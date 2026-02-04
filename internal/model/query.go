@@ -2,11 +2,14 @@ package model
 
 import (
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // QueryFilters defines the filter parameters for structured decision queries.
 type QueryFilters struct {
 	AgentIDs      []string   `json:"agent_id,omitempty"`
+	RunID         *uuid.UUID `json:"run_id,omitempty"`
 	DecisionType  *string    `json:"decision_type,omitempty"`
 	ConfidenceMin *float32   `json:"confidence_min,omitempty"`
 	Outcome       *string    `json:"outcome,omitempty"`
@@ -55,4 +58,20 @@ type PagedResult[T any] struct {
 	Total  int `json:"total"`
 	Limit  int `json:"limit"`
 	Offset int `json:"offset"`
+}
+
+// CheckRequest is the request body for POST /v1/check.
+// It supports a lightweight precedent lookup before making a decision.
+type CheckRequest struct {
+	DecisionType string `json:"decision_type"`
+	Query        string `json:"query,omitempty"`
+	AgentID      string `json:"agent_id,omitempty"`
+	Limit        int    `json:"limit,omitempty"`
+}
+
+// CheckResponse is the response for POST /v1/check.
+type CheckResponse struct {
+	HasPrecedent bool               `json:"has_precedent"`
+	Decisions    []Decision         `json:"decisions"`
+	Conflicts    []DecisionConflict `json:"conflicts,omitempty"`
 }

@@ -160,6 +160,9 @@ func (db *DB) QueryDecisions(ctx context.Context, req model.QueryRequest) ([]mod
 	if limit <= 0 {
 		limit = 50
 	}
+	if limit > 1000 {
+		limit = 1000
+	}
 	offset := req.Offset
 	if offset < 0 {
 		offset = 0
@@ -183,24 +186,31 @@ func (db *DB) QueryDecisions(ctx context.Context, req model.QueryRequest) ([]mod
 		return nil, 0, err
 	}
 
-	// Optionally load related data.
+	// Optionally load related data in batch (avoids N+1 queries).
 	includeAlts := containsStr(req.Include, "alternatives")
 	includeEvidence := containsStr(req.Include, "evidence")
-	if includeAlts || includeEvidence {
+	if (includeAlts || includeEvidence) && len(decisions) > 0 {
+		ids := make([]uuid.UUID, len(decisions))
 		for i := range decisions {
-			if includeAlts {
-				alts, err := db.GetAlternativesByDecision(ctx, decisions[i].ID)
-				if err != nil {
-					return nil, 0, err
-				}
-				decisions[i].Alternatives = alts
+			ids[i] = decisions[i].ID
+		}
+
+		if includeAlts {
+			altsMap, err := db.GetAlternativesByDecisions(ctx, ids)
+			if err != nil {
+				return nil, 0, err
 			}
-			if includeEvidence {
-				ev, err := db.GetEvidenceByDecision(ctx, decisions[i].ID)
-				if err != nil {
-					return nil, 0, err
-				}
-				decisions[i].Evidence = ev
+			for i := range decisions {
+				decisions[i].Alternatives = altsMap[decisions[i].ID]
+			}
+		}
+		if includeEvidence {
+			evsMap, err := db.GetEvidenceByDecisions(ctx, ids)
+			if err != nil {
+				return nil, 0, err
+			}
+			for i := range decisions {
+				decisions[i].Evidence = evsMap[decisions[i].ID]
 			}
 		}
 	}
@@ -237,6 +247,9 @@ func (db *DB) QueryDecisionsTemporal(ctx context.Context, req model.TemporalQuer
 func (db *DB) SearchDecisionsByEmbedding(ctx context.Context, embedding pgvector.Vector, filters model.QueryFilters, limit int) ([]model.SearchResult, error) {
 	if limit <= 0 {
 		limit = 10
+	}
+	if limit > 1000 {
+		limit = 1000
 	}
 
 	where, args := buildDecisionWhereClause(filters, 2)
@@ -283,6 +296,9 @@ func (db *DB) GetDecisionsByAgent(ctx context.Context, agentID string, limit, of
 	if limit <= 0 {
 		limit = 50
 	}
+	if limit > 1000 {
+		limit = 1000
+	}
 
 	filters := model.QueryFilters{
 		AgentIDs: []string{agentID},
@@ -323,6 +339,11 @@ func buildDecisionWhereClause(f model.QueryFilters, startArgIdx int) (string, []
 	if len(f.AgentIDs) > 0 {
 		conditions = append(conditions, fmt.Sprintf("agent_id = ANY($%d)", idx))
 		args = append(args, f.AgentIDs)
+		idx++
+	}
+	if f.RunID != nil {
+		conditions = append(conditions, fmt.Sprintf("run_id = $%d", idx))
+		args = append(args, *f.RunID)
 		idx++
 	}
 	if f.DecisionType != nil {

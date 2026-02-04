@@ -71,6 +71,38 @@ func (db *DB) CreateEvidenceBatch(ctx context.Context, evs []model.Evidence) err
 	return nil
 }
 
+// GetEvidenceByDecisions retrieves all evidence for a set of decision IDs in a single query.
+// Results are returned as a map from decision ID to its evidence.
+func (db *DB) GetEvidenceByDecisions(ctx context.Context, decisionIDs []uuid.UUID) (map[uuid.UUID][]model.Evidence, error) {
+	if len(decisionIDs) == 0 {
+		return nil, nil
+	}
+
+	rows, err := db.pool.Query(ctx,
+		`SELECT id, decision_id, source_type, source_uri, content,
+		 relevance_score, metadata, created_at
+		 FROM evidence WHERE decision_id = ANY($1)
+		 ORDER BY relevance_score DESC NULLS LAST`, decisionIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("storage: get evidence batch: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[uuid.UUID][]model.Evidence)
+	for rows.Next() {
+		var ev model.Evidence
+		if err := rows.Scan(
+			&ev.ID, &ev.DecisionID, &ev.SourceType, &ev.SourceURI, &ev.Content,
+			&ev.RelevanceScore, &ev.Metadata, &ev.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("storage: scan evidence: %w", err)
+		}
+		result[ev.DecisionID] = append(result[ev.DecisionID], ev)
+	}
+	return result, rows.Err()
+}
+
 // GetEvidenceByDecision retrieves all evidence for a decision.
 func (db *DB) GetEvidenceByDecision(ctx context.Context, decisionID uuid.UUID) ([]model.Evidence, error) {
 	rows, err := db.pool.Query(ctx,

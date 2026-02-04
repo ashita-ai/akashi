@@ -373,15 +373,17 @@ func TestMCPListTools(t *testing.T) {
 
 	toolsResult, err := c.ListTools(ctx, mcplib.ListToolsRequest{})
 	require.NoError(t, err)
-	assert.Len(t, toolsResult.Tools, 3)
+	assert.Len(t, toolsResult.Tools, 5)
 
 	toolNames := make(map[string]bool)
 	for _, tool := range toolsResult.Tools {
 		toolNames[tool.Name] = true
 	}
+	assert.True(t, toolNames["kyoyu_check"], "expected kyoyu_check tool")
 	assert.True(t, toolNames["kyoyu_trace"], "expected kyoyu_trace tool")
 	assert.True(t, toolNames["kyoyu_query"], "expected kyoyu_query tool")
 	assert.True(t, toolNames["kyoyu_search"], "expected kyoyu_search tool")
+	assert.True(t, toolNames["kyoyu_recent"], "expected kyoyu_recent tool")
 }
 
 func TestMCPListResources(t *testing.T) {
@@ -496,4 +498,290 @@ func TestMCPUnauthenticated(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestMCPCheckTool(t *testing.T) {
+	c := newMCPClient(t, agentToken)
+	defer c.Close()
+
+	ctx := context.Background()
+	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
+		Params: mcplib.InitializeParams{
+			ClientInfo: mcplib.Implementation{Name: "test-client", Version: "1.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	// Record a decision first.
+	traceResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name: "kyoyu_trace",
+			Arguments: map[string]any{
+				"agent_id":      "test-agent",
+				"decision_type": "architecture",
+				"outcome":       "chose Redis for session caching",
+				"confidence":    0.85,
+				"reasoning":     "Redis handles expected QPS, TTL prevents stale reads",
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, traceResult.IsError, "trace tool returned error: %v", traceResult.Content)
+
+	// Now check for precedents — should find the decision we just recorded.
+	checkResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name: "kyoyu_check",
+			Arguments: map[string]any{
+				"decision_type": "architecture",
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, checkResult.IsError, "check tool returned error: %v", checkResult.Content)
+
+	// Parse the response and verify has_precedent is true.
+	var checkResp model.CheckResponse
+	for _, content := range checkResult.Content {
+		if tc, ok := content.(mcplib.TextContent); ok {
+			err := json.Unmarshal([]byte(tc.Text), &checkResp)
+			require.NoError(t, err)
+			break
+		}
+	}
+	assert.True(t, checkResp.HasPrecedent, "expected has_precedent=true after recording a decision")
+	assert.NotEmpty(t, checkResp.Decisions, "expected at least one precedent decision")
+}
+
+func TestMCPCheckNoPrecedent(t *testing.T) {
+	c := newMCPClient(t, agentToken)
+	defer c.Close()
+
+	ctx := context.Background()
+	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
+		Params: mcplib.InitializeParams{
+			ClientInfo: mcplib.Implementation{Name: "test-client", Version: "1.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	// Check for a decision type that hasn't been used.
+	checkResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name: "kyoyu_check",
+			Arguments: map[string]any{
+				"decision_type": "deployment",
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, checkResult.IsError, "check tool returned error: %v", checkResult.Content)
+
+	var checkResp model.CheckResponse
+	for _, content := range checkResult.Content {
+		if tc, ok := content.(mcplib.TextContent); ok {
+			err := json.Unmarshal([]byte(tc.Text), &checkResp)
+			require.NoError(t, err)
+			break
+		}
+	}
+	assert.False(t, checkResp.HasPrecedent, "expected has_precedent=false for unused decision type")
+}
+
+func TestMCPRecentTool(t *testing.T) {
+	c := newMCPClient(t, agentToken)
+	defer c.Close()
+
+	ctx := context.Background()
+	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
+		Params: mcplib.InitializeParams{
+			ClientInfo: mcplib.Implementation{Name: "test-client", Version: "1.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	// Record a decision so there's at least one recent one.
+	_, err = c.CallTool(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name: "kyoyu_trace",
+			Arguments: map[string]any{
+				"agent_id":      "test-agent",
+				"decision_type": "feature_scope",
+				"outcome":       "included pagination in API response",
+				"confidence":    0.9,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	// Call kyoyu_recent.
+	recentResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name: "kyoyu_recent",
+			Arguments: map[string]any{
+				"limit": 5,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, recentResult.IsError, "recent tool returned error: %v", recentResult.Content)
+
+	// Parse and verify we got results.
+	var recentResp struct {
+		Decisions []model.Decision `json:"decisions"`
+		Total     int              `json:"total"`
+	}
+	for _, content := range recentResult.Content {
+		if tc, ok := content.(mcplib.TextContent); ok {
+			err := json.Unmarshal([]byte(tc.Text), &recentResp)
+			require.NoError(t, err)
+			break
+		}
+	}
+	assert.NotEmpty(t, recentResp.Decisions, "expected at least one recent decision")
+	assert.Greater(t, recentResp.Total, 0, "expected total > 0")
+}
+
+func TestMCPPrompts(t *testing.T) {
+	c := newMCPClient(t, agentToken)
+	defer c.Close()
+
+	ctx := context.Background()
+	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
+		Params: mcplib.InitializeParams{
+			ClientInfo: mcplib.Implementation{Name: "test-client", Version: "1.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	// List prompts.
+	promptsResult, err := c.ListPrompts(ctx, mcplib.ListPromptsRequest{})
+	require.NoError(t, err)
+	assert.Len(t, promptsResult.Prompts, 3, "expected 3 prompts")
+
+	promptNames := make(map[string]bool)
+	for _, p := range promptsResult.Prompts {
+		promptNames[p.Name] = true
+	}
+	assert.True(t, promptNames["before-decision"], "expected before-decision prompt")
+	assert.True(t, promptNames["after-decision"], "expected after-decision prompt")
+	assert.True(t, promptNames["agent-setup"], "expected agent-setup prompt")
+
+	// Get the agent-setup prompt (no arguments needed).
+	setupResult, err := c.GetPrompt(ctx, mcplib.GetPromptRequest{
+		Params: mcplib.GetPromptParams{
+			Name: "agent-setup",
+		},
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, setupResult.Messages, "expected at least one message in agent-setup prompt")
+	// Verify the content mentions the check-before workflow.
+	for _, msg := range setupResult.Messages {
+		if tc, ok := msg.Content.(mcplib.TextContent); ok {
+			assert.Contains(t, tc.Text, "Check Before", "expected agent-setup to mention check-before pattern")
+			break
+		}
+	}
+
+	// Get the before-decision prompt with an argument.
+	beforeResult, err := c.GetPrompt(ctx, mcplib.GetPromptRequest{
+		Params: mcplib.GetPromptParams{
+			Name:      "before-decision",
+			Arguments: map[string]string{"decision_type": "architecture"},
+		},
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, beforeResult.Messages)
+}
+
+func TestCheckEndpoint(t *testing.T) {
+	// First, create a decision via /v1/trace so we have precedent.
+	_, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken,
+		model.TraceRequest{
+			AgentID: "test-agent",
+			Decision: model.TraceDecision{
+				DecisionType: "security",
+				Outcome:      "chose JWT for API auth",
+				Confidence:   0.9,
+			},
+		})
+	require.NoError(t, err)
+
+	// Check for precedents on "security" type — should find one.
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/check", agentToken,
+		model.CheckRequest{
+			DecisionType: "security",
+			Limit:        5,
+		})
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Data model.CheckResponse `json:"data"`
+	}
+	data, _ := io.ReadAll(resp.Body)
+	err = json.Unmarshal(data, &result)
+	require.NoError(t, err)
+	assert.True(t, result.Data.HasPrecedent, "expected has_precedent=true")
+	assert.NotEmpty(t, result.Data.Decisions)
+
+	// Check for a type with no precedents.
+	resp2, err := authedRequest("POST", testSrv.URL+"/v1/check", agentToken,
+		model.CheckRequest{
+			DecisionType: "deployment",
+			Limit:        5,
+		})
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	assert.Equal(t, http.StatusOK, resp2.StatusCode)
+
+	var result2 struct {
+		Data model.CheckResponse `json:"data"`
+	}
+	data2, _ := io.ReadAll(resp2.Body)
+	err = json.Unmarshal(data2, &result2)
+	require.NoError(t, err)
+	assert.False(t, result2.Data.HasPrecedent, "expected has_precedent=false for unused type")
+}
+
+func TestDecisionsRecentEndpoint(t *testing.T) {
+	// GET /v1/decisions/recent with no filters.
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/recent", agentToken, nil)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Data struct {
+			Decisions []model.Decision `json:"decisions"`
+			Total     int              `json:"total"`
+			Limit     int              `json:"limit"`
+		} `json:"data"`
+	}
+	data, _ := io.ReadAll(resp.Body)
+	err = json.Unmarshal(data, &result)
+	require.NoError(t, err)
+	assert.NotEmpty(t, result.Data.Decisions, "expected at least one recent decision")
+	assert.Equal(t, 10, result.Data.Limit, "expected default limit of 10")
+
+	// GET with agent_id filter.
+	resp2, err := authedRequest("GET", testSrv.URL+"/v1/decisions/recent?agent_id=test-agent&limit=3", agentToken, nil)
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	assert.Equal(t, http.StatusOK, resp2.StatusCode)
+
+	var result2 struct {
+		Data struct {
+			Decisions []model.Decision `json:"decisions"`
+			Limit     int              `json:"limit"`
+		} `json:"data"`
+	}
+	data2, _ := io.ReadAll(resp2.Body)
+	err = json.Unmarshal(data2, &result2)
+	require.NoError(t, err)
+	assert.Equal(t, 3, result2.Data.Limit)
+	for _, d := range result2.Data.Decisions {
+		assert.Equal(t, "test-agent", d.AgentID, "expected only test-agent decisions")
+	}
 }

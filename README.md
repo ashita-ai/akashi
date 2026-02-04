@@ -51,7 +51,7 @@ Kyoyu is a smart store, not an orchestrator. It stores, indexes, and queries dec
 The server exposes the same capabilities through two interfaces:
 
 - **HTTP API** at `/v1/...` -- standard REST endpoints for trace ingestion, structured queries, semantic search, agent management, and real-time subscriptions (SSE)
-- **MCP server** at `/mcp` -- StreamableHTTP transport with three tools (`kyoyu_trace`, `kyoyu_query`, `kyoyu_search`) and three resources (`kyoyu://session/current`, `kyoyu://decisions/recent`, `kyoyu://agent/{id}/history`), so any MCP-compatible agent can connect directly
+- **MCP server** at `/mcp` -- StreamableHTTP transport with five tools (`kyoyu_check`, `kyoyu_trace`, `kyoyu_query`, `kyoyu_search`, `kyoyu_recent`), three resources (`kyoyu://session/current`, `kyoyu://decisions/recent`, `kyoyu://agent/{id}/history`), and three prompts (`before-decision`, `after-decision`, `agent-setup`), so any MCP-compatible agent can connect directly
 
 Both interfaces share the same storage layer and embedding provider.
 
@@ -175,6 +175,18 @@ curl -X POST http://localhost:8080/v1/search \
   -d '{"query": "which model to use for text tasks", "limit": 5}'
 ```
 
+## SDKs
+
+Client SDKs are available for Go, Python, and TypeScript. Each provides the same five operations: `Check`, `Trace`, `Query`, `Search`, and `Recent`.
+
+| Language | Path | Dependencies | Docs |
+|----------|------|--------------|------|
+| Go | [`sdk/go/`](sdk/go/) | `net/http` + `google/uuid` | [README](sdk/go/README.md) |
+| Python | [`sdk/python/`](sdk/python/) | `httpx` + `pydantic v2` | [README](sdk/python/README.md) |
+| TypeScript | [`sdk/typescript/`](sdk/typescript/) | Native `fetch` (zero deps) | [README](sdk/typescript/README.md) |
+
+All SDKs handle JWT token acquisition and auto-refresh transparently. Python and TypeScript include middleware that enforces the check-before/record-after pattern automatically. See `prompts/` for system prompt templates that teach agents when to use these tools.
+
 ## Project structure
 
 ```
@@ -182,7 +194,7 @@ cmd/kyoyu/                 Application entrypoint, wires all components
 internal/
   auth/                    Ed25519 JWT + Argon2id API key hashing
   config/                  Environment variable configuration
-  mcp/                     MCP server (3 resources, 3 tools)
+  mcp/                     MCP server (5 tools, 3 resources, 3 prompts)
   model/                   Domain types (runs, events, decisions, agents, queries)
   server/                  HTTP server, handlers, middleware (auth, tracing, logging)
   service/
@@ -195,6 +207,11 @@ docker/
   docker-compose.yml       Full stack: Postgres, PgBouncer, Redis, Kyoyu
   Dockerfile.postgres      Postgres 17 + pgvector 0.8.0 + TimescaleDB 2.17.2
   init.sql                 Extension initialization
+sdk/
+  go/                      Go SDK (separate go.mod, no server dependencies)
+  python/                  Python SDK (pydantic v2 + httpx)
+  typescript/              TypeScript SDK (native fetch, zero runtime dependencies)
+prompts/                   System prompt templates for agent builders
 Dockerfile                 Multi-stage Go build (alpine-based, runs as non-root)
 ```
 
@@ -251,9 +268,9 @@ make test
 go test ./... -v -count=1
 ```
 
-33 integration tests across 3 packages:
-- `internal/storage/` -- 16 tests covering runs, events, decisions, alternatives, evidence, agents, grants, conflicts, notifications
-- `internal/server/` -- 15 tests covering health, auth flow, RBAC, run+event ingestion, trace convenience endpoint, queries, search, MCP initialize/list/trace/query/resource/unauth
+41 integration tests across 3 packages:
+- `internal/storage/` -- 17 tests covering runs, events, decisions, alternatives, evidence, agents, grants, conflicts, notifications
+- `internal/server/` -- 22 tests covering health, auth flow, RBAC, run+event ingestion, trace, queries, search, check, recent decisions, MCP tools (5), MCP prompts (3), MCP resources
 - `internal/auth/` -- 2 tests covering API key hashing and JWT issuance/validation
 
 ## Requirements
