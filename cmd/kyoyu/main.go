@@ -13,10 +13,12 @@ import (
 
 	"github.com/ashita-ai/kyoyu/internal/auth"
 	"github.com/ashita-ai/kyoyu/internal/config"
+	"github.com/ashita-ai/kyoyu/internal/mcp"
 	"github.com/ashita-ai/kyoyu/internal/server"
 	"github.com/ashita-ai/kyoyu/internal/service/embedding"
 	"github.com/ashita-ai/kyoyu/internal/service/trace"
 	"github.com/ashita-ai/kyoyu/internal/storage"
+	"github.com/ashita-ai/kyoyu/internal/telemetry"
 )
 
 func main() {
@@ -46,6 +48,13 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}
 
 	slog.Info("kyoyu starting", "version", "0.1.0", "port", cfg.Port)
+
+	// Initialize OpenTelemetry.
+	otelShutdown, err := telemetry.Init(ctx, cfg.OTELEndpoint, cfg.ServiceName, "0.1.0")
+	if err != nil {
+		return fmt.Errorf("telemetry: %w", err)
+	}
+	defer otelShutdown(context.Background())
 
 	// Connect to database.
 	db, err := storage.New(ctx, cfg.DatabaseURL, cfg.NotifyURL, logger)
@@ -79,9 +88,13 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	buf := trace.NewBuffer(db, logger, cfg.EventBufferSize, cfg.EventFlushTimeout)
 	buf.Start(ctx)
 
-	// Create and start HTTP server.
+	// Create MCP server.
+	mcpSrv := mcp.New(db, embedder, logger)
+
+	// Create and start HTTP server (MCP mounted at /mcp).
 	srv := server.New(db, jwtMgr, embedder, buf, logger,
-		cfg.Port, cfg.ReadTimeout, cfg.WriteTimeout)
+		cfg.Port, cfg.ReadTimeout, cfg.WriteTimeout,
+		mcpSrv.MCPServer())
 
 	// Seed admin agent.
 	if err := srv.Handlers().SeedAdmin(ctx, cfg.AdminAPIKey); err != nil {

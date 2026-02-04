@@ -1,0 +1,10 @@
+.git
+.claude
+.env
+.env.*
+!.env.example
+bin/
+docker/
+specs/
+*.md
+!migrations/
