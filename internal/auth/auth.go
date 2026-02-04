@@ -1,0 +1,126 @@
+// Package auth provides JWT-based authentication and RBAC authorization for Kyoyu.
+//
+// Uses Ed25519 (EdDSA) for JWT signing. Keys can be loaded from PEM files
+// or auto-generated for development.
+package auth
+
+import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+
+	"github.com/ashita-ai/kyoyu/internal/model"
+)
+
+// Claims extends jwt.RegisteredClaims with Kyoyu-specific fields.
+type Claims struct {
+	jwt.RegisteredClaims
+	AgentID string          `json:"agent_id"`
+	Role    model.AgentRole `json:"role"`
+}
+
+// JWTManager handles JWT creation and validation using Ed25519.
+type JWTManager struct {
+	privateKey ed25519.PrivateKey
+	publicKey  ed25519.PublicKey
+	expiration time.Duration
+}
+
+// NewJWTManager creates a JWTManager from PEM key files.
+// If paths are empty, generates an ephemeral key pair (for development).
+func NewJWTManager(privateKeyPath, publicKeyPath string, expiration time.Duration) (*JWTManager, error) {
+	if privateKeyPath == "" || publicKeyPath == "" {
+		pub, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("auth: generate key pair: %w", err)
+		}
+		return &JWTManager{privateKey: priv, publicKey: pub, expiration: expiration}, nil
+	}
+
+	privPEM, err := os.ReadFile(privateKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("auth: read private key: %w", err)
+	}
+	block, _ := pem.Decode(privPEM)
+	if block == nil {
+		return nil, fmt.Errorf("auth: decode private key PEM")
+	}
+	privKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("auth: parse private key: %w", err)
+	}
+	edPriv, ok := privKey.(ed25519.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("auth: private key is not Ed25519")
+	}
+
+	pubPEM, err := os.ReadFile(publicKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("auth: read public key: %w", err)
+	}
+	pubBlock, _ := pem.Decode(pubPEM)
+	if pubBlock == nil {
+		return nil, fmt.Errorf("auth: decode public key PEM")
+	}
+	pubKey, err := x509.ParsePKIXPublicKey(pubBlock.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("auth: parse public key: %w", err)
+	}
+	edPub, ok := pubKey.(ed25519.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("auth: public key is not Ed25519")
+	}
+
+	return &JWTManager{privateKey: edPriv, publicKey: edPub, expiration: expiration}, nil
+}
+
+// IssueToken creates a signed JWT for the given agent.
+func (m *JWTManager) IssueToken(agent model.Agent) (string, time.Time, error) {
+	now := time.Now().UTC()
+	exp := now.Add(m.expiration)
+
+	claims := Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   agent.ID.String(),
+			Issuer:    "kyoyu",
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(exp),
+			ID:        uuid.New().String(),
+		},
+		AgentID: agent.AgentID,
+		Role:    agent.Role,
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
+	signed, err := token.SignedString(m.privateKey)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("auth: sign token: %w", err)
+	}
+	return signed, exp, nil
+}
+
+// ValidateToken parses and validates a JWT, returning the claims.
+func (m *JWTManager) ValidateToken(tokenStr string) (*Claims, error) {
+	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(token *jwt.Token) (any, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodEd25519); !ok {
+			return nil, fmt.Errorf("auth: unexpected signing method: %v", token.Header["alg"])
+		}
+		return m.publicKey, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("auth: validate token: %w", err)
+	}
+
+	claims, ok := token.Claims.(*Claims)
+	if !ok || !token.Valid {
+		return nil, fmt.Errorf("auth: invalid token claims")
+	}
+	return claims, nil
+}

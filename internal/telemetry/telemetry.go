@@ -1,0 +1,93 @@
+// Package telemetry initializes OpenTelemetry tracing and metrics exporters.
+package telemetry
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+)
+
+// Shutdown combines multiple shutdown functions.
+type Shutdown func(ctx context.Context) error
+
+// Init configures the global OpenTelemetry tracer and meter providers.
+// If endpoint is empty, OTEL is disabled and no-op providers are used.
+// Returns a shutdown function that must be called during graceful shutdown.
+func Init(ctx context.Context, endpoint, serviceName, version string) (Shutdown, error) {
+	if endpoint == "" {
+		return func(ctx context.Context) error { return nil }, nil
+	}
+
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
+			semconv.ServiceNameKey.String(serviceName),
+			semconv.ServiceVersionKey.String(version),
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("telemetry: create resource: %w", err)
+	}
+
+	// Trace exporter.
+	traceExp, err := otlptracehttp.New(ctx,
+		otlptracehttp.WithEndpoint(endpoint),
+		otlptracehttp.WithInsecure(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("telemetry: create trace exporter: %w", err)
+	}
+
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(traceExp,
+			sdktrace.WithBatchTimeout(5*time.Second),
+		),
+		sdktrace.WithResource(res),
+	)
+	otel.SetTracerProvider(tp)
+
+	// Metric exporter.
+	metricExp, err := otlpmetrichttp.New(ctx,
+		otlpmetrichttp.WithEndpoint(endpoint),
+		otlpmetrichttp.WithInsecure(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("telemetry: create metric exporter: %w", err)
+	}
+
+	mp := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(
+			sdkmetric.NewPeriodicReader(metricExp,
+				sdkmetric.WithInterval(15*time.Second),
+			),
+		),
+		sdkmetric.WithResource(res),
+	)
+	otel.SetMeterProvider(mp)
+
+	shutdown := func(ctx context.Context) error {
+		var firstErr error
+		if err := tp.Shutdown(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		if err := mp.Shutdown(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		return firstErr
+	}
+
+	return shutdown, nil
+}
+
+// Meter returns the global meter for the given instrumentation scope.
+func Meter(name string) metric.Meter {
+	return otel.GetMeterProvider().Meter(name)
+}

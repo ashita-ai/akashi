@@ -8,15 +8,76 @@ services:
       - "5432:5432"
     environment:
       POSTGRES_USER: kyoyu
-      POSTGRES_PASSWORD: kyoyu
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kyoyu}
       POSTGRES_DB: kyoyu
     volumes:
       - pgdata:/var/lib/postgresql/data
+    command: >
+      postgres
+        -c shared_buffers=256MB
+        -c effective_cache_size=768MB
+        -c wal_buffers=16MB
+        -c max_wal_size=1GB
+        -c synchronous_commit=off
+        -c max_connections=200
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U kyoyu -d kyoyu"]
       interval: 5s
       timeout: 5s
       retries: 5
 
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: kyoyu-pgbouncer
+    ports:
+      - "6432:6432"
+    environment:
+      DATABASE_URL: postgres://kyoyu:${POSTGRES_PASSWORD:-kyoyu}@postgres:5432/kyoyu
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 50
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    container_name: kyoyu-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  kyoyu:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: kyoyu-server
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://kyoyu:${POSTGRES_PASSWORD:-kyoyu}@pgbouncer:6432/kyoyu?sslmode=disable
+      NOTIFY_URL: postgres://kyoyu:${POSTGRES_PASSWORD:-kyoyu}@postgres:5432/kyoyu?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      KYOYU_PORT: "8080"
+      KYOYU_ADMIN_API_KEY: ${KYOYU_ADMIN_API_KEY:-changeme}
+      KYOYU_LOG_LEVEL: ${KYOYU_LOG_LEVEL:-info}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      KYOYU_EMBEDDING_MODEL: ${KYOYU_EMBEDDING_MODEL:-text-embedding-3-small}
+    depends_on:
+      pgbouncer:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   pgdata:
+  redisdata:
