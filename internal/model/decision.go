@@ -1,0 +1,98 @@
+package model
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/pgvector/pgvector-go"
+)
+
+// Decision is a first-class decision entity with bi-temporal modeling.
+// Created from DecisionMade events and revised via DecisionRevised events.
+type Decision struct {
+	ID              uuid.UUID      `json:"id"`
+	RunID           uuid.UUID      `json:"run_id"`
+	AgentID         string         `json:"agent_id"`
+	DecisionType    string         `json:"decision_type"`
+	Outcome         string         `json:"outcome"`
+	Confidence      float32        `json:"confidence"`
+	Reasoning       *string        `json:"reasoning,omitempty"`
+	Embedding       *pgvector.Vector `json:"-"`
+	Metadata        map[string]any `json:"metadata"`
+
+	// Bi-temporal columns.
+	ValidFrom       time.Time  `json:"valid_from"`
+	ValidTo         *time.Time `json:"valid_to,omitempty"`
+	TransactionTime time.Time  `json:"transaction_time"`
+
+	CreatedAt time.Time `json:"created_at"`
+
+	// Joined data (populated by queries, not stored in decisions table).
+	Alternatives []Alternative `json:"alternatives,omitempty"`
+	Evidence     []Evidence    `json:"evidence,omitempty"`
+}
+
+// Alternative represents an option considered for a decision. Immutable.
+type Alternative struct {
+	ID              uuid.UUID      `json:"id"`
+	DecisionID      uuid.UUID      `json:"decision_id"`
+	Label           string         `json:"label"`
+	Score           *float32       `json:"score,omitempty"`
+	Selected        bool           `json:"selected"`
+	RejectionReason *string        `json:"rejection_reason,omitempty"`
+	Metadata        map[string]any `json:"metadata"`
+	CreatedAt       time.Time      `json:"created_at"`
+}
+
+// SourceType enumerates valid evidence source types.
+type SourceType string
+
+const (
+	SourceDocument     SourceType = "document"
+	SourceAPIResponse  SourceType = "api_response"
+	SourceAgentOutput  SourceType = "agent_output"
+	SourceUserInput    SourceType = "user_input"
+	SourceSearchResult SourceType = "search_result"
+)
+
+// Evidence represents supporting information for a decision. Immutable.
+type Evidence struct {
+	ID             uuid.UUID        `json:"id"`
+	DecisionID     uuid.UUID        `json:"decision_id"`
+	SourceType     SourceType       `json:"source_type"`
+	SourceURI      *string          `json:"source_uri,omitempty"`
+	Content        string           `json:"content"`
+	RelevanceScore *float32         `json:"relevance_score,omitempty"`
+	Embedding      *pgvector.Vector `json:"-"`
+	Metadata       map[string]any   `json:"metadata"`
+	CreatedAt      time.Time        `json:"created_at"`
+}
+
+// DecisionConflict represents a detected conflict between two decisions.
+type DecisionConflict struct {
+	DecisionAID uuid.UUID `json:"decision_a_id"`
+	DecisionBID uuid.UUID `json:"decision_b_id"`
+	AgentA      string    `json:"agent_a"`
+	AgentB      string    `json:"agent_b"`
+	RunA        uuid.UUID `json:"run_a"`
+	RunB        uuid.UUID `json:"run_b"`
+	DecisionType string  `json:"decision_type"`
+	OutcomeA    string    `json:"outcome_a"`
+	OutcomeB    string    `json:"outcome_b"`
+	ConfidenceA float32   `json:"confidence_a"`
+	ConfidenceB float32   `json:"confidence_b"`
+	DecidedAtA  time.Time `json:"decided_at_a"`
+	DecidedAtB  time.Time `json:"decided_at_b"`
+	DetectedAt  time.Time `json:"detected_at"`
+}
+
+// AgentCurrentState is a summary of an agent's latest activity.
+type AgentCurrentState struct {
+	AgentID         string     `json:"agent_id"`
+	LatestRunID     uuid.UUID  `json:"latest_run_id"`
+	RunStatus       RunStatus  `json:"run_status"`
+	StartedAt       time.Time  `json:"started_at"`
+	EventCount      int64      `json:"event_count"`
+	LastActivity    *time.Time `json:"last_activity,omitempty"`
+	ActiveDecisions int64      `json:"active_decisions"`
+}
