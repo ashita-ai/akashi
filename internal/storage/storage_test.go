@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
 	"github.com/pgvector/pgvector-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -63,30 +63,29 @@ func TestMain(m *testing.M) {
 
 	dsn := fmt.Sprintf("postgres://kyoyu:kyoyu@%s:%s/kyoyu?sslmode=disable", host, port.Port())
 
+	// Enable extensions before creating the storage layer so pgvector types
+	// get registered on the pool's AfterConnect hook.
+	bootstrapConn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to bootstrap connection: %v\n", err)
+		os.Exit(1)
+	}
+	if _, err := bootstrapConn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS vector"); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create vector extension: %v\n", err)
+		os.Exit(1)
+	}
+	if _, err := bootstrapConn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS timescaledb"); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create timescaledb extension: %v\n", err)
+		os.Exit(1)
+	}
+	bootstrapConn.Close(ctx)
+
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	testDB, err = storage.New(ctx, dsn, "", logger)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create DB: %v\n", err)
 		os.Exit(1)
 	}
-
-	// Enable pgvector extension.
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create pool for init: %v\n", err)
-		os.Exit(1)
-	}
-	_, err = pool.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS vector")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create vector extension: %v\n", err)
-		os.Exit(1)
-	}
-	_, err = pool.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS timescaledb")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create timescaledb extension: %v\n", err)
-		os.Exit(1)
-	}
-	pool.Close()
 
 	// Run migrations.
 	if err := testDB.RunMigrations(ctx, os.DirFS("../../migrations")); err != nil {

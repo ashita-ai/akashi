@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	mcpserver "github.com/mark3labs/mcp-go/server"
+
 	"github.com/ashita-ai/kyoyu/internal/auth"
 	"github.com/ashita-ai/kyoyu/internal/model"
 	"github.com/ashita-ai/kyoyu/internal/service/embedding"
@@ -28,6 +30,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 // New creates a new HTTP server with all routes configured.
+// mcpSrv is optional; if non-nil the MCP StreamableHTTP transport is mounted at /mcp.
 func New(
 	db *storage.DB,
 	jwtMgr *auth.JWTManager,
@@ -36,6 +39,7 @@ func New(
 	logger *slog.Logger,
 	port int,
 	readTimeout, writeTimeout time.Duration,
+	mcpSrv *mcpserver.MCPServer,
 ) *Server {
 	h := NewHandlers(db, jwtMgr, embedder, buffer, logger)
 
@@ -77,13 +81,20 @@ func New(
 	// Conflicts (all authenticated roles).
 	mux.Handle("GET /v1/conflicts", allRoles(http.HandlerFunc(h.HandleListConflicts)))
 
+	// MCP StreamableHTTP transport (auth required, any authenticated role).
+	if mcpSrv != nil {
+		mcpHTTP := mcpserver.NewStreamableHTTPServer(mcpSrv)
+		mux.Handle("/mcp", allRoles(mcpHTTP))
+	}
+
 	// Health (no auth).
 	mux.HandleFunc("GET /health", h.HandleHealth)
 
-	// Apply middleware chain: request ID → logging → auth.
+	// Apply middleware chain: request ID → tracing → logging → auth.
 	var handler http.Handler = mux
 	handler = authMiddleware(jwtMgr, handler)
 	handler = loggingMiddleware(logger, handler)
+	handler = tracingMiddleware(handler)
 	handler = requestIDMiddleware(handler)
 
 	return &Server{

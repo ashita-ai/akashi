@@ -13,12 +13,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	mcpclient "github.com/mark3labs/mcp-go/client"
+	mcptransport "github.com/mark3labs/mcp-go/client/transport"
+	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/ashita-ai/kyoyu/internal/auth"
+	"github.com/ashita-ai/kyoyu/internal/mcp"
 	"github.com/ashita-ai/kyoyu/internal/model"
 	"github.com/ashita-ai/kyoyu/internal/server"
 	"github.com/ashita-ai/kyoyu/internal/service/embedding"
@@ -61,6 +66,17 @@ func TestMain(m *testing.M) {
 	port, _ := container.MappedPort(ctx, "5432")
 	dsn := fmt.Sprintf("postgres://kyoyu:kyoyu@%s:%s/kyoyu?sslmode=disable", host, port.Port())
 
+	// Enable extensions before creating the storage layer so pgvector types
+	// get registered on the pool's AfterConnect hook.
+	bootstrapConn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to bootstrap connection: %v\n", err)
+		os.Exit(1)
+	}
+	_, _ = bootstrapConn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS vector")
+	_, _ = bootstrapConn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS timescaledb")
+	bootstrapConn.Close(ctx)
+
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
 	db, err := storage.New(ctx, dsn, "", logger)
@@ -68,11 +84,6 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "failed to create DB: %v\n", err)
 		os.Exit(1)
 	}
-
-	// Enable extensions and run migrations.
-	pool := db.Pool()
-	_, _ = pool.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS vector")
-	_, _ = pool.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS timescaledb")
 
 	if err := db.RunMigrations(ctx, os.DirFS("../../migrations")); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to run migrations: %v\n", err)
@@ -84,7 +95,8 @@ func TestMain(m *testing.M) {
 	buf := trace.NewBuffer(db, logger, 1000, 50*time.Millisecond)
 	buf.Start(ctx)
 
-	srv := server.New(db, jwtMgr, embedder, buf, logger, 0, 30*time.Second, 30*time.Second)
+	mcpSrv := mcp.New(db, embedder, logger)
+	srv := server.New(db, jwtMgr, embedder, buf, logger, 0, 30*time.Second, 30*time.Second, mcpSrv.MCPServer())
 
 	// Seed admin.
 	_ = srv.Handlers().SeedAdmin(ctx, "test-admin-key")
@@ -316,4 +328,172 @@ func TestConflictsEndpoint(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// newMCPClient creates an MCP client that connects to the test server's /mcp endpoint
+// with the given bearer token for authentication.
+func newMCPClient(t *testing.T, token string) *mcpclient.Client {
+	t.Helper()
+	c, err := mcpclient.NewStreamableHttpClient(
+		testSrv.URL+"/mcp",
+		mcptransport.WithHTTPHeaders(map[string]string{
+			"Authorization": "Bearer " + token,
+		}),
+	)
+	require.NoError(t, err)
+	return c
+}
+
+func TestMCPInitialize(t *testing.T) {
+	c := newMCPClient(t, agentToken)
+	defer c.Close()
+
+	ctx := context.Background()
+	initResult, err := c.Initialize(ctx, mcplib.InitializeRequest{
+		Params: mcplib.InitializeParams{
+			ClientInfo: mcplib.Implementation{Name: "test-client", Version: "1.0"},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "kyoyu", initResult.ServerInfo.Name)
+	assert.Equal(t, "0.1.0", initResult.ServerInfo.Version)
+}
+
+func TestMCPListTools(t *testing.T) {
+	c := newMCPClient(t, agentToken)
+	defer c.Close()
+
+	ctx := context.Background()
+	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
+		Params: mcplib.InitializeParams{
+			ClientInfo: mcplib.Implementation{Name: "test-client", Version: "1.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	toolsResult, err := c.ListTools(ctx, mcplib.ListToolsRequest{})
+	require.NoError(t, err)
+	assert.Len(t, toolsResult.Tools, 3)
+
+	toolNames := make(map[string]bool)
+	for _, tool := range toolsResult.Tools {
+		toolNames[tool.Name] = true
+	}
+	assert.True(t, toolNames["kyoyu_trace"], "expected kyoyu_trace tool")
+	assert.True(t, toolNames["kyoyu_query"], "expected kyoyu_query tool")
+	assert.True(t, toolNames["kyoyu_search"], "expected kyoyu_search tool")
+}
+
+func TestMCPListResources(t *testing.T) {
+	c := newMCPClient(t, agentToken)
+	defer c.Close()
+
+	ctx := context.Background()
+	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
+		Params: mcplib.InitializeParams{
+			ClientInfo: mcplib.Implementation{Name: "test-client", Version: "1.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	resourcesResult, err := c.ListResources(ctx, mcplib.ListResourcesRequest{})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(resourcesResult.Resources), 2, "expected at least session/current and decisions/recent")
+}
+
+func TestMCPTraceAndQuery(t *testing.T) {
+	c := newMCPClient(t, agentToken)
+	defer c.Close()
+
+	ctx := context.Background()
+	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
+		Params: mcplib.InitializeParams{
+			ClientInfo: mcplib.Implementation{Name: "test-client", Version: "1.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	// Record a decision via the MCP trace tool.
+	traceResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name: "kyoyu_trace",
+			Arguments: map[string]any{
+				"agent_id":      "test-agent",
+				"decision_type": "mcp_test",
+				"outcome":       "mcp_approved",
+				"confidence":    0.85,
+				"reasoning":     "tested via MCP protocol",
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, traceResult.IsError, "trace tool returned error: %v", traceResult.Content)
+	assert.NotEmpty(t, traceResult.Content)
+
+	// Query it back via the MCP query tool.
+	queryResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name: "kyoyu_query",
+			Arguments: map[string]any{
+				"agent_id":      "test-agent",
+				"decision_type": "mcp_test",
+				"limit":         10,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, queryResult.IsError, "query tool returned error: %v", queryResult.Content)
+	assert.NotEmpty(t, queryResult.Content)
+
+	// Search via the MCP search tool.
+	searchResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name: "kyoyu_search",
+			Arguments: map[string]any{
+				"query": "mcp approved decisions",
+				"limit": 5,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, searchResult.IsError, "search tool returned error: %v", searchResult.Content)
+}
+
+func TestMCPReadResource(t *testing.T) {
+	c := newMCPClient(t, agentToken)
+	defer c.Close()
+
+	ctx := context.Background()
+	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
+		Params: mcplib.InitializeParams{
+			ClientInfo: mcplib.Implementation{Name: "test-client", Version: "1.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	// Read the session/current resource.
+	result, err := c.ReadResource(ctx, mcplib.ReadResourceRequest{
+		Params: mcplib.ReadResourceParams{
+			URI: "kyoyu://session/current",
+		},
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, result.Contents)
+
+	// Read the decisions/recent resource.
+	result, err = c.ReadResource(ctx, mcplib.ReadResourceRequest{
+		Params: mcplib.ReadResourceParams{
+			URI: "kyoyu://decisions/recent",
+		},
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, result.Contents)
+}
+
+func TestMCPUnauthenticated(t *testing.T) {
+	// MCP endpoint should require auth.
+	resp, err := http.Post(testSrv.URL+"/mcp", "application/json", nil)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }

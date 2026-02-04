@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	pgxvector "github.com/pgvector/pgvector-go/pgx"
 )
 
 // DB wraps a pgxpool.Pool for normal queries (via PgBouncer)
@@ -29,6 +30,18 @@ func New(ctx context.Context, poolDSN, notifyDSN string, logger *slog.Logger) (*
 	poolCfg, err := pgxpool.ParseConfig(poolDSN)
 	if err != nil {
 		return nil, fmt.Errorf("storage: parse pool DSN: %w", err)
+	}
+
+	// Register pgvector types on each new connection so COPY can encode vectors.
+	// The registration is best-effort: if the vector extension hasn't been
+	// created yet (e.g. during initial pool startup before migrations),
+	// we log a warning and proceed. Subsequent connections will succeed once
+	// the extension exists.
+	poolCfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		if err := pgxvector.RegisterTypes(ctx, conn); err != nil {
+			logger.Debug("storage: pgvector types not registered (extension may not exist yet)", "error", err)
+		}
+		return nil
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
