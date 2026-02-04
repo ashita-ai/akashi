@@ -36,5 +36,8 @@ Thumbs.db
 # Scratchpad (temporary notes, drafts, not committed)
 scratchpad/
 
+# Node
+node_modules/
+
 # Docker volumes
 docker/data/

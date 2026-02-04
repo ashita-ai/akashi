@@ -71,6 +71,12 @@ func New(
 	// Search endpoint (all authenticated roles).
 	mux.Handle("POST /v1/search", allRoles(http.HandlerFunc(h.HandleSearch)))
 
+	// Check endpoint — lightweight precedent lookup (all authenticated roles).
+	mux.Handle("POST /v1/check", allRoles(http.HandlerFunc(h.HandleCheck)))
+
+	// Recent decisions endpoint (all authenticated roles).
+	mux.Handle("GET /v1/decisions/recent", allRoles(http.HandlerFunc(h.HandleDecisionsRecent)))
+
 	// Subscription endpoint (all authenticated roles).
 	mux.Handle("GET /v1/subscribe", allRoles(http.HandlerFunc(h.HandleSubscribe)))
 

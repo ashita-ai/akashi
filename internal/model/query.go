@@ -56,3 +56,19 @@ type PagedResult[T any] struct {
 	Limit  int `json:"limit"`
 	Offset int `json:"offset"`
 }
+
+// CheckRequest is the request body for POST /v1/check.
+// It supports a lightweight precedent lookup before making a decision.
+type CheckRequest struct {
+	DecisionType string `json:"decision_type"`
+	Query        string `json:"query,omitempty"`
+	AgentID      string `json:"agent_id,omitempty"`
+	Limit        int    `json:"limit,omitempty"`
+}
+
+// CheckResponse is the response for POST /v1/check.
+type CheckResponse struct {
+	HasPrecedent bool               `json:"has_precedent"`
+	Decisions    []Decision         `json:"decisions"`
+	Conflicts    []DecisionConflict `json:"conflicts,omitempty"`
+}
