@@ -1,0 +1,46 @@
+FROM postgres:17
+
+ARG PGVECTOR_VERSION=0.8.0
+ARG TIMESCALEDB_VERSION=2.17.2
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    git \
+    gnupg \
+    lsb-release \
+    postgresql-server-dev-17 \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install pgvector from source
+RUN cd /tmp \
+    && git clone --branch v${PGVECTOR_VERSION} --depth 1 https://github.com/pgvector/pgvector.git \
+    && cd pgvector \
+    && make \
+    && make install \
+    && cd / \
+    && rm -rf /tmp/pgvector
+
+# Install TimescaleDB from apt repository
+RUN echo "deb https://packagecloud.io/timescale/timescaledb/debian/ $(lsb_release -cs) main" \
+    > /etc/apt/sources.list.d/timescaledb.list \
+    && wget --quiet -O - https://packagecloud.io/timescale/timescaledb/gpgkey | gpg --dearmor -o /etc/apt/trusted.gpg.d/timescaledb.gpg \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends timescaledb-2-postgresql-17 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Clean up build dependencies
+RUN apt-get purge -y --auto-remove \
+    build-essential \
+    git \
+    postgresql-server-dev-17 \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Configure TimescaleDB shared preload
+RUN echo "shared_preload_libraries = 'timescaledb'" >> /usr/share/postgresql/postgresql.conf.sample
+
+# Copy initialization script
+COPY init.sql /docker-entrypoint-initdb.d/01-init.sql
