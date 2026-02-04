@@ -2,11 +2,14 @@ package model
 
 import (
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // QueryFilters defines the filter parameters for structured decision queries.
 type QueryFilters struct {
 	AgentIDs      []string   `json:"agent_id,omitempty"`
+	RunID         *uuid.UUID `json:"run_id,omitempty"`
 	DecisionType  *string    `json:"decision_type,omitempty"`
 	ConfidenceMin *float32   `json:"confidence_min,omitempty"`
 	Outcome       *string    `json:"outcome,omitempty"`

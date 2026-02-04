@@ -11,9 +11,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/pgvector/pgvector-go"
 )
+
+// maxResponseBody is the maximum size of an OpenAI embedding response we'll read (10 MB).
+const maxResponseBody = 10 * 1024 * 1024
 
 // Provider generates vector embeddings from text.
 type Provider interface {
@@ -39,9 +43,11 @@ type OpenAIProvider struct {
 func NewOpenAIProvider(apiKey, model string) *OpenAIProvider {
 	dims := 1536
 	return &OpenAIProvider{
-		apiKey:     apiKey,
-		model:      model,
-		httpClient: &http.Client{},
+		apiKey: apiKey,
+		model:  model,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
 		dimensions: dims,
 	}
 }
@@ -104,7 +110,7 @@ func (p *OpenAIProvider) EmbedBatch(ctx context.Context, texts []string) ([]pgve
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {
 		return nil, fmt.Errorf("embedding: read response: %w", err)
 	}
@@ -120,6 +126,10 @@ func (p *OpenAIProvider) EmbedBatch(ctx context.Context, texts []string) ([]pgve
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("embedding: unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
+	if len(result.Data) != len(texts) {
+		return nil, fmt.Errorf("embedding: expected %d embeddings but got %d", len(texts), len(result.Data))
 	}
 
 	// Ensure results are in input order.

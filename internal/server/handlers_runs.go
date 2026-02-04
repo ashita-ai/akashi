@@ -112,7 +112,12 @@ func (h *Handlers) HandleCompleteRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, _ := h.db.GetRun(r.Context(), runID)
+	updated, err := h.db.GetRun(r.Context(), runID)
+	if err != nil {
+		h.logger.Warn("complete run: read-back failed", "error", err, "run_id", runID)
+		writeJSON(w, r, http.StatusOK, map[string]any{"run_id": runID, "status": string(status)})
+		return
+	}
 	writeJSON(w, r, http.StatusOK, updated)
 }
 
@@ -136,21 +141,17 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get decisions for this run by querying by agent and filtering to this run.
-	var decisions []model.Decision
-	runDecisions, _, err := h.db.QueryDecisions(r.Context(), model.QueryRequest{
+	// Get decisions for this run.
+	decisions, _, err := h.db.QueryDecisions(r.Context(), model.QueryRequest{
 		Filters: model.QueryFilters{
-			AgentIDs: []string{run.AgentID},
+			RunID: &runID,
 		},
 		Include: []string{"alternatives", "evidence"},
 		Limit:   100,
 	})
-	if err == nil {
-		for _, d := range runDecisions {
-			if d.RunID == runID {
-				decisions = append(decisions, d)
-			}
-		}
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to get decisions")
+		return
 	}
 
 	writeJSON(w, r, http.StatusOK, map[string]any{

@@ -113,12 +113,17 @@ func (h *Handlers) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 // HandleHealth handles GET /health.
 func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	pgStatus := "connected"
+	status := "healthy"
+	httpStatus := http.StatusOK
+
 	if err := h.db.Ping(r.Context()); err != nil {
 		pgStatus = "disconnected"
+		status = "unhealthy"
+		httpStatus = http.StatusServiceUnavailable
 	}
 
-	writeJSON(w, r, http.StatusOK, model.HealthResponse{
-		Status:   "healthy",
+	writeJSON(w, r, httpStatus, model.HealthResponse{
+		Status:   status,
 		Version:  "0.1.0",
 		Postgres: pgStatus,
 		Uptime:   int64(time.Since(h.startedAt).Seconds()),

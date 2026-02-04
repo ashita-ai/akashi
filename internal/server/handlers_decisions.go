@@ -20,6 +20,23 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.AgentID == "" {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "agent_id is required")
+		return
+	}
+	if req.Decision.DecisionType == "" {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "decision.decision_type is required")
+		return
+	}
+	if req.Decision.Outcome == "" {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "decision.outcome is required")
+		return
+	}
+	if req.Decision.Confidence < 0 || req.Decision.Confidence > 1 {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "decision.confidence must be between 0 and 1")
+		return
+	}
+
 	if claims.Role != model.RoleAdmin && req.AgentID != claims.AgentID {
 		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "can only trace for your own agent_id")
 		return
