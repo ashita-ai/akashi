@@ -152,9 +152,9 @@ func (c *Client) Recent(ctx context.Context, opts *RecentOptions) ([]Decision, e
 // traceBody is the wire format for POST /v1/trace. The server expects a
 // nested "decision" object rather than flat fields.
 type traceBody struct {
-	AgentID  string          `json:"agent_id"`
-	Decision traceDecision   `json:"decision"`
-	Metadata map[string]any  `json:"metadata,omitempty"`
+	AgentID  string         `json:"agent_id"`
+	Decision traceDecision  `json:"decision"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type traceDecision struct {

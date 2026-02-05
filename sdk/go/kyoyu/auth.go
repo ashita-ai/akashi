@@ -13,11 +13,11 @@ import (
 // tokenManager handles JWT token acquisition and refresh.
 // It is safe for concurrent use.
 type tokenManager struct {
-	baseURL  string
-	agentID  string
-	apiKey   string
-	client   *http.Client
-	margin   time.Duration
+	baseURL string
+	agentID string
+	apiKey  string
+	client  *http.Client
+	margin  time.Duration
 
 	mu        sync.Mutex
 	token     string

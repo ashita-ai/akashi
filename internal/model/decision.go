@@ -10,15 +10,15 @@ import (
 // Decision is a first-class decision entity with bi-temporal modeling.
 // Created from DecisionMade events and revised via DecisionRevised events.
 type Decision struct {
-	ID              uuid.UUID      `json:"id"`
-	RunID           uuid.UUID      `json:"run_id"`
-	AgentID         string         `json:"agent_id"`
-	DecisionType    string         `json:"decision_type"`
-	Outcome         string         `json:"outcome"`
-	Confidence      float32        `json:"confidence"`
-	Reasoning       *string        `json:"reasoning,omitempty"`
-	Embedding       *pgvector.Vector `json:"-"`
-	Metadata        map[string]any `json:"metadata"`
+	ID           uuid.UUID        `json:"id"`
+	RunID        uuid.UUID        `json:"run_id"`
+	AgentID      string           `json:"agent_id"`
+	DecisionType string           `json:"decision_type"`
+	Outcome      string           `json:"outcome"`
+	Confidence   float32          `json:"confidence"`
+	Reasoning    *string          `json:"reasoning,omitempty"`
+	Embedding    *pgvector.Vector `json:"-"`
+	Metadata     map[string]any   `json:"metadata"`
 
 	// Quality score (0.0-1.0) measuring trace completeness.
 	QualityScore float32 `json:"quality_score"`
@@ -76,20 +76,20 @@ type Evidence struct {
 
 // DecisionConflict represents a detected conflict between two decisions.
 type DecisionConflict struct {
-	DecisionAID uuid.UUID `json:"decision_a_id"`
-	DecisionBID uuid.UUID `json:"decision_b_id"`
-	AgentA      string    `json:"agent_a"`
-	AgentB      string    `json:"agent_b"`
-	RunA        uuid.UUID `json:"run_a"`
-	RunB        uuid.UUID `json:"run_b"`
-	DecisionType string  `json:"decision_type"`
-	OutcomeA    string    `json:"outcome_a"`
-	OutcomeB    string    `json:"outcome_b"`
-	ConfidenceA float32   `json:"confidence_a"`
-	ConfidenceB float32   `json:"confidence_b"`
-	DecidedAtA  time.Time `json:"decided_at_a"`
-	DecidedAtB  time.Time `json:"decided_at_b"`
-	DetectedAt  time.Time `json:"detected_at"`
+	DecisionAID  uuid.UUID `json:"decision_a_id"`
+	DecisionBID  uuid.UUID `json:"decision_b_id"`
+	AgentA       string    `json:"agent_a"`
+	AgentB       string    `json:"agent_b"`
+	RunA         uuid.UUID `json:"run_a"`
+	RunB         uuid.UUID `json:"run_b"`
+	DecisionType string    `json:"decision_type"`
+	OutcomeA     string    `json:"outcome_a"`
+	OutcomeB     string    `json:"outcome_b"`
+	ConfidenceA  float32   `json:"confidence_a"`
+	ConfidenceB  float32   `json:"confidence_b"`
+	DecidedAtA   time.Time `json:"decided_at_a"`
+	DecidedAtB   time.Time `json:"decided_at_b"`
+	DetectedAt   time.Time `json:"detected_at"`
 }
 
 // AgentCurrentState is a summary of an agent's latest activity.

@@ -22,8 +22,8 @@ type Buffer struct {
 	maxSize      int
 	flushTimeout time.Duration
 
-	mu     sync.Mutex
-	events []model.AgentEvent
+	mu      sync.Mutex
+	events  []model.AgentEvent
 	seqNums map[uuid.UUID]int64 // run_id -> next sequence number
 
 	flushCh chan struct{}

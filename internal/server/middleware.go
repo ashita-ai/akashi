@@ -98,8 +98,8 @@ func (w *statusWriter) WriteHeader(code int) {
 }
 
 var (
-	tracer     = otel.Tracer("kyoyu/http")
-	httpMeter  = otel.GetMeterProvider().Meter("kyoyu/http")
+	tracer    = otel.Tracer("kyoyu/http")
+	httpMeter = otel.GetMeterProvider().Meter("kyoyu/http")
 )
 
 // tracingMiddleware creates an OTEL span for each HTTP request

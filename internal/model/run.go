@@ -23,15 +23,15 @@ const (
 // AgentRun is the top-level execution context for an agent.
 // Corresponds to an OTEL trace. Immutable once created.
 type AgentRun struct {
-	ID           uuid.UUID         `json:"id"`
-	AgentID      string            `json:"agent_id"`
-	TraceID      *string           `json:"trace_id,omitempty"`
-	ParentRunID  *uuid.UUID        `json:"parent_run_id,omitempty"`
-	Status       RunStatus         `json:"status"`
-	StartedAt    time.Time         `json:"started_at"`
-	CompletedAt  *time.Time        `json:"completed_at,omitempty"`
-	Metadata     map[string]any    `json:"metadata"`
-	CreatedAt    time.Time         `json:"created_at"`
+	ID          uuid.UUID      `json:"id"`
+	AgentID     string         `json:"agent_id"`
+	TraceID     *string        `json:"trace_id,omitempty"`
+	ParentRunID *uuid.UUID     `json:"parent_run_id,omitempty"`
+	Status      RunStatus      `json:"status"`
+	StartedAt   time.Time      `json:"started_at"`
+	CompletedAt *time.Time     `json:"completed_at,omitempty"`
+	Metadata    map[string]any `json:"metadata"`
+	CreatedAt   time.Time      `json:"created_at"`
 }
 
 // RunParam is an immutable key-value pair set at run start.

@@ -42,10 +42,10 @@ type Config struct {
 	ServiceName  string
 
 	// Operational settings.
-	LogLevel              string
+	LogLevel                string
 	ConflictRefreshInterval time.Duration
-	EventBufferSize       int
-	EventFlushTimeout     time.Duration
+	EventBufferSize         int
+	EventFlushTimeout       time.Duration
 }
 
 // Load reads configuration from environment variables with sensible defaults.
