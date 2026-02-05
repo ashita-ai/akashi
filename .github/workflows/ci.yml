@@ -42,8 +42,7 @@ jobs:
       - name: Lint
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.1
-          install-mode: goinstall
+          version: v2.8
 
       - name: Vet
         run: go vet ./...
