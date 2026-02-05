@@ -98,7 +98,7 @@ func TestMain(m *testing.M) {
 	buf.Start(ctx)
 
 	mcpSrv := mcp.New(db, decisionSvc, logger, "test")
-	srv := server.New(db, jwtMgr, decisionSvc, buf, nil, logger, 0, 30*time.Second, 30*time.Second, mcpSrv.MCPServer(), "test", 1*1024*1024)
+	srv := server.New(db, jwtMgr, decisionSvc, buf, nil, nil, logger, 0, 30*time.Second, 30*time.Second, mcpSrv.MCPServer(), "test", 1*1024*1024)
 
 	// Seed admin.
 	_ = srv.Handlers().SeedAdmin(ctx, "test-admin-key")
@@ -786,6 +786,14 @@ func TestDecisionsRecentEndpoint(t *testing.T) {
 	for _, d := range result2.Data.Decisions {
 		assert.Equal(t, "test-agent", d.AgentID, "expected only test-agent decisions")
 	}
+}
+
+func TestSSESubscribeNoBroker(t *testing.T) {
+	// When broker is nil (no LISTEN/NOTIFY configured), SSE returns 503.
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/subscribe", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 }
 
 func TestAccessGrantEnforcement(t *testing.T) {

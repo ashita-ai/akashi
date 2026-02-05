@@ -23,6 +23,7 @@ type Handlers struct {
 	jwtMgr              *auth.JWTManager
 	decisionSvc         *decisions.Service
 	buffer              *trace.Buffer
+	broker              *Broker
 	logger              *slog.Logger
 	startedAt           time.Time
 	version             string
@@ -30,12 +31,14 @@ type Handlers struct {
 }
 
 // NewHandlers creates a new Handlers with all dependencies.
-func NewHandlers(db *storage.DB, jwtMgr *auth.JWTManager, decisionSvc *decisions.Service, buffer *trace.Buffer, logger *slog.Logger, version string, maxRequestBodyBytes int64) *Handlers {
+// broker may be nil if LISTEN/NOTIFY is not configured.
+func NewHandlers(db *storage.DB, jwtMgr *auth.JWTManager, decisionSvc *decisions.Service, buffer *trace.Buffer, broker *Broker, logger *slog.Logger, version string, maxRequestBodyBytes int64) *Handlers {
 	return &Handlers{
 		db:                  db,
 		jwtMgr:              jwtMgr,
 		decisionSvc:         decisionSvc,
 		buffer:              buffer,
+		broker:              broker,
 		logger:              logger,
 		startedAt:           time.Now(),
 		version:             version,
@@ -82,6 +85,12 @@ func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 
 // HandleSubscribe handles GET /v1/subscribe (SSE).
 func (h *Handlers) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
+	if h.broker == nil {
+		writeError(w, r, http.StatusServiceUnavailable, model.ErrCodeInternalError,
+			"SSE not available (LISTEN/NOTIFY not configured)")
+		return
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "streaming not supported")
@@ -94,22 +103,22 @@ func (h *Handlers) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
+	ch := h.broker.Subscribe()
+	defer h.broker.Unsubscribe(ch)
+
 	ctx := r.Context()
-
-	// Subscribe to Postgres notifications via a polling approach
-	// since we may not have a dedicated notify connection available.
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			// In a full implementation, this would receive from a fan-out channel
-			// connected to the LISTEN/NOTIFY connection.
-			// For now, clients stay connected and will receive events
-			// when the notification fan-out is wired up.
+		case event, ok := <-ch:
+			if !ok {
+				return
+			}
+			if _, err := w.Write(event); err != nil {
+				return
+			}
+			flusher.Flush()
 		}
 	}
 }

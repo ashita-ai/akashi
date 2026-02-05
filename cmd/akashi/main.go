@@ -105,8 +105,17 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	// Create MCP server.
 	mcpSrv := mcp.New(db, decisionSvc, logger, version)
 
+	// Create SSE broker (requires LISTEN/NOTIFY connection).
+	var broker *server.Broker
+	if db.NotifyConn() != nil {
+		broker = server.NewBroker(db, logger)
+		go broker.Start(ctx)
+	} else {
+		logger.Info("SSE broker: disabled (no notify connection)")
+	}
+
 	// Create and start HTTP server (MCP mounted at /mcp).
-	srv := server.New(db, jwtMgr, decisionSvc, buf, limiter, logger,
+	srv := server.New(db, jwtMgr, decisionSvc, buf, limiter, broker, logger,
 		cfg.Port, cfg.ReadTimeout, cfg.WriteTimeout,
 		mcpSrv.MCPServer(), version, cfg.MaxRequestBodyBytes)
 

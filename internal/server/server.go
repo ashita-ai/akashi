@@ -33,12 +33,14 @@ func (s *Server) Handler() http.Handler {
 // New creates a new HTTP server with all routes configured.
 // mcpSrv is optional; if non-nil the MCP StreamableHTTP transport is mounted at /mcp.
 // limiter is optional; if nil, rate limiting is disabled (noop).
+// broker is optional; if nil, SSE subscriptions return 503.
 func New(
 	db *storage.DB,
 	jwtMgr *auth.JWTManager,
 	decisionSvc *decisions.Service,
 	buffer *trace.Buffer,
 	limiter *ratelimit.Limiter,
+	broker *Broker,
 	logger *slog.Logger,
 	port int,
 	readTimeout, writeTimeout time.Duration,
@@ -46,7 +48,7 @@ func New(
 	version string,
 	maxRequestBodyBytes int64,
 ) *Server {
-	h := NewHandlers(db, jwtMgr, decisionSvc, buffer, logger, version, maxRequestBodyBytes)
+	h := NewHandlers(db, jwtMgr, decisionSvc, buffer, broker, logger, version, maxRequestBodyBytes)
 
 	// Rate limit rules.
 	ingestRL := ratelimit.Middleware(limiter, ratelimit.Rule{
