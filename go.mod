@@ -1,4 +1,4 @@
-module github.com/ashita-ai/kyoyu
+module github.com/ashita-ai/akashi
 
 go 1.25
 

@@ -16,8 +16,8 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/ashita-ai/kyoyu/internal/model"
-	"github.com/ashita-ai/kyoyu/internal/storage"
+	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 // testDB holds a shared test database connection for all tests in this package.
@@ -31,9 +31,9 @@ func TestMain(m *testing.M) {
 		Image:        "timescale/timescaledb:latest-pg17",
 		ExposedPorts: []string{"5432/tcp"},
 		Env: map[string]string{
-			"POSTGRES_USER":     "kyoyu",
-			"POSTGRES_PASSWORD": "kyoyu",
-			"POSTGRES_DB":       "kyoyu",
+			"POSTGRES_USER":     "akashi",
+			"POSTGRES_PASSWORD": "akashi",
+			"POSTGRES_DB":       "akashi",
 		},
 		WaitingFor: wait.ForLog("database system is ready to accept connections").
 			WithOccurrence(2).
@@ -61,7 +61,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	dsn := fmt.Sprintf("postgres://kyoyu:kyoyu@%s:%s/kyoyu?sslmode=disable", host, port.Port())
+	dsn := fmt.Sprintf("postgres://akashi:akashi@%s:%s/akashi?sslmode=disable", host, port.Port())
 
 	// Enable extensions before creating the storage layer so pgvector types
 	// get registered on the pool's AfterConnect hook.

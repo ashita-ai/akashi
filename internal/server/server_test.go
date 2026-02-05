@@ -22,13 +22,13 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/ashita-ai/kyoyu/internal/auth"
-	"github.com/ashita-ai/kyoyu/internal/mcp"
-	"github.com/ashita-ai/kyoyu/internal/model"
-	"github.com/ashita-ai/kyoyu/internal/server"
-	"github.com/ashita-ai/kyoyu/internal/service/embedding"
-	"github.com/ashita-ai/kyoyu/internal/service/trace"
-	"github.com/ashita-ai/kyoyu/internal/storage"
+	"github.com/ashita-ai/akashi/internal/auth"
+	"github.com/ashita-ai/akashi/internal/mcp"
+	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/server"
+	"github.com/ashita-ai/akashi/internal/service/embedding"
+	"github.com/ashita-ai/akashi/internal/service/trace"
+	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 var (
@@ -44,9 +44,9 @@ func TestMain(m *testing.M) {
 		Image:        "timescale/timescaledb:latest-pg17",
 		ExposedPorts: []string{"5432/tcp"},
 		Env: map[string]string{
-			"POSTGRES_USER":     "kyoyu",
-			"POSTGRES_PASSWORD": "kyoyu",
-			"POSTGRES_DB":       "kyoyu",
+			"POSTGRES_USER":     "akashi",
+			"POSTGRES_PASSWORD": "akashi",
+			"POSTGRES_DB":       "akashi",
 		},
 		WaitingFor: wait.ForLog("database system is ready to accept connections").
 			WithOccurrence(2).
@@ -64,7 +64,7 @@ func TestMain(m *testing.M) {
 
 	host, _ := container.Host(ctx)
 	port, _ := container.MappedPort(ctx, "5432")
-	dsn := fmt.Sprintf("postgres://kyoyu:kyoyu@%s:%s/kyoyu?sslmode=disable", host, port.Port())
+	dsn := fmt.Sprintf("postgres://akashi:akashi@%s:%s/akashi?sslmode=disable", host, port.Port())
 
 	// Enable extensions before creating the storage layer so pgvector types
 	// get registered on the pool's AfterConnect hook.
@@ -355,7 +355,7 @@ func TestMCPInitialize(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "kyoyu", initResult.ServerInfo.Name)
+	assert.Equal(t, "akashi", initResult.ServerInfo.Name)
 	assert.Equal(t, "0.1.0", initResult.ServerInfo.Version)
 }
 
@@ -379,11 +379,11 @@ func TestMCPListTools(t *testing.T) {
 	for _, tool := range toolsResult.Tools {
 		toolNames[tool.Name] = true
 	}
-	assert.True(t, toolNames["kyoyu_check"], "expected kyoyu_check tool")
-	assert.True(t, toolNames["kyoyu_trace"], "expected kyoyu_trace tool")
-	assert.True(t, toolNames["kyoyu_query"], "expected kyoyu_query tool")
-	assert.True(t, toolNames["kyoyu_search"], "expected kyoyu_search tool")
-	assert.True(t, toolNames["kyoyu_recent"], "expected kyoyu_recent tool")
+	assert.True(t, toolNames["akashi_check"], "expected akashi_check tool")
+	assert.True(t, toolNames["akashi_trace"], "expected akashi_trace tool")
+	assert.True(t, toolNames["akashi_query"], "expected akashi_query tool")
+	assert.True(t, toolNames["akashi_search"], "expected akashi_search tool")
+	assert.True(t, toolNames["akashi_recent"], "expected akashi_recent tool")
 }
 
 func TestMCPListResources(t *testing.T) {
@@ -418,7 +418,7 @@ func TestMCPTraceAndQuery(t *testing.T) {
 	// Record a decision via the MCP trace tool.
 	traceResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
 		Params: mcplib.CallToolParams{
-			Name: "kyoyu_trace",
+			Name: "akashi_trace",
 			Arguments: map[string]any{
 				"agent_id":      "test-agent",
 				"decision_type": "mcp_test",
@@ -435,7 +435,7 @@ func TestMCPTraceAndQuery(t *testing.T) {
 	// Query it back via the MCP query tool.
 	queryResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
 		Params: mcplib.CallToolParams{
-			Name: "kyoyu_query",
+			Name: "akashi_query",
 			Arguments: map[string]any{
 				"agent_id":      "test-agent",
 				"decision_type": "mcp_test",
@@ -450,7 +450,7 @@ func TestMCPTraceAndQuery(t *testing.T) {
 	// Search via the MCP search tool.
 	searchResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
 		Params: mcplib.CallToolParams{
-			Name: "kyoyu_search",
+			Name: "akashi_search",
 			Arguments: map[string]any{
 				"query": "mcp approved decisions",
 				"limit": 5,
@@ -476,7 +476,7 @@ func TestMCPReadResource(t *testing.T) {
 	// Read the session/current resource.
 	result, err := c.ReadResource(ctx, mcplib.ReadResourceRequest{
 		Params: mcplib.ReadResourceParams{
-			URI: "kyoyu://session/current",
+			URI: "akashi://session/current",
 		},
 	})
 	require.NoError(t, err)
@@ -485,7 +485,7 @@ func TestMCPReadResource(t *testing.T) {
 	// Read the decisions/recent resource.
 	result, err = c.ReadResource(ctx, mcplib.ReadResourceRequest{
 		Params: mcplib.ReadResourceParams{
-			URI: "kyoyu://decisions/recent",
+			URI: "akashi://decisions/recent",
 		},
 	})
 	require.NoError(t, err)
@@ -515,7 +515,7 @@ func TestMCPCheckTool(t *testing.T) {
 	// Record a decision first.
 	traceResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
 		Params: mcplib.CallToolParams{
-			Name: "kyoyu_trace",
+			Name: "akashi_trace",
 			Arguments: map[string]any{
 				"agent_id":      "test-agent",
 				"decision_type": "architecture",
@@ -531,7 +531,7 @@ func TestMCPCheckTool(t *testing.T) {
 	// Now check for precedents — should find the decision we just recorded.
 	checkResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
 		Params: mcplib.CallToolParams{
-			Name: "kyoyu_check",
+			Name: "akashi_check",
 			Arguments: map[string]any{
 				"decision_type": "architecture",
 			},
@@ -568,7 +568,7 @@ func TestMCPCheckNoPrecedent(t *testing.T) {
 	// Check for a decision type that hasn't been used.
 	checkResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
 		Params: mcplib.CallToolParams{
-			Name: "kyoyu_check",
+			Name: "akashi_check",
 			Arguments: map[string]any{
 				"decision_type": "deployment",
 			},
@@ -603,7 +603,7 @@ func TestMCPRecentTool(t *testing.T) {
 	// Record a decision so there's at least one recent one.
 	_, err = c.CallTool(ctx, mcplib.CallToolRequest{
 		Params: mcplib.CallToolParams{
-			Name: "kyoyu_trace",
+			Name: "akashi_trace",
 			Arguments: map[string]any{
 				"agent_id":      "test-agent",
 				"decision_type": "feature_scope",
@@ -614,10 +614,10 @@ func TestMCPRecentTool(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Call kyoyu_recent.
+	// Call akashi_recent.
 	recentResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
 		Params: mcplib.CallToolParams{
-			Name: "kyoyu_recent",
+			Name: "akashi_recent",
 			Arguments: map[string]any{
 				"limit": 5,
 			},

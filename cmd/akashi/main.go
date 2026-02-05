@@ -11,19 +11,19 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ashita-ai/kyoyu/internal/auth"
-	"github.com/ashita-ai/kyoyu/internal/config"
-	"github.com/ashita-ai/kyoyu/internal/mcp"
-	"github.com/ashita-ai/kyoyu/internal/server"
-	"github.com/ashita-ai/kyoyu/internal/service/embedding"
-	"github.com/ashita-ai/kyoyu/internal/service/trace"
-	"github.com/ashita-ai/kyoyu/internal/storage"
-	"github.com/ashita-ai/kyoyu/internal/telemetry"
+	"github.com/ashita-ai/akashi/internal/auth"
+	"github.com/ashita-ai/akashi/internal/config"
+	"github.com/ashita-ai/akashi/internal/mcp"
+	"github.com/ashita-ai/akashi/internal/server"
+	"github.com/ashita-ai/akashi/internal/service/embedding"
+	"github.com/ashita-ai/akashi/internal/service/trace"
+	"github.com/ashita-ai/akashi/internal/storage"
+	"github.com/ashita-ai/akashi/internal/telemetry"
 )
 
 func main() {
 	level := slog.LevelInfo
-	if os.Getenv("KYOYU_LOG_LEVEL") == "debug" {
+	if os.Getenv("AKASHI_LOG_LEVEL") == "debug" {
 		level = slog.LevelDebug
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -47,7 +47,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	slog.Info("kyoyu starting", "version", "0.1.0", "port", cfg.Port)
+	slog.Info("akashi starting", "version", "0.1.0", "port", cfg.Port)
 
 	// Initialize OpenTelemetry.
 	otelShutdown, err := telemetry.Init(ctx, cfg.OTELEndpoint, cfg.ServiceName, "0.1.0")
@@ -114,7 +114,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 
 	// Graceful shutdown.
 	fmt.Println()
-	slog.Info("kyoyu shutting down")
+	slog.Info("akashi shutting down")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
@@ -127,7 +127,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		slog.Error("http shutdown error", "error", err)
 	}
 
-	slog.Info("kyoyu stopped")
+	slog.Info("akashi stopped")
 	return nil
 }
 
@@ -138,7 +138,7 @@ func newEmbeddingProvider(cfg config.Config, logger *slog.Logger) embedding.Prov
 	switch cfg.EmbeddingProvider {
 	case "openai":
 		if cfg.OpenAIAPIKey == "" {
-			logger.Error("OPENAI_API_KEY required when KYOYU_EMBEDDING_PROVIDER=openai")
+			logger.Error("OPENAI_API_KEY required when AKASHI_EMBEDDING_PROVIDER=openai")
 			return embedding.NewNoopProvider(1536)
 		}
 		logger.Info("embedding provider: openai", "model", cfg.EmbeddingModel)

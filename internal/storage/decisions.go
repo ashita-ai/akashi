@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/pgvector/pgvector-go"
 
-	"github.com/ashita-ai/kyoyu/internal/model"
+	"github.com/ashita-ai/akashi/internal/model"
 )
 
 // CreateDecision inserts a decision and returns it.

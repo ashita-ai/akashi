@@ -1,13 +1,13 @@
-# Project Index: Kyoyu
+# Project Index: Akashi
 
 Generated: 2026-02-04
 
-Kyoyu is a decision-tracing service for AI agent coordination. Agents record decisions they make, check for precedents before deciding, and search decision history by semantic similarity. The server uses a bi-temporal data model (valid time + transaction time) with pgvector for embeddings.
+Akashi is a decision-tracing service for AI agent coordination. Agents record decisions they make, check for precedents before deciding, and search decision history by semantic similarity. The server uses a bi-temporal data model (valid time + transaction time) with pgvector for embeddings.
 
 ## Project Structure
 
 ```
-cmd/kyoyu/main.go              # Server entry point
+cmd/akashi/main.go              # Server entry point
 internal/
   config/config.go              # Env-based configuration (Config struct, Load())
   auth/
@@ -45,30 +45,30 @@ internal/
     handlers_admin.go           # HandleCreateAgent, HandleListAgents, HandleCreateGrant, HandleDeleteGrant
   mcp/
     mcp.go                      # MCP Server struct, New(), MCPServer() accessor
-    tools.go                    # 5 MCP tools: kyoyu_check, kyoyu_trace, kyoyu_query, kyoyu_search, kyoyu_recent
+    tools.go                    # 5 MCP tools: akashi_check, akashi_trace, akashi_query, akashi_search, akashi_recent
     resources.go                # 3 MCP resources: session/current, decisions/recent, agents/{id}/history
     prompts.go                  # 3 MCP prompts: before-decision, after-decision, agent-setup
   telemetry/telemetry.go        # InitTracer, InitMeter (OTLP/HTTP exporters)
 migrations/                     # 001-010 SQL files (agents, events, decisions, alternatives, evidence, spans, access control, materialized views)
-docker/docker-compose.yml       # Postgres+pgvector, PgBouncer, Redis, Kyoyu server
+docker/docker-compose.yml       # Postgres+pgvector, PgBouncer, Redis, Akashi server
 sdk/
-  go/kyoyu/                     # Go SDK (net/http, uuid only)
+  go/akashi/                     # Go SDK (net/http, uuid only)
     client.go                   # Client, Config, NewClient, Check/Trace/Query/Search/Recent
     auth.go                     # tokenManager (sync.Mutex, auto-refresh)
     types.go                    # Decision, Alternative, Evidence, request/response types
     errors.go                   # Error type, IsNotFound/IsUnauthorized/IsForbidden
-  python/src/kyoyu/             # Python SDK (httpx + pydantic v2)
-    client.py                   # KyoyuClient (async), KyoyuSyncClient
+  python/src/akashi/             # Python SDK (httpx + pydantic v2)
+    client.py                   # AkashiClient (async), AkashiSyncClient
     auth.py                     # TokenManager (asyncio.Lock, auto-refresh)
     types.py                    # Pydantic models
-    middleware.py               # KyoyuMiddleware, KyoyuSyncMiddleware
-    exceptions.py               # KyoyuError hierarchy
+    middleware.py               # AkashiMiddleware, AkashiSyncMiddleware
+    exceptions.py               # AkashiError hierarchy
   typescript/src/               # TypeScript SDK (native fetch, zero deps)
-    client.ts                   # KyoyuClient
+    client.ts                   # AkashiClient
     auth.ts                     # TokenManager
     types.ts                    # TypeScript interfaces
-    middleware.ts               # withKyoyu<T> wrapper
-    errors.ts                   # KyoyuError classes
+    middleware.ts               # withAkashi<T> wrapper
+    errors.ts                   # AkashiError classes
 prompts/                        # System prompt templates for agent builders
   generic.md                    # Framework-agnostic check-before/record-after instructions
   python.md                     # Python SDK usage examples
@@ -116,9 +116,9 @@ prompts/                        # System prompt templates for agent builders
 
 All via environment variables (see `.env.example`):
 - `DATABASE_URL` / `NOTIFY_URL` — Postgres (PgBouncer for queries, direct for LISTEN/NOTIFY)
-- `KYOYU_ADMIN_API_KEY` — Bootstrap admin agent
-- `OPENAI_API_KEY` / `KYOYU_EMBEDDING_MODEL` — Embeddings (falls back to NoopProvider)
-- `KYOYU_PORT`, `KYOYU_LOG_LEVEL` — Server tuning
+- `AKASHI_ADMIN_API_KEY` — Bootstrap admin agent
+- `OPENAI_API_KEY` / `AKASHI_EMBEDDING_MODEL` — Embeddings (falls back to NoopProvider)
+- `AKASHI_PORT`, `AKASHI_LOG_LEVEL` — Server tuning
 
 ## Tests
 
@@ -132,7 +132,7 @@ All via environment variables (see `.env.example`):
 
 ```bash
 cp .env.example .env            # Configure secrets
-make docker-up                  # Start Postgres, PgBouncer, Redis, Kyoyu
+make docker-up                  # Start Postgres, PgBouncer, Redis, Akashi
 curl http://localhost:8080/health
 ```
 

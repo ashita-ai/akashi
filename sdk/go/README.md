@@ -1,11 +1,11 @@
-# Kyoyu Go SDK
+# Akashi Go SDK
 
-Go client for the [Kyoyu](../../README.md) decision-tracing API. Uses `net/http` with no dependencies beyond `github.com/google/uuid`.
+Go client for the [Akashi](../../README.md) decision-tracing API. Uses `net/http` with no dependencies beyond `github.com/google/uuid`.
 
 ## Install
 
 ```bash
-go get github.com/ashita-ai/kyoyu/sdk/go/kyoyu
+go get github.com/ashita-ai/akashi/sdk/go/akashi
 ```
 
 ## Usage
@@ -18,11 +18,11 @@ import (
     "fmt"
     "log"
 
-    "github.com/ashita-ai/kyoyu/sdk/go/kyoyu"
+    "github.com/ashita-ai/akashi/sdk/go/akashi"
 )
 
 func main() {
-    client := kyoyu.NewClient(kyoyu.Config{
+    client := akashi.NewClient(akashi.Config{
         BaseURL: "http://localhost:8080",
         AgentID: "my-agent",
         APIKey:  "my-api-key",
@@ -31,7 +31,7 @@ func main() {
     ctx := context.Background()
 
     // Check for precedents before making a decision.
-    check, err := client.Check(ctx, kyoyu.CheckRequest{
+    check, err := client.Check(ctx, akashi.CheckRequest{
         DecisionType: "model_selection",
     })
     if err != nil {
@@ -47,12 +47,12 @@ func main() {
 
     // Record a decision.
     reasoning := "Best quality-to-cost ratio for summarization"
-    resp, err := client.Trace(ctx, kyoyu.TraceRequest{
+    resp, err := client.Trace(ctx, akashi.TraceRequest{
         DecisionType: "model_selection",
         Outcome:      "chose gpt-4o for summarization",
         Confidence:   0.85,
         Reasoning:    &reasoning,
-        Alternatives: []kyoyu.TraceAlternative{
+        Alternatives: []akashi.TraceAlternative{
             {Label: "gpt-4o", Selected: true},
             {Label: "claude-3-haiku", Selected: false},
         },
@@ -102,10 +102,10 @@ Get the most recent decisions, optionally filtered by agent ID or decision type.
 
 ## Error handling
 
-All API errors are returned as `*kyoyu.Error` with `StatusCode`, `Code`, and `Message` fields. Helper functions:
+All API errors are returned as `*akashi.Error` with `StatusCode`, `Code`, and `Message` fields. Helper functions:
 
 ```go
-if kyoyu.IsNotFound(err) { /* 404 */ }
-if kyoyu.IsUnauthorized(err) { /* 401 */ }
-if kyoyu.IsForbidden(err) { /* 403 */ }
+if akashi.IsNotFound(err) { /* 404 */ }
+if akashi.IsUnauthorized(err) { /* 401 */ }
+if akashi.IsForbidden(err) { /* 403 */ }
 ```

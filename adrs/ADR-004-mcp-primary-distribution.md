@@ -5,29 +5,29 @@
 
 ## Context
 
-Kyoyu needs to be accessible to AI agents built on diverse frameworks. We need to decide the primary integration mechanism.
+Akashi needs to be accessible to AI agents built on diverse frameworks. We need to decide the primary integration mechanism.
 
 ## Decision
 
-Build Kyoyu as an **MCP (Model Context Protocol) server** as the primary distribution channel. HTTP API is the underlying transport. Framework-specific integrations (LangChain callback, CrewAI hooks) are secondary.
+Build Akashi as an **MCP (Model Context Protocol) server** as the primary distribution channel. HTTP API is the underlying transport. Framework-specific integrations (LangChain callback, CrewAI hooks) are secondary.
 
 ### MCP Surface
 
 **Resources** (read-only context):
-- `kyoyu://session/current` — current session context
-- `kyoyu://decisions/recent` — recent decisions
-- `kyoyu://agent/{id}/history` — agent decision history
+- `akashi://session/current` — current session context
+- `akashi://decisions/recent` — recent decisions
+- `akashi://agent/{id}/history` — agent decision history
 
 **Tools** (executable operations):
-- `kyoyu_trace` — record a decision trace
-- `kyoyu_query` — structured query over past decisions
-- `kyoyu_search` — semantic similarity search
+- `akashi_trace` — record a decision trace
+- `akashi_query` — structured query over past decisions
+- `akashi_search` — semantic similarity search
 
 ## Rationale
 
 **Why MCP first:**
 
-- Framework-agnostic: any MCP-compatible agent (Claude, ChatGPT, custom) gets Kyoyu for free.
+- Framework-agnostic: any MCP-compatible agent (Claude, ChatGPT, custom) gets Akashi for free.
 - Two-way protocol: agents both read context (Resources) and write traces (Tools).
 - Industry convergence: Anthropic, OpenAI, Google, AWS on MCP steering committee.
 - Solves M*N integration problem with M+N adapters.

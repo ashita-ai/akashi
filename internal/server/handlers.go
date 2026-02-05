@@ -10,11 +10,11 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/ashita-ai/kyoyu/internal/auth"
-	"github.com/ashita-ai/kyoyu/internal/model"
-	"github.com/ashita-ai/kyoyu/internal/service/embedding"
-	"github.com/ashita-ai/kyoyu/internal/service/trace"
-	"github.com/ashita-ai/kyoyu/internal/storage"
+	"github.com/ashita-ai/akashi/internal/auth"
+	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/service/embedding"
+	"github.com/ashita-ai/akashi/internal/service/trace"
+	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 // Handlers holds HTTP handler dependencies.

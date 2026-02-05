@@ -5,7 +5,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/ashita-ai/kyoyu/internal/model"
+	"github.com/ashita-ai/akashi/internal/model"
 )
 
 // HandleCreateRun handles POST /v1/runs.

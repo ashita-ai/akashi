@@ -1,7 +1,7 @@
 {
-  "name": "kyoyu",
+  "name": "akashi",
   "version": "0.1.0",
-  "description": "TypeScript SDK for the Kyoyu decision-tracing API",
+  "description": "TypeScript SDK for the Akashi decision-tracing API",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -8,7 +8,7 @@
 
 ## Overview
 
-Kyoyu exposes two API surfaces that share a single service layer:
+Akashi exposes two API surfaces that share a single service layer:
 
 1. **HTTP JSON API** — primary programmatic interface for SDKs and direct clients
 2. **MCP Server** — framework-agnostic interface for MCP-compatible AI agents
@@ -27,7 +27,7 @@ Both require JWT authentication. All responses include standard error envelopes.
      "agent_id": "underwriting-agent",
      "role": "agent",
      "exp": 1738600000,
-     "iss": "kyoyu"
+     "iss": "akashi"
    }
 3. Client includes JWT in subsequent requests:
    Authorization: Bearer <jwt>
@@ -478,19 +478,19 @@ The MCP server exposes the same capabilities through the MCP protocol.
 
 | URI | Description | Maps to |
 |-----|------------|---------|
-| `kyoyu://session/current` | Current session context for the requesting agent | `GET /v1/agents/{agent_id}/history?limit=10` |
-| `kyoyu://decisions/recent` | Recent decisions across all accessible agents | `POST /v1/query` with time filter |
-| `kyoyu://agent/{id}/history` | Specific agent's decision history | `GET /v1/agents/{id}/history` |
+| `akashi://session/current` | Current session context for the requesting agent | `GET /v1/agents/{agent_id}/history?limit=10` |
+| `akashi://decisions/recent` | Recent decisions across all accessible agents | `POST /v1/query` with time filter |
+| `akashi://agent/{id}/history` | Specific agent's decision history | `GET /v1/agents/{id}/history` |
 
 ### Tools (executable operations)
 
-#### `kyoyu_trace`
+#### `akashi_trace`
 
 Record a decision trace.
 
 ```json
 {
-  "name": "kyoyu_trace",
+  "name": "akashi_trace",
   "description": "Record a structured decision trace with alternatives, evidence, and confidence",
   "inputSchema": {
     "type": "object",
@@ -529,13 +529,13 @@ Record a decision trace.
 }
 ```
 
-#### `kyoyu_query`
+#### `akashi_query`
 
 Structured query over past decisions.
 
 ```json
 {
-  "name": "kyoyu_query",
+  "name": "akashi_query",
   "description": "Query past decisions with structured filters, time ranges, and result ordering",
   "inputSchema": {
     "type": "object",
@@ -552,13 +552,13 @@ Structured query over past decisions.
 }
 ```
 
-#### `kyoyu_search`
+#### `akashi_search`
 
 Semantic similarity search.
 
 ```json
 {
-  "name": "kyoyu_search",
+  "name": "akashi_search",
   "description": "Search decision history by semantic similarity. Find precedents and related decisions.",
   "inputSchema": {
     "type": "object",

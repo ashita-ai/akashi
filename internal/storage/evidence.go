@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/pgvector/pgvector-go"
 
-	"github.com/ashita-ai/kyoyu/internal/model"
+	"github.com/ashita-ai/akashi/internal/model"
 )
 
 // CreateEvidence inserts a single piece of evidence for a decision.

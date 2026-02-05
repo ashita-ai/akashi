@@ -1,4 +1,4 @@
-import type { KyoyuClient } from "./client.js";
+import type { AkashiClient } from "./client.js";
 import type { CheckResponse, Traceable } from "./types.js";
 
 /**
@@ -13,7 +13,7 @@ import type { CheckResponse, Traceable } from "./types.js";
  *
  * @example
  * ```ts
- * const result = await withKyoyu(client, "model_selection", async (precedents) => {
+ * const result = await withAkashi(client, "model_selection", async (precedents) => {
  *   // Use precedents to inform your decision...
  *   return {
  *     value: "gpt-4o",
@@ -27,8 +27,8 @@ import type { CheckResponse, Traceable } from "./types.js";
  * });
  * ```
  */
-export async function withKyoyu<T extends Traceable>(
-  client: KyoyuClient,
+export async function withAkashi<T extends Traceable>(
+  client: AkashiClient,
   decisionType: string,
   fn: (precedents: CheckResponse) => Promise<T>,
 ): Promise<T> {

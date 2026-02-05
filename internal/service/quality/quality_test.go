@@ -3,7 +3,7 @@ package quality
 import (
 	"testing"
 
-	"github.com/ashita-ai/kyoyu/internal/model"
+	"github.com/ashita-ai/akashi/internal/model"
 )
 
 func TestScore(t *testing.T) {

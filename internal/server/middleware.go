@@ -1,4 +1,4 @@
-// Package server implements the HTTP API server for Kyoyu.
+// Package server implements the HTTP API server for Akashi.
 package server
 
 import (
@@ -16,8 +16,8 @@ import (
 	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/ashita-ai/kyoyu/internal/auth"
-	"github.com/ashita-ai/kyoyu/internal/model"
+	"github.com/ashita-ai/akashi/internal/auth"
+	"github.com/ashita-ai/akashi/internal/model"
 )
 
 type contextKey string
@@ -98,8 +98,8 @@ func (w *statusWriter) WriteHeader(code int) {
 }
 
 var (
-	tracer    = otel.Tracer("kyoyu/http")
-	httpMeter = otel.GetMeterProvider().Meter("kyoyu/http")
+	tracer    = otel.Tracer("akashi/http")
+	httpMeter = otel.GetMeterProvider().Meter("akashi/http")
 )
 
 // tracingMiddleware creates an OTEL span for each HTTP request
@@ -134,10 +134,10 @@ func tracingMiddleware(next http.Handler) http.Handler {
 
 		if claims := ClaimsFromContext(ctx); claims != nil {
 			span.SetAttributes(
-				attribute.String("kyoyu.agent_id", claims.AgentID),
-				attribute.String("kyoyu.role", string(claims.Role)),
+				attribute.String("akashi.agent_id", claims.AgentID),
+				attribute.String("akashi.role", string(claims.Role)),
 			)
-			attrs = append(attrs, attribute.String("kyoyu.agent_id", claims.AgentID))
+			attrs = append(attrs, attribute.String("akashi.agent_id", claims.AgentID))
 		}
 
 		// Record metrics (best-effort, instruments lazily created).

@@ -1,21 +1,21 @@
-# Kyoyu
+# Akashi
 
 Shared context layer for AI agents. Persistent, queryable decision traces that flow between agents, systems, and humans.
 
 ## What it does
 
-When multiple AI agents collaborate on a task, each makes decisions that downstream agents need to understand. Kyoyu captures structured records of those decisions -- what was decided, why, what alternatives were considered, what evidence supported it, and how confident the agent was -- and makes them queryable through both an HTTP API and the Model Context Protocol (MCP).
+When multiple AI agents collaborate on a task, each makes decisions that downstream agents need to understand. Akashi captures structured records of those decisions -- what was decided, why, what alternatives were considered, what evidence supported it, and how confident the agent was -- and makes them queryable through both an HTTP API and the Model Context Protocol (MCP).
 
 This lets agents coordinate through shared understanding rather than opaque message passing. Agent B can search for Agent A's past decisions by semantic similarity, query by type and confidence threshold, or subscribe to a real-time feed of new decisions.
 
-### What Kyoyu is not
+### What Akashi is not
 
-Kyoyu is a smart store, not an orchestrator. It stores, indexes, and queries decision traces but never directs agent behavior. It differs from:
+Akashi is a smart store, not an orchestrator. It stores, indexes, and queries decision traces but never directs agent behavior. It differs from:
 
-- **Agent memory** (Mem0, etc.) -- Kyoyu stores structured decision records with typed fields, not unstructured memory blobs
-- **Temporal knowledge graphs** (Zep, etc.) -- Kyoyu models decisions as first-class entities with alternatives and evidence, not graph relationships
-- **Workflow engines** (LangGraph, Temporal) -- Kyoyu provides reactive coordination (subscriptions, conflict detection) without managing workflows
-- **Observability dashboards** (Langfuse, etc.) -- Kyoyu is infrastructure that agents query programmatically, not a human-facing dashboard
+- **Agent memory** (Mem0, etc.) -- Akashi stores structured decision records with typed fields, not unstructured memory blobs
+- **Temporal knowledge graphs** (Zep, etc.) -- Akashi models decisions as first-class entities with alternatives and evidence, not graph relationships
+- **Workflow engines** (LangGraph, Temporal) -- Akashi provides reactive coordination (subscriptions, conflict detection) without managing workflows
+- **Observability dashboards** (Langfuse, etc.) -- Akashi is infrastructure that agents query programmatically, not a human-facing dashboard
 
 ## Architecture overview
 
@@ -27,7 +27,7 @@ Kyoyu is a smart store, not an orchestrator. It stores, indexes, and queries dec
                    |   /mcp  |                    | /v1/... |
                    +---------+                    +---------+
                         |                              |
-                        +---------- Kyoyu Server ------+
+                        +---------- Akashi Server ------+
                         |       (Go, single binary)    |
                         |                              |
               +---------+----------+---------+---------+
@@ -51,7 +51,7 @@ Kyoyu is a smart store, not an orchestrator. It stores, indexes, and queries dec
 The server exposes the same capabilities through two interfaces:
 
 - **HTTP API** at `/v1/...` -- standard REST endpoints for trace ingestion, structured queries, semantic search, agent management, and real-time subscriptions (SSE)
-- **MCP server** at `/mcp` -- StreamableHTTP transport with five tools (`kyoyu_check`, `kyoyu_trace`, `kyoyu_query`, `kyoyu_search`, `kyoyu_recent`), three resources (`kyoyu://session/current`, `kyoyu://decisions/recent`, `kyoyu://agent/{id}/history`), and three prompts (`before-decision`, `after-decision`, `agent-setup`), so any MCP-compatible agent can connect directly
+- **MCP server** at `/mcp` -- StreamableHTTP transport with five tools (`akashi_check`, `akashi_trace`, `akashi_query`, `akashi_search`, `akashi_recent`), three resources (`akashi://session/current`, `akashi://decisions/recent`, `akashi://agent/{id}/history`), and three prompts (`before-decision`, `after-decision`, `agent-setup`), so any MCP-compatible agent can connect directly
 
 Both interfaces share the same storage layer and embedding provider.
 
@@ -59,13 +59,13 @@ Both interfaces share the same storage layer and embedding provider.
 
 ### Recording a decision
 
-An agent records a decision trace either through the HTTP convenience endpoint or the MCP `kyoyu_trace` tool:
+An agent records a decision trace either through the HTTP convenience endpoint or the MCP `akashi_trace` tool:
 
 1. A run (execution context) is created in the `agent_runs` table
 2. The decision text is embedded via the configured embedding provider (OpenAI `text-embedding-3-small` by default, or a noop zero-vector provider for development)
 3. The decision is stored with its embedding in the `decisions` table (1536-dimensional vector column with an HNSW index)
 4. Alternatives and evidence are batch-inserted using the PostgreSQL COPY protocol for throughput
-5. A `NOTIFY` is sent on the `kyoyu_decisions` channel so SSE subscribers learn about it immediately
+5. A `NOTIFY` is sent on the `akashi_decisions` channel so SSE subscribers learn about it immediately
 6. The run is marked complete
 
 For high-throughput event ingestion, agents can use the step-by-step path (`POST /v1/runs`, then `POST /v1/runs/{id}/events`). Events accumulate in an in-memory buffer that flushes via `COPY` when it hits 1000 events or 100ms, whichever comes first. Sequence numbers are assigned server-side to guarantee ordering.
@@ -109,7 +109,7 @@ Decisions use **bi-temporal modeling**: `valid_from`/`valid_to` track business t
 - **API keys** are hashed with Argon2id (64MB memory, constant-time comparison) and stored in the `agents` table
 - **JWTs** are signed with Ed25519 (EdDSA). Keys load from PEM files in production or are auto-generated for development
 - Three roles: `admin` (full access), `agent` (read/write own traces, query granted traces), `reader` (read-only)
-- On first startup, if the `agents` table is empty and `KYOYU_ADMIN_API_KEY` is set, an admin agent is bootstrapped automatically
+- On first startup, if the `agents` table is empty and `AKASHI_ADMIN_API_KEY` is set, an admin agent is bootstrapped automatically
 
 Auth flow:
 ```
@@ -126,13 +126,13 @@ Authorization: Bearer <jwt>
 # Copy and edit the environment file
 cp .env.example .env
 
-# Start the full stack (Postgres + PgBouncer + Redis + Kyoyu)
+# Start the full stack (Postgres + PgBouncer + Redis + Akashi)
 docker compose -f docker/docker-compose.yml up -d
 
 # Or start just the database for local development
 make docker-up
 make build
-KYOYU_ADMIN_API_KEY=dev-admin-key ./bin/kyoyu
+AKASHI_ADMIN_API_KEY=dev-admin-key ./bin/akashi
 
 # Run the test suite (requires Docker for testcontainers)
 make test
@@ -190,7 +190,7 @@ All SDKs handle JWT token acquisition and auto-refresh transparently. Python and
 ## Project structure
 
 ```
-cmd/kyoyu/                 Application entrypoint, wires all components
+cmd/akashi/                 Application entrypoint, wires all components
 internal/
   auth/                    Ed25519 JWT + Argon2id API key hashing
   config/                  Environment variable configuration
@@ -204,7 +204,7 @@ internal/
   telemetry/               OpenTelemetry tracer and meter initialization
 migrations/                10 forward-only SQL migration files
 docker/
-  docker-compose.yml       Full stack: Postgres, PgBouncer, Redis, Kyoyu
+  docker-compose.yml       Full stack: Postgres, PgBouncer, Redis, Akashi
   Dockerfile.postgres      Postgres 17 + pgvector 0.8.0 + TimescaleDB 2.17.2
   init.sql                 Extension initialization
 sdk/
@@ -221,22 +221,22 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `postgres://...@localhost:6432/kyoyu` | Connection string (through PgBouncer) |
-| `NOTIFY_URL` | `postgres://...@localhost:5432/kyoyu` | Direct connection for LISTEN/NOTIFY |
+| `DATABASE_URL` | `postgres://...@localhost:6432/akashi` | Connection string (through PgBouncer) |
+| `NOTIFY_URL` | `postgres://...@localhost:5432/akashi` | Direct connection for LISTEN/NOTIFY |
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis connection |
-| `KYOYU_PORT` | `8080` | HTTP server port |
-| `KYOYU_ADMIN_API_KEY` | _(empty)_ | Bootstrap admin API key |
+| `AKASHI_PORT` | `8080` | HTTP server port |
+| `AKASHI_ADMIN_API_KEY` | _(empty)_ | Bootstrap admin API key |
 | `OPENAI_API_KEY` | _(empty)_ | OpenAI key for embeddings (falls back to noop) |
-| `KYOYU_EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model |
-| `KYOYU_JWT_PRIVATE_KEY` | _(empty)_ | Path to Ed25519 private key PEM (auto-generated if empty) |
-| `KYOYU_JWT_PUBLIC_KEY` | _(empty)_ | Path to Ed25519 public key PEM |
-| `KYOYU_JWT_EXPIRATION` | `24h` | JWT token lifetime |
+| `AKASHI_EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model |
+| `AKASHI_JWT_PRIVATE_KEY` | _(empty)_ | Path to Ed25519 private key PEM (auto-generated if empty) |
+| `AKASHI_JWT_PUBLIC_KEY` | _(empty)_ | Path to Ed25519 public key PEM |
+| `AKASHI_JWT_EXPIRATION` | `24h` | JWT token lifetime |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | _(empty)_ | OTLP endpoint (OTEL disabled if empty) |
-| `KYOYU_LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
+| `AKASHI_LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
 
 ## Observability
 
-When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, Kyoyu exports:
+When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, Akashi exports:
 
 - **Traces**: every HTTP request gets a span with method, path, status code, agent ID, and role attributes
 - **Metrics**: `http.server.request_count` (counter) and `http.server.duration` (histogram in ms), both tagged by method, route, status code, and agent ID
@@ -252,9 +252,9 @@ The `docker/docker-compose.yml` runs four services:
 | postgres | Custom (pgvector + TimescaleDB) | 5432 | Primary datastore |
 | pgbouncer | edoburu/pgbouncer | 6432 | Connection pooling (transaction mode, 50 pool / 1000 max) |
 | redis | redis:7-alpine | 6379 | Rate limiting and caching (provisioned, not yet wired) |
-| kyoyu | Multi-stage Go build | 8080 | Application server |
+| akashi | Multi-stage Go build | 8080 | Application server |
 
-Kyoyu connects to PgBouncer for all queries and maintains a separate direct connection to Postgres for `LISTEN/NOTIFY` (which PgBouncer does not support in transaction pooling mode).
+Akashi connects to PgBouncer for all queries and maintains a separate direct connection to Postgres for `LISTEN/NOTIFY` (which PgBouncer does not support in transaction pooling mode).
 
 ## Testing
 

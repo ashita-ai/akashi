@@ -1,13 +1,13 @@
-# Kyoyu Python SDK
+# Akashi Python SDK
 
-Python client for the [Kyoyu](../../README.md) decision-tracing API. Provides both async and sync clients, with middleware for the check-before/record-after pattern.
+Python client for the [Akashi](../../README.md) decision-tracing API. Provides both async and sync clients, with middleware for the check-before/record-after pattern.
 
 **Requirements:** Python 3.10+, httpx, pydantic v2
 
 ## Install
 
 ```bash
-pip install kyoyu
+pip install akashi
 # or from source:
 pip install -e sdk/python
 ```
@@ -18,10 +18,10 @@ pip install -e sdk/python
 
 ```python
 import asyncio
-from kyoyu import KyoyuClient, TraceRequest
+from akashi import AkashiClient, TraceRequest
 
 async def main():
-    client = KyoyuClient(
+    client = AkashiClient(
         base_url="http://localhost:8080",
         agent_id="my-agent",
         api_key="my-api-key",
@@ -47,9 +47,9 @@ asyncio.run(main())
 ### Sync client
 
 ```python
-from kyoyu import KyoyuSyncClient, TraceRequest
+from akashi import AkashiSyncClient, TraceRequest
 
-client = KyoyuSyncClient(
+client = AkashiSyncClient(
     base_url="http://localhost:8080",
     agent_id="my-agent",
     api_key="my-api-key",
@@ -65,7 +65,7 @@ resp = client.trace(TraceRequest(
 
 ## API
 
-Both `KyoyuClient` (async) and `KyoyuSyncClient` (sync) expose the same methods:
+Both `AkashiClient` (async) and `AkashiSyncClient` (sync) expose the same methods:
 
 | Method | Description |
 |--------|-------------|
@@ -81,7 +81,7 @@ The middleware enforces the check-before/record-after pattern automatically. You
 
 ```python
 from dataclasses import dataclass
-from kyoyu import KyoyuClient, KyoyuMiddleware, CheckResponse, TraceRequest
+from akashi import AkashiClient, AkashiMiddleware, CheckResponse, TraceRequest
 
 @dataclass
 class ModelChoice:
@@ -103,20 +103,20 @@ async def choose_model(precedents: CheckResponse, **kwargs) -> ModelChoice:
             return ModelChoice(model=best.outcome, confidence=best.confidence)
     return ModelChoice(model="gpt-4o", confidence=0.85)
 
-client = KyoyuClient(base_url="...", agent_id="...", api_key="...")
-middleware = KyoyuMiddleware(client)
+client = AkashiClient(base_url="...", agent_id="...", api_key="...")
+middleware = AkashiMiddleware(client)
 result = await middleware.wrap("model_selection", choose_model)
 ```
 
-A synchronous variant `KyoyuSyncMiddleware` works identically with `KyoyuSyncClient`.
+A synchronous variant `AkashiSyncMiddleware` works identically with `AkashiSyncClient`.
 
 ## Error handling
 
-All errors inherit from `KyoyuError`:
+All errors inherit from `AkashiError`:
 
 ```python
-from kyoyu import (
-    KyoyuError,
+from akashi import (
+    AkashiError,
     AuthenticationError,   # 401
     AuthorizationError,    # 403
     NotFoundError,         # 404
@@ -129,10 +129,10 @@ from kyoyu import (
 
 ## Types
 
-All request and response types are Pydantic v2 models. Import them from `kyoyu`:
+All request and response types are Pydantic v2 models. Import them from `akashi`:
 
 ```python
-from kyoyu import (
+from akashi import (
     Decision, Alternative, Evidence, DecisionConflict,
     TraceRequest, TraceAlternative, TraceEvidence,
     TraceResponse, CheckResponse, QueryResponse,

@@ -1,4 +1,4 @@
-// Package model defines the core domain types for Kyoyu.
+// Package model defines the core domain types for Akashi.
 //
 // All types correspond directly to database tables and event payloads
 // defined in SPEC-002. Types use strong typing (UUIDs, time.Time, enums)

@@ -1,8 +1,8 @@
-// Package mcp implements the Model Context Protocol server for Kyoyu.
+// Package mcp implements the Model Context Protocol server for Akashi.
 //
 // The MCP server exposes the same capabilities as the HTTP API through
 // MCP resources, tools, and prompts, allowing MCP-compatible AI agents
-// to interact with Kyoyu's decision trace infrastructure.
+// to interact with Akashi's decision trace infrastructure.
 package mcp
 
 import (
@@ -11,11 +11,11 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
-	"github.com/ashita-ai/kyoyu/internal/service/embedding"
-	"github.com/ashita-ai/kyoyu/internal/storage"
+	"github.com/ashita-ai/akashi/internal/service/embedding"
+	"github.com/ashita-ai/akashi/internal/storage"
 )
 
-// Server wraps the MCP server with Kyoyu's service layer.
+// Server wraps the MCP server with Akashi's service layer.
 type Server struct {
 	mcpServer *mcpserver.MCPServer
 	db        *storage.DB
@@ -32,7 +32,7 @@ func New(db *storage.DB, embedder embedding.Provider, logger *slog.Logger) *Serv
 	}
 
 	s.mcpServer = mcpserver.NewMCPServer(
-		"kyoyu",
+		"akashi",
 		"0.1.0",
 		mcpserver.WithResourceCapabilities(true, true),
 		mcpserver.WithToolCapabilities(true),

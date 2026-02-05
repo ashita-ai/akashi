@@ -128,8 +128,8 @@ export interface Traceable {
   toTrace(): TraceRequest;
 }
 
-/** Configuration for the Kyoyu client. */
-export interface KyoyuConfig {
+/** Configuration for the Akashi client. */
+export interface AkashiConfig {
   baseUrl: string;
   agentId: string;
   apiKey: string;

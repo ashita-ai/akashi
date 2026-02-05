@@ -1,6 +1,6 @@
-# Kyoyu Agent Guide
+# Akashi Agent Guide
 
-**What is Kyoyu**: Shared context layer for AI agents. Persistent, queryable decision traces that flow between agents, systems, and humans. Git for agent decisions.
+**What is Akashi**: Shared context layer for AI agents. Persistent, queryable decision traces that flow between agents, systems, and humans. Git for agent decisions.
 
 **Your Role**: Go backend engineer building infrastructure for multi-agent coordination. You write production-grade code with comprehensive tests.
 
@@ -71,7 +71,7 @@ golangci-lint run ./...
 go vet ./...
 
 # Build
-go build -o bin/kyoyu ./cmd/kyoyu
+go build -o bin/akashi ./cmd/akashi
 
 # Docker (Postgres 17 + pgvector + TimescaleDB)
 docker compose -f docker/docker-compose.yml up -d
@@ -88,8 +88,8 @@ make all
 ### Project Layout
 
 ```
-kyoyu/
-├── cmd/kyoyu/          # Application entrypoint
+akashi/
+├── cmd/akashi/          # Application entrypoint
 ├── internal/
 │   ├── config/         # Configuration loading (env, flags)
 │   ├── server/         # HTTP/gRPC server setup, routing
@@ -245,7 +245,7 @@ golangci-lint run ./... && go vet ./...
 go test ./... -v -race
 
 # 4. Build
-go build ./cmd/kyoyu
+go build ./cmd/akashi
 
 # 5. No TODOs or placeholders
 grep -r "TODO\|FIXME" cmd/ internal/ && echo "REMOVE TODOs" && exit 1

@@ -1,18 +1,18 @@
-"""Kyoyu Python SDK — decision tracing for AI agent coordination."""
+"""Akashi Python SDK — decision tracing for AI agent coordination."""
 
-from kyoyu.client import KyoyuClient, KyoyuSyncClient
-from kyoyu.exceptions import (
+from akashi.client import AkashiClient, AkashiSyncClient
+from akashi.exceptions import (
     AuthenticationError,
     AuthorizationError,
     ConflictError,
-    KyoyuError,
+    AkashiError,
     NotFoundError,
     ServerError,
     TokenExpiredError,
     ValidationError,
 )
-from kyoyu.middleware import KyoyuMiddleware, KyoyuSyncMiddleware
-from kyoyu.types import (
+from akashi.middleware import AkashiMiddleware, AkashiSyncMiddleware
+from akashi.types import (
     Alternative,
     CheckResponse,
     Decision,
@@ -30,11 +30,11 @@ from kyoyu.types import (
 
 __all__ = [
     # Clients
-    "KyoyuClient",
-    "KyoyuSyncClient",
+    "AkashiClient",
+    "AkashiSyncClient",
     # Middleware
-    "KyoyuMiddleware",
-    "KyoyuSyncMiddleware",
+    "AkashiMiddleware",
+    "AkashiSyncMiddleware",
     # Types — domain
     "Decision",
     "Alternative",
@@ -52,7 +52,7 @@ __all__ = [
     "SearchResult",
     "SearchResponse",
     # Exceptions
-    "KyoyuError",
+    "AkashiError",
     "AuthenticationError",
     "AuthorizationError",
     "NotFoundError",

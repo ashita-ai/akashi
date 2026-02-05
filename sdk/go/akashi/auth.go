@@ -1,4 +1,4 @@
-package kyoyu
+package akashi
 
 import (
 	"bytes"
@@ -63,28 +63,28 @@ type authResponseEnvelope struct {
 func (tm *tokenManager) refresh(ctx context.Context) error {
 	body, err := json.Marshal(authRequest{AgentID: tm.agentID, APIKey: tm.apiKey})
 	if err != nil {
-		return fmt.Errorf("kyoyu: marshal auth request: %w", err)
+		return fmt.Errorf("akashi: marshal auth request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tm.baseURL+"/auth/token", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("kyoyu: create auth request: %w", err)
+		return fmt.Errorf("akashi: create auth request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := tm.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("kyoyu: auth request: %w", err)
+		return fmt.Errorf("akashi: auth request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("kyoyu: auth failed with status %d", resp.StatusCode)
+		return fmt.Errorf("akashi: auth failed with status %d", resp.StatusCode)
 	}
 
 	var envelope authResponseEnvelope
 	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		return fmt.Errorf("kyoyu: decode auth response: %w", err)
+		return fmt.Errorf("akashi: decode auth response: %w", err)
 	}
 
 	tm.token = envelope.Data.Token

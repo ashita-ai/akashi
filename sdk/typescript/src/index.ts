@@ -1,8 +1,8 @@
-export { KyoyuClient } from "./client.js";
-export { withKyoyu } from "./middleware.js";
+export { AkashiClient } from "./client.js";
+export { withAkashi } from "./middleware.js";
 export { TokenManager } from "./auth.js";
 export {
-  KyoyuError,
+  AkashiError,
   AuthenticationError,
   AuthorizationError,
   NotFoundError,
@@ -25,5 +25,5 @@ export type {
   SearchResult,
   SearchResponse,
   Traceable,
-  KyoyuConfig,
+  AkashiConfig,
 } from "./types.js";

@@ -17,7 +17,7 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/ashita-ai/kyoyu
+        - github.com/ashita-ai/akashi
 
 issues:
   max-issues-per-linter: 0

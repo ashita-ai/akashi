@@ -6,9 +6,9 @@ import (
 
 	"github.com/pgvector/pgvector-go"
 
-	"github.com/ashita-ai/kyoyu/internal/model"
-	"github.com/ashita-ai/kyoyu/internal/service/quality"
-	"github.com/ashita-ai/kyoyu/internal/storage"
+	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/service/quality"
+	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 // HandleTrace handles POST /v1/trace (convenience endpoint).

@@ -1,4 +1,4 @@
-# Kyoyu.ai: Shared Agent Context Infrastructure
+# Akashi.ai: Shared Agent Context Infrastructure
 
 ## Company Spec v1.0 | January 2026
 
@@ -6,7 +6,7 @@
 
 ## Executive Summary
 
-**Kyoyu.ai** builds the shared context layer for AI agents. As enterprises deploy fleets of specialized AI agents that must coordinate, hand off tasks, and collaborate with humans, the critical missing infrastructure is a persistent, queryable record of agent reasoning, decisions, and state.
+**Akashi.ai** builds the shared context layer for AI agents. As enterprises deploy fleets of specialized AI agents that must coordinate, hand off tasks, and collaborate with humans, the critical missing infrastructure is a persistent, queryable record of agent reasoning, decisions, and state.
 
 We are the "git for agent decisions" - providing versioned, traceable, shareable context that flows between agents, systems, and humans.
 
@@ -96,11 +96,11 @@ Year 1-3 target: Mid-market and enterprise companies with:
 
 ---
 
-## 3. Solution: The Kyoyu Context Layer
+## 3. Solution: The Akashi Context Layer
 
 ### Product Vision
 
-Kyoyu.ai provides **shared, persistent, queryable context** for AI agent systems. Every agent decision, reasoning step, tool call, and human intervention becomes part of a versioned context graph that any authorized agent or human can access.
+Akashi.ai provides **shared, persistent, queryable context** for AI agent systems. Every agent decision, reasoning step, tool call, and human intervention becomes part of a versioned context graph that any authorized agent or human can access.
 
 ### Core Capabilities
 
@@ -121,17 +121,17 @@ Following [Letta's memory block architecture](https://www.letta.com/blog/memory-
 #### 3.3 Decision Trace API
 ```python
 # Record agent reasoning
-kyoyu.trace(
+akashi.trace(
     agent_id="underwriting-agent",
     decision="approve_loan",
     confidence=0.87,
     evidence=[doc_1, doc_2, credit_score],
     reasoning="Debt-to-income within threshold...",
-    precedents=kyoyu.query("similar loan decisions")
+    precedents=akashi.query("similar loan decisions")
 )
 
 # Query past decisions
-similar = kyoyu.query(
+similar = akashi.query(
     "loan approvals where DTI > 40%",
     time_range="last_90_days",
     outcome_filter="default"
@@ -161,7 +161,7 @@ Re-run any decision with the exact context that was available at decision time. 
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘    │
 │       │             │             │             │           │
 ├───────┴─────────────┴─────────────┴─────────────┴───────────┤
-│                    Kyoyu Context Layer                       │
+│                    Akashi Context Layer                       │
 │  ┌─────────────────────────────────────────────────────┐    │
 │  │  Context Graph Engine                                │    │
 │  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐   │    │
@@ -377,9 +377,9 @@ Re-run any decision with the exact context that was available at decision time. 
 
 ---
 
-## 10. Why Kyoyu?
+## 10. Why Akashi?
 
-**Kyoyu (共有)** means "shared" or "common ownership" in Japanese. This isn't just a name - it's the product thesis:
+**Akashi (共有)** means "shared" or "common ownership" in Japanese. This isn't just a name - it's the product thesis:
 
 - Agents **share** context, not just pass messages
 - Decisions become **shared** knowledge across the organization

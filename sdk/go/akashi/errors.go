@@ -1,9 +1,9 @@
-// Package kyoyu provides a Go client for the Kyoyu decision-tracing API.
-package kyoyu
+// Package akashi provides a Go client for the Akashi decision-tracing API.
+package akashi
 
 import "fmt"
 
-// Error represents an error from the Kyoyu API with the HTTP status code
+// Error represents an error from the Akashi API with the HTTP status code
 // and the server's error message.
 type Error struct {
 	StatusCode int
@@ -12,7 +12,7 @@ type Error struct {
 }
 
 func (e *Error) Error() string {
-	return fmt.Sprintf("kyoyu: %s (%d): %s", e.Code, e.StatusCode, e.Message)
+	return fmt.Sprintf("akashi: %s (%d): %s", e.Code, e.StatusCode, e.Message)
 }
 
 // IsNotFound returns true if the error is a 404.

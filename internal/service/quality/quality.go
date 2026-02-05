@@ -6,7 +6,7 @@ package quality
 import (
 	"strings"
 
-	"github.com/ashita-ai/kyoyu/internal/model"
+	"github.com/ashita-ai/akashi/internal/model"
 )
 
 // StandardDecisionTypes are the canonical types from prompt templates.

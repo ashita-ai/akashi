@@ -1,4 +1,4 @@
-module github.com/ashita-ai/kyoyu/sdk/go
+module github.com/ashita-ai/akashi/sdk/go
 
 go 1.22
 

@@ -8,14 +8,14 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/pgvector/pgvector-go"
 
-	"github.com/ashita-ai/kyoyu/internal/model"
-	"github.com/ashita-ai/kyoyu/internal/storage"
+	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 func (s *Server) registerTools() {
-	// kyoyu_check — look before you leap.
+	// akashi_check — look before you leap.
 	s.mcpServer.AddTool(
-		mcplib.NewTool("kyoyu_check",
+		mcplib.NewTool("akashi_check",
 			mcplib.WithDescription(`Check for existing decisions before making a new one.
 
 WHEN TO USE: BEFORE making any decision. This is the most important tool —
@@ -30,7 +30,7 @@ WHAT YOU GET BACK:
 - decisions: the most relevant prior decisions (up to limit)
 - conflicts: any active conflicts on this decision type
 
-EXAMPLE: Before choosing a caching strategy, call kyoyu_check with
+EXAMPLE: Before choosing a caching strategy, call akashi_check with
 decision_type="architecture" to see if anyone already decided on caching.`),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithIdempotentHintAnnotation(true),
@@ -56,9 +56,9 @@ decision_type="architecture" to see if anyone already decided on caching.`),
 		s.handleCheck,
 	)
 
-	// kyoyu_trace — record a decision.
+	// akashi_trace — record a decision.
 	s.mcpServer.AddTool(
-		mcplib.NewTool("kyoyu_trace",
+		mcplib.NewTool("akashi_trace",
 			mcplib.WithDescription(`Record a decision you just made so other agents can learn from it.
 
 WHEN TO USE: After you make any non-trivial decision — choosing a model,
@@ -103,14 +103,14 @@ reasoning="Redis handles our expected QPS, TTL prevents stale reads"`),
 		s.handleTrace,
 	)
 
-	// kyoyu_query — structured query over past decisions.
+	// akashi_query — structured query over past decisions.
 	s.mcpServer.AddTool(
-		mcplib.NewTool("kyoyu_query",
+		mcplib.NewTool("akashi_query",
 			mcplib.WithDescription(`Query past decisions with structured filters.
 
 WHEN TO USE: When you need to find specific decisions by exact criteria —
 a particular agent, decision type, confidence threshold, or outcome.
-For fuzzy/semantic searches, use kyoyu_search instead.
+For fuzzy/semantic searches, use akashi_search instead.
 
 FILTER EXAMPLES:
 - All architecture decisions: decision_type="architecture"
@@ -145,14 +145,14 @@ FILTER EXAMPLES:
 		s.handleQuery,
 	)
 
-	// kyoyu_search — semantic similarity search.
+	// akashi_search — semantic similarity search.
 	s.mcpServer.AddTool(
-		mcplib.NewTool("kyoyu_search",
+		mcplib.NewTool("akashi_search",
 			mcplib.WithDescription(`Search decision history by semantic similarity.
 
 WHEN TO USE: When you have a natural language question about past decisions
 and want to find the most relevant matches regardless of exact wording.
-For exact-match filtering, use kyoyu_query instead.
+For exact-match filtering, use akashi_query instead.
 
 EXAMPLE QUERIES:
 - "How did we handle rate limiting?"
@@ -181,9 +181,9 @@ EXAMPLE QUERIES:
 		s.handleSearch,
 	)
 
-	// kyoyu_recent — what happened recently.
+	// akashi_recent — what happened recently.
 	s.mcpServer.AddTool(
-		mcplib.NewTool("kyoyu_recent",
+		mcplib.NewTool("akashi_recent",
 			mcplib.WithDescription(`Get the most recent decisions across all agents.
 
 WHEN TO USE: To get a quick overview of what's been decided recently.

@@ -129,7 +129,7 @@ SELECT add_compression_policy('agent_events', INTERVAL '7 days');
 
 | Trigger | Threshold | Measurement |
 |---------|-----------|-------------|
-| Query latency degradation | p95 > 50ms sustained over 1 hour | Prometheus `kyoyu_query_duration_seconds` |
+| Query latency degradation | p95 > 50ms sustained over 1 hour | Prometheus `akashi_query_duration_seconds` |
 | Connection pool saturation | > 80% pool utilization sustained | PgBouncer stats |
 | CPU utilization | > 70% sustained on DB instance | Node exporter |
 | Replication demand | Need for isolated read workloads | Manual assessment |
@@ -175,10 +175,10 @@ SELECT add_compression_policy('agent_events', INTERVAL '7 days');
 host = "0.0.0.0"
 port = 6432
 
-[pools.kyoyu]
+[pools.akashi]
 pool_mode = "transaction"
 
-[pools.kyoyu.shards.0]
+[pools.akashi.shards.0]
 servers = [
     ["primary.db.internal", 5432, "primary"],
     ["replica1.db.internal", 5432, "replica"],
@@ -255,55 +255,55 @@ Migrate to Neon for automatic compute scaling and storage separation.
 
 | Metric | Type | Labels |
 |--------|------|--------|
-| `kyoyu_events_ingested_total` | Counter | `agent_id`, `event_type` |
-| `kyoyu_events_batch_size` | Histogram | |
-| `kyoyu_events_batch_flush_duration_seconds` | Histogram | |
-| `kyoyu_events_buffer_size` | Gauge | |
-| `kyoyu_copy_errors_total` | Counter | `error_type` |
+| `akashi_events_ingested_total` | Counter | `agent_id`, `event_type` |
+| `akashi_events_batch_size` | Histogram | |
+| `akashi_events_batch_flush_duration_seconds` | Histogram | |
+| `akashi_events_buffer_size` | Gauge | |
+| `akashi_copy_errors_total` | Counter | `error_type` |
 
 #### Query Metrics
 
 | Metric | Type | Labels |
 |--------|------|--------|
-| `kyoyu_query_duration_seconds` | Histogram | `query_type` (`structured`, `temporal`, `search`) |
-| `kyoyu_query_results_total` | Histogram | `query_type` |
-| `kyoyu_search_similarity_score` | Histogram | |
+| `akashi_query_duration_seconds` | Histogram | `query_type` (`structured`, `temporal`, `search`) |
+| `akashi_query_results_total` | Histogram | `query_type` |
+| `akashi_search_similarity_score` | Histogram | |
 
 #### Connection Metrics
 
 | Metric | Type | Labels |
 |--------|------|--------|
-| `kyoyu_active_connections` | Gauge | `pool` |
-| `kyoyu_pool_utilization_ratio` | Gauge | `pool` |
-| `kyoyu_auth_failures_total` | Counter | `reason` |
+| `akashi_active_connections` | Gauge | `pool` |
+| `akashi_pool_utilization_ratio` | Gauge | `pool` |
+| `akashi_auth_failures_total` | Counter | `reason` |
 
 #### Storage Metrics
 
 | Metric | Type | Labels |
 |--------|------|--------|
-| `kyoyu_db_table_size_bytes` | Gauge | `table` |
-| `kyoyu_compression_ratio` | Gauge | `table` |
-| `kyoyu_chunk_count` | Gauge | `state` (`compressed`, `uncompressed`) |
+| `akashi_db_table_size_bytes` | Gauge | `table` |
+| `akashi_compression_ratio` | Gauge | `table` |
+| `akashi_chunk_count` | Gauge | `state` (`compressed`, `uncompressed`) |
 
 ### Traces (emitted via OTEL)
 
 Each API request generates an OTEL span:
 
 ```
-kyoyu.api.trace         (POST /v1/trace)
-  ├── kyoyu.validate    (input validation)
-  ├── kyoyu.embed       (embedding generation)
-  ├── kyoyu.ingest      (COPY to PostgreSQL)
-  └── kyoyu.notify      (SSE subscription fanout)
+akashi.api.trace         (POST /v1/trace)
+  ├── akashi.validate    (input validation)
+  ├── akashi.embed       (embedding generation)
+  ├── akashi.ingest      (COPY to PostgreSQL)
+  └── akashi.notify      (SSE subscription fanout)
 
-kyoyu.api.query         (POST /v1/query)
-  ├── kyoyu.authz       (permission check)
-  └── kyoyu.db.query    (PostgreSQL query execution)
+akashi.api.query         (POST /v1/query)
+  ├── akashi.authz       (permission check)
+  └── akashi.db.query    (PostgreSQL query execution)
 
-kyoyu.api.search        (POST /v1/search)
-  ├── kyoyu.embed       (query embedding)
-  ├── kyoyu.authz       (permission check)
-  └── kyoyu.db.search   (pgvector HNSW search)
+akashi.api.search        (POST /v1/search)
+  ├── akashi.embed       (query embedding)
+  ├── akashi.authz       (permission check)
+  └── akashi.db.search   (pgvector HNSW search)
 ```
 
 ### Logging (structured, via slog)
@@ -349,8 +349,8 @@ services:
   postgres:
     image: timescale/timescaledb:latest-pg17
     environment:
-      POSTGRES_DB: kyoyu
-      POSTGRES_USER: kyoyu
+      POSTGRES_DB: akashi
+      POSTGRES_USER: akashi
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5432:5432"
@@ -369,19 +369,19 @@ services:
   pgbouncer:
     image: edoburu/pgbouncer:latest
     environment:
-      DATABASE_URL: postgres://kyoyu:${POSTGRES_PASSWORD}@postgres:5432/kyoyu
+      DATABASE_URL: postgres://akashi:${POSTGRES_PASSWORD}@postgres:5432/akashi
       POOL_MODE: transaction
       MAX_CLIENT_CONN: 1000
       DEFAULT_POOL_SIZE: 50
     ports:
       - "6432:6432"
 
-  kyoyu:
+  akashi:
     build: .
     environment:
-      DATABASE_URL: postgres://kyoyu:${POSTGRES_PASSWORD}@pgbouncer:6432/kyoyu
-      KYOYU_PORT: 8080
-      KYOYU_JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: postgres://akashi:${POSTGRES_PASSWORD}@pgbouncer:6432/akashi
+      AKASHI_PORT: 8080
+      AKASHI_JWT_SECRET: ${JWT_SECRET}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     ports:
       - "8080:8080"

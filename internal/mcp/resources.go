@@ -7,14 +7,14 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/ashita-ai/kyoyu/internal/model"
+	"github.com/ashita-ai/akashi/internal/model"
 )
 
 func (s *Server) registerResources() {
-	// kyoyu://session/current — current session context for the requesting agent.
+	// akashi://session/current — current session context for the requesting agent.
 	s.mcpServer.AddResource(
 		mcplib.NewResource(
-			"kyoyu://session/current",
+			"akashi://session/current",
 			"Current Session",
 			mcplib.WithResourceDescription("Current session context for the requesting agent"),
 			mcplib.WithMIMEType("application/json"),
@@ -22,10 +22,10 @@ func (s *Server) registerResources() {
 		s.handleSessionCurrent,
 	)
 
-	// kyoyu://decisions/recent — recent decisions across accessible agents.
+	// akashi://decisions/recent — recent decisions across accessible agents.
 	s.mcpServer.AddResource(
 		mcplib.NewResource(
-			"kyoyu://decisions/recent",
+			"akashi://decisions/recent",
 			"Recent Decisions",
 			mcplib.WithResourceDescription("Recent decisions across all accessible agents"),
 			mcplib.WithMIMEType("application/json"),
@@ -33,10 +33,10 @@ func (s *Server) registerResources() {
 		s.handleDecisionsRecent,
 	)
 
-	// kyoyu://agent/{id}/history — specific agent's decision history.
+	// akashi://agent/{id}/history — specific agent's decision history.
 	s.mcpServer.AddResourceTemplate(
 		mcplib.NewResourceTemplate(
-			"kyoyu://agent/{id}/history",
+			"akashi://agent/{id}/history",
 			"Agent History",
 			mcplib.WithTemplateDescription("Decision history for a specific agent"),
 			mcplib.WithTemplateMIMEType("application/json"),
@@ -63,7 +63,7 @@ func (s *Server) handleSessionCurrent(ctx context.Context, request mcplib.ReadRe
 
 	return []mcplib.ResourceContents{
 		mcplib.TextResourceContents{
-			URI:      "kyoyu://session/current",
+			URI:      "akashi://session/current",
 			MIMEType: "application/json",
 			Text:     string(data),
 		},
@@ -88,7 +88,7 @@ func (s *Server) handleDecisionsRecent(ctx context.Context, request mcplib.ReadR
 
 	return []mcplib.ResourceContents{
 		mcplib.TextResourceContents{
-			URI:      "kyoyu://decisions/recent",
+			URI:      "akashi://decisions/recent",
 			MIMEType: "application/json",
 			Text:     string(data),
 		},
@@ -98,9 +98,9 @@ func (s *Server) handleDecisionsRecent(ctx context.Context, request mcplib.ReadR
 func (s *Server) handleAgentHistory(ctx context.Context, request mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
 	// Extract agent_id from the URI template parameter.
 	uri := request.Params.URI
-	// Parse agent_id from kyoyu://agent/{id}/history
+	// Parse agent_id from akashi://agent/{id}/history
 	var agentID string
-	_, err := fmt.Sscanf(uri, "kyoyu://agent/%s/history", &agentID)
+	_, err := fmt.Sscanf(uri, "akashi://agent/%s/history", &agentID)
 	if err != nil || agentID == "" {
 		return nil, fmt.Errorf("mcp: invalid agent history URI: %s", uri)
 	}

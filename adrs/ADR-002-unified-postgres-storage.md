@@ -5,7 +5,7 @@
 
 ## Context
 
-Kyoyu needs vector search (semantic similarity over decisions), time-series ingestion (append-only events), graph traversal (decision chains), and structured queries (metadata filters). The typical approach uses 3-4 specialized databases. We need to decide whether to go polyglot or unified.
+Akashi needs vector search (semantic similarity over decisions), time-series ingestion (append-only events), graph traversal (decision chains), and structured queries (metadata filters). The typical approach uses 3-4 specialized databases. We need to decide whether to go polyglot or unified.
 
 ## Decision
 
