@@ -798,6 +798,53 @@ func TestSSESubscribeNoBroker(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 }
 
+func TestExportDecisions(t *testing.T) {
+	// Ensure there are decisions to export (created by earlier tests).
+	t.Run("admin can export NDJSON", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/export/decisions?agent_id=test-agent", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "application/x-ndjson", resp.Header.Get("Content-Type"))
+		assert.Contains(t, resp.Header.Get("Content-Disposition"), "akashi-export-")
+		assert.Contains(t, resp.Header.Get("Content-Disposition"), ".ndjson")
+
+		// Parse NDJSON lines.
+		body, _ := io.ReadAll(resp.Body)
+		lines := bytes.Split(bytes.TrimSpace(body), []byte("\n"))
+		assert.Greater(t, len(lines), 0, "should have at least one decision in export")
+
+		// Each line should be valid JSON parseable as a Decision.
+		for _, line := range lines {
+			if len(line) == 0 {
+				continue
+			}
+			var d model.Decision
+			err := json.Unmarshal(line, &d)
+			assert.NoError(t, err, "each line should be valid JSON decision: %s", string(line))
+			assert.NotEmpty(t, d.ID, "decision should have an ID")
+			assert.Equal(t, "test-agent", d.AgentID, "export should only contain requested agent")
+		}
+	})
+
+	t.Run("non-admin cannot export", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/export/decisions", agentToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("empty export for unknown agent", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/export/decisions?agent_id=nonexistent", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		// Should succeed but with empty body.
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		assert.Empty(t, bytes.TrimSpace(body), "export for nonexistent agent should be empty")
+	})
+}
+
 func TestDeleteAgentData(t *testing.T) {
 	// Create an agent with runs, decisions, and events.
 	createAgent(testSrv.URL, adminToken, "delete-me", "Delete Me", "agent", "delete-key")
