@@ -175,6 +175,8 @@ func authedRequest(method, url, token string, body any) (*http.Response, error) 
 	return http.DefaultClient.Do(req)
 }
 
+func ptrFloat32(v float32) *float32 { return &v }
+
 func TestHealthEndpoint(t *testing.T) {
 	resp, err := http.Get(testSrv.URL + "/health")
 	require.NoError(t, err)
@@ -794,6 +796,97 @@ func TestSSESubscribeNoBroker(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
+
+func TestDeleteAgentData(t *testing.T) {
+	// Create an agent with runs, decisions, and events.
+	createAgent(testSrv.URL, adminToken, "delete-me", "Delete Me", "agent", "delete-key")
+	deleteToken := getToken(testSrv.URL, "delete-me", "delete-key")
+
+	// Trace a decision (creates run + decision + events).
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", deleteToken,
+		model.TraceRequest{
+			AgentID: "delete-me",
+			Decision: model.TraceDecision{
+				DecisionType: "gdpr_test",
+				Outcome:      "delete_everything",
+				Confidence:   0.8,
+				Alternatives: []model.TraceAlternative{
+					{Label: "keep", Score: ptrFloat32(0.2)},
+				},
+				Evidence: []model.TraceEvidence{
+					{SourceType: "document", Content: "test evidence for GDPR"},
+				},
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("trace failed: status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	// Verify the agent's history exists.
+	resp2, err := authedRequest("GET", testSrv.URL+"/v1/agents/delete-me/history", deleteToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp2.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp2.StatusCode)
+	var hist struct {
+		Data struct {
+			Decisions []model.Decision `json:"decisions"`
+		} `json:"data"`
+	}
+	data, _ := io.ReadAll(resp2.Body)
+	_ = json.Unmarshal(data, &hist)
+	assert.NotEmpty(t, hist.Data.Decisions, "agent should have decisions before deletion")
+
+	t.Run("non-admin cannot delete", func(t *testing.T) {
+		resp, err := authedRequest("DELETE", testSrv.URL+"/v1/agents/delete-me", deleteToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("cannot delete admin", func(t *testing.T) {
+		resp, err := authedRequest("DELETE", testSrv.URL+"/v1/agents/admin", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("admin can delete agent", func(t *testing.T) {
+		resp, err := authedRequest("DELETE", testSrv.URL+"/v1/agents/delete-me", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data struct {
+				AgentID string `json:"agent_id"`
+				Deleted struct {
+					Evidence     int64 `json:"evidence"`
+					Alternatives int64 `json:"alternatives"`
+					Decisions    int64 `json:"decisions"`
+					Events       int64 `json:"events"`
+					Runs         int64 `json:"runs"`
+					Agents       int64 `json:"agents"`
+				} `json:"deleted"`
+			} `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(data, &result)
+		assert.Equal(t, "delete-me", result.Data.AgentID)
+		assert.Equal(t, int64(1), result.Data.Deleted.Agents, "should delete 1 agent")
+		assert.GreaterOrEqual(t, result.Data.Deleted.Decisions, int64(1), "should delete at least 1 decision")
+		assert.GreaterOrEqual(t, result.Data.Deleted.Runs, int64(1), "should delete at least 1 run")
+	})
+
+	t.Run("deleted agent is gone", func(t *testing.T) {
+		resp, err := authedRequest("DELETE", testSrv.URL+"/v1/agents/delete-me", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
 }
 
 func TestAccessGrantEnforcement(t *testing.T) {

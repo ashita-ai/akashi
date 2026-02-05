@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -161,8 +162,44 @@ func (h *Handlers) HandleDeleteGrant(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// HandleDeleteAgent handles DELETE /v1/agents/{agent_id} (admin-only).
+// Deletes all data associated with the agent (GDPR right to erasure).
+func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("agent_id")
+	if agentID == "" {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "agent_id is required")
+		return
+	}
+
+	// Prevent deleting the admin account to avoid lockout.
+	if agentID == "admin" {
+		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "cannot delete the admin agent")
+		return
+	}
+
+	result, err := h.db.DeleteAgentData(r.Context(), agentID)
+	if err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "agent not found")
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to delete agent data")
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"agent_id": agentID,
+		"deleted":  result,
+	})
+}
+
 // isDuplicateKeyError checks if a Postgres error is a unique_violation (23505).
 func isDuplicateKeyError(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// isNotFoundError checks if an error message indicates a not-found condition.
+func isNotFoundError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "not found")
 }
