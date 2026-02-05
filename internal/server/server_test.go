@@ -39,7 +39,7 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	req := testcontainers.ContainerRequest{
 		Image:        "timescale/timescaledb:latest-pg17",
@@ -115,9 +115,10 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	testSrv.Close()
-	buf.Drain(ctx)
-	db.Close(ctx)
-	_ = container.Terminate(ctx)
+	cancel() // Signal the buffer's flush loop to exit.
+	buf.Drain(context.Background())
+	db.Close(context.Background())
+	_ = container.Terminate(context.Background())
 	os.Exit(code)
 }
 
