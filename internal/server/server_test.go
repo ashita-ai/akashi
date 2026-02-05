@@ -787,3 +787,154 @@ func TestDecisionsRecentEndpoint(t *testing.T) {
 		assert.Equal(t, "test-agent", d.AgentID, "expected only test-agent decisions")
 	}
 }
+
+func TestAccessGrantEnforcement(t *testing.T) {
+	// Create a reader agent with no grants.
+	createAgent(testSrv.URL, adminToken, "reader-agent", "Reader", "reader", "reader-key")
+	readerToken := getToken(testSrv.URL, "reader-agent", "reader-key")
+
+	// First, ensure test-agent has at least one decision.
+	_, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken,
+		model.TraceRequest{
+			AgentID: "test-agent",
+			Decision: model.TraceDecision{
+				DecisionType: "authz_test",
+				Outcome:      "granted",
+				Confidence:   0.9,
+			},
+		})
+	require.NoError(t, err)
+
+	t.Run("reader cannot see other agent history", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/agents/test-agent/history", readerToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("reader gets empty results from query", func(t *testing.T) {
+		dType := "authz_test"
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/query", readerToken,
+			model.QueryRequest{
+				Filters: model.QueryFilters{
+					AgentIDs:     []string{"test-agent"},
+					DecisionType: &dType,
+				},
+				Limit: 10,
+			})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data struct {
+				Decisions []model.Decision `json:"decisions"`
+			} `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(data, &result)
+		assert.Empty(t, result.Data.Decisions, "reader should see no decisions without a grant")
+	})
+
+	t.Run("reader gets empty recent decisions", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/recent?agent_id=test-agent", readerToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data struct {
+				Decisions []model.Decision `json:"decisions"`
+			} `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(data, &result)
+		assert.Empty(t, result.Data.Decisions, "reader should see no recent decisions without a grant")
+	})
+
+	t.Run("admin can grant access to reader", func(t *testing.T) {
+		agentIDStr := "test-agent"
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/grants", adminToken,
+			model.CreateGrantRequest{
+				GranteeAgentID: "reader-agent",
+				ResourceType:   "agent_traces",
+				ResourceID:     &agentIDStr,
+				Permission:     "read",
+			})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusCreated, resp.StatusCode)
+	})
+
+	t.Run("reader can see history after grant", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/agents/test-agent/history", readerToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data struct {
+				Decisions []model.Decision `json:"decisions"`
+			} `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(data, &result)
+		assert.NotEmpty(t, result.Data.Decisions, "reader should see decisions after grant")
+	})
+
+	t.Run("reader can query after grant", func(t *testing.T) {
+		dType := "authz_test"
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/query", readerToken,
+			model.QueryRequest{
+				Filters: model.QueryFilters{
+					AgentIDs:     []string{"test-agent"},
+					DecisionType: &dType,
+				},
+				Limit: 10,
+			})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data struct {
+				Decisions []model.Decision `json:"decisions"`
+			} `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(data, &result)
+		assert.NotEmpty(t, result.Data.Decisions, "reader should see decisions after grant")
+	})
+
+	t.Run("admin sees everything regardless", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/agents/test-agent/history", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data struct {
+				Decisions []model.Decision `json:"decisions"`
+			} `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(data, &result)
+		assert.NotEmpty(t, result.Data.Decisions, "admin should always see decisions")
+	})
+
+	t.Run("agent can see own data", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/agents/test-agent/history", agentToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data struct {
+				Decisions []model.Decision `json:"decisions"`
+			} `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(data, &result)
+		assert.NotEmpty(t, result.Data.Decisions, "agent should see own decisions")
+	})
+}

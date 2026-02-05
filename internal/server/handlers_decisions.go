@@ -60,6 +60,8 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 
 // HandleQuery handles POST /v1/query.
 func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+
 	var req model.QueryRequest
 	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
@@ -69,6 +71,12 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	decisions, total, err := h.decisionSvc.Query(r.Context(), req)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "query failed")
+		return
+	}
+
+	decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, decisions)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "authorization check failed")
 		return
 	}
 
@@ -82,6 +90,8 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 
 // HandleTemporalQuery handles POST /v1/query/temporal.
 func (h *Handlers) HandleTemporalQuery(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+
 	var req model.TemporalQueryRequest
 	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
@@ -94,6 +104,12 @@ func (h *Handlers) HandleTemporalQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, decisions)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "authorization check failed")
+		return
+	}
+
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"as_of":     req.AsOf,
 		"decisions": decisions,
@@ -102,9 +118,20 @@ func (h *Handlers) HandleTemporalQuery(w http.ResponseWriter, r *http.Request) {
 
 // HandleAgentHistory handles GET /v1/agents/{agent_id}/history.
 func (h *Handlers) HandleAgentHistory(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
 	agentID := r.PathValue("agent_id")
 	if agentID == "" {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "agent_id is required")
+		return
+	}
+
+	ok, err := canAccessAgent(r.Context(), h.db, claims, agentID)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "authorization check failed")
+		return
+	}
+	if !ok {
+		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "no access to this agent's history")
 		return
 	}
 
@@ -130,6 +157,8 @@ func (h *Handlers) HandleAgentHistory(w http.ResponseWriter, r *http.Request) {
 
 // HandleSearch handles POST /v1/search.
 func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+
 	var req model.SearchRequest
 	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
@@ -147,6 +176,12 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	results, err = filterSearchResultsByAccess(r.Context(), h.db, claims, results)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "authorization check failed")
+		return
+	}
+
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"results": results,
 		"total":   len(results),
@@ -155,6 +190,8 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 
 // HandleCheck handles POST /v1/check.
 func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+
 	var req model.CheckRequest
 	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
@@ -172,11 +209,19 @@ func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	resp.Decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, resp.Decisions)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "authorization check failed")
+		return
+	}
+	resp.HasPrecedent = len(resp.Decisions) > 0
+
 	writeJSON(w, r, http.StatusOK, resp)
 }
 
 // HandleDecisionsRecent handles GET /v1/decisions/recent.
 func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
 	limit := queryInt(r, "limit", 10)
 
 	filters := model.QueryFilters{}
@@ -193,6 +238,12 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, decisions)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "authorization check failed")
+		return
+	}
+
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"decisions": decisions,
 		"total":     total,
@@ -202,6 +253,8 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 
 // HandleListConflicts handles GET /v1/conflicts.
 func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+
 	var decisionType *string
 	if dt := r.URL.Query().Get("decision_type"); dt != "" {
 		decisionType = &dt
@@ -211,6 +264,12 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 	conflicts, err := h.db.ListConflicts(r.Context(), decisionType, limit)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to list conflicts")
+		return
+	}
+
+	conflicts, err = filterConflictsByAccess(r.Context(), h.db, claims, conflicts)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "authorization check failed")
 		return
 	}
 

@@ -123,6 +123,7 @@ func (h *Handlers) HandleCompleteRun(w http.ResponseWriter, r *http.Request) {
 
 // HandleGetRun handles GET /v1/runs/{run_id}.
 func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
 	runID, err := parseRunID(r)
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
@@ -132,6 +133,16 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 	run, err := h.db.GetRun(r.Context(), runID)
 	if err != nil {
 		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "run not found")
+		return
+	}
+
+	ok, err := canAccessAgent(r.Context(), h.db, claims, run.AgentID)
+	if err != nil {
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "authorization check failed")
+		return
+	}
+	if !ok {
+		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "no access to this run")
 		return
 	}
 

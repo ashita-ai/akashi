@@ -17,6 +17,11 @@ type KeyFunc func(r *http.Request) string
 func Middleware(limiter *Limiter, rule Rule, keyFunc KeyFunc) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if limiter == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			key := keyFunc(r)
 			if key == "" {
 				next.ServeHTTP(w, r)
