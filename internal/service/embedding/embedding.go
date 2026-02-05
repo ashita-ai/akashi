@@ -108,7 +108,7 @@ func (p *OpenAIProvider) EmbedBatch(ctx context.Context, texts []string) ([]pgve
 	if err != nil {
 		return nil, fmt.Errorf("embedding: send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {

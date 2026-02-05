@@ -18,8 +18,8 @@ import (
 // Server wraps the MCP server with Akashi's service layer.
 type Server struct {
 	mcpServer   *mcpserver.MCPServer
-	db          *storage.DB          // for resources (read-only queries)
-	decisionSvc *decisions.Service   // for tools (shared business logic)
+	db          *storage.DB        // for resources (read-only queries)
+	decisionSvc *decisions.Service // for tools (shared business logic)
 	logger      *slog.Logger
 }
 

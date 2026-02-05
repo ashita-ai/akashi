@@ -78,7 +78,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "failed to create timescaledb extension: %v\n", err)
 		os.Exit(1)
 	}
-	bootstrapConn.Close(ctx)
+	_ = bootstrapConn.Close(ctx)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	testDB, err = storage.New(ctx, dsn, "", logger)

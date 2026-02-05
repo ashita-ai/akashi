@@ -30,7 +30,7 @@ func (db *DB) CreateTraceTx(ctx context.Context, params CreateTraceParams) (mode
 	if err != nil {
 		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: begin trace tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	now := time.Now().UTC()
 

@@ -44,7 +44,7 @@ func NewJWTManager(privateKeyPath, publicKeyPath string, expiration time.Duratio
 		return &JWTManager{privateKey: priv, publicKey: pub, expiration: expiration}, nil
 	}
 
-	privPEM, err := os.ReadFile(privateKeyPath)
+	privPEM, err := os.ReadFile(privateKeyPath) //nolint:gosec // paths come from validated config, not user input
 	if err != nil {
 		return nil, fmt.Errorf("auth: read private key: %w", err)
 	}
@@ -61,7 +61,7 @@ func NewJWTManager(privateKeyPath, publicKeyPath string, expiration time.Duratio
 		return nil, fmt.Errorf("auth: private key is not Ed25519")
 	}
 
-	pubPEM, err := os.ReadFile(publicKeyPath)
+	pubPEM, err := os.ReadFile(publicKeyPath) //nolint:gosec // paths come from validated config, not user input
 	if err != nil {
 		return nil, fmt.Errorf("auth: read public key: %w", err)
 	}

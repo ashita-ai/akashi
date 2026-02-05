@@ -76,7 +76,7 @@ func TestMain(m *testing.M) {
 	}
 	_, _ = bootstrapConn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS vector")
 	_, _ = bootstrapConn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS timescaledb")
-	bootstrapConn.Close(ctx)
+	_ = bootstrapConn.Close(ctx)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
@@ -127,7 +127,7 @@ func getToken(baseURL, agentID, apiKey string) string {
 	if err != nil {
 		panic(fmt.Sprintf("getToken: request failed: %v", err))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		panic(fmt.Sprintf("getToken: status %d, body: %s", resp.StatusCode, string(data)))
@@ -155,7 +155,7 @@ func createAgent(baseURL, token, agentID, name, role, apiKey string) {
 	if err != nil {
 		panic(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 func authedRequest(method, url, token string, body any) (*http.Response, error) {
@@ -178,7 +178,7 @@ func authedRequest(method, url, token string, body any) (*http.Response, error) 
 func TestHealthEndpoint(t *testing.T) {
 	resp, err := http.Get(testSrv.URL + "/health")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var result struct {
@@ -199,14 +199,14 @@ func TestAuthFlow(t *testing.T) {
 	body, _ := json.Marshal(model.AuthTokenRequest{AgentID: "admin", APIKey: "wrong"})
 	resp, err := http.Post(testSrv.URL+"/auth/token", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
 func TestUnauthenticatedAccess(t *testing.T) {
 	resp, err := http.Get(testSrv.URL + "/v1/conflicts")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
@@ -215,7 +215,7 @@ func TestCreateRunAndAppendEvents(t *testing.T) {
 	resp, err := authedRequest("POST", testSrv.URL+"/v1/runs", agentToken,
 		model.CreateRunRequest{AgentID: "test-agent"})
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	var runResult struct {
@@ -234,7 +234,7 @@ func TestCreateRunAndAppendEvents(t *testing.T) {
 			},
 		})
 	require.NoError(t, err)
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	assert.Equal(t, http.StatusCreated, resp2.StatusCode)
 
 	// Wait for buffer flush.
@@ -243,7 +243,7 @@ func TestCreateRunAndAppendEvents(t *testing.T) {
 	// Get run with events.
 	resp3, err := authedRequest("GET", testSrv.URL+"/v1/runs/"+runID.String(), agentToken, nil)
 	require.NoError(t, err)
-	defer resp3.Body.Close()
+	defer func() { _ = resp3.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp3.StatusCode)
 }
 
@@ -267,7 +267,7 @@ func TestTraceConvenience(t *testing.T) {
 			},
 		})
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 }
 
@@ -295,7 +295,7 @@ func TestQueryEndpoint(t *testing.T) {
 			Limit: 10,
 		})
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
@@ -306,7 +306,7 @@ func TestSearchEndpoint(t *testing.T) {
 			Limit: 5,
 		})
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
@@ -315,20 +315,20 @@ func TestAdminOnlyEndpoints(t *testing.T) {
 	resp, err := authedRequest("POST", testSrv.URL+"/v1/agents", agentToken,
 		model.CreateAgentRequest{AgentID: "should-fail", Name: "Fail", APIKey: "key"})
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 
 	// Admin can list agents.
 	resp2, err := authedRequest("GET", testSrv.URL+"/v1/agents", adminToken, nil)
 	require.NoError(t, err)
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp2.StatusCode)
 }
 
 func TestConflictsEndpoint(t *testing.T) {
 	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflicts", adminToken, nil)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
@@ -348,7 +348,7 @@ func newMCPClient(t *testing.T, token string) *mcpclient.Client {
 
 func TestMCPInitialize(t *testing.T) {
 	c := newMCPClient(t, agentToken)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	initResult, err := c.Initialize(ctx, mcplib.InitializeRequest{
@@ -363,7 +363,7 @@ func TestMCPInitialize(t *testing.T) {
 
 func TestMCPListTools(t *testing.T) {
 	c := newMCPClient(t, agentToken)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
@@ -390,7 +390,7 @@ func TestMCPListTools(t *testing.T) {
 
 func TestMCPListResources(t *testing.T) {
 	c := newMCPClient(t, agentToken)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
@@ -407,7 +407,7 @@ func TestMCPListResources(t *testing.T) {
 
 func TestMCPTraceAndQuery(t *testing.T) {
 	c := newMCPClient(t, agentToken)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
@@ -465,7 +465,7 @@ func TestMCPTraceAndQuery(t *testing.T) {
 
 func TestMCPReadResource(t *testing.T) {
 	c := newMCPClient(t, agentToken)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
@@ -498,13 +498,13 @@ func TestMCPUnauthenticated(t *testing.T) {
 	// MCP endpoint should require auth.
 	resp, err := http.Post(testSrv.URL+"/mcp", "application/json", nil)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
 func TestMCPCheckTool(t *testing.T) {
 	c := newMCPClient(t, agentToken)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
@@ -557,7 +557,7 @@ func TestMCPCheckTool(t *testing.T) {
 
 func TestMCPCheckNoPrecedent(t *testing.T) {
 	c := newMCPClient(t, agentToken)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
@@ -592,7 +592,7 @@ func TestMCPCheckNoPrecedent(t *testing.T) {
 
 func TestMCPRecentTool(t *testing.T) {
 	c := newMCPClient(t, agentToken)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
@@ -646,7 +646,7 @@ func TestMCPRecentTool(t *testing.T) {
 
 func TestMCPPrompts(t *testing.T) {
 	c := newMCPClient(t, agentToken)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
@@ -716,7 +716,7 @@ func TestCheckEndpoint(t *testing.T) {
 			Limit:        5,
 		})
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var result struct {
@@ -735,7 +735,7 @@ func TestCheckEndpoint(t *testing.T) {
 			Limit:        5,
 		})
 	require.NoError(t, err)
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp2.StatusCode)
 
 	var result2 struct {
@@ -751,7 +751,7 @@ func TestDecisionsRecentEndpoint(t *testing.T) {
 	// GET /v1/decisions/recent with no filters.
 	resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/recent", agentToken, nil)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var result struct {
@@ -770,7 +770,7 @@ func TestDecisionsRecentEndpoint(t *testing.T) {
 	// GET with agent_id filter.
 	resp2, err := authedRequest("GET", testSrv.URL+"/v1/decisions/recent?agent_id=test-agent&limit=3", agentToken, nil)
 	require.NoError(t, err)
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp2.StatusCode)
 
 	var result2 struct {

@@ -96,7 +96,7 @@ func (l *Limiter) Allow(ctx context.Context, rule Rule, key string) Result {
 	nowMicro := now.UnixMicro()
 	windowStart := now.Add(-rule.Window).UnixMicro()
 	ttlSeconds := int(rule.Window.Seconds()) + 10 // Key TTL = window + buffer.
-	member := fmt.Sprintf("%d:%s", nowMicro, key)  // Unique per microsecond per key.
+	member := fmt.Sprintf("%d:%s", nowMicro, key) // Unique per microsecond per key.
 
 	redisKey := fmt.Sprintf("akashi:rl:%s:%s", rule.Prefix, key)
 

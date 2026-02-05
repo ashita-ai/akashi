@@ -91,7 +91,7 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 	if err != nil {
 		return model.Decision{}, fmt.Errorf("storage: begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	now := time.Now().UTC()
 

@@ -29,6 +29,10 @@ import (
 var version = "dev"
 
 func main() {
+	os.Exit(run0())
+}
+
+func run0() int {
 	level := slog.LevelInfo
 	if os.Getenv("AKASHI_LOG_LEVEL") == "debug" {
 		level = slog.LevelDebug
@@ -43,8 +47,9 @@ func main() {
 
 	if err := run(ctx, logger); err != nil {
 		slog.Error("fatal error", "error", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 func run(ctx context.Context, logger *slog.Logger) error {
@@ -61,7 +66,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("telemetry: %w", err)
 	}
-	defer otelShutdown(context.Background())
+	defer func() { _ = otelShutdown(context.Background()) }()
 
 	// Connect to database.
 	db, err := storage.New(ctx, cfg.DatabaseURL, cfg.NotifyURL, logger)
@@ -94,7 +99,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	// Create rate limiter (backed by Redis if configured, noop otherwise).
 	limiter := newRateLimiter(cfg, logger)
 	if limiter != nil {
-		defer limiter.Close()
+		defer func() { _ = limiter.Close() }()
 	}
 
 	// Create MCP server.
@@ -200,7 +205,7 @@ func ollamaReachable(baseURL string) bool {
 	if err != nil {
 		return false
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
 }
 
@@ -225,7 +230,7 @@ func newRateLimiter(cfg config.Config, logger *slog.Logger) *ratelimit.Limiter {
 
 	if err := client.Ping(ctx).Err(); err != nil {
 		logger.Warn("rate limiting: disabled (Redis unreachable)", "error", err)
-		client.Close()
+		_ = client.Close()
 		return ratelimit.New(nil, logger)
 	}
 

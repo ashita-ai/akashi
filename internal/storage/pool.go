@@ -128,7 +128,7 @@ func (db *DB) reconnectNotify(ctx context.Context) error {
 	for attempt := range maxRetries {
 		if attempt > 0 {
 			// Jitter: 0 to backoff/2.
-			jitter := time.Duration(rand.Int64N(int64(backoff / 2)))
+			jitter := time.Duration(rand.Int64N(int64(backoff / 2))) //nolint:gosec // jitter doesn't need crypto-strength randomness
 			sleep := backoff + jitter
 
 			db.logger.Info("storage: reconnecting notify",

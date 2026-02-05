@@ -108,7 +108,7 @@ func TestOllamaProviderErrors(t *testing.T) {
 
 	t.Run("empty embedding", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			json.NewEncoder(w).Encode(ollamaEmbedResponse{Embedding: nil})
+			_ = json.NewEncoder(w).Encode(ollamaEmbedResponse{Embedding: nil})
 		}))
 		defer server.Close()
 
@@ -121,7 +121,7 @@ func TestOllamaProviderErrors(t *testing.T) {
 
 	t.Run("invalid json response", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte("not json"))
+			_, _ = w.Write([]byte("not json"))
 		}))
 		defer server.Close()
 
