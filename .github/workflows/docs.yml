@@ -1,0 +1,70 @@
+name: Update Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'migrations/**'
+  workflow_dispatch:
+
+jobs:
+  update-docs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Generate project structure
+        run: |
+          cat > PROJECT_STRUCTURE.md << 'EOF'
+          # Project Structure
+
+          Generated: $(date -u +%Y-%m-%d)
+
+          ```
+          EOF
+          find . -type f -name '*.go' | grep -v '_test.go' | grep -v vendor | sort | while read f; do
+            echo "$f" >> PROJECT_STRUCTURE.md
+          done
+          echo '```' >> PROJECT_STRUCTURE.md
+
+      - name: Count tests
+        run: |
+          echo "" >> PROJECT_STRUCTURE.md
+          echo "## Test Summary" >> PROJECT_STRUCTURE.md
+          echo "" >> PROJECT_STRUCTURE.md
+          echo "| Package | Tests |" >> PROJECT_STRUCTURE.md
+          echo "|---------|-------|" >> PROJECT_STRUCTURE.md
+          go test -list '.*' ./... 2>/dev/null | grep -E '^(ok|---|\?|Test)' | \
+            awk '/^ok/ {pkg=$2} /^Test/ {tests[pkg]++} END {for(p in tests) print "| "p" | "tests[p]" |"}' >> PROJECT_STRUCTURE.md || true
+
+      - name: Check for changes
+        id: changes
+        run: |
+          git add PROJECT_STRUCTURE.md
+          if git diff --staged --quiet; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "docs: update project structure"
+          git push
