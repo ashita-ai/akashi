@@ -1,4 +1,4 @@
-package kyoyu
+package akashi
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ import (
 
 // Config holds the settings needed to construct a Client.
 type Config struct {
-	// BaseURL is the root URL of the Kyoyu server (e.g. "http://localhost:8080").
+	// BaseURL is the root URL of the Akashi server (e.g. "http://localhost:8080").
 	BaseURL string
 
 	// AgentID identifies this agent for authentication and tracing.
@@ -32,7 +32,7 @@ type Config struct {
 	Timeout time.Duration
 }
 
-// Client is an HTTP client for the Kyoyu decision-tracing API.
+// Client is an HTTP client for the Akashi decision-tracing API.
 // All methods are safe for concurrent use.
 type Client struct {
 	baseURL  string
@@ -152,9 +152,9 @@ func (c *Client) Recent(ctx context.Context, opts *RecentOptions) ([]Decision, e
 // traceBody is the wire format for POST /v1/trace. The server expects a
 // nested "decision" object rather than flat fields.
 type traceBody struct {
-	AgentID  string          `json:"agent_id"`
-	Decision traceDecision   `json:"decision"`
-	Metadata map[string]any  `json:"metadata,omitempty"`
+	AgentID  string         `json:"agent_id"`
+	Decision traceDecision  `json:"decision"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type traceDecision struct {
@@ -241,12 +241,12 @@ type apiErrorEnvelope struct {
 func (c *Client) post(ctx context.Context, path string, body any, dest any) error {
 	encoded, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("kyoyu: marshal request body: %w", err)
+		return fmt.Errorf("akashi: marshal request body: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(encoded))
 	if err != nil {
-		return fmt.Errorf("kyoyu: create request: %w", err)
+		return fmt.Errorf("akashi: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -256,7 +256,7 @@ func (c *Client) post(ctx context.Context, path string, body any, dest any) erro
 func (c *Client) get(ctx context.Context, path string, dest any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
-		return fmt.Errorf("kyoyu: create request: %w", err)
+		return fmt.Errorf("akashi: create request: %w", err)
 	}
 
 	return c.doRequest(ctx, req, dest)
@@ -271,7 +271,7 @@ func (c *Client) doRequest(ctx context.Context, req *http.Request, dest any) err
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("kyoyu: %s %s: %w", req.Method, req.URL.Path, err)
+		return fmt.Errorf("akashi: %s %s: %w", req.Method, req.URL.Path, err)
 	}
 	defer resp.Body.Close()
 
@@ -281,7 +281,7 @@ func (c *Client) doRequest(ctx context.Context, req *http.Request, dest any) err
 func handleResponse(resp *http.Response, dest any) error {
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("kyoyu: read response body: %w", err)
+		return fmt.Errorf("akashi: read response body: %w", err)
 	}
 
 	if resp.StatusCode >= 400 {
@@ -291,7 +291,7 @@ func handleResponse(resp *http.Response, dest any) error {
 	// Unwrap the server's { "data": ... } envelope.
 	var envelope apiEnvelope
 	if err := json.Unmarshal(bodyBytes, &envelope); err != nil {
-		return fmt.Errorf("kyoyu: decode response envelope: %w", err)
+		return fmt.Errorf("akashi: decode response envelope: %w", err)
 	}
 
 	if envelope.Data == nil {

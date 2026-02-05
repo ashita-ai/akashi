@@ -3,7 +3,7 @@ import {
   AuthenticationError,
   AuthorizationError,
   ConflictError,
-  KyoyuError,
+  AkashiError,
   NotFoundError,
   ServerError,
   ValidationError,
@@ -11,7 +11,7 @@ import {
 import type {
   CheckResponse,
   Decision,
-  KyoyuConfig,
+  AkashiConfig,
   QueryFilters,
   QueryResponse,
   SearchResponse,
@@ -145,7 +145,7 @@ async function handleResponse<T>(resp: Response): Promise<T> {
     );
   }
   if (resp.status >= 400) {
-    throw new KyoyuError(
+    throw new AkashiError(
       await extractErrorMessage(resp, `Unexpected: ${resp.status}`),
       resp.status,
     );
@@ -167,13 +167,13 @@ async function handleResponse<T>(resp: Response): Promise<T> {
 // ---------------------------------------------------------------------------
 
 /**
- * HTTP client for the Kyoyu decision-tracing API.
+ * HTTP client for the Akashi decision-tracing API.
  *
  * Uses native `fetch` with zero runtime dependencies.
  *
  * @example
  * ```ts
- * const client = new KyoyuClient({
+ * const client = new AkashiClient({
  *   baseUrl: "http://localhost:8080",
  *   agentId: "my-agent",
  *   apiKey: "secret",
@@ -190,13 +190,13 @@ async function handleResponse<T>(resp: Response): Promise<T> {
  * }
  * ```
  */
-export class KyoyuClient {
+export class AkashiClient {
   private readonly baseUrl: string;
   private readonly agentId: string;
   private readonly timeoutMs: number;
   private readonly tokenManager: TokenManager;
 
-  constructor(config: KyoyuConfig) {
+  constructor(config: AkashiConfig) {
     this.baseUrl = config.baseUrl.replace(/\/+$/, "");
     this.agentId = config.agentId;
     this.timeoutMs = config.timeoutMs ?? 30_000;

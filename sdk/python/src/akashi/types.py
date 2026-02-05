@@ -1,4 +1,4 @@
-"""Pydantic models mirroring the Kyoyu Go domain types."""
+"""Pydantic models mirroring the Akashi Go domain types."""
 
 from __future__ import annotations
 

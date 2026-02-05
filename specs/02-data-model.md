@@ -470,7 +470,7 @@ Decisions and evidence get vector embeddings for semantic search.
 - **Embedding dimension**: 1536 (OpenAI `text-embedding-3-small` compatible; configurable)
 - **Index type**: HNSW with `vector_cosine_ops`
 - **Index parameters**: `m = 16`, `ef_construction = 64` (tunable per deployment)
-- **Embedding generation**: Server-side. Kyoyu generates embeddings on ingestion using a configurable embedding provider. Clients can also supply pre-computed embeddings.
+- **Embedding generation**: Server-side. Akashi generates embeddings on ingestion using a configurable embedding provider. Clients can also supply pre-computed embeddings.
 
 ## Migration Strategy
 

@@ -3,13 +3,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.postgres
-    container_name: kyoyu-postgres
+    container_name: akashi-postgres
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_USER: kyoyu
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kyoyu}
-      POSTGRES_DB: kyoyu
+      POSTGRES_USER: akashi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-akashi}
+      POSTGRES_DB: akashi
     volumes:
       - pgdata:/var/lib/postgresql/data
     command: >
@@ -21,18 +21,18 @@ services:
         -c synchronous_commit=off
         -c max_connections=200
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U kyoyu -d kyoyu"]
+      test: ["CMD-SHELL", "pg_isready -U akashi -d akashi"]
       interval: 5s
       timeout: 5s
       retries: 5
 
   pgbouncer:
     image: edoburu/pgbouncer:latest
-    container_name: kyoyu-pgbouncer
+    container_name: akashi-pgbouncer
     ports:
       - "6432:6432"
     environment:
-      DATABASE_URL: postgres://kyoyu:${POSTGRES_PASSWORD:-kyoyu}@postgres:5432/kyoyu
+      DATABASE_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi
       POOL_MODE: transaction
       MAX_CLIENT_CONN: 1000
       DEFAULT_POOL_SIZE: 50
@@ -42,7 +42,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: kyoyu-redis
+    container_name: akashi-redis
     ports:
       - "6379:6379"
     volumes:
@@ -54,22 +54,22 @@ services:
       timeout: 5s
       retries: 5
 
-  kyoyu:
+  akashi:
     build:
       context: ..
       dockerfile: Dockerfile
-    container_name: kyoyu-server
+    container_name: akashi-server
     ports:
       - "8080:8080"
     environment:
-      DATABASE_URL: postgres://kyoyu:${POSTGRES_PASSWORD:-kyoyu}@pgbouncer:6432/kyoyu?sslmode=disable
-      NOTIFY_URL: postgres://kyoyu:${POSTGRES_PASSWORD:-kyoyu}@postgres:5432/kyoyu?sslmode=disable
+      DATABASE_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@pgbouncer:6432/akashi?sslmode=disable
+      NOTIFY_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi?sslmode=disable
       REDIS_URL: redis://redis:6379/0
-      KYOYU_PORT: "8080"
-      KYOYU_ADMIN_API_KEY: ${KYOYU_ADMIN_API_KEY:-changeme}
-      KYOYU_LOG_LEVEL: ${KYOYU_LOG_LEVEL:-info}
+      AKASHI_PORT: "8080"
+      AKASHI_ADMIN_API_KEY: ${AKASHI_ADMIN_API_KEY:-changeme}
+      AKASHI_LOG_LEVEL: ${AKASHI_LOG_LEVEL:-info}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      KYOYU_EMBEDDING_MODEL: ${KYOYU_EMBEDDING_MODEL:-text-embedding-3-small}
+      AKASHI_EMBEDDING_MODEL: ${AKASHI_EMBEDDING_MODEL:-text-embedding-3-small}
     depends_on:
       pgbouncer:
         condition: service_started

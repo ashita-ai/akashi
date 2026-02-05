@@ -1,4 +1,4 @@
-/** Token management for Kyoyu API authentication. */
+/** Token management for Akashi API authentication. */
 
 export class TokenManager {
   private token = "";

@@ -5,13 +5,13 @@
 
 ## Context
 
-Kyoyu is infrastructure: event ingestion, concurrent connections, query engine, MCP server. We need to choose a primary language for the server and for client SDKs.
+Akashi is infrastructure: event ingestion, concurrent connections, query engine, MCP server. We need to choose a primary language for the server and for client SDKs.
 
 ## Decision
 
 - **Go** for the server (this repo)
-- **Python SDK** (separate repo: `kyoyu-python`)
-- **TypeScript SDK** (separate repo: `kyoyu-typescript`)
+- **Python SDK** (separate repo: `akashi-python`)
+- **TypeScript SDK** (separate repo: `akashi-typescript`)
 
 ## Rationale
 

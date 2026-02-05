@@ -1,13 +1,13 @@
-# Kyoyu TypeScript SDK
+# Akashi TypeScript SDK
 
-TypeScript client for the [Kyoyu](../../README.md) decision-tracing API. Uses native `fetch` with zero runtime dependencies.
+TypeScript client for the [Akashi](../../README.md) decision-tracing API. Uses native `fetch` with zero runtime dependencies.
 
 **Requirements:** Node.js 18+ or any runtime with global `fetch` (Deno, Bun, Cloudflare Workers)
 
 ## Install
 
 ```bash
-npm install kyoyu
+npm install akashi
 # or from source:
 cd sdk/typescript && npm install && npx tsc
 ```
@@ -15,9 +15,9 @@ cd sdk/typescript && npm install && npx tsc
 ## Quick start
 
 ```typescript
-import { KyoyuClient } from "kyoyu";
+import { AkashiClient } from "akashi";
 
-const client = new KyoyuClient({
+const client = new AkashiClient({
   baseUrl: "http://localhost:8080",
   agentId: "my-agent",
   apiKey: "my-api-key",
@@ -45,7 +45,7 @@ console.log(`Recorded decision ${resp.decision_id}`);
 
 ## API
 
-### `new KyoyuClient(config)`
+### `new AkashiClient(config)`
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -66,15 +66,15 @@ console.log(`Recorded decision ${resp.decision_id}`);
 
 ## Middleware
 
-The `withKyoyu` function wraps a decision-making function with automatic check and trace:
+The `withAkashi` function wraps a decision-making function with automatic check and trace:
 
 ```typescript
-import { KyoyuClient, withKyoyu } from "kyoyu";
-import type { CheckResponse, TraceRequest } from "kyoyu";
+import { AkashiClient, withAkashi } from "akashi";
+import type { CheckResponse, TraceRequest } from "akashi";
 
-const client = new KyoyuClient({ baseUrl: "...", agentId: "...", apiKey: "..." });
+const client = new AkashiClient({ baseUrl: "...", agentId: "...", apiKey: "..." });
 
-const result = await withKyoyu(client, "model_selection", async (precedents) => {
+const result = await withAkashi(client, "model_selection", async (precedents) => {
   // Use precedents.decisions to inform your choice...
   const model = precedents.has_precedent ? precedents.decisions[0].outcome : "gpt-4o";
 
@@ -96,18 +96,18 @@ The return value must implement the `Traceable` interface (a `toTrace()` method 
 
 ## Error handling
 
-All errors extend `KyoyuError` and include `statusCode` and `message`:
+All errors extend `AkashiError` and include `statusCode` and `message`:
 
 ```typescript
 import {
-  KyoyuError,           // Base class
+  AkashiError,           // Base class
   AuthenticationError,   // 401
   AuthorizationError,    // 403
   NotFoundError,         // 404
   ValidationError,       // 400
   ConflictError,         // 409
   ServerError,           // 5xx
-} from "kyoyu";
+} from "akashi";
 
 try {
   await client.check("...");
@@ -128,6 +128,6 @@ import type {
   TraceRequest, TraceAlternative, TraceEvidence,
   TraceResponse, CheckResponse, QueryResponse,
   SearchResult, SearchResponse, QueryFilters,
-  Traceable, KyoyuConfig,
-} from "kyoyu";
+  Traceable, AkashiConfig,
+} from "akashi";
 ```

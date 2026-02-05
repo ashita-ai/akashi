@@ -1,13 +1,13 @@
 .PHONY: all build test lint fmt vet clean docker-up docker-down migrate
 
-BINARY := bin/kyoyu
+BINARY := bin/akashi
 GO := go
 GOFLAGS := -race
 
 all: fmt lint vet test build
 
 build:
-	$(GO) build -o $(BINARY) ./cmd/kyoyu
+	$(GO) build -o $(BINARY) ./cmd/akashi
 
 test:
 	$(GO) test $(GOFLAGS) ./... -v

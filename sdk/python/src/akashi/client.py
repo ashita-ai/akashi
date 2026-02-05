@@ -1,4 +1,4 @@
-"""Kyoyu Python client — async and sync HTTP client for the decision-tracing API."""
+"""Akashi Python client — async and sync HTTP client for the decision-tracing API."""
 
 from __future__ import annotations
 
@@ -6,17 +6,17 @@ from typing import Any
 
 import httpx
 
-from kyoyu.auth import TokenManager
-from kyoyu.exceptions import (
+from akashi.auth import TokenManager
+from akashi.exceptions import (
     AuthenticationError,
     AuthorizationError,
     ConflictError,
-    KyoyuError,
+    AkashiError,
     NotFoundError,
     ServerError,
     ValidationError,
 )
-from kyoyu.types import (
+from akashi.types import (
     CheckResponse,
     Decision,
     QueryFilters,
@@ -134,7 +134,7 @@ def _handle_response(resp: httpx.Response) -> dict[str, Any]:
     if resp.status_code >= 500:
         raise ServerError(_extract_error_message(resp, f"Server error: {resp.status_code}"))
     if resp.status_code >= 400:
-        raise KyoyuError(_extract_error_message(resp, f"Unexpected error: {resp.status_code}"))
+        raise AkashiError(_extract_error_message(resp, f"Unexpected error: {resp.status_code}"))
     body = resp.json()
     return body.get("data", body)
 
@@ -144,12 +144,12 @@ def _handle_response(resp: httpx.Response) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-class KyoyuClient:
-    """Async HTTP client for the Kyoyu decision-tracing API.
+class AkashiClient:
+    """Async HTTP client for the Akashi decision-tracing API.
 
     Usage::
 
-        async with KyoyuClient(base_url="http://localhost:8080",
+        async with AkashiClient(base_url="http://localhost:8080",
                                 agent_id="my-agent",
                                 api_key="secret") as client:
             resp = await client.check("architecture")
@@ -179,7 +179,7 @@ class KyoyuClient:
         )
         self._client = httpx.AsyncClient(timeout=timeout)
 
-    async def __aenter__(self) -> KyoyuClient:
+    async def __aenter__(self) -> AkashiClient:
         return self
 
     async def __aexit__(self, *exc: object) -> None:
@@ -263,12 +263,12 @@ class KyoyuClient:
 # ---------------------------------------------------------------------------
 
 
-class KyoyuSyncClient:
-    """Synchronous HTTP client for the Kyoyu decision-tracing API.
+class AkashiSyncClient:
+    """Synchronous HTTP client for the Akashi decision-tracing API.
 
     Usage::
 
-        with KyoyuSyncClient(base_url="http://localhost:8080",
+        with AkashiSyncClient(base_url="http://localhost:8080",
                               agent_id="my-agent",
                               api_key="secret") as client:
             resp = client.check("architecture")
@@ -291,7 +291,7 @@ class KyoyuSyncClient:
         )
         self._client = httpx.Client(timeout=timeout)
 
-    def __enter__(self) -> KyoyuSyncClient:
+    def __enter__(self) -> AkashiSyncClient:
         return self
 
     def __exit__(self, *exc: object) -> None:

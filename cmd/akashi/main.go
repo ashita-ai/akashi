@@ -11,19 +11,19 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ashita-ai/kyoyu/internal/auth"
-	"github.com/ashita-ai/kyoyu/internal/config"
-	"github.com/ashita-ai/kyoyu/internal/mcp"
-	"github.com/ashita-ai/kyoyu/internal/server"
-	"github.com/ashita-ai/kyoyu/internal/service/embedding"
-	"github.com/ashita-ai/kyoyu/internal/service/trace"
-	"github.com/ashita-ai/kyoyu/internal/storage"
-	"github.com/ashita-ai/kyoyu/internal/telemetry"
+	"github.com/ashita-ai/akashi/internal/auth"
+	"github.com/ashita-ai/akashi/internal/config"
+	"github.com/ashita-ai/akashi/internal/mcp"
+	"github.com/ashita-ai/akashi/internal/server"
+	"github.com/ashita-ai/akashi/internal/service/embedding"
+	"github.com/ashita-ai/akashi/internal/service/trace"
+	"github.com/ashita-ai/akashi/internal/storage"
+	"github.com/ashita-ai/akashi/internal/telemetry"
 )
 
 func main() {
 	level := slog.LevelInfo
-	if os.Getenv("KYOYU_LOG_LEVEL") == "debug" {
+	if os.Getenv("AKASHI_LOG_LEVEL") == "debug" {
 		level = slog.LevelDebug
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -47,7 +47,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	slog.Info("kyoyu starting", "version", "0.1.0", "port", cfg.Port)
+	slog.Info("akashi starting", "version", "0.1.0", "port", cfg.Port)
 
 	// Initialize OpenTelemetry.
 	otelShutdown, err := telemetry.Init(ctx, cfg.OTELEndpoint, cfg.ServiceName, "0.1.0")
@@ -75,14 +75,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}
 
 	// Create embedding provider.
-	var embedder embedding.Provider
-	if cfg.OpenAIAPIKey != "" {
-		embedder = embedding.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.EmbeddingModel)
-		slog.Info("embedding provider: openai", "model", cfg.EmbeddingModel)
-	} else {
-		embedder = embedding.NewNoopProvider(1536)
-		slog.Warn("no OpenAI API key configured, using noop embedding provider")
-	}
+	embedder := newEmbeddingProvider(cfg, logger)
 
 	// Create event buffer.
 	buf := trace.NewBuffer(db, logger, cfg.EventBufferSize, cfg.EventFlushTimeout)
@@ -121,7 +114,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 
 	// Graceful shutdown.
 	fmt.Println()
-	slog.Info("kyoyu shutting down")
+	slog.Info("akashi shutting down")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
@@ -134,8 +127,62 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		slog.Error("http shutdown error", "error", err)
 	}
 
-	slog.Info("kyoyu stopped")
+	slog.Info("akashi stopped")
 	return nil
+}
+
+// newEmbeddingProvider creates an embedding provider based on configuration.
+// Provider selection: "openai", "ollama", "noop", or "auto" (default).
+// Auto mode tries OpenAI if key present, then Ollama if reachable, else noop.
+func newEmbeddingProvider(cfg config.Config, logger *slog.Logger) embedding.Provider {
+	switch cfg.EmbeddingProvider {
+	case "openai":
+		if cfg.OpenAIAPIKey == "" {
+			logger.Error("OPENAI_API_KEY required when AKASHI_EMBEDDING_PROVIDER=openai")
+			return embedding.NewNoopProvider(1536)
+		}
+		logger.Info("embedding provider: openai", "model", cfg.EmbeddingModel)
+		return embedding.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.EmbeddingModel)
+
+	case "ollama":
+		logger.Info("embedding provider: ollama", "url", cfg.OllamaURL, "model", cfg.OllamaModel)
+		return embedding.NewOllamaProvider(cfg.OllamaURL, cfg.OllamaModel, 1024, 1536)
+
+	case "noop":
+		logger.Info("embedding provider: noop (semantic search disabled)")
+		return embedding.NewNoopProvider(1536)
+
+	case "auto":
+		fallthrough
+	default:
+		// Auto-detect: prefer OpenAI if key present, then Ollama if reachable, else noop.
+		if cfg.OpenAIAPIKey != "" {
+			logger.Info("embedding provider: openai (auto-detected)", "model", cfg.EmbeddingModel)
+			return embedding.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.EmbeddingModel)
+		}
+		if ollamaReachable(cfg.OllamaURL) {
+			logger.Info("embedding provider: ollama (auto-detected)", "url", cfg.OllamaURL, "model", cfg.OllamaModel)
+			return embedding.NewOllamaProvider(cfg.OllamaURL, cfg.OllamaModel, 1024, 1536)
+		}
+		logger.Warn("no embedding provider available, using noop (semantic search disabled)")
+		return embedding.NewNoopProvider(1536)
+	}
+}
+
+// ollamaReachable checks if an Ollama server is responding.
+func ollamaReachable(baseURL string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/tags", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 func conflictRefreshLoop(ctx context.Context, db *storage.DB, logger *slog.Logger, interval time.Duration) {

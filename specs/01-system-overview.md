@@ -1,4 +1,4 @@
-# SPEC-001: Kyoyu System Overview
+# SPEC-001: Akashi System Overview
 
 **Status:** Draft
 **Date:** 2026-02-03
@@ -12,11 +12,11 @@ Multi-agent AI systems lack a shared, persistent, queryable record of agent reas
 
 No existing product answers: "Why did the agent decide this, what alternatives were considered, what evidence supported it, and has this situation come up before?"
 
-Kyoyu is the **decision trace layer** that fills this gap.
+Akashi is the **decision trace layer** that fills this gap.
 
 ## System Identity
 
-Kyoyu is a **smart store** — not an orchestrator. It stores, indexes, and queries decision traces. It provides reactive primitives (subscriptions, conflict detection views, handoff protocol) but never directs agent behavior or manages workflows. Orchestration is the responsibility of external systems (framework-native tools, durable execution libraries, etc.).
+Akashi is a **smart store** — not an orchestrator. It stores, indexes, and queries decision traces. It provides reactive primitives (subscriptions, conflict detection views, handoff protocol) but never directs agent behavior or manages workflows. Orchestration is the responsibility of external systems (framework-native tools, durable execution libraries, etc.).
 
 ### Three Capability Pillars
 
@@ -26,14 +26,14 @@ Kyoyu is a **smart store** — not an orchestrator. It stores, indexes, and quer
 | **Query & Retrieval** | Semantic search, structured queries, temporal/point-in-time queries, precedent matching |
 | **Governance & Access** | JWT + RBAC authentication, scoped visibility, audit logging, compliance exports |
 
-### What Kyoyu Is NOT
+### What Akashi Is NOT
 
 - NOT a general-purpose agent memory (Mem0's space)
 - NOT a temporal knowledge graph (Zep's space)
 - NOT an orchestration engine (LangGraph, Temporal, etc.)
 - NOT an observability dashboard (Langfuse/Phoenix's space)
 
-Kyoyu **complements** these systems. It owns the semantic context layer — decisions, evidence, reasoning lineage.
+Akashi **complements** these systems. It owns the semantic context layer — decisions, evidence, reasoning lineage.
 
 ## Scope
 
@@ -52,14 +52,14 @@ The event type hierarchy defines the boundary:
 
 ### Coordination Model
 
-Kyoyu provides **reactive coordination**, not directive orchestration:
+Akashi provides **reactive coordination**, not directive orchestration:
 
 - **Subscriptions**: Agents subscribe to new decisions matching criteria (real-time push via SSE or WebSocket)
 - **Conflict detection**: Materialized views surface conflicting decisions automatically
 - **Handoff protocol**: Structured context transfer between agents/humans — a data format and storage mechanism, not a workflow engine
 - **Consensus views**: Read-only views showing agreement/disagreement state across agents on a topic
 
-Agents query Kyoyu for context and write traces to it. Kyoyu never tells an agent what to do next.
+Agents query Akashi for context and write traces to it. Akashi never tells an agent what to do next.
 
 ## V1 Success Criteria
 
@@ -68,9 +68,9 @@ Agents query Kyoyu for context and write traces to it. Kyoyu never tells an agen
 | Component | Scope |
 |-----------|-------|
 | **Go server** | HTTP JSON API + MCP server, single static binary |
-| **MCP server** | Resources (`kyoyu://session/current`, `kyoyu://decisions/recent`, `kyoyu://agent/{id}/history`) + Tools (`kyoyu_trace`, `kyoyu_query`, `kyoyu_search`) |
-| **Python SDK** | Thin HTTP client (separate repo: `kyoyu-python`) |
-| **TypeScript SDK** | Thin HTTP client (separate repo: `kyoyu-typescript`) |
+| **MCP server** | Resources (`akashi://session/current`, `akashi://decisions/recent`, `akashi://agent/{id}/history`) + Tools (`akashi_trace`, `akashi_query`, `akashi_search`) |
+| **Python SDK** | Thin HTTP client (separate repo: `akashi-python`) |
+| **TypeScript SDK** | Thin HTTP client (separate repo: `akashi-typescript`) |
 | **Framework integration** | At least one of: LangChain callback handler, CrewAI hooks |
 | **PostgreSQL schema** | Full migration set for all core tables |
 
@@ -103,9 +103,9 @@ Agents query Kyoyu for context and write traces to it. Kyoyu never tells an agen
 
 ### Observability
 
-- Kyoyu emits OTEL telemetry (traces and metrics) for its own operations
+- Akashi emits OTEL telemetry (traces and metrics) for its own operations
 - Decision traces include optional `trace_id` for OTEL correlation
-- `kyoyu.context_id` propagated via OTEL baggage (identifier only, never sensitive data)
+- `akashi.context_id` propagated via OTEL baggage (identifier only, never sensitive data)
 
 ### Target Adoption
 
@@ -116,16 +116,16 @@ Agents query Kyoyu for context and write traces to it. Kyoyu never tells an agen
 ### Position in the Stack
 
 ```
-Orchestration:    External           (durable execution, workflow management — not Kyoyu's concern)
-Semantic Context: Kyoyu              (decision traces, evidence, reasoning)
+Orchestration:    External           (durable execution, workflow management — not Akashi's concern)
+Semantic Context: Akashi              (decision traces, evidence, reasoning)
 Observability:    OpenTelemetry      (latency, errors, token counts)
 ─────────────────────────────────────────
 Linked via trace_id, conversation_id, context_id
 ```
 
-### Boundary: What Kyoyu Owns
+### Boundary: What Akashi Owns
 
-| Kyoyu Owns | Kyoyu Does NOT Own |
+| Akashi Owns | Akashi Does NOT Own |
 |------------|-------------------|
 | Decision trace storage and indexing | Workflow orchestration |
 | Semantic search over decisions/evidence | Agent lifecycle management |
@@ -135,7 +135,7 @@ Linked via trace_id, conversation_id, context_id
 | Handoff context (data format + storage) | Initiating or routing handoffs |
 | Access control (JWT + RBAC + grants) | Identity provider (external) |
 
-Kyoyu is framework-agnostic. Any orchestration tool (LangGraph, Temporal, DBOS, custom) can write traces to Kyoyu and query them. Kyoyu does not depend on or recommend any specific orchestration system.
+Akashi is framework-agnostic. Any orchestration tool (LangGraph, Temporal, DBOS, custom) can write traces to Akashi and query them. Akashi does not depend on or recommend any specific orchestration system.
 
 ## Resolved Contradictions
 
@@ -189,8 +189,8 @@ Build in this sequence. Each phase produces a working, testable system.
 
 ### Phase E: SDKs + Integration (separate repos)
 
-15. **Python SDK** — Thin HTTP client in `kyoyu-python`.
-16. **TypeScript SDK** — Thin HTTP client in `kyoyu-typescript`.
+15. **Python SDK** — Thin HTTP client in `akashi-python`.
+16. **TypeScript SDK** — Thin HTTP client in `akashi-typescript`.
 17. **Framework integration** — LangChain callback handler or CrewAI hooks wrapping the SDK.
 
 **Exit criteria**: SDK can trace a decision, query it back, and search semantically.

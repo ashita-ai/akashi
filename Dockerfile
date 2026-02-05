@@ -10,18 +10,18 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /kyoyu ./cmd/kyoyu
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /akashi ./cmd/akashi
 
 FROM alpine:3.21
 
 RUN apk add --no-cache ca-certificates tzdata
-RUN adduser -D -u 10001 kyoyu
+RUN adduser -D -u 10001 akashi
 
-COPY --from=builder /kyoyu /usr/local/bin/kyoyu
+COPY --from=builder /akashi /usr/local/bin/akashi
 COPY migrations /migrations
 
-USER kyoyu
+USER akashi
 
 EXPOSE 8080
 
-ENTRYPOINT ["kyoyu"]
+ENTRYPOINT ["akashi"]

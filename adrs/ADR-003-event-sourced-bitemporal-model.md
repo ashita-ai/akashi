@@ -5,7 +5,7 @@
 
 ## Context
 
-Kyoyu captures decision traces from AI agents. We need a data model that supports auditability (what happened and when), replay (reconstruct state at any point), and extensibility (new event types without schema changes).
+Akashi captures decision traces from AI agents. We need a data model that supports auditability (what happened and when), replay (reconstruct state at any point), and extensibility (new event types without schema changes).
 
 ## Decision
 

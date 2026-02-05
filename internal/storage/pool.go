@@ -1,4 +1,4 @@
-// Package storage provides the PostgreSQL storage layer for Kyoyu.
+// Package storage provides the PostgreSQL storage layer for Akashi.
 //
 // It manages connection pooling (via pgxpool through PgBouncer),
 // a dedicated connection for LISTEN/NOTIFY (direct to Postgres),

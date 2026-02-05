@@ -1,4 +1,4 @@
-package kyoyu
+package akashi
 
 import (
 	"time"

@@ -1,4 +1,4 @@
-// Package auth provides JWT-based authentication and RBAC authorization for Kyoyu.
+// Package auth provides JWT-based authentication and RBAC authorization for Akashi.
 //
 // Uses Ed25519 (EdDSA) for JWT signing. Keys can be loaded from PEM files
 // or auto-generated for development.
@@ -16,10 +16,10 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 
-	"github.com/ashita-ai/kyoyu/internal/model"
+	"github.com/ashita-ai/akashi/internal/model"
 )
 
-// Claims extends jwt.RegisteredClaims with Kyoyu-specific fields.
+// Claims extends jwt.RegisteredClaims with Akashi-specific fields.
 type Claims struct {
 	jwt.RegisteredClaims
 	AgentID string          `json:"agent_id"`
@@ -89,7 +89,7 @@ func (m *JWTManager) IssueToken(agent model.Agent) (string, time.Time, error) {
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   agent.ID.String(),
-			Issuer:    "kyoyu",
+			Issuer:    "akashi",
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(exp),
 			ID:        uuid.New().String(),

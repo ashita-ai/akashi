@@ -6,8 +6,9 @@ import (
 
 	"github.com/pgvector/pgvector-go"
 
-	"github.com/ashita-ai/kyoyu/internal/model"
-	"github.com/ashita-ai/kyoyu/internal/storage"
+	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/service/quality"
+	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 // HandleTrace handles POST /v1/trace (convenience endpoint).
@@ -66,7 +67,10 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		decisionEmb = &emb
 	}
 
-	// 3. Create decision.
+	// 3. Compute quality score.
+	qualityScore := quality.Score(req.Decision)
+
+	// 4. Create decision.
 	decision, err := h.db.CreateDecision(r.Context(), model.Decision{
 		RunID:        run.ID,
 		AgentID:      req.AgentID,
@@ -75,6 +79,8 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		Confidence:   req.Decision.Confidence,
 		Reasoning:    req.Decision.Reasoning,
 		Embedding:    decisionEmb,
+		QualityScore: qualityScore,
+		PrecedentRef: req.PrecedentRef,
 	})
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to create decision")
@@ -305,7 +311,7 @@ func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 		queried, _, err := h.db.QueryDecisions(r.Context(), model.QueryRequest{
 			Filters:  filters,
 			Include:  []string{"alternatives"},
-			OrderBy:  "valid_from",
+			OrderBy:  "quality_score",
 			OrderDir: "desc",
 			Limit:    limit,
 		})

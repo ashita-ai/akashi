@@ -9,7 +9,7 @@ The agent memory infrastructure space has multiple players. We need a clear posi
 
 ## Decision
 
-Kyoyu is a **decision trace layer**, not a general memory layer. We capture structured decision context: what was decided, what alternatives were considered, what evidence supported it, and how confident the agent was.
+Akashi is a **decision trace layer**, not a general memory layer. We capture structured decision context: what was decided, what alternatives were considered, what evidence supported it, and how confident the agent was.
 
 We do NOT build:
 - General-purpose agent memory (Mem0's space)
@@ -28,7 +28,7 @@ No existing product answers: "Why did the agent decide this, what alternatives w
 | LangGraph | Within-graph only | Checkpoints only | No | No |
 | Letta | Single-agent | No | No | No |
 | Langfuse | No (observability) | Traces, not decisions | No | No |
-| **Kyoyu** | **Yes** | **Yes** | **Yes** | **Yes** |
+| **Akashi** | **Yes** | **Yes** | **Yes** | **Yes** |
 
 ## Rationale
 
@@ -46,7 +46,7 @@ No existing product answers: "Why did the agent decide this, what alternatives w
 **Differentiation from OTEL:**
 
 - OTEL shows *that* something happened and *how long* it took.
-- Kyoyu shows *why* it happened, *what evidence* supported it, and *how confident* the agent was.
+- Akashi shows *why* it happened, *what evidence* supported it, and *how confident* the agent was.
 
 ## Consequences
 

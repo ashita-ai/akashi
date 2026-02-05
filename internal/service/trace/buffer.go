@@ -10,8 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/ashita-ai/kyoyu/internal/model"
-	"github.com/ashita-ai/kyoyu/internal/storage"
+	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 // Buffer accumulates events in memory and flushes to the database
@@ -22,8 +22,8 @@ type Buffer struct {
 	maxSize      int
 	flushTimeout time.Duration
 
-	mu     sync.Mutex
-	events []model.AgentEvent
+	mu      sync.Mutex
+	events  []model.AgentEvent
 	seqNums map[uuid.UUID]int64 // run_id -> next sequence number
 
 	flushCh chan struct{}

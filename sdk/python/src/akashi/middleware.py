@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Protocol, TypeVar
 
-from kyoyu.client import KyoyuClient, KyoyuSyncClient
-from kyoyu.types import CheckResponse, TraceRequest
+from akashi.client import AkashiClient, AkashiSyncClient
+from akashi.types import CheckResponse, TraceRequest
 
 
 class Traceable(Protocol):
@@ -19,12 +19,12 @@ T = TypeVar("T", bound=Traceable)
 
 
 @dataclass
-class KyoyuMiddleware:
+class AkashiMiddleware:
     """Wraps async decision-making callables with automatic check-before/record-after.
 
     Usage::
 
-        middleware = KyoyuMiddleware(client)
+        middleware = AkashiMiddleware(client)
 
         async def choose_model(precedents: CheckResponse, **kwargs):
             # ... decision logic using precedents ...
@@ -33,7 +33,7 @@ class KyoyuMiddleware:
         result = await middleware.wrap("model_selection", choose_model)
     """
 
-    client: KyoyuClient
+    client: AkashiClient
 
     async def wrap(
         self,
@@ -44,9 +44,9 @@ class KyoyuMiddleware:
     ) -> T:
         """Execute *func* with the check-before/record-after pattern.
 
-        1. Calls ``kyoyu_check`` for the given decision type.
+        1. Calls ``akashi_check`` for the given decision type.
         2. Invokes *func* with ``precedents`` as a keyword argument.
-        3. Calls ``kyoyu_trace`` with the result's trace representation.
+        3. Calls ``akashi_trace`` with the result's trace representation.
 
         *func* must accept a ``precedents`` keyword argument of type
         :class:`CheckResponse` and return an object implementing the
@@ -59,12 +59,12 @@ class KyoyuMiddleware:
 
 
 @dataclass
-class KyoyuSyncMiddleware:
+class AkashiSyncMiddleware:
     """Wraps synchronous decision-making callables with automatic check-before/record-after.
 
     Usage::
 
-        middleware = KyoyuSyncMiddleware(client)
+        middleware = AkashiSyncMiddleware(client)
 
         def choose_model(precedents: CheckResponse, **kwargs):
             # ... decision logic using precedents ...
@@ -73,7 +73,7 @@ class KyoyuSyncMiddleware:
         result = middleware.wrap("model_selection", choose_model)
     """
 
-    client: KyoyuSyncClient
+    client: AkashiSyncClient
 
     def wrap(
         self,

@@ -1,33 +1,33 @@
-"""Exception hierarchy for the Kyoyu Python SDK."""
+"""Exception hierarchy for the Akashi Python SDK."""
 
 from __future__ import annotations
 
 
-class KyoyuError(Exception):
-    """Base exception for all Kyoyu SDK errors."""
+class AkashiError(Exception):
+    """Base exception for all Akashi SDK errors."""
 
 
-class AuthenticationError(KyoyuError):
+class AuthenticationError(AkashiError):
     """Raised when authentication fails (401)."""
 
 
-class AuthorizationError(KyoyuError):
+class AuthorizationError(AkashiError):
     """Raised when the agent lacks permission (403)."""
 
 
-class NotFoundError(KyoyuError):
+class NotFoundError(AkashiError):
     """Raised when a requested resource does not exist (404)."""
 
 
-class ValidationError(KyoyuError):
+class ValidationError(AkashiError):
     """Raised when the server rejects input as invalid (400)."""
 
 
-class ConflictError(KyoyuError):
+class ConflictError(AkashiError):
     """Raised on duplicate or conflicting resources (409)."""
 
 
-class ServerError(KyoyuError):
+class ServerError(AkashiError):
     """Raised on unexpected server-side errors (5xx)."""
 
 

@@ -1,4 +1,4 @@
-"""Token management for Kyoyu API authentication."""
+"""Token management for Akashi API authentication."""
 
 from __future__ import annotations
 

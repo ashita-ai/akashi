@@ -9,8 +9,8 @@ import (
 
 // NotifyChannel is a Postgres LISTEN/NOTIFY channel name.
 const (
-	ChannelDecisions = "kyoyu_decisions"
-	ChannelConflicts = "kyoyu_conflicts"
+	ChannelDecisions = "akashi_decisions"
+	ChannelConflicts = "akashi_conflicts"
 )
 
 // Listen starts listening on the specified channel using the dedicated notify connection.
