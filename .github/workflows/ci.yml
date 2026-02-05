@@ -22,7 +22,6 @@ jobs:
       - name: Install tools
         run: |
           go install golang.org/x/tools/cmd/goimports@latest
-          go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
           go install golang.org/x/vuln/cmd/govulncheck@latest
 
       - name: Verify dependencies
@@ -34,7 +33,9 @@ jobs:
         run: go build -o bin/akashi ./cmd/akashi
 
       - name: Lint
-        run: golangci-lint run ./...
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.1
 
       - name: Vet
         run: go vet ./...
