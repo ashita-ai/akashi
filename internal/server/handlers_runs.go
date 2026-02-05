@@ -13,7 +13,7 @@ func (h *Handlers) HandleCreateRun(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 
 	var req model.CreateRunRequest
-	if err := decodeJSON(r, &req); err != nil {
+	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
 		return
 	}
@@ -55,7 +55,7 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req model.AppendEventsRequest
-	if err := decodeJSON(r, &req); err != nil {
+	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
 		return
 	}
@@ -97,7 +97,7 @@ func (h *Handlers) HandleCompleteRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req model.CompleteRunRequest
-	if err := decodeJSON(r, &req); err != nil {
+	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
 		return
 	}

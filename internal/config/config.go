@@ -31,11 +31,12 @@ type Config struct {
 	AdminAPIKey string // API key for the initial admin agent.
 
 	// Embedding provider settings.
-	EmbeddingProvider string // "auto", "openai", "ollama", or "noop"
-	OpenAIAPIKey      string
-	EmbeddingModel    string
-	OllamaURL         string
-	OllamaModel       string
+	EmbeddingProvider   string // "auto", "openai", "ollama", or "noop"
+	OpenAIAPIKey        string
+	EmbeddingModel      string
+	EmbeddingDimensions int // Vector dimensions; must match the chosen model's output.
+	OllamaURL           string
+	OllamaModel         string
 
 	// OTEL settings.
 	OTELEndpoint string
@@ -46,6 +47,7 @@ type Config struct {
 	ConflictRefreshInterval time.Duration
 	EventBufferSize         int
 	EventFlushTimeout       time.Duration
+	MaxRequestBodyBytes     int64 // Maximum request body size in bytes.
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -54,8 +56,8 @@ func Load() (Config, error) {
 		Port:                    envInt("AKASHI_PORT", 8080),
 		ReadTimeout:             envDuration("AKASHI_READ_TIMEOUT", 30*time.Second),
 		WriteTimeout:            envDuration("AKASHI_WRITE_TIMEOUT", 30*time.Second),
-		DatabaseURL:             envStr("DATABASE_URL", "postgres://akashi:akashi@localhost:6432/akashi?sslmode=disable"),
-		NotifyURL:               envStr("NOTIFY_URL", "postgres://akashi:akashi@localhost:5432/akashi?sslmode=disable"),
+		DatabaseURL:             envStr("DATABASE_URL", "postgres://akashi:akashi@localhost:6432/akashi?sslmode=verify-full"),
+		NotifyURL:               envStr("NOTIFY_URL", "postgres://akashi:akashi@localhost:5432/akashi?sslmode=verify-full"),
 		RedisURL:                envStr("REDIS_URL", "redis://localhost:6379/0"),
 		JWTPrivateKeyPath:       envStr("AKASHI_JWT_PRIVATE_KEY", ""),
 		JWTPublicKeyPath:        envStr("AKASHI_JWT_PUBLIC_KEY", ""),
@@ -64,6 +66,7 @@ func Load() (Config, error) {
 		EmbeddingProvider:       envStr("AKASHI_EMBEDDING_PROVIDER", "auto"),
 		OpenAIAPIKey:            envStr("OPENAI_API_KEY", ""),
 		EmbeddingModel:          envStr("AKASHI_EMBEDDING_MODEL", "text-embedding-3-small"),
+		EmbeddingDimensions:     envInt("AKASHI_EMBEDDING_DIMENSIONS", 1024),
 		OllamaURL:               envStr("OLLAMA_URL", "http://localhost:11434"),
 		OllamaModel:             envStr("OLLAMA_MODEL", "mxbai-embed-large"),
 		OTELEndpoint:            envStr("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
@@ -72,6 +75,7 @@ func Load() (Config, error) {
 		ConflictRefreshInterval: envDuration("AKASHI_CONFLICT_REFRESH_INTERVAL", 30*time.Second),
 		EventBufferSize:         envInt("AKASHI_EVENT_BUFFER_SIZE", 1000),
 		EventFlushTimeout:       envDuration("AKASHI_EVENT_FLUSH_TIMEOUT", 100*time.Millisecond),
+		MaxRequestBodyBytes:     int64(envInt("AKASHI_MAX_REQUEST_BODY_BYTES", 1*1024*1024)), // 1 MB default
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -84,6 +88,12 @@ func Load() (Config, error) {
 func (c Config) Validate() error {
 	if c.DatabaseURL == "" {
 		return fmt.Errorf("config: DATABASE_URL is required")
+	}
+	if c.EmbeddingDimensions <= 0 {
+		return fmt.Errorf("config: AKASHI_EMBEDDING_DIMENSIONS must be positive")
+	}
+	if c.MaxRequestBodyBytes <= 0 {
+		return fmt.Errorf("config: AKASHI_MAX_REQUEST_BODY_BYTES must be positive")
 	}
 	return nil
 }

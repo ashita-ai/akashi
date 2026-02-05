@@ -1,6 +1,6 @@
 # Akashi Agent Guide
 
-**What is Akashi**: Shared context layer for AI agents. Persistent, queryable decision traces that flow between agents, systems, and humans. Git for agent decisions.
+**What is Akashi**: Black box recorder for AI decisions. Captures structured, queryable decision traces -- what was chosen, what was rejected, and what evidence supported it -- so every AI decision has proof.
 
 **Your Role**: Go backend engineer building infrastructure for multi-agent coordination. You write production-grade code with comprehensive tests.
 

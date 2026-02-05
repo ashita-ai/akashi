@@ -11,34 +11,34 @@ import (
 )
 
 func (s *Server) registerResources() {
-	// akashi://session/current — current session context for the requesting agent.
+	// akashi://session/current — current session context from the black box.
 	s.mcpServer.AddResource(
 		mcplib.NewResource(
 			"akashi://session/current",
 			"Current Session",
-			mcplib.WithResourceDescription("Current session context for the requesting agent"),
+			mcplib.WithResourceDescription("Recent decisions from the black box for the current session"),
 			mcplib.WithMIMEType("application/json"),
 		),
 		s.handleSessionCurrent,
 	)
 
-	// akashi://decisions/recent — recent decisions across accessible agents.
+	// akashi://decisions/recent — recent decision records across accessible agents.
 	s.mcpServer.AddResource(
 		mcplib.NewResource(
 			"akashi://decisions/recent",
 			"Recent Decisions",
-			mcplib.WithResourceDescription("Recent decisions across all accessible agents"),
+			mcplib.WithResourceDescription("Recent decision records from the black box across all accessible agents"),
 			mcplib.WithMIMEType("application/json"),
 		),
 		s.handleDecisionsRecent,
 	)
 
-	// akashi://agent/{id}/history — specific agent's decision history.
+	// akashi://agent/{id}/history — specific agent's decision audit trail.
 	s.mcpServer.AddResourceTemplate(
 		mcplib.NewResourceTemplate(
 			"akashi://agent/{id}/history",
 			"Agent History",
-			mcplib.WithTemplateDescription("Decision history for a specific agent"),
+			mcplib.WithTemplateDescription("Decision audit trail for a specific agent"),
 			mcplib.WithTemplateMIMEType("application/json"),
 		),
 		s.handleAgentHistory,

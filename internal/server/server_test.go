@@ -26,6 +26,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/mcp"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/server"
+	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
 	"github.com/ashita-ai/akashi/internal/service/trace"
 	"github.com/ashita-ai/akashi/internal/storage"
@@ -91,12 +92,13 @@ func TestMain(m *testing.M) {
 	}
 
 	jwtMgr, _ := auth.NewJWTManager("", "", 24*time.Hour)
-	embedder := embedding.NewNoopProvider(1536)
+	embedder := embedding.NewNoopProvider(1024)
+	decisionSvc := decisions.New(db, embedder, logger)
 	buf := trace.NewBuffer(db, logger, 1000, 50*time.Millisecond)
 	buf.Start(ctx)
 
-	mcpSrv := mcp.New(db, embedder, logger)
-	srv := server.New(db, jwtMgr, embedder, buf, logger, 0, 30*time.Second, 30*time.Second, mcpSrv.MCPServer())
+	mcpSrv := mcp.New(db, decisionSvc, logger, "test")
+	srv := server.New(db, jwtMgr, decisionSvc, buf, nil, logger, 0, 30*time.Second, 30*time.Second, mcpSrv.MCPServer(), "test", 1*1024*1024)
 
 	// Seed admin.
 	_ = srv.Handlers().SeedAdmin(ctx, "test-admin-key")
@@ -356,7 +358,7 @@ func TestMCPInitialize(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "akashi", initResult.ServerInfo.Name)
-	assert.Equal(t, "0.1.0", initResult.ServerInfo.Version)
+	assert.Equal(t, "test", initResult.ServerInfo.Version)
 }
 
 func TestMCPListTools(t *testing.T) {

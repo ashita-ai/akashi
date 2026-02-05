@@ -241,8 +241,21 @@ func writeError(w http.ResponseWriter, r *http.Request, status int, code, messag
 	})
 }
 
+// securityHeadersMiddleware adds standard security response headers.
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // decodeJSON decodes a JSON request body into the target struct.
-func decodeJSON(r *http.Request, target any) error {
+// Applies MaxBytesReader to prevent unbounded request bodies.
+func decodeJSON(r *http.Request, target any, maxBytes int64) error {
+	r.Body = http.MaxBytesReader(nil, r.Body, maxBytes)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	return decoder.Decode(target)

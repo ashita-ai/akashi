@@ -11,15 +11,22 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/config"
 	"github.com/ashita-ai/akashi/internal/mcp"
+	"github.com/ashita-ai/akashi/internal/ratelimit"
 	"github.com/ashita-ai/akashi/internal/server"
+	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
 	"github.com/ashita-ai/akashi/internal/service/trace"
 	"github.com/ashita-ai/akashi/internal/storage"
 	"github.com/ashita-ai/akashi/internal/telemetry"
 )
+
+// version is set at build time via -ldflags.
+var version = "dev"
 
 func main() {
 	level := slog.LevelInfo
@@ -47,10 +54,10 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	slog.Info("akashi starting", "version", "0.1.0", "port", cfg.Port)
+	slog.Info("akashi starting", "version", version, "port", cfg.Port)
 
 	// Initialize OpenTelemetry.
-	otelShutdown, err := telemetry.Init(ctx, cfg.OTELEndpoint, cfg.ServiceName, "0.1.0")
+	otelShutdown, err := telemetry.Init(ctx, cfg.OTELEndpoint, cfg.ServiceName, version)
 	if err != nil {
 		return fmt.Errorf("telemetry: %w", err)
 	}
@@ -77,17 +84,26 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	// Create embedding provider.
 	embedder := newEmbeddingProvider(cfg, logger)
 
+	// Create decision service (shared by HTTP and MCP handlers).
+	decisionSvc := decisions.New(db, embedder, logger)
+
 	// Create event buffer.
 	buf := trace.NewBuffer(db, logger, cfg.EventBufferSize, cfg.EventFlushTimeout)
 	buf.Start(ctx)
 
+	// Create rate limiter (backed by Redis if configured, noop otherwise).
+	limiter := newRateLimiter(cfg, logger)
+	if limiter != nil {
+		defer limiter.Close()
+	}
+
 	// Create MCP server.
-	mcpSrv := mcp.New(db, embedder, logger)
+	mcpSrv := mcp.New(db, decisionSvc, logger, version)
 
 	// Create and start HTTP server (MCP mounted at /mcp).
-	srv := server.New(db, jwtMgr, embedder, buf, logger,
+	srv := server.New(db, jwtMgr, decisionSvc, buf, limiter, logger,
 		cfg.Port, cfg.ReadTimeout, cfg.WriteTimeout,
-		mcpSrv.MCPServer())
+		mcpSrv.MCPServer(), version, cfg.MaxRequestBodyBytes)
 
 	// Seed admin agent.
 	if err := srv.Handlers().SeedAdmin(ctx, cfg.AdminAPIKey); err != nil {
@@ -132,40 +148,43 @@ func run(ctx context.Context, logger *slog.Logger) error {
 }
 
 // newEmbeddingProvider creates an embedding provider based on configuration.
-// Provider selection: "openai", "ollama", "noop", or "auto" (default).
-// Auto mode tries OpenAI if key present, then Ollama if reachable, else noop.
+// Provider selection: "ollama", "openai", "noop", or "auto" (default).
+// Auto mode tries Ollama if reachable, then OpenAI if key present, else noop.
+// Ollama is preferred: embeddings stay on-premises with no external API costs.
 func newEmbeddingProvider(cfg config.Config, logger *slog.Logger) embedding.Provider {
+	dims := cfg.EmbeddingDimensions
+
 	switch cfg.EmbeddingProvider {
 	case "openai":
 		if cfg.OpenAIAPIKey == "" {
 			logger.Error("OPENAI_API_KEY required when AKASHI_EMBEDDING_PROVIDER=openai")
-			return embedding.NewNoopProvider(1536)
+			return embedding.NewNoopProvider(dims)
 		}
-		logger.Info("embedding provider: openai", "model", cfg.EmbeddingModel)
+		logger.Info("embedding provider: openai", "model", cfg.EmbeddingModel, "dimensions", dims)
 		return embedding.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.EmbeddingModel)
 
 	case "ollama":
-		logger.Info("embedding provider: ollama", "url", cfg.OllamaURL, "model", cfg.OllamaModel)
-		return embedding.NewOllamaProvider(cfg.OllamaURL, cfg.OllamaModel, 1024, 1536)
+		logger.Info("embedding provider: ollama", "url", cfg.OllamaURL, "model", cfg.OllamaModel, "dimensions", dims)
+		return embedding.NewOllamaProvider(cfg.OllamaURL, cfg.OllamaModel, dims)
 
 	case "noop":
 		logger.Info("embedding provider: noop (semantic search disabled)")
-		return embedding.NewNoopProvider(1536)
+		return embedding.NewNoopProvider(dims)
 
 	case "auto":
 		fallthrough
 	default:
-		// Auto-detect: prefer OpenAI if key present, then Ollama if reachable, else noop.
+		// Auto-detect: prefer Ollama (on-premises, no cost), then OpenAI, else noop.
+		if ollamaReachable(cfg.OllamaURL) {
+			logger.Info("embedding provider: ollama (auto-detected)", "url", cfg.OllamaURL, "model", cfg.OllamaModel, "dimensions", dims)
+			return embedding.NewOllamaProvider(cfg.OllamaURL, cfg.OllamaModel, dims)
+		}
 		if cfg.OpenAIAPIKey != "" {
-			logger.Info("embedding provider: openai (auto-detected)", "model", cfg.EmbeddingModel)
+			logger.Info("embedding provider: openai (auto-detected)", "model", cfg.EmbeddingModel, "dimensions", dims)
 			return embedding.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.EmbeddingModel)
 		}
-		if ollamaReachable(cfg.OllamaURL) {
-			logger.Info("embedding provider: ollama (auto-detected)", "url", cfg.OllamaURL, "model", cfg.OllamaModel)
-			return embedding.NewOllamaProvider(cfg.OllamaURL, cfg.OllamaModel, 1024, 1536)
-		}
 		logger.Warn("no embedding provider available, using noop (semantic search disabled)")
-		return embedding.NewNoopProvider(1536)
+		return embedding.NewNoopProvider(dims)
 	}
 }
 
@@ -183,6 +202,35 @@ func ollamaReachable(baseURL string) bool {
 	}
 	resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
+}
+
+// newRateLimiter creates a Redis-backed rate limiter. If Redis is not configured
+// or not reachable, returns a noop limiter (all requests allowed).
+func newRateLimiter(cfg config.Config, logger *slog.Logger) *ratelimit.Limiter {
+	if cfg.RedisURL == "" {
+		logger.Info("rate limiting: disabled (no REDIS_URL)")
+		return ratelimit.New(nil, logger)
+	}
+
+	opts, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		logger.Warn("rate limiting: disabled (invalid REDIS_URL)", "error", err)
+		return ratelimit.New(nil, logger)
+	}
+
+	client := redis.NewClient(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := client.Ping(ctx).Err(); err != nil {
+		logger.Warn("rate limiting: disabled (Redis unreachable)", "error", err)
+		client.Close()
+		return ratelimit.New(nil, logger)
+	}
+
+	logger.Info("rate limiting: enabled", "redis", cfg.RedisURL)
+	return ratelimit.New(client, logger)
 }
 
 func conflictRefreshLoop(ctx context.Context, db *storage.DB, logger *slog.Logger, interval time.Duration) {

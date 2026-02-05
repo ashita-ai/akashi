@@ -1,16 +1,28 @@
 # Akashi
 
-Shared context layer for AI agents. Persistent, queryable decision traces that flow between agents, systems, and humans.
+Black box recorder for AI decisions.
+
+Akashi records why your AI agents made every decision -- what they chose, what they rejected, and what evidence supported it. So when someone asks "why did the AI do that?", you have the answer.
 
 ## What it does
 
-When multiple AI agents collaborate on a task, each makes decisions that downstream agents need to understand. Akashi captures structured records of those decisions -- what was decided, why, what alternatives were considered, what evidence supported it, and how confident the agent was -- and makes them queryable through both an HTTP API and the Model Context Protocol (MCP).
+When AI agents make decisions, those decisions need to be auditable. Akashi captures structured records of every decision -- what was decided, why, what alternatives were considered, what evidence supported it, and how confident the agent was -- and makes them queryable through both an HTTP API and the Model Context Protocol (MCP).
 
-This lets agents coordinate through shared understanding rather than opaque message passing. Agent B can search for Agent A's past decisions by semantic similarity, query by type and confidence threshold, or subscribe to a real-time feed of new decisions.
+This creates a persistent audit trail that agents, humans, and downstream systems can query. Agent B can search for Agent A's past decisions by semantic similarity, query by type and confidence threshold, or subscribe to a real-time feed of new decisions as they happen.
+
+### What the black box records
+
+Every decision trace captures:
+
+- **The decision itself** -- what was chosen and the agent's confidence level
+- **The reasoning chain** -- step-by-step logic explaining why
+- **Rejected alternatives** -- what else was considered, with scores and rejection reasons
+- **Supporting evidence** -- what information backed the decision, with provenance
+- **Temporal context** -- when the decision was made and when it was valid
 
 ### What Akashi is not
 
-Akashi is a smart store, not an orchestrator. It stores, indexes, and queries decision traces but never directs agent behavior. It differs from:
+Akashi is an audit system, not an orchestrator. It records, indexes, and queries decision traces but never directs agent behavior. It differs from:
 
 - **Agent memory** (Mem0, etc.) -- Akashi stores structured decision records with typed fields, not unstructured memory blobs
 - **Temporal knowledge graphs** (Zep, etc.) -- Akashi models decisions as first-class entities with alternatives and evidence, not graph relationships
@@ -59,7 +71,7 @@ Both interfaces share the same storage layer and embedding provider.
 
 ### Recording a decision
 
-An agent records a decision trace either through the HTTP convenience endpoint or the MCP `akashi_trace` tool:
+An agent records a decision to the black box either through the HTTP convenience endpoint or the MCP `akashi_trace` tool:
 
 1. A run (execution context) is created in the `agent_runs` table
 2. The decision text is embedded via the configured embedding provider (OpenAI `text-embedding-3-small` by default, or a noop zero-vector provider for development)
@@ -70,7 +82,7 @@ An agent records a decision trace either through the HTTP convenience endpoint o
 
 For high-throughput event ingestion, agents can use the step-by-step path (`POST /v1/runs`, then `POST /v1/runs/{id}/events`). Events accumulate in an in-memory buffer that flushes via `COPY` when it hits 1000 events or 100ms, whichever comes first. Sequence numbers are assigned server-side to guarantee ordering.
 
-### Querying decisions
+### Querying the audit trail
 
 Three query modes, all available through both HTTP and MCP:
 

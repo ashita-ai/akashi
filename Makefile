@@ -1,8 +1,11 @@
-.PHONY: all build test lint fmt vet clean docker-up docker-down migrate ci security tidy
+.PHONY: all build test lint fmt vet clean docker-up docker-down ci security tidy \
+       migrate-apply migrate-lint migrate-hash migrate-diff migrate-status
 
 BINARY := bin/akashi
 GO := go
 GOFLAGS := -race
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+LDFLAGS := -ldflags "-X main.version=$(VERSION)"
 
 all: fmt lint vet test build
 
@@ -11,7 +14,7 @@ ci: tidy build lint vet security test
 	@echo "CI passed"
 
 build:
-	$(GO) build -o $(BINARY) ./cmd/akashi
+	$(GO) build $(LDFLAGS) -o $(BINARY) ./cmd/akashi
 
 test:
 	$(GO) test $(GOFLAGS) ./... -v
@@ -46,6 +49,26 @@ docker-down:
 docker-rebuild:
 	docker compose -f docker/docker-compose.yml up -d --build
 
-migrate:
-	@echo "Run migrations against the database"
-	@echo "TODO: integrate golang-migrate or atlas"
+# Atlas migration targets.
+# Requires: atlas CLI (https://atlasgo.io/getting-started#installation)
+# Environment variables:
+#   DATABASE_URL   - target database (default: local PgBouncer)
+#   ATLAS_DEV_URL  - disposable Postgres for diffing/linting (default: local direct)
+ATLAS_DEV_URL ?= postgres://akashi:akashi@localhost:5432/akashi?sslmode=disable&search_path=public
+ATLAS ?= atlas
+
+migrate-apply: ## Apply pending migrations
+	$(ATLAS) migrate apply --env local
+
+migrate-lint: ## Lint migration files for safety issues
+	$(ATLAS) migrate lint --env ci --latest 1
+
+migrate-hash: ## Regenerate atlas.sum after editing migration files
+	$(ATLAS) migrate hash --dir file://migrations
+
+migrate-diff: ## Generate a new migration from schema changes (usage: make migrate-diff name=add_foo)
+	@test -n "$(name)" || (echo "usage: make migrate-diff name=<migration_name>" && exit 1)
+	$(ATLAS) migrate diff $(name) --env local
+
+migrate-status: ## Show migration status
+	$(ATLAS) migrate status --env local

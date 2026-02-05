@@ -511,27 +511,29 @@ func TestListRunsByAgent(t *testing.T) {
 	assert.Len(t, runs, 3)
 }
 
-func TestNextSequenceNum(t *testing.T) {
+func TestReserveSequenceNums(t *testing.T) {
 	ctx := context.Background()
 
-	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: "seqtest"})
+	// Reserve a batch of 5 sequence numbers.
+	nums, err := testDB.ReserveSequenceNums(ctx, 5)
 	require.NoError(t, err)
+	assert.Len(t, nums, 5)
 
-	seq, err := testDB.NextSequenceNum(ctx, run.ID)
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), seq)
+	// Values must be monotonically increasing.
+	for i := 1; i < len(nums); i++ {
+		assert.Greater(t, nums[i], nums[i-1], "sequence numbers must be monotonically increasing")
+	}
 
-	// Insert one event.
-	err = testDB.InsertEvent(ctx, model.AgentEvent{
-		ID: uuid.New(), RunID: run.ID, EventType: model.EventAgentRunStarted,
-		SequenceNum: 1, OccurredAt: time.Now().UTC(), AgentID: "seqtest",
-		Payload: map[string]any{}, CreatedAt: time.Now().UTC(),
-	})
+	// Reserve another batch — values must continue increasing from the last batch.
+	nums2, err := testDB.ReserveSequenceNums(ctx, 3)
 	require.NoError(t, err)
+	assert.Len(t, nums2, 3)
+	assert.Greater(t, nums2[0], nums[len(nums)-1], "second batch must start after first batch")
 
-	seq, err = testDB.NextSequenceNum(ctx, run.ID)
+	// Zero count returns nil.
+	empty, err := testDB.ReserveSequenceNums(ctx, 0)
 	require.NoError(t, err)
-	assert.Equal(t, int64(2), seq)
+	assert.Nil(t, empty)
 }
 
 func TestNotify(t *testing.T) {

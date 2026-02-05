@@ -14,6 +14,10 @@ import (
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
+// maxBufferCapacity is the hard upper limit on buffered events to prevent OOM.
+// When this limit is reached, Append applies backpressure by returning an error.
+const maxBufferCapacity = 100_000
+
 // Buffer accumulates events in memory and flushes to the database
 // using COPY when either the buffer size or flush timeout is reached.
 type Buffer struct {
@@ -22,9 +26,8 @@ type Buffer struct {
 	maxSize      int
 	flushTimeout time.Duration
 
-	mu      sync.Mutex
-	events  []model.AgentEvent
-	seqNums map[uuid.UUID]int64 // run_id -> next sequence number
+	mu     sync.Mutex
+	events []model.AgentEvent
 
 	flushCh chan struct{}
 	done    chan struct{}
@@ -37,7 +40,6 @@ func NewBuffer(db *storage.DB, logger *slog.Logger, maxSize int, flushTimeout ti
 		logger:       logger,
 		maxSize:      maxSize,
 		flushTimeout: flushTimeout,
-		seqNums:      make(map[uuid.UUID]int64),
 		flushCh:      make(chan struct{}, 1),
 		done:         make(chan struct{}),
 	}
@@ -50,17 +52,22 @@ func (b *Buffer) Start(ctx context.Context) {
 
 // Append adds events to the buffer, assigning server-side sequence numbers.
 // Returns the assigned events with populated IDs and sequence numbers.
+// Returns an error if the buffer is at capacity (backpressure).
 func (b *Buffer) Append(ctx context.Context, runID uuid.UUID, agentID string, inputs []model.EventInput) ([]model.AgentEvent, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// Get or initialize the sequence counter for this run.
-	if _, ok := b.seqNums[runID]; !ok {
-		seq, err := b.db.NextSequenceNum(ctx, runID)
-		if err != nil {
-			return nil, fmt.Errorf("trace: get sequence num: %w", err)
-		}
-		b.seqNums[runID] = seq
+	// Backpressure: reject writes when the buffer is full.
+	if len(b.events)+len(inputs) > maxBufferCapacity {
+		return nil, fmt.Errorf("trace: buffer at capacity (%d events), try again later", len(b.events))
+	}
+
+	// Allocate globally unique sequence numbers from the Postgres SEQUENCE.
+	// This is done under the mutex to preserve ordering within a run, but
+	// the DB call itself is fast (single round-trip for the whole batch).
+	seqNums, err := b.db.ReserveSequenceNums(ctx, len(inputs))
+	if err != nil {
+		return nil, fmt.Errorf("trace: reserve sequence nums: %w", err)
 	}
 
 	now := time.Now().UTC()
@@ -74,13 +81,12 @@ func (b *Buffer) Append(ctx context.Context, runID uuid.UUID, agentID string, in
 			ID:          uuid.New(),
 			RunID:       runID,
 			EventType:   input.EventType,
-			SequenceNum: b.seqNums[runID],
+			SequenceNum: seqNums[i],
 			OccurredAt:  occurredAt,
 			AgentID:     agentID,
 			Payload:     input.Payload,
 			CreatedAt:   now,
 		}
-		b.seqNums[runID]++
 	}
 
 	b.events = append(b.events, events...)
@@ -129,9 +135,13 @@ func (b *Buffer) flush(ctx context.Context) {
 
 	if err != nil {
 		b.logger.Error("trace: flush failed", "error", err, "batch_size", len(batch))
-		// Put events back for retry.
+		// Put events back for retry, but respect the capacity limit.
 		b.mu.Lock()
-		b.events = append(batch, b.events...)
+		if len(b.events)+len(batch) <= maxBufferCapacity {
+			b.events = append(batch, b.events...)
+		} else {
+			b.logger.Error("trace: dropping events, buffer at capacity after flush failure", "dropped", len(batch))
+		}
 		b.mu.Unlock()
 		return
 	}
@@ -142,9 +152,14 @@ func (b *Buffer) flush(ctx context.Context) {
 	)
 }
 
-// Drain flushes all remaining events and waits for completion.
+// Drain flushes all remaining events and waits for the background goroutine to finish.
 func (b *Buffer) Drain(ctx context.Context) {
 	b.flush(ctx)
+	select {
+	case <-b.done:
+	case <-ctx.Done():
+		b.logger.Warn("trace: drain timed out waiting for flush loop")
+	}
 }
 
 // Len returns the current number of buffered events.

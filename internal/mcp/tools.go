@@ -6,24 +6,23 @@ import (
 	"fmt"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
-	"github.com/pgvector/pgvector-go"
 
 	"github.com/ashita-ai/akashi/internal/model"
-	"github.com/ashita-ai/akashi/internal/storage"
+	"github.com/ashita-ai/akashi/internal/service/decisions"
 )
 
 func (s *Server) registerTools() {
-	// akashi_check — look before you leap.
+	// akashi_check — check the black box for decision precedents.
 	s.mcpServer.AddTool(
 		mcplib.NewTool("akashi_check",
-			mcplib.WithDescription(`Check for existing decisions before making a new one.
+			mcplib.WithDescription(`Check the black box for decision precedents before making a new one.
 
 WHEN TO USE: BEFORE making any decision. This is the most important tool —
 it prevents contradictions and lets you build on prior work.
 
-Call this FIRST with the type of decision you're about to make. If precedents
-exist, factor them into your reasoning. If conflicts exist, resolve them
-explicitly.
+Call this FIRST with the type of decision you're about to make. If the audit
+trail shows precedents, factor them into your reasoning. If conflicts exist,
+resolve them explicitly.
 
 WHAT YOU GET BACK:
 - has_precedent: whether any prior decisions exist for this type
@@ -56,10 +55,10 @@ decision_type="architecture" to see if anyone already decided on caching.`),
 		s.handleCheck,
 	)
 
-	// akashi_trace — record a decision.
+	// akashi_trace — record a decision to the black box.
 	s.mcpServer.AddTool(
 		mcplib.NewTool("akashi_trace",
-			mcplib.WithDescription(`Record a decision you just made so other agents can learn from it.
+			mcplib.WithDescription(`Record a decision to the black box so there is proof of why it was made.
 
 WHEN TO USE: After you make any non-trivial decision — choosing a model,
 selecting an approach, picking a data source, resolving an ambiguity,
@@ -103,10 +102,10 @@ reasoning="Redis handles our expected QPS, TTL prevents stale reads"`),
 		s.handleTrace,
 	)
 
-	// akashi_query — structured query over past decisions.
+	// akashi_query — structured query over the decision audit trail.
 	s.mcpServer.AddTool(
 		mcplib.NewTool("akashi_query",
-			mcplib.WithDescription(`Query past decisions with structured filters.
+			mcplib.WithDescription(`Query the decision audit trail with structured filters.
 
 WHEN TO USE: When you need to find specific decisions by exact criteria —
 a particular agent, decision type, confidence threshold, or outcome.
@@ -145,10 +144,10 @@ FILTER EXAMPLES:
 		s.handleQuery,
 	)
 
-	// akashi_search — semantic similarity search.
+	// akashi_search — search the black box for similar past decisions.
 	s.mcpServer.AddTool(
 		mcplib.NewTool("akashi_search",
-			mcplib.WithDescription(`Search decision history by semantic similarity.
+			mcplib.WithDescription(`Search the black box for similar past decisions by semantic similarity.
 
 WHEN TO USE: When you have a natural language question about past decisions
 and want to find the most relevant matches regardless of exact wording.
@@ -181,14 +180,14 @@ EXAMPLE QUERIES:
 		s.handleSearch,
 	)
 
-	// akashi_recent — what happened recently.
+	// akashi_recent — see what the black box recorded recently.
 	s.mcpServer.AddTool(
 		mcplib.NewTool("akashi_recent",
-			mcplib.WithDescription(`Get the most recent decisions across all agents.
+			mcplib.WithDescription(`See what the black box recorded recently across all agents.
 
 WHEN TO USE: To get a quick overview of what's been decided recently.
 Useful at the start of a session to understand current context,
-or to check what other agents have been doing.
+or to review what other agents have been doing.
 
 Returns decisions ordered by time (newest first) with optional
 filters for agent_id and decision_type.`),
@@ -223,62 +222,9 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 	agentID := request.GetString("agent_id", "")
 	limit := request.GetInt("limit", 5)
 
-	var decisions []model.Decision
-
-	if query != "" {
-		// Semantic search path.
-		queryEmb, err := s.embedder.Embed(ctx, query)
-		if err != nil {
-			return errorResult(fmt.Sprintf("failed to generate embedding: %v", err)), nil
-		}
-
-		filters := model.QueryFilters{
-			DecisionType: &decisionType,
-		}
-		if agentID != "" {
-			filters.AgentIDs = []string{agentID}
-		}
-
-		results, err := s.db.SearchDecisionsByEmbedding(ctx, queryEmb, filters, limit)
-		if err != nil {
-			return errorResult(fmt.Sprintf("search failed: %v", err)), nil
-		}
-		for _, sr := range results {
-			decisions = append(decisions, sr.Decision)
-		}
-	} else {
-		// Structured query path.
-		filters := model.QueryFilters{
-			DecisionType: &decisionType,
-		}
-		if agentID != "" {
-			filters.AgentIDs = []string{agentID}
-		}
-
-		queried, _, err := s.db.QueryDecisions(ctx, model.QueryRequest{
-			Filters:  filters,
-			Include:  []string{"alternatives"},
-			OrderBy:  "valid_from",
-			OrderDir: "desc",
-			Limit:    limit,
-		})
-		if err != nil {
-			return errorResult(fmt.Sprintf("query failed: %v", err)), nil
-		}
-		decisions = queried
-	}
-
-	// Always check for conflicts.
-	conflicts, err := s.db.ListConflicts(ctx, &decisionType, limit)
+	resp, err := s.decisionSvc.Check(ctx, decisionType, query, agentID, limit)
 	if err != nil {
-		s.logger.Warn("mcp: check conflicts failed", "error", err)
-		conflicts = nil
-	}
-
-	resp := model.CheckResponse{
-		HasPrecedent: len(decisions) > 0,
-		Decisions:    decisions,
-		Conflicts:    conflicts,
+		return errorResult(fmt.Sprintf("check failed: %v", err)), nil
 	}
 
 	resultData, _ := json.MarshalIndent(resp, "", "  ")
@@ -300,55 +246,27 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		return errorResult("agent_id, decision_type, and outcome are required"), nil
 	}
 
-	// Create run.
-	run, err := s.db.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to create run: %v", err)), nil
-	}
-
-	// Generate embedding.
-	embText := decisionType + ": " + outcome
-	if reasoning != "" {
-		embText += " " + reasoning
-	}
-	var decisionEmb *pgvector.Vector
-	emb, err := s.embedder.Embed(ctx, embText)
-	if err != nil {
-		s.logger.Warn("mcp: embedding failed", "error", err)
-	} else {
-		decisionEmb = &emb
-	}
-
-	// Create decision.
 	var reasoningPtr *string
 	if reasoning != "" {
 		reasoningPtr = &reasoning
 	}
-	decision, err := s.db.CreateDecision(ctx, model.Decision{
-		RunID:        run.ID,
-		AgentID:      agentID,
-		DecisionType: decisionType,
-		Outcome:      outcome,
-		Confidence:   confidence,
-		Reasoning:    reasoningPtr,
-		Embedding:    decisionEmb,
+
+	result, err := s.decisionSvc.Trace(ctx, decisions.TraceInput{
+		AgentID: agentID,
+		Decision: model.TraceDecision{
+			DecisionType: decisionType,
+			Outcome:      outcome,
+			Confidence:   confidence,
+			Reasoning:    reasoningPtr,
+		},
 	})
 	if err != nil {
-		return errorResult(fmt.Sprintf("failed to create decision: %v", err)), nil
+		return errorResult(fmt.Sprintf("failed to record decision: %v", err)), nil
 	}
 
-	// Complete run.
-	_ = s.db.CompleteRun(ctx, run.ID, model.RunStatusCompleted, nil)
-
-	// Notify.
-	notifyPayload, _ := json.Marshal(map[string]any{
-		"decision_id": decision.ID, "agent_id": agentID, "outcome": outcome,
-	})
-	_ = s.db.Notify(ctx, storage.ChannelDecisions, string(notifyPayload))
-
 	resultData, _ := json.Marshal(map[string]any{
-		"run_id":      run.ID,
-		"decision_id": decision.ID,
+		"run_id":      result.RunID,
+		"decision_id": result.DecisionID,
 		"status":      "recorded",
 	})
 
@@ -377,7 +295,7 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 
 	limit := request.GetInt("limit", 10)
 
-	decisions, total, err := s.db.QueryDecisions(ctx, model.QueryRequest{
+	decs, total, err := s.decisionSvc.Query(ctx, model.QueryRequest{
 		Filters:  filters,
 		Include:  []string{"alternatives"},
 		OrderBy:  "valid_from",
@@ -389,7 +307,7 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 	}
 
 	resultData, _ := json.MarshalIndent(map[string]any{
-		"decisions": decisions,
+		"decisions": decs,
 		"total":     total,
 	}, "", "  ")
 
@@ -412,12 +330,7 @@ func (s *Server) handleSearch(ctx context.Context, request mcplib.CallToolReques
 		filters.ConfidenceMin = &confMin
 	}
 
-	queryEmb, err := s.embedder.Embed(ctx, query)
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to generate embedding: %v", err)), nil
-	}
-
-	results, err := s.db.SearchDecisionsByEmbedding(ctx, queryEmb, filters, limit)
+	results, err := s.decisionSvc.Search(ctx, query, filters, limit)
 	if err != nil {
 		return errorResult(fmt.Sprintf("search failed: %v", err)), nil
 	}
@@ -445,19 +358,13 @@ func (s *Server) handleRecent(ctx context.Context, request mcplib.CallToolReques
 		filters.DecisionType = &dt
 	}
 
-	decisions, total, err := s.db.QueryDecisions(ctx, model.QueryRequest{
-		Filters:  filters,
-		Include:  []string{"alternatives"},
-		OrderBy:  "valid_from",
-		OrderDir: "desc",
-		Limit:    limit,
-	})
+	decs, total, err := s.decisionSvc.Recent(ctx, filters, limit)
 	if err != nil {
 		return errorResult(fmt.Sprintf("query failed: %v", err)), nil
 	}
 
 	resultData, _ := json.MarshalIndent(map[string]any{
-		"decisions": decisions,
+		"decisions": decs,
 		"total":     total,
 	}, "", "  ")
 

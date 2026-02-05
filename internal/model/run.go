@@ -33,29 +33,3 @@ type AgentRun struct {
 	Metadata    map[string]any `json:"metadata"`
 	CreatedAt   time.Time      `json:"created_at"`
 }
-
-// RunParam is an immutable key-value pair set at run start.
-type RunParam struct {
-	ID    uuid.UUID `json:"id"`
-	RunID uuid.UUID `json:"run_id"`
-	Key   string    `json:"key"`
-	Value string    `json:"value"`
-}
-
-// RunMetric is an append-only numeric measurement.
-type RunMetric struct {
-	ID         uuid.UUID `json:"id"`
-	RunID      uuid.UUID `json:"run_id"`
-	Key        string    `json:"key"`
-	Value      float64   `json:"value"`
-	Step       int64     `json:"step"`
-	RecordedAt time.Time `json:"recorded_at"`
-}
-
-// RunTag is a mutable tag for categorization (upsert semantics).
-type RunTag struct {
-	ID    uuid.UUID `json:"id"`
-	RunID uuid.UUID `json:"run_id"`
-	Key   string    `json:"key"`
-	Value string    `json:"value"`
-}

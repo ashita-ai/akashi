@@ -1,6 +1,6 @@
 # Akashi Go SDK
 
-Go client for the [Akashi](../../README.md) decision-tracing API. Uses `net/http` with no dependencies beyond `github.com/google/uuid`.
+Go client for the [Akashi](../../README.md) decision audit API -- the black box recorder for AI decisions. Uses `net/http` with no dependencies beyond `github.com/google/uuid`.
 
 ## Install
 

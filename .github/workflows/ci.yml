@@ -29,8 +29,15 @@ jobs:
           go mod tidy
           git diff --exit-code go.mod go.sum
 
+      - name: Install Atlas
+        run: curl -sSf https://atlasgo.sh | sh
+
+      - name: Verify migration integrity
+        run: |
+          atlas migrate validate --dir file://migrations
+
       - name: Build
-        run: go build -o bin/akashi ./cmd/akashi
+        run: go build -ldflags "-X main.version=ci-${GITHUB_SHA::8}" -o bin/akashi ./cmd/akashi
 
       - name: Lint
         uses: golangci/golangci-lint-action@v7

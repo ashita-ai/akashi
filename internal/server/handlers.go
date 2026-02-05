@@ -12,37 +12,41 @@ import (
 
 	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/model"
-	"github.com/ashita-ai/akashi/internal/service/embedding"
+	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/trace"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 // Handlers holds HTTP handler dependencies.
 type Handlers struct {
-	db        *storage.DB
-	jwtMgr    *auth.JWTManager
-	embedder  embedding.Provider
-	buffer    *trace.Buffer
-	logger    *slog.Logger
-	startedAt time.Time
+	db                  *storage.DB
+	jwtMgr              *auth.JWTManager
+	decisionSvc         *decisions.Service
+	buffer              *trace.Buffer
+	logger              *slog.Logger
+	startedAt           time.Time
+	version             string
+	maxRequestBodyBytes int64
 }
 
 // NewHandlers creates a new Handlers with all dependencies.
-func NewHandlers(db *storage.DB, jwtMgr *auth.JWTManager, embedder embedding.Provider, buffer *trace.Buffer, logger *slog.Logger) *Handlers {
+func NewHandlers(db *storage.DB, jwtMgr *auth.JWTManager, decisionSvc *decisions.Service, buffer *trace.Buffer, logger *slog.Logger, version string, maxRequestBodyBytes int64) *Handlers {
 	return &Handlers{
-		db:        db,
-		jwtMgr:    jwtMgr,
-		embedder:  embedder,
-		buffer:    buffer,
-		logger:    logger,
-		startedAt: time.Now(),
+		db:                  db,
+		jwtMgr:              jwtMgr,
+		decisionSvc:         decisionSvc,
+		buffer:              buffer,
+		logger:              logger,
+		startedAt:           time.Now(),
+		version:             version,
+		maxRequestBodyBytes: maxRequestBodyBytes,
 	}
 }
 
 // HandleAuthToken handles POST /auth/token.
 func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 	var req model.AuthTokenRequest
-	if err := decodeJSON(r, &req); err != nil {
+	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
 		return
 	}
@@ -124,7 +128,7 @@ func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, r, httpStatus, model.HealthResponse{
 		Status:   status,
-		Version:  "0.1.0",
+		Version:  h.version,
 		Postgres: pgStatus,
 		Uptime:   int64(time.Since(h.startedAt).Seconds()),
 	})
