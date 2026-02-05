@@ -30,9 +30,12 @@ type Config struct {
 	// Admin bootstrap.
 	AdminAPIKey string // API key for the initial admin agent.
 
-	// OpenAI embedding settings.
-	OpenAIAPIKey  string
-	EmbeddingModel string
+	// Embedding provider settings.
+	EmbeddingProvider string // "auto", "openai", "ollama", or "noop"
+	OpenAIAPIKey      string
+	EmbeddingModel    string
+	OllamaURL         string
+	OllamaModel       string
 
 	// OTEL settings.
 	OTELEndpoint string
@@ -58,8 +61,11 @@ func Load() (Config, error) {
 		JWTPublicKeyPath:        envStr("KYOYU_JWT_PUBLIC_KEY", ""),
 		JWTExpiration:           envDuration("KYOYU_JWT_EXPIRATION", 24*time.Hour),
 		AdminAPIKey:             envStr("KYOYU_ADMIN_API_KEY", ""),
+		EmbeddingProvider:       envStr("KYOYU_EMBEDDING_PROVIDER", "auto"),
 		OpenAIAPIKey:            envStr("OPENAI_API_KEY", ""),
 		EmbeddingModel:          envStr("KYOYU_EMBEDDING_MODEL", "text-embedding-3-small"),
+		OllamaURL:               envStr("OLLAMA_URL", "http://localhost:11434"),
+		OllamaModel:             envStr("OLLAMA_MODEL", "mxbai-embed-large"),
 		OTELEndpoint:            envStr("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		ServiceName:             envStr("OTEL_SERVICE_NAME", "kyoyu"),
 		LogLevel:                envStr("KYOYU_LOG_LEVEL", "info"),

@@ -34,10 +34,11 @@ func (db *DB) CreateDecision(ctx context.Context, d model.Decision) (model.Decis
 
 	_, err := db.pool.Exec(ctx,
 		`INSERT INTO decisions (id, run_id, agent_id, decision_type, outcome, confidence,
-		 reasoning, embedding, metadata, valid_from, valid_to, transaction_time, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		 reasoning, embedding, metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 		d.ID, d.RunID, d.AgentID, d.DecisionType, d.Outcome, d.Confidence,
-		d.Reasoning, d.Embedding, d.Metadata, d.ValidFrom, d.ValidTo, d.TransactionTime, d.CreatedAt,
+		d.Reasoning, d.Embedding, d.Metadata, d.QualityScore, d.PrecedentRef,
+		d.ValidFrom, d.ValidTo, d.TransactionTime, d.CreatedAt,
 	)
 	if err != nil {
 		return model.Decision{}, fmt.Errorf("storage: create decision: %w", err)
@@ -50,11 +51,12 @@ func (db *DB) GetDecision(ctx context.Context, id uuid.UUID, includeAlts, includ
 	var d model.Decision
 	err := db.pool.QueryRow(ctx,
 		`SELECT id, run_id, agent_id, decision_type, outcome, confidence, reasoning,
-		 metadata, valid_from, valid_to, transaction_time, created_at
+		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at
 		 FROM decisions WHERE id = $1`, id,
 	).Scan(
 		&d.ID, &d.RunID, &d.AgentID, &d.DecisionType, &d.Outcome, &d.Confidence,
-		&d.Reasoning, &d.Metadata, &d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
+		&d.Reasoning, &d.Metadata, &d.QualityScore, &d.PrecedentRef,
+		&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -116,10 +118,11 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 
 	_, err = tx.Exec(ctx,
 		`INSERT INTO decisions (id, run_id, agent_id, decision_type, outcome, confidence,
-		 reasoning, embedding, metadata, valid_from, valid_to, transaction_time, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		 reasoning, embedding, metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 		revised.ID, revised.RunID, revised.AgentID, revised.DecisionType, revised.Outcome,
 		revised.Confidence, revised.Reasoning, revised.Embedding, revised.Metadata,
+		revised.QualityScore, revised.PrecedentRef,
 		revised.ValidFrom, revised.ValidTo, revised.TransactionTime, revised.CreatedAt,
 	)
 	if err != nil {
@@ -147,7 +150,7 @@ func (db *DB) QueryDecisions(ctx context.Context, req model.QueryRequest) ([]mod
 	orderBy := "valid_from"
 	if req.OrderBy != "" {
 		switch req.OrderBy {
-		case "confidence", "valid_from", "decision_type", "outcome":
+		case "confidence", "valid_from", "decision_type", "outcome", "quality_score":
 			orderBy = req.OrderBy
 		}
 	}
@@ -170,7 +173,7 @@ func (db *DB) QueryDecisions(ctx context.Context, req model.QueryRequest) ([]mod
 
 	selectQuery := fmt.Sprintf(
 		`SELECT id, run_id, agent_id, decision_type, outcome, confidence, reasoning,
-		 metadata, valid_from, valid_to, transaction_time, created_at
+		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at
 		 FROM decisions%s ORDER BY %s %s LIMIT %d OFFSET %d`,
 		where, orderBy, orderDir, limit, offset,
 	)
@@ -231,7 +234,7 @@ func (db *DB) QueryDecisionsTemporal(ctx context.Context, req model.TemporalQuer
 	args = append(args, req.AsOf, req.AsOf)
 
 	query := `SELECT id, run_id, agent_id, decision_type, outcome, confidence, reasoning,
-		 metadata, valid_from, valid_to, transaction_time, created_at
+		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at
 		 FROM decisions` + where + ` ORDER BY valid_from DESC`
 
 	rows, err := db.pool.Query(ctx, query, args...)
@@ -259,12 +262,19 @@ func (db *DB) SearchDecisionsByEmbedding(ctx context.Context, embedding pgvector
 		where += " AND embedding IS NOT NULL"
 	}
 
+	// Quality-weighted relevance with temporal decay:
+	// - Semantic similarity: 60% base weight
+	// - Quality score: up to 30% bonus
+	// - Recency: decays to 50% at 90 days
 	query := fmt.Sprintf(
 		`SELECT id, run_id, agent_id, decision_type, outcome, confidence, reasoning,
-		 metadata, valid_from, valid_to, transaction_time, created_at,
-		 1 - (embedding <=> $1) AS similarity
+		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at,
+		 (1 - (embedding <=> $1))
+		   * (0.6 + 0.3 * COALESCE(quality_score, 0))
+		   * (1.0 / (1.0 + EXTRACT(EPOCH FROM (NOW() - valid_from)) / 86400.0 / 90.0))
+		   AS relevance
 		 FROM decisions%s
-		 ORDER BY embedding <=> $1
+		 ORDER BY relevance DESC
 		 LIMIT %d`, where, limit,
 	)
 
@@ -278,15 +288,16 @@ func (db *DB) SearchDecisionsByEmbedding(ctx context.Context, embedding pgvector
 	var results []model.SearchResult
 	for rows.Next() {
 		var d model.Decision
-		var sim float32
+		var relevance float32
 		if err := rows.Scan(
 			&d.ID, &d.RunID, &d.AgentID, &d.DecisionType, &d.Outcome, &d.Confidence,
-			&d.Reasoning, &d.Metadata, &d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
-			&sim,
+			&d.Reasoning, &d.Metadata, &d.QualityScore, &d.PrecedentRef,
+			&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
+			&relevance,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan search result: %w", err)
 		}
-		results = append(results, model.SearchResult{Decision: d, SimilarityScore: sim})
+		results = append(results, model.SearchResult{Decision: d, SimilarityScore: relevance})
 	}
 	return results, rows.Err()
 }
@@ -316,7 +327,7 @@ func (db *DB) GetDecisionsByAgent(ctx context.Context, agentID string, limit, of
 
 	query := fmt.Sprintf(
 		`SELECT id, run_id, agent_id, decision_type, outcome, confidence, reasoning,
-		 metadata, valid_from, valid_to, transaction_time, created_at
+		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at
 		 FROM decisions%s ORDER BY valid_from DESC LIMIT %d OFFSET %d`,
 		where, limit, offset,
 	)
@@ -386,7 +397,8 @@ func scanDecisions(rows pgx.Rows) ([]model.Decision, error) {
 		var d model.Decision
 		if err := rows.Scan(
 			&d.ID, &d.RunID, &d.AgentID, &d.DecisionType, &d.Outcome, &d.Confidence,
-			&d.Reasoning, &d.Metadata, &d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
+			&d.Reasoning, &d.Metadata, &d.QualityScore, &d.PrecedentRef,
+			&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan decision: %w", err)
 		}

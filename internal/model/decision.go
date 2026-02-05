@@ -20,6 +20,12 @@ type Decision struct {
 	Embedding       *pgvector.Vector `json:"-"`
 	Metadata        map[string]any `json:"metadata"`
 
+	// Quality score (0.0-1.0) measuring trace completeness.
+	QualityScore float32 `json:"quality_score"`
+
+	// Precedent reference: decision that influenced this one.
+	PrecedentRef *uuid.UUID `json:"precedent_ref,omitempty"`
+
 	// Bi-temporal columns.
 	ValidFrom       time.Time  `json:"valid_from"`
 	ValidTo         *time.Time `json:"valid_to,omitempty"`

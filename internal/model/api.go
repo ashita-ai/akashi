@@ -70,10 +70,11 @@ type CompleteRunRequest struct {
 
 // TraceRequest is the convenience request for POST /v1/trace.
 type TraceRequest struct {
-	AgentID  string         `json:"agent_id"`
-	TraceID  *string        `json:"trace_id,omitempty"`
-	Decision TraceDecision  `json:"decision"`
-	Metadata map[string]any `json:"metadata,omitempty"`
+	AgentID      string         `json:"agent_id"`
+	TraceID      *string        `json:"trace_id,omitempty"`
+	Decision     TraceDecision  `json:"decision"`
+	PrecedentRef *uuid.UUID     `json:"precedent_ref,omitempty"` // decision that influenced this one
+	Metadata     map[string]any `json:"metadata,omitempty"`
 }
 
 // TraceDecision is the decision portion of a trace convenience request.
