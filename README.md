@@ -1,24 +1,25 @@
 # Akashi
 
-Black box recorder for AI decisions.
+**Git blame for AI decisions.**
 
-Akashi records why your AI agents made every decision -- what they chose, what they rejected, and what evidence supported it. So when someone asks "why did the AI do that?", you have the answer.
+When multiple AI agents work together — a planner, a coder, a reviewer — their decisions are invisible. If something goes wrong, you can't answer: *who decided what, when, why, and what alternatives were considered?*
+
+Akashi is the audit trail. Every agent decision gets recorded with its full reasoning, the alternatives that were weighed, the evidence that informed it, and the confidence level. When the CTO asks "why did the AI do that?", you have the answer.
 
 ## What it does
 
-When AI agents make decisions, those decisions need to be auditable. Akashi captures structured records of every decision -- what was decided, why, what alternatives were considered, what evidence supported it, and how confident the agent was -- and makes them queryable through both an HTTP API and the Model Context Protocol (MCP).
+Akashi captures structured records of every AI agent decision and makes them queryable through an HTTP API, Model Context Protocol (MCP), and a built-in audit dashboard. Agent B can search Agent A's past decisions by semantic similarity, query by type and confidence threshold, or subscribe to a real-time feed of new decisions as they happen.
 
-This creates a persistent audit trail that agents, humans, and downstream systems can query. Agent B can search for Agent A's past decisions by semantic similarity, query by type and confidence threshold, or subscribe to a real-time feed of new decisions as they happen.
+### What the audit trail captures
 
-### What the black box records
-
-Every decision trace captures:
+Every decision trace records:
 
 - **The decision itself** -- what was chosen and the agent's confidence level
 - **The reasoning chain** -- step-by-step logic explaining why
 - **Rejected alternatives** -- what else was considered, with scores and rejection reasons
 - **Supporting evidence** -- what information backed the decision, with provenance
 - **Temporal context** -- when the decision was made and when it was valid
+- **Conflicts** -- when two agents disagree on the same question, Akashi detects it
 
 ### What Akashi is not
 
@@ -27,45 +28,61 @@ Akashi is an audit system, not an orchestrator. It records, indexes, and queries
 - **Agent memory** (Mem0, etc.) -- Akashi stores structured decision records with typed fields, not unstructured memory blobs
 - **Temporal knowledge graphs** (Zep, etc.) -- Akashi models decisions as first-class entities with alternatives and evidence, not graph relationships
 - **Workflow engines** (LangGraph, Temporal) -- Akashi provides reactive coordination (subscriptions, conflict detection) without managing workflows
-- **Observability dashboards** (Langfuse, etc.) -- Akashi is infrastructure that agents query programmatically, not a human-facing dashboard
+- **Observability dashboards** (Langfuse, etc.) -- Akashi captures structured decision records, not LLM call traces. It answers "why did the agent decide X?" not "how long did the API call take?"
+
+## Audit Dashboard
+
+Akashi ships with a built-in audit dashboard — a React SPA embedded in the Go binary via `go:embed`. No separate frontend deployment needed.
+
+| Page | What it shows |
+|------|---------------|
+| **Dashboard** | Decision counts, active agents, open conflicts, usage gauge, recent activity |
+| **Decisions** | Paginated table of all decisions with agent/type filters, click to drill down |
+| **Decision Detail** | Full trace: reasoning, alternatives table with scores, evidence cards, timeline |
+| **Agents** | Registered agents with RBAC roles, create/delete management (admin only) |
+| **Conflicts** | Side-by-side view when two agents disagree on the same question |
+| **Search** | Keyword and semantic search across all decisions |
+| **Billing** | Plan limits, usage meters, Stripe checkout/portal (SaaS mode) |
+
+The UI is optional — build with `go build -tags ui` to include it, or without for API-only deployments. In development, run `make dev-ui` for Vite's hot-reload dev server proxied to the Go backend.
 
 ## Architecture overview
 
 ```
-                    MCP Clients                   HTTP Clients
-                        |                              |
-                        v                              v
-                   +---------+                    +---------+
-                   |   /mcp  |                    | /v1/... |
-                   +---------+                    +---------+
-                        |                              |
-                        +---------- Akashi Server ------+
-                        |       (Go, single binary)    |
-                        |                              |
-              +---------+----------+---------+---------+
-              |         |          |         |         |
-           Auth    Trace Buffer  Query    Search   Conflict
-          Ed25519   (in-memory   (SQL    (pgvector  Detection
-           JWT     + COPY flush)  WHERE)  HNSW)   (mat. view)
-              |         |          |         |         |
-              +----+----+----+-----+---------+---------+
-                   |              |
-              PgBouncer       Direct Conn
-             (port 6432)      (port 5432)
-               queries      LISTEN/NOTIFY
-                   |              |
-                   +------+-------+
-                          |
-                   PostgreSQL 17
-               pgvector + TimescaleDB
+     Browser (SPA)        MCP Clients              HTTP Clients
+          |                    |                         |
+          v                    v                         v
+     +---------+         +---------+               +---------+
+     |    /    |         |   /mcp  |               | /v1/... |
+     +---------+         +---------+               +---------+
+          |                    |                         |
+          +----------- Akashi Server (Go, single binary) +
+          |                                              |
++---------+----------+---------+---------+---------+-----+
+|         |          |         |         |         |
+Auth    Trace Buffer Query   Search   Conflict   Billing
+Ed25519  (in-memory  (SQL    (pgvector  Detection  (Stripe)
+ JWT    + COPY flush) WHERE)  HNSW)  (mat. view)
+|         |          |         |         |
++----+----+----+-----+---------+---------+
+     |              |
+PgBouncer       Direct Conn
+(port 6432)     (port 5432)
+  queries     LISTEN/NOTIFY
+     |              |
+     +------+-------+
+            |
+     PostgreSQL 17
+  pgvector + TimescaleDB
 ```
 
-The server exposes the same capabilities through two interfaces:
+The server exposes the same capabilities through three interfaces:
 
-- **HTTP API** at `/v1/...` -- standard REST endpoints for trace ingestion, structured queries, semantic search, agent management, and real-time subscriptions (SSE)
+- **Audit Dashboard** at `/` -- built-in React SPA for human reviewers, auditors, and operators
+- **HTTP API** at `/v1/...` -- REST endpoints for trace ingestion, structured queries, semantic search, agent management, and real-time subscriptions (SSE)
 - **MCP server** at `/mcp` -- StreamableHTTP transport with five tools (`akashi_check`, `akashi_trace`, `akashi_query`, `akashi_search`, `akashi_recent`), three resources (`akashi://session/current`, `akashi://decisions/recent`, `akashi://agent/{id}/history`), and three prompts (`before-decision`, `after-decision`, `agent-setup`), so any MCP-compatible agent can connect directly
 
-Both interfaces share the same storage layer and embedding provider.
+All three interfaces share the same storage layer, auth, and embedding provider.
 
 ## How data flows
 
@@ -142,8 +159,16 @@ docker compose -f docker/docker-compose.yml up -d
 
 # Or start just the database for local development
 make docker-up
-make build
+make build                    # API-only binary
 AKASHI_ADMIN_API_KEY=dev-admin-key ./bin/akashi
+
+# Build with the audit dashboard embedded
+make build-with-ui            # Builds UI + Go binary with -tags ui
+AKASHI_ADMIN_API_KEY=dev-admin-key ./bin/akashi
+# Open http://localhost:8080 to see the dashboard
+
+# UI development (hot reload)
+make dev-ui                   # Vite dev server at :5173, proxies API to :8080
 
 # Run the test suite (requires Docker for testcontainers)
 make test
@@ -204,16 +229,28 @@ All SDKs handle JWT token acquisition and auto-refresh transparently. Python and
 cmd/akashi/                 Application entrypoint, wires all components
 internal/
   auth/                    Ed25519 JWT + Argon2id API key hashing
+  billing/                 Stripe billing integration with quota enforcement
   config/                  Environment variable configuration
   mcp/                     MCP server (5 tools, 3 resources, 3 prompts)
   model/                   Domain types (runs, events, decisions, agents, queries)
-  server/                  HTTP server, handlers, middleware (auth, tracing, logging)
+  ratelimit/               Redis-backed sliding window rate limiter
+  server/                  HTTP server, handlers, middleware, SPA handler
   service/
-    embedding/             Embedding provider interface (OpenAI + noop implementations)
+    decisions/             Shared decision service (trace, check, search, query)
+    embedding/             Embedding provider interface (OpenAI, Ollama, noop)
+    quality/               Decision quality scoring
     trace/                 In-memory event buffer with COPY-based batch flush
+  signup/                  Self-serve signup with email verification
   storage/                 PostgreSQL storage layer (pgxpool + pgx for NOTIFY)
   telemetry/               OpenTelemetry tracer and meter initialization
-migrations/                10 forward-only SQL migration files
+migrations/                14 forward-only SQL migration files
+ui/                        Audit dashboard (React 19, TypeScript, Vite, Tailwind)
+  ui.go                    go:embed with build tag (ui)
+  ui_noop.go               nil FS fallback without build tag
+  src/
+    pages/                 Dashboard, Decisions, DecisionDetail, Agents, Conflicts, Billing, Search, Login
+    components/            Layout, ErrorBoundary, shadcn/ui primitives
+    lib/                   API client, auth context, SSE hook, utilities
 docker/
   docker-compose.yml       Full stack: Postgres, PgBouncer, Redis, Akashi
   Dockerfile.postgres      Postgres 17 + pgvector 0.8.0 + TimescaleDB 2.17.2
@@ -223,7 +260,7 @@ sdk/
   python/                  Python SDK (pydantic v2 + httpx)
   typescript/              TypeScript SDK (native fetch, zero runtime dependencies)
 prompts/                   System prompt templates for agent builders
-Dockerfile                 Multi-stage Go build (alpine-based, runs as non-root)
+Dockerfile                 3-stage build: Node (UI) → Go (binary) → Alpine (runtime)
 ```
 
 ## Configuration
@@ -234,14 +271,19 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 |----------|---------|-------------|
 | `DATABASE_URL` | `postgres://...@localhost:6432/akashi` | Connection string (through PgBouncer) |
 | `NOTIFY_URL` | `postgres://...@localhost:5432/akashi` | Direct connection for LISTEN/NOTIFY |
-| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection |
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis for rate limiting (noop if unreachable) |
 | `AKASHI_PORT` | `8080` | HTTP server port |
 | `AKASHI_ADMIN_API_KEY` | _(empty)_ | Bootstrap admin API key |
 | `OPENAI_API_KEY` | _(empty)_ | OpenAI key for embeddings (falls back to noop) |
+| `AKASHI_EMBEDDING_PROVIDER` | `auto` | Embedding provider: `auto`, `openai`, `ollama`, `noop` |
 | `AKASHI_EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama server URL (preferred in auto mode) |
 | `AKASHI_JWT_PRIVATE_KEY` | _(empty)_ | Path to Ed25519 private key PEM (auto-generated if empty) |
 | `AKASHI_JWT_PUBLIC_KEY` | _(empty)_ | Path to Ed25519 public key PEM |
 | `AKASHI_JWT_EXPIRATION` | `24h` | JWT token lifetime |
+| `STRIPE_SECRET_KEY` | _(empty)_ | Stripe secret key (billing disabled if empty) |
+| `STRIPE_WEBHOOK_SECRET` | _(empty)_ | Stripe webhook signing secret |
+| `AKASHI_SMTP_HOST` | _(empty)_ | SMTP host for email verification (logs URL if empty) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | _(empty)_ | OTLP endpoint (OTEL disabled if empty) |
 | `AKASHI_LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
 
@@ -262,7 +304,7 @@ The `docker/docker-compose.yml` runs four services:
 |---------|-------|------|---------|
 | postgres | Custom (pgvector + TimescaleDB) | 5432 | Primary datastore |
 | pgbouncer | edoburu/pgbouncer | 6432 | Connection pooling (transaction mode, 50 pool / 1000 max) |
-| redis | redis:7-alpine | 6379 | Rate limiting and caching (provisioned, not yet wired) |
+| redis | redis:7-alpine | 6379 | Rate limiting (sliding window, per-agent quotas) |
 | akashi | Multi-stage Go build | 8080 | Application server |
 
 Akashi connects to PgBouncer for all queries and maintains a separate direct connection to Postgres for `LISTEN/NOTIFY` (which PgBouncer does not support in transaction pooling mode).
@@ -279,15 +321,20 @@ make test
 go test ./... -v -count=1
 ```
 
-57 Go integration tests across 6 packages:
-- `internal/storage/` -- 17 tests covering runs, events, decisions, alternatives, evidence, agents, grants, conflicts, notifications
-- `internal/server/` -- 27 tests covering health, auth flow, RBAC, run+event ingestion, trace, queries, search, check, recent decisions, SSE broker, MCP tools (5), MCP prompts (3), MCP resources
-- `internal/ratelimit/` -- 7 tests covering sliding window algorithm, concurrent access, noop mode
-- `internal/auth/` -- 2 tests covering API key hashing and JWT issuance/validation
-- `internal/service/embedding/` -- 2 tests covering Ollama provider
-- `internal/service/quality/` -- 2 tests covering quality scoring
+100+ tests across Go, Python, and TypeScript:
 
-TypeScript SDK: 23 tests covering client methods, error mapping, and middleware (`sdk/typescript/`).
+**Go integration tests** (real TimescaleDB + pgvector via testcontainers, no mocks):
+- `internal/server/` -- 27 tests: health, auth, RBAC, ingestion, trace, query, search, export, GDPR deletion, signup/verification, billing, access grants, SSE, MCP tools/resources/prompts
+- `internal/storage/` -- 17 tests: runs, events, decisions, alternatives, evidence, agents, grants, conflicts, notifications, temporal queries, embedding search
+- `internal/ratelimit/` -- 7 tests: sliding window, concurrency, noop mode
+- `internal/auth/` -- 2 tests: API key hashing, JWT issuance/validation
+- `internal/service/` -- 4 tests: embedding providers, quality scoring
+- `internal/signup/`, `internal/billing/` -- validation and quota logic
+
+**SDK tests:**
+- TypeScript: 23 tests (client methods, error mapping, middleware)
+- Python: 12 tests (async/sync clients, error mapping, middleware)
+- Go: 5 tests (client methods, token refresh, error types, timeouts)
 
 ## Requirements
 
