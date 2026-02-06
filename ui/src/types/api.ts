@@ -161,6 +161,8 @@ export interface DecisionConflict {
   outcome_b: string;
   confidence_a: number;
   confidence_b: number;
+  reasoning_a: string | null;
+  reasoning_b: string | null;
   decided_at_a: string;
   decided_at_b: string;
   detected_at: string;

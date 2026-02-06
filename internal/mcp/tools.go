@@ -338,7 +338,7 @@ func (s *Server) handleSearch(ctx context.Context, request mcplib.CallToolReques
 		filters.ConfidenceMin = &confMin
 	}
 
-	results, err := s.decisionSvc.Search(ctx, orgID, query, filters, limit)
+	results, err := s.decisionSvc.Search(ctx, orgID, query, true, filters, limit)
 	if err != nil {
 		return errorResult(fmt.Sprintf("search failed: %v", err)), nil
 	}

@@ -184,7 +184,7 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err := h.decisionSvc.Search(r.Context(), orgID, req.Query, req.Filters, req.Limit)
+	results, err := h.decisionSvc.Search(r.Context(), orgID, req.Query, req.Semantic, req.Filters, req.Limit)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "search failed")
 		return
