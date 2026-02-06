@@ -42,6 +42,11 @@ type Config struct {
 	OTELEndpoint string
 	ServiceName  string
 
+	// Stripe billing settings.
+	StripeSecretKey     string
+	StripeWebhookSecret string
+	StripePriceIDPro    string // Stripe Price ID for the Pro plan.
+
 	// SMTP settings for email verification.
 	SMTPHost     string
 	SMTPPort     int
@@ -79,6 +84,9 @@ func Load() (Config, error) {
 		OllamaModel:             envStr("OLLAMA_MODEL", "mxbai-embed-large"),
 		OTELEndpoint:            envStr("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		ServiceName:             envStr("OTEL_SERVICE_NAME", "akashi"),
+		StripeSecretKey:         envStr("STRIPE_SECRET_KEY", ""),
+		StripeWebhookSecret:     envStr("STRIPE_WEBHOOK_SECRET", ""),
+		StripePriceIDPro:        envStr("STRIPE_PRO_PRICE_ID", ""),
 		SMTPHost:                envStr("AKASHI_SMTP_HOST", ""),
 		SMTPPort:                envInt("AKASHI_SMTP_PORT", 587),
 		SMTPUser:                envStr("AKASHI_SMTP_USER", ""),

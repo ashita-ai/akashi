@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ashita-ai/akashi/internal/auth"
+	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/trace"
@@ -23,6 +24,7 @@ type Handlers struct {
 	db                  *storage.DB
 	jwtMgr              *auth.JWTManager
 	decisionSvc         *decisions.Service
+	billingSvc          *billing.Service
 	buffer              *trace.Buffer
 	broker              *Broker
 	signupSvc           *signup.Service
@@ -35,11 +37,13 @@ type Handlers struct {
 // NewHandlers creates a new Handlers with all dependencies.
 // broker may be nil if LISTEN/NOTIFY is not configured.
 // signupSvc may be nil if signup is not configured.
-func NewHandlers(db *storage.DB, jwtMgr *auth.JWTManager, decisionSvc *decisions.Service, buffer *trace.Buffer, broker *Broker, signupSvc *signup.Service, logger *slog.Logger, version string, maxRequestBodyBytes int64) *Handlers {
+// billingSvc may be nil if Stripe is not configured.
+func NewHandlers(db *storage.DB, jwtMgr *auth.JWTManager, decisionSvc *decisions.Service, billingSvc *billing.Service, buffer *trace.Buffer, broker *Broker, signupSvc *signup.Service, logger *slog.Logger, version string, maxRequestBodyBytes int64) *Handlers {
 	return &Handlers{
 		db:                  db,
 		jwtMgr:              jwtMgr,
 		decisionSvc:         decisionSvc,
+		billingSvc:          billingSvc,
 		buffer:              buffer,
 		broker:              broker,
 		signupSvc:           signupSvc,

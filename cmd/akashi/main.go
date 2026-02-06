@@ -14,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/ashita-ai/akashi/internal/auth"
+	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/config"
 	"github.com/ashita-ai/akashi/internal/mcp"
 	"github.com/ashita-ai/akashi/internal/ratelimit"
@@ -90,8 +91,20 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	// Create embedding provider.
 	embedder := newEmbeddingProvider(cfg, logger)
 
+	// Create billing service (Stripe integration; disabled if STRIPE_SECRET_KEY is empty).
+	billingSvc := billing.New(db, billing.Config{
+		SecretKey:     cfg.StripeSecretKey,
+		WebhookSecret: cfg.StripeWebhookSecret,
+		PriceIDPro:    cfg.StripePriceIDPro,
+	}, logger)
+	if billingSvc.Enabled() {
+		logger.Info("billing: enabled (Stripe configured)")
+	} else {
+		logger.Info("billing: disabled (no STRIPE_SECRET_KEY)")
+	}
+
 	// Create decision service (shared by HTTP and MCP handlers).
-	decisionSvc := decisions.New(db, embedder, logger)
+	decisionSvc := decisions.New(db, embedder, billingSvc, logger)
 
 	// Create event buffer.
 	buf := trace.NewBuffer(db, logger, cfg.EventBufferSize, cfg.EventFlushTimeout)
@@ -126,7 +139,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}
 
 	// Create and start HTTP server (MCP mounted at /mcp).
-	srv := server.New(db, jwtMgr, decisionSvc, buf, limiter, broker, signupSvc, logger,
+	srv := server.New(db, jwtMgr, decisionSvc, billingSvc, buf, limiter, broker, signupSvc, logger,
 		cfg.Port, cfg.ReadTimeout, cfg.WriteTimeout,
 		mcpSrv.MCPServer(), version, cfg.MaxRequestBodyBytes)
 

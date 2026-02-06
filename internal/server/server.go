@@ -10,6 +10,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/ashita-ai/akashi/internal/auth"
+	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/ratelimit"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
@@ -39,6 +40,7 @@ func New(
 	db *storage.DB,
 	jwtMgr *auth.JWTManager,
 	decisionSvc *decisions.Service,
+	billingSvc *billing.Service,
 	buffer *trace.Buffer,
 	limiter *ratelimit.Limiter,
 	broker *Broker,
@@ -50,7 +52,7 @@ func New(
 	version string,
 	maxRequestBodyBytes int64,
 ) *Server {
-	h := NewHandlers(db, jwtMgr, decisionSvc, buffer, broker, signupSvc, logger, version, maxRequestBodyBytes)
+	h := NewHandlers(db, jwtMgr, decisionSvc, billingSvc, buffer, broker, signupSvc, logger, version, maxRequestBodyBytes)
 
 	// Rate limit rules.
 	ingestRL := ratelimit.Middleware(limiter, ratelimit.Rule{
@@ -112,6 +114,15 @@ func New(
 	// Access control (agent+ can grant access to own traces).
 	mux.Handle("POST /v1/grants", writeRole(http.HandlerFunc(h.HandleCreateGrant)))
 	mux.Handle("DELETE /v1/grants/{grant_id}", writeRole(http.HandlerFunc(h.HandleDeleteGrant)))
+
+	// Billing endpoints (org_owner+ for checkout/portal, no auth for webhooks).
+	ownerOnly := requireRole(model.RoleOrgOwner)
+	mux.Handle("POST /billing/checkout", ownerOnly(http.HandlerFunc(h.HandleBillingCheckout)))
+	mux.Handle("POST /billing/portal", ownerOnly(http.HandlerFunc(h.HandleBillingPortal)))
+	mux.Handle("POST /billing/webhooks", http.HandlerFunc(h.HandleBillingWebhook))
+
+	// Usage endpoint (reader+, any authenticated user can see their org's usage).
+	mux.Handle("GET /v1/usage", queryRL(readRole(http.HandlerFunc(h.HandleUsage))))
 
 	// Conflicts (reader+, query rate limit).
 	mux.Handle("GET /v1/conflicts", queryRL(readRole(http.HandlerFunc(h.HandleListConflicts))))

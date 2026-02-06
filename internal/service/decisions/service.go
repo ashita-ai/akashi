@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pgvector/pgvector-go"
 
+	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
 	"github.com/ashita-ai/akashi/internal/service/quality"
@@ -22,17 +23,20 @@ import (
 
 // Service encapsulates decision business logic shared by HTTP and MCP handlers.
 type Service struct {
-	db       *storage.DB
-	embedder embedding.Provider
-	logger   *slog.Logger
+	db         *storage.DB
+	embedder   embedding.Provider
+	billingSvc *billing.Service
+	logger     *slog.Logger
 }
 
 // New creates a new decision Service.
-func New(db *storage.DB, embedder embedding.Provider, logger *slog.Logger) *Service {
+// billingSvc may be nil if billing is not configured.
+func New(db *storage.DB, embedder embedding.Provider, billingSvc *billing.Service, logger *slog.Logger) *Service {
 	return &Service{
-		db:       db,
-		embedder: embedder,
-		logger:   logger,
+		db:         db,
+		embedder:   embedder,
+		billingSvc: billingSvc,
+		logger:     logger,
 	}
 }
 
@@ -56,6 +60,13 @@ type TraceResult struct {
 // Embeddings and quality scores are computed first, then all database writes
 // happen atomically within a single transaction. Notification is sent after commit.
 func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) (TraceResult, error) {
+	// 0. Quota check (before any DB writes or embedding calls).
+	if s.billingSvc != nil {
+		if err := s.billingSvc.CheckDecisionQuota(ctx, orgID); err != nil {
+			return TraceResult{}, err
+		}
+	}
+
 	// 1. Generate decision embedding (outside tx — may call external API).
 	embText := input.Decision.DecisionType + ": " + input.Decision.Outcome
 	if input.Decision.Reasoning != nil {
@@ -137,6 +148,13 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 		s.logger.Error("trace: marshal notify payload", "error", err)
 	} else if err := s.db.Notify(ctx, storage.ChannelDecisions, string(notifyPayload)); err != nil {
 		s.logger.Error("trace: notify subscribers", "error", err)
+	}
+
+	// 7. Increment usage counter (after successful commit, non-fatal).
+	if s.billingSvc != nil {
+		if err := s.billingSvc.IncrementDecisionCount(ctx, orgID); err != nil {
+			s.logger.Warn("trace: increment usage counter failed (non-fatal)", "error", err, "org_id", orgID)
+		}
 	}
 
 	eventCount := len(alts) + len(evs) + 1 // +1 for the decision itself

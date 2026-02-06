@@ -39,6 +39,7 @@ const (
 	ErrCodeNotFound      = "NOT_FOUND"
 	ErrCodeConflict      = "CONFLICT"
 	ErrCodeRateLimited   = "RATE_LIMITED"
+	ErrCodeQuotaExceeded = "QUOTA_EXCEEDED"
 	ErrCodeInternalError = "INTERNAL_ERROR"
 )
 

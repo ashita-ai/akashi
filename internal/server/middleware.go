@@ -177,7 +177,8 @@ func authMiddleware(jwtMgr *auth.JWTManager, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Paths that don't require auth.
 		if r.URL.Path == "/health" || r.URL.Path == "/auth/token" ||
-			r.URL.Path == "/auth/signup" || r.URL.Path == "/auth/verify" {
+			r.URL.Path == "/auth/signup" || r.URL.Path == "/auth/verify" ||
+			r.URL.Path == "/billing/webhooks" {
 			next.ServeHTTP(w, r)
 			return
 		}

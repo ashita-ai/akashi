@@ -127,6 +127,26 @@ func (db *DB) GetUsage(ctx context.Context, orgID uuid.UUID, period string) (mod
 	return usage, nil
 }
 
+// GetOrganizationByStripeCustomer retrieves an org by its Stripe customer ID.
+func (db *DB) GetOrganizationByStripeCustomer(ctx context.Context, customerID string) (model.Organization, error) {
+	var org model.Organization
+	err := db.pool.QueryRow(ctx,
+		`SELECT id, name, slug, plan, stripe_customer_id, stripe_subscription_id,
+		 decision_limit, agent_limit, email, email_verified, created_at, updated_at
+		 FROM organizations WHERE stripe_customer_id = $1`, customerID,
+	).Scan(
+		&org.ID, &org.Name, &org.Slug, &org.Plan, &org.StripeCustomerID, &org.StripeSubscriptionID,
+		&org.DecisionLimit, &org.AgentLimit, &org.Email, &org.EmailVerified, &org.CreatedAt, &org.UpdatedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return model.Organization{}, fmt.Errorf("storage: organization not found for customer: %s", customerID)
+		}
+		return model.Organization{}, fmt.Errorf("storage: get organization by stripe customer: %w", err)
+	}
+	return org, nil
+}
+
 // CreateEmailVerification inserts a verification token for an org.
 func (db *DB) CreateEmailVerification(ctx context.Context, orgID uuid.UUID, token string, expiresAt time.Time) error {
 	_, err := db.pool.Exec(ctx,

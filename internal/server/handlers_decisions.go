@@ -1,8 +1,10 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 
+	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 )
@@ -48,6 +50,10 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		PrecedentRef: req.PrecedentRef,
 	})
 	if err != nil {
+		if errors.Is(err, billing.ErrQuotaExceeded) {
+			writeError(w, r, http.StatusTooManyRequests, model.ErrCodeQuotaExceeded, err.Error())
+			return
+		}
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to create trace")
 		return
 	}
