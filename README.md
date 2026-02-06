@@ -279,12 +279,15 @@ make test
 go test ./... -v -count=1
 ```
 
-50 integration tests across 5 packages:
+57 Go integration tests across 6 packages:
 - `internal/storage/` -- 17 tests covering runs, events, decisions, alternatives, evidence, agents, grants, conflicts, notifications
 - `internal/server/` -- 27 tests covering health, auth flow, RBAC, run+event ingestion, trace, queries, search, check, recent decisions, SSE broker, MCP tools (5), MCP prompts (3), MCP resources
+- `internal/ratelimit/` -- 7 tests covering sliding window algorithm, concurrent access, noop mode
 - `internal/auth/` -- 2 tests covering API key hashing and JWT issuance/validation
 - `internal/service/embedding/` -- 2 tests covering Ollama provider
 - `internal/service/quality/` -- 2 tests covering quality scoring
+
+TypeScript SDK: 23 tests covering client methods, error mapping, and middleware (`sdk/typescript/`).
 
 ## Requirements
 
