@@ -1,5 +1,5 @@
-.PHONY: all build test lint fmt vet clean docker-up docker-down ci security tidy \
-       migrate-apply migrate-lint migrate-hash migrate-diff migrate-status
+.PHONY: all build build-ui build-with-ui test lint fmt vet clean docker-up docker-down ci security tidy \
+       dev-ui migrate-apply migrate-lint migrate-hash migrate-diff migrate-status
 
 BINARY := bin/akashi
 GO := go
@@ -15,6 +15,18 @@ ci: tidy build lint vet security test
 
 build:
 	$(GO) build $(LDFLAGS) -o $(BINARY) ./cmd/akashi
+
+# Build the frontend (produces ui/dist/).
+build-ui:
+	cd ui && npm ci && npm run build
+
+# Build the Go binary with the embedded UI.
+build-with-ui: build-ui
+	$(GO) build -tags ui $(LDFLAGS) -o $(BINARY) ./cmd/akashi
+
+# Run the Vite dev server with API proxy to the Go server.
+dev-ui:
+	cd ui && npm run dev
 
 test:
 	$(GO) test $(GOFLAGS) ./... -v
@@ -37,7 +49,7 @@ tidy:
 	@git diff --quiet go.mod go.sum || (echo "go.mod/go.sum not tidy" && exit 1)
 
 clean:
-	rm -rf bin/
+	rm -rf bin/ ui/dist/ ui/node_modules/
 	$(GO) clean -testcache
 
 docker-up:

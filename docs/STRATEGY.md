@@ -3,12 +3,12 @@
 ## Positioning
 
 ### The One-Liner
-**"The black box recorder for AI decisions."**
+**"Git blame for AI decisions."**
 
-When something goes wrong—or right—you'll know exactly why.
+When multiple AI agents work together, their decisions are invisible. Akashi makes them auditable.
 
-### The Analogy
-Aviation black boxes don't fly planes. They prove what happened. Akashi doesn't orchestrate agents. It proves what they decided, why, and what they considered.
+### The Elevator Pitch
+Aviation black boxes don't fly planes. They prove what happened. Akashi doesn't orchestrate agents. It proves what they decided, why, and what they considered. When the CTO asks "why did the AI do that?", you have the answer.
 
 ### Pricing Philosophy
 **Price it like insurance, not like software.**
@@ -231,10 +231,12 @@ Someone forks the concept with an OSS version.
 ## 90-Day Priorities
 
 ### Month 1: PLG Foundation
-- [ ] Self-serve signup flow
-- [ ] Free tier implementation with limits
-- [ ] Onboarding flow showing value (first decision → audit view)
-- [ ] Billing integration (Stripe)
+- [x] Self-serve signup flow (with email verification)
+- [x] Free tier implementation with limits (quota enforcement via billing service)
+- [x] Onboarding flow showing value (first decision → audit dashboard)
+- [x] Billing integration (Stripe checkout + portal)
+- [x] Audit dashboard UI (React SPA embedded in Go binary)
+- [x] Multi-tenancy (org-scoped data isolation)
 
 ### Month 2: Ecosystem Seeding
 - [ ] LangChain integration in their docs
@@ -250,14 +252,16 @@ Someone forks the concept with an OSS version.
 
 ---
 
+## Resolved Questions
+
+1. **Dashboard or no dashboard?** Resolved: YES. Built-in React SPA embedded in the Go binary via `go:embed`. Covers decisions, agents, conflicts, search, billing. Optional via build tag (`-tags ui`).
+
+2. **Multi-tenancy model?** Resolved: Org-scoped tenancy with self-serve signup, email verification, and Stripe billing. Each org has isolated data via `org_id` columns on all tables. RBAC roles: `platform_admin > org_owner > admin > agent > reader`.
+
 ## Open Questions
 
-1. **Dashboard or no dashboard?** Current design is API/MCP only. Should there be a minimal UI for showing audit trails to non-technical stakeholders?
+1. **Data residency?** EU customers may require EU-hosted instances. When does this become blocking?
 
-2. **Multi-tenancy model?** How do startups show Akashi data to their enterprise customers during security reviews?
+2. **SOC 2 timing?** When do we need our own SOC 2 to sell to enterprises who require it?
 
-3. **Data residency?** EU customers may require EU-hosted instances. When does this become blocking?
-
-4. **SOC 2 timing?** When do we need our own SOC 2 to sell to enterprises who require it?
-
-5. **Pricing validation?** Are the proposed price points right? Need customer development interviews.
+3. **Pricing validation?** Are the proposed price points right? Need customer development interviews.

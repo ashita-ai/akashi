@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"time"
@@ -10,10 +11,12 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/ashita-ai/akashi/internal/auth"
+	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/ratelimit"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/trace"
+	"github.com/ashita-ai/akashi/internal/signup"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
@@ -34,21 +37,25 @@ func (s *Server) Handler() http.Handler {
 // mcpSrv is optional; if non-nil the MCP StreamableHTTP transport is mounted at /mcp.
 // limiter is optional; if nil, rate limiting is disabled (noop).
 // broker is optional; if nil, SSE subscriptions return 503.
+// uiFS is optional; if non-nil, the SPA is served at the root path.
 func New(
 	db *storage.DB,
 	jwtMgr *auth.JWTManager,
 	decisionSvc *decisions.Service,
+	billingSvc *billing.Service,
 	buffer *trace.Buffer,
 	limiter *ratelimit.Limiter,
 	broker *Broker,
+	signupSvc *signup.Service,
 	logger *slog.Logger,
 	port int,
 	readTimeout, writeTimeout time.Duration,
 	mcpSrv *mcpserver.MCPServer,
 	version string,
 	maxRequestBodyBytes int64,
+	uiFS fs.FS,
 ) *Server {
-	h := NewHandlers(db, jwtMgr, decisionSvc, buffer, broker, logger, version, maxRequestBodyBytes)
+	h := NewHandlers(db, jwtMgr, decisionSvc, billingSvc, buffer, broker, signupSvc, logger, version, maxRequestBodyBytes)
 
 	// Rate limit rules.
 	ingestRL := ratelimit.Middleware(limiter, ratelimit.Rule{
@@ -69,6 +76,10 @@ func New(
 	// Auth endpoints (no auth required, rate limited by IP).
 	mux.Handle("POST /auth/token", authRL(http.HandlerFunc(h.HandleAuthToken)))
 	mux.Handle("POST /auth/refresh", authRL(http.HandlerFunc(h.HandleAuthToken)))
+
+	// Signup endpoints (no auth required, rate limited by IP).
+	mux.Handle("POST /auth/signup", authRL(http.HandlerFunc(h.HandleSignup)))
+	mux.Handle("GET /auth/verify", http.HandlerFunc(h.HandleVerifyEmail))
 
 	// Agent management (admin-only, no rate limit — admin is exempt).
 	adminOnly := requireRole(model.RoleAdmin)
@@ -107,6 +118,15 @@ func New(
 	mux.Handle("POST /v1/grants", writeRole(http.HandlerFunc(h.HandleCreateGrant)))
 	mux.Handle("DELETE /v1/grants/{grant_id}", writeRole(http.HandlerFunc(h.HandleDeleteGrant)))
 
+	// Billing endpoints (org_owner+ for checkout/portal, no auth for webhooks).
+	ownerOnly := requireRole(model.RoleOrgOwner)
+	mux.Handle("POST /billing/checkout", ownerOnly(http.HandlerFunc(h.HandleBillingCheckout)))
+	mux.Handle("POST /billing/portal", ownerOnly(http.HandlerFunc(h.HandleBillingPortal)))
+	mux.Handle("POST /billing/webhooks", http.HandlerFunc(h.HandleBillingWebhook))
+
+	// Usage endpoint (reader+, any authenticated user can see their org's usage).
+	mux.Handle("GET /v1/usage", queryRL(readRole(http.HandlerFunc(h.HandleUsage))))
+
 	// Conflicts (reader+, query rate limit).
 	mux.Handle("GET /v1/conflicts", queryRL(readRole(http.HandlerFunc(h.HandleListConflicts))))
 
@@ -118,6 +138,13 @@ func New(
 
 	// Health (no auth, no rate limit).
 	mux.HandleFunc("GET /health", h.HandleHealth)
+
+	// SPA: serve the embedded UI at the root path.
+	// Registered last so all API routes take priority via the mux's longest-match rule.
+	if uiFS != nil {
+		mux.Handle("/", newSPAHandler(uiFS))
+		logger.Info("ui enabled, serving SPA at /")
+	}
 
 	// Apply middleware chain: request ID → security headers → tracing → logging → auth.
 	var handler http.Handler = mux

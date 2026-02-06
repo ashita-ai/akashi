@@ -14,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/ashita-ai/akashi/internal/auth"
+	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/config"
 	"github.com/ashita-ai/akashi/internal/mcp"
 	"github.com/ashita-ai/akashi/internal/ratelimit"
@@ -21,8 +22,10 @@ import (
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
 	"github.com/ashita-ai/akashi/internal/service/trace"
+	"github.com/ashita-ai/akashi/internal/signup"
 	"github.com/ashita-ai/akashi/internal/storage"
 	"github.com/ashita-ai/akashi/internal/telemetry"
+	"github.com/ashita-ai/akashi/ui"
 )
 
 // version is set at build time via -ldflags.
@@ -89,8 +92,20 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	// Create embedding provider.
 	embedder := newEmbeddingProvider(cfg, logger)
 
+	// Create billing service (Stripe integration; disabled if STRIPE_SECRET_KEY is empty).
+	billingSvc := billing.New(db, billing.Config{
+		SecretKey:     cfg.StripeSecretKey,
+		WebhookSecret: cfg.StripeWebhookSecret,
+		PriceIDPro:    cfg.StripePriceIDPro,
+	}, logger)
+	if billingSvc.Enabled() {
+		logger.Info("billing: enabled (Stripe configured)")
+	} else {
+		logger.Info("billing: disabled (no STRIPE_SECRET_KEY)")
+	}
+
 	// Create decision service (shared by HTTP and MCP handlers).
-	decisionSvc := decisions.New(db, embedder, logger)
+	decisionSvc := decisions.New(db, embedder, billingSvc, logger)
 
 	// Create event buffer.
 	buf := trace.NewBuffer(db, logger, cfg.EventBufferSize, cfg.EventFlushTimeout)
@@ -101,6 +116,16 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	if limiter != nil {
 		defer func() { _ = limiter.Close() }()
 	}
+
+	// Create signup service.
+	signupSvc := signup.New(db, signup.Config{
+		SMTPHost: cfg.SMTPHost,
+		SMTPPort: cfg.SMTPPort,
+		SMTPUser: cfg.SMTPUser,
+		SMTPPass: cfg.SMTPPassword,
+		SMTPFrom: cfg.SMTPFrom,
+		BaseURL:  cfg.BaseURL,
+	}, logger)
 
 	// Create MCP server.
 	mcpSrv := mcp.New(db, decisionSvc, logger, version)
@@ -114,10 +139,19 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		logger.Info("SSE broker: disabled (no notify connection)")
 	}
 
+	// Load embedded UI filesystem (non-nil only when built with -tags ui).
+	uiFS, err := ui.DistFS()
+	if err != nil {
+		return fmt.Errorf("ui: %w", err)
+	}
+	if uiFS != nil {
+		logger.Info("ui: embedded SPA loaded")
+	}
+
 	// Create and start HTTP server (MCP mounted at /mcp).
-	srv := server.New(db, jwtMgr, decisionSvc, buf, limiter, broker, logger,
+	srv := server.New(db, jwtMgr, decisionSvc, billingSvc, buf, limiter, broker, signupSvc, logger,
 		cfg.Port, cfg.ReadTimeout, cfg.WriteTimeout,
-		mcpSrv.MCPServer(), version, cfg.MaxRequestBodyBytes)
+		mcpSrv.MCPServer(), version, cfg.MaxRequestBodyBytes, uiFS)
 
 	// Seed admin agent.
 	if err := srv.Handlers().SeedAdmin(ctx, cfg.AdminAPIKey); err != nil {

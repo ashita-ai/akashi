@@ -29,13 +29,15 @@ import (
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
 	"github.com/ashita-ai/akashi/internal/service/trace"
+	"github.com/ashita-ai/akashi/internal/signup"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 var (
-	testSrv    *httptest.Server
-	adminToken string
-	agentToken string
+	testSrv       *httptest.Server
+	testcontainer testcontainers.Container
+	adminToken    string
+	agentToken    string
 )
 
 func TestMain(m *testing.M) {
@@ -54,7 +56,8 @@ func TestMain(m *testing.M) {
 			WithStartupTimeout(60 * time.Second),
 	}
 
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+	var err error
+	testcontainer, err = testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,
 		Started:          true,
 	})
@@ -63,8 +66,8 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	host, _ := container.Host(ctx)
-	port, _ := container.MappedPort(ctx, "5432")
+	host, _ := testcontainer.Host(ctx)
+	port, _ := testcontainer.MappedPort(ctx, "5432")
 	dsn := fmt.Sprintf("postgres://akashi:akashi@%s:%s/akashi?sslmode=disable", host, port.Port())
 
 	// Enable extensions before creating the storage layer so pgvector types
@@ -93,12 +96,16 @@ func TestMain(m *testing.M) {
 
 	jwtMgr, _ := auth.NewJWTManager("", "", 24*time.Hour)
 	embedder := embedding.NewNoopProvider(1024)
-	decisionSvc := decisions.New(db, embedder, logger)
+	decisionSvc := decisions.New(db, embedder, nil, logger)
 	buf := trace.NewBuffer(db, logger, 1000, 50*time.Millisecond)
 	buf.Start(ctx)
 
 	mcpSrv := mcp.New(db, decisionSvc, logger, "test")
-	srv := server.New(db, jwtMgr, decisionSvc, buf, nil, nil, logger, 0, 30*time.Second, 30*time.Second, mcpSrv.MCPServer(), "test", 1*1024*1024)
+	signupSvc := signup.New(db, signup.Config{
+		SMTPFrom: "test@akashi.dev",
+		BaseURL:  "http://localhost:8080",
+	}, logger)
+	srv := server.New(db, jwtMgr, decisionSvc, nil, buf, nil, nil, signupSvc, logger, 0, 30*time.Second, 30*time.Second, mcpSrv.MCPServer(), "test", 1*1024*1024, nil)
 
 	// Seed admin.
 	_ = srv.Handlers().SeedAdmin(ctx, "test-admin-key")
@@ -118,7 +125,7 @@ func TestMain(m *testing.M) {
 	cancel() // Signal the buffer's flush loop to exit.
 	buf.Drain(context.Background())
 	db.Close(context.Background())
-	_ = container.Terminate(context.Background())
+	_ = testcontainer.Terminate(context.Background())
 	os.Exit(code)
 }
 
@@ -935,6 +942,325 @@ func TestDeleteAgentData(t *testing.T) {
 		defer func() { _ = resp.Body.Close() }()
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
+}
+
+func TestSignupFlow(t *testing.T) {
+	t.Run("valid signup creates org and agent", func(t *testing.T) {
+		body, _ := json.Marshal(model.SignupRequest{
+			Email:    "test-signup@example.com",
+			Password: "StrongP@ss123",
+			OrgName:  "Test Org",
+		})
+		resp, err := http.Post(testSrv.URL+"/auth/signup", "application/json", bytes.NewReader(body))
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusCreated, resp.StatusCode)
+
+		var result struct {
+			Data signup.SignupResult `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		err = json.Unmarshal(data, &result)
+		require.NoError(t, err)
+		assert.NotEqual(t, "", result.Data.OrgID.String())
+		assert.Equal(t, "owner@test-org", result.Data.AgentID)
+		assert.Contains(t, result.Data.Message, "verify")
+	})
+
+	t.Run("unverified org cannot get token", func(t *testing.T) {
+		body, _ := json.Marshal(model.AuthTokenRequest{
+			AgentID: "owner@test-org",
+			APIKey:  "StrongP@ss123",
+		})
+		resp, err := http.Post(testSrv.URL+"/auth/token", "application/json", bytes.NewReader(body))
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+		data, _ := io.ReadAll(resp.Body)
+		assert.Contains(t, string(data), "email not verified")
+	})
+
+	t.Run("invalid email rejected", func(t *testing.T) {
+		body, _ := json.Marshal(model.SignupRequest{
+			Email:    "not-an-email",
+			Password: "StrongP@ss123",
+			OrgName:  "Bad Email Org",
+		})
+		resp, err := http.Post(testSrv.URL+"/auth/signup", "application/json", bytes.NewReader(body))
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("weak password rejected", func(t *testing.T) {
+		body, _ := json.Marshal(model.SignupRequest{
+			Email:    "weak@example.com",
+			Password: "short",
+			OrgName:  "Weak Pwd Org",
+		})
+		resp, err := http.Post(testSrv.URL+"/auth/signup", "application/json", bytes.NewReader(body))
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("missing org name rejected", func(t *testing.T) {
+		body, _ := json.Marshal(model.SignupRequest{
+			Email:    "noorg@example.com",
+			Password: "StrongP@ss123",
+			OrgName:  "",
+		})
+		resp, err := http.Post(testSrv.URL+"/auth/signup", "application/json", bytes.NewReader(body))
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+}
+
+func TestVerifyEmail(t *testing.T) {
+	t.Run("missing token rejected", func(t *testing.T) {
+		resp, err := http.Get(testSrv.URL + "/auth/verify")
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("invalid token rejected", func(t *testing.T) {
+		resp, err := http.Get(testSrv.URL + "/auth/verify?token=bogus-token")
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+}
+
+func TestSignupAndVerifyFullFlow(t *testing.T) {
+	// 1. Sign up.
+	signupBody, _ := json.Marshal(model.SignupRequest{
+		Email:    "fullflow@example.com",
+		Password: "MyStr0ngPasswd",
+		OrgName:  "Full Flow Org",
+	})
+	resp, err := http.Post(testSrv.URL+"/auth/signup", "application/json", bytes.NewReader(signupBody))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var signupResult struct {
+		Data signup.SignupResult `json:"data"`
+	}
+	data, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(data, &signupResult))
+	orgID := signupResult.Data.OrgID
+	agentID := signupResult.Data.AgentID
+
+	// 2. Confirm token is rejected before email verification.
+	tokenBody, _ := json.Marshal(model.AuthTokenRequest{AgentID: agentID, APIKey: "MyStr0ngPasswd"})
+	resp2, err := http.Post(testSrv.URL+"/auth/token", "application/json", bytes.NewReader(tokenBody))
+	require.NoError(t, err)
+	defer func() { _ = resp2.Body.Close() }()
+	assert.Equal(t, http.StatusForbidden, resp2.StatusCode)
+
+	// 3. Get the verification token from the DB directly (in production this comes via email).
+	var verifyToken string
+	ctx := context.Background()
+	// We need DB access to retrieve the token. Use the exported test DB via a storage query.
+	// Since we can't access the DB directly from the test package, we'll use a
+	// roundabout approach: look up the token via the org_id we got back.
+	// Actually, we can use the storage package directly since we have the DSN.
+	// Instead, let's just verify the full flow works via the org_id.
+	// We'll directly query the DB that the test server uses.
+	// The test container DSN is not exported, so let's use the signup service's DB.
+	// Actually, the simplest approach: query the verification token from email_verifications.
+	host, _ := testcontainer.Host(ctx)
+	port, _ := testcontainer.MappedPort(ctx, "5432")
+	dsn := fmt.Sprintf("postgres://akashi:akashi@%s:%s/akashi?sslmode=disable", host, port.Port())
+	conn, err := pgx.Connect(ctx, dsn)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close(ctx) }()
+
+	err = conn.QueryRow(ctx,
+		"SELECT token FROM email_verifications WHERE org_id = $1 AND used_at IS NULL ORDER BY created_at DESC LIMIT 1",
+		orgID,
+	).Scan(&verifyToken)
+	require.NoError(t, err, "should find verification token in DB")
+	require.NotEmpty(t, verifyToken)
+
+	// 4. Verify email.
+	resp3, err := http.Get(testSrv.URL + "/auth/verify?token=" + verifyToken)
+	require.NoError(t, err)
+	defer func() { _ = resp3.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp3.StatusCode)
+
+	data3, _ := io.ReadAll(resp3.Body)
+	assert.Contains(t, string(data3), "verified")
+
+	// 5. Now token issuance should succeed.
+	resp4, err := http.Post(testSrv.URL+"/auth/token", "application/json", bytes.NewReader(tokenBody))
+	require.NoError(t, err)
+	defer func() { _ = resp4.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp4.StatusCode)
+
+	var tokenResult struct {
+		Data model.AuthTokenResponse `json:"data"`
+	}
+	data4, _ := io.ReadAll(resp4.Body)
+	require.NoError(t, json.Unmarshal(data4, &tokenResult))
+	assert.NotEmpty(t, tokenResult.Data.Token)
+
+	// 6. Verify the token can't be used again.
+	resp5, err := http.Get(testSrv.URL + "/auth/verify?token=" + verifyToken)
+	require.NoError(t, err)
+	defer func() { _ = resp5.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp5.StatusCode)
+}
+
+func TestUsageEndpoint(t *testing.T) {
+	t.Run("authenticated user can see usage", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/usage", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data struct {
+				Plan          string `json:"plan"`
+				Period        string `json:"period"`
+				DecisionCount int    `json:"decision_count"`
+				DecisionLimit int    `json:"decision_limit"`
+				AgentLimit    int    `json:"agent_limit"`
+			} `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		err = json.Unmarshal(data, &result)
+		require.NoError(t, err)
+		assert.NotEmpty(t, result.Data.Period)
+		assert.NotEmpty(t, result.Data.Plan)
+	})
+
+	t.Run("unauthenticated cannot see usage", func(t *testing.T) {
+		resp, err := http.Get(testSrv.URL + "/v1/usage")
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
+func TestBillingWebhookEndpoint(t *testing.T) {
+	t.Run("webhook returns 503 when billing disabled", func(t *testing.T) {
+		body := []byte(`{"type":"checkout.session.completed"}`)
+		req, _ := http.NewRequest("POST", testSrv.URL+"/billing/webhooks", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	})
+
+	t.Run("webhook does not require JWT auth", func(t *testing.T) {
+		// Verify the endpoint is reachable without Bearer token
+		// (it uses Stripe signature instead of JWT).
+		body := []byte(`{}`)
+		req, _ := http.NewRequest("POST", testSrv.URL+"/billing/webhooks", bytes.NewReader(body))
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		// Should NOT be 401 (auth middleware skipped). Returns 503 because billing is disabled.
+		assert.NotEqual(t, http.StatusUnauthorized, resp.StatusCode)
+		assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	})
+}
+
+func TestBillingCheckoutEndpoint(t *testing.T) {
+	t.Run("billing not configured returns 503 for org_owner", func(t *testing.T) {
+		// Create an org_owner via signup + verify to get a proper token.
+		ownerToken := createVerifiedOrgOwner(t, "billing-checkout-test@example.com", "Str0ngPassw0rd!", "Billing Checkout Org")
+
+		resp, err := authedRequest("POST", testSrv.URL+"/billing/checkout", ownerToken,
+			map[string]string{"success_url": "https://ok", "cancel_url": "https://cancel"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	})
+
+	t.Run("admin cannot access checkout (requires org_owner)", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/billing/checkout", adminToken,
+			map[string]string{"success_url": "https://ok", "cancel_url": "https://cancel"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("agent cannot access checkout", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/billing/checkout", agentToken,
+			map[string]string{"success_url": "https://ok", "cancel_url": "https://cancel"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+}
+
+func TestBillingPortalEndpoint(t *testing.T) {
+	t.Run("billing not configured returns 503 for org_owner", func(t *testing.T) {
+		ownerToken := createVerifiedOrgOwner(t, "billing-portal-test@example.com", "Str0ngPassw0rd!", "Billing Portal Org")
+
+		resp, err := authedRequest("POST", testSrv.URL+"/billing/portal", ownerToken,
+			map[string]string{"return_url": "https://return"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	})
+
+	t.Run("admin cannot access portal (requires org_owner)", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/billing/portal", adminToken,
+			map[string]string{"return_url": "https://return"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+}
+
+// createVerifiedOrgOwner signs up a new org, verifies the email, and returns a JWT token
+// for the org_owner agent. This is a helper for tests that need an org_owner role.
+func createVerifiedOrgOwner(t *testing.T, email, password, orgName string) string {
+	t.Helper()
+	ctx := context.Background()
+
+	// 1. Sign up.
+	signupBody, _ := json.Marshal(model.SignupRequest{Email: email, Password: password, OrgName: orgName})
+	resp, err := http.Post(testSrv.URL+"/auth/signup", "application/json", bytes.NewReader(signupBody))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var signupResult struct {
+		Data signup.SignupResult `json:"data"`
+	}
+	data, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(data, &signupResult))
+
+	// 2. Verify email directly via DB.
+	host, _ := testcontainer.Host(ctx)
+	port, _ := testcontainer.MappedPort(ctx, "5432")
+	dsn := fmt.Sprintf("postgres://akashi:akashi@%s:%s/akashi?sslmode=disable", host, port.Port())
+	conn, err := pgx.Connect(ctx, dsn)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close(ctx) }()
+
+	var verifyToken string
+	err = conn.QueryRow(ctx,
+		"SELECT token FROM email_verifications WHERE org_id = $1 AND used_at IS NULL ORDER BY created_at DESC LIMIT 1",
+		signupResult.Data.OrgID,
+	).Scan(&verifyToken)
+	require.NoError(t, err)
+
+	resp2, err := http.Get(testSrv.URL + "/auth/verify?token=" + verifyToken)
+	require.NoError(t, err)
+	defer func() { _ = resp2.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp2.StatusCode)
+
+	// 3. Get token.
+	return getToken(testSrv.URL, signupResult.Data.AgentID, password)
 }
 
 func TestAccessGrantEnforcement(t *testing.T) {
