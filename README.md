@@ -75,7 +75,7 @@ An agent records a decision to the black box either through the HTTP convenience
 
 1. A run (execution context) is created in the `agent_runs` table
 2. The decision text is embedded via the configured embedding provider (OpenAI `text-embedding-3-small` by default, or a noop zero-vector provider for development)
-3. The decision is stored with its embedding in the `decisions` table (1536-dimensional vector column with an HNSW index)
+3. The decision is stored with its embedding in the `decisions` table (1024-dimensional vector column with an HNSW index)
 4. Alternatives and evidence are batch-inserted using the PostgreSQL COPY protocol for throughput
 5. A `NOTIFY` is sent on the `akashi_decisions` channel so SSE subscribers learn about it immediately
 6. The run is marked complete
@@ -107,12 +107,11 @@ Core tables:
 |-------|---------|
 | `agent_runs` | Top-level execution context (one per agent invocation) |
 | `agent_events` | Append-only event log (TimescaleDB hypertable, daily chunks, 7-day compression) |
-| `decisions` | First-class decision entities with vector(1536) embeddings, bi-temporal columns |
+| `decisions` | First-class decision entities with vector(1024) embeddings, bi-temporal columns |
 | `alternatives` | Options the agent considered, with scores and rejection reasons |
-| `evidence` | Supporting evidence with provenance, vector(1536) embeddings |
+| `evidence` | Supporting evidence with provenance, vector(1024) embeddings |
 | `agents` | Registered agents with roles (admin/agent/reader) and Argon2id API key hashes |
 | `access_grants` | Fine-grained, time-limited cross-agent visibility |
-| `spans` | OpenTelemetry-compatible trace spans |
 
 Decisions use **bi-temporal modeling**: `valid_from`/`valid_to` track business time (when the decision was in effect), while `transaction_time` tracks when it was recorded. Revising a decision closes the old row's `valid_to` and inserts a new row, preserving full history.
 
@@ -280,10 +279,12 @@ make test
 go test ./... -v -count=1
 ```
 
-41 integration tests across 3 packages:
+50 integration tests across 5 packages:
 - `internal/storage/` -- 17 tests covering runs, events, decisions, alternatives, evidence, agents, grants, conflicts, notifications
-- `internal/server/` -- 22 tests covering health, auth flow, RBAC, run+event ingestion, trace, queries, search, check, recent decisions, MCP tools (5), MCP prompts (3), MCP resources
+- `internal/server/` -- 27 tests covering health, auth flow, RBAC, run+event ingestion, trace, queries, search, check, recent decisions, SSE broker, MCP tools (5), MCP prompts (3), MCP resources
 - `internal/auth/` -- 2 tests covering API key hashing and JWT issuance/validation
+- `internal/service/embedding/` -- 2 tests covering Ollama provider
+- `internal/service/quality/` -- 2 tests covering quality scoring
 
 ## Requirements
 

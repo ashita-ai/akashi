@@ -1,8 +1,13 @@
 # SPEC-002: Data Model
 
-**Status:** Draft
+**Status:** Draft (partially implemented)
 **Date:** 2026-02-03
 **Depends on:** ADR-002 (Unified PostgreSQL), ADR-003 (Event-sourced bitemporal model)
+
+> **Note:** This spec is a design document. The implemented schema differs in some details:
+> - Embedding dimensions are 1024 (not 1536) per migration 013
+> - `spans`, `run_params`, `run_metrics`, `run_tags` tables are not yet implemented
+> - See `migrations/*.sql` for the actual schema
 
 ---
 

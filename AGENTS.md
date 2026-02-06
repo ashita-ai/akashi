@@ -150,11 +150,12 @@ Event-sourced with bi-temporal modeling. Core tables:
 |-------|---------|
 | `agent_runs` | Top-level execution context (corresponds to OTEL traces) |
 | `agent_events` | Append-only event log (source of truth, never mutated) |
-| `decisions` | First-class decision entities with confidence, reasoning |
+| `decisions` | First-class decision entities with confidence, reasoning, embeddings |
 | `alternatives` | Alternatives considered with scores and rejection reasons |
-| `evidence` | Evidence links with provenance |
-| `spans` | OTEL-compatible hierarchical trace structure |
-| `run_params` / `run_metrics` / `run_tags` | MLflow-inspired metadata |
+| `evidence` | Evidence links with provenance and embeddings |
+| `agents` | Registered agents with roles and API key hashes |
+| `access_grants` | Fine-grained cross-agent visibility |
+| `decision_conflicts` | Materialized view of conflicting decisions |
 
 **Bi-temporal columns** on mutable tables:
 - `valid_from` / `valid_to`: business time (when the decision was valid)
