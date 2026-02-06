@@ -6,6 +6,9 @@ Generated: $(date -u +%Y-%m-%d)
 ./cmd/akashi/main.go
 ./internal/auth/auth.go
 ./internal/auth/hash.go
+./internal/billing/billing.go
+./internal/billing/metering.go
+./internal/billing/webhooks.go
 ./internal/config/config.go
 ./internal/ctxutil/ctxutil.go
 ./internal/mcp/mcp.go
@@ -24,16 +27,19 @@ Generated: $(date -u +%Y-%m-%d)
 ./internal/server/broker.go
 ./internal/server/handlers.go
 ./internal/server/handlers_admin.go
+./internal/server/handlers_billing.go
 ./internal/server/handlers_decisions.go
 ./internal/server/handlers_export.go
 ./internal/server/handlers_runs.go
 ./internal/server/middleware.go
 ./internal/server/server.go
+./internal/server/spa.go
 ./internal/service/decisions/service.go
 ./internal/service/embedding/embedding.go
 ./internal/service/embedding/ollama.go
 ./internal/service/quality/quality.go
 ./internal/service/trace/buffer.go
+./internal/signup/signup.go
 ./internal/storage/agents.go
 ./internal/storage/alternatives.go
 ./internal/storage/conflicts.go
@@ -53,6 +59,8 @@ Generated: $(date -u +%Y-%m-%d)
 ./sdk/go/akashi/client.go
 ./sdk/go/akashi/errors.go
 ./sdk/go/akashi/types.go
+./ui/ui.go
+./ui/ui_noop.go
 ```
 
 ## Test Summary
@@ -60,8 +68,10 @@ Generated: $(date -u +%Y-%m-%d)
 | Package | Tests |
 |---------|-------|
 |  | 2 |
+| github.com/ashita-ai/akashi/internal/billing | 7 |
+| github.com/ashita-ai/akashi/internal/signup | 16 |
 | github.com/ashita-ai/akashi/internal/service/embedding | 2 |
-| github.com/ashita-ai/akashi/internal/ratelimit | 28 |
-| github.com/ashita-ai/akashi/internal/service/quality | 16 |
+| github.com/ashita-ai/akashi/internal/ratelimit | 35 |
+| github.com/ashita-ai/akashi/internal/service/quality | 3 |
 | github.com/ashita-ai/akashi/internal/server | 2 |
-| github.com/ashita-ai/akashi/internal/auth | 7 |
+| github.com/ashita-ai/akashi/internal/auth | 8 |
