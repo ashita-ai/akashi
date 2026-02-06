@@ -12,7 +12,7 @@ Multi-agent AI systems lack a shared, persistent, queryable record of agent reas
 
 No existing product answers: "Why did the agent decide this, what alternatives were considered, what evidence supported it, and has this situation come up before?"
 
-Akashi is the **decision trace layer** that fills this gap.
+Akashi is the **black box recorder** that fills this gap -- a decision audit system that captures and preserves the full reasoning behind every AI decision.
 
 ## System Identity
 
@@ -33,7 +33,7 @@ Akashi is a **smart store** — not an orchestrator. It stores, indexes, and que
 - NOT an orchestration engine (LangGraph, Temporal, etc.)
 - NOT an observability dashboard (Langfuse/Phoenix's space)
 
-Akashi **complements** these systems. It owns the semantic context layer — decisions, evidence, reasoning lineage.
+Akashi **complements** these systems. It owns the decision audit trail — recording every decision, the evidence behind it, and the full reasoning lineage.
 
 ## Scope
 

@@ -11,29 +11,29 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
-	"github.com/ashita-ai/akashi/internal/service/embedding"
+	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 // Server wraps the MCP server with Akashi's service layer.
 type Server struct {
-	mcpServer *mcpserver.MCPServer
-	db        *storage.DB
-	embedder  embedding.Provider
-	logger    *slog.Logger
+	mcpServer   *mcpserver.MCPServer
+	db          *storage.DB        // for resources (read-only queries)
+	decisionSvc *decisions.Service // for tools (shared business logic)
+	logger      *slog.Logger
 }
 
 // New creates and configures a new MCP server with all resources, tools, and prompts.
-func New(db *storage.DB, embedder embedding.Provider, logger *slog.Logger) *Server {
+func New(db *storage.DB, decisionSvc *decisions.Service, logger *slog.Logger, version string) *Server {
 	s := &Server{
-		db:       db,
-		embedder: embedder,
-		logger:   logger,
+		db:          db,
+		decisionSvc: decisionSvc,
+		logger:      logger,
 	}
 
 	s.mcpServer = mcpserver.NewMCPServer(
 		"akashi",
-		"0.1.0",
+		version,
 		mcpserver.WithResourceCapabilities(true, true),
 		mcpserver.WithToolCapabilities(true),
 		mcpserver.WithPromptCapabilities(true),

@@ -8,10 +8,10 @@ import (
 )
 
 func (s *Server) registerPrompts() {
-	// before-decision — guides the agent through checking precedents first.
+	// before-decision — guides the agent through checking the black box for precedents first.
 	s.mcpServer.AddPrompt(
 		mcplib.NewPrompt("before-decision",
-			mcplib.WithPromptDescription("Guide for checking precedents before making a decision"),
+			mcplib.WithPromptDescription("Check the black box for precedents before making a decision"),
 			mcplib.WithArgument("decision_type",
 				mcplib.ArgumentDescription("The type of decision you're about to make (e.g., model_selection, architecture, data_source)"),
 				mcplib.RequiredArgument(),
@@ -20,10 +20,10 @@ func (s *Server) registerPrompts() {
 		s.handleBeforeDecisionPrompt,
 	)
 
-	// after-decision — reminds the agent to record what was decided.
+	// after-decision — reminds the agent to record the decision to the black box.
 	s.mcpServer.AddPrompt(
 		mcplib.NewPrompt("after-decision",
-			mcplib.WithPromptDescription("Reminder to record a decision after making it"),
+			mcplib.WithPromptDescription("Record a decision to the black box after making it"),
 			mcplib.WithArgument("decision_type",
 				mcplib.ArgumentDescription("The type of decision that was made"),
 				mcplib.RequiredArgument(),
@@ -36,10 +36,10 @@ func (s *Server) registerPrompts() {
 		s.handleAfterDecisionPrompt,
 	)
 
-	// agent-setup — full system prompt snippet explaining the Akashi workflow.
+	// agent-setup — full system prompt snippet explaining the Akashi decision audit workflow.
 	s.mcpServer.AddPrompt(
 		mcplib.NewPrompt("agent-setup",
-			mcplib.WithPromptDescription("System prompt snippet explaining the Akashi check-before/record-after workflow"),
+			mcplib.WithPromptDescription("System prompt snippet explaining the Akashi decision audit workflow (check-before/record-after)"),
 		),
 		s.handleAgentSetupPrompt,
 	)
@@ -97,7 +97,7 @@ func (s *Server) handleAfterDecisionPrompt(ctx context.Context, request mcplib.G
 				Role: mcplib.RoleUser,
 				Content: mcplib.TextContent{
 					Type: "text",
-					Text: fmt.Sprintf(`You just made a decision. Record it now so other agents can learn from it.
+					Text: fmt.Sprintf(`You just made a decision. Record it to the black box now so there is proof of why, and other agents can learn from it.
 
 CALL akashi_trace with:
 - decision_type: "%s"
@@ -119,14 +119,15 @@ Good reasoning includes:
 
 func (s *Server) handleAgentSetupPrompt(ctx context.Context, request mcplib.GetPromptRequest) (*mcplib.GetPromptResult, error) {
 	return &mcplib.GetPromptResult{
-		Description: "Akashi decision-sharing workflow for AI agents",
+		Description: "Akashi decision audit workflow for AI agents",
 		Messages: []mcplib.PromptMessage{
 			{
 				Role: mcplib.RoleUser,
 				Content: mcplib.TextContent{
 					Type: "text",
-					Text: `You have access to Akashi, a decision-sharing system that helps AI agents
-coordinate by recording and querying past decisions.
+					Text: `You have access to Akashi, a black box recorder for AI decisions. It captures
+why every decision was made -- what was chosen, what was rejected, and what
+evidence supported it -- so there is always proof when someone asks "why?"
 
 ## The Pattern: Check Before, Record After
 
@@ -134,21 +135,22 @@ Every non-trivial decision should follow this workflow:
 
 ### Before deciding:
 Call akashi_check with the decision_type you're about to make.
-This returns existing precedents and any conflicts. Use this information
-to make a more informed decision and avoid contradicting prior work.
+This checks the black box for existing precedents and any conflicts.
+Use this information to make a more informed decision and avoid
+contradicting prior work.
 
 ### After deciding:
 Call akashi_trace to record what you decided, why, and how confident you are.
-This creates a searchable record that other agents (and your future self)
-can learn from.
+This adds to the audit trail so other agents (and your future self)
+can learn from it, and so the decision is provable later.
 
 ## Available Tools
 
-- akashi_check: Look for existing decisions before making a new one (use FIRST)
-- akashi_trace: Record a decision you just made (use AFTER deciding)
-- akashi_query: Find decisions by exact filters (type, agent, confidence)
-- akashi_search: Find decisions by semantic similarity (natural language)
-- akashi_recent: See what's been decided recently (good for context)
+- akashi_check: Check the black box for precedents before deciding (use FIRST)
+- akashi_trace: Record a decision to the black box (use AFTER deciding)
+- akashi_query: Query the audit trail by exact filters (type, agent, confidence)
+- akashi_search: Search the black box by semantic similarity (natural language)
+- akashi_recent: See what the black box recorded recently (good for context)
 
 ## Decision Types
 

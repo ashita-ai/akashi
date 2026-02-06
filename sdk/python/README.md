@@ -1,6 +1,6 @@
 # Akashi Python SDK
 
-Python client for the [Akashi](../../README.md) decision-tracing API. Provides both async and sync clients, with middleware for the check-before/record-after pattern.
+Python client for the [Akashi](../../README.md) decision audit API -- the black box recorder for AI decisions. Provides both async and sync clients, with middleware for the check-before/record-after pattern.
 
 **Requirements:** Python 3.10+, httpx, pydantic v2
 

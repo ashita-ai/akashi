@@ -39,55 +39,33 @@ func TestOllamaProvider(t *testing.T) {
 	}))
 	defer server.Close()
 
-	t.Run("dimensions with padding", func(t *testing.T) {
-		p := NewOllamaProvider(server.URL, "test-model", 1024, 1536)
-		if p.Dimensions() != 1536 {
-			t.Errorf("expected 1536, got %d", p.Dimensions())
-		}
-	})
-
-	t.Run("dimensions without padding", func(t *testing.T) {
-		p := NewOllamaProvider(server.URL, "test-model", 1024, 0)
+	t.Run("dimensions", func(t *testing.T) {
+		p := NewOllamaProvider(server.URL, "test-model", 1024)
 		if p.Dimensions() != 1024 {
 			t.Errorf("expected 1024, got %d", p.Dimensions())
 		}
 	})
 
-	t.Run("embed single with padding", func(t *testing.T) {
-		p := NewOllamaProvider(server.URL, "test-model", 1024, 1536)
+	t.Run("embed single", func(t *testing.T) {
+		p := NewOllamaProvider(server.URL, "test-model", 1024)
 		vec, err := p.Embed(context.Background(), "test text")
 		if err != nil {
 			t.Fatal(err)
 		}
 		slice := vec.Slice()
-		if len(slice) != 1536 {
-			t.Errorf("expected 1536-dim vector, got %d", len(slice))
+		if len(slice) != 1024 {
+			t.Errorf("expected 1024-dim vector, got %d", len(slice))
 		}
-		// First 1024 should have values, rest should be zero.
 		if slice[0] != 0.0 {
 			t.Errorf("expected first element to be 0.0, got %f", slice[0])
 		}
 		if slice[100] != 0.1 {
 			t.Errorf("expected element 100 to be 0.1, got %f", slice[100])
 		}
-		if slice[1024] != 0.0 {
-			t.Errorf("expected padded element to be 0.0, got %f", slice[1024])
-		}
-	})
-
-	t.Run("embed single without padding", func(t *testing.T) {
-		p := NewOllamaProvider(server.URL, "test-model", 1024, 0)
-		vec, err := p.Embed(context.Background(), "test text")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(vec.Slice()) != 1024 {
-			t.Errorf("expected 1024-dim vector, got %d", len(vec.Slice()))
-		}
 	})
 
 	t.Run("embed batch", func(t *testing.T) {
-		p := NewOllamaProvider(server.URL, "test-model", 1024, 1536)
+		p := NewOllamaProvider(server.URL, "test-model", 1024)
 		vecs, err := p.EmbedBatch(context.Background(), []string{"a", "b", "c"})
 		if err != nil {
 			t.Fatal(err)
@@ -96,14 +74,14 @@ func TestOllamaProvider(t *testing.T) {
 			t.Errorf("expected 3 vectors, got %d", len(vecs))
 		}
 		for i, vec := range vecs {
-			if len(vec.Slice()) != 1536 {
-				t.Errorf("vector %d: expected 1536-dim, got %d", i, len(vec.Slice()))
+			if len(vec.Slice()) != 1024 {
+				t.Errorf("vector %d: expected 1024-dim, got %d", i, len(vec.Slice()))
 			}
 		}
 	})
 
 	t.Run("embed batch empty", func(t *testing.T) {
-		p := NewOllamaProvider(server.URL, "test-model", 1024, 1536)
+		p := NewOllamaProvider(server.URL, "test-model", 1024)
 		vecs, err := p.EmbedBatch(context.Background(), nil)
 		if err != nil {
 			t.Fatal(err)
@@ -121,7 +99,7 @@ func TestOllamaProviderErrors(t *testing.T) {
 		}))
 		defer server.Close()
 
-		p := NewOllamaProvider(server.URL, "test-model", 1024, 1536)
+		p := NewOllamaProvider(server.URL, "test-model", 1024)
 		_, err := p.Embed(context.Background(), "test")
 		if err == nil {
 			t.Error("expected error, got nil")
@@ -130,11 +108,11 @@ func TestOllamaProviderErrors(t *testing.T) {
 
 	t.Run("empty embedding", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			json.NewEncoder(w).Encode(ollamaEmbedResponse{Embedding: nil})
+			_ = json.NewEncoder(w).Encode(ollamaEmbedResponse{Embedding: nil})
 		}))
 		defer server.Close()
 
-		p := NewOllamaProvider(server.URL, "test-model", 1024, 1536)
+		p := NewOllamaProvider(server.URL, "test-model", 1024)
 		_, err := p.Embed(context.Background(), "test")
 		if err == nil {
 			t.Error("expected error for empty embedding, got nil")
@@ -143,11 +121,11 @@ func TestOllamaProviderErrors(t *testing.T) {
 
 	t.Run("invalid json response", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte("not json"))
+			_, _ = w.Write([]byte("not json"))
 		}))
 		defer server.Close()
 
-		p := NewOllamaProvider(server.URL, "test-model", 1024, 1536)
+		p := NewOllamaProvider(server.URL, "test-model", 1024)
 		_, err := p.Embed(context.Background(), "test")
 		if err == nil {
 			t.Error("expected error for invalid json, got nil")

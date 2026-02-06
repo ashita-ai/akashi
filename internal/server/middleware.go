@@ -219,30 +219,51 @@ func requireRole(roles ...model.AgentRole) func(http.Handler) http.Handler {
 func writeJSON(w http.ResponseWriter, r *http.Request, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(model.APIResponse{
+	if err := json.NewEncoder(w).Encode(model.APIResponse{
 		Data: data,
 		Meta: model.ResponseMeta{
 			RequestID: RequestIDFromContext(r.Context()),
 			Timestamp: time.Now().UTC(),
 		},
-	})
+	}); err != nil {
+		slog.Warn("failed to encode JSON response",
+			"error", err,
+			"request_id", RequestIDFromContext(r.Context()))
+	}
 }
 
 // writeError writes a JSON error response with the standard envelope.
 func writeError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(model.APIError{
+	if err := json.NewEncoder(w).Encode(model.APIError{
 		Error: model.ErrorDetail{Code: code, Message: message},
 		Meta: model.ResponseMeta{
 			RequestID: RequestIDFromContext(r.Context()),
 			Timestamp: time.Now().UTC(),
 		},
+	}); err != nil {
+		slog.Warn("failed to encode JSON error response",
+			"error", err,
+			"request_id", RequestIDFromContext(r.Context()))
+	}
+}
+
+// securityHeadersMiddleware adds standard security response headers.
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		next.ServeHTTP(w, r)
 	})
 }
 
 // decodeJSON decodes a JSON request body into the target struct.
-func decodeJSON(r *http.Request, target any) error {
+// Applies MaxBytesReader to prevent unbounded request bodies.
+func decodeJSON(r *http.Request, target any, maxBytes int64) error {
+	r.Body = http.MaxBytesReader(nil, r.Body, maxBytes)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	return decoder.Decode(target)

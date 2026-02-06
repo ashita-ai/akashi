@@ -11,16 +11,30 @@ import (
 	"github.com/ashita-ai/akashi/internal/model"
 )
 
-// NextSequenceNum returns the next sequence number for a run.
-func (db *DB) NextSequenceNum(ctx context.Context, runID uuid.UUID) (int64, error) {
-	var seq int64
-	err := db.pool.QueryRow(ctx,
-		`SELECT COALESCE(MAX(sequence_num), 0) + 1 FROM agent_events WHERE run_id = $1`, runID,
-	).Scan(&seq)
-	if err != nil {
-		return 0, fmt.Errorf("storage: next sequence num: %w", err)
+// ReserveSequenceNums atomically allocates count globally unique sequence numbers
+// using a Postgres SEQUENCE. Returns a slice of monotonically increasing values.
+// Under concurrent access, values are unique but may not be consecutive (gaps are
+// harmless — they just mean another caller grabbed intervening numbers).
+func (db *DB) ReserveSequenceNums(ctx context.Context, count int) ([]int64, error) {
+	if count <= 0 {
+		return nil, nil
 	}
-	return seq, nil
+	rows, err := db.pool.Query(ctx,
+		`SELECT nextval('event_sequence_num_seq') FROM generate_series(1, $1)`, count)
+	if err != nil {
+		return nil, fmt.Errorf("storage: reserve sequence nums: %w", err)
+	}
+	defer rows.Close()
+
+	nums := make([]int64, 0, count)
+	for rows.Next() {
+		var v int64
+		if err := rows.Scan(&v); err != nil {
+			return nil, fmt.Errorf("storage: scan sequence num: %w", err)
+		}
+		nums = append(nums, v)
+	}
+	return nums, rows.Err()
 }
 
 // InsertEvents inserts events using the COPY protocol for high throughput.

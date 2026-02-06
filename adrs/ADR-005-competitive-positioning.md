@@ -9,7 +9,7 @@ The agent memory infrastructure space has multiple players. We need a clear posi
 
 ## Decision
 
-Akashi is a **decision trace layer**, not a general memory layer. We capture structured decision context: what was decided, what alternatives were considered, what evidence supported it, and how confident the agent was.
+Akashi is a **decision audit system -- a black box recorder for AI decisions**, not a general memory layer. We capture structured decision context: what was decided, what alternatives were considered, what evidence supported it, and how confident the agent was.
 
 We do NOT build:
 - General-purpose agent memory (Mem0's space)
@@ -52,7 +52,7 @@ No existing product answers: "Why did the agent decide this, what alternatives w
 
 - Data model is optimized for decisions, alternatives, evidence, reasoning chains.
 - API surface (`trace`, `query`, `search`) is decision-centric, not memory-centric.
-- Marketing and docs emphasize "decision traces" and "agent audit trail", not "agent memory".
+- Marketing and docs emphasize "black box recorder", "decision audit trail", and "decision proof", not "agent memory".
 - We complement Mem0/Zep (they handle facts, we handle decisions), not compete.
 
 ## References

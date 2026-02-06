@@ -1,6 +1,6 @@
 # Akashi TypeScript SDK
 
-TypeScript client for the [Akashi](../../README.md) decision-tracing API. Uses native `fetch` with zero runtime dependencies.
+TypeScript client for the [Akashi](../../README.md) decision audit API -- the black box recorder for AI decisions. Uses native `fetch` with zero runtime dependencies.
 
 **Requirements:** Node.js 18+ or any runtime with global `fetch` (Deno, Bun, Cloudflare Workers)
 

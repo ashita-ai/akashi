@@ -1,20 +1,22 @@
 package server
 
 import (
+	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 // HandleCreateAgent handles POST /v1/agents (admin-only).
 func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	var req model.CreateAgentRequest
-	if err := decodeJSON(r, &req); err != nil {
+	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
 		return
 	}
@@ -42,7 +44,7 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		Metadata:   req.Metadata,
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
+		if isDuplicateKeyError(err) {
 			writeError(w, r, http.StatusConflict, model.ErrCodeConflict, "agent_id already exists")
 			return
 		}
@@ -68,7 +70,7 @@ func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 
 	var req model.CreateGrantRequest
-	if err := decodeJSON(r, &req); err != nil {
+	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
 		return
 	}
@@ -114,7 +116,7 @@ func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:    expiresAt,
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
+		if isDuplicateKeyError(err) {
 			writeError(w, r, http.StatusConflict, model.ErrCodeConflict, "grant already exists")
 			return
 		}
@@ -127,6 +129,8 @@ func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 
 // HandleDeleteGrant handles DELETE /v1/grants/{grant_id}.
 func (h *Handlers) HandleDeleteGrant(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+
 	grantIDStr := r.PathValue("grant_id")
 	grantID, err := uuid.Parse(grantIDStr)
 	if err != nil {
@@ -134,10 +138,63 @@ func (h *Handlers) HandleDeleteGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.db.DeleteGrant(r.Context(), grantID); err != nil {
+	// Verify the grant exists and the caller has permission to delete it.
+	grant, err := h.db.GetGrant(r.Context(), grantID)
+	if err != nil {
 		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "grant not found")
 		return
 	}
 
+	// Only admins or the grantor can delete a grant.
+	if claims.Role != model.RoleAdmin {
+		grantor, err := h.db.GetAgentByAgentID(r.Context(), claims.AgentID)
+		if err != nil || grant.GrantorID != grantor.ID {
+			writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "can only delete your own grants")
+			return
+		}
+	}
+
+	if err := h.db.DeleteGrant(r.Context(), grantID); err != nil {
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to delete grant")
+		return
+	}
+
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// HandleDeleteAgent handles DELETE /v1/agents/{agent_id} (admin-only).
+// Deletes all data associated with the agent (GDPR right to erasure).
+func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("agent_id")
+	if agentID == "" {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "agent_id is required")
+		return
+	}
+
+	// Prevent deleting the admin account to avoid lockout.
+	if agentID == "admin" {
+		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "cannot delete the admin agent")
+		return
+	}
+
+	result, err := h.db.DeleteAgentData(r.Context(), agentID)
+	if err != nil {
+		if errors.Is(err, storage.ErrAgentNotFound) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "agent not found")
+			return
+		}
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to delete agent data")
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"agent_id": agentID,
+		"deleted":  result,
+	})
+}
+
+// isDuplicateKeyError checks if a Postgres error is a unique_violation (23505).
+func isDuplicateKeyError(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

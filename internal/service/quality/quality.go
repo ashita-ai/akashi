@@ -47,21 +47,23 @@ func Score(d model.TraceDecision) float32 {
 	// Factor 2: Reasoning is substantive.
 	if d.Reasoning != nil {
 		reasoningLen := len(strings.TrimSpace(*d.Reasoning))
-		if reasoningLen > 100 {
+		switch {
+		case reasoningLen > 100:
 			score += 0.25
-		} else if reasoningLen > 50 {
+		case reasoningLen > 50:
 			score += 0.20
-		} else if reasoningLen > 20 {
+		case reasoningLen > 20:
 			score += 0.10
 		}
 	}
 
 	// Factor 3: Alternatives provided.
-	if len(d.Alternatives) >= 3 {
+	switch {
+	case len(d.Alternatives) >= 3:
 		score += 0.20
-	} else if len(d.Alternatives) >= 2 {
+	case len(d.Alternatives) >= 2:
 		score += 0.15
-	} else if len(d.Alternatives) >= 1 {
+	case len(d.Alternatives) >= 1:
 		score += 0.05
 	}
 

@@ -26,6 +26,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/mcp"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/server"
+	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
 	"github.com/ashita-ai/akashi/internal/service/trace"
 	"github.com/ashita-ai/akashi/internal/storage"
@@ -38,7 +39,7 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	req := testcontainers.ContainerRequest{
 		Image:        "timescale/timescaledb:latest-pg17",
@@ -75,7 +76,7 @@ func TestMain(m *testing.M) {
 	}
 	_, _ = bootstrapConn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS vector")
 	_, _ = bootstrapConn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS timescaledb")
-	bootstrapConn.Close(ctx)
+	_ = bootstrapConn.Close(ctx)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
@@ -91,12 +92,13 @@ func TestMain(m *testing.M) {
 	}
 
 	jwtMgr, _ := auth.NewJWTManager("", "", 24*time.Hour)
-	embedder := embedding.NewNoopProvider(1536)
+	embedder := embedding.NewNoopProvider(1024)
+	decisionSvc := decisions.New(db, embedder, logger)
 	buf := trace.NewBuffer(db, logger, 1000, 50*time.Millisecond)
 	buf.Start(ctx)
 
-	mcpSrv := mcp.New(db, embedder, logger)
-	srv := server.New(db, jwtMgr, embedder, buf, logger, 0, 30*time.Second, 30*time.Second, mcpSrv.MCPServer())
+	mcpSrv := mcp.New(db, decisionSvc, logger, "test")
+	srv := server.New(db, jwtMgr, decisionSvc, buf, nil, nil, logger, 0, 30*time.Second, 30*time.Second, mcpSrv.MCPServer(), "test", 1*1024*1024)
 
 	// Seed admin.
 	_ = srv.Handlers().SeedAdmin(ctx, "test-admin-key")
@@ -113,9 +115,10 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	testSrv.Close()
-	buf.Drain(ctx)
-	db.Close(ctx)
-	_ = container.Terminate(ctx)
+	cancel() // Signal the buffer's flush loop to exit.
+	buf.Drain(context.Background())
+	db.Close(context.Background())
+	_ = container.Terminate(context.Background())
 	os.Exit(code)
 }
 
@@ -125,7 +128,7 @@ func getToken(baseURL, agentID, apiKey string) string {
 	if err != nil {
 		panic(fmt.Sprintf("getToken: request failed: %v", err))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		panic(fmt.Sprintf("getToken: status %d, body: %s", resp.StatusCode, string(data)))
@@ -153,7 +156,7 @@ func createAgent(baseURL, token, agentID, name, role, apiKey string) {
 	if err != nil {
 		panic(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 func authedRequest(method, url, token string, body any) (*http.Response, error) {
@@ -173,10 +176,12 @@ func authedRequest(method, url, token string, body any) (*http.Response, error) 
 	return http.DefaultClient.Do(req)
 }
 
+func ptrFloat32(v float32) *float32 { return &v }
+
 func TestHealthEndpoint(t *testing.T) {
 	resp, err := http.Get(testSrv.URL + "/health")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var result struct {
@@ -197,14 +202,14 @@ func TestAuthFlow(t *testing.T) {
 	body, _ := json.Marshal(model.AuthTokenRequest{AgentID: "admin", APIKey: "wrong"})
 	resp, err := http.Post(testSrv.URL+"/auth/token", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
 func TestUnauthenticatedAccess(t *testing.T) {
 	resp, err := http.Get(testSrv.URL + "/v1/conflicts")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
@@ -213,7 +218,7 @@ func TestCreateRunAndAppendEvents(t *testing.T) {
 	resp, err := authedRequest("POST", testSrv.URL+"/v1/runs", agentToken,
 		model.CreateRunRequest{AgentID: "test-agent"})
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	var runResult struct {
@@ -232,7 +237,7 @@ func TestCreateRunAndAppendEvents(t *testing.T) {
 			},
 		})
 	require.NoError(t, err)
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	assert.Equal(t, http.StatusCreated, resp2.StatusCode)
 
 	// Wait for buffer flush.
@@ -241,7 +246,7 @@ func TestCreateRunAndAppendEvents(t *testing.T) {
 	// Get run with events.
 	resp3, err := authedRequest("GET", testSrv.URL+"/v1/runs/"+runID.String(), agentToken, nil)
 	require.NoError(t, err)
-	defer resp3.Body.Close()
+	defer func() { _ = resp3.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp3.StatusCode)
 }
 
@@ -265,7 +270,7 @@ func TestTraceConvenience(t *testing.T) {
 			},
 		})
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 }
 
@@ -293,7 +298,7 @@ func TestQueryEndpoint(t *testing.T) {
 			Limit: 10,
 		})
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
@@ -304,7 +309,7 @@ func TestSearchEndpoint(t *testing.T) {
 			Limit: 5,
 		})
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
@@ -313,20 +318,20 @@ func TestAdminOnlyEndpoints(t *testing.T) {
 	resp, err := authedRequest("POST", testSrv.URL+"/v1/agents", agentToken,
 		model.CreateAgentRequest{AgentID: "should-fail", Name: "Fail", APIKey: "key"})
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 
 	// Admin can list agents.
 	resp2, err := authedRequest("GET", testSrv.URL+"/v1/agents", adminToken, nil)
 	require.NoError(t, err)
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp2.StatusCode)
 }
 
 func TestConflictsEndpoint(t *testing.T) {
 	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflicts", adminToken, nil)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
@@ -346,7 +351,7 @@ func newMCPClient(t *testing.T, token string) *mcpclient.Client {
 
 func TestMCPInitialize(t *testing.T) {
 	c := newMCPClient(t, agentToken)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	initResult, err := c.Initialize(ctx, mcplib.InitializeRequest{
@@ -356,12 +361,12 @@ func TestMCPInitialize(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "akashi", initResult.ServerInfo.Name)
-	assert.Equal(t, "0.1.0", initResult.ServerInfo.Version)
+	assert.Equal(t, "test", initResult.ServerInfo.Version)
 }
 
 func TestMCPListTools(t *testing.T) {
 	c := newMCPClient(t, agentToken)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
@@ -388,7 +393,7 @@ func TestMCPListTools(t *testing.T) {
 
 func TestMCPListResources(t *testing.T) {
 	c := newMCPClient(t, agentToken)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
@@ -405,7 +410,7 @@ func TestMCPListResources(t *testing.T) {
 
 func TestMCPTraceAndQuery(t *testing.T) {
 	c := newMCPClient(t, agentToken)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
@@ -463,7 +468,7 @@ func TestMCPTraceAndQuery(t *testing.T) {
 
 func TestMCPReadResource(t *testing.T) {
 	c := newMCPClient(t, agentToken)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
@@ -496,13 +501,13 @@ func TestMCPUnauthenticated(t *testing.T) {
 	// MCP endpoint should require auth.
 	resp, err := http.Post(testSrv.URL+"/mcp", "application/json", nil)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
 func TestMCPCheckTool(t *testing.T) {
 	c := newMCPClient(t, agentToken)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
@@ -555,7 +560,7 @@ func TestMCPCheckTool(t *testing.T) {
 
 func TestMCPCheckNoPrecedent(t *testing.T) {
 	c := newMCPClient(t, agentToken)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
@@ -590,7 +595,7 @@ func TestMCPCheckNoPrecedent(t *testing.T) {
 
 func TestMCPRecentTool(t *testing.T) {
 	c := newMCPClient(t, agentToken)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
@@ -644,7 +649,7 @@ func TestMCPRecentTool(t *testing.T) {
 
 func TestMCPPrompts(t *testing.T) {
 	c := newMCPClient(t, agentToken)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
 	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
@@ -714,7 +719,7 @@ func TestCheckEndpoint(t *testing.T) {
 			Limit:        5,
 		})
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var result struct {
@@ -733,7 +738,7 @@ func TestCheckEndpoint(t *testing.T) {
 			Limit:        5,
 		})
 	require.NoError(t, err)
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp2.StatusCode)
 
 	var result2 struct {
@@ -749,7 +754,7 @@ func TestDecisionsRecentEndpoint(t *testing.T) {
 	// GET /v1/decisions/recent with no filters.
 	resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/recent", agentToken, nil)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var result struct {
@@ -768,7 +773,7 @@ func TestDecisionsRecentEndpoint(t *testing.T) {
 	// GET with agent_id filter.
 	resp2, err := authedRequest("GET", testSrv.URL+"/v1/decisions/recent?agent_id=test-agent&limit=3", agentToken, nil)
 	require.NoError(t, err)
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp2.StatusCode)
 
 	var result2 struct {
@@ -784,4 +789,301 @@ func TestDecisionsRecentEndpoint(t *testing.T) {
 	for _, d := range result2.Data.Decisions {
 		assert.Equal(t, "test-agent", d.AgentID, "expected only test-agent decisions")
 	}
+}
+
+func TestSSESubscribeNoBroker(t *testing.T) {
+	// When broker is nil (no LISTEN/NOTIFY configured), SSE returns 503.
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/subscribe", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
+
+func TestExportDecisions(t *testing.T) {
+	// Ensure there are decisions to export (created by earlier tests).
+	t.Run("admin can export NDJSON", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/export/decisions?agent_id=test-agent", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "application/x-ndjson", resp.Header.Get("Content-Type"))
+		assert.Contains(t, resp.Header.Get("Content-Disposition"), "akashi-export-")
+		assert.Contains(t, resp.Header.Get("Content-Disposition"), ".ndjson")
+
+		// Parse NDJSON lines.
+		body, _ := io.ReadAll(resp.Body)
+		lines := bytes.Split(bytes.TrimSpace(body), []byte("\n"))
+		assert.Greater(t, len(lines), 0, "should have at least one decision in export")
+
+		// Each line should be valid JSON parseable as a Decision.
+		for _, line := range lines {
+			if len(line) == 0 {
+				continue
+			}
+			var d model.Decision
+			err := json.Unmarshal(line, &d)
+			assert.NoError(t, err, "each line should be valid JSON decision: %s", string(line))
+			assert.NotEmpty(t, d.ID, "decision should have an ID")
+			assert.Equal(t, "test-agent", d.AgentID, "export should only contain requested agent")
+		}
+	})
+
+	t.Run("non-admin cannot export", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/export/decisions", agentToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("empty export for unknown agent", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/export/decisions?agent_id=nonexistent", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		// Should succeed but with empty body.
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		assert.Empty(t, bytes.TrimSpace(body), "export for nonexistent agent should be empty")
+	})
+}
+
+func TestDeleteAgentData(t *testing.T) {
+	// Create an agent with runs, decisions, and events.
+	createAgent(testSrv.URL, adminToken, "delete-me", "Delete Me", "agent", "delete-key")
+	deleteToken := getToken(testSrv.URL, "delete-me", "delete-key")
+
+	// Trace a decision (creates run + decision + events).
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", deleteToken,
+		model.TraceRequest{
+			AgentID: "delete-me",
+			Decision: model.TraceDecision{
+				DecisionType: "gdpr_test",
+				Outcome:      "delete_everything",
+				Confidence:   0.8,
+				Alternatives: []model.TraceAlternative{
+					{Label: "keep", Score: ptrFloat32(0.2)},
+				},
+				Evidence: []model.TraceEvidence{
+					{SourceType: "document", Content: "test evidence for GDPR"},
+				},
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("trace failed: status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	// Verify the agent's history exists.
+	resp2, err := authedRequest("GET", testSrv.URL+"/v1/agents/delete-me/history", deleteToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp2.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp2.StatusCode)
+	var hist struct {
+		Data struct {
+			Decisions []model.Decision `json:"decisions"`
+		} `json:"data"`
+	}
+	data, _ := io.ReadAll(resp2.Body)
+	_ = json.Unmarshal(data, &hist)
+	assert.NotEmpty(t, hist.Data.Decisions, "agent should have decisions before deletion")
+
+	t.Run("non-admin cannot delete", func(t *testing.T) {
+		resp, err := authedRequest("DELETE", testSrv.URL+"/v1/agents/delete-me", deleteToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("cannot delete admin", func(t *testing.T) {
+		resp, err := authedRequest("DELETE", testSrv.URL+"/v1/agents/admin", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("admin can delete agent", func(t *testing.T) {
+		resp, err := authedRequest("DELETE", testSrv.URL+"/v1/agents/delete-me", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data struct {
+				AgentID string `json:"agent_id"`
+				Deleted struct {
+					Evidence     int64 `json:"evidence"`
+					Alternatives int64 `json:"alternatives"`
+					Decisions    int64 `json:"decisions"`
+					Events       int64 `json:"events"`
+					Runs         int64 `json:"runs"`
+					Agents       int64 `json:"agents"`
+				} `json:"deleted"`
+			} `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(data, &result)
+		assert.Equal(t, "delete-me", result.Data.AgentID)
+		assert.Equal(t, int64(1), result.Data.Deleted.Agents, "should delete 1 agent")
+		assert.GreaterOrEqual(t, result.Data.Deleted.Decisions, int64(1), "should delete at least 1 decision")
+		assert.GreaterOrEqual(t, result.Data.Deleted.Runs, int64(1), "should delete at least 1 run")
+	})
+
+	t.Run("deleted agent is gone", func(t *testing.T) {
+		resp, err := authedRequest("DELETE", testSrv.URL+"/v1/agents/delete-me", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+}
+
+func TestAccessGrantEnforcement(t *testing.T) {
+	// Create a reader agent with no grants.
+	createAgent(testSrv.URL, adminToken, "reader-agent", "Reader", "reader", "reader-key")
+	readerToken := getToken(testSrv.URL, "reader-agent", "reader-key")
+
+	// First, ensure test-agent has at least one decision.
+	_, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken,
+		model.TraceRequest{
+			AgentID: "test-agent",
+			Decision: model.TraceDecision{
+				DecisionType: "authz_test",
+				Outcome:      "granted",
+				Confidence:   0.9,
+			},
+		})
+	require.NoError(t, err)
+
+	t.Run("reader cannot see other agent history", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/agents/test-agent/history", readerToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("reader gets empty results from query", func(t *testing.T) {
+		dType := "authz_test"
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/query", readerToken,
+			model.QueryRequest{
+				Filters: model.QueryFilters{
+					AgentIDs:     []string{"test-agent"},
+					DecisionType: &dType,
+				},
+				Limit: 10,
+			})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data struct {
+				Decisions []model.Decision `json:"decisions"`
+			} `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(data, &result)
+		assert.Empty(t, result.Data.Decisions, "reader should see no decisions without a grant")
+	})
+
+	t.Run("reader gets empty recent decisions", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/recent?agent_id=test-agent", readerToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data struct {
+				Decisions []model.Decision `json:"decisions"`
+			} `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(data, &result)
+		assert.Empty(t, result.Data.Decisions, "reader should see no recent decisions without a grant")
+	})
+
+	t.Run("admin can grant access to reader", func(t *testing.T) {
+		agentIDStr := "test-agent"
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/grants", adminToken,
+			model.CreateGrantRequest{
+				GranteeAgentID: "reader-agent",
+				ResourceType:   "agent_traces",
+				ResourceID:     &agentIDStr,
+				Permission:     "read",
+			})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusCreated, resp.StatusCode)
+	})
+
+	t.Run("reader can see history after grant", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/agents/test-agent/history", readerToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data struct {
+				Decisions []model.Decision `json:"decisions"`
+			} `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(data, &result)
+		assert.NotEmpty(t, result.Data.Decisions, "reader should see decisions after grant")
+	})
+
+	t.Run("reader can query after grant", func(t *testing.T) {
+		dType := "authz_test"
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/query", readerToken,
+			model.QueryRequest{
+				Filters: model.QueryFilters{
+					AgentIDs:     []string{"test-agent"},
+					DecisionType: &dType,
+				},
+				Limit: 10,
+			})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data struct {
+				Decisions []model.Decision `json:"decisions"`
+			} `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(data, &result)
+		assert.NotEmpty(t, result.Data.Decisions, "reader should see decisions after grant")
+	})
+
+	t.Run("admin sees everything regardless", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/agents/test-agent/history", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data struct {
+				Decisions []model.Decision `json:"decisions"`
+			} `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(data, &result)
+		assert.NotEmpty(t, result.Data.Decisions, "admin should always see decisions")
+	})
+
+	t.Run("agent can see own data", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/agents/test-agent/history", agentToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data struct {
+				Decisions []model.Decision `json:"decisions"`
+			} `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(data, &result)
+		assert.NotEmpty(t, result.Data.Decisions, "agent should see own decisions")
+	})
 }

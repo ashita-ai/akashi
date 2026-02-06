@@ -13,18 +13,19 @@ import (
 )
 
 // OllamaProvider generates embeddings using a local Ollama server.
+// This is the recommended provider for production: embeddings stay on-premises,
+// no external API costs, and data never leaves the customer's network.
 type OllamaProvider struct {
 	baseURL    string
 	model      string
 	httpClient *http.Client
 	dimensions int
-	padTo      int
 }
 
 // NewOllamaProvider creates a provider that calls Ollama's embedding API.
 // Model should be an embedding model like "mxbai-embed-large" or "nomic-embed-text".
-// If padTo > dimensions, vectors are zero-padded for schema compatibility.
-func NewOllamaProvider(baseURL, model string, dimensions, padTo int) *OllamaProvider {
+// Dimensions must match the model's native output size (e.g., 1024 for mxbai-embed-large).
+func NewOllamaProvider(baseURL, model string, dimensions int) *OllamaProvider {
 	if baseURL == "" {
 		baseURL = "http://localhost:11434"
 	}
@@ -35,15 +36,11 @@ func NewOllamaProvider(baseURL, model string, dimensions, padTo int) *OllamaProv
 			Timeout: 30 * time.Second,
 		},
 		dimensions: dimensions,
-		padTo:      padTo,
 	}
 }
 
-// Dimensions returns the output vector size (after padding if configured).
+// Dimensions returns the model's native vector size.
 func (p *OllamaProvider) Dimensions() int {
-	if p.padTo > p.dimensions {
-		return p.padTo
-	}
 	return p.dimensions
 }
 
@@ -76,7 +73,7 @@ func (p *OllamaProvider) Embed(ctx context.Context, text string) (pgvector.Vecto
 	if err != nil {
 		return pgvector.Vector{}, fmt.Errorf("ollama: send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
@@ -92,15 +89,7 @@ func (p *OllamaProvider) Embed(ctx context.Context, text string) (pgvector.Vecto
 		return pgvector.Vector{}, fmt.Errorf("ollama: empty embedding returned")
 	}
 
-	// Pad if needed for schema compatibility.
-	vec := result.Embedding
-	if p.padTo > len(vec) {
-		padded := make([]float32, p.padTo)
-		copy(padded, vec)
-		vec = padded
-	}
-
-	return pgvector.NewVector(vec), nil
+	return pgvector.NewVector(result.Embedding), nil
 }
 
 // EmbedBatch generates embeddings for multiple texts.

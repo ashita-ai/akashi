@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile.postgres
     container_name: akashi-postgres
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_USER: akashi
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-akashi}
@@ -30,7 +30,7 @@ services:
     image: edoburu/pgbouncer:latest
     container_name: akashi-pgbouncer
     ports:
-      - "6432:6432"
+      - "127.0.0.1:6432:6432"
     environment:
       DATABASE_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi
       POOL_MODE: transaction
@@ -44,12 +44,12 @@ services:
     image: redis:7-alpine
     container_name: akashi-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redisdata:/data
-    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:-akashi}
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-akashi}", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -60,16 +60,17 @@ services:
       dockerfile: Dockerfile
     container_name: akashi-server
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
-      DATABASE_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@pgbouncer:6432/akashi?sslmode=disable
-      NOTIFY_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi?sslmode=disable
-      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@pgbouncer:6432/akashi?sslmode=verify-full
+      NOTIFY_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi?sslmode=verify-full
+      REDIS_URL: redis://default:${REDIS_PASSWORD:-akashi}@redis:6379/0
       AKASHI_PORT: "8080"
       AKASHI_ADMIN_API_KEY: ${AKASHI_ADMIN_API_KEY:-changeme}
       AKASHI_LOG_LEVEL: ${AKASHI_LOG_LEVEL:-info}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       AKASHI_EMBEDDING_MODEL: ${AKASHI_EMBEDDING_MODEL:-text-embedding-3-small}
+      AKASHI_EMBEDDING_DIMENSIONS: ${AKASHI_EMBEDDING_DIMENSIONS:-1024}
     depends_on:
       pgbouncer:
         condition: service_started
