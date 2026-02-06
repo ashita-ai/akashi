@@ -41,3 +41,12 @@ node_modules/
 
 # Docker volumes
 docker/data/
+
+# Generated index
+PROJECT_INDEX.md
+PROJECT_INDEX.json
+
+# Python virtual environments
+sdk/python/.venv/
+__pycache__/
+*.pyc

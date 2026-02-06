@@ -40,10 +40,9 @@ type TemporalQueryRequest struct {
 
 // SearchRequest is the request body for POST /v1/search.
 type SearchRequest struct {
-	Query      string       `json:"query"`
-	SearchType string       `json:"search_type,omitempty"`
-	Filters    QueryFilters `json:"filters,omitempty"`
-	Limit      int          `json:"limit,omitempty"`
+	Query   string       `json:"query"`
+	Filters QueryFilters `json:"filters,omitempty"`
+	Limit   int          `json:"limit,omitempty"`
 }
 
 // SearchResult wraps a decision with its similarity score.
