@@ -175,7 +175,7 @@ func newEmbeddingProvider(cfg config.Config, logger *slog.Logger) embedding.Prov
 			return embedding.NewNoopProvider(dims)
 		}
 		logger.Info("embedding provider: openai", "model", cfg.EmbeddingModel, "dimensions", dims)
-		return embedding.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.EmbeddingModel)
+		return embedding.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.EmbeddingModel, dims)
 
 	case "ollama":
 		logger.Info("embedding provider: ollama", "url", cfg.OllamaURL, "model", cfg.OllamaModel, "dimensions", dims)
@@ -195,7 +195,7 @@ func newEmbeddingProvider(cfg config.Config, logger *slog.Logger) embedding.Prov
 		}
 		if cfg.OpenAIAPIKey != "" {
 			logger.Info("embedding provider: openai (auto-detected)", "model", cfg.EmbeddingModel, "dimensions", dims)
-			return embedding.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.EmbeddingModel)
+			return embedding.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.EmbeddingModel, dims)
 		}
 		logger.Warn("no embedding provider available, using noop (semantic search disabled)")
 		return embedding.NewNoopProvider(dims)

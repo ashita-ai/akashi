@@ -40,15 +40,19 @@ type OpenAIProvider struct {
 }
 
 // NewOpenAIProvider creates a new OpenAI embedding provider.
-func NewOpenAIProvider(apiKey, model string) *OpenAIProvider {
-	dims := 1536
+// Dimensions should match the model's output size (e.g., 1536 for text-embedding-3-small,
+// or a smaller value if using the dimensions parameter in the API request).
+func NewOpenAIProvider(apiKey, model string, dimensions int) *OpenAIProvider {
+	if dimensions <= 0 {
+		dimensions = 1536 // Default for text-embedding-3-small
+	}
 	return &OpenAIProvider{
 		apiKey: apiKey,
 		model:  model,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		dimensions: dims,
+		dimensions: dimensions,
 	}
 }
 

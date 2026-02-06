@@ -90,6 +90,9 @@ func (b *Broker) broadcast(event []byte) {
 		case ch <- event:
 		default:
 			// Subscriber buffer full — drop this event for them.
+			b.logger.Warn("broker: dropped event for slow subscriber",
+				"buffer_cap", cap(ch),
+				"event_size", len(event))
 		}
 	}
 }

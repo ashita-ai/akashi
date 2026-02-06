@@ -80,9 +80,12 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Note: total reflects DB count before access filtering.
+	// For non-admin users, the actual accessible count may be lower.
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"decisions": decisions,
 		"total":     total,
+		"count":     len(decisions),
 		"limit":     req.Limit,
 		"offset":    req.Offset,
 	})
@@ -247,6 +250,7 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"decisions": decisions,
 		"total":     total,
+		"count":     len(decisions),
 		"limit":     limit,
 	})
 }

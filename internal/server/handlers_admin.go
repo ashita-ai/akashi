@@ -3,7 +3,6 @@ package server
 import (
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 // HandleCreateAgent handles POST /v1/agents (admin-only).
@@ -179,7 +179,7 @@ func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.db.DeleteAgentData(r.Context(), agentID)
 	if err != nil {
-		if isNotFoundError(err) {
+		if errors.Is(err, storage.ErrAgentNotFound) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "agent not found")
 			return
 		}
@@ -197,9 +197,4 @@ func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 func isDuplicateKeyError(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
-}
-
-// isNotFoundError checks if an error message indicates a not-found condition.
-func isNotFoundError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "not found")
 }

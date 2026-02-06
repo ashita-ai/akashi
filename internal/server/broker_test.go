@@ -1,13 +1,21 @@
 package server
 
 import (
+	"log/slog"
+	"os"
 	"testing"
 	"time"
 )
 
+// testLogger returns a logger for tests that discards output.
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+}
+
 func TestBrokerFanOut(t *testing.T) {
 	broker := &Broker{
 		subscribers: make(map[chan []byte]struct{}),
+		logger:      testLogger(),
 	}
 
 	// Subscribe two clients.
@@ -65,6 +73,7 @@ func TestFormatSSE(t *testing.T) {
 func TestBrokerSlowSubscriber(t *testing.T) {
 	broker := &Broker{
 		subscribers: make(map[chan []byte]struct{}),
+		logger:      testLogger(),
 	}
 
 	// Create a slow subscriber (small buffer that we won't read from).

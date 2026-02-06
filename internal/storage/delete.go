@@ -2,10 +2,14 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
 )
+
+// ErrAgentNotFound is returned when an agent doesn't exist.
+var ErrAgentNotFound = errors.New("storage: agent not found")
 
 // DeleteAgentResult contains the count of rows deleted per table.
 type DeleteAgentResult struct {
@@ -34,7 +38,10 @@ func (db *DB) DeleteAgentData(ctx context.Context, agentID string) (DeleteAgentR
 	var agentUUID string
 	err = tx.QueryRow(ctx, `SELECT id FROM agents WHERE agent_id = $1`, agentID).Scan(&agentUUID)
 	if err != nil {
-		return DeleteAgentResult{}, fmt.Errorf("storage: agent not found: %s", agentID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return DeleteAgentResult{}, fmt.Errorf("%w: %s", ErrAgentNotFound, agentID)
+		}
+		return DeleteAgentResult{}, fmt.Errorf("storage: lookup agent: %w", err)
 	}
 
 	// 1. Delete evidence (via decision_id for this agent's decisions).
