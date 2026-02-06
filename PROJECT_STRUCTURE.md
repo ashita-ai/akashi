@@ -7,6 +7,7 @@ Generated: $(date -u +%Y-%m-%d)
 ./internal/auth/auth.go
 ./internal/auth/hash.go
 ./internal/config/config.go
+./internal/ctxutil/ctxutil.go
 ./internal/mcp/mcp.go
 ./internal/mcp/prompts.go
 ./internal/mcp/resources.go
@@ -43,6 +44,7 @@ Generated: $(date -u +%Y-%m-%d)
 ./internal/storage/grants.go
 ./internal/storage/migrate.go
 ./internal/storage/notify.go
+./internal/storage/organizations.go
 ./internal/storage/pool.go
 ./internal/storage/runs.go
 ./internal/storage/trace.go
