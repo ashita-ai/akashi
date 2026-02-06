@@ -183,6 +183,16 @@ func authMiddleware(jwtMgr *auth.JWTManager, next http.Handler) http.Handler {
 			return
 		}
 
+		// SPA static assets and client-side routes don't require auth.
+		// Auth is enforced client-side and on the API endpoints.
+		if !strings.HasPrefix(r.URL.Path, "/v1/") &&
+			!strings.HasPrefix(r.URL.Path, "/billing/") &&
+			!strings.HasPrefix(r.URL.Path, "/auth/") &&
+			r.URL.Path != "/mcp" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
 			writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "missing authorization header")

@@ -105,7 +105,7 @@ func TestMain(m *testing.M) {
 		SMTPFrom: "test@akashi.dev",
 		BaseURL:  "http://localhost:8080",
 	}, logger)
-	srv := server.New(db, jwtMgr, decisionSvc, nil, buf, nil, nil, signupSvc, logger, 0, 30*time.Second, 30*time.Second, mcpSrv.MCPServer(), "test", 1*1024*1024)
+	srv := server.New(db, jwtMgr, decisionSvc, nil, buf, nil, nil, signupSvc, logger, 0, 30*time.Second, 30*time.Second, mcpSrv.MCPServer(), "test", 1*1024*1024, nil)
 
 	// Seed admin.
 	_ = srv.Handlers().SeedAdmin(ctx, "test-admin-key")

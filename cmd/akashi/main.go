@@ -25,6 +25,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/signup"
 	"github.com/ashita-ai/akashi/internal/storage"
 	"github.com/ashita-ai/akashi/internal/telemetry"
+	"github.com/ashita-ai/akashi/ui"
 )
 
 // version is set at build time via -ldflags.
@@ -138,10 +139,19 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		logger.Info("SSE broker: disabled (no notify connection)")
 	}
 
+	// Load embedded UI filesystem (non-nil only when built with -tags ui).
+	uiFS, err := ui.DistFS()
+	if err != nil {
+		return fmt.Errorf("ui: %w", err)
+	}
+	if uiFS != nil {
+		logger.Info("ui: embedded SPA loaded")
+	}
+
 	// Create and start HTTP server (MCP mounted at /mcp).
 	srv := server.New(db, jwtMgr, decisionSvc, billingSvc, buf, limiter, broker, signupSvc, logger,
 		cfg.Port, cfg.ReadTimeout, cfg.WriteTimeout,
-		mcpSrv.MCPServer(), version, cfg.MaxRequestBodyBytes)
+		mcpSrv.MCPServer(), version, cfg.MaxRequestBodyBytes, uiFS)
 
 	// Seed admin agent.
 	if err := srv.Handlers().SeedAdmin(ctx, cfg.AdminAPIKey); err != nil {

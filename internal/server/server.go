@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"time"
@@ -36,6 +37,7 @@ func (s *Server) Handler() http.Handler {
 // mcpSrv is optional; if non-nil the MCP StreamableHTTP transport is mounted at /mcp.
 // limiter is optional; if nil, rate limiting is disabled (noop).
 // broker is optional; if nil, SSE subscriptions return 503.
+// uiFS is optional; if non-nil, the SPA is served at the root path.
 func New(
 	db *storage.DB,
 	jwtMgr *auth.JWTManager,
@@ -51,6 +53,7 @@ func New(
 	mcpSrv *mcpserver.MCPServer,
 	version string,
 	maxRequestBodyBytes int64,
+	uiFS fs.FS,
 ) *Server {
 	h := NewHandlers(db, jwtMgr, decisionSvc, billingSvc, buffer, broker, signupSvc, logger, version, maxRequestBodyBytes)
 
@@ -135,6 +138,13 @@ func New(
 
 	// Health (no auth, no rate limit).
 	mux.HandleFunc("GET /health", h.HandleHealth)
+
+	// SPA: serve the embedded UI at the root path.
+	// Registered last so all API routes take priority via the mux's longest-match rule.
+	if uiFS != nil {
+		mux.Handle("/", newSPAHandler(uiFS))
+		logger.Info("ui enabled, serving SPA at /")
+	}
 
 	// Apply middleware chain: request ID → security headers → tracing → logging → auth.
 	var handler http.Handler = mux
