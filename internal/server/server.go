@@ -14,6 +14,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/ratelimit"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/trace"
+	"github.com/ashita-ai/akashi/internal/signup"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
@@ -41,6 +42,7 @@ func New(
 	buffer *trace.Buffer,
 	limiter *ratelimit.Limiter,
 	broker *Broker,
+	signupSvc *signup.Service,
 	logger *slog.Logger,
 	port int,
 	readTimeout, writeTimeout time.Duration,
@@ -48,7 +50,7 @@ func New(
 	version string,
 	maxRequestBodyBytes int64,
 ) *Server {
-	h := NewHandlers(db, jwtMgr, decisionSvc, buffer, broker, logger, version, maxRequestBodyBytes)
+	h := NewHandlers(db, jwtMgr, decisionSvc, buffer, broker, signupSvc, logger, version, maxRequestBodyBytes)
 
 	// Rate limit rules.
 	ingestRL := ratelimit.Middleware(limiter, ratelimit.Rule{
@@ -69,6 +71,10 @@ func New(
 	// Auth endpoints (no auth required, rate limited by IP).
 	mux.Handle("POST /auth/token", authRL(http.HandlerFunc(h.HandleAuthToken)))
 	mux.Handle("POST /auth/refresh", authRL(http.HandlerFunc(h.HandleAuthToken)))
+
+	// Signup endpoints (no auth required, rate limited by IP).
+	mux.Handle("POST /auth/signup", authRL(http.HandlerFunc(h.HandleSignup)))
+	mux.Handle("GET /auth/verify", http.HandlerFunc(h.HandleVerifyEmail))
 
 	// Agent management (admin-only, no rate limit — admin is exempt).
 	adminOnly := requireRole(model.RoleAdmin)

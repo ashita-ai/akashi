@@ -42,6 +42,14 @@ type Config struct {
 	OTELEndpoint string
 	ServiceName  string
 
+	// SMTP settings for email verification.
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUser     string
+	SMTPPassword string
+	SMTPFrom     string
+	BaseURL      string // e.g., "https://akashi.example.com" for verification links.
+
 	// Operational settings.
 	LogLevel                string
 	ConflictRefreshInterval time.Duration
@@ -71,6 +79,12 @@ func Load() (Config, error) {
 		OllamaModel:             envStr("OLLAMA_MODEL", "mxbai-embed-large"),
 		OTELEndpoint:            envStr("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		ServiceName:             envStr("OTEL_SERVICE_NAME", "akashi"),
+		SMTPHost:                envStr("AKASHI_SMTP_HOST", ""),
+		SMTPPort:                envInt("AKASHI_SMTP_PORT", 587),
+		SMTPUser:                envStr("AKASHI_SMTP_USER", ""),
+		SMTPPassword:            envStr("AKASHI_SMTP_PASSWORD", ""),
+		SMTPFrom:                envStr("AKASHI_SMTP_FROM", "noreply@akashi.dev"),
+		BaseURL:                 envStr("AKASHI_BASE_URL", "http://localhost:8080"),
 		LogLevel:                envStr("AKASHI_LOG_LEVEL", "info"),
 		ConflictRefreshInterval: envDuration("AKASHI_CONFLICT_REFRESH_INTERVAL", 30*time.Second),
 		EventBufferSize:         envInt("AKASHI_EVENT_BUFFER_SIZE", 1000),

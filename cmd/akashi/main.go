@@ -21,6 +21,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
 	"github.com/ashita-ai/akashi/internal/service/trace"
+	"github.com/ashita-ai/akashi/internal/signup"
 	"github.com/ashita-ai/akashi/internal/storage"
 	"github.com/ashita-ai/akashi/internal/telemetry"
 )
@@ -102,6 +103,16 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		defer func() { _ = limiter.Close() }()
 	}
 
+	// Create signup service.
+	signupSvc := signup.New(db, signup.Config{
+		SMTPHost: cfg.SMTPHost,
+		SMTPPort: cfg.SMTPPort,
+		SMTPUser: cfg.SMTPUser,
+		SMTPPass: cfg.SMTPPassword,
+		SMTPFrom: cfg.SMTPFrom,
+		BaseURL:  cfg.BaseURL,
+	}, logger)
+
 	// Create MCP server.
 	mcpSrv := mcp.New(db, decisionSvc, logger, version)
 
@@ -115,7 +126,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}
 
 	// Create and start HTTP server (MCP mounted at /mcp).
-	srv := server.New(db, jwtMgr, decisionSvc, buf, limiter, broker, logger,
+	srv := server.New(db, jwtMgr, decisionSvc, buf, limiter, broker, signupSvc, logger,
 		cfg.Port, cfg.ReadTimeout, cfg.WriteTimeout,
 		mcpSrv.MCPServer(), version, cfg.MaxRequestBodyBytes)
 

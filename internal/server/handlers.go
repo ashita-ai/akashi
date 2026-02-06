@@ -14,6 +14,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/trace"
+	"github.com/ashita-ai/akashi/internal/signup"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
@@ -24,6 +25,7 @@ type Handlers struct {
 	decisionSvc         *decisions.Service
 	buffer              *trace.Buffer
 	broker              *Broker
+	signupSvc           *signup.Service
 	logger              *slog.Logger
 	startedAt           time.Time
 	version             string
@@ -32,13 +34,15 @@ type Handlers struct {
 
 // NewHandlers creates a new Handlers with all dependencies.
 // broker may be nil if LISTEN/NOTIFY is not configured.
-func NewHandlers(db *storage.DB, jwtMgr *auth.JWTManager, decisionSvc *decisions.Service, buffer *trace.Buffer, broker *Broker, logger *slog.Logger, version string, maxRequestBodyBytes int64) *Handlers {
+// signupSvc may be nil if signup is not configured.
+func NewHandlers(db *storage.DB, jwtMgr *auth.JWTManager, decisionSvc *decisions.Service, buffer *trace.Buffer, broker *Broker, signupSvc *signup.Service, logger *slog.Logger, version string, maxRequestBodyBytes int64) *Handlers {
 	return &Handlers{
 		db:                  db,
 		jwtMgr:              jwtMgr,
 		decisionSvc:         decisionSvc,
 		buffer:              buffer,
 		broker:              broker,
+		signupSvc:           signupSvc,
 		logger:              logger,
 		startedAt:           time.Now(),
 		version:             version,
@@ -69,6 +73,19 @@ func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 	if err != nil || !valid {
 		writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "invalid credentials")
 		return
+	}
+
+	// Reject unverified orgs (skip for the default org used by pre-migration seed admin).
+	if agent.OrgID != uuid.Nil {
+		org, err := h.db.GetOrganization(r.Context(), agent.OrgID)
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to look up organization")
+			return
+		}
+		if !org.EmailVerified {
+			writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "email not verified — check your inbox or request a new verification link")
+			return
+		}
 	}
 
 	token, expiresAt, err := h.jwtMgr.IssueToken(agent)
@@ -180,6 +197,48 @@ func (h *Handlers) SeedAdmin(ctx context.Context, adminAPIKey string) error {
 
 	h.logger.Info("seeded initial admin agent")
 	return nil
+}
+
+// HandleSignup handles POST /auth/signup.
+func (h *Handlers) HandleSignup(w http.ResponseWriter, r *http.Request) {
+	var req model.SignupRequest
+	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+		return
+	}
+
+	result, err := h.signupSvc.Signup(r.Context(), signup.SignupInput{
+		Email:    req.Email,
+		Password: req.Password,
+		OrgName:  req.OrgName,
+	})
+	if err != nil {
+		h.logger.Error("signup failed", "error", err, "email", req.Email)
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
+
+	writeJSON(w, r, http.StatusCreated, result)
+}
+
+// HandleVerifyEmail handles GET /auth/verify.
+func (h *Handlers) HandleVerifyEmail(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "token is required")
+		return
+	}
+
+	if err := h.signupSvc.Verify(r.Context(), token); err != nil {
+		h.logger.Error("email verification failed", "error", err)
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]string{
+		"status":  "verified",
+		"message": "email verified successfully — you can now authenticate",
+	})
 }
 
 // --- Shared helpers ---
