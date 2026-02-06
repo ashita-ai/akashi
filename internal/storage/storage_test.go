@@ -351,11 +351,12 @@ func TestSearchDecisionsByEmbedding(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create decisions with embeddings.
-	vec1 := make([]float32, 1536)
+	// Note: schema uses vector(1024) per migration 013.
+	vec1 := make([]float32, 1024)
 	vec1[0] = 1.0
 	emb1 := pgvector.NewVector(vec1)
 
-	vec2 := make([]float32, 1536)
+	vec2 := make([]float32, 1024)
 	vec2[1] = 1.0
 	emb2 := pgvector.NewVector(vec2)
 
@@ -380,7 +381,7 @@ func TestSearchDecisionsByEmbedding(t *testing.T) {
 	require.NoError(t, err)
 
 	// Search with vector close to emb1.
-	queryVec := make([]float32, 1536)
+	queryVec := make([]float32, 1024)
 	queryVec[0] = 0.99
 	queryVec[1] = 0.01
 	queryEmb := pgvector.NewVector(queryVec)

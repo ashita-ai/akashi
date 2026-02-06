@@ -138,7 +138,7 @@ func (h *Handlers) HandleAgentHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := queryInt(r, "limit", 50)
+	limit := queryLimit(r, 50)
 	offset := queryInt(r, "offset", 0)
 	from := queryTime(r, "from")
 	to := queryTime(r, "to")
@@ -225,7 +225,7 @@ func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 // HandleDecisionsRecent handles GET /v1/decisions/recent.
 func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
-	limit := queryInt(r, "limit", 10)
+	limit := queryLimit(r, 10)
 
 	filters := model.QueryFilters{}
 	if agentID := r.URL.Query().Get("agent_id"); agentID != "" {
@@ -263,7 +263,7 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 	if dt := r.URL.Query().Get("decision_type"); dt != "" {
 		decisionType = &dt
 	}
-	limit := queryInt(r, "limit", 50)
+	limit := queryLimit(r, 50)
 
 	conflicts, err := h.db.ListConflicts(r.Context(), decisionType, limit)
 	if err != nil {

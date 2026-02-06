@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/google/uuid"
 
@@ -30,7 +31,11 @@ func canAccessAgent(ctx context.Context, db *storage.DB, claims *auth.Claims, ta
 	// Need a grant. Parse the caller's UUID from the JWT subject.
 	callerUUID, err := uuid.Parse(claims.Subject)
 	if err != nil {
-		return false, nil // malformed subject → deny
+		slog.Warn("authz: malformed JWT subject, denying access",
+			"error", err,
+			"agent_id", claims.AgentID,
+			"role", claims.Role)
+		return false, nil
 	}
 
 	return db.HasAccess(ctx, callerUUID, string(model.ResourceAgentTraces), targetAgentID, string(model.PermissionRead))

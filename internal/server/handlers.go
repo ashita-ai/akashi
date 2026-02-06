@@ -192,6 +192,9 @@ func parseRunID(r *http.Request) (uuid.UUID, error) {
 	return id, nil
 }
 
+// maxQueryLimit is the maximum allowed value for limit query parameters.
+const maxQueryLimit = 1000
+
 func queryInt(r *http.Request, key string, defaultVal int) int {
 	if v := r.URL.Query().Get(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -199,6 +202,19 @@ func queryInt(r *http.Request, key string, defaultVal int) int {
 		}
 	}
 	return defaultVal
+}
+
+// queryLimit returns a bounded limit value from query params.
+// Values are clamped to [1, maxQueryLimit].
+func queryLimit(r *http.Request, defaultVal int) int {
+	limit := queryInt(r, "limit", defaultVal)
+	if limit < 1 {
+		return 1
+	}
+	if limit > maxQueryLimit {
+		return maxQueryLimit
+	}
+	return limit
 }
 
 func queryTime(r *http.Request, key string) *time.Time {
