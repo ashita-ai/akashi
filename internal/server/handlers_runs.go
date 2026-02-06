@@ -11,6 +11,7 @@ import (
 // HandleCreateRun handles POST /v1/runs.
 func (h *Handlers) HandleCreateRun(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
 
 	var req model.CreateRunRequest
 	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
@@ -19,11 +20,12 @@ func (h *Handlers) HandleCreateRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Agents can only create runs for themselves.
-	if claims.Role != model.RoleAdmin && req.AgentID != claims.AgentID {
+	if !model.RoleAtLeast(claims.Role, model.RoleAdmin) && req.AgentID != claims.AgentID {
 		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "can only create runs for your own agent_id")
 		return
 	}
 
+	req.OrgID = orgID
 	run, err := h.db.CreateRun(r.Context(), req)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to create run")
@@ -49,7 +51,7 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if claims.Role != model.RoleAdmin && run.AgentID != claims.AgentID {
+	if !model.RoleAtLeast(claims.Role, model.RoleAdmin) && run.AgentID != claims.AgentID {
 		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "not your run")
 		return
 	}
@@ -60,7 +62,7 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, err := h.buffer.Append(r.Context(), runID, run.AgentID, req.Events)
+	events, err := h.buffer.Append(r.Context(), runID, run.AgentID, run.OrgID, req.Events)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to buffer events")
 		return
@@ -91,7 +93,7 @@ func (h *Handlers) HandleCompleteRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "run not found")
 		return
 	}
-	if claims.Role != model.RoleAdmin && run.AgentID != claims.AgentID {
+	if !model.RoleAtLeast(claims.Role, model.RoleAdmin) && run.AgentID != claims.AgentID {
 		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "not your run")
 		return
 	}
@@ -124,6 +126,7 @@ func (h *Handlers) HandleCompleteRun(w http.ResponseWriter, r *http.Request) {
 // HandleGetRun handles GET /v1/runs/{run_id}.
 func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
 	runID, err := parseRunID(r)
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
@@ -153,7 +156,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get decisions for this run.
-	decisions, _, err := h.db.QueryDecisions(r.Context(), model.QueryRequest{
+	decisions, _, err := h.db.QueryDecisions(r.Context(), orgID, model.QueryRequest{
 		Filters: model.QueryFilters{
 			RunID: &runID,
 		},

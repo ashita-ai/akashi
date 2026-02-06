@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ashita-ai/akashi/internal/auth"
+	"github.com/ashita-ai/akashi/internal/ctxutil"
 	"github.com/ashita-ai/akashi/internal/model"
 )
 
@@ -24,7 +25,6 @@ type contextKey string
 
 const (
 	contextKeyRequestID contextKey = "request_id"
-	contextKeyClaims    contextKey = "claims"
 )
 
 // RequestIDFromContext extracts the request ID from the context.
@@ -36,11 +36,15 @@ func RequestIDFromContext(ctx context.Context) string {
 }
 
 // ClaimsFromContext extracts the JWT claims from the context.
+// Delegates to ctxutil so MCP tools can use the same accessor.
 func ClaimsFromContext(ctx context.Context) *auth.Claims {
-	if v, ok := ctx.Value(contextKeyClaims).(*auth.Claims); ok {
-		return v
-	}
-	return nil
+	return ctxutil.ClaimsFromContext(ctx)
+}
+
+// OrgIDFromContext extracts the org_id from the context (set from JWT claims).
+// Delegates to ctxutil so MCP tools can use the same accessor.
+func OrgIDFromContext(ctx context.Context) uuid.UUID {
+	return ctxutil.OrgIDFromContext(ctx)
 }
 
 // requestIDMiddleware assigns a unique request ID to each request.
@@ -95,6 +99,13 @@ type statusWriter struct {
 func (w *statusWriter) WriteHeader(code int) {
 	w.statusCode = code
 	w.ResponseWriter.WriteHeader(code)
+}
+
+// Flush implements http.Flusher so SSE works through the middleware chain.
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 var (
@@ -165,7 +176,8 @@ func traceIDFromContext(ctx context.Context) string {
 func authMiddleware(jwtMgr *auth.JWTManager, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Paths that don't require auth.
-		if r.URL.Path == "/health" || r.URL.Path == "/auth/token" {
+		if r.URL.Path == "/health" || r.URL.Path == "/auth/token" ||
+			r.URL.Path == "/auth/signup" || r.URL.Path == "/auth/verify" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -188,17 +200,14 @@ func authMiddleware(jwtMgr *auth.JWTManager, next http.Handler) http.Handler {
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), contextKeyClaims, claims)
+		ctx := ctxutil.WithClaims(r.Context(), claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-// requireRole returns middleware that enforces a minimum role.
-func requireRole(roles ...model.AgentRole) func(http.Handler) http.Handler {
-	roleSet := make(map[model.AgentRole]bool, len(roles))
-	for _, r := range roles {
-		roleSet[r] = true
-	}
+// requireRole returns middleware that enforces a minimum role level.
+// Uses the role hierarchy: platform_admin > org_owner > admin > agent > reader.
+func requireRole(minRole model.AgentRole) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			claims := ClaimsFromContext(r.Context())
@@ -206,7 +215,7 @@ func requireRole(roles ...model.AgentRole) func(http.Handler) http.Handler {
 				writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "no claims in context")
 				return
 			}
-			if !roleSet[claims.Role] {
+			if !model.RoleAtLeast(claims.Role, minRole) {
 				writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "insufficient permissions")
 				return
 			}

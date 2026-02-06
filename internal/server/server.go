@@ -77,43 +77,43 @@ func New(
 	mux.Handle("DELETE /v1/agents/{agent_id}", adminOnly(http.HandlerFunc(h.HandleDeleteAgent)))
 	mux.Handle("GET /v1/export/decisions", adminOnly(http.HandlerFunc(h.HandleExportDecisions)))
 
-	// Trace ingestion (admin + agent, rate limited).
-	writeRoles := requireRole(model.RoleAdmin, model.RoleAgent)
-	mux.Handle("POST /v1/runs", ingestRL(writeRoles(http.HandlerFunc(h.HandleCreateRun))))
-	mux.Handle("POST /v1/runs/{run_id}/events", ingestRL(writeRoles(http.HandlerFunc(h.HandleAppendEvents))))
-	mux.Handle("POST /v1/runs/{run_id}/complete", ingestRL(writeRoles(http.HandlerFunc(h.HandleCompleteRun))))
-	mux.Handle("POST /v1/trace", ingestRL(writeRoles(http.HandlerFunc(h.HandleTrace))))
+	// Trace ingestion (agent+, rate limited).
+	writeRole := requireRole(model.RoleAgent)
+	mux.Handle("POST /v1/runs", ingestRL(writeRole(http.HandlerFunc(h.HandleCreateRun))))
+	mux.Handle("POST /v1/runs/{run_id}/events", ingestRL(writeRole(http.HandlerFunc(h.HandleAppendEvents))))
+	mux.Handle("POST /v1/runs/{run_id}/complete", ingestRL(writeRole(http.HandlerFunc(h.HandleCompleteRun))))
+	mux.Handle("POST /v1/trace", ingestRL(writeRole(http.HandlerFunc(h.HandleTrace))))
 
-	// Query endpoints (all authenticated roles, rate limited).
-	allRoles := requireRole(model.RoleAdmin, model.RoleAgent, model.RoleReader)
-	mux.Handle("POST /v1/query", queryRL(allRoles(http.HandlerFunc(h.HandleQuery))))
-	mux.Handle("POST /v1/query/temporal", queryRL(allRoles(http.HandlerFunc(h.HandleTemporalQuery))))
-	mux.Handle("GET /v1/runs/{run_id}", queryRL(allRoles(http.HandlerFunc(h.HandleGetRun))))
-	mux.Handle("GET /v1/agents/{agent_id}/history", queryRL(allRoles(http.HandlerFunc(h.HandleAgentHistory))))
+	// Query endpoints (reader+, rate limited).
+	readRole := requireRole(model.RoleReader)
+	mux.Handle("POST /v1/query", queryRL(readRole(http.HandlerFunc(h.HandleQuery))))
+	mux.Handle("POST /v1/query/temporal", queryRL(readRole(http.HandlerFunc(h.HandleTemporalQuery))))
+	mux.Handle("GET /v1/runs/{run_id}", queryRL(readRole(http.HandlerFunc(h.HandleGetRun))))
+	mux.Handle("GET /v1/agents/{agent_id}/history", queryRL(readRole(http.HandlerFunc(h.HandleAgentHistory))))
 
-	// Search endpoint (all authenticated roles, tighter rate limit).
-	mux.Handle("POST /v1/search", searchRL(allRoles(http.HandlerFunc(h.HandleSearch))))
+	// Search endpoint (reader+, tighter rate limit).
+	mux.Handle("POST /v1/search", searchRL(readRole(http.HandlerFunc(h.HandleSearch))))
 
-	// Check endpoint — lightweight precedent lookup (query rate limit).
-	mux.Handle("POST /v1/check", queryRL(allRoles(http.HandlerFunc(h.HandleCheck))))
+	// Check endpoint — lightweight precedent lookup (reader+).
+	mux.Handle("POST /v1/check", queryRL(readRole(http.HandlerFunc(h.HandleCheck))))
 
-	// Recent decisions (query rate limit).
-	mux.Handle("GET /v1/decisions/recent", queryRL(allRoles(http.HandlerFunc(h.HandleDecisionsRecent))))
+	// Recent decisions (reader+).
+	mux.Handle("GET /v1/decisions/recent", queryRL(readRole(http.HandlerFunc(h.HandleDecisionsRecent))))
 
-	// Subscription endpoint (no rate limit — long-lived connection).
-	mux.Handle("GET /v1/subscribe", allRoles(http.HandlerFunc(h.HandleSubscribe)))
+	// Subscription endpoint (reader+, no rate limit — long-lived connection).
+	mux.Handle("GET /v1/subscribe", readRole(http.HandlerFunc(h.HandleSubscribe)))
 
-	// Access control (admin + agent owners).
-	mux.Handle("POST /v1/grants", writeRoles(http.HandlerFunc(h.HandleCreateGrant)))
-	mux.Handle("DELETE /v1/grants/{grant_id}", writeRoles(http.HandlerFunc(h.HandleDeleteGrant)))
+	// Access control (agent+ can grant access to own traces).
+	mux.Handle("POST /v1/grants", writeRole(http.HandlerFunc(h.HandleCreateGrant)))
+	mux.Handle("DELETE /v1/grants/{grant_id}", writeRole(http.HandlerFunc(h.HandleDeleteGrant)))
 
-	// Conflicts (all authenticated roles, query rate limit).
-	mux.Handle("GET /v1/conflicts", queryRL(allRoles(http.HandlerFunc(h.HandleListConflicts))))
+	// Conflicts (reader+, query rate limit).
+	mux.Handle("GET /v1/conflicts", queryRL(readRole(http.HandlerFunc(h.HandleListConflicts))))
 
-	// MCP StreamableHTTP transport (auth required, any authenticated role).
+	// MCP StreamableHTTP transport (auth required, reader+).
 	if mcpSrv != nil {
 		mcpHTTP := mcpserver.NewStreamableHTTPServer(mcpSrv)
-		mux.Handle("/mcp", allRoles(mcpHTTP))
+		mux.Handle("/mcp", readRole(mcpHTTP))
 	}
 
 	// Health (no auth, no rate limit).
@@ -141,13 +141,13 @@ func New(
 }
 
 // agentKeyFunc extracts the agent ID from the request context for rate limiting.
-// Returns empty string for admin agents (admin is exempt from rate limits).
+// Returns empty string for admin+ roles (exempt from rate limits).
 func agentKeyFunc(r *http.Request) string {
 	claims := ClaimsFromContext(r.Context())
 	if claims == nil {
 		return ""
 	}
-	if claims.Role == model.RoleAdmin {
+	if model.RoleAtLeast(claims.Role, model.RoleAdmin) {
 		return ""
 	}
 	return claims.AgentID

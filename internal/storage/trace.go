@@ -15,6 +15,7 @@ import (
 // within a single database transaction.
 type CreateTraceParams struct {
 	AgentID      string
+	OrgID        uuid.UUID
 	TraceID      *string
 	Metadata     map[string]any
 	Decision     model.Decision
@@ -38,6 +39,7 @@ func (db *DB) CreateTraceTx(ctx context.Context, params CreateTraceParams) (mode
 	run := model.AgentRun{
 		ID:        uuid.New(),
 		AgentID:   params.AgentID,
+		OrgID:     params.OrgID,
 		TraceID:   params.TraceID,
 		Status:    model.RunStatusRunning,
 		StartedAt: now,
@@ -48,9 +50,9 @@ func (db *DB) CreateTraceTx(ctx context.Context, params CreateTraceParams) (mode
 		run.Metadata = map[string]any{}
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO agent_runs (id, agent_id, trace_id, parent_run_id, status, started_at, metadata, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		run.ID, run.AgentID, run.TraceID, nil,
+		`INSERT INTO agent_runs (id, agent_id, org_id, trace_id, parent_run_id, status, started_at, metadata, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		run.ID, run.AgentID, run.OrgID, run.TraceID, nil,
 		string(run.Status), run.StartedAt, run.Metadata, run.CreatedAt,
 	); err != nil {
 		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: create run in trace tx: %w", err)
@@ -61,6 +63,7 @@ func (db *DB) CreateTraceTx(ctx context.Context, params CreateTraceParams) (mode
 	d.ID = uuid.New()
 	d.RunID = run.ID
 	d.AgentID = params.AgentID
+	d.OrgID = params.OrgID
 	if d.ValidFrom.IsZero() {
 		d.ValidFrom = now
 	}
@@ -74,10 +77,10 @@ func (db *DB) CreateTraceTx(ctx context.Context, params CreateTraceParams) (mode
 		d.Metadata = map[string]any{}
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO decisions (id, run_id, agent_id, decision_type, outcome, confidence,
+		`INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome, confidence,
 		 reasoning, embedding, metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
-		d.ID, d.RunID, d.AgentID, d.DecisionType, d.Outcome, d.Confidence,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+		d.ID, d.RunID, d.AgentID, d.OrgID, d.DecisionType, d.Outcome, d.Confidence,
 		d.Reasoning, d.Embedding, d.Metadata, d.QualityScore, d.PrecedentRef,
 		d.ValidFrom, d.ValidTo, d.TransactionTime, d.CreatedAt,
 	); err != nil {

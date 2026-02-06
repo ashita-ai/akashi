@@ -10,6 +10,7 @@ import (
 // HandleTrace handles POST /v1/trace (convenience endpoint).
 func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
 
 	var req model.TraceRequest
 	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
@@ -34,12 +35,12 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if claims.Role != model.RoleAdmin && req.AgentID != claims.AgentID {
+	if !model.RoleAtLeast(claims.Role, model.RoleAdmin) && req.AgentID != claims.AgentID {
 		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "can only trace for your own agent_id")
 		return
 	}
 
-	result, err := h.decisionSvc.Trace(r.Context(), decisions.TraceInput{
+	result, err := h.decisionSvc.Trace(r.Context(), orgID, decisions.TraceInput{
 		AgentID:      req.AgentID,
 		TraceID:      req.TraceID,
 		Metadata:     req.Metadata,
@@ -61,6 +62,7 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 // HandleQuery handles POST /v1/query.
 func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
 
 	var req model.QueryRequest
 	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
@@ -68,7 +70,7 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decisions, total, err := h.decisionSvc.Query(r.Context(), req)
+	decisions, total, err := h.decisionSvc.Query(r.Context(), orgID, req)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "query failed")
 		return
@@ -94,6 +96,7 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 // HandleTemporalQuery handles POST /v1/query/temporal.
 func (h *Handlers) HandleTemporalQuery(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
 
 	var req model.TemporalQueryRequest
 	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
@@ -101,7 +104,7 @@ func (h *Handlers) HandleTemporalQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decisions, err := h.db.QueryDecisionsTemporal(r.Context(), req)
+	decisions, err := h.db.QueryDecisionsTemporal(r.Context(), orgID, req)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "temporal query failed")
 		return
@@ -122,6 +125,7 @@ func (h *Handlers) HandleTemporalQuery(w http.ResponseWriter, r *http.Request) {
 // HandleAgentHistory handles GET /v1/agents/{agent_id}/history.
 func (h *Handlers) HandleAgentHistory(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
 	agentID := r.PathValue("agent_id")
 	if agentID == "" {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "agent_id is required")
@@ -143,7 +147,7 @@ func (h *Handlers) HandleAgentHistory(w http.ResponseWriter, r *http.Request) {
 	from := queryTime(r, "from")
 	to := queryTime(r, "to")
 
-	decisions, total, err := h.db.GetDecisionsByAgent(r.Context(), agentID, limit, offset, from, to)
+	decisions, total, err := h.db.GetDecisionsByAgent(r.Context(), orgID, agentID, limit, offset, from, to)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to get history")
 		return
@@ -161,6 +165,7 @@ func (h *Handlers) HandleAgentHistory(w http.ResponseWriter, r *http.Request) {
 // HandleSearch handles POST /v1/search.
 func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
 
 	var req model.SearchRequest
 	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
@@ -173,7 +178,7 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err := h.decisionSvc.Search(r.Context(), req.Query, req.Filters, req.Limit)
+	results, err := h.decisionSvc.Search(r.Context(), orgID, req.Query, req.Filters, req.Limit)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "search failed")
 		return
@@ -194,6 +199,7 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 // HandleCheck handles POST /v1/check.
 func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
 
 	var req model.CheckRequest
 	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
@@ -206,7 +212,7 @@ func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.decisionSvc.Check(r.Context(), req.DecisionType, req.Query, req.AgentID, req.Limit)
+	resp, err := h.decisionSvc.Check(r.Context(), orgID, req.DecisionType, req.Query, req.AgentID, req.Limit)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "check failed")
 		return
@@ -225,6 +231,7 @@ func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 // HandleDecisionsRecent handles GET /v1/decisions/recent.
 func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
 	limit := queryLimit(r, 10)
 
 	filters := model.QueryFilters{}
@@ -235,7 +242,7 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 		filters.DecisionType = &dt
 	}
 
-	decisions, total, err := h.decisionSvc.Recent(r.Context(), filters, limit)
+	decisions, total, err := h.decisionSvc.Recent(r.Context(), orgID, filters, limit)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "query failed")
 		return
@@ -258,6 +265,7 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 // HandleListConflicts handles GET /v1/conflicts.
 func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
 
 	var decisionType *string
 	if dt := r.URL.Query().Get("decision_type"); dt != "" {
@@ -265,7 +273,7 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 	}
 	limit := queryLimit(r, 50)
 
-	conflicts, err := h.db.ListConflicts(r.Context(), decisionType, limit)
+	conflicts, err := h.db.ListConflicts(r.Context(), orgID, decisionType, limit)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to list conflicts")
 		return

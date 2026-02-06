@@ -23,6 +23,7 @@ import (
 type Claims struct {
 	jwt.RegisteredClaims
 	AgentID string          `json:"agent_id"`
+	OrgID   uuid.UUID       `json:"org_id"`
 	Role    model.AgentRole `json:"role"`
 }
 
@@ -95,6 +96,7 @@ func (m *JWTManager) IssueToken(agent model.Agent) (string, time.Time, error) {
 			ID:        uuid.New().String(),
 		},
 		AgentID: agent.AgentID,
+		OrgID:   agent.OrgID,
 		Role:    agent.Role,
 	}
 

@@ -54,7 +54,7 @@ func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agent, err := h.db.GetAgentByAgentID(r.Context(), req.AgentID)
+	agent, err := h.db.GetAgentByAgentIDGlobal(r.Context(), req.AgentID)
 	if err != nil {
 		writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "invalid credentials")
 		return
@@ -150,7 +150,10 @@ func (h *Handlers) SeedAdmin(ctx context.Context, adminAPIKey string) error {
 		return nil
 	}
 
-	count, err := h.db.CountAgents(ctx)
+	// Default org UUID for the pre-migration seed admin.
+	defaultOrgID := uuid.Nil
+
+	count, err := h.db.CountAgents(ctx, defaultOrgID)
 	if err != nil {
 		return fmt.Errorf("seed admin: count agents: %w", err)
 	}
@@ -166,6 +169,7 @@ func (h *Handlers) SeedAdmin(ctx context.Context, adminAPIKey string) error {
 
 	_, err = h.db.CreateAgent(ctx, model.Agent{
 		AgentID:    "admin",
+		OrgID:      defaultOrgID,
 		Name:       "System Admin",
 		Role:       model.RoleAdmin,
 		APIKeyHash: &hash,

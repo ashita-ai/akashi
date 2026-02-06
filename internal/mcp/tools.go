@@ -7,6 +7,7 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/ashita-ai/akashi/internal/ctxutil"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 )
@@ -213,6 +214,8 @@ filters for agent_id and decision_type.`),
 }
 
 func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	orgID := ctxutil.OrgIDFromContext(ctx)
+
 	decisionType := request.GetString("decision_type", "")
 	if decisionType == "" {
 		return errorResult("decision_type is required"), nil
@@ -222,7 +225,7 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 	agentID := request.GetString("agent_id", "")
 	limit := request.GetInt("limit", 5)
 
-	resp, err := s.decisionSvc.Check(ctx, decisionType, query, agentID, limit)
+	resp, err := s.decisionSvc.Check(ctx, orgID, decisionType, query, agentID, limit)
 	if err != nil {
 		return errorResult(fmt.Sprintf("check failed: %v", err)), nil
 	}
@@ -236,6 +239,8 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 }
 
 func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	orgID := ctxutil.OrgIDFromContext(ctx)
+
 	agentID := request.GetString("agent_id", "")
 	decisionType := request.GetString("decision_type", "")
 	outcome := request.GetString("outcome", "")
@@ -251,7 +256,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		reasoningPtr = &reasoning
 	}
 
-	result, err := s.decisionSvc.Trace(ctx, decisions.TraceInput{
+	result, err := s.decisionSvc.Trace(ctx, orgID, decisions.TraceInput{
 		AgentID: agentID,
 		Decision: model.TraceDecision{
 			DecisionType: decisionType,
@@ -278,6 +283,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 }
 
 func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	orgID := ctxutil.OrgIDFromContext(ctx)
 	filters := model.QueryFilters{}
 
 	if agentID := request.GetString("agent_id", ""); agentID != "" {
@@ -295,7 +301,7 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 
 	limit := request.GetInt("limit", 10)
 
-	decs, total, err := s.decisionSvc.Query(ctx, model.QueryRequest{
+	decs, total, err := s.decisionSvc.Query(ctx, orgID, model.QueryRequest{
 		Filters:  filters,
 		Include:  []string{"alternatives"},
 		OrderBy:  "valid_from",
@@ -319,6 +325,8 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 }
 
 func (s *Server) handleSearch(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	orgID := ctxutil.OrgIDFromContext(ctx)
+
 	query := request.GetString("query", "")
 	if query == "" {
 		return errorResult("query is required"), nil
@@ -330,7 +338,7 @@ func (s *Server) handleSearch(ctx context.Context, request mcplib.CallToolReques
 		filters.ConfidenceMin = &confMin
 	}
 
-	results, err := s.decisionSvc.Search(ctx, query, filters, limit)
+	results, err := s.decisionSvc.Search(ctx, orgID, query, filters, limit)
 	if err != nil {
 		return errorResult(fmt.Sprintf("search failed: %v", err)), nil
 	}
@@ -348,6 +356,7 @@ func (s *Server) handleSearch(ctx context.Context, request mcplib.CallToolReques
 }
 
 func (s *Server) handleRecent(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	orgID := ctxutil.OrgIDFromContext(ctx)
 	limit := request.GetInt("limit", 10)
 
 	filters := model.QueryFilters{}
@@ -358,7 +367,7 @@ func (s *Server) handleRecent(ctx context.Context, request mcplib.CallToolReques
 		filters.DecisionType = &dt
 	}
 
-	decs, total, err := s.decisionSvc.Recent(ctx, filters, limit)
+	decs, total, err := s.decisionSvc.Recent(ctx, orgID, filters, limit)
 	if err != nil {
 		return errorResult(fmt.Sprintf("query failed: %v", err)), nil
 	}
