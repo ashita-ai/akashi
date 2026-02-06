@@ -34,10 +34,10 @@ import (
 )
 
 var (
-	testSrv        *httptest.Server
-	testcontainer  testcontainers.Container
-	adminToken     string
-	agentToken     string
+	testSrv       *httptest.Server
+	testcontainer testcontainers.Container
+	adminToken    string
+	agentToken    string
 )
 
 func TestMain(m *testing.M) {

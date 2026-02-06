@@ -39,9 +39,9 @@ func TestValidatePassword(t *testing.T) {
 	}{
 		{"StrongP@ss123", true},
 		{"Abcdefghij1x", true},
-		{"short1A", false},        // too short
-		{"alllowercase1", false},  // no uppercase
-		{"ALLUPPERCASE1", false},  // no lowercase
+		{"short1A", false},       // too short
+		{"alllowercase1", false}, // no uppercase
+		{"ALLUPPERCASE1", false}, // no lowercase
 		{"AllLettersNoDigit", false},
 		{"", false},
 	}

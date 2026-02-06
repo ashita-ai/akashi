@@ -38,7 +38,7 @@ func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if urlPath != "/" {
 		f, err := h.fs.Open(urlPath)
 		if err == nil {
-			f.Close()
+			_ = f.Close()
 			setCacheHeaders(w, urlPath)
 			h.static.ServeHTTP(w, r)
 			return

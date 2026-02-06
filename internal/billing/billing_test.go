@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -63,27 +64,27 @@ func TestCheckDecisionQuota_DisabledService(t *testing.T) {
 	svc := New(nil, Config{}, nil)
 
 	// Disabled service should always allow.
-	err := svc.CheckDecisionQuota(nil, [16]byte{})
+	err := svc.CheckDecisionQuota(context.TODO(), [16]byte{})
 	assert.NoError(t, err)
 }
 
 func TestCheckAgentQuota_DisabledService(t *testing.T) {
 	svc := New(nil, Config{}, nil)
 
-	err := svc.CheckAgentQuota(nil, [16]byte{})
+	err := svc.CheckAgentQuota(context.TODO(), [16]byte{})
 	assert.NoError(t, err)
 }
 
 func TestCreateCheckoutSession_Disabled(t *testing.T) {
 	svc := New(nil, Config{}, nil)
 
-	_, err := svc.CreateCheckoutSession(nil, "org-id", "test@example.com", "https://ok", "https://cancel")
+	_, err := svc.CreateCheckoutSession(context.TODO(), "org-id", "test@example.com", "https://ok", "https://cancel")
 	assert.ErrorIs(t, err, ErrBillingDisabled)
 }
 
 func TestCreatePortalSession_Disabled(t *testing.T) {
 	svc := New(nil, Config{}, nil)
 
-	_, err := svc.CreatePortalSession(nil, "cus_xxx", "https://return")
+	_, err := svc.CreatePortalSession(context.TODO(), "cus_xxx", "https://return")
 	assert.ErrorIs(t, err, ErrBillingDisabled)
 }

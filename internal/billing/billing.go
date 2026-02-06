@@ -42,9 +42,9 @@ type Service struct {
 
 // Config holds Stripe configuration.
 type Config struct {
-	SecretKey      string
-	WebhookSecret  string
-	PriceIDPro     string
+	SecretKey     string
+	WebhookSecret string
+	PriceIDPro    string
 }
 
 // New creates a billing service. If cfg.SecretKey is empty, the service
