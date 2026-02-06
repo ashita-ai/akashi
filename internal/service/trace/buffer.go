@@ -53,7 +53,7 @@ func (b *Buffer) Start(ctx context.Context) {
 // Append adds events to the buffer, assigning server-side sequence numbers.
 // Returns the assigned events with populated IDs and sequence numbers.
 // Returns an error if the buffer is at capacity (backpressure).
-func (b *Buffer) Append(ctx context.Context, runID uuid.UUID, agentID string, inputs []model.EventInput) ([]model.AgentEvent, error) {
+func (b *Buffer) Append(ctx context.Context, runID uuid.UUID, agentID string, orgID uuid.UUID, inputs []model.EventInput) ([]model.AgentEvent, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -80,6 +80,7 @@ func (b *Buffer) Append(ctx context.Context, runID uuid.UUID, agentID string, in
 		events[i] = model.AgentEvent{
 			ID:          uuid.New(),
 			RunID:       runID,
+			OrgID:       orgID,
 			EventType:   input.EventType,
 			SequenceNum: seqNums[i],
 			OccurredAt:  occurredAt,

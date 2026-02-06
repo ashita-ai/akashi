@@ -25,6 +25,7 @@ const (
 type AgentRun struct {
 	ID          uuid.UUID      `json:"id"`
 	AgentID     string         `json:"agent_id"`
+	OrgID       uuid.UUID      `json:"org_id"`
 	TraceID     *string        `json:"trace_id,omitempty"`
 	ParentRunID *uuid.UUID     `json:"parent_run_id,omitempty"`
 	Status      RunStatus      `json:"status"`

@@ -33,10 +33,10 @@ func (db *DB) CreateDecision(ctx context.Context, d model.Decision) (model.Decis
 	}
 
 	_, err := db.pool.Exec(ctx,
-		`INSERT INTO decisions (id, run_id, agent_id, decision_type, outcome, confidence,
+		`INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome, confidence,
 		 reasoning, embedding, metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
-		d.ID, d.RunID, d.AgentID, d.DecisionType, d.Outcome, d.Confidence,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+		d.ID, d.RunID, d.AgentID, d.OrgID, d.DecisionType, d.Outcome, d.Confidence,
 		d.Reasoning, d.Embedding, d.Metadata, d.QualityScore, d.PrecedentRef,
 		d.ValidFrom, d.ValidTo, d.TransactionTime, d.CreatedAt,
 	)
@@ -50,11 +50,11 @@ func (db *DB) CreateDecision(ctx context.Context, d model.Decision) (model.Decis
 func (db *DB) GetDecision(ctx context.Context, id uuid.UUID, includeAlts, includeEvidence bool) (model.Decision, error) {
 	var d model.Decision
 	err := db.pool.QueryRow(ctx,
-		`SELECT id, run_id, agent_id, decision_type, outcome, confidence, reasoning,
+		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at
 		 FROM decisions WHERE id = $1`, id,
 	).Scan(
-		&d.ID, &d.RunID, &d.AgentID, &d.DecisionType, &d.Outcome, &d.Confidence,
+		&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence,
 		&d.Reasoning, &d.Metadata, &d.QualityScore, &d.PrecedentRef,
 		&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
 	)
@@ -117,10 +117,10 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 	}
 
 	_, err = tx.Exec(ctx,
-		`INSERT INTO decisions (id, run_id, agent_id, decision_type, outcome, confidence,
+		`INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome, confidence,
 		 reasoning, embedding, metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
-		revised.ID, revised.RunID, revised.AgentID, revised.DecisionType, revised.Outcome,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+		revised.ID, revised.RunID, revised.AgentID, revised.OrgID, revised.DecisionType, revised.Outcome,
 		revised.Confidence, revised.Reasoning, revised.Embedding, revised.Metadata,
 		revised.QualityScore, revised.PrecedentRef,
 		revised.ValidFrom, revised.ValidTo, revised.TransactionTime, revised.CreatedAt,
@@ -136,8 +136,8 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 }
 
 // QueryDecisions executes a structured query with filters, ordering, and pagination.
-func (db *DB) QueryDecisions(ctx context.Context, req model.QueryRequest) ([]model.Decision, int, error) {
-	where, args := buildDecisionWhereClause(req.Filters, 1)
+func (db *DB) QueryDecisions(ctx context.Context, orgID uuid.UUID, req model.QueryRequest) ([]model.Decision, int, error) {
+	where, args := buildDecisionWhereClause(orgID, req.Filters, 1)
 
 	// Count total matching decisions.
 	countQuery := "SELECT COUNT(*) FROM decisions" + where
@@ -172,7 +172,7 @@ func (db *DB) QueryDecisions(ctx context.Context, req model.QueryRequest) ([]mod
 	}
 
 	selectQuery := fmt.Sprintf(
-		`SELECT id, run_id, agent_id, decision_type, outcome, confidence, reasoning,
+		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at
 		 FROM decisions%s ORDER BY %s %s LIMIT %d OFFSET %d`,
 		where, orderBy, orderDir, limit, offset,
@@ -222,8 +222,8 @@ func (db *DB) QueryDecisions(ctx context.Context, req model.QueryRequest) ([]mod
 }
 
 // QueryDecisionsTemporal executes a bi-temporal point-in-time query.
-func (db *DB) QueryDecisionsTemporal(ctx context.Context, req model.TemporalQueryRequest) ([]model.Decision, error) {
-	where, args := buildDecisionWhereClause(req.Filters, 1)
+func (db *DB) QueryDecisionsTemporal(ctx context.Context, orgID uuid.UUID, req model.TemporalQueryRequest) ([]model.Decision, error) {
+	where, args := buildDecisionWhereClause(orgID, req.Filters, 1)
 
 	// Add temporal conditions.
 	argIdx := len(args) + 1
@@ -233,7 +233,7 @@ func (db *DB) QueryDecisionsTemporal(ctx context.Context, req model.TemporalQuer
 	)
 	args = append(args, req.AsOf, req.AsOf)
 
-	query := `SELECT id, run_id, agent_id, decision_type, outcome, confidence, reasoning,
+	query := `SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at
 		 FROM decisions` + where + ` ORDER BY valid_from DESC`
 
@@ -247,7 +247,7 @@ func (db *DB) QueryDecisionsTemporal(ctx context.Context, req model.TemporalQuer
 }
 
 // SearchDecisionsByEmbedding performs semantic similarity search over decisions using pgvector.
-func (db *DB) SearchDecisionsByEmbedding(ctx context.Context, embedding pgvector.Vector, filters model.QueryFilters, limit int) ([]model.SearchResult, error) {
+func (db *DB) SearchDecisionsByEmbedding(ctx context.Context, orgID uuid.UUID, embedding pgvector.Vector, filters model.QueryFilters, limit int) ([]model.SearchResult, error) {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -255,19 +255,15 @@ func (db *DB) SearchDecisionsByEmbedding(ctx context.Context, embedding pgvector
 		limit = 1000
 	}
 
-	where, args := buildDecisionWhereClause(filters, 2)
-	if where == "" {
-		where = " WHERE embedding IS NOT NULL"
-	} else {
-		where += " AND embedding IS NOT NULL"
-	}
+	where, args := buildDecisionWhereClause(orgID, filters, 2)
+	where += " AND embedding IS NOT NULL"
 
 	// Quality-weighted relevance with temporal decay:
 	// - Semantic similarity: 60% base weight
 	// - Quality score: up to 30% bonus
 	// - Recency: decays to 50% at 90 days
 	query := fmt.Sprintf(
-		`SELECT id, run_id, agent_id, decision_type, outcome, confidence, reasoning,
+		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at,
 		 (1 - (embedding <=> $1))
 		   * (0.6 + 0.3 * COALESCE(quality_score, 0))
@@ -290,7 +286,7 @@ func (db *DB) SearchDecisionsByEmbedding(ctx context.Context, embedding pgvector
 		var d model.Decision
 		var relevance float32
 		if err := rows.Scan(
-			&d.ID, &d.RunID, &d.AgentID, &d.DecisionType, &d.Outcome, &d.Confidence,
+			&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence,
 			&d.Reasoning, &d.Metadata, &d.QualityScore, &d.PrecedentRef,
 			&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
 			&relevance,
@@ -302,8 +298,8 @@ func (db *DB) SearchDecisionsByEmbedding(ctx context.Context, embedding pgvector
 	return results, rows.Err()
 }
 
-// GetDecisionsByAgent returns decisions for a given agent with pagination.
-func (db *DB) GetDecisionsByAgent(ctx context.Context, agentID string, limit, offset int, from, to *time.Time) ([]model.Decision, int, error) {
+// GetDecisionsByAgent returns decisions for a given agent within an org with pagination.
+func (db *DB) GetDecisionsByAgent(ctx context.Context, orgID uuid.UUID, agentID string, limit, offset int, from, to *time.Time) ([]model.Decision, int, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -318,7 +314,7 @@ func (db *DB) GetDecisionsByAgent(ctx context.Context, agentID string, limit, of
 		filters.TimeRange = &model.TimeRange{From: from, To: to}
 	}
 
-	where, args := buildDecisionWhereClause(filters, 1)
+	where, args := buildDecisionWhereClause(orgID, filters, 1)
 
 	var total int
 	if err := db.pool.QueryRow(ctx, "SELECT COUNT(*) FROM decisions"+where, args...).Scan(&total); err != nil {
@@ -326,7 +322,7 @@ func (db *DB) GetDecisionsByAgent(ctx context.Context, agentID string, limit, of
 	}
 
 	query := fmt.Sprintf(
-		`SELECT id, run_id, agent_id, decision_type, outcome, confidence, reasoning,
+		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at
 		 FROM decisions%s ORDER BY valid_from DESC LIMIT %d OFFSET %d`,
 		where, limit, offset,
@@ -342,10 +338,15 @@ func (db *DB) GetDecisionsByAgent(ctx context.Context, agentID string, limit, of
 	return decisions, total, err
 }
 
-func buildDecisionWhereClause(f model.QueryFilters, startArgIdx int) (string, []any) {
+func buildDecisionWhereClause(orgID uuid.UUID, f model.QueryFilters, startArgIdx int) (string, []any) {
 	var conditions []string
 	var args []any
 	idx := startArgIdx
+
+	// Org isolation is always the first condition.
+	conditions = append(conditions, fmt.Sprintf("org_id = $%d", idx))
+	args = append(args, orgID)
+	idx++
 
 	if len(f.AgentIDs) > 0 {
 		conditions = append(conditions, fmt.Sprintf("agent_id = ANY($%d)", idx))
@@ -384,9 +385,6 @@ func buildDecisionWhereClause(f model.QueryFilters, startArgIdx int) (string, []
 		}
 	}
 
-	if len(conditions) == 0 {
-		return "", nil
-	}
 	return " WHERE " + strings.Join(conditions, " AND "), args
 }
 
@@ -395,7 +393,7 @@ func scanDecisions(rows pgx.Rows) ([]model.Decision, error) {
 	for rows.Next() {
 		var d model.Decision
 		if err := rows.Scan(
-			&d.ID, &d.RunID, &d.AgentID, &d.DecisionType, &d.Outcome, &d.Confidence,
+			&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence,
 			&d.Reasoning, &d.Metadata, &d.QualityScore, &d.PrecedentRef,
 			&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
 		); err != nil {

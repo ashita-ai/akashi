@@ -55,7 +55,7 @@ type TraceResult struct {
 // Trace records a complete decision with its alternatives and evidence.
 // Embeddings and quality scores are computed first, then all database writes
 // happen atomically within a single transaction. Notification is sent after commit.
-func (s *Service) Trace(ctx context.Context, input TraceInput) (TraceResult, error) {
+func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) (TraceResult, error) {
 	// 1. Generate decision embedding (outside tx — may call external API).
 	embText := input.Decision.DecisionType + ": " + input.Decision.Outcome
 	if input.Decision.Reasoning != nil {
@@ -107,6 +107,7 @@ func (s *Service) Trace(ctx context.Context, input TraceInput) (TraceResult, err
 	// 5. Execute transactional write (run + decision + alts + evidence + complete).
 	run, decision, err := s.db.CreateTraceTx(ctx, storage.CreateTraceParams{
 		AgentID:  input.AgentID,
+		OrgID:    orgID,
 		TraceID:  input.TraceID,
 		Metadata: input.Metadata,
 		Decision: model.Decision{
@@ -129,6 +130,7 @@ func (s *Service) Trace(ctx context.Context, input TraceInput) (TraceResult, err
 	notifyPayload, err := json.Marshal(map[string]any{
 		"decision_id": decision.ID,
 		"agent_id":    input.AgentID,
+		"org_id":      orgID,
 		"outcome":     input.Decision.Outcome,
 	})
 	if err != nil {
@@ -146,7 +148,7 @@ func (s *Service) Trace(ctx context.Context, input TraceInput) (TraceResult, err
 }
 
 // Check performs a precedent lookup by semantic search or structured query.
-func (s *Service) Check(ctx context.Context, decisionType, query, agentID string, limit int) (model.CheckResponse, error) {
+func (s *Service) Check(ctx context.Context, orgID uuid.UUID, decisionType, query, agentID string, limit int) (model.CheckResponse, error) {
 	if limit <= 0 {
 		limit = 5
 	}
@@ -163,7 +165,7 @@ func (s *Service) Check(ctx context.Context, decisionType, query, agentID string
 		if agentID != "" {
 			filters.AgentIDs = []string{agentID}
 		}
-		results, err := s.db.SearchDecisionsByEmbedding(ctx, queryEmb, filters, limit)
+		results, err := s.db.SearchDecisionsByEmbedding(ctx, orgID, queryEmb, filters, limit)
 		if err != nil {
 			return model.CheckResponse{}, fmt.Errorf("check: search: %w", err)
 		}
@@ -176,7 +178,7 @@ func (s *Service) Check(ctx context.Context, decisionType, query, agentID string
 		if agentID != "" {
 			filters.AgentIDs = []string{agentID}
 		}
-		queried, _, err := s.db.QueryDecisions(ctx, model.QueryRequest{
+		queried, _, err := s.db.QueryDecisions(ctx, orgID, model.QueryRequest{
 			Filters:  filters,
 			Include:  []string{"alternatives"},
 			OrderBy:  "valid_from",
@@ -190,7 +192,7 @@ func (s *Service) Check(ctx context.Context, decisionType, query, agentID string
 	}
 
 	// Always check for conflicts.
-	conflicts, err := s.db.ListConflicts(ctx, &decisionType, limit)
+	conflicts, err := s.db.ListConflicts(ctx, orgID, &decisionType, limit)
 	if err != nil {
 		s.logger.Warn("check: list conflicts", "error", err)
 		conflicts = nil
@@ -204,22 +206,22 @@ func (s *Service) Check(ctx context.Context, decisionType, query, agentID string
 }
 
 // Search performs semantic similarity search over decisions.
-func (s *Service) Search(ctx context.Context, query string, filters model.QueryFilters, limit int) ([]model.SearchResult, error) {
+func (s *Service) Search(ctx context.Context, orgID uuid.UUID, query string, filters model.QueryFilters, limit int) ([]model.SearchResult, error) {
 	queryEmb, err := s.embedder.Embed(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("search: generate embedding: %w", err)
 	}
-	return s.db.SearchDecisionsByEmbedding(ctx, queryEmb, filters, limit)
+	return s.db.SearchDecisionsByEmbedding(ctx, orgID, queryEmb, filters, limit)
 }
 
 // Query executes a structured query with filters, ordering, and pagination.
-func (s *Service) Query(ctx context.Context, req model.QueryRequest) ([]model.Decision, int, error) {
-	return s.db.QueryDecisions(ctx, req)
+func (s *Service) Query(ctx context.Context, orgID uuid.UUID, req model.QueryRequest) ([]model.Decision, int, error) {
+	return s.db.QueryDecisions(ctx, orgID, req)
 }
 
 // Recent returns recent decisions with optional filters.
-func (s *Service) Recent(ctx context.Context, filters model.QueryFilters, limit int) ([]model.Decision, int, error) {
-	return s.db.QueryDecisions(ctx, model.QueryRequest{
+func (s *Service) Recent(ctx context.Context, orgID uuid.UUID, filters model.QueryFilters, limit int) ([]model.Decision, int, error) {
+	return s.db.QueryDecisions(ctx, orgID, model.QueryRequest{
 		Filters:  filters,
 		Include:  []string{"alternatives"},
 		OrderBy:  "valid_from",

@@ -45,6 +45,7 @@ const (
 // CreateRunRequest is the request body for POST /v1/runs.
 type CreateRunRequest struct {
 	AgentID     string         `json:"agent_id"`
+	OrgID       uuid.UUID      `json:"-"` // Set from JWT claims, not from request body.
 	TraceID     *string        `json:"trace_id,omitempty"`
 	ParentRunID *uuid.UUID     `json:"parent_run_id,omitempty"`
 	Metadata    map[string]any `json:"metadata,omitempty"`
@@ -145,4 +146,34 @@ type HealthResponse struct {
 type SubscriptionEvent struct {
 	Event string `json:"event"`
 	Data  any    `json:"data"`
+}
+
+// Organization represents a tenant in the multi-tenancy model.
+type Organization struct {
+	ID                   uuid.UUID `json:"id"`
+	Name                 string    `json:"name"`
+	Slug                 string    `json:"slug"`
+	Plan                 string    `json:"plan"`
+	StripeCustomerID     *string   `json:"stripe_customer_id,omitempty"`
+	StripeSubscriptionID *string   `json:"stripe_subscription_id,omitempty"`
+	DecisionLimit        int       `json:"decision_limit"`
+	AgentLimit           int       `json:"agent_limit"`
+	Email                string    `json:"email"`
+	EmailVerified        bool      `json:"email_verified"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
+// OrgUsage tracks decision counts per org per billing period.
+type OrgUsage struct {
+	OrgID         uuid.UUID `json:"org_id"`
+	Period        string    `json:"period"`
+	DecisionCount int       `json:"decision_count"`
+}
+
+// SignupRequest is the request body for POST /auth/signup.
+type SignupRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	OrgName  string `json:"org_name"`
 }

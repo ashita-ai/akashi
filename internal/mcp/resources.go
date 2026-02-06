@@ -7,6 +7,7 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/ashita-ai/akashi/internal/ctxutil"
 	"github.com/ashita-ai/akashi/internal/model"
 )
 
@@ -46,8 +47,10 @@ func (s *Server) registerResources() {
 }
 
 func (s *Server) handleSessionCurrent(ctx context.Context, request mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+	orgID := ctxutil.OrgIDFromContext(ctx)
+
 	// Return recent decisions across all agents (limited).
-	decisions, _, err := s.db.QueryDecisions(ctx, model.QueryRequest{
+	decisions, _, err := s.db.QueryDecisions(ctx, orgID, model.QueryRequest{
 		OrderBy:  "valid_from",
 		OrderDir: "desc",
 		Limit:    10,
@@ -71,7 +74,9 @@ func (s *Server) handleSessionCurrent(ctx context.Context, request mcplib.ReadRe
 }
 
 func (s *Server) handleDecisionsRecent(ctx context.Context, request mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
-	decisions, _, err := s.db.QueryDecisions(ctx, model.QueryRequest{
+	orgID := ctxutil.OrgIDFromContext(ctx)
+
+	decisions, _, err := s.db.QueryDecisions(ctx, orgID, model.QueryRequest{
 		OrderBy:  "valid_from",
 		OrderDir: "desc",
 		Limit:    20,
@@ -96,6 +101,8 @@ func (s *Server) handleDecisionsRecent(ctx context.Context, request mcplib.ReadR
 }
 
 func (s *Server) handleAgentHistory(ctx context.Context, request mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+	orgID := ctxutil.OrgIDFromContext(ctx)
+
 	// Extract agent_id from the URI template parameter.
 	uri := request.Params.URI
 	// Parse agent_id from akashi://agent/{id}/history
@@ -109,7 +116,7 @@ func (s *Server) handleAgentHistory(ctx context.Context, request mcplib.ReadReso
 		agentID = agentID[:len(agentID)-8]
 	}
 
-	decisions, _, err := s.db.GetDecisionsByAgent(ctx, agentID, 20, 0, nil, nil)
+	decisions, _, err := s.db.GetDecisionsByAgent(ctx, orgID, agentID, 20, 0, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: agent history: %w", err)
 	}

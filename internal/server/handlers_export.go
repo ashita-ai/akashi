@@ -14,6 +14,7 @@ import (
 // alternatives and evidence for each decision. Uses cursor-based
 // pagination to avoid loading all results into memory.
 func (h *Handlers) HandleExportDecisions(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
 	q := r.URL.Query()
 
 	filters := model.QueryFilters{}
@@ -52,7 +53,7 @@ func (h *Handlers) HandleExportDecisions(w http.ResponseWriter, r *http.Request)
 	flusher, _ := w.(http.Flusher)
 
 	for {
-		decisions, _, err := h.db.QueryDecisions(r.Context(), model.QueryRequest{
+		decisions, _, err := h.db.QueryDecisions(r.Context(), orgID, model.QueryRequest{
 			Filters:  filters,
 			Include:  []string{"alternatives", "evidence"},
 			OrderBy:  "valid_from",

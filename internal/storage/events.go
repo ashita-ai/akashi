@@ -44,13 +44,14 @@ func (db *DB) InsertEvents(ctx context.Context, events []model.AgentEvent) (int6
 		return 0, nil
 	}
 
-	columns := []string{"id", "run_id", "event_type", "sequence_num", "occurred_at", "agent_id", "payload", "created_at"}
+	columns := []string{"id", "run_id", "org_id", "event_type", "sequence_num", "occurred_at", "agent_id", "payload", "created_at"}
 
 	rows := make([][]any, len(events))
 	for i, e := range events {
 		rows[i] = []any{
 			e.ID,
 			e.RunID,
+			e.OrgID,
 			string(e.EventType),
 			e.SequenceNum,
 			e.OccurredAt,
@@ -75,9 +76,9 @@ func (db *DB) InsertEvents(ctx context.Context, events []model.AgentEvent) (int6
 // InsertEvent inserts a single event (for low-volume operations).
 func (db *DB) InsertEvent(ctx context.Context, event model.AgentEvent) error {
 	_, err := db.pool.Exec(ctx,
-		`INSERT INTO agent_events (id, run_id, event_type, sequence_num, occurred_at, agent_id, payload, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		event.ID, event.RunID, string(event.EventType), event.SequenceNum,
+		`INSERT INTO agent_events (id, run_id, org_id, event_type, sequence_num, occurred_at, agent_id, payload, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		event.ID, event.RunID, event.OrgID, string(event.EventType), event.SequenceNum,
 		event.OccurredAt, event.AgentID, event.Payload, event.CreatedAt,
 	)
 	if err != nil {
@@ -89,7 +90,7 @@ func (db *DB) InsertEvent(ctx context.Context, event model.AgentEvent) error {
 // GetEventsByRun retrieves all events for a run, ordered by sequence_num.
 func (db *DB) GetEventsByRun(ctx context.Context, runID uuid.UUID) ([]model.AgentEvent, error) {
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, run_id, event_type, sequence_num, occurred_at, agent_id, payload, created_at
+		`SELECT id, run_id, org_id, event_type, sequence_num, occurred_at, agent_id, payload, created_at
 		 FROM agent_events WHERE run_id = $1
 		 ORDER BY sequence_num ASC`, runID,
 	)
@@ -105,7 +106,7 @@ func (db *DB) GetEventsByRun(ctx context.Context, runID uuid.UUID) ([]model.Agen
 // Used for context replay.
 func (db *DB) GetEventsByRunBeforeTime(ctx context.Context, runID uuid.UUID, before time.Time) ([]model.AgentEvent, error) {
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, run_id, event_type, sequence_num, occurred_at, agent_id, payload, created_at
+		`SELECT id, run_id, org_id, event_type, sequence_num, occurred_at, agent_id, payload, created_at
 		 FROM agent_events WHERE run_id = $1 AND occurred_at <= $2
 		 ORDER BY sequence_num ASC`, runID, before,
 	)
@@ -122,7 +123,7 @@ func scanEvents(rows pgx.Rows) ([]model.AgentEvent, error) {
 	for rows.Next() {
 		var e model.AgentEvent
 		if err := rows.Scan(
-			&e.ID, &e.RunID, &e.EventType, &e.SequenceNum,
+			&e.ID, &e.RunID, &e.OrgID, &e.EventType, &e.SequenceNum,
 			&e.OccurredAt, &e.AgentID, &e.Payload, &e.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan event: %w", err)

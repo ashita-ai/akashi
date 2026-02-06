@@ -15,6 +15,8 @@ import (
 
 // HandleCreateAgent handles POST /v1/agents (admin-only).
 func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+
 	var req model.CreateAgentRequest
 	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
@@ -38,6 +40,7 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 
 	agent, err := h.db.CreateAgent(r.Context(), model.Agent{
 		AgentID:    req.AgentID,
+		OrgID:      orgID,
 		Name:       req.Name,
 		Role:       req.Role,
 		APIKeyHash: &hash,
@@ -57,7 +60,9 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 
 // HandleListAgents handles GET /v1/agents (admin-only).
 func (h *Handlers) HandleListAgents(w http.ResponseWriter, r *http.Request) {
-	agents, err := h.db.ListAgents(r.Context())
+	orgID := OrgIDFromContext(r.Context())
+
+	agents, err := h.db.ListAgents(r.Context(), orgID)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to list agents")
 		return
@@ -68,6 +73,7 @@ func (h *Handlers) HandleListAgents(w http.ResponseWriter, r *http.Request) {
 // HandleCreateGrant handles POST /v1/grants.
 func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
 
 	var req model.CreateGrantRequest
 	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
@@ -76,14 +82,14 @@ func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get grantor agent.
-	grantor, err := h.db.GetAgentByAgentID(r.Context(), claims.AgentID)
+	grantor, err := h.db.GetAgentByAgentID(r.Context(), orgID, claims.AgentID)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to get grantor")
 		return
 	}
 
 	// Only admins and the owner of the resource can grant access.
-	if claims.Role != model.RoleAdmin {
+	if !model.RoleAtLeast(claims.Role, model.RoleAdmin) {
 		if req.ResourceID == nil || *req.ResourceID != claims.AgentID {
 			writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "can only grant access to your own traces")
 			return
@@ -91,7 +97,7 @@ func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get grantee agent.
-	grantee, err := h.db.GetAgentByAgentID(r.Context(), req.GranteeAgentID)
+	grantee, err := h.db.GetAgentByAgentID(r.Context(), orgID, req.GranteeAgentID)
 	if err != nil {
 		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "grantee agent not found")
 		return
@@ -108,6 +114,7 @@ func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	grant, err := h.db.CreateGrant(r.Context(), model.AccessGrant{
+		OrgID:        orgID,
 		GrantorID:    grantor.ID,
 		GranteeID:    grantee.ID,
 		ResourceType: req.ResourceType,
@@ -130,6 +137,7 @@ func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 // HandleDeleteGrant handles DELETE /v1/grants/{grant_id}.
 func (h *Handlers) HandleDeleteGrant(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
 
 	grantIDStr := r.PathValue("grant_id")
 	grantID, err := uuid.Parse(grantIDStr)
@@ -146,8 +154,8 @@ func (h *Handlers) HandleDeleteGrant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Only admins or the grantor can delete a grant.
-	if claims.Role != model.RoleAdmin {
-		grantor, err := h.db.GetAgentByAgentID(r.Context(), claims.AgentID)
+	if !model.RoleAtLeast(claims.Role, model.RoleAdmin) {
+		grantor, err := h.db.GetAgentByAgentID(r.Context(), orgID, claims.AgentID)
 		if err != nil || grant.GrantorID != grantor.ID {
 			writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "can only delete your own grants")
 			return
@@ -165,6 +173,7 @@ func (h *Handlers) HandleDeleteGrant(w http.ResponseWriter, r *http.Request) {
 // HandleDeleteAgent handles DELETE /v1/agents/{agent_id} (admin-only).
 // Deletes all data associated with the agent (GDPR right to erasure).
 func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
 	agentID := r.PathValue("agent_id")
 	if agentID == "" {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "agent_id is required")
@@ -177,7 +186,7 @@ func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.db.DeleteAgentData(r.Context(), agentID)
+	result, err := h.db.DeleteAgentData(r.Context(), orgID, agentID)
 	if err != nil {
 		if errors.Is(err, storage.ErrAgentNotFound) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "agent not found")

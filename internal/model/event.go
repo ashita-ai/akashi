@@ -38,6 +38,7 @@ const (
 type AgentEvent struct {
 	ID          uuid.UUID      `json:"id"`
 	RunID       uuid.UUID      `json:"run_id"`
+	OrgID       uuid.UUID      `json:"org_id"`
 	EventType   EventType      `json:"event_type"`
 	SequenceNum int64          `json:"sequence_num"`
 	OccurredAt  time.Time      `json:"occurred_at"`

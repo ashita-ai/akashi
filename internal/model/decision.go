@@ -13,6 +13,7 @@ type Decision struct {
 	ID           uuid.UUID        `json:"id"`
 	RunID        uuid.UUID        `json:"run_id"`
 	AgentID      string           `json:"agent_id"`
+	OrgID        uuid.UUID        `json:"org_id"`
 	DecisionType string           `json:"decision_type"`
 	Outcome      string           `json:"outcome"`
 	Confidence   float32          `json:"confidence"`
@@ -78,6 +79,7 @@ type Evidence struct {
 type DecisionConflict struct {
 	DecisionAID  uuid.UUID `json:"decision_a_id"`
 	DecisionBID  uuid.UUID `json:"decision_b_id"`
+	OrgID        uuid.UUID `json:"org_id"`
 	AgentA       string    `json:"agent_a"`
 	AgentB       string    `json:"agent_b"`
 	RunA         uuid.UUID `json:"run_a"`
@@ -95,6 +97,7 @@ type DecisionConflict struct {
 // AgentCurrentState is a summary of an agent's latest activity.
 type AgentCurrentState struct {
 	AgentID         string     `json:"agent_id"`
+	OrgID           uuid.UUID  `json:"org_id"`
 	LatestRunID     uuid.UUID  `json:"latest_run_id"`
 	RunStatus       RunStatus  `json:"run_status"`
 	StartedAt       time.Time  `json:"started_at"`

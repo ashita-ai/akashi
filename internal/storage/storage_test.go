@@ -327,7 +327,7 @@ func TestQueryDecisions(t *testing.T) {
 
 	dType := "classification"
 	confMin := float32(0.5)
-	decisions, total, err := testDB.QueryDecisions(ctx, model.QueryRequest{
+	decisions, total, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
 		Filters: model.QueryFilters{
 			AgentIDs:      []string{"query-test"},
 			DecisionType:  &dType,
@@ -386,7 +386,7 @@ func TestSearchDecisionsByEmbedding(t *testing.T) {
 	queryVec[1] = 0.01
 	queryEmb := pgvector.NewVector(queryVec)
 
-	results, err := testDB.SearchDecisionsByEmbedding(ctx, queryEmb, model.QueryFilters{}, 10)
+	results, err := testDB.SearchDecisionsByEmbedding(ctx, uuid.Nil, queryEmb, model.QueryFilters{}, 10)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, len(results), 2)
 	// The first result should be more similar (outcome="similar").
@@ -409,7 +409,7 @@ func TestTemporalQuery(t *testing.T) {
 	require.NoError(t, err)
 
 	// Query as of now should see the decision.
-	decisions, err := testDB.QueryDecisionsTemporal(ctx, model.TemporalQueryRequest{
+	decisions, err := testDB.QueryDecisionsTemporal(ctx, uuid.Nil, model.TemporalQueryRequest{
 		AsOf: time.Now().UTC().Add(time.Second),
 		Filters: model.QueryFilters{
 			AgentIDs: []string{"temporal-test"},
@@ -419,7 +419,7 @@ func TestTemporalQuery(t *testing.T) {
 	assert.GreaterOrEqual(t, len(decisions), 1)
 
 	// Query as of yesterday should see nothing.
-	decisions, err = testDB.QueryDecisionsTemporal(ctx, model.TemporalQueryRequest{
+	decisions, err = testDB.QueryDecisionsTemporal(ctx, uuid.Nil, model.TemporalQueryRequest{
 		AsOf: time.Now().UTC().Add(-24 * time.Hour),
 		Filters: model.QueryFilters{
 			AgentIDs: []string{"temporal-test"},
@@ -442,7 +442,7 @@ func TestAgentCRUD(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "crud-agent", agent.AgentID)
 
-	got, err := testDB.GetAgentByAgentID(ctx, "crud-agent")
+	got, err := testDB.GetAgentByAgentID(ctx, uuid.Nil, "crud-agent")
 	require.NoError(t, err)
 	assert.Equal(t, agent.ID, got.ID)
 
@@ -479,12 +479,12 @@ func TestAccessGrants(t *testing.T) {
 	require.NoError(t, err)
 
 	// Check access.
-	has, err := testDB.HasAccess(ctx, grantee.ID, "agent_traces", "underwriting-agent", "read")
+	has, err := testDB.HasAccess(ctx, uuid.Nil, grantee.ID, "agent_traces", "underwriting-agent", "read")
 	require.NoError(t, err)
 	assert.True(t, has)
 
 	// Check no access for different resource.
-	has, err = testDB.HasAccess(ctx, grantee.ID, "agent_traces", "other-agent", "read")
+	has, err = testDB.HasAccess(ctx, uuid.Nil, grantee.ID, "agent_traces", "other-agent", "read")
 	require.NoError(t, err)
 	assert.False(t, has)
 
@@ -492,7 +492,7 @@ func TestAccessGrants(t *testing.T) {
 	err = testDB.DeleteGrant(ctx, grant.ID)
 	require.NoError(t, err)
 
-	has, err = testDB.HasAccess(ctx, grantee.ID, "agent_traces", "underwriting-agent", "read")
+	has, err = testDB.HasAccess(ctx, uuid.Nil, grantee.ID, "agent_traces", "underwriting-agent", "read")
 	require.NoError(t, err)
 	assert.False(t, has)
 }
@@ -506,7 +506,7 @@ func TestListRunsByAgent(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	runs, total, err := testDB.ListRunsByAgent(ctx, agentID, 10, 0)
+	runs, total, err := testDB.ListRunsByAgent(ctx, uuid.Nil, agentID, 10, 0)
 	require.NoError(t, err)
 	assert.Equal(t, 3, total)
 	assert.Len(t, runs, 3)
