@@ -25,7 +25,7 @@ import sys
 import time
 import urllib.request
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 try:
@@ -42,9 +42,10 @@ DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "postgres://tsdbadmin:y7umgb9h487bgckm@xmrlv6epap.uy8qsyc8jg.tsdb.cloud.timescale.com:39116/tsdb?sslmode=require",
 )
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/embeddings")
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/embed")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "mxbai-embed-large")
-EMBED_WORKERS = int(os.environ.get("EMBED_WORKERS", "8"))
+EMBED_BATCH_SIZE = int(os.environ.get("EMBED_BATCH_SIZE", "50"))
+EMBED_WORKERS = int(os.environ.get("EMBED_WORKERS", "4"))
 SEED_MARKER = "seed:demo-data"
 
 # The org_id for the default (pre-signup) org — uuid.Nil.
@@ -387,38 +388,43 @@ def generate_decisions(count: int) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Ollama embedding with parallelism
+# Ollama batch embedding
 # ---------------------------------------------------------------------------
 
-def embed_one(text: str) -> list[float]:
-    """Get embedding from Ollama for a single text."""
-    payload = json.dumps({"model": EMBED_MODEL, "prompt": text}).encode()
+def embed_chunk(texts: list[str]) -> list[list[float]]:
+    """Embed multiple texts in a single Ollama /api/embed call."""
+    payload = json.dumps({"model": EMBED_MODEL, "input": texts}).encode()
     req = urllib.request.Request(OLLAMA_URL, data=payload, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=120) as resp:
         data = json.loads(resp.read())
-    return data["embedding"]
+    return data["embeddings"]
 
 
 def embed_batch(decisions: list[dict]) -> list[dict]:
-    """Generate embeddings for all decisions using a thread pool."""
+    """Generate embeddings using parallel batched Ollama calls."""
     total = len(decisions)
     completed = 0
     start = time.time()
 
-    def process(idx: int, dec: dict) -> tuple[int, list[float]]:
-        return idx, embed_one(dec["embed_text"])
+    # Build (batch_start, batch_end) ranges
+    chunks = []
+    for batch_start in range(0, total, EMBED_BATCH_SIZE):
+        chunks.append((batch_start, min(batch_start + EMBED_BATCH_SIZE, total)))
+
+    def process_chunk(span):
+        s, e = span
+        texts = [d["embed_text"] for d in decisions[s:e]]
+        return s, embed_chunk(texts)
 
     with ThreadPoolExecutor(max_workers=EMBED_WORKERS) as pool:
-        futures = {pool.submit(process, i, d): i for i, d in enumerate(decisions)}
-        for future in as_completed(futures):
-            idx, embedding = future.result()
-            decisions[idx]["embedding"] = embedding
-            completed += 1
-            if completed % 100 == 0 or completed == total:
-                elapsed = time.time() - start
-                rate = completed / elapsed
-                eta = (total - completed) / rate if rate > 0 else 0
-                print(f"  Embedded {completed}/{total} ({rate:.0f}/s, ETA {eta:.0f}s)")
+        for s, embeddings in pool.map(process_chunk, chunks):
+            for i, emb in enumerate(embeddings):
+                decisions[s + i]["embedding"] = emb
+            completed += len(embeddings)
+            elapsed = time.time() - start
+            rate = completed / elapsed if elapsed > 0 else 0
+            eta = (total - completed) / rate if rate > 0 else 0
+            print(f"  Embedded {completed}/{total} ({rate:.0f}/s, ETA {eta:.0f}s)")
 
     return decisions
 
@@ -519,50 +525,52 @@ def insert_data(conn, decisions: list[dict]):
                 ]),
             })
 
+    seed_meta = json.dumps({"seed_marker": SEED_MARKER})
+
     with conn.cursor() as cur:
-        # Insert runs
+        # Insert runs via executemany
         print(f"  Inserting {len(runs)} runs...")
-        for run in runs:
-            cur.execute("""
-                INSERT INTO agent_runs (id, agent_id, org_id, status, metadata, started_at, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (id) DO NOTHING
-            """, (
-                run["id"], run["agent_id"], run["org_id"], run["status"],
-                json.dumps({"seed_marker": SEED_MARKER}),
-                run["created_at"], run["created_at"],
-            ))
+        cur.executemany("""
+            INSERT INTO agent_runs (id, agent_id, org_id, status, metadata, started_at, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO NOTHING
+        """, [
+            (r["id"], r["agent_id"], r["org_id"], r["status"],
+             seed_meta, r["created_at"], r["created_at"])
+            for r in runs
+        ])
 
-        # Insert decisions
+        # Insert decisions via COPY for maximum throughput.
+        # COPY doesn't support ON CONFLICT, but seed data uses fresh UUIDs so
+        # collisions are impossible.
         print(f"  Inserting {len(decisions)} decisions...")
-        for dec in decisions:
-            vec_str = "[" + ",".join(str(v) for v in dec["embedding"]) + "]"
-            cur.execute("""
-                INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome,
-                    confidence, reasoning, embedding, quality_score, metadata,
-                    valid_from, transaction_time, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s, %s, %s, %s, %s)
-                ON CONFLICT (id) DO NOTHING
-            """, (
-                dec["id"], dec["run_id"], dec["agent_id"], DEFAULT_ORG_ID,
-                dec["decision_type"], dec["outcome"], dec["confidence"],
-                dec["reasoning"], vec_str,
-                round(random.uniform(0.3, 1.0), 2),
-                json.dumps({"seed_marker": SEED_MARKER}),
-                dec["created_at"], dec["created_at"], dec["created_at"],
-            ))
+        with cur.copy(
+            "COPY decisions (id, run_id, agent_id, org_id, decision_type, outcome,"
+            " confidence, reasoning, embedding, quality_score, metadata,"
+            " valid_from, transaction_time, created_at)"
+            " FROM STDIN"
+        ) as copy:
+            for dec in decisions:
+                vec_str = "[" + ",".join(str(v) for v in dec["embedding"]) + "]"
+                copy.write_row((
+                    dec["id"], dec["run_id"], dec["agent_id"], DEFAULT_ORG_ID,
+                    dec["decision_type"], dec["outcome"], dec["confidence"],
+                    dec["reasoning"], vec_str,
+                    round(random.uniform(0.3, 1.0), 2), seed_meta,
+                    dec["created_at"], dec["created_at"], dec["created_at"],
+                ))
 
-        # Insert alternatives
+        # Insert alternatives via COPY
         print(f"  Inserting {len(alternatives)} alternatives...")
-        for alt in alternatives:
-            cur.execute("""
-                INSERT INTO alternatives (id, decision_id, label, score, selected, rejection_reason)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (id) DO NOTHING
-            """, (
-                alt["id"], alt["decision_id"], alt["label"],
-                alt["score"], alt["selected"], alt["rejection_reason"],
-            ))
+        with cur.copy(
+            "COPY alternatives (id, decision_id, label, score, selected, rejection_reason)"
+            " FROM STDIN"
+        ) as copy:
+            for alt in alternatives:
+                copy.write_row((
+                    alt["id"], alt["decision_id"], alt["label"],
+                    alt["score"], alt["selected"], alt["rejection_reason"],
+                ))
 
     conn.commit()
     print(f"  Done! {len(runs)} runs, {len(decisions)} decisions, {len(alternatives)} alternatives")
@@ -607,7 +615,7 @@ def main():
     print(f"  Generated {len(decisions)} decisions in {time.time() - t0:.1f}s\n")
 
     # Step 2: Generate embeddings via Ollama
-    print(f"Step 2: Generating embeddings ({EMBED_WORKERS} workers)...")
+    print(f"Step 2: Generating embeddings ({EMBED_WORKERS} workers x {EMBED_BATCH_SIZE}/batch)...")
     t1 = time.time()
     decisions = embed_batch(decisions)
     embed_time = time.time() - t1
