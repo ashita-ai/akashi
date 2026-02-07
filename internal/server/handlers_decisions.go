@@ -54,7 +54,7 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, http.StatusTooManyRequests, model.ErrCodeQuotaExceeded, err.Error())
 			return
 		}
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to create trace")
+		h.writeInternalError(w, r, "failed to create trace", err)
 		return
 	}
 
@@ -78,13 +78,13 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 
 	decisions, total, err := h.decisionSvc.Query(r.Context(), orgID, req)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "query failed")
+		h.writeInternalError(w, r, "query failed", err)
 		return
 	}
 
 	decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, decisions)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "authorization check failed")
+		h.writeInternalError(w, r, "authorization check failed", err)
 		return
 	}
 
@@ -112,13 +112,13 @@ func (h *Handlers) HandleTemporalQuery(w http.ResponseWriter, r *http.Request) {
 
 	decisions, err := h.db.QueryDecisionsTemporal(r.Context(), orgID, req)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "temporal query failed")
+		h.writeInternalError(w, r, "temporal query failed", err)
 		return
 	}
 
 	decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, decisions)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "authorization check failed")
+		h.writeInternalError(w, r, "authorization check failed", err)
 		return
 	}
 
@@ -140,7 +140,7 @@ func (h *Handlers) HandleAgentHistory(w http.ResponseWriter, r *http.Request) {
 
 	ok, err := canAccessAgent(r.Context(), h.db, claims, agentID)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "authorization check failed")
+		h.writeInternalError(w, r, "authorization check failed", err)
 		return
 	}
 	if !ok {
@@ -155,7 +155,7 @@ func (h *Handlers) HandleAgentHistory(w http.ResponseWriter, r *http.Request) {
 
 	decisions, total, err := h.db.GetDecisionsByAgent(r.Context(), orgID, agentID, limit, offset, from, to)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to get history")
+		h.writeInternalError(w, r, "failed to get history", err)
 		return
 	}
 
@@ -186,13 +186,13 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 
 	results, err := h.decisionSvc.Search(r.Context(), orgID, req.Query, req.Semantic, req.Filters, req.Limit)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "search failed")
+		h.writeInternalError(w, r, "search failed", err)
 		return
 	}
 
 	results, err = filterSearchResultsByAccess(r.Context(), h.db, claims, results)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "authorization check failed")
+		h.writeInternalError(w, r, "authorization check failed", err)
 		return
 	}
 
@@ -220,13 +220,13 @@ func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.decisionSvc.Check(r.Context(), orgID, req.DecisionType, req.Query, req.AgentID, req.Limit)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "check failed")
+		h.writeInternalError(w, r, "check failed", err)
 		return
 	}
 
 	resp.Decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, resp.Decisions)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "authorization check failed")
+		h.writeInternalError(w, r, "authorization check failed", err)
 		return
 	}
 	resp.HasPrecedent = len(resp.Decisions) > 0
@@ -250,13 +250,13 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 
 	decisions, total, err := h.decisionSvc.Recent(r.Context(), orgID, filters, limit)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "query failed")
+		h.writeInternalError(w, r, "query failed", err)
 		return
 	}
 
 	decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, decisions)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "authorization check failed")
+		h.writeInternalError(w, r, "authorization check failed", err)
 		return
 	}
 
@@ -281,13 +281,13 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 
 	conflicts, err := h.db.ListConflicts(r.Context(), orgID, decisionType, limit)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to list conflicts")
+		h.writeInternalError(w, r, "failed to list conflicts", err)
 		return
 	}
 
 	conflicts, err = filterConflictsByAccess(r.Context(), h.db, claims, conflicts)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "authorization check failed")
+		h.writeInternalError(w, r, "authorization check failed", err)
 		return
 	}
 

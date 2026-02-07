@@ -62,6 +62,7 @@ func (h *Handlers) HandleExportDecisions(w http.ResponseWriter, r *http.Request)
 			Offset:   offset,
 		})
 		if err != nil {
+			h.logger.Error("export failed", "error", err, "offset", offset)
 			// If we haven't written anything yet, we can still return an error.
 			if offset == 0 {
 				writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "export failed")

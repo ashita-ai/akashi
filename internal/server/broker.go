@@ -2,21 +2,29 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"sync"
+
+	"github.com/google/uuid"
 
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
+// subscriber tracks an SSE subscriber's channel and org scope.
+type subscriber struct {
+	orgID uuid.UUID
+}
+
 // Broker fans out Postgres LISTEN/NOTIFY messages to SSE subscribers.
 // It runs a background goroutine that calls db.WaitForNotification in a loop
-// and sends each payload to all active subscriber channels.
+// and sends each payload only to subscribers in the matching org.
 type Broker struct {
 	db     *storage.DB
 	logger *slog.Logger
 
 	mu          sync.RWMutex
-	subscribers map[chan []byte]struct{}
+	subscribers map[chan []byte]subscriber
 }
 
 // NewBroker creates a new SSE broker. Call Start to begin listening.
@@ -24,7 +32,7 @@ func NewBroker(db *storage.DB, logger *slog.Logger) *Broker {
 	return &Broker{
 		db:          db,
 		logger:      logger,
-		subscribers: make(map[chan []byte]struct{}),
+		subscribers: make(map[chan []byte]subscriber),
 	}
 }
 
@@ -54,18 +62,22 @@ func (b *Broker) Start(ctx context.Context) {
 			continue
 		}
 
+		// Extract org_id from the notification payload for tenant isolation.
+		orgID := extractOrgID(payload)
+
 		// Format as SSE event.
 		event := formatSSE(channel, payload)
-		b.broadcast(event)
+		b.broadcastToOrg(event, orgID)
 	}
 }
 
-// Subscribe returns a channel that receives SSE-formatted events.
-// The caller must call Unsubscribe when done.
-func (b *Broker) Subscribe() chan []byte {
+// Subscribe returns a channel that receives SSE-formatted events scoped to
+// the given org. Only notifications whose payload contains a matching org_id
+// are delivered to this subscriber.
+func (b *Broker) Subscribe(orgID uuid.UUID) chan []byte {
 	ch := make(chan []byte, 64) // Buffer to avoid blocking the broadcast loop.
 	b.mu.Lock()
-	b.subscribers[ch] = struct{}{}
+	b.subscribers[ch] = subscriber{orgID: orgID}
 	b.mu.Unlock()
 	return ch
 }
@@ -78,23 +90,48 @@ func (b *Broker) Unsubscribe(ch chan []byte) {
 	close(ch)
 }
 
-// broadcast sends an event to all subscribers. Slow subscribers that have
-// a full buffer are skipped (their event is dropped) to prevent one slow
-// client from blocking all others.
-func (b *Broker) broadcast(event []byte) {
+// broadcastToOrg sends an event only to subscribers belonging to the given org.
+// If orgID is uuid.Nil (e.g. payload couldn't be parsed), the event is dropped
+// rather than leaked to all tenants. Slow subscribers that have a full buffer
+// are skipped to prevent one slow client from blocking all others.
+func (b *Broker) broadcastToOrg(event []byte, orgID uuid.UUID) {
+	if orgID == uuid.Nil {
+		b.logger.Warn("broker: dropping event with unparseable org_id")
+		return
+	}
+
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	for ch := range b.subscribers {
+	for ch, sub := range b.subscribers {
+		if sub.orgID != orgID {
+			continue
+		}
 		select {
 		case ch <- event:
 		default:
-			// Subscriber buffer full — drop this event for them.
 			b.logger.Warn("broker: dropped event for slow subscriber",
+				"org_id", orgID,
 				"buffer_cap", cap(ch),
 				"event_size", len(event))
 		}
 	}
+}
+
+// extractOrgID parses the notification payload JSON to extract the org_id field.
+// Returns uuid.Nil if the payload is not valid JSON or lacks an org_id.
+func extractOrgID(payload string) uuid.UUID {
+	var p struct {
+		OrgID string `json:"org_id"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return uuid.Nil
+	}
+	id, err := uuid.Parse(p.OrgID)
+	if err != nil {
+		return uuid.Nil
+	}
+	return id
 }
 
 // formatSSE formats a notification as a Server-Sent Events message.

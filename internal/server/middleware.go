@@ -269,6 +269,18 @@ func writeError(w http.ResponseWriter, r *http.Request, status int, code, messag
 	}
 }
 
+// writeInternalError logs the underlying error and writes a generic 500 response.
+// This ensures every internal server error is visible in server logs for debugging,
+// without leaking internal details to the client.
+func (h *Handlers) writeInternalError(w http.ResponseWriter, r *http.Request, msg string, err error) {
+	h.logger.Error(msg,
+		"error", err,
+		"method", r.Method,
+		"path", r.URL.Path,
+		"request_id", RequestIDFromContext(r.Context()))
+	writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, msg)
+}
+
 // securityHeadersMiddleware adds standard security response headers.
 func securityHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
