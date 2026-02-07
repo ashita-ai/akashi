@@ -18,6 +18,7 @@ interface AuthState {
 interface AuthContextValue {
   isAuthenticated: boolean;
   agentId: string | null;
+  token: string | null;
   login: (agentId: string, apiKey: string) => Promise<void>;
   logout: () => void;
 }
@@ -74,6 +75,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const value: AuthContextValue = {
     isAuthenticated: state.token !== null,
     agentId: state.agentId,
+    token: state.token,
     login,
     logout,
   };

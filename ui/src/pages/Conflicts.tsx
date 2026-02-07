@@ -1,12 +1,15 @@
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { listConflicts } from "@/lib/api";
 import type { DecisionConflict } from "@/types/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate } from "@/lib/utils";
-import { AlertTriangle, ArrowRight, Swords } from "lucide-react";
+import { AlertTriangle, ArrowRight, ChevronLeft, ChevronRight, Swords } from "lucide-react";
+import { useState, type FormEvent } from "react";
 
 function truncate(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
@@ -109,11 +112,41 @@ function ConflictCard({ conflict }: { conflict: DecisionConflict }) {
   );
 }
 
+const PAGE_SIZE = 25;
+
 export default function Conflicts() {
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const page = Math.max(0, parseInt(searchParams.get("page") ?? "0", 10));
+  const agentFilter = searchParams.get("agent") ?? "";
+
+  const [agentInput, setAgentInput] = useState(agentFilter);
+
   const { data, isPending } = useQuery({
-    queryKey: ["conflicts"],
-    queryFn: () => listConflicts({ limit: 100 }),
+    queryKey: ["conflicts", page, agentFilter],
+    queryFn: () =>
+      listConflicts({
+        limit: PAGE_SIZE,
+        offset: page * PAGE_SIZE,
+        ...(agentFilter ? { agent_id: agentFilter } : {}),
+      }),
   });
+
+  const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
+
+  function applyFilter(e: FormEvent) {
+    e.preventDefault();
+    const params: Record<string, string> = {};
+    if (agentInput.trim()) params.agent = agentInput.trim();
+    setSearchParams(params);
+  }
+
+  function goToPage(p: number) {
+    const params: Record<string, string> = {};
+    if (agentFilter) params.agent = agentFilter;
+    if (p > 0) params.page = String(p);
+    setSearchParams(params);
+  }
 
   return (
     <div className="space-y-6">
@@ -123,6 +156,35 @@ export default function Conflicts() {
           <Badge variant="outline">{data.total} detected</Badge>
         )}
       </div>
+
+      {/* Agent filter */}
+      <form onSubmit={applyFilter} className="flex flex-wrap items-end gap-3">
+        <div className="space-y-1">
+          <label className="text-xs text-muted-foreground">Agent</label>
+          <Input
+            placeholder="agent-id"
+            value={agentInput}
+            onChange={(e) => setAgentInput(e.target.value)}
+            className="w-48"
+          />
+        </div>
+        <Button type="submit" size="sm">
+          Filter
+        </Button>
+        {agentFilter && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setAgentInput("");
+              setSearchParams({});
+            }}
+          >
+            Clear
+          </Button>
+        )}
+      </form>
 
       {isPending ? (
         <div className="space-y-4">
@@ -134,18 +196,51 @@ export default function Conflicts() {
         <div className="flex flex-col items-center py-12 text-center">
           <AlertTriangle className="h-12 w-12 text-muted-foreground/30 mb-4" />
           <p className="text-sm text-muted-foreground">
-            No conflicts detected. Agents are in agreement.
+            {agentFilter
+              ? `No conflicts found for agent "${agentFilter}".`
+              : "No conflicts detected. Agents are in agreement."}
           </p>
         </div>
       ) : (
-        <div className="space-y-4">
-          {data.conflicts.map((conflict) => (
-            <ConflictCard
-              key={`${conflict.decision_a_id}-${conflict.decision_b_id}`}
-              conflict={conflict}
-            />
-          ))}
-        </div>
+        <>
+          <div className="space-y-4">
+            {data.conflicts.map((conflict) => (
+              <ConflictCard
+                key={`${conflict.decision_a_id}-${conflict.decision_b_id}`}
+                conflict={conflict}
+              />
+            ))}
+          </div>
+
+          {/* Pagination */}
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">
+              Showing {page * PAGE_SIZE + 1}{"\u2013"}
+              {Math.min((page + 1) * PAGE_SIZE, data.total)} of{" "}
+              {data.total.toLocaleString()}
+            </p>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page === 0}
+                onClick={() => goToPage(page - 1)}
+              >
+                <ChevronLeft className="h-4 w-4" />
+                Prev
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page >= totalPages - 1}
+                onClick={() => goToPage(page + 1)}
+              >
+                Next
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

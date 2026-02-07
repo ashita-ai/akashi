@@ -9,7 +9,8 @@ import { Link } from "react-router";
 import { listConflicts } from "@/lib/api";
 
 function UsageGauge({ used, limit }: { used: number; limit: number }) {
-  const pct = percentOf(used, limit);
+  const unlimited = limit === 0;
+  const pct = unlimited ? 0 : percentOf(used, limit);
   const color =
     pct >= 90
       ? "bg-destructive"
@@ -20,16 +21,22 @@ function UsageGauge({ used, limit }: { used: number; limit: number }) {
     <div className="space-y-2">
       <div className="flex justify-between text-sm">
         <span>
-          {used.toLocaleString()} / {limit.toLocaleString()}
+          {unlimited
+            ? `${used.toLocaleString()} / Unlimited`
+            : `${used.toLocaleString()} / ${limit.toLocaleString()}`}
         </span>
-        <span className="text-muted-foreground">{pct}%</span>
+        {!unlimited && (
+          <span className="text-muted-foreground">{pct}%</span>
+        )}
       </div>
-      <div className="h-2 w-full rounded-full bg-secondary">
-        <div
-          className={`h-full rounded-full transition-all ${color}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
+      {!unlimited && (
+        <div className="h-2 w-full rounded-full bg-secondary">
+          <div
+            className={`h-full rounded-full transition-all ${color}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -89,7 +96,7 @@ export default function Dashboard() {
               </div>
             )}
             <p className="text-xs text-muted-foreground">
-              limit: {usage.data?.agent_limit ?? "\u2014"}
+              limit: {usage.data?.agent_limit === 0 ? "Unlimited" : (usage.data?.agent_limit ?? "\u2014")}
             </p>
           </CardContent>
         </Card>

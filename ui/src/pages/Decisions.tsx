@@ -174,7 +174,7 @@ export default function Decisions() {
           {/* Pagination */}
           <div className="flex items-center justify-between">
             <p className="text-sm text-muted-foreground">
-              Showing {page * PAGE_SIZE + 1}\u2013
+              Showing {page * PAGE_SIZE + 1}{"\u2013"}
               {Math.min((page + 1) * PAGE_SIZE, data.total)} of{" "}
               {data.total.toLocaleString()}
             </p>
