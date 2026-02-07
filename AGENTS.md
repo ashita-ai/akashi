@@ -138,7 +138,8 @@ Current specs:
 - `03-api-contracts.md`: HTTP + MCP API surface
 - `04-scaling-and-operations.md`: Deployment, monitoring, scaling
 - `05-multi-tenancy.md`: Org-scoped multi-tenancy (and sub-specs 05a-05e)
-- `06-tenant-isolation.md`: Three-tier tenant isolation (schema + database + RLS)
+- `06a-schema-optimization.md`: Schema fixes (evidence.org_id data leak, missing indexes, mat view rewrite)
+- `07-qdrant-vector-search.md`: Qdrant Cloud as primary vector search with pgvector fallback
 
 **When to write a spec:** Any feature that touches more than 3 files, requires a migration, changes the API contract, or could be implemented multiple ways. If the work would benefit from a reviewer saying "yes, build it this way", it's a spec.
 
