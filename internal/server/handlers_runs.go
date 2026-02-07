@@ -28,7 +28,7 @@ func (h *Handlers) HandleCreateRun(w http.ResponseWriter, r *http.Request) {
 	req.OrgID = orgID
 	run, err := h.db.CreateRun(r.Context(), req)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to create run")
+		h.writeInternalError(w, r, "failed to create run", err)
 		return
 	}
 
@@ -64,7 +64,7 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 
 	events, err := h.buffer.Append(r.Context(), runID, run.AgentID, run.OrgID, req.Events)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to buffer events")
+		h.writeInternalError(w, r, "failed to buffer events", err)
 		return
 	}
 
@@ -110,7 +110,7 @@ func (h *Handlers) HandleCompleteRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.db.CompleteRun(r.Context(), runID, status, req.Metadata); err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to complete run")
+		h.writeInternalError(w, r, "failed to complete run", err)
 		return
 	}
 
@@ -141,7 +141,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 
 	ok, err := canAccessAgent(r.Context(), h.db, claims, run.AgentID)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "authorization check failed")
+		h.writeInternalError(w, r, "authorization check failed", err)
 		return
 	}
 	if !ok {
@@ -151,7 +151,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 
 	events, err := h.db.GetEventsByRun(r.Context(), runID)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to get events")
+		h.writeInternalError(w, r, "failed to get events", err)
 		return
 	}
 
@@ -164,7 +164,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 		Limit:   100,
 	})
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to get decisions")
+		h.writeInternalError(w, r, "failed to get decisions", err)
 		return
 	}
 

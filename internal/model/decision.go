@@ -89,6 +89,8 @@ type DecisionConflict struct {
 	OutcomeB     string    `json:"outcome_b"`
 	ConfidenceA  float32   `json:"confidence_a"`
 	ConfidenceB  float32   `json:"confidence_b"`
+	ReasoningA   *string   `json:"reasoning_a,omitempty"`
+	ReasoningB   *string   `json:"reasoning_b,omitempty"`
 	DecidedAtA   time.Time `json:"decided_at_a"`
 	DecidedAtB   time.Time `json:"decided_at_b"`
 	DetectedAt   time.Time `json:"detected_at"`

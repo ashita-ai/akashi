@@ -174,16 +174,29 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, decisionType, quer
 	var decisions []model.Decision
 
 	if query != "" {
-		// Semantic search path.
-		queryEmb, err := s.embedder.Embed(ctx, query)
-		if err != nil {
-			return model.CheckResponse{}, fmt.Errorf("check: generate embedding: %w", err)
-		}
 		filters := model.QueryFilters{DecisionType: &decisionType}
 		if agentID != "" {
 			filters.AgentIDs = []string{agentID}
 		}
-		results, err := s.db.SearchDecisionsByEmbedding(ctx, orgID, queryEmb, filters, limit)
+
+		// Try semantic search, fall back to text search if embeddings are zero.
+		var results []model.SearchResult
+		queryEmb, err := s.embedder.Embed(ctx, query)
+		if err != nil {
+			return model.CheckResponse{}, fmt.Errorf("check: generate embedding: %w", err)
+		}
+		isZero := true
+		for _, v := range queryEmb.Slice() {
+			if v != 0 {
+				isZero = false
+				break
+			}
+		}
+		if !isZero {
+			results, err = s.db.SearchDecisionsByEmbedding(ctx, orgID, queryEmb, filters, limit)
+		} else {
+			results, err = s.db.SearchDecisionsByText(ctx, orgID, query, filters, limit)
+		}
 		if err != nil {
 			return model.CheckResponse{}, fmt.Errorf("check: search: %w", err)
 		}
@@ -223,13 +236,29 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, decisionType, quer
 	}, nil
 }
 
-// Search performs semantic similarity search over decisions.
-func (s *Service) Search(ctx context.Context, orgID uuid.UUID, query string, filters model.QueryFilters, limit int) ([]model.SearchResult, error) {
-	queryEmb, err := s.embedder.Embed(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("search: generate embedding: %w", err)
+// Search performs semantic or text-based search over decisions.
+// When semantic is true and a real embedding provider is available, it uses
+// vector similarity. Otherwise it falls back to keyword matching.
+func (s *Service) Search(ctx context.Context, orgID uuid.UUID, query string, semantic bool, filters model.QueryFilters, limit int) ([]model.SearchResult, error) {
+	if semantic {
+		queryEmb, err := s.embedder.Embed(ctx, query)
+		if err != nil {
+			return nil, fmt.Errorf("search: generate embedding: %w", err)
+		}
+		// Check if the embedding is non-trivial (not all zeros from noop provider).
+		isZero := true
+		for _, v := range queryEmb.Slice() {
+			if v != 0 {
+				isZero = false
+				break
+			}
+		}
+		if !isZero {
+			return s.db.SearchDecisionsByEmbedding(ctx, orgID, queryEmb, filters, limit)
+		}
+		// Fall through to text search if embeddings are zero (noop provider).
 	}
-	return s.db.SearchDecisionsByEmbedding(ctx, orgID, queryEmb, filters, limit)
+	return s.db.SearchDecisionsByText(ctx, orgID, query, filters, limit)
 }
 
 // Query executes a structured query with filters, ordering, and pagination.

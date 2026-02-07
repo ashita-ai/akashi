@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -83,7 +84,7 @@ func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 	if agent.OrgID != uuid.Nil {
 		org, err := h.db.GetOrganization(r.Context(), agent.OrgID)
 		if err != nil {
-			writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to look up organization")
+			h.writeInternalError(w, r, "failed to look up organization", err)
 			return
 		}
 		if !org.EmailVerified {
@@ -94,7 +95,7 @@ func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 
 	token, expiresAt, err := h.jwtMgr.IssueToken(agent)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to issue token")
+		h.writeInternalError(w, r, "failed to issue token", err)
 		return
 	}
 
@@ -124,7 +125,8 @@ func (h *Handlers) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	ch := h.broker.Subscribe()
+	orgID := OrgIDFromContext(r.Context())
+	ch := h.broker.Subscribe(orgID)
 	defer h.broker.Unsubscribe(ch)
 
 	ctx := r.Context()
@@ -217,8 +219,15 @@ func (h *Handlers) HandleSignup(w http.ResponseWriter, r *http.Request) {
 		OrgName:  req.OrgName,
 	})
 	if err != nil {
-		h.logger.Error("signup failed", "error", err, "email", req.Email)
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		switch {
+		case errors.Is(err, signup.ErrInvalidEmail),
+			errors.Is(err, signup.ErrWeakPassword),
+			errors.Is(err, signup.ErrOrgNameRequired):
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		default:
+			h.logger.Error("signup failed", "error", err, "email", req.Email)
+			writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "signup failed")
+		}
 		return
 	}
 
@@ -235,7 +244,7 @@ func (h *Handlers) HandleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.signupSvc.Verify(r.Context(), token); err != nil {
 		h.logger.Error("email verification failed", "error", err)
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid or expired verification token")
 		return
 	}
 

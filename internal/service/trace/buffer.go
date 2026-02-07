@@ -29,8 +29,9 @@ type Buffer struct {
 	mu     sync.Mutex
 	events []model.AgentEvent
 
-	flushCh chan struct{}
-	done    chan struct{}
+	flushCh    chan struct{}
+	done       chan struct{}
+	cancelLoop context.CancelFunc // cancels the flushLoop goroutine
 }
 
 // NewBuffer creates a new event buffer.
@@ -47,7 +48,9 @@ func NewBuffer(db *storage.DB, logger *slog.Logger, maxSize int, flushTimeout ti
 
 // Start begins the background flush loop. Call Drain to stop.
 func (b *Buffer) Start(ctx context.Context) {
-	go b.flushLoop(ctx)
+	loopCtx, cancel := context.WithCancel(ctx)
+	b.cancelLoop = cancel
+	go b.flushLoop(loopCtx)
 }
 
 // Append adds events to the buffer, assigning server-side sequence numbers.
@@ -153,9 +156,13 @@ func (b *Buffer) flush(ctx context.Context) {
 	)
 }
 
-// Drain flushes all remaining events and waits for the background goroutine to finish.
+// Drain signals the background flush loop to stop, waits for it to complete
+// its final flush, and returns. The ctx parameter controls the maximum time
+// to wait for the goroutine to finish.
 func (b *Buffer) Drain(ctx context.Context) {
-	b.flush(ctx)
+	if b.cancelLoop != nil {
+		b.cancelLoop() // Signal flushLoop to exit; it does a final flush before closing b.done.
+	}
 	select {
 	case <-b.done:
 	case <-ctx.Done():

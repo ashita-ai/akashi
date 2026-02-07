@@ -262,10 +262,11 @@ func (db *DB) SearchDecisionsByEmbedding(ctx context.Context, orgID uuid.UUID, e
 	// - Semantic similarity: 60% base weight
 	// - Quality score: up to 30% bonus
 	// - Recency: decays to 50% at 90 days
+	// NULLIF handles zero-vector embeddings (from noop provider) which produce NaN cosine distance.
 	query := fmt.Sprintf(
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at,
-		 (1 - (embedding <=> $1))
+		 COALESCE(1 - NULLIF((embedding <=> $1)::float4, 'NaN'::float4), 0)
 		   * (0.6 + 0.3 * COALESCE(quality_score, 0))
 		   * (1.0 / (1.0 + EXTRACT(EPOCH FROM (NOW() - valid_from)) / 86400.0 / 90.0))
 		   AS relevance
@@ -292,6 +293,62 @@ func (db *DB) SearchDecisionsByEmbedding(ctx context.Context, orgID uuid.UUID, e
 			&relevance,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan search result: %w", err)
+		}
+		results = append(results, model.SearchResult{Decision: d, SimilarityScore: relevance})
+	}
+	return results, rows.Err()
+}
+
+// SearchDecisionsByText performs keyword search over decision outcome and reasoning fields.
+// Used as fallback when semantic search is disabled or the embedding provider is noop.
+func (db *DB) SearchDecisionsByText(ctx context.Context, orgID uuid.UUID, query string, filters model.QueryFilters, limit int) ([]model.SearchResult, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	where, args := buildDecisionWhereClause(orgID, filters, 1)
+
+	// Use ILIKE for simple keyword matching across outcome, reasoning, and decision_type.
+	// The query is split into words, and all must match at least one field.
+	words := strings.Fields(query)
+	for _, word := range words {
+		args = append(args, "%"+strings.ToLower(word)+"%")
+		paramIdx := len(args)
+		where += fmt.Sprintf(` AND (LOWER(outcome) LIKE $%d OR LOWER(COALESCE(reasoning, '')) LIKE $%d OR LOWER(decision_type) LIKE $%d)`,
+			paramIdx, paramIdx, paramIdx)
+	}
+
+	sql := fmt.Sprintf(
+		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
+		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at,
+		 (0.6 + 0.3 * COALESCE(quality_score, 0))
+		   * (1.0 / (1.0 + EXTRACT(EPOCH FROM (NOW() - valid_from)) / 86400.0 / 90.0))
+		   AS relevance
+		 FROM decisions%s
+		 ORDER BY relevance DESC
+		 LIMIT %d`, where, limit,
+	)
+
+	rows, err := db.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("storage: text search decisions: %w", err)
+	}
+	defer rows.Close()
+
+	var results []model.SearchResult
+	for rows.Next() {
+		var d model.Decision
+		var relevance float32
+		if err := rows.Scan(
+			&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence,
+			&d.Reasoning, &d.Metadata, &d.QualityScore, &d.PrecedentRef,
+			&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
+			&relevance,
+		); err != nil {
+			return nil, fmt.Errorf("storage: scan text search result: %w", err)
 		}
 		results = append(results, model.SearchResult{Decision: d, SimilarityScore: relevance})
 	}

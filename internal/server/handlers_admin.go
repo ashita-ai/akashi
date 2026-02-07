@@ -48,7 +48,7 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 
 	hash, err := auth.HashAPIKey(req.APIKey)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to hash api key")
+		h.writeInternalError(w, r, "failed to hash api key", err)
 		return
 	}
 
@@ -65,7 +65,7 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, http.StatusConflict, model.ErrCodeConflict, "agent_id already exists")
 			return
 		}
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to create agent")
+		h.writeInternalError(w, r, "failed to create agent", err)
 		return
 	}
 
@@ -78,7 +78,7 @@ func (h *Handlers) HandleListAgents(w http.ResponseWriter, r *http.Request) {
 
 	agents, err := h.db.ListAgents(r.Context(), orgID)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to list agents")
+		h.writeInternalError(w, r, "failed to list agents", err)
 		return
 	}
 	writeJSON(w, r, http.StatusOK, agents)
@@ -98,7 +98,7 @@ func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 	// Get grantor agent.
 	grantor, err := h.db.GetAgentByAgentID(r.Context(), orgID, claims.AgentID)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to get grantor")
+		h.writeInternalError(w, r, "failed to get grantor", err)
 		return
 	}
 
@@ -141,7 +141,7 @@ func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, http.StatusConflict, model.ErrCodeConflict, "grant already exists")
 			return
 		}
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to create grant")
+		h.writeInternalError(w, r, "failed to create grant", err)
 		return
 	}
 
@@ -177,7 +177,7 @@ func (h *Handlers) HandleDeleteGrant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.db.DeleteGrant(r.Context(), grantID); err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to delete grant")
+		h.writeInternalError(w, r, "failed to delete grant", err)
 		return
 	}
 
@@ -206,7 +206,7 @@ func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "agent not found")
 			return
 		}
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "failed to delete agent data")
+		h.writeInternalError(w, r, "failed to delete agent data", err)
 		return
 	}
 
