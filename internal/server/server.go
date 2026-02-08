@@ -38,6 +38,7 @@ func (s *Server) Handler() http.Handler {
 // limiter is optional; if nil, rate limiting is disabled (noop).
 // broker is optional; if nil, SSE subscriptions return 503.
 // uiFS is optional; if non-nil, the SPA is served at the root path.
+// openapiSpec is optional; if non-nil, GET /openapi.yaml serves the spec.
 func New(
 	db *storage.DB,
 	jwtMgr *auth.JWTManager,
@@ -54,8 +55,9 @@ func New(
 	version string,
 	maxRequestBodyBytes int64,
 	uiFS fs.FS,
+	openapiSpec []byte,
 ) *Server {
-	h := NewHandlers(db, jwtMgr, decisionSvc, billingSvc, buffer, broker, signupSvc, logger, version, maxRequestBodyBytes)
+	h := NewHandlers(db, jwtMgr, decisionSvc, billingSvc, buffer, broker, signupSvc, logger, version, maxRequestBodyBytes, openapiSpec)
 
 	// Rate limit rules.
 	ingestRL := ratelimit.Middleware(limiter, ratelimit.Rule{
@@ -135,6 +137,9 @@ func New(
 		mcpHTTP := mcpserver.NewStreamableHTTPServer(mcpSrv)
 		mux.Handle("/mcp", readRole(mcpHTTP))
 	}
+
+	// OpenAPI spec (no auth, no rate limit).
+	mux.HandleFunc("GET /openapi.yaml", h.HandleOpenAPISpec)
 
 	// Health (no auth, no rate limit).
 	mux.HandleFunc("GET /health", h.HandleHealth)
