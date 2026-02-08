@@ -10,13 +10,15 @@ Run these checks. CI will reject the PR if any fail.
 go mod tidy && git diff --exit-code go.mod go.sum
 go build ./...
 go vet ./...
+golangci-lint run ./...
 atlas migrate validate --dir file://migrations
 ```
 
 If `go mod tidy` produces a diff, stage `go.mod` and `go.sum` in the same commit.
 If `atlas migrate validate` fails, run `atlas migrate hash --dir file://migrations` and stage `migrations/atlas.sum`.
+If `golangci-lint` is not on `$PATH`, it's at `~/go/bin/golangci-lint` (install: `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.8.0`).
 
-Never commit without running these. `make ci` runs the full pipeline locally (tidy, build, lint, vet, security, test) and is the gold standard, but the four commands above are the minimum.
+Never commit without running these. `make ci` runs the full pipeline locally (tidy, build, lint, vet, security, test) and is the gold standard, but the five commands above are the minimum.
 
 ## Migrations
 
