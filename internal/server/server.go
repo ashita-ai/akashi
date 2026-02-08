@@ -14,6 +14,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/ratelimit"
+	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/trace"
 	"github.com/ashita-ai/akashi/internal/signup"
@@ -48,6 +49,7 @@ func New(
 	limiter *ratelimit.Limiter,
 	broker *Broker,
 	signupSvc *signup.Service,
+	searcher search.Searcher,
 	logger *slog.Logger,
 	port int,
 	readTimeout, writeTimeout time.Duration,
@@ -57,7 +59,7 @@ func New(
 	uiFS fs.FS,
 	openapiSpec []byte,
 ) *Server {
-	h := NewHandlers(db, jwtMgr, decisionSvc, billingSvc, buffer, broker, signupSvc, logger, version, maxRequestBodyBytes, openapiSpec)
+	h := NewHandlers(db, jwtMgr, decisionSvc, billingSvc, buffer, broker, signupSvc, searcher, logger, version, maxRequestBodyBytes, openapiSpec)
 
 	// Rate limit rules.
 	ingestRL := ratelimit.Middleware(limiter, ratelimit.Rule{

@@ -82,6 +82,17 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 		return DeleteAgentResult{}, fmt.Errorf("storage: clear external precedent refs: %w", err)
 	}
 
+	// 3b. Queue search index deletions for this agent's decisions.
+	// Insert outbox entries before deleting the decisions so the worker can remove them from Qdrant.
+	_, err = tx.Exec(ctx,
+		`INSERT INTO search_outbox (decision_id, org_id, operation)
+		 SELECT id, org_id, 'delete' FROM decisions WHERE org_id = $1 AND agent_id = $2
+		 ON CONFLICT (decision_id, operation) DO NOTHING`,
+		orgID, agentID)
+	if err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: queue search outbox deletes: %w", err)
+	}
+
 	// 4. Delete decisions.
 	tag, err = tx.Exec(ctx, `DELETE FROM decisions WHERE org_id = $1 AND agent_id = $2`, orgID, agentID)
 	if err != nil {

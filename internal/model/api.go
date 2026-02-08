@@ -140,6 +140,7 @@ type HealthResponse struct {
 	Status   string `json:"status"`
 	Version  string `json:"version"`
 	Postgres string `json:"postgres"`
+	Qdrant   string `json:"qdrant,omitempty"`
 	Uptime   int64  `json:"uptime_seconds"`
 }
 

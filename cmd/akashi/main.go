@@ -20,6 +20,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/config"
 	"github.com/ashita-ai/akashi/internal/mcp"
 	"github.com/ashita-ai/akashi/internal/ratelimit"
+	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/server"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
@@ -109,8 +110,35 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		logger.Info("billing: disabled (no STRIPE_SECRET_KEY)")
 	}
 
+	// Initialize Qdrant search index and outbox worker (optional — disabled if QDRANT_URL is empty).
+	var searcher search.Searcher
+	var outboxWorker *search.OutboxWorker
+	if cfg.QdrantURL != "" {
+		qdrantIndex, err := search.NewQdrantIndex(search.QdrantConfig{
+			URL:        cfg.QdrantURL,
+			APIKey:     cfg.QdrantAPIKey,
+			Collection: cfg.QdrantCollection,
+			Dims:       uint64(cfg.EmbeddingDimensions), //nolint:gosec // validated positive in config.Validate
+		}, logger)
+		if err != nil {
+			return fmt.Errorf("qdrant: %w", err)
+		}
+		defer func() { _ = qdrantIndex.Close() }()
+
+		if err := qdrantIndex.EnsureCollection(ctx); err != nil {
+			return fmt.Errorf("qdrant ensure collection: %w", err)
+		}
+
+		searcher = qdrantIndex
+		outboxWorker = search.NewOutboxWorker(db.Pool(), qdrantIndex, logger, cfg.OutboxPollInterval, cfg.OutboxBatchSize)
+		outboxWorker.Start(ctx)
+		logger.Info("qdrant: enabled", "collection", cfg.QdrantCollection)
+	} else {
+		logger.Info("qdrant: disabled (no QDRANT_URL)")
+	}
+
 	// Create decision service (shared by HTTP and MCP handlers).
-	decisionSvc := decisions.New(db, embedder, billingSvc, logger)
+	decisionSvc := decisions.New(db, embedder, searcher, billingSvc, logger)
 
 	// Create event buffer.
 	buf := trace.NewBuffer(db, logger, cfg.EventBufferSize, cfg.EventFlushTimeout)
@@ -154,7 +182,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}
 
 	// Create and start HTTP server (MCP mounted at /mcp).
-	srv := server.New(db, jwtMgr, decisionSvc, billingSvc, buf, limiter, broker, signupSvc, logger,
+	srv := server.New(db, jwtMgr, decisionSvc, billingSvc, buf, limiter, broker, signupSvc, searcher, logger,
 		cfg.Port, cfg.ReadTimeout, cfg.WriteTimeout,
 		mcpSrv.MCPServer(), version, cfg.MaxRequestBodyBytes, uiFS, api.OpenAPISpec)
 
@@ -187,6 +215,11 @@ func run(ctx context.Context, logger *slog.Logger) error {
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
+
+	// Drain outbox worker first (syncs remaining entries to Qdrant before closing connection).
+	if outboxWorker != nil {
+		outboxWorker.Drain(shutdownCtx)
+	}
 
 	// Drain event buffer.
 	buf.Drain(shutdownCtx)

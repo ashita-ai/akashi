@@ -13,7 +13,8 @@ import (
 	"github.com/ashita-ai/akashi/internal/model"
 )
 
-// CreateDecision inserts a decision and returns it.
+// CreateDecision inserts a decision and queues a search outbox entry if the
+// decision has an embedding. Both writes happen atomically in a single transaction.
 func (db *DB) CreateDecision(ctx context.Context, d model.Decision) (model.Decision, error) {
 	if d.ID == uuid.Nil {
 		d.ID = uuid.New()
@@ -32,7 +33,13 @@ func (db *DB) CreateDecision(ctx context.Context, d model.Decision) (model.Decis
 		d.Metadata = map[string]any{}
 	}
 
-	_, err := db.pool.Exec(ctx,
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return model.Decision{}, fmt.Errorf("storage: begin create decision tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	_, err = tx.Exec(ctx,
 		`INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome, confidence,
 		 reasoning, embedding, metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
@@ -42,6 +49,20 @@ func (db *DB) CreateDecision(ctx context.Context, d model.Decision) (model.Decis
 	)
 	if err != nil {
 		return model.Decision{}, fmt.Errorf("storage: create decision: %w", err)
+	}
+
+	// Queue search index update inside the same transaction.
+	if d.Embedding != nil {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO search_outbox (decision_id, org_id, operation)
+			 VALUES ($1, $2, 'upsert') ON CONFLICT (decision_id, operation) DO NOTHING`,
+			d.ID, d.OrgID); err != nil {
+			return model.Decision{}, fmt.Errorf("storage: queue search outbox in create decision: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return model.Decision{}, fmt.Errorf("storage: commit create decision: %w", err)
 	}
 	return d, nil
 }
@@ -127,6 +148,22 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 	)
 	if err != nil {
 		return model.Decision{}, fmt.Errorf("storage: insert revised decision: %w", err)
+	}
+
+	// Queue search index updates: delete the old decision, upsert the new one.
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO search_outbox (decision_id, org_id, operation)
+		 VALUES ($1, $2, 'delete') ON CONFLICT (decision_id, operation) DO NOTHING`,
+		originalID, revised.OrgID); err != nil {
+		return model.Decision{}, fmt.Errorf("storage: queue search outbox delete in revision: %w", err)
+	}
+	if revised.Embedding != nil {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO search_outbox (decision_id, org_id, operation)
+			 VALUES ($1, $2, 'upsert') ON CONFLICT (decision_id, operation) DO NOTHING`,
+			revised.ID, revised.OrgID); err != nil {
+			return model.Decision{}, fmt.Errorf("storage: queue search outbox upsert in revision: %w", err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -301,6 +338,7 @@ func (db *DB) SearchDecisionsByEmbedding(ctx context.Context, orgID uuid.UUID, e
 
 // SearchDecisionsByText performs keyword search over decision outcome and reasoning fields.
 // Used as fallback when semantic search is disabled or the embedding provider is noop.
+// Only returns active decisions (valid_to IS NULL) for consistency with the Qdrant search path.
 func (db *DB) SearchDecisionsByText(ctx context.Context, orgID uuid.UUID, query string, filters model.QueryFilters, limit int) ([]model.SearchResult, error) {
 	if limit <= 0 {
 		limit = 10
@@ -310,6 +348,7 @@ func (db *DB) SearchDecisionsByText(ctx context.Context, orgID uuid.UUID, query 
 	}
 
 	where, args := buildDecisionWhereClause(orgID, filters, 1)
+	where += " AND valid_to IS NULL"
 
 	// Use ILIKE for simple keyword matching across outcome, reasoning, and decision_type.
 	// The query is split into words, and all must match at least one field.
@@ -459,6 +498,38 @@ func scanDecisions(rows pgx.Rows) ([]model.Decision, error) {
 		decisions = append(decisions, d)
 	}
 	return decisions, rows.Err()
+}
+
+// GetDecisionsByIDs returns active decisions for the given IDs within an org.
+// Only returns decisions with valid_to IS NULL (not revised/invalidated).
+// Used to hydrate search results from Qdrant back to full Decision objects.
+func (db *DB) GetDecisionsByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]model.Decision, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	rows, err := db.pool.Query(ctx,
+		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
+		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at
+		 FROM decisions
+		 WHERE org_id = $1 AND id = ANY($2) AND valid_to IS NULL`,
+		orgID, ids,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("storage: get decisions by IDs: %w", err)
+	}
+	defer rows.Close()
+
+	decisions, err := scanDecisions(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[uuid.UUID]model.Decision, len(decisions))
+	for _, d := range decisions {
+		result[d.ID] = d
+	}
+	return result, nil
 }
 
 func containsStr(slice []string, s string) bool {
