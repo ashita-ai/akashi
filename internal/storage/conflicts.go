@@ -19,19 +19,63 @@ func (db *DB) RefreshConflicts(ctx context.Context) error {
 }
 
 // RefreshAgentState refreshes the agent_current_state materialized view.
+// Uses CONCURRENTLY to avoid blocking reads during refresh (requires the
+// unique index idx_agent_current_state_agent_org from migration 016).
 func (db *DB) RefreshAgentState(ctx context.Context) error {
-	_, err := db.pool.Exec(ctx, `REFRESH MATERIALIZED VIEW agent_current_state`)
+	_, err := db.pool.Exec(ctx, `REFRESH MATERIALIZED VIEW CONCURRENTLY agent_current_state`)
 	if err != nil {
 		return fmt.Errorf("storage: refresh agent state: %w", err)
 	}
 	return nil
 }
 
-// ListConflicts retrieves detected conflicts within an org, optionally filtered by decision_type.
+// ConflictFilters holds optional filters for conflict queries.
+type ConflictFilters struct {
+	DecisionType *string
+	AgentID      *string
+}
+
+// conflictWhere appends WHERE conditions for the common filter set.
+// It returns the query suffix and the args slice (starting from argOffset).
+func conflictWhere(filters ConflictFilters, argOffset int) (string, []any) {
+	var clause string
+	var args []any
+	if filters.DecisionType != nil {
+		clause += fmt.Sprintf(" AND dc.decision_type = $%d", argOffset)
+		args = append(args, *filters.DecisionType)
+		argOffset++
+	}
+	if filters.AgentID != nil {
+		clause += fmt.Sprintf(" AND (dc.agent_a = $%d OR dc.agent_b = $%d)", argOffset, argOffset)
+		args = append(args, *filters.AgentID)
+	}
+	return clause, args
+}
+
+// CountConflicts returns the total number of conflicts for an org.
+func (db *DB) CountConflicts(ctx context.Context, orgID uuid.UUID, filters ConflictFilters) (int, error) {
+	query := `SELECT COUNT(*) FROM decision_conflicts dc WHERE dc.org_id = $1`
+	args := []any{orgID}
+
+	suffix, extra := conflictWhere(filters, 2)
+	query += suffix
+	args = append(args, extra...)
+
+	var count int
+	if err := db.pool.QueryRow(ctx, query, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("storage: count conflicts: %w", err)
+	}
+	return count, nil
+}
+
+// ListConflicts retrieves detected conflicts within an org.
 // Joins the decisions table to include reasoning for both sides.
-func (db *DB) ListConflicts(ctx context.Context, orgID uuid.UUID, decisionType *string, limit int) ([]model.DecisionConflict, error) {
+func (db *DB) ListConflicts(ctx context.Context, orgID uuid.UUID, filters ConflictFilters, limit, offset int) ([]model.DecisionConflict, error) {
 	if limit <= 0 {
 		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
 	}
 
 	query := `SELECT dc.decision_a_id, dc.decision_b_id, dc.org_id,
@@ -46,13 +90,12 @@ func (db *DB) ListConflicts(ctx context.Context, orgID uuid.UUID, decisionType *
 		 WHERE dc.org_id = $1`
 
 	args := []any{orgID}
-	if decisionType != nil {
-		query += " AND dc.decision_type = $2"
-		args = append(args, *decisionType)
-	}
 
-	query += " ORDER BY dc.detected_at DESC"
-	query += fmt.Sprintf(" LIMIT %d", limit)
+	suffix, extra := conflictWhere(filters, 2)
+	query += suffix
+	args = append(args, extra...)
+
+	query += fmt.Sprintf(" ORDER BY dc.detected_at DESC LIMIT %d OFFSET %d", limit, offset)
 
 	rows, err := db.pool.Query(ctx, query, args...)
 	if err != nil {

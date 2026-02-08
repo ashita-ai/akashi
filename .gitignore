@@ -1,5 +1,7 @@
 # Binaries
 bin/
+/akashi
+/akashi-*
 *.exe
 *.exe~
 *.dll
@@ -48,5 +50,10 @@ PROJECT_INDEX.json
 
 # Python virtual environments
 sdk/python/.venv/
+sdk/python/uv.lock
 __pycache__/
 *.pyc
+
+# Tool state
+.claude-flow/
+.swarm/

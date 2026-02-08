@@ -46,8 +46,8 @@ function ConnectionDot({ status }: { status: SSEStatus }) {
 }
 
 export default function Layout() {
-  const { agentId, logout } = useAuth();
-  const sseStatus = useSSE(null); // Will be wired to token later
+  const { agentId, token, logout } = useAuth();
+  const sseStatus = useSSE(token);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (

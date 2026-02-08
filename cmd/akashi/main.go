@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/ashita-ai/akashi/internal/auth"
@@ -56,6 +57,9 @@ func run0() int {
 }
 
 func run(ctx context.Context, logger *slog.Logger) error {
+	// Load .env file if present (non-fatal; production won't have one).
+	_ = godotenv.Load()
+
 	// Load configuration.
 	cfg, err := config.Load()
 	if err != nil {

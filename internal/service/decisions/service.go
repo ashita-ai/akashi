@@ -107,6 +107,7 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 			}
 		}
 		evs[i] = model.Evidence{
+			OrgID:          orgID,
 			SourceType:     model.SourceType(e.SourceType),
 			SourceURI:      e.SourceURI,
 			Content:        e.Content,
@@ -223,7 +224,7 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, decisionType, quer
 	}
 
 	// Always check for conflicts.
-	conflicts, err := s.db.ListConflicts(ctx, orgID, &decisionType, limit)
+	conflicts, err := s.db.ListConflicts(ctx, orgID, storage.ConflictFilters{DecisionType: &decisionType}, limit, 0)
 	if err != nil {
 		s.logger.Warn("check: list conflicts", "error", err)
 		conflicts = nil

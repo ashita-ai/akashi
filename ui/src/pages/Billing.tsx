@@ -64,9 +64,13 @@ export default function Billing() {
       window.location.href = data.checkout_url;
     },
     onError: (err) => {
-      setError(
-        err instanceof ApiError ? err.message : "Failed to start checkout",
-      );
+      if (err instanceof ApiError && err.status === 403) {
+        setError("Only organization owners can manage billing");
+      } else {
+        setError(
+          err instanceof ApiError ? err.message : "Failed to start checkout",
+        );
+      }
     },
   });
 
@@ -77,9 +81,13 @@ export default function Billing() {
       window.location.href = data.portal_url;
     },
     onError: (err) => {
-      setError(
-        err instanceof ApiError ? err.message : "Failed to open portal",
-      );
+      if (err instanceof ApiError && err.status === 403) {
+        setError("Only organization owners can manage billing");
+      } else {
+        setError(
+          err instanceof ApiError ? err.message : "Failed to open portal",
+        );
+      }
     },
   });
 
@@ -186,7 +194,8 @@ function UsageMeter({
   used: number;
   limit: number;
 }) {
-  const pct = percentOf(used, limit);
+  const unlimited = limit === 0;
+  const pct = unlimited ? 0 : percentOf(used, limit);
   const color =
     pct >= 90
       ? "bg-destructive"
@@ -199,15 +208,19 @@ function UsageMeter({
       <div className="flex justify-between text-sm">
         <span>{label}</span>
         <span className="text-muted-foreground">
-          {used.toLocaleString()} / {limit.toLocaleString()} ({pct}%)
+          {unlimited
+            ? `${used.toLocaleString()} / Unlimited`
+            : `${used.toLocaleString()} / ${limit.toLocaleString()} (${pct}%)`}
         </span>
       </div>
-      <div className="h-2 w-full rounded-full bg-secondary">
-        <div
-          className={`h-full rounded-full transition-all ${color}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
+      {!unlimited && (
+        <div className="h-2 w-full rounded-full bg-secondary">
+          <div
+            className={`h-full rounded-full transition-all ${color}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
     </div>
   );
 }

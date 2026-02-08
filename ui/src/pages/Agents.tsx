@@ -42,6 +42,28 @@ const roleColors: Record<AgentRole, "default" | "secondary" | "destructive" | "s
   reader: "outline",
 };
 
+const metadataKeys = ["model", "framework", "owner", "description"] as const;
+
+function AgentDetails({ metadata }: { metadata: Record<string, unknown> | null }) {
+  if (!metadata) return <span className="text-muted-foreground">{"\u2014"}</span>;
+
+  const entries = metadataKeys
+    .filter((k) => metadata[k] != null && String(metadata[k]).trim() !== "")
+    .map((k) => ({ key: k, value: String(metadata[k]) }));
+
+  if (entries.length === 0) return <span className="text-muted-foreground">{"\u2014"}</span>;
+
+  return (
+    <div className="flex flex-wrap gap-1">
+      {entries.map(({ key, value }) => (
+        <Badge key={key} variant="outline" className="text-xs font-normal">
+          {key}: {value}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
 export default function Agents() {
   const queryClient = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
@@ -76,11 +98,17 @@ export default function Agents() {
   function handleCreate(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const form = new FormData(e.currentTarget);
+    const metadata: Record<string, string> = {};
+    for (const key of ["model", "framework", "owner", "description"] as const) {
+      const val = (form.get(key) as string | null)?.trim();
+      if (val) metadata[key] = val;
+    }
     const req: CreateAgentRequest = {
       agent_id: form.get("agent_id") as string,
       name: form.get("name") as string,
       role: (form.get("role") as AgentRole) || "agent",
       api_key: form.get("api_key") as string,
+      ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
     };
     setFormError(null);
     createMutation.mutate(req);
@@ -137,6 +165,27 @@ export default function Agents() {
                     placeholder="strong-secret-key"
                   />
                 </div>
+                <div className="border-t pt-3 mt-1">
+                  <p className="text-xs text-muted-foreground mb-3">Optional metadata</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label htmlFor="model" className="text-xs">Model</Label>
+                      <Input id="model" name="model" placeholder="claude-opus-4-6" className="h-8 text-sm" />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="framework" className="text-xs">Framework</Label>
+                      <Input id="framework" name="framework" placeholder="LangGraph" className="h-8 text-sm" />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="owner" className="text-xs">Owner</Label>
+                      <Input id="owner" name="owner" placeholder="platform-team" className="h-8 text-sm" />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="description" className="text-xs">Description</Label>
+                      <Input id="description" name="description" placeholder="Reviews PRs" className="h-8 text-sm" />
+                    </div>
+                  </div>
+                </div>
                 {formError && (
                   <p className="text-sm text-destructive">{formError}</p>
                 )}
@@ -168,6 +217,7 @@ export default function Agents() {
               <TableHead>Agent ID</TableHead>
               <TableHead>Name</TableHead>
               <TableHead>Role</TableHead>
+              <TableHead>Details</TableHead>
               <TableHead>Created</TableHead>
               <TableHead className="w-12" />
             </TableRow>
@@ -183,6 +233,9 @@ export default function Agents() {
                   <Badge variant={roleColors[agent.role] ?? "secondary"}>
                     {agent.role}
                   </Badge>
+                </TableCell>
+                <TableCell>
+                  <AgentDetails metadata={agent.metadata} />
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
                   {formatDate(agent.created_at)}

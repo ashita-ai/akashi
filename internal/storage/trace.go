@@ -113,7 +113,7 @@ func (db *DB) CreateTraceTx(ctx context.Context, params CreateTraceParams) (mode
 
 	// 4. Create evidence via COPY.
 	if len(params.Evidence) > 0 {
-		columns := []string{"id", "decision_id", "source_type", "source_uri", "content",
+		columns := []string{"id", "decision_id", "org_id", "source_type", "source_uri", "content",
 			"relevance_score", "embedding", "metadata", "created_at"}
 		rows := make([][]any, len(params.Evidence))
 		for i, ev := range params.Evidence {
@@ -129,7 +129,7 @@ func (db *DB) CreateTraceTx(ctx context.Context, params CreateTraceParams) (mode
 			if meta == nil {
 				meta = map[string]any{}
 			}
-			rows[i] = []any{id, d.ID, string(ev.SourceType), ev.SourceURI, ev.Content,
+			rows[i] = []any{id, d.ID, params.OrgID, string(ev.SourceType), ev.SourceURI, ev.Content,
 				ev.RelevanceScore, ev.Embedding, meta, createdAt}
 		}
 		if _, err := tx.CopyFrom(ctx, pgx.Identifier{"evidence"}, columns, pgx.CopyFromRows(rows)); err != nil {

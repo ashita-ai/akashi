@@ -55,17 +55,21 @@ type Alternative struct {
 type SourceType string
 
 const (
-	SourceDocument     SourceType = "document"
-	SourceAPIResponse  SourceType = "api_response"
-	SourceAgentOutput  SourceType = "agent_output"
-	SourceUserInput    SourceType = "user_input"
-	SourceSearchResult SourceType = "search_result"
+	SourceDocument      SourceType = "document"
+	SourceAPIResponse   SourceType = "api_response"
+	SourceAgentOutput   SourceType = "agent_output"
+	SourceUserInput     SourceType = "user_input"
+	SourceSearchResult  SourceType = "search_result"
+	SourceToolOutput    SourceType = "tool_output"
+	SourceMemory        SourceType = "memory"
+	SourceDatabaseQuery SourceType = "database_query"
 )
 
 // Evidence represents supporting information for a decision. Immutable.
 type Evidence struct {
 	ID             uuid.UUID        `json:"id"`
 	DecisionID     uuid.UUID        `json:"decision_id"`
+	OrgID          uuid.UUID        `json:"org_id"`
 	SourceType     SourceType       `json:"source_type"`
 	SourceURI      *string          `json:"source_uri,omitempty"`
 	Content        string           `json:"content"`

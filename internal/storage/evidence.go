@@ -25,10 +25,10 @@ func (db *DB) CreateEvidence(ctx context.Context, ev model.Evidence) (model.Evid
 	}
 
 	_, err := db.pool.Exec(ctx,
-		`INSERT INTO evidence (id, decision_id, source_type, source_uri, content,
+		`INSERT INTO evidence (id, decision_id, org_id, source_type, source_uri, content,
 		 relevance_score, embedding, metadata, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		ev.ID, ev.DecisionID, string(ev.SourceType), ev.SourceURI, ev.Content,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		ev.ID, ev.DecisionID, ev.OrgID, string(ev.SourceType), ev.SourceURI, ev.Content,
 		ev.RelevanceScore, ev.Embedding, ev.Metadata, ev.CreatedAt,
 	)
 	if err != nil {
@@ -43,7 +43,7 @@ func (db *DB) CreateEvidenceBatch(ctx context.Context, evs []model.Evidence) err
 		return nil
 	}
 
-	columns := []string{"id", "decision_id", "source_type", "source_uri", "content",
+	columns := []string{"id", "decision_id", "org_id", "source_type", "source_uri", "content",
 		"relevance_score", "embedding", "metadata", "created_at"}
 
 	rows := make([][]any, len(evs))
@@ -60,7 +60,7 @@ func (db *DB) CreateEvidenceBatch(ctx context.Context, evs []model.Evidence) err
 		if meta == nil {
 			meta = map[string]any{}
 		}
-		rows[i] = []any{id, ev.DecisionID, string(ev.SourceType), ev.SourceURI, ev.Content,
+		rows[i] = []any{id, ev.DecisionID, ev.OrgID, string(ev.SourceType), ev.SourceURI, ev.Content,
 			ev.RelevanceScore, ev.Embedding, meta, createdAt}
 	}
 
@@ -79,7 +79,7 @@ func (db *DB) GetEvidenceByDecisions(ctx context.Context, decisionIDs []uuid.UUI
 	}
 
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, decision_id, source_type, source_uri, content,
+		`SELECT id, decision_id, org_id, source_type, source_uri, content,
 		 relevance_score, metadata, created_at
 		 FROM evidence WHERE decision_id = ANY($1)
 		 ORDER BY relevance_score DESC NULLS LAST`, decisionIDs,
@@ -93,7 +93,7 @@ func (db *DB) GetEvidenceByDecisions(ctx context.Context, decisionIDs []uuid.UUI
 	for rows.Next() {
 		var ev model.Evidence
 		if err := rows.Scan(
-			&ev.ID, &ev.DecisionID, &ev.SourceType, &ev.SourceURI, &ev.Content,
+			&ev.ID, &ev.DecisionID, &ev.OrgID, &ev.SourceType, &ev.SourceURI, &ev.Content,
 			&ev.RelevanceScore, &ev.Metadata, &ev.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan evidence: %w", err)
@@ -106,7 +106,7 @@ func (db *DB) GetEvidenceByDecisions(ctx context.Context, decisionIDs []uuid.UUI
 // GetEvidenceByDecision retrieves all evidence for a decision.
 func (db *DB) GetEvidenceByDecision(ctx context.Context, decisionID uuid.UUID) ([]model.Evidence, error) {
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, decision_id, source_type, source_uri, content,
+		`SELECT id, decision_id, org_id, source_type, source_uri, content,
 		 relevance_score, metadata, created_at
 		 FROM evidence WHERE decision_id = $1
 		 ORDER BY relevance_score DESC NULLS LAST`, decisionID,
@@ -120,7 +120,7 @@ func (db *DB) GetEvidenceByDecision(ctx context.Context, decisionID uuid.UUID) (
 	for rows.Next() {
 		var ev model.Evidence
 		if err := rows.Scan(
-			&ev.ID, &ev.DecisionID, &ev.SourceType, &ev.SourceURI, &ev.Content,
+			&ev.ID, &ev.DecisionID, &ev.OrgID, &ev.SourceType, &ev.SourceURI, &ev.Content,
 			&ev.RelevanceScore, &ev.Metadata, &ev.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan evidence: %w", err)
@@ -130,19 +130,19 @@ func (db *DB) GetEvidenceByDecision(ctx context.Context, decisionID uuid.UUID) (
 	return evs, rows.Err()
 }
 
-// SearchEvidenceByEmbedding performs semantic similarity search over evidence.
-func (db *DB) SearchEvidenceByEmbedding(ctx context.Context, embedding pgvector.Vector, limit int) ([]model.Evidence, error) {
+// SearchEvidenceByEmbedding performs semantic similarity search over evidence within an org.
+func (db *DB) SearchEvidenceByEmbedding(ctx context.Context, orgID uuid.UUID, embedding pgvector.Vector, limit int) ([]model.Evidence, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, decision_id, source_type, source_uri, content,
+		`SELECT id, decision_id, org_id, source_type, source_uri, content,
 		 relevance_score, metadata, created_at
 		 FROM evidence
-		 WHERE embedding IS NOT NULL
-		 ORDER BY embedding <=> $1
-		 LIMIT $2`, embedding, limit,
+		 WHERE org_id = $1 AND embedding IS NOT NULL
+		 ORDER BY embedding <=> $2
+		 LIMIT $3`, orgID, embedding, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("storage: search evidence: %w", err)
@@ -153,7 +153,7 @@ func (db *DB) SearchEvidenceByEmbedding(ctx context.Context, embedding pgvector.
 	for rows.Next() {
 		var ev model.Evidence
 		if err := rows.Scan(
-			&ev.ID, &ev.DecisionID, &ev.SourceType, &ev.SourceURI, &ev.Content,
+			&ev.ID, &ev.DecisionID, &ev.OrgID, &ev.SourceType, &ev.SourceURI, &ev.Content,
 			&ev.RelevanceScore, &ev.Metadata, &ev.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan evidence search: %w", err)

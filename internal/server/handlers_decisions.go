@@ -7,6 +7,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
+	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 // HandleTrace handles POST /v1/trace (convenience endpoint).
@@ -273,13 +274,23 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
 
-	var decisionType *string
+	filters := storage.ConflictFilters{}
 	if dt := r.URL.Query().Get("decision_type"); dt != "" {
-		decisionType = &dt
+		filters.DecisionType = &dt
 	}
-	limit := queryLimit(r, 50)
+	if aid := r.URL.Query().Get("agent_id"); aid != "" {
+		filters.AgentID = &aid
+	}
+	limit := queryLimit(r, 25)
+	offset := queryInt(r, "offset", 0)
 
-	conflicts, err := h.db.ListConflicts(r.Context(), orgID, decisionType, limit)
+	total, err := h.db.CountConflicts(r.Context(), orgID, filters)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to count conflicts", err)
+		return
+	}
+
+	conflicts, err := h.db.ListConflicts(r.Context(), orgID, filters, limit, offset)
 	if err != nil {
 		h.writeInternalError(w, r, "failed to list conflicts", err)
 		return
@@ -293,6 +304,8 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"conflicts": conflicts,
-		"total":     len(conflicts),
+		"total":     total,
+		"limit":     limit,
+		"offset":    offset,
 	})
 }

@@ -217,6 +217,8 @@ export interface PaginatedDecisions {
 export interface ConflictsList {
   conflicts: DecisionConflict[];
   total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface AgentsList {

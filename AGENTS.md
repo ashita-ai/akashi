@@ -101,8 +101,9 @@ akashi/
 │   │   └── search/     # Semantic similarity search (pgvector)
 │   └── mcp/            # MCP server implementation
 ├── migrations/         # SQL migration files (numbered, forward-only)
-├── adrs/               # Architecture Decision Records (committed)
-├── specs/              # Design specifications, feature specs (committed)
+├── adrs/               # Architecture Decision Records — *why* decisions were made
+├── specs/              # Design specifications — *how* features should be built
+├── docs/               # Supplementary docs — strategy, standards, deep dives
 ├── scratchpad/         # Temporary notes, drafts, research (gitignored)
 └── docker/             # Postgres Dockerfile + docker-compose
 ```
@@ -111,9 +112,9 @@ Use `internal/` for all application code. Nothing in `pkg/` until SDK clients ne
 
 ### adrs/
 
-Architecture Decision Records. Every significant technical decision gets an ADR. Format: `ADR-NNN-short-title.md`.
+Architecture Decision Records. **Every significant technical decision gets an ADR.** Format: `ADR-NNN-short-title.md`. ADRs record *why* a decision was made, what alternatives were considered, and what tradeoffs were accepted.
 
-ADRs are committed to the repo. They are the canonical record of *why* things are the way they are. Read existing ADRs before proposing changes to the areas they cover.
+ADRs are committed to the repo. Read existing ADRs before proposing changes to the areas they cover.
 
 Current ADRs:
 - `ADR-001`: Go for server, Python/TypeScript for SDKs
@@ -123,11 +124,28 @@ Current ADRs:
 - `ADR-005`: Competitive positioning — decision traces, not memory
 - `ADR-006`: Standards alignment — OTEL, MCP, A2A
 
+**When to write an ADR:** Any choice that constrains future decisions — language, database, protocol, auth scheme, isolation model. If you'd explain it to a new engineer as "here's why we did it this way", it's an ADR.
+
 ### specs/
 
-Design specifications. Feature specs, system design docs, API contracts, and acceptance criteria go here. Specs describe *how* something should work; ADRs describe *why* a decision was made.
+Design specifications. **Feature specs, system design docs, API contracts, and implementation plans go here.** Specs describe *how* something should work — the detailed blueprint that an engineer or agent can execute against.
 
-Committed to the repo. Format is flexible — use whatever structure fits the specification.
+Format: `NN-short-title.md` (numbered for ordering). Sub-specs use letter suffixes: `05a-schema-migration.md`.
+
+Current specs:
+- `01-system-overview.md`: Architecture overview
+- `02-data-model.md`: Event-sourced bi-temporal schema
+- `03-api-contracts.md`: HTTP + MCP API surface
+- `04-scaling-and-operations.md`: Deployment, monitoring, scaling
+- `05-multi-tenancy.md`: Org-scoped multi-tenancy (and sub-specs 05a-05e)
+- `06a-schema-optimization.md`: Schema fixes (evidence.org_id data leak, missing indexes, mat view rewrite)
+- `07-qdrant-vector-search.md`: Qdrant Cloud as primary vector search with pgvector fallback
+
+**When to write a spec:** Any feature that touches more than 3 files, requires a migration, changes the API contract, or could be implemented multiple ways. If the work would benefit from a reviewer saying "yes, build it this way", it's a spec.
+
+### docs/
+
+Supplementary documentation — strategy papers, standards alignment notes, deep dives for external audiences. Not implementation blueprints (those go in `specs/`) and not decision rationale (those go in `adrs/`).
 
 ### scratchpad/
 
