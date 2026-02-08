@@ -107,6 +107,7 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 			}
 		}
 		evs[i] = model.Evidence{
+			OrgID:          orgID,
 			SourceType:     model.SourceType(e.SourceType),
 			SourceURI:      e.SourceURI,
 			Content:        e.Content,
