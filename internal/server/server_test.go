@@ -96,7 +96,7 @@ func TestMain(m *testing.M) {
 
 	jwtMgr, _ := auth.NewJWTManager("", "", 24*time.Hour)
 	embedder := embedding.NewNoopProvider(1024)
-	decisionSvc := decisions.New(db, embedder, nil, logger)
+	decisionSvc := decisions.New(db, embedder, nil, nil, logger)
 	buf := trace.NewBuffer(db, logger, 1000, 50*time.Millisecond)
 	buf.Start(ctx)
 
@@ -105,7 +105,7 @@ func TestMain(m *testing.M) {
 		SMTPFrom: "test@akashi.dev",
 		BaseURL:  "http://localhost:8080",
 	}, logger)
-	srv := server.New(db, jwtMgr, decisionSvc, nil, buf, nil, nil, signupSvc, logger, 0, 30*time.Second, 30*time.Second, mcpSrv.MCPServer(), "test", 1*1024*1024, nil, nil)
+	srv := server.New(db, jwtMgr, decisionSvc, nil, buf, nil, nil, signupSvc, nil, logger, 0, 30*time.Second, 30*time.Second, mcpSrv.MCPServer(), "test", 1*1024*1024, nil, nil)
 
 	// Seed admin.
 	_ = srv.Handlers().SeedAdmin(ctx, "test-admin-key")
@@ -211,7 +211,7 @@ func TestOpenAPISpec(t *testing.T) {
 
 	t.Run("embedded spec is served", func(t *testing.T) {
 		spec := []byte("openapi: \"3.1.0\"\ninfo:\n  title: Test\n  version: 0.0.1\npaths: {}\n")
-		h := server.NewHandlers(nil, nil, nil, nil, nil, nil, nil,
+		h := server.NewHandlers(nil, nil, nil, nil, nil, nil, nil, nil,
 			slog.New(slog.NewTextHandler(os.Stderr, nil)), "test", 1*1024*1024, spec)
 
 		rec := httptest.NewRecorder()

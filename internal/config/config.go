@@ -55,6 +55,13 @@ type Config struct {
 	SMTPFrom     string
 	BaseURL      string // e.g., "https://akashi.example.com" for verification links.
 
+	// Qdrant vector search settings.
+	QdrantURL          string // gRPC-compatible URL (e.g. "https://xyz.cloud.qdrant.io:6334")
+	QdrantAPIKey       string
+	QdrantCollection   string
+	OutboxPollInterval time.Duration
+	OutboxBatchSize    int
+
 	// Operational settings.
 	LogLevel                string
 	ConflictRefreshInterval time.Duration
@@ -93,6 +100,11 @@ func Load() (Config, error) {
 		SMTPPassword:            envStr("AKASHI_SMTP_PASSWORD", ""),
 		SMTPFrom:                envStr("AKASHI_SMTP_FROM", "noreply@akashi.dev"),
 		BaseURL:                 envStr("AKASHI_BASE_URL", "http://localhost:8080"),
+		QdrantURL:               envStr("QDRANT_URL", ""),
+		QdrantAPIKey:            envStr("QDRANT_API_KEY", ""),
+		QdrantCollection:        envStr("QDRANT_COLLECTION", "akashi_decisions"),
+		OutboxPollInterval:      envDuration("AKASHI_OUTBOX_POLL_INTERVAL", 1*time.Second),
+		OutboxBatchSize:         envInt("AKASHI_OUTBOX_BATCH_SIZE", 100),
 		LogLevel:                envStr("AKASHI_LOG_LEVEL", "info"),
 		ConflictRefreshInterval: envDuration("AKASHI_CONFLICT_REFRESH_INTERVAL", 30*time.Second),
 		EventBufferSize:         envInt("AKASHI_EVENT_BUFFER_SIZE", 1000),

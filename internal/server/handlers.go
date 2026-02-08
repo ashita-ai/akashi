@@ -14,6 +14,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/trace"
 	"github.com/ashita-ai/akashi/internal/signup"
@@ -29,6 +30,7 @@ type Handlers struct {
 	buffer              *trace.Buffer
 	broker              *Broker
 	signupSvc           *signup.Service
+	searcher            search.Searcher
 	logger              *slog.Logger
 	startedAt           time.Time
 	version             string
@@ -40,8 +42,9 @@ type Handlers struct {
 // broker may be nil if LISTEN/NOTIFY is not configured.
 // signupSvc may be nil if signup is not configured.
 // billingSvc may be nil if Stripe is not configured.
+// searcher may be nil if Qdrant is not configured.
 // openapiSpec may be nil if no OpenAPI spec is embedded.
-func NewHandlers(db *storage.DB, jwtMgr *auth.JWTManager, decisionSvc *decisions.Service, billingSvc *billing.Service, buffer *trace.Buffer, broker *Broker, signupSvc *signup.Service, logger *slog.Logger, version string, maxRequestBodyBytes int64, openapiSpec []byte) *Handlers {
+func NewHandlers(db *storage.DB, jwtMgr *auth.JWTManager, decisionSvc *decisions.Service, billingSvc *billing.Service, buffer *trace.Buffer, broker *Broker, signupSvc *signup.Service, searcher search.Searcher, logger *slog.Logger, version string, maxRequestBodyBytes int64, openapiSpec []byte) *Handlers {
 	return &Handlers{
 		db:                  db,
 		jwtMgr:              jwtMgr,
@@ -50,6 +53,7 @@ func NewHandlers(db *storage.DB, jwtMgr *auth.JWTManager, decisionSvc *decisions
 		buffer:              buffer,
 		broker:              broker,
 		signupSvc:           signupSvc,
+		searcher:            searcher,
 		logger:              logger,
 		startedAt:           time.Now(),
 		version:             version,
@@ -161,12 +165,22 @@ func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		httpStatus = http.StatusServiceUnavailable
 	}
 
-	writeJSON(w, r, httpStatus, model.HealthResponse{
+	resp := model.HealthResponse{
 		Status:   status,
 		Version:  h.version,
 		Postgres: pgStatus,
 		Uptime:   int64(time.Since(h.startedAt).Seconds()),
-	})
+	}
+
+	if h.searcher != nil {
+		if err := h.searcher.Healthy(r.Context()); err == nil {
+			resp.Qdrant = "connected"
+		} else {
+			resp.Qdrant = "disconnected"
+		}
+	}
+
+	writeJSON(w, r, httpStatus, resp)
 }
 
 // HandleOpenAPISpec serves the embedded OpenAPI specification.

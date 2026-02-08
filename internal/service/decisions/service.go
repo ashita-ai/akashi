@@ -16,6 +16,7 @@ import (
 
 	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
 	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/storage"
@@ -25,16 +26,19 @@ import (
 type Service struct {
 	db         *storage.DB
 	embedder   embedding.Provider
+	searcher   search.Searcher
 	billingSvc *billing.Service
 	logger     *slog.Logger
 }
 
 // New creates a new decision Service.
+// searcher may be nil if Qdrant is not configured (falls back to text search).
 // billingSvc may be nil if billing is not configured.
-func New(db *storage.DB, embedder embedding.Provider, billingSvc *billing.Service, logger *slog.Logger) *Service {
+func New(db *storage.DB, embedder embedding.Provider, searcher search.Searcher, billingSvc *billing.Service, logger *slog.Logger) *Service {
 	return &Service{
 		db:         db,
 		embedder:   embedder,
+		searcher:   searcher,
 		billingSvc: billingSvc,
 		logger:     logger,
 	}
@@ -175,29 +179,12 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, decisionType, quer
 	var decisions []model.Decision
 
 	if query != "" {
+		// Use the same Qdrant → text fallback chain as Search.
 		filters := model.QueryFilters{DecisionType: &decisionType}
 		if agentID != "" {
 			filters.AgentIDs = []string{agentID}
 		}
-
-		// Try semantic search, fall back to text search if embeddings are zero.
-		var results []model.SearchResult
-		queryEmb, err := s.embedder.Embed(ctx, query)
-		if err != nil {
-			return model.CheckResponse{}, fmt.Errorf("check: generate embedding: %w", err)
-		}
-		isZero := true
-		for _, v := range queryEmb.Slice() {
-			if v != 0 {
-				isZero = false
-				break
-			}
-		}
-		if !isZero {
-			results, err = s.db.SearchDecisionsByEmbedding(ctx, orgID, queryEmb, filters, limit)
-		} else {
-			results, err = s.db.SearchDecisionsByText(ctx, orgID, query, filters, limit)
-		}
+		results, err := s.Search(ctx, orgID, query, true, filters, limit)
 		if err != nil {
 			return model.CheckResponse{}, fmt.Errorf("check: search: %w", err)
 		}
@@ -238,28 +225,58 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, decisionType, quer
 }
 
 // Search performs semantic or text-based search over decisions.
-// When semantic is true and a real embedding provider is available, it uses
-// vector similarity. Otherwise it falls back to keyword matching.
+// Fallback chain: Qdrant (semantic) → ILIKE text search (keyword).
+// When semantic is true and Qdrant is healthy, it queries Qdrant and hydrates
+// results from Postgres. On any Qdrant failure, it falls through to text search.
 func (s *Service) Search(ctx context.Context, orgID uuid.UUID, query string, semantic bool, filters model.QueryFilters, limit int) ([]model.SearchResult, error) {
-	if semantic {
-		queryEmb, err := s.embedder.Embed(ctx, query)
-		if err != nil {
-			return nil, fmt.Errorf("search: generate embedding: %w", err)
-		}
-		// Check if the embedding is non-trivial (not all zeros from noop provider).
-		isZero := true
-		for _, v := range queryEmb.Slice() {
-			if v != 0 {
-				isZero = false
-				break
+	if semantic && s.searcher != nil {
+		if err := s.searcher.Healthy(ctx); err == nil {
+			queryEmb, err := s.embedder.Embed(ctx, query)
+			if err != nil {
+				s.logger.Warn("search: embedding failed, falling back to text", "error", err)
+			} else if !isZeroVector(queryEmb) {
+				results, err := s.searcher.Search(ctx, orgID, queryEmb.Slice(), filters, limit)
+				if err != nil {
+					s.logger.Warn("search: qdrant query failed, falling back to text", "error", err)
+				} else {
+					return s.hydrateAndReScore(ctx, orgID, results, limit)
+				}
 			}
+		} else {
+			s.logger.Debug("search: qdrant unhealthy, using text search", "error", err)
 		}
-		if !isZero {
-			return s.db.SearchDecisionsByEmbedding(ctx, orgID, queryEmb, filters, limit)
-		}
-		// Fall through to text search if embeddings are zero (noop provider).
 	}
+
 	return s.db.SearchDecisionsByText(ctx, orgID, query, filters, limit)
+}
+
+// hydrateAndReScore fetches full decisions from Postgres and applies quality+recency re-scoring.
+func (s *Service) hydrateAndReScore(ctx context.Context, orgID uuid.UUID, results []search.Result, limit int) ([]model.SearchResult, error) {
+	if len(results) == 0 {
+		return []model.SearchResult{}, nil
+	}
+
+	ids := make([]uuid.UUID, len(results))
+	for i, r := range results {
+		ids[i] = r.DecisionID
+	}
+
+	decisions, err := s.db.GetDecisionsByIDs(ctx, orgID, ids)
+	if err != nil {
+		return nil, fmt.Errorf("search: hydrate decisions: %w", err)
+	}
+
+	return search.ReScore(results, decisions, limit), nil
+}
+
+// isZeroVector returns true if all elements of the vector are zero (noop provider).
+func isZeroVector(v pgvector.Vector) bool {
+	for _, val := range v.Slice() {
+		if val != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // Query executes a structured query with filters, ordering, and pagination.
