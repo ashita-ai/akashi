@@ -48,7 +48,6 @@ func conflictWhere(filters ConflictFilters, argOffset int) (string, []any) {
 	if filters.AgentID != nil {
 		clause += fmt.Sprintf(" AND (dc.agent_a = $%d OR dc.agent_b = $%d)", argOffset, argOffset)
 		args = append(args, *filters.AgentID)
-		argOffset++
 	}
 	return clause, args
 }
