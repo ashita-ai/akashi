@@ -14,6 +14,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/ashita-ai/akashi/api"
 	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/config"
@@ -155,7 +156,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	// Create and start HTTP server (MCP mounted at /mcp).
 	srv := server.New(db, jwtMgr, decisionSvc, billingSvc, buf, limiter, broker, signupSvc, logger,
 		cfg.Port, cfg.ReadTimeout, cfg.WriteTimeout,
-		mcpSrv.MCPServer(), version, cfg.MaxRequestBodyBytes, uiFS)
+		mcpSrv.MCPServer(), version, cfg.MaxRequestBodyBytes, uiFS, api.OpenAPISpec)
 
 	// Seed admin agent.
 	if err := srv.Handlers().SeedAdmin(ctx, cfg.AdminAPIKey); err != nil {

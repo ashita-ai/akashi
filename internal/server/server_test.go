@@ -105,7 +105,7 @@ func TestMain(m *testing.M) {
 		SMTPFrom: "test@akashi.dev",
 		BaseURL:  "http://localhost:8080",
 	}, logger)
-	srv := server.New(db, jwtMgr, decisionSvc, nil, buf, nil, nil, signupSvc, logger, 0, 30*time.Second, 30*time.Second, mcpSrv.MCPServer(), "test", 1*1024*1024, nil)
+	srv := server.New(db, jwtMgr, decisionSvc, nil, buf, nil, nil, signupSvc, logger, 0, 30*time.Second, 30*time.Second, mcpSrv.MCPServer(), "test", 1*1024*1024, nil, nil)
 
 	// Seed admin.
 	_ = srv.Handlers().SeedAdmin(ctx, "test-admin-key")
@@ -198,6 +198,30 @@ func TestHealthEndpoint(t *testing.T) {
 	_ = json.Unmarshal(data, &result)
 	assert.Equal(t, "healthy", result.Data.Status)
 	assert.Equal(t, "connected", result.Data.Postgres)
+}
+
+func TestOpenAPISpec(t *testing.T) {
+	t.Run("nil spec returns 404", func(t *testing.T) {
+		// testSrv was created with nil openapiSpec.
+		resp, err := http.Get(testSrv.URL + "/openapi.yaml")
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("embedded spec is served", func(t *testing.T) {
+		spec := []byte("openapi: \"3.1.0\"\ninfo:\n  title: Test\n  version: 0.0.1\npaths: {}\n")
+		h := server.NewHandlers(nil, nil, nil, nil, nil, nil, nil,
+			slog.New(slog.NewTextHandler(os.Stderr, nil)), "test", 1*1024*1024, spec)
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/openapi.yaml", nil)
+		h.HandleOpenAPISpec(rec, req)
+
+		assert.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, "application/yaml", rec.Header().Get("Content-Type"))
+		assert.Contains(t, rec.Body.String(), "openapi: \"3.1.0\"")
+	})
 }
 
 func TestAuthFlow(t *testing.T) {

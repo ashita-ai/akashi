@@ -33,13 +33,15 @@ type Handlers struct {
 	startedAt           time.Time
 	version             string
 	maxRequestBodyBytes int64
+	openapiSpec         []byte
 }
 
 // NewHandlers creates a new Handlers with all dependencies.
 // broker may be nil if LISTEN/NOTIFY is not configured.
 // signupSvc may be nil if signup is not configured.
 // billingSvc may be nil if Stripe is not configured.
-func NewHandlers(db *storage.DB, jwtMgr *auth.JWTManager, decisionSvc *decisions.Service, billingSvc *billing.Service, buffer *trace.Buffer, broker *Broker, signupSvc *signup.Service, logger *slog.Logger, version string, maxRequestBodyBytes int64) *Handlers {
+// openapiSpec may be nil if no OpenAPI spec is embedded.
+func NewHandlers(db *storage.DB, jwtMgr *auth.JWTManager, decisionSvc *decisions.Service, billingSvc *billing.Service, buffer *trace.Buffer, broker *Broker, signupSvc *signup.Service, logger *slog.Logger, version string, maxRequestBodyBytes int64, openapiSpec []byte) *Handlers {
 	return &Handlers{
 		db:                  db,
 		jwtMgr:              jwtMgr,
@@ -52,6 +54,7 @@ func NewHandlers(db *storage.DB, jwtMgr *auth.JWTManager, decisionSvc *decisions
 		startedAt:           time.Now(),
 		version:             version,
 		maxRequestBodyBytes: maxRequestBodyBytes,
+		openapiSpec:         openapiSpec,
 	}
 }
 
@@ -164,6 +167,17 @@ func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		Postgres: pgStatus,
 		Uptime:   int64(time.Since(h.startedAt).Seconds()),
 	})
+}
+
+// HandleOpenAPISpec serves the embedded OpenAPI specification.
+func (h *Handlers) HandleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
+	if len(h.openapiSpec) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/yaml")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(h.openapiSpec)
 }
 
 // SeedAdmin creates the initial admin agent if the agents table is empty.
