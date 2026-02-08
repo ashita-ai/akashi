@@ -1,60 +1,94 @@
-# ADR-002: Unified PostgreSQL storage
+# ADR-002: Unified PostgreSQL storage with optional Qdrant acceleration
 
-**Status:** Accepted
+**Status:** Accepted (revised 2026-02-08)
 **Date:** 2026-02-03
+**Revised:** 2026-02-08
 
 ## Context
 
-Akashi needs vector search (semantic similarity over decisions), time-series ingestion (append-only events), graph traversal (decision chains), and structured queries (metadata filters). The typical approach uses 3-4 specialized databases. We need to decide whether to go polyglot or unified.
+Akashi needs vector search (semantic similarity over decisions and evidence), time-series ingestion (append-only events), graph traversal (decision chains), and structured queries (metadata filters). The typical approach uses 3-4 specialized databases.
+
+Since the original ADR (2026-02-03), multi-tenancy and the OSS/cloud split introduced a new constraint: the self-hosted OSS version must work with a single Postgres instance and zero additional infrastructure, while the cloud version must handle filtered vector search across millions of decisions spanning hundreds of tenants.
 
 ## Decision
 
-Single PostgreSQL 17 instance with extensions:
-- **pgvector** (HNSW indexes) for semantic search
-- **TimescaleDB** for time-series event ingestion and partitioning
-- **JSONB** for facet-based extensibility
-- **Recursive CTEs** for shallow graph traversal (1-3 hops)
+**PostgreSQL is the source of truth for all data.** Every record lives in Postgres first. No data exists only in an external index.
 
-Do NOT introduce Neo4j, Qdrant, Redis, ClickHouse, or any additional database without hitting a documented migration trigger.
+**pgvector ships out of the box.** The OSS, single-tenant deployment uses pgvector with HNSW indexes for all vector search. This covers the common case: a team running 1-50 agents with up to hundreds of thousands of decisions. No additional infrastructure required.
+
+**Qdrant is an optional, derived acceleration layer.** For multi-tenant cloud deployments where filtered vector search across millions of rows exceeds pgvector's practical limits, Qdrant provides a shared collection with org_id payload filtering. Qdrant is eventually consistent with Postgres via an outbox worker pattern. If Qdrant is unavailable, queries fall back to pgvector transparently.
+
+The storage architecture:
+
+| Concern | Technology | Deployment |
+|---------|-----------|------------|
+| Source of truth | PostgreSQL 17 | Always |
+| Vector search (default) | pgvector HNSW | Always (ships with Postgres) |
+| Vector search (scale) | Qdrant | Optional (cloud, multi-tenant) |
+| Time-series events | TimescaleDB | Always |
+| Flexible metadata | JSONB + GIN indexes | Always |
+| Graph traversal | Recursive CTEs | Always |
 
 ## Rationale
 
-**Performance is sufficient for MVP through early scale:**
+### Why pgvector out of the box
 
-- pgvector with HNSW: 471 QPS at 99% recall on 50M vectors (pgvectorscale). Matches Qdrant throughput, 75-79% cheaper than Pinecone.
-- TimescaleDB: 20x faster inserts, 14,000x faster time-ordered queries vs vanilla Postgres. 90% compression on old chunks.
-- Recursive CTEs: <10ms for 1-3 hop traversals on 100K nodes. Sufficient for decision chain queries.
+- Zero additional infrastructure for self-hosted users. `docker compose up` gives you vector search.
+- pgvector with HNSW: 471 QPS at 99% recall on 50M vectors (pgvectorscale). Sufficient for single-tenant workloads well beyond MVP scale.
+- Hybrid queries are the killer feature: vector similarity + metadata filter + time range + org isolation in a single SQL query. No cross-database joins.
+- One database to monitor, back up, tune, and secure for the common case.
 
-**Operational simplicity:**
+### Why Qdrant at scale
 
-- One database to monitor, back up, tune, and secure.
-- One connection pool. One migration system. One failure domain.
-- Cost: ~$294/month unified vs $369-1,350/month for equivalent polyglot stack.
+- Multi-tenant filtered search (WHERE org_id = X AND embedding <=> query) degrades in pgvector when the org filter is highly selective against a large shared index. Qdrant's payload-indexed filtering handles this natively.
+- Qdrant's quantization (scalar/product) reduces memory footprint at 1M+ vectors with minimal recall loss.
+- Horizontal scaling: Qdrant shards across nodes. pgvector is bound to a single Postgres instance.
 
-**Hybrid queries are the killer feature:**
+### Why Postgres stays as source of truth
 
-- Vector similarity + metadata filter + time range in a single SQL query.
-- No cross-database joins, no eventual consistency between systems.
+- Bi-temporal model (valid_from/valid_to + transaction_time) requires transactional guarantees that Qdrant doesn't provide.
+- Evidence, alternatives, conflicts, and access grants all live in Postgres. Decisions reference them via foreign keys. Moving decisions out of Postgres would break referential integrity.
+- Qdrant is a search accelerator, not a database. If Qdrant loses data, it can be rebuilt from Postgres. The reverse is not true.
 
-## Migration Triggers
+## Architecture
 
-Split out a specialized database ONLY when concrete performance data shows:
+### Searcher interface
+
+All vector search goes through the `Searcher` interface in `internal/storage/`. Implementations:
+
+- `PgvectorSearcher` — queries Postgres directly. Ships in OSS. Always available.
+- `QdrantSearcher` — queries Qdrant with pgvector fallback. Cloud-only.
+
+The active implementation is selected at startup based on configuration. Application code never knows which backend is serving results.
+
+### Qdrant sync (cloud only)
+
+A search outbox table in Postgres captures decision mutations. A background worker reads the outbox and syncs to Qdrant. Delivery semantics are at-least-once with idempotent upserts. On Qdrant downtime, the outbox accumulates and the worker drains it on reconnect. Meanwhile, pgvector handles all queries transparently.
+
+### Fallback behavior
+
+If Qdrant returns an error or is unreachable, the QdrantSearcher falls back to pgvector for that request. This is transparent to the caller. Fallback events are logged as warnings for monitoring.
+
+## Migration triggers for further specialization
 
 | Trigger | Threshold | Action |
 |---------|-----------|--------|
-| Vector search latency | p95 >500ms with >100M vectors | Add dedicated vector DB |
-| Event ingestion rate | >1M events/sec sustained | Add ClickHouse |
-| Graph query workload | >50% of queries, >10M nodes, deep traversal | Add Neo4j |
+| Event ingestion rate | >1M events/sec sustained | Evaluate ClickHouse for events |
+| Graph query workload | >50% of queries, >10M nodes, deep traversal | Evaluate Neo4j |
+
+The vector search trigger from the original ADR has been exercised — Qdrant was added for multi-tenant scale.
 
 ## Consequences
 
 - All storage code lives in `internal/storage/`.
 - Migrations are forward-only SQL files in `migrations/`.
-- Docker setup bundles Postgres 17 + pgvector + TimescaleDB.
-- Must monitor query latency and ingestion throughput to know when triggers are hit.
+- The `Searcher` interface abstracts vector search backend selection.
+- Docker Compose for OSS bundles Postgres 17 + pgvector + TimescaleDB. No Qdrant.
+- Cloud deployment adds Qdrant as a separate service with outbox-based sync.
+- pgvector indexes must be maintained even when Qdrant is active (fallback path).
 
 ## References
 
-- Research: `ventures/specs/03-postgres-unified-storage.md`
+- Spec 07: Qdrant vector search (internal/specs/07-qdrant-vector-search.md)
 - pgvector benchmarks: jkatz05.com/post/postgres/pgvector-performance-150x-speedup/
 - TimescaleDB benchmarks: timescale.com/blog/timescaledb-vs-6a696248104e/
