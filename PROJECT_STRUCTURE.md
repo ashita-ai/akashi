@@ -3,6 +3,7 @@
 Generated: $(date -u +%Y-%m-%d)
 
 ```
+./api/embed.go
 ./cmd/akashi/main.go
 ./internal/auth/auth.go
 ./internal/auth/hash.go
@@ -71,7 +72,7 @@ Generated: $(date -u +%Y-%m-%d)
 | github.com/ashita-ai/akashi/internal/billing | 7 |
 | github.com/ashita-ai/akashi/internal/signup | 16 |
 | github.com/ashita-ai/akashi/internal/service/embedding | 2 |
-| github.com/ashita-ai/akashi/internal/ratelimit | 38 |
+| github.com/ashita-ai/akashi/internal/ratelimit | 39 |
 | github.com/ashita-ai/akashi/internal/service/quality | 3 |
 | github.com/ashita-ai/akashi/internal/server | 2 |
 | github.com/ashita-ai/akashi/internal/auth | 8 |
