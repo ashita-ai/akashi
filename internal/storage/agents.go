@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -82,7 +83,7 @@ func (db *DB) GetAgentByAgentID(ctx context.Context, orgID uuid.UUID, agentID st
 		&a.Metadata, &a.CreatedAt, &a.UpdatedAt,
 	)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return model.Agent{}, fmt.Errorf("storage: agent not found: %s", agentID)
 		}
 		return model.Agent{}, fmt.Errorf("storage: get agent: %w", err)
@@ -101,7 +102,7 @@ func (db *DB) GetAgentByID(ctx context.Context, id uuid.UUID) (model.Agent, erro
 		&a.Metadata, &a.CreatedAt, &a.UpdatedAt,
 	)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return model.Agent{}, fmt.Errorf("storage: agent not found: %s", id)
 		}
 		return model.Agent{}, fmt.Errorf("storage: get agent by id: %w", err)

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -79,7 +80,7 @@ func (db *DB) GetDecision(ctx context.Context, orgID, id uuid.UUID, includeAlts,
 		&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
 	)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return model.Decision{}, fmt.Errorf("storage: decision not found: %s", id)
 		}
 		return model.Decision{}, fmt.Errorf("storage: get decision: %w", err)
