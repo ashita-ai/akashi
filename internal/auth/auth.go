@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -38,6 +39,7 @@ type JWTManager struct {
 // If paths are empty, generates an ephemeral key pair (for development).
 func NewJWTManager(privateKeyPath, publicKeyPath string, expiration time.Duration) (*JWTManager, error) {
 	if privateKeyPath == "" || publicKeyPath == "" {
+		slog.Warn("auth: no JWT key files configured, generating ephemeral key pair (not for production)")
 		pub, priv, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			return nil, fmt.Errorf("auth: generate key pair: %w", err)

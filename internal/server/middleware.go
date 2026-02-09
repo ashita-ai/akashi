@@ -122,8 +122,6 @@ var (
 
 // tracingMiddleware creates an OTEL span for each HTTP request
 // and records request count and duration metrics.
-// It reuses the statusWriter from loggingMiddleware if already present,
-// avoiding a redundant wrapper allocation per request.
 func tracingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, span := tracer.Start(r.Context(), r.Method+" "+r.URL.Path,
@@ -137,11 +135,7 @@ func tracingMiddleware(next http.Handler) http.Handler {
 
 		start := time.Now()
 
-		// Reuse existing statusWriter if the logging middleware already wrapped w.
-		sw, ok := w.(*statusWriter)
-		if !ok {
-			sw = &statusWriter{ResponseWriter: w, statusCode: http.StatusOK}
-		}
+		sw := &statusWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(sw, r.WithContext(ctx))
 
 		duration := time.Since(start)
@@ -311,6 +305,28 @@ func recoveryMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
 				writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "internal server error")
 			}
 		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// corsMiddleware handles CORS preflight requests and sets response headers.
+// Allows any origin to facilitate SDK and browser-based integrations.
+// Authentication is enforced per-request via JWT, so open CORS is safe.
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Max-Age", "86400")
+			w.Header().Set("Vary", "Origin")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
 }

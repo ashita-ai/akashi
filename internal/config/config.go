@@ -133,14 +133,36 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config: AKASHI_MAX_REQUEST_BODY_BYTES must be positive")
 	}
 	if c.JWTPrivateKeyPath != "" {
-		if _, err := os.Stat(c.JWTPrivateKeyPath); err != nil {
-			return fmt.Errorf("config: AKASHI_JWT_PRIVATE_KEY %q: %w", c.JWTPrivateKeyPath, err)
+		if err := validateKeyFile(c.JWTPrivateKeyPath, "AKASHI_JWT_PRIVATE_KEY"); err != nil {
+			return err
 		}
 	}
 	if c.JWTPublicKeyPath != "" {
-		if _, err := os.Stat(c.JWTPublicKeyPath); err != nil {
-			return fmt.Errorf("config: AKASHI_JWT_PUBLIC_KEY %q: %w", c.JWTPublicKeyPath, err)
+		if err := validateKeyFile(c.JWTPublicKeyPath, "AKASHI_JWT_PUBLIC_KEY"); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// validateKeyFile checks that a key file exists, is readable, is non-empty,
+// and has restrictive permissions (owner-only on Unix).
+func validateKeyFile(path, envVar string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("config: %s %q: %w", envVar, path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("config: %s %q is a directory, expected a file", envVar, path)
+	}
+	if info.Size() == 0 {
+		return fmt.Errorf("config: %s %q is empty", envVar, path)
+	}
+	// Check that the file is not world-readable (Unix permissions only).
+	// info.Mode().Perm() returns the Unix permission bits.
+	perm := info.Mode().Perm()
+	if perm&0o077 != 0 {
+		return fmt.Errorf("config: %s %q has overly permissive mode %04o (expected 0600 or stricter)", envVar, path, perm)
 	}
 	return nil
 }

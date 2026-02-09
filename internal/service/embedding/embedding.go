@@ -42,7 +42,11 @@ type OpenAIProvider struct {
 // NewOpenAIProvider creates a new OpenAI embedding provider.
 // Dimensions should match the model's output size (e.g., 1536 for text-embedding-3-small,
 // or a smaller value if using the dimensions parameter in the API request).
-func NewOpenAIProvider(apiKey, model string, dimensions int) *OpenAIProvider {
+// Returns an error if apiKey is empty.
+func NewOpenAIProvider(apiKey, model string, dimensions int) (*OpenAIProvider, error) {
+	if apiKey == "" {
+		return nil, fmt.Errorf("embedding: OpenAI API key is required")
+	}
 	if dimensions <= 0 {
 		dimensions = 1536 // Default for text-embedding-3-small
 	}
@@ -53,7 +57,7 @@ func NewOpenAIProvider(apiKey, model string, dimensions int) *OpenAIProvider {
 			Timeout: 30 * time.Second,
 		},
 		dimensions: dimensions,
-	}
+	}, nil
 }
 
 // Dimensions returns the embedding vector size.

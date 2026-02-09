@@ -33,7 +33,7 @@ func (s *Service) CheckDecisionQuota(ctx context.Context, orgID uuid.UUID) error
 
 	usage, err := s.db.GetUsage(ctx, orgID, CurrentPeriod())
 	if err != nil {
-		return nil // No usage record = 0 decisions this period.
+		return fmt.Errorf("billing: get usage for quota check: %w", err)
 	}
 
 	if usage.DecisionCount >= org.DecisionLimit {

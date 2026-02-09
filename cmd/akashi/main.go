@@ -112,11 +112,14 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	embedder := newEmbeddingProvider(cfg, logger)
 
 	// Create billing service (Stripe integration; disabled if STRIPE_SECRET_KEY is empty).
-	billingSvc := billing.New(db, billing.Config{
+	billingSvc, err := billing.New(db, billing.Config{
 		SecretKey:     cfg.StripeSecretKey,
 		WebhookSecret: cfg.StripeWebhookSecret,
 		PriceIDPro:    cfg.StripePriceIDPro,
 	}, logger)
+	if err != nil {
+		return fmt.Errorf("billing: %w", err)
+	}
 	if billingSvc.Enabled() {
 		logger.Info("billing: enabled (Stripe configured)")
 	} else {
@@ -276,7 +279,12 @@ func newEmbeddingProvider(cfg config.Config, logger *slog.Logger) embedding.Prov
 			return embedding.NewNoopProvider(dims)
 		}
 		logger.Info("embedding provider: openai", "model", cfg.EmbeddingModel, "dimensions", dims)
-		return embedding.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.EmbeddingModel, dims)
+		p, err := embedding.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.EmbeddingModel, dims)
+		if err != nil {
+			logger.Error("openai provider init failed", "error", err)
+			return embedding.NewNoopProvider(dims)
+		}
+		return p
 
 	case "ollama":
 		logger.Info("embedding provider: ollama", "url", cfg.OllamaURL, "model", cfg.OllamaModel, "dimensions", dims)
@@ -296,7 +304,12 @@ func newEmbeddingProvider(cfg config.Config, logger *slog.Logger) embedding.Prov
 		}
 		if cfg.OpenAIAPIKey != "" {
 			logger.Info("embedding provider: openai (auto-detected)", "model", cfg.EmbeddingModel, "dimensions", dims)
-			return embedding.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.EmbeddingModel, dims)
+			p, err := embedding.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.EmbeddingModel, dims)
+			if err != nil {
+				logger.Error("openai provider init failed", "error", err)
+				return embedding.NewNoopProvider(dims)
+			}
+			return p
 		}
 		logger.Warn("no embedding provider available, using noop (semantic search disabled)")
 		return embedding.NewNoopProvider(dims)

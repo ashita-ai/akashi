@@ -208,10 +208,8 @@ func (w *OutboxWorker) cleanupDeadLetters(ctx context.Context) {
 func (w *OutboxWorker) processUpserts(ctx context.Context, entries []outboxEntry) {
 	// Fetch decision data from Postgres.
 	decisionIDs := make([]uuid.UUID, len(entries))
-	orgByDecision := make(map[uuid.UUID]uuid.UUID, len(entries))
 	for i, e := range entries {
 		decisionIDs[i] = e.DecisionID
-		orgByDecision[e.DecisionID] = e.OrgID
 	}
 
 	decisions, err := w.fetchDecisionsForIndex(ctx, decisionIDs)

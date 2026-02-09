@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,6 +29,8 @@ type Buffer struct {
 
 	mu     sync.Mutex
 	events []model.AgentEvent
+
+	droppedEvents atomic.Int64 // total events dropped due to capacity after flush failure
 
 	flushCh    chan struct{}
 	done       chan struct{}
@@ -147,6 +150,7 @@ func (b *Buffer) flush(ctx context.Context) {
 		if len(b.events)+len(batch) <= maxBufferCapacity {
 			b.events = append(batch, b.events...)
 		} else {
+			b.droppedEvents.Add(int64(len(batch)))
 			b.logger.Error("trace: dropping events, buffer at capacity after flush failure", "dropped", len(batch))
 		}
 		b.mu.Unlock()
@@ -178,4 +182,10 @@ func (b *Buffer) Len() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return len(b.events)
+}
+
+// DroppedEvents returns the total number of events dropped due to buffer capacity
+// exhaustion after a flush failure. A non-zero value indicates data loss.
+func (b *Buffer) DroppedEvents() int64 {
+	return b.droppedEvents.Load()
 }
