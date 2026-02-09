@@ -89,6 +89,34 @@ func (db *DB) HasAccess(ctx context.Context, orgID uuid.UUID, granteeID uuid.UUI
 	return exists, nil
 }
 
+// ListGrantedAgentIDs returns the set of agent_ids that the grantee has been
+// granted read access to (via agent_traces grants) within the given org.
+// The caller's own agent_id is always included.
+func (db *DB) ListGrantedAgentIDs(ctx context.Context, orgID uuid.UUID, granteeID uuid.UUID, selfAgentID string) (map[string]bool, error) {
+	rows, err := db.pool.Query(ctx,
+		`SELECT DISTINCT resource_id FROM access_grants
+		 WHERE org_id = $1 AND grantee_id = $2
+		 AND resource_type = 'agent_traces' AND permission = 'read'
+		 AND (expires_at IS NULL OR expires_at > now())
+		 AND resource_id IS NOT NULL`,
+		orgID, granteeID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("storage: list granted agent ids: %w", err)
+	}
+	defer rows.Close()
+
+	granted := map[string]bool{selfAgentID: true}
+	for rows.Next() {
+		var agentID string
+		if err := rows.Scan(&agentID); err != nil {
+			return nil, fmt.Errorf("storage: scan granted agent id: %w", err)
+		}
+		granted[agentID] = true
+	}
+	return granted, rows.Err()
+}
+
 // ListGrantsByGrantee returns all active grants for a grantee within an org.
 func (db *DB) ListGrantsByGrantee(ctx context.Context, orgID uuid.UUID, granteeID uuid.UUID) ([]model.AccessGrant, error) {
 	rows, err := db.pool.Query(ctx,

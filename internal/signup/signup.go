@@ -133,7 +133,7 @@ func (s *Service) Signup(ctx context.Context, input SignupInput) (SignupResult, 
 		return SignupResult{}, fmt.Errorf("signup: create verification: %w", err)
 	}
 
-	verifyURL := fmt.Sprintf("%s/auth/verify?token=%s", s.baseURL, token)
+	verifyURL := fmt.Sprintf("%s/verify?token=%s", s.baseURL, token)
 	if err := s.sendVerificationEmail(input.Email, verifyURL); err != nil {
 		// Log but don't fail — the user can request a resend later.
 		s.logger.Error("signup: send verification email failed", "error", err, "email", input.Email)

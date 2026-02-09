@@ -41,6 +41,10 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "agent_id, name, and api_key are required")
 		return
 	}
+	if err := model.ValidateAgentID(req.AgentID); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
 
 	if req.Role == "" {
 		req.Role = model.RoleAgent
@@ -75,13 +79,19 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 // HandleListAgents handles GET /v1/agents (admin-only).
 func (h *Handlers) HandleListAgents(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
+	limit := queryLimit(r, 200)
+	offset := queryInt(r, "offset", 0)
 
-	agents, err := h.db.ListAgents(r.Context(), orgID)
+	agents, err := h.db.ListAgents(r.Context(), orgID, limit, offset)
 	if err != nil {
 		h.writeInternalError(w, r, "failed to list agents", err)
 		return
 	}
-	writeJSON(w, r, http.StatusOK, agents)
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"agents": agents,
+		"limit":  limit,
+		"offset": offset,
+	})
 }
 
 // HandleCreateGrant handles POST /v1/grants.
@@ -189,8 +199,8 @@ func (h *Handlers) HandleDeleteGrant(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 	agentID := r.PathValue("agent_id")
-	if agentID == "" {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "agent_id is required")
+	if err := model.ValidateAgentID(agentID); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
 		return
 	}
 

@@ -212,6 +212,22 @@ func TestHealthEndpoint(t *testing.T) {
 	assert.Equal(t, "connected", result.Data.Postgres)
 }
 
+func TestSecurityHeaders(t *testing.T) {
+	resp, err := http.Get(testSrv.URL + "/health")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	assert.Equal(t, "nosniff", resp.Header.Get("X-Content-Type-Options"))
+	assert.Equal(t, "DENY", resp.Header.Get("X-Frame-Options"))
+	assert.Equal(t, "no-store", resp.Header.Get("Cache-Control"))
+	assert.Equal(t, "strict-origin-when-cross-origin", resp.Header.Get("Referrer-Policy"))
+	assert.Equal(t, "max-age=63072000; includeSubDomains", resp.Header.Get("Strict-Transport-Security"))
+	assert.Contains(t, resp.Header.Get("Content-Security-Policy"), "default-src 'self'")
+	assert.Contains(t, resp.Header.Get("Content-Security-Policy"), "frame-ancestors 'none'")
+	assert.Contains(t, resp.Header.Get("Permissions-Policy"), "camera=()")
+	assert.Contains(t, resp.Header.Get("Permissions-Policy"), "geolocation=()")
+}
+
 func TestOpenAPISpec(t *testing.T) {
 	t.Run("nil spec returns 404", func(t *testing.T) {
 		// testSrv was created with nil openapiSpec.
@@ -1060,14 +1076,16 @@ func TestSignupFlow(t *testing.T) {
 
 func TestVerifyEmail(t *testing.T) {
 	t.Run("missing token rejected", func(t *testing.T) {
-		resp, err := http.Get(testSrv.URL + "/auth/verify")
+		body, _ := json.Marshal(map[string]string{"token": ""})
+		resp, err := http.Post(testSrv.URL+"/auth/verify", "application/json", bytes.NewReader(body))
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	})
 
 	t.Run("invalid token rejected", func(t *testing.T) {
-		resp, err := http.Get(testSrv.URL + "/auth/verify?token=bogus-token")
+		body, _ := json.Marshal(map[string]string{"token": "bogus-token"})
+		resp, err := http.Post(testSrv.URL+"/auth/verify", "application/json", bytes.NewReader(body))
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -1127,7 +1145,8 @@ func TestSignupAndVerifyFullFlow(t *testing.T) {
 	require.NotEmpty(t, verifyToken)
 
 	// 4. Verify email.
-	resp3, err := http.Get(testSrv.URL + "/auth/verify?token=" + verifyToken)
+	verifyBody, _ := json.Marshal(map[string]string{"token": verifyToken})
+	resp3, err := http.Post(testSrv.URL+"/auth/verify", "application/json", bytes.NewReader(verifyBody))
 	require.NoError(t, err)
 	defer func() { _ = resp3.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp3.StatusCode)
@@ -1149,7 +1168,8 @@ func TestSignupAndVerifyFullFlow(t *testing.T) {
 	assert.NotEmpty(t, tokenResult.Data.Token)
 
 	// 6. Verify the token can't be used again.
-	resp5, err := http.Get(testSrv.URL + "/auth/verify?token=" + verifyToken)
+	verifyBody2, _ := json.Marshal(map[string]string{"token": verifyToken})
+	resp5, err := http.Post(testSrv.URL+"/auth/verify", "application/json", bytes.NewReader(verifyBody2))
 	require.NoError(t, err)
 	defer func() { _ = resp5.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp5.StatusCode)
@@ -1294,7 +1314,8 @@ func createVerifiedOrgOwner(t *testing.T, email, password, orgName string) strin
 	).Scan(&verifyToken)
 	require.NoError(t, err)
 
-	resp2, err := http.Get(testSrv.URL + "/auth/verify?token=" + verifyToken)
+	verifyBody, _ := json.Marshal(map[string]string{"token": verifyToken})
+	resp2, err := http.Post(testSrv.URL+"/auth/verify", "application/json", bytes.NewReader(verifyBody))
 	require.NoError(t, err)
 	defer func() { _ = resp2.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp2.StatusCode)

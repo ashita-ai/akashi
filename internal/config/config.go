@@ -131,6 +131,16 @@ func (c Config) Validate() error {
 	if c.MaxRequestBodyBytes <= 0 {
 		return fmt.Errorf("config: AKASHI_MAX_REQUEST_BODY_BYTES must be positive")
 	}
+	if c.JWTPrivateKeyPath != "" {
+		if _, err := os.Stat(c.JWTPrivateKeyPath); err != nil {
+			return fmt.Errorf("config: AKASHI_JWT_PRIVATE_KEY %q: %w", c.JWTPrivateKeyPath, err)
+		}
+	}
+	if c.JWTPublicKeyPath != "" {
+		if _, err := os.Stat(c.JWTPublicKeyPath); err != nil {
+			return fmt.Errorf("config: AKASHI_JWT_PUBLIC_KEY %q: %w", c.JWTPublicKeyPath, err)
+		}
+	}
 	return nil
 }
 

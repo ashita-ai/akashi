@@ -95,11 +95,22 @@ func (db *DB) GetAgentByID(ctx context.Context, id uuid.UUID) (model.Agent, erro
 	return a, nil
 }
 
-// ListAgents returns all agents within an org.
-func (db *DB) ListAgents(ctx context.Context, orgID uuid.UUID) ([]model.Agent, error) {
+// ListAgents returns agents within an org with pagination.
+// limit is clamped to [1, 1000] with a default of 200; offset must be non-negative.
+func (db *DB) ListAgents(ctx context.Context, orgID uuid.UUID, limit, offset int) ([]model.Agent, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	if offset < 0 {
+		offset = 0
+	}
 	rows, err := db.pool.Query(ctx,
 		`SELECT id, agent_id, org_id, name, role, api_key_hash, metadata, created_at, updated_at
-		 FROM agents WHERE org_id = $1 ORDER BY created_at ASC`, orgID,
+		 FROM agents WHERE org_id = $1 ORDER BY created_at ASC LIMIT $2 OFFSET $3`,
+		orgID, limit, offset,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("storage: list agents: %w", err)

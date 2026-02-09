@@ -175,19 +175,23 @@ paths:
           $ref: "#/components/responses/RateLimited"
 
   /auth/verify:
-    get:
+    post:
       operationId: verifyEmail
       tags: [Auth]
       summary: Verify organization email
-      description: Confirms the email address for an organization using a one-time token.
+      description: Confirms the email address for an organization using a one-time token sent via POST body to avoid token exposure in server logs and URLs.
       security: []
-      parameters:
-        - name: token
-          in: query
-          required: true
-          schema:
-            type: string
-          description: Verification token from the email link.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  description: Verification token from the email link.
       responses:
         "200":
           description: Email verified successfully.

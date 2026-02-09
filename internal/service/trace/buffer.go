@@ -57,20 +57,20 @@ func (b *Buffer) Start(ctx context.Context) {
 // Returns the assigned events with populated IDs and sequence numbers.
 // Returns an error if the buffer is at capacity (backpressure).
 func (b *Buffer) Append(ctx context.Context, runID uuid.UUID, agentID string, orgID uuid.UUID, inputs []model.EventInput) ([]model.AgentEvent, error) {
+	// Reserve sequence numbers outside the mutex. Sequences are globally unique;
+	// if the append fails after this point, the reserved numbers become gaps,
+	// which is acceptable (sequence_num is for ordering, not continuity).
+	seqNums, err := b.db.ReserveSequenceNums(ctx, len(inputs))
+	if err != nil {
+		return nil, fmt.Errorf("trace: reserve sequence nums: %w", err)
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	// Backpressure: reject writes when the buffer is full.
 	if len(b.events)+len(inputs) > maxBufferCapacity {
 		return nil, fmt.Errorf("trace: buffer at capacity (%d events), try again later", len(b.events))
-	}
-
-	// Allocate globally unique sequence numbers from the Postgres SEQUENCE.
-	// This is done under the mutex to preserve ordering within a run, but
-	// the DB call itself is fast (single round-trip for the whole batch).
-	seqNums, err := b.db.ReserveSequenceNums(ctx, len(inputs))
-	if err != nil {
-		return nil, fmt.Errorf("trace: reserve sequence nums: %w", err)
 	}
 
 	now := time.Now().UTC()
