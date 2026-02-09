@@ -95,8 +95,6 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Note: total reflects DB count before access filtering.
-	// For non-admin users, the actual accessible count may be lower.
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"decisions": decisions,
 		"total":     total,
@@ -157,8 +155,16 @@ func (h *Handlers) HandleAgentHistory(w http.ResponseWriter, r *http.Request) {
 
 	limit := queryLimit(r, 50)
 	offset := queryInt(r, "offset", 0)
-	from := queryTime(r, "from")
-	to := queryTime(r, "to")
+	from, err := queryTime(r, "from")
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
+	to, err := queryTime(r, "to")
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
 
 	decisions, total, err := h.db.GetDecisionsByAgent(r.Context(), orgID, agentID, limit, offset, from, to)
 	if err != nil {
@@ -290,12 +296,6 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 	limit := queryLimit(r, 25)
 	offset := queryInt(r, "offset", 0)
 
-	total, err := h.db.CountConflicts(r.Context(), orgID, filters)
-	if err != nil {
-		h.writeInternalError(w, r, "failed to count conflicts", err)
-		return
-	}
-
 	conflicts, err := h.db.ListConflicts(r.Context(), orgID, filters, limit, offset)
 	if err != nil {
 		h.writeInternalError(w, r, "failed to list conflicts", err)
@@ -310,7 +310,7 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"conflicts": conflicts,
-		"total":     total,
+		"total":     len(conflicts),
 		"limit":     limit,
 		"offset":    offset,
 	})

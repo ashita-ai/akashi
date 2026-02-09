@@ -94,43 +94,41 @@ func (s *Service) Signup(ctx context.Context, input SignupInput) (SignupResult, 
 
 	slug := slugify(input.OrgName)
 
-	org, err := s.db.CreateOrganization(ctx, model.Organization{
-		Name:          input.OrgName,
-		Slug:          slug,
-		Plan:          "free",
-		DecisionLimit: 1000,
-		AgentLimit:    5,
-		Email:         input.Email,
-		EmailVerified: false,
-	})
-	if err != nil {
-		return SignupResult{}, fmt.Errorf("signup: create org: %w", err)
-	}
-
 	hash, err := auth.HashAPIKey(input.Password)
 	if err != nil {
 		return SignupResult{}, fmt.Errorf("signup: hash password: %w", err)
 	}
 
 	agentID := "owner@" + slug
-	_, err = s.db.CreateAgent(ctx, model.Agent{
-		AgentID:    agentID,
-		OrgID:      org.ID,
-		Name:       input.OrgName + " Owner",
-		Role:       model.RoleOrgOwner,
-		APIKeyHash: &hash,
-	})
-	if err != nil {
-		return SignupResult{}, fmt.Errorf("signup: create owner agent: %w", err)
-	}
 
 	token, err := generateToken(32)
 	if err != nil {
 		return SignupResult{}, fmt.Errorf("signup: generate token: %w", err)
 	}
 
-	if err := s.db.CreateEmailVerification(ctx, org.ID, token, time.Now().Add(24*time.Hour)); err != nil {
-		return SignupResult{}, fmt.Errorf("signup: create verification: %w", err)
+	// Create org, owner agent, and verification token in a single transaction.
+	// If any step fails the entire signup is rolled back — no orphaned rows.
+	result, err := s.db.CreateSignupTx(ctx, storage.SignupParams{
+		Org: model.Organization{
+			Name:          input.OrgName,
+			Slug:          slug,
+			Plan:          "free",
+			DecisionLimit: 1000,
+			AgentLimit:    5,
+			Email:         input.Email,
+			EmailVerified: false,
+		},
+		Agent: model.Agent{
+			AgentID:    agentID,
+			Name:       input.OrgName + " Owner",
+			Role:       model.RoleOrgOwner,
+			APIKeyHash: &hash,
+		},
+		VerificationToken:  token,
+		VerificationExpiry: time.Now().Add(24 * time.Hour),
+	})
+	if err != nil {
+		return SignupResult{}, fmt.Errorf("signup: %w", err)
 	}
 
 	verifyURL := fmt.Sprintf("%s/verify?token=%s", s.baseURL, token)
@@ -140,7 +138,7 @@ func (s *Service) Signup(ctx context.Context, input SignupInput) (SignupResult, 
 	}
 
 	return SignupResult{
-		OrgID:   org.ID,
+		OrgID:   result.Org.ID,
 		AgentID: agentID,
 		Message: "check your email to verify your account",
 	}, nil
@@ -299,11 +297,13 @@ func hasExcessiveRepetition(password string) bool {
 	return false
 }
 
-// commonPasswords is a short list of passwords that pass 12-char + mixed-case +
-// digit checks but are still trivially guessable. Checked case-insensitively.
+// commonPasswords contains passwords that pass the formal checks (12+ chars,
+// upper + lower + digit) but are trivially guessable. Checked case-insensitively.
 var commonPasswords = []string{
+	// Classic weak passwords padded to 12+
 	"password1234",
 	"password123!",
+	"password12345",
 	"abcdefghij12",
 	"qwertyuiop12",
 	"admin1234567",
@@ -313,9 +313,34 @@ var commonPasswords = []string{
 	"iloveyou1234",
 	"trustno1trust",
 	"abc123456789",
-	"password12345",
 	"administrator1",
 	"qwerty1234567",
+	// Seasonal / year-based patterns
+	"summer202612",
+	"winter202612",
+	"spring202612",
+	"autumn202612",
+	"january12345",
+	// Keyboard walks and sequences
+	"qweasdzxc123",
+	"asdfghjkl123",
+	"zxcvbnm12345",
+	"1q2w3e4r5t6y",
+	// Company/tech cliches
+	"passw0rd1234",
+	"p@ssword1234",
+	"letmein123456",
+	"master1234567",
+	"dragon1234567",
+	"monkey1234567",
+	"shadow1234567",
+	"sunshine12345",
+	"princess12345",
+	"football12345",
+	"baseball12345",
+	"superman12345",
+	"michael123456",
+	"charlie123456",
 }
 
 var multiHyphen = regexp.MustCompile(`-{2,}`)

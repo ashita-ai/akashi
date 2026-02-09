@@ -43,10 +43,11 @@ type OutboxWorker struct {
 	pollInterval time.Duration
 	batchSize    int
 
-	started    atomic.Bool
-	cancelLoop context.CancelFunc
-	done       chan struct{}
-	once       sync.Once
+	started     atomic.Bool
+	cancelLoop  context.CancelFunc
+	done        chan struct{}
+	once        sync.Once
+	lastCleanup time.Time
 }
 
 // NewOutboxWorker creates a new outbox worker.
@@ -142,13 +143,15 @@ func (w *OutboxWorker) processBatch(ctx context.Context) {
 		return
 	}
 
-	// Lock the entries for 30 seconds.
+	// Lock the entries for 60 seconds (must exceed the 30s batchCtx timeout
+	// to prevent a second worker from picking up entries whose lock expired
+	// while the first worker is still processing).
 	entryIDs := make([]int64, len(entries))
 	for i, e := range entries {
 		entryIDs[i] = e.ID
 	}
 	if _, err := tx.Exec(ctx,
-		`UPDATE search_outbox SET locked_until = now() + interval '30 seconds' WHERE id = ANY($1)`,
+		`UPDATE search_outbox SET locked_until = now() + interval '60 seconds' WHERE id = ANY($1)`,
 		entryIDs,
 	); err != nil {
 		w.logger.Error("search outbox: lock entries", "error", err)
@@ -177,6 +180,28 @@ func (w *OutboxWorker) processBatch(ctx context.Context) {
 	}
 	if len(deletes) > 0 {
 		w.processDeletes(ctx, deletes)
+	}
+
+	// Periodically clean up dead-letter entries (attempts >= max, older than 7 days).
+	if time.Since(w.lastCleanup) > time.Hour {
+		w.cleanupDeadLetters(ctx)
+		w.lastCleanup = time.Now()
+	}
+}
+
+func (w *OutboxWorker) cleanupDeadLetters(ctx context.Context) {
+	tag, err := w.pool.Exec(ctx,
+		`DELETE FROM search_outbox
+		 WHERE attempts >= $1
+		   AND created_at < now() - interval '7 days'`,
+		maxOutboxAttempts,
+	)
+	if err != nil {
+		w.logger.Error("search outbox: cleanup dead-letters failed", "error", err)
+		return
+	}
+	if tag.RowsAffected() > 0 {
+		w.logger.Info("search outbox: cleaned dead-letter entries", "deleted", tag.RowsAffected())
 	}
 }
 

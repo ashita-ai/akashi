@@ -36,6 +36,7 @@ type QueryRequest struct {
 type TemporalQueryRequest struct {
 	AsOf    time.Time    `json:"as_of"`
 	Filters QueryFilters `json:"filters"`
+	Limit   int          `json:"limit,omitempty"`
 }
 
 // SearchRequest is the request body for POST /v1/search.

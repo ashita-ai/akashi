@@ -38,14 +38,15 @@ func (h *Handlers) HandleCreateRun(w http.ResponseWriter, r *http.Request) {
 // HandleAppendEvents handles POST /v1/runs/{run_id}/events.
 func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
 	runID, err := parseRunID(r)
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
 		return
 	}
 
-	// Verify run exists and agent has access.
-	run, err := h.db.GetRun(r.Context(), runID)
+	// Verify run exists within the caller's org and agent has access.
+	run, err := h.db.GetRun(r.Context(), orgID, runID)
 	if err != nil {
 		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "run not found")
 		return
@@ -82,13 +83,14 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 // HandleCompleteRun handles POST /v1/runs/{run_id}/complete.
 func (h *Handlers) HandleCompleteRun(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
 	runID, err := parseRunID(r)
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
 		return
 	}
 
-	run, err := h.db.GetRun(r.Context(), runID)
+	run, err := h.db.GetRun(r.Context(), orgID, runID)
 	if err != nil {
 		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "run not found")
 		return
@@ -109,12 +111,12 @@ func (h *Handlers) HandleCompleteRun(w http.ResponseWriter, r *http.Request) {
 		status = model.RunStatusFailed
 	}
 
-	if err := h.db.CompleteRun(r.Context(), runID, status, req.Metadata); err != nil {
+	if err := h.db.CompleteRun(r.Context(), orgID, runID, status, req.Metadata); err != nil {
 		h.writeInternalError(w, r, "failed to complete run", err)
 		return
 	}
 
-	updated, err := h.db.GetRun(r.Context(), runID)
+	updated, err := h.db.GetRun(r.Context(), orgID, runID)
 	if err != nil {
 		h.logger.Warn("complete run: read-back failed", "error", err, "run_id", runID)
 		writeJSON(w, r, http.StatusOK, map[string]any{"run_id": runID, "status": string(status)})
@@ -133,7 +135,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	run, err := h.db.GetRun(r.Context(), runID)
+	run, err := h.db.GetRun(r.Context(), orgID, runID)
 	if err != nil {
 		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "run not found")
 		return

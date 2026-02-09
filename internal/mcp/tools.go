@@ -7,6 +7,7 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/ashita-ai/akashi/internal/authz"
 	"github.com/ashita-ai/akashi/internal/ctxutil"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
@@ -215,6 +216,7 @@ filters for agent_id and decision_type.`),
 
 func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	orgID := ctxutil.OrgIDFromContext(ctx)
+	claims := ctxutil.ClaimsFromContext(ctx)
 
 	decisionType := request.GetString("decision_type", "")
 	if decisionType == "" {
@@ -230,6 +232,19 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 		return errorResult(fmt.Sprintf("check failed: %v", err)), nil
 	}
 
+	// Apply access filtering (same as HTTP handlers).
+	if claims != nil {
+		resp.Decisions, err = authz.FilterDecisions(ctx, s.db, claims, resp.Decisions)
+		if err != nil {
+			return errorResult(fmt.Sprintf("authorization check failed: %v", err)), nil
+		}
+		resp.Conflicts, err = authz.FilterConflicts(ctx, s.db, claims, resp.Conflicts)
+		if err != nil {
+			return errorResult(fmt.Sprintf("authorization check failed: %v", err)), nil
+		}
+		resp.HasPrecedent = len(resp.Decisions) > 0
+	}
+
 	resultData, _ := json.MarshalIndent(resp, "", "  ")
 	return &mcplib.CallToolResult{
 		Content: []mcplib.Content{
@@ -240,6 +255,7 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 
 func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	orgID := ctxutil.OrgIDFromContext(ctx)
+	claims := ctxutil.ClaimsFromContext(ctx)
 
 	agentID := request.GetString("agent_id", "")
 	decisionType := request.GetString("decision_type", "")
@@ -249,6 +265,21 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 
 	if agentID == "" || decisionType == "" || outcome == "" {
 		return errorResult("agent_id, decision_type, and outcome are required"), nil
+	}
+
+	// Validate agent_id format (same as HTTP handler).
+	if err := model.ValidateAgentID(agentID); err != nil {
+		return errorResult(fmt.Sprintf("invalid agent_id: %v", err)), nil
+	}
+
+	// Non-admin callers can only trace for their own agent_id.
+	if claims != nil && !model.RoleAtLeast(claims.Role, model.RoleAdmin) && agentID != claims.AgentID {
+		return errorResult("agents can only record decisions for their own agent_id"), nil
+	}
+
+	// Verify the agent exists within the org.
+	if _, err := s.db.GetAgentByAgentID(ctx, orgID, agentID); err != nil {
+		return errorResult(fmt.Sprintf("agent %q not found in this organization", agentID)), nil
 	}
 
 	var reasoningPtr *string
@@ -284,6 +315,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 
 func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	orgID := ctxutil.OrgIDFromContext(ctx)
+	claims := ctxutil.ClaimsFromContext(ctx)
 	filters := model.QueryFilters{}
 
 	if agentID := request.GetString("agent_id", ""); agentID != "" {
@@ -301,7 +333,7 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 
 	limit := request.GetInt("limit", 10)
 
-	decs, total, err := s.decisionSvc.Query(ctx, orgID, model.QueryRequest{
+	decs, _, err := s.decisionSvc.Query(ctx, orgID, model.QueryRequest{
 		Filters:  filters,
 		Include:  []string{"alternatives"},
 		OrderBy:  "valid_from",
@@ -312,9 +344,17 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 		return errorResult(fmt.Sprintf("query failed: %v", err)), nil
 	}
 
+	// Apply access filtering.
+	if claims != nil {
+		decs, err = authz.FilterDecisions(ctx, s.db, claims, decs)
+		if err != nil {
+			return errorResult(fmt.Sprintf("authorization check failed: %v", err)), nil
+		}
+	}
+
 	resultData, _ := json.MarshalIndent(map[string]any{
 		"decisions": decs,
-		"total":     total,
+		"total":     len(decs),
 	}, "", "  ")
 
 	return &mcplib.CallToolResult{
@@ -326,6 +366,7 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 
 func (s *Server) handleSearch(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	orgID := ctxutil.OrgIDFromContext(ctx)
+	claims := ctxutil.ClaimsFromContext(ctx)
 
 	query := request.GetString("query", "")
 	if query == "" {
@@ -343,6 +384,14 @@ func (s *Server) handleSearch(ctx context.Context, request mcplib.CallToolReques
 		return errorResult(fmt.Sprintf("search failed: %v", err)), nil
 	}
 
+	// Apply access filtering.
+	if claims != nil {
+		results, err = authz.FilterSearchResults(ctx, s.db, claims, results)
+		if err != nil {
+			return errorResult(fmt.Sprintf("authorization check failed: %v", err)), nil
+		}
+	}
+
 	resultData, _ := json.MarshalIndent(map[string]any{
 		"results": results,
 		"total":   len(results),
@@ -357,6 +406,7 @@ func (s *Server) handleSearch(ctx context.Context, request mcplib.CallToolReques
 
 func (s *Server) handleRecent(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	orgID := ctxutil.OrgIDFromContext(ctx)
+	claims := ctxutil.ClaimsFromContext(ctx)
 	limit := request.GetInt("limit", 10)
 
 	filters := model.QueryFilters{}
@@ -367,14 +417,22 @@ func (s *Server) handleRecent(ctx context.Context, request mcplib.CallToolReques
 		filters.DecisionType = &dt
 	}
 
-	decs, total, err := s.decisionSvc.Recent(ctx, orgID, filters, limit)
+	decs, _, err := s.decisionSvc.Recent(ctx, orgID, filters, limit)
 	if err != nil {
 		return errorResult(fmt.Sprintf("query failed: %v", err)), nil
 	}
 
+	// Apply access filtering.
+	if claims != nil {
+		decs, err = authz.FilterDecisions(ctx, s.db, claims, decs)
+		if err != nil {
+			return errorResult(fmt.Sprintf("authorization check failed: %v", err)), nil
+		}
+	}
+
 	resultData, _ := json.MarshalIndent(map[string]any{
 		"decisions": decs,
-		"total":     total,
+		"total":     len(decs),
 	}, "", "  ")
 
 	return &mcplib.CallToolResult{

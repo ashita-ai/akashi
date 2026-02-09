@@ -40,12 +40,12 @@ func (db *DB) CreateRun(ctx context.Context, req model.CreateRunRequest) (model.
 	return run, nil
 }
 
-// GetRun retrieves a run by ID.
-func (db *DB) GetRun(ctx context.Context, id uuid.UUID) (model.AgentRun, error) {
+// GetRun retrieves a run by ID, scoped to the given org.
+func (db *DB) GetRun(ctx context.Context, orgID, id uuid.UUID) (model.AgentRun, error) {
 	var run model.AgentRun
 	err := db.pool.QueryRow(ctx,
 		`SELECT id, agent_id, org_id, trace_id, parent_run_id, status, started_at, completed_at, metadata, created_at
-		 FROM agent_runs WHERE id = $1`, id,
+		 FROM agent_runs WHERE id = $1 AND org_id = $2`, id, orgID,
 	).Scan(
 		&run.ID, &run.AgentID, &run.OrgID, &run.TraceID, &run.ParentRunID,
 		&run.Status, &run.StartedAt, &run.CompletedAt, &run.Metadata, &run.CreatedAt,
@@ -59,16 +59,16 @@ func (db *DB) GetRun(ctx context.Context, id uuid.UUID) (model.AgentRun, error) 
 	return run, nil
 }
 
-// CompleteRun marks a run as completed or failed.
-func (db *DB) CompleteRun(ctx context.Context, id uuid.UUID, status model.RunStatus, metadata map[string]any) error {
+// CompleteRun marks a run as completed or failed, scoped to the given org.
+func (db *DB) CompleteRun(ctx context.Context, orgID, id uuid.UUID, status model.RunStatus, metadata map[string]any) error {
 	now := time.Now().UTC()
 	if metadata == nil {
 		metadata = map[string]any{}
 	}
 	tag, err := db.pool.Exec(ctx,
 		`UPDATE agent_runs SET status = $1, completed_at = $2, metadata = metadata || $3
-		 WHERE id = $4 AND status = 'running'`,
-		string(status), now, metadata, id,
+		 WHERE id = $4 AND org_id = $5 AND status = 'running'`,
+		string(status), now, metadata, id, orgID,
 	)
 	if err != nil {
 		return fmt.Errorf("storage: complete run: %w", err)

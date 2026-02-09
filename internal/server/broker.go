@@ -1,9 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -135,7 +137,18 @@ func extractOrgID(payload string) uuid.UUID {
 }
 
 // formatSSE formats a notification as a Server-Sent Events message.
+// Per the SSE spec, each line in a multi-line data field must be
+// prefixed with "data: " to avoid desynchronizing the client parser.
 func formatSSE(eventType, data string) []byte {
-	// SSE format: "event: <type>\ndata: <payload>\n\n"
-	return []byte("event: " + eventType + "\ndata: " + data + "\n\n")
+	var buf bytes.Buffer
+	buf.WriteString("event: ")
+	buf.WriteString(eventType)
+	buf.WriteByte('\n')
+	for _, line := range strings.Split(data, "\n") {
+		buf.WriteString("data: ")
+		buf.WriteString(line)
+		buf.WriteByte('\n')
+	}
+	buf.WriteByte('\n')
+	return buf.Bytes()
 }

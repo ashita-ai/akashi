@@ -2,9 +2,9 @@ package ratelimit
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/ashita-ai/akashi/internal/model"
@@ -85,18 +85,15 @@ func writeRateLimitError(w http.ResponseWriter, requestID string) {
 }
 
 // IPKeyFunc extracts the client IP from the request for rate limiting.
+// Uses RemoteAddr only. X-Forwarded-For is not trusted because the server
+// may not be behind a reverse proxy that sanitizes the header, and any
+// client can set an arbitrary value to bypass rate limiting.
+// If deployed behind a trusted proxy, configure the proxy to set RemoteAddr
+// (e.g., nginx realip module, Cloudflare Authenticated Origin Pulls).
 func IPKeyFunc(r *http.Request) string {
-	// Prefer X-Forwarded-For if behind a reverse proxy.
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if idx := strings.IndexByte(xff, ','); idx != -1 {
-			return strings.TrimSpace(xff[:idx])
-		}
-		return strings.TrimSpace(xff)
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr // Fallback if format is unexpected.
 	}
-	// Fall back to RemoteAddr (strip port).
-	addr := r.RemoteAddr
-	if idx := strings.LastIndex(addr, ":"); idx != -1 {
-		return addr[:idx]
-	}
-	return addr
+	return host
 }

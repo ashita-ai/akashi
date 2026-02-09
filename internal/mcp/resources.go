@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/ashita-ai/akashi/internal/authz"
 	"github.com/ashita-ai/akashi/internal/ctxutil"
 	"github.com/ashita-ai/akashi/internal/model"
 )
@@ -48,8 +50,8 @@ func (s *Server) registerResources() {
 
 func (s *Server) handleSessionCurrent(ctx context.Context, request mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
 	orgID := ctxutil.OrgIDFromContext(ctx)
+	claims := ctxutil.ClaimsFromContext(ctx)
 
-	// Return recent decisions across all agents (limited).
 	decisions, _, err := s.db.QueryDecisions(ctx, orgID, model.QueryRequest{
 		OrderBy:  "valid_from",
 		OrderDir: "desc",
@@ -57,6 +59,14 @@ func (s *Server) handleSessionCurrent(ctx context.Context, request mcplib.ReadRe
 	})
 	if err != nil {
 		return nil, fmt.Errorf("mcp: session current: %w", err)
+	}
+
+	// Apply access filtering.
+	if claims != nil {
+		decisions, err = authz.FilterDecisions(ctx, s.db, claims, decisions)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: session current: access filter: %w", err)
+		}
 	}
 
 	data, err := json.MarshalIndent(decisions, "", "  ")
@@ -75,6 +85,7 @@ func (s *Server) handleSessionCurrent(ctx context.Context, request mcplib.ReadRe
 
 func (s *Server) handleDecisionsRecent(ctx context.Context, request mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
 	orgID := ctxutil.OrgIDFromContext(ctx)
+	claims := ctxutil.ClaimsFromContext(ctx)
 
 	decisions, _, err := s.db.QueryDecisions(ctx, orgID, model.QueryRequest{
 		OrderBy:  "valid_from",
@@ -84,6 +95,14 @@ func (s *Server) handleDecisionsRecent(ctx context.Context, request mcplib.ReadR
 	})
 	if err != nil {
 		return nil, fmt.Errorf("mcp: recent decisions: %w", err)
+	}
+
+	// Apply access filtering.
+	if claims != nil {
+		decisions, err = authz.FilterDecisions(ctx, s.db, claims, decisions)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: recent decisions: access filter: %w", err)
+		}
 	}
 
 	data, err := json.MarshalIndent(decisions, "", "  ")
@@ -102,18 +121,28 @@ func (s *Server) handleDecisionsRecent(ctx context.Context, request mcplib.ReadR
 
 func (s *Server) handleAgentHistory(ctx context.Context, request mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
 	orgID := ctxutil.OrgIDFromContext(ctx)
+	claims := ctxutil.ClaimsFromContext(ctx)
 
-	// Extract agent_id from the URI template parameter.
+	// Extract agent_id from URI: akashi://agent/{id}/history
 	uri := request.Params.URI
-	// Parse agent_id from akashi://agent/{id}/history
-	var agentID string
-	_, err := fmt.Sscanf(uri, "akashi://agent/%s/history", &agentID)
-	if err != nil || agentID == "" {
-		return nil, fmt.Errorf("mcp: invalid agent history URI: %s", uri)
+	agentID, err := parseAgentHistoryURI(uri)
+	if err != nil {
+		return nil, err
 	}
-	// Remove trailing "/history" if Sscanf grabbed it.
-	if len(agentID) > 8 && agentID[len(agentID)-8:] == "/history" {
-		agentID = agentID[:len(agentID)-8]
+
+	if err := model.ValidateAgentID(agentID); err != nil {
+		return nil, fmt.Errorf("mcp: invalid agent_id in URI: %w", err)
+	}
+
+	// Check access before querying.
+	if claims != nil {
+		ok, err := authz.CanAccessAgent(ctx, s.db, claims, agentID)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: agent history: access check: %w", err)
+		}
+		if !ok {
+			return nil, fmt.Errorf("mcp: no access to agent %q", agentID)
+		}
 	}
 
 	decisions, _, err := s.db.GetDecisionsByAgent(ctx, orgID, agentID, 20, 0, nil, nil)
@@ -136,4 +165,24 @@ func (s *Server) handleAgentHistory(ctx context.Context, request mcplib.ReadReso
 			Text:     string(data),
 		},
 	}, nil
+}
+
+// parseAgentHistoryURI extracts the agent_id from "akashi://agent/{id}/history".
+// Uses string splitting instead of fmt.Sscanf to correctly handle agent IDs
+// that contain characters Sscanf would misparse.
+func parseAgentHistoryURI(uri string) (string, error) {
+	// Expected: akashi://agent/{id}/history
+	const prefix = "akashi://agent/"
+	const suffix = "/history"
+
+	if !strings.HasPrefix(uri, prefix) || !strings.HasSuffix(uri, suffix) {
+		return "", fmt.Errorf("mcp: invalid agent history URI: %s", uri)
+	}
+
+	agentID := uri[len(prefix) : len(uri)-len(suffix)]
+	if agentID == "" {
+		return "", fmt.Errorf("mcp: empty agent_id in URI: %s", uri)
+	}
+
+	return agentID, nil
 }

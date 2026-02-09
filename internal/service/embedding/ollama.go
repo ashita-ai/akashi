@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/pgvector/pgvector-go"
@@ -92,20 +93,54 @@ func (p *OllamaProvider) Embed(ctx context.Context, text string) (pgvector.Vecto
 	return pgvector.NewVector(result.Embedding), nil
 }
 
+// ollamaMaxConcurrency is the maximum number of parallel requests to Ollama.
+// Kept low to avoid overwhelming a single local GPU.
+const ollamaMaxConcurrency = 4
+
 // EmbedBatch generates embeddings for multiple texts.
-// Ollama doesn't have a native batch API, so we call sequentially.
+// Ollama doesn't have a native batch API, so we call concurrently with
+// a bounded worker pool to reduce wall-clock time.
 func (p *OllamaProvider) EmbedBatch(ctx context.Context, texts []string) ([]pgvector.Vector, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
 
-	vecs := make([]pgvector.Vector, len(texts))
-	for i, text := range texts {
-		vec, err := p.Embed(ctx, text)
+	// Single text — no concurrency overhead.
+	if len(texts) == 1 {
+		vec, err := p.Embed(ctx, texts[0])
 		if err != nil {
-			return nil, fmt.Errorf("ollama: batch item %d: %w", i, err)
+			return nil, err
 		}
-		vecs[i] = vec
+		return []pgvector.Vector{vec}, nil
+	}
+
+	vecs := make([]pgvector.Vector, len(texts))
+	errs := make([]error, len(texts))
+	sem := make(chan struct{}, ollamaMaxConcurrency)
+
+	var wg sync.WaitGroup
+	for i, text := range texts {
+		wg.Add(1)
+		go func(idx int, t string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			vec, err := p.Embed(ctx, t)
+			if err != nil {
+				errs[idx] = fmt.Errorf("ollama: batch item %d: %w", idx, err)
+				return
+			}
+			vecs[idx] = vec
+		}(i, text)
+	}
+	wg.Wait()
+
+	// Return the first error encountered.
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
 	}
 	return vecs, nil
 }

@@ -147,6 +147,89 @@ func (db *DB) GetOrganizationByStripeCustomer(ctx context.Context, customerID st
 	return org, nil
 }
 
+// SignupParams holds the inputs for a transactional signup.
+type SignupParams struct {
+	Org                model.Organization
+	Agent              model.Agent
+	VerificationToken  string
+	VerificationExpiry time.Time
+}
+
+// SignupResult holds the outputs from a transactional signup.
+type SignupResult struct {
+	Org   model.Organization
+	Agent model.Agent
+}
+
+// CreateSignupTx creates an organization, its owner agent, and a verification
+// token in a single transaction. If any step fails, the entire operation is
+// rolled back, preventing orphaned rows.
+func (db *DB) CreateSignupTx(ctx context.Context, params SignupParams) (SignupResult, error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return SignupResult{}, fmt.Errorf("storage: begin signup tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	org := params.Org
+	if org.ID == uuid.Nil {
+		org.ID = uuid.New()
+	}
+	now := time.Now().UTC()
+	if org.CreatedAt.IsZero() {
+		org.CreatedAt = now
+	}
+	org.UpdatedAt = now
+
+	_, err = tx.Exec(ctx,
+		`INSERT INTO organizations (id, name, slug, plan, stripe_customer_id, stripe_subscription_id,
+		 decision_limit, agent_limit, email, email_verified, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		org.ID, org.Name, org.Slug, org.Plan, org.StripeCustomerID, org.StripeSubscriptionID,
+		org.DecisionLimit, org.AgentLimit, org.Email, org.EmailVerified, org.CreatedAt, org.UpdatedAt,
+	)
+	if err != nil {
+		return SignupResult{}, fmt.Errorf("storage: create organization: %w", err)
+	}
+
+	agent := params.Agent
+	if agent.ID == uuid.Nil {
+		agent.ID = uuid.New()
+	}
+	if agent.CreatedAt.IsZero() {
+		agent.CreatedAt = now
+	}
+	agent.UpdatedAt = now
+	agent.OrgID = org.ID
+	if agent.Metadata == nil {
+		agent.Metadata = map[string]any{}
+	}
+
+	_, err = tx.Exec(ctx,
+		`INSERT INTO agents (id, agent_id, org_id, name, role, api_key_hash, metadata, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		agent.ID, agent.AgentID, agent.OrgID, agent.Name, string(agent.Role),
+		agent.APIKeyHash, agent.Metadata, agent.CreatedAt, agent.UpdatedAt,
+	)
+	if err != nil {
+		return SignupResult{}, fmt.Errorf("storage: create owner agent: %w", err)
+	}
+
+	_, err = tx.Exec(ctx,
+		`INSERT INTO email_verifications (org_id, token, expires_at) VALUES ($1, $2, $3)`,
+		org.ID, params.VerificationToken, params.VerificationExpiry,
+	)
+	if err != nil {
+		return SignupResult{}, fmt.Errorf("storage: create email verification: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return SignupResult{}, fmt.Errorf("storage: commit signup tx: %w", err)
+	}
+
+	return SignupResult{Org: org, Agent: agent}, nil
+}
+
 // CreateEmailVerification inserts a verification token for an org.
 func (db *DB) CreateEmailVerification(ctx context.Context, orgID uuid.UUID, token string, expiresAt time.Time) error {
 	_, err := db.pool.Exec(ctx,

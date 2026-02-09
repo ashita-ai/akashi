@@ -167,7 +167,14 @@ func TestFormatSSE(t *testing.T) {
 	got := string(formatSSE("akashi_decisions", `{"id":"123"}`))
 	want := "event: akashi_decisions\ndata: {\"id\":\"123\"}\n\n"
 	if got != want {
-		t.Errorf("formatSSE: got %q, want %q", got, want)
+		t.Errorf("formatSSE single-line: got %q, want %q", got, want)
+	}
+
+	// Multi-line payloads: each line must be prefixed with "data: " per the SSE spec.
+	gotMulti := string(formatSSE("test", "line1\nline2\nline3"))
+	wantMulti := "event: test\ndata: line1\ndata: line2\ndata: line3\n\n"
+	if gotMulti != wantMulti {
+		t.Errorf("formatSSE multi-line: got %q, want %q", gotMulti, wantMulti)
 	}
 }
 

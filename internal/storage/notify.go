@@ -28,6 +28,11 @@ func (db *DB) Listen(ctx context.Context, channel string) error {
 	}
 
 	// Track for automatic re-subscription after reconnect.
+	for _, ch := range db.listenChannels {
+		if ch == channel {
+			return nil // Already listening.
+		}
+	}
 	db.listenChannels = append(db.listenChannels, channel)
 	return nil
 }

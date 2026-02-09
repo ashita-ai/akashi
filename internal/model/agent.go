@@ -62,10 +62,11 @@ const (
 )
 
 // RoleRank returns the numeric rank of a role (higher = more privileges).
+// Only relative ordering matters — RoleAtLeast uses >= comparison.
 func RoleRank(r AgentRole) int {
 	switch r {
 	case RolePlatformAdmin:
-		return 100
+		return 5
 	case RoleOrgOwner:
 		return 4
 	case RoleAdmin:

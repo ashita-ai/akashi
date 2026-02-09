@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"time"
@@ -79,7 +80,7 @@ func Load() (Config, error) {
 		WriteTimeout:            envDuration("AKASHI_WRITE_TIMEOUT", 30*time.Second),
 		DatabaseURL:             envStr("DATABASE_URL", "postgres://akashi:akashi@localhost:6432/akashi?sslmode=verify-full"),
 		NotifyURL:               envStr("NOTIFY_URL", "postgres://akashi:akashi@localhost:5432/akashi?sslmode=verify-full"),
-		RedisURL:                envStr("REDIS_URL", "redis://localhost:6379/0"),
+		RedisURL:                envStr("REDIS_URL", ""),
 		JWTPrivateKeyPath:       envStr("AKASHI_JWT_PRIVATE_KEY", ""),
 		JWTPublicKeyPath:        envStr("AKASHI_JWT_PUBLIC_KEY", ""),
 		JWTExpiration:           envDuration("AKASHI_JWT_EXPIRATION", 24*time.Hour),
@@ -153,27 +154,39 @@ func envStr(key, defaultVal string) string {
 
 func envInt(key string, defaultVal int) int {
 	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			slog.Warn("config: ignoring invalid integer value, using default",
+				"key", key, "value", v, "default", defaultVal, "error", err)
+			return defaultVal
 		}
+		return n
 	}
 	return defaultVal
 }
 
 func envBool(key string, defaultVal bool) bool {
 	if v := os.Getenv(key); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			return b
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			slog.Warn("config: ignoring invalid boolean value, using default",
+				"key", key, "value", v, "default", defaultVal, "error", err)
+			return defaultVal
 		}
+		return b
 	}
 	return defaultVal
 }
 
 func envDuration(key string, defaultVal time.Duration) time.Duration {
 	if v := os.Getenv(key); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			slog.Warn("config: ignoring invalid duration value, using default",
+				"key", key, "value", v, "default", defaultVal, "error", err)
+			return defaultVal
 		}
+		return d
 	}
 	return defaultVal
 }
