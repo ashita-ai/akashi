@@ -57,7 +57,7 @@ SDKs serve three roles:
 
 1. **Foundation for framework integrations.** Every framework integration imports the SDK. The SDK owns the HTTP client, auth flow, error handling, and typed models. Framework integrations are thin wrappers over SDK methods.
 2. **Escape hatch for custom integrations.** Not every agent system uses LangChain or CrewAI. Custom orchestrators, batch pipelines, and CI/CD hooks need a typed client with proper error handling, not raw `curl` calls.
-3. **Test surface.** SDK tests (Go: 5, Python: 12, TypeScript: 23) validate the HTTP API contract from the consumer's perspective. They catch breaking changes before framework integrations or MCP users encounter them.
+3. **Test surface.** SDK tests (Go: 26, Python: 33, TypeScript: 56) validate the HTTP API contract from the consumer's perspective. They catch breaking changes before framework integrations or MCP users encounter them.
 
 ### Why the MCP server is co-hosted, not a separate process
 

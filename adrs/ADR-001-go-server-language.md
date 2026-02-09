@@ -1,7 +1,8 @@
-# ADR-001: Go for server, Python/TypeScript for SDKs
+# ADR-001: Go for server, Go/Python/TypeScript for SDKs
 
 **Status:** Accepted
 **Date:** 2026-02-03
+**Revised:** 2026-02-08
 
 ## Context
 
@@ -10,8 +11,11 @@ Akashi is infrastructure: event ingestion, concurrent connections, query engine,
 ## Decision
 
 - **Go** for the server (this repo)
-- **Python SDK** (separate repo: `akashi-python`)
-- **TypeScript SDK** (separate repo: `akashi-typescript`)
+- **Go SDK** (`sdk/go/akashi/`)
+- **Python SDK** (`sdk/python/src/akashi/`)
+- **TypeScript SDK** (`sdk/typescript/src/`)
+
+All three SDKs live in the same repo under `sdk/`. API and SDK changes are committed together in a single release cycle.
 
 ## Rationale
 
@@ -37,8 +41,9 @@ Akashi is infrastructure: event ingestion, concurrent connections, query engine,
 - Go's performance is sufficient — we're I/O bound (Postgres), not CPU bound.
 - Smaller hiring pool for Rust.
 
-**Why Python and TypeScript for SDKs:**
+**Why Go, Python, and TypeScript for SDKs:**
 
+- Go: provides a native client for Go-based agent systems and serves as the reference SDK implementation.
 - Python: dominant in ML/AI agent frameworks (LangChain, CrewAI, AutoGen, OpenAI SDK).
 - TypeScript: web agents, Node.js backends, Vercel AI SDK ecosystem.
 - SDKs are thin HTTP clients — language choice should match the consumer ecosystem.
@@ -46,6 +51,5 @@ Akashi is infrastructure: event ingestion, concurrent connections, query engine,
 ## Consequences
 
 - Server development uses Go tooling (go test, golangci-lint, goimports).
-- SDKs are maintained in separate repos with their own release cycles.
-- API contract is HTTP/JSON, defined once, consumed by both SDKs.
-- Need to maintain API compatibility across three codebases.
+- SDKs live in `sdk/` within the same repo. API and SDK changes are committed together, eliminating version drift.
+- API contract is HTTP/JSON, validated by all three SDK test suites in a single CI pipeline.

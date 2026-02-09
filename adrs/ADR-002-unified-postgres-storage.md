@@ -16,15 +16,15 @@ Since the original ADR (2026-02-03), multi-tenancy and the OSS/cloud split intro
 
 **pgvector ships out of the box.** The OSS, single-tenant deployment uses pgvector with HNSW indexes for all vector search. This covers the common case: a team running 1-50 agents with up to hundreds of thousands of decisions. No additional infrastructure required.
 
-**Qdrant is an optional, derived acceleration layer.** For multi-tenant cloud deployments where filtered vector search across millions of rows exceeds pgvector's practical limits, Qdrant provides a shared collection with org_id payload filtering. Qdrant is eventually consistent with Postgres via an outbox worker pattern. If Qdrant is unavailable, queries fall back to pgvector transparently.
+**Qdrant is an optional, derived acceleration layer.** For multi-tenant cloud deployments where filtered vector search across millions of rows exceeds pgvector's practical limits, Qdrant provides a shared collection with org_id payload filtering. Qdrant is eventually consistent with Postgres via an outbox worker pattern. If Qdrant is unavailable, queries fall back to text search (ILIKE keyword matching) transparently.
 
 The storage architecture:
 
 | Concern | Technology | Deployment |
 |---------|-----------|------------|
 | Source of truth | PostgreSQL 17 | Always |
-| Vector search (default) | pgvector HNSW | Always (ships with Postgres) |
-| Vector search (scale) | Qdrant | Optional (cloud, multi-tenant) |
+| Embeddings (source of truth) | pgvector column | Always (stored for Qdrant sync, not indexed for search) |
+| Vector search | Qdrant | Optional (cloud, multi-tenant) |
 | Time-series events | TimescaleDB | Always |
 | Flexible metadata | JSONB + GIN indexes | Always |
 | Graph traversal | Recursive CTEs | Always |
@@ -54,20 +54,19 @@ The storage architecture:
 
 ### Searcher interface
 
-All vector search goes through the `Searcher` interface in `internal/storage/`. Implementations:
+All vector search goes through the `Searcher` interface in `internal/search/search.go`. The implementation:
 
-- `PgvectorSearcher` — queries Postgres directly. Ships in OSS. Always available.
-- `QdrantSearcher` — queries Qdrant with pgvector fallback. Cloud-only.
+- `QdrantIndex` (`internal/search/qdrant.go`) — queries Qdrant Cloud. Configured at startup when Qdrant credentials are present.
 
-The active implementation is selected at startup based on configuration. Application code never knows which backend is serving results.
+When Qdrant is not configured or is unhealthy, the service layer (`internal/service/decisions/service.go:Search()`) falls back to text search via `SearchDecisionsByText` in `internal/storage/decisions.go`, which uses ILIKE keyword matching. Application code calls the service layer and is unaware of which path serves results.
 
 ### Qdrant sync (cloud only)
 
-A search outbox table in Postgres captures decision mutations. A background worker reads the outbox and syncs to Qdrant. Delivery semantics are at-least-once with idempotent upserts. On Qdrant downtime, the outbox accumulates and the worker drains it on reconnect. Meanwhile, pgvector handles all queries transparently.
+A search outbox table in Postgres captures decision mutations. A background worker reads the outbox and syncs to Qdrant. Delivery semantics are at-least-once with idempotent upserts. On Qdrant downtime, the outbox accumulates and the worker drains it on reconnect. Meanwhile, text search handles all queries transparently.
 
 ### Fallback behavior
 
-If Qdrant returns an error or is unreachable, the QdrantSearcher falls back to pgvector for that request. This is transparent to the caller. Fallback events are logged as warnings for monitoring.
+If Qdrant returns an error, is unreachable, or is not configured, the service layer falls back to text search (ILIKE keyword matching in `internal/storage/decisions.go:SearchDecisionsByText`). This is transparent to the caller. Fallback events are logged as warnings for monitoring.
 
 ## Migration triggers for further specialization
 
@@ -80,12 +79,12 @@ The vector search trigger from the original ADR has been exercised — Qdrant wa
 
 ## Consequences
 
-- All storage code lives in `internal/storage/`.
+- Core storage in `internal/storage/`, search abstraction in `internal/search/`.
 - Migrations are forward-only SQL files in `migrations/`.
 - The `Searcher` interface abstracts vector search backend selection.
 - Docker Compose for OSS bundles Postgres 17 + pgvector + TimescaleDB. No Qdrant.
 - Cloud deployment adds Qdrant as a separate service with outbox-based sync.
-- pgvector indexes must be maintained even when Qdrant is active (fallback path).
+- The pgvector HNSW index on `decisions.embedding` was dropped in migration 017 (Qdrant replaces it). The `evidence.embedding` HNSW index remains. The `decisions.embedding` column is retained as source of truth for Qdrant outbox sync.
 
 ## References
 

@@ -274,15 +274,23 @@ func (h *Handlers) HandleSignup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusCreated, result)
 }
 
-// HandleVerifyEmail handles GET /auth/verify.
+// HandleVerifyEmail handles POST /auth/verify.
+// Accepts {"token": "..."} in the request body (not as a query parameter)
+// to avoid token exposure in server/proxy logs and browser history.
 func (h *Handlers) HandleVerifyEmail(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
-	if token == "" {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+		return
+	}
+	if req.Token == "" {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "token is required")
 		return
 	}
 
-	if err := h.signupSvc.Verify(r.Context(), token); err != nil {
+	if err := h.signupSvc.Verify(r.Context(), req.Token); err != nil {
 		h.logger.Error("email verification failed", "error", err)
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid or expired verification token")
 		return

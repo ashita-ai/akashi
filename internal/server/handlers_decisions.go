@@ -21,8 +21,8 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.AgentID == "" {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "agent_id is required")
+	if err := model.ValidateAgentID(req.AgentID); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
 		return
 	}
 	if req.Decision.DecisionType == "" {
@@ -140,8 +140,8 @@ func (h *Handlers) HandleAgentHistory(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
 	agentID := r.PathValue("agent_id")
-	if agentID == "" {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "agent_id is required")
+	if err := model.ValidateAgentID(agentID); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
 		return
 	}
 

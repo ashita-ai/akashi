@@ -41,28 +41,40 @@ func canAccessAgent(ctx context.Context, db *storage.DB, claims *auth.Claims, ta
 	return db.HasAccess(ctx, claims.OrgID, callerUUID, string(model.ResourceAgentTraces), targetAgentID, string(model.PermissionRead))
 }
 
+// loadGrantedSet returns the set of agent_ids the caller can access.
+// For admin+ this returns nil (meaning all access). For others it loads
+// granted agent_ids in a single query.
+func loadGrantedSet(ctx context.Context, db *storage.DB, claims *auth.Claims) (map[string]bool, error) {
+	if model.RoleAtLeast(claims.Role, model.RoleAdmin) {
+		return nil, nil // nil means unrestricted
+	}
+
+	callerUUID, err := uuid.Parse(claims.Subject)
+	if err != nil {
+		slog.Warn("authz: malformed JWT subject, denying all access",
+			"error", err,
+			"agent_id", claims.AgentID,
+			"role", claims.Role)
+		return map[string]bool{}, nil // empty set = no access
+	}
+
+	return db.ListGrantedAgentIDs(ctx, claims.OrgID, callerUUID, claims.AgentID)
+}
+
 // filterDecisionsByAccess removes decisions the caller is not authorized to see.
 // Admin+ sees everything; agent sees own + granted; reader sees only granted.
 func filterDecisionsByAccess(ctx context.Context, db *storage.DB, claims *auth.Claims, decisions []model.Decision) ([]model.Decision, error) {
-	if model.RoleAtLeast(claims.Role, model.RoleAdmin) {
-		return decisions, nil
+	granted, err := loadGrantedSet(ctx, db, claims)
+	if err != nil {
+		return nil, err
+	}
+	if granted == nil {
+		return decisions, nil // admin: unrestricted
 	}
 
-	// Build a cache of agent access checks to avoid repeated DB queries.
-	accessCache := make(map[string]bool)
-
-	var allowed []model.Decision
+	allowed := make([]model.Decision, 0, len(decisions))
 	for _, d := range decisions {
-		ok, cached := accessCache[d.AgentID]
-		if !cached {
-			var err error
-			ok, err = canAccessAgent(ctx, db, claims, d.AgentID)
-			if err != nil {
-				return nil, err
-			}
-			accessCache[d.AgentID] = ok
-		}
-		if ok {
+		if granted[d.AgentID] {
 			allowed = append(allowed, d)
 		}
 	}
@@ -71,24 +83,17 @@ func filterDecisionsByAccess(ctx context.Context, db *storage.DB, claims *auth.C
 
 // filterSearchResultsByAccess is like filterDecisionsByAccess but for search results.
 func filterSearchResultsByAccess(ctx context.Context, db *storage.DB, claims *auth.Claims, results []model.SearchResult) ([]model.SearchResult, error) {
-	if model.RoleAtLeast(claims.Role, model.RoleAdmin) {
+	granted, err := loadGrantedSet(ctx, db, claims)
+	if err != nil {
+		return nil, err
+	}
+	if granted == nil {
 		return results, nil
 	}
 
-	accessCache := make(map[string]bool)
-
-	var allowed []model.SearchResult
+	allowed := make([]model.SearchResult, 0, len(results))
 	for _, r := range results {
-		ok, cached := accessCache[r.Decision.AgentID]
-		if !cached {
-			var err error
-			ok, err = canAccessAgent(ctx, db, claims, r.Decision.AgentID)
-			if err != nil {
-				return nil, err
-			}
-			accessCache[r.Decision.AgentID] = ok
-		}
-		if ok {
+		if granted[r.Decision.AgentID] {
 			allowed = append(allowed, r)
 		}
 	}
@@ -98,36 +103,17 @@ func filterSearchResultsByAccess(ctx context.Context, db *storage.DB, claims *au
 // filterConflictsByAccess removes conflicts the caller cannot see.
 // A caller must have access to BOTH agents involved in a conflict to see it.
 func filterConflictsByAccess(ctx context.Context, db *storage.DB, claims *auth.Claims, conflicts []model.DecisionConflict) ([]model.DecisionConflict, error) {
-	if model.RoleAtLeast(claims.Role, model.RoleAdmin) {
+	granted, err := loadGrantedSet(ctx, db, claims)
+	if err != nil {
+		return nil, err
+	}
+	if granted == nil {
 		return conflicts, nil
 	}
 
-	accessCache := make(map[string]bool)
-	checkAccess := func(agentID string) (bool, error) {
-		ok, cached := accessCache[agentID]
-		if cached {
-			return ok, nil
-		}
-		var err error
-		ok, err = canAccessAgent(ctx, db, claims, agentID)
-		if err != nil {
-			return false, err
-		}
-		accessCache[agentID] = ok
-		return ok, nil
-	}
-
-	var allowed []model.DecisionConflict
+	allowed := make([]model.DecisionConflict, 0, len(conflicts))
 	for _, c := range conflicts {
-		okA, err := checkAccess(c.AgentA)
-		if err != nil {
-			return nil, err
-		}
-		okB, err := checkAccess(c.AgentB)
-		if err != nil {
-			return nil, err
-		}
-		if okA && okB {
+		if granted[c.AgentA] && granted[c.AgentB] {
 			allowed = append(allowed, c)
 		}
 	}

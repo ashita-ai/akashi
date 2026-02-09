@@ -41,8 +41,10 @@ scratchpad/
 # Node
 node_modules/
 
-# Docker volumes
+# Docker volumes and runtime env files
 docker/data/
+docker/.env.*
+docker/*.test.yml
 
 # Generated index
 PROJECT_INDEX.md

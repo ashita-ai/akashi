@@ -81,7 +81,7 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 	if err != nil {
 		s.logger.Warn("trace: decision embedding failed, continuing without", "error", err)
 	} else if err := s.validateEmbeddingDims(emb); err != nil {
-		s.logger.Warn("trace: decision embedding dimension mismatch, discarding", "error", err)
+		return TraceResult{}, fmt.Errorf("trace: %w (check AKASHI_EMBEDDING_DIMENSIONS config)", err)
 	} else {
 		decisionEmb = &emb
 	}
@@ -109,7 +109,7 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 			if err != nil {
 				s.logger.Warn("trace: evidence embedding failed", "error", err)
 			} else if err := s.validateEmbeddingDims(vec); err != nil {
-				s.logger.Warn("trace: evidence embedding dimension mismatch, discarding", "error", err)
+				return TraceResult{}, fmt.Errorf("trace: evidence %w (check AKASHI_EMBEDDING_DIMENSIONS config)", err)
 			} else {
 				evEmb = &vec
 			}

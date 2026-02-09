@@ -109,7 +109,7 @@ func New(cfg ServerConfig) *Server {
 
 	// Signup endpoints (no auth required, rate limited by IP).
 	mux.Handle("POST /auth/signup", authRL(http.HandlerFunc(h.HandleSignup)))
-	mux.Handle("GET /auth/verify", authRL(http.HandlerFunc(h.HandleVerifyEmail)))
+	mux.Handle("POST /auth/verify", authRL(http.HandlerFunc(h.HandleVerifyEmail)))
 
 	// Agent management (admin-only, no rate limit — admin is exempt).
 	adminOnly := requireRole(model.RoleAdmin)

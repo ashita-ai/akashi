@@ -124,5 +124,14 @@ func (m *JWTManager) ValidateToken(tokenStr string) (*Claims, error) {
 	if !ok || !token.Valid {
 		return nil, fmt.Errorf("auth: invalid token claims")
 	}
+
+	if claims.Issuer != "akashi" {
+		return nil, fmt.Errorf("auth: invalid issuer: %s", claims.Issuer)
+	}
+
+	if _, err := uuid.Parse(claims.Subject); err != nil {
+		return nil, fmt.Errorf("auth: invalid subject (expected UUID): %w", err)
+	}
+
 	return claims, nil
 }

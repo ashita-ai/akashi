@@ -1,8 +1,17 @@
+# Local development: fully self-contained stack with no cloud dependencies.
+#
+# Usage:
+#   docker compose -f docker/docker-compose.local.yml up -d
+#   curl http://localhost:8080/health
+#
+# Postgres (pgvector + TimescaleDB) runs locally. No Qdrant — semantic search
+# falls back to pgvector. Embedding provider defaults to noop (no external
+# service required). Override AKASHI_EMBEDDING_PROVIDER=auto if Ollama is
+# running on the host.
+
 services:
   postgres:
-    build:
-      context: .
-      dockerfile: Dockerfile.postgres
+    image: timescale/timescaledb-ha:pg17
     container_name: akashi-postgres
     ports:
       - "127.0.0.1:5432:5432"
@@ -30,15 +39,21 @@ services:
     image: edoburu/pgbouncer:latest
     container_name: akashi-pgbouncer
     ports:
-      - "127.0.0.1:6432:6432"
+      - "127.0.0.1:6432:5432"
     environment:
       DATABASE_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi
       POOL_MODE: transaction
+      AUTH_TYPE: scram-sha-256
       MAX_CLIENT_CONN: 1000
       DEFAULT_POOL_SIZE: 50
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
@@ -47,7 +62,12 @@ services:
       - "127.0.0.1:6379:6379"
     volumes:
       - redisdata:/data
-    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:-akashi}
+    command: >
+      redis-server
+        --appendonly yes
+        --maxmemory 128mb
+        --maxmemory-policy allkeys-lru
+        --requirepass ${REDIS_PASSWORD:-akashi}
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-akashi}", "ping"]
       interval: 5s
@@ -62,18 +82,32 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     environment:
-      DATABASE_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@pgbouncer:6432/akashi?sslmode=verify-full
-      NOTIFY_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi?sslmode=verify-full
+      # Database: queries go through PgBouncer; NOTIFY goes direct to Postgres.
+      # sslmode=disable — no TLS between local containers.
+      DATABASE_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@pgbouncer:5432/akashi?sslmode=disable
+      NOTIFY_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi?sslmode=disable
       REDIS_URL: redis://default:${REDIS_PASSWORD:-akashi}@redis:6379/0
+
+      # Core settings.
       AKASHI_PORT: "8080"
       AKASHI_ADMIN_API_KEY: ${AKASHI_ADMIN_API_KEY:-changeme}
-      AKASHI_LOG_LEVEL: ${AKASHI_LOG_LEVEL:-info}
+      AKASHI_LOG_LEVEL: ${AKASHI_LOG_LEVEL:-debug}
+
+      # No Qdrant — empty QDRANT_URL forces pgvector fallback.
+      QDRANT_URL: ""
+      QDRANT_API_KEY: ""
+
+      # Noop embedding by default (no external service needed for local dev).
+      # Set to "auto" if Ollama is running on the host.
+      AKASHI_EMBEDDING_PROVIDER: ${AKASHI_EMBEDDING_PROVIDER:-noop}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       AKASHI_EMBEDDING_MODEL: ${AKASHI_EMBEDDING_MODEL:-text-embedding-3-small}
       AKASHI_EMBEDDING_DIMENSIONS: ${AKASHI_EMBEDDING_DIMENSIONS:-1024}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-mxbai-embed-large}
     depends_on:
       pgbouncer:
-        condition: service_started
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:

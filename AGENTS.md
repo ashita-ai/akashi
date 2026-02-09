@@ -73,9 +73,13 @@ go vet ./...
 # Build
 go build -o bin/akashi ./cmd/akashi
 
-# Docker (Postgres 17 + pgvector + TimescaleDB)
-docker compose -f docker/docker-compose.yml up -d
-docker compose -f docker/docker-compose.yml down
+# Docker — local stack (Postgres 17 + pgvector + TimescaleDB, no cloud deps)
+docker compose -f docker/docker-compose.local.yml up -d
+docker compose -f docker/docker-compose.local.yml down
+
+# Docker — cloud stack (TimescaleDB Cloud + Qdrant Cloud)
+docker compose -f docker/docker-compose.cloud.yml --env-file docker/.env.cloud up -d
+docker compose -f docker/docker-compose.cloud.yml --env-file docker/.env.cloud down
 
 # Run full quality suite
 make all
@@ -105,7 +109,7 @@ akashi/
 ├── specs/              # Design specifications — *how* features should be built
 ├── docs/               # Supplementary docs — strategy, standards, deep dives
 ├── scratchpad/         # Temporary notes, drafts, research (gitignored)
-└── docker/             # Postgres Dockerfile + docker-compose
+└── docker/             # Postgres Dockerfile + compose variants (local, cloud)
 ```
 
 Use `internal/` for all application code. Nothing in `pkg/` until SDK clients need shared types.

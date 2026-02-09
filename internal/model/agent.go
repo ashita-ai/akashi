@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -81,4 +82,24 @@ func RoleRank(r AgentRole) int {
 // RoleAtLeast returns true if role r has at least the privileges of minRole.
 func RoleAtLeast(r, minRole AgentRole) bool {
 	return RoleRank(r) >= RoleRank(minRole)
+}
+
+// ValidateAgentID checks that an agent ID conforms to the allowed format.
+// Agent IDs must be 1-255 ASCII characters: alphanumeric, dots, hyphens,
+// underscores, and @ signs.
+func ValidateAgentID(id string) error {
+	if len(id) == 0 {
+		return fmt.Errorf("agent_id is required")
+	}
+	if len(id) > 255 {
+		return fmt.Errorf("agent_id must be at most 255 characters")
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') &&
+			c != '.' && c != '-' && c != '_' && c != '@' {
+			return fmt.Errorf("agent_id contains invalid character at position %d: %q", i, c)
+		}
+	}
+	return nil
 }
