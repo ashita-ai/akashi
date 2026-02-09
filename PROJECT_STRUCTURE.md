@@ -7,6 +7,7 @@ Generated: $(date -u +%Y-%m-%d)
 ./cmd/akashi/main.go
 ./internal/auth/auth.go
 ./internal/auth/hash.go
+./internal/authz/authz.go
 ./internal/billing/billing.go
 ./internal/billing/metering.go
 ./internal/billing/webhooks.go
@@ -72,12 +73,13 @@ Generated: $(date -u +%Y-%m-%d)
 | Package | Tests |
 |---------|-------|
 |  | 5 |
-| github.com/ashita-ai/akashi/internal/billing | 2 |
+| github.com/ashita-ai/akashi/internal/billing | 1 |
 | github.com/ashita-ai/akashi/internal/signup | 15 |
-| github.com/ashita-ai/akashi/internal/service/embedding | 2 |
+| github.com/ashita-ai/akashi/internal/service/embedding | 29 |
 | github.com/ashita-ai/akashi/internal/ratelimit | 6 |
 | github.com/ashita-ai/akashi/internal/model | 7 |
 | github.com/ashita-ai/akashi/internal/service/quality | 3 |
 | github.com/ashita-ai/akashi/internal/server | 2 |
 | github.com/ashita-ai/akashi/internal/search | 40 |
 | github.com/ashita-ai/akashi/internal/auth | 8 |
+| github.com/ashita-ai/akashi/internal/mcp | 2 |
