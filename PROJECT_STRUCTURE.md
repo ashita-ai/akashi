@@ -71,12 +71,13 @@ Generated: $(date -u +%Y-%m-%d)
 
 | Package | Tests |
 |---------|-------|
-|  | 2 |
-| github.com/ashita-ai/akashi/internal/billing | 7 |
+|  | 5 |
+| github.com/ashita-ai/akashi/internal/billing | 2 |
 | github.com/ashita-ai/akashi/internal/signup | 15 |
 | github.com/ashita-ai/akashi/internal/service/embedding | 2 |
 | github.com/ashita-ai/akashi/internal/ratelimit | 6 |
+| github.com/ashita-ai/akashi/internal/model | 7 |
 | github.com/ashita-ai/akashi/internal/service/quality | 3 |
 | github.com/ashita-ai/akashi/internal/server | 2 |
-| github.com/ashita-ai/akashi/internal/search | 39 |
+| github.com/ashita-ai/akashi/internal/search | 40 |
 | github.com/ashita-ai/akashi/internal/auth | 8 |
