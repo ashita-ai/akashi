@@ -73,6 +73,79 @@ class DecisionConflict(BaseModel):
     detected_at: datetime
 
 
+class AgentRun(BaseModel):
+    """An agent run — top-level execution context corresponding to an OTEL trace."""
+
+    id: UUID
+    agent_id: str
+    org_id: UUID
+    trace_id: str | None = None
+    parent_run_id: UUID | None = None
+    status: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    started_at: datetime
+    completed_at: datetime | None = None
+    created_at: datetime
+
+
+class AgentEvent(BaseModel):
+    """An append-only event in the event log."""
+
+    id: UUID
+    run_id: UUID
+    event_type: str
+    sequence_num: int
+    occurred_at: datetime
+    agent_id: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class Agent(BaseModel):
+    """An agent identity with role assignment."""
+
+    id: UUID
+    agent_id: str
+    org_id: UUID
+    name: str
+    role: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class Grant(BaseModel):
+    """A fine-grained access grant between agents."""
+
+    id: UUID
+    grantor_id: UUID
+    grantee_id: UUID
+    resource_type: str
+    resource_id: str | None = None
+    permission: str
+    expires_at: datetime | None = None
+    granted_at: datetime
+
+
+class HealthResponse(BaseModel):
+    """Response from GET /health."""
+
+    status: str
+    version: str
+    postgres: str
+    qdrant: str = ""
+    uptime_seconds: int
+
+
+class UsageResponse(BaseModel):
+    """Response from GET /v1/usage."""
+
+    org_id: UUID
+    period: str
+    decision_count: int
+    decision_limit: int
+    agent_limit: int
+
+
 # --- Request types ---
 
 
@@ -122,6 +195,56 @@ class CheckRequest(BaseModel):
     query: str | None = None
     agent_id: str | None = None
     limit: int = Field(default=5, ge=1, le=100)
+
+
+class CreateRunRequest(BaseModel):
+    """Request body for creating an agent run."""
+
+    trace_id: str | None = None
+    parent_run_id: UUID | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EventInput(BaseModel):
+    """A single event to append to a run."""
+
+    event_type: str
+    occurred_at: datetime | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class CompleteRunRequest(BaseModel):
+    """Request body for completing an agent run."""
+
+    status: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CreateAgentRequest(BaseModel):
+    """Request body for creating an agent (admin-only)."""
+
+    agent_id: str
+    name: str
+    role: str
+    api_key: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CreateGrantRequest(BaseModel):
+    """Request body for creating an access grant."""
+
+    grantee_agent_id: str
+    resource_type: str
+    resource_id: str | None = None
+    permission: str
+    expires_at: str | None = None
+
+
+class TemporalQueryRequest(BaseModel):
+    """Request body for a temporal (point-in-time) query."""
+
+    as_of: datetime
+    filters: QueryFilters = Field(default_factory=QueryFilters)
 
 
 # --- Response types ---

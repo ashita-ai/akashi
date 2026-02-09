@@ -38,3 +38,19 @@ func IsForbidden(err error) bool {
 	}
 	return false
 }
+
+// IsRateLimited returns true if the error is a 429 (Too Many Requests).
+func IsRateLimited(err error) bool {
+	if e, ok := err.(*Error); ok {
+		return e.StatusCode == 429
+	}
+	return false
+}
+
+// IsConflict returns true if the error is a 409.
+func IsConflict(err error) bool {
+	if e, ok := err.(*Error); ok {
+		return e.StatusCode == 409
+	}
+	return false
+}

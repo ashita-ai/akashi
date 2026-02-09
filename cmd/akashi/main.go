@@ -165,7 +165,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 
 	// Create SSE broker (requires LISTEN/NOTIFY connection).
 	var broker *server.Broker
-	if db.NotifyConn() != nil {
+	if db.HasNotifyConn() {
 		broker = server.NewBroker(db, logger)
 		go broker.Start(ctx)
 	} else {

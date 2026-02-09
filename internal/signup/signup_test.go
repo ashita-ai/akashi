@@ -39,11 +39,16 @@ func TestValidatePassword(t *testing.T) {
 	}{
 		{"StrongP@ss123", true},
 		{"Abcdefghij1x", true},
-		{"short1A", false},       // too short
-		{"alllowercase1", false}, // no uppercase
-		{"ALLUPPERCASE1", false}, // no lowercase
-		{"AllLettersNoDigit", false},
+		{"MyUn1quePassw0rd", true},   // good password
+		{"short1A", false},           // too short
+		{"alllowercase1", false},     // no uppercase
+		{"ALLUPPERCASE1", false},     // no lowercase
+		{"AllLettersNoDigit", false}, // no digits
 		{"", false},
+		{"Password1234", false}, // common password (case-insensitive)
+		{"Aaa111111111", false}, // excessive repetition ('1' > 50%)
+		{"Abc123456789", false}, // common password
+		{"QWERTYUIOP12", false}, // common password (case-insensitive)
 	}
 	for _, tt := range tests {
 		err := validatePassword(tt.password)

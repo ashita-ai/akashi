@@ -49,6 +49,14 @@ export class ConflictError extends AkashiError {
   }
 }
 
+/** Raised when the client is rate-limited (429). */
+export class RateLimitError extends AkashiError {
+  constructor(message = "Rate limit exceeded") {
+    super(message, 429);
+    this.name = "RateLimitError";
+  }
+}
+
 /** Raised on unexpected server-side errors (5xx). */
 export class ServerError extends AkashiError {
   constructor(statusCode: number, message = "Server error") {
