@@ -81,5 +81,5 @@ Generated: $(date -u +%Y-%m-%d)
 | github.com/ashita-ai/akashi/internal/service/quality | 3 |
 | github.com/ashita-ai/akashi/internal/server | 2 |
 | github.com/ashita-ai/akashi/internal/search | 40 |
-| github.com/ashita-ai/akashi/internal/auth | 8 |
+| github.com/ashita-ai/akashi/internal/auth | 10 |
 | github.com/ashita-ai/akashi/internal/mcp | 2 |
