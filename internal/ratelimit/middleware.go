@@ -2,9 +2,9 @@ package ratelimit
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/ashita-ai/akashi/internal/model"
@@ -91,9 +91,9 @@ func writeRateLimitError(w http.ResponseWriter, requestID string) {
 // If deployed behind a trusted proxy, configure the proxy to set RemoteAddr
 // (e.g., nginx realip module, Cloudflare Authenticated Origin Pulls).
 func IPKeyFunc(r *http.Request) string {
-	addr := r.RemoteAddr
-	if idx := strings.LastIndex(addr, ":"); idx != -1 {
-		return addr[:idx]
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr // Fallback if format is unexpected.
 	}
-	return addr
+	return host
 }
