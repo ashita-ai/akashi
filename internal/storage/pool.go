@@ -83,11 +83,13 @@ func (db *DB) Pool() *pgxpool.Pool {
 	return db.pool
 }
 
-// NotifyConn returns the dedicated LISTEN/NOTIFY connection, or nil if not configured.
-func (db *DB) NotifyConn() *pgx.Conn {
+// HasNotifyConn reports whether a dedicated LISTEN/NOTIFY connection is configured.
+// Use this instead of accessing the raw connection — the connection is managed
+// internally by WaitForNotification and its reconnect logic.
+func (db *DB) HasNotifyConn() bool {
 	db.notifyMu.Lock()
 	defer db.notifyMu.Unlock()
-	return db.notifyConn
+	return db.notifyConn != nil
 }
 
 // Ping checks connectivity to the database.

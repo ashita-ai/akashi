@@ -80,6 +80,8 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 	emb, err := s.embedder.Embed(ctx, embText)
 	if err != nil {
 		s.logger.Warn("trace: decision embedding failed, continuing without", "error", err)
+	} else if err := s.validateEmbeddingDims(emb); err != nil {
+		s.logger.Warn("trace: decision embedding dimension mismatch, discarding", "error", err)
 	} else {
 		decisionEmb = &emb
 	}
@@ -106,6 +108,8 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 			vec, err := s.embedder.Embed(ctx, e.Content)
 			if err != nil {
 				s.logger.Warn("trace: evidence embedding failed", "error", err)
+			} else if err := s.validateEmbeddingDims(vec); err != nil {
+				s.logger.Warn("trace: evidence embedding dimension mismatch, discarding", "error", err)
 			} else {
 				evEmb = &vec
 			}
@@ -267,6 +271,16 @@ func (s *Service) hydrateAndReScore(ctx context.Context, orgID uuid.UUID, result
 	}
 
 	return search.ReScore(results, decisions, limit), nil
+}
+
+// validateEmbeddingDims checks that the vector has the expected number of dimensions.
+func (s *Service) validateEmbeddingDims(v pgvector.Vector) error {
+	expected := s.embedder.Dimensions()
+	got := len(v.Slice())
+	if got != expected {
+		return fmt.Errorf("embedding dimension mismatch: got %d, want %d", got, expected)
+	}
+	return nil
 }
 
 // isZeroVector returns true if all elements of the vector are zero (noop provider).

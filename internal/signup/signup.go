@@ -4,10 +4,12 @@ package signup
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/smtp"
 	"regexp"
 	"strings"
@@ -170,12 +172,64 @@ func (s *Service) sendVerificationEmail(to, verifyURL string) error {
 	)
 
 	addr := fmt.Sprintf("%s:%d", s.smtpHost, s.smtpPort)
-	var smtpAuth smtp.Auth
-	if s.smtpUser != "" {
-		smtpAuth = smtp.PlainAuth("", s.smtpUser, s.smtpPass, s.smtpHost)
+	return sendMailTLS(addr, s.smtpHost, s.smtpUser, s.smtpPass, s.smtpFrom, []string{to}, []byte(msg))
+}
+
+// sendMailTLS connects to an SMTP server and enforces STARTTLS before authenticating.
+// This prevents credentials from being sent in plaintext over the wire.
+func sendMailTLS(addr, host, user, pass, from string, recipients []string, msg []byte) error {
+	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("smtp: dial %s: %w", addr, err)
 	}
 
-	return smtp.SendMail(addr, smtpAuth, s.smtpFrom, []string{to}, []byte(msg))
+	client, err := smtp.NewClient(conn, host)
+	if err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("smtp: new client: %w", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if err := client.Hello("localhost"); err != nil {
+		return fmt.Errorf("smtp: hello: %w", err)
+	}
+
+	// Require STARTTLS — refuse to send credentials on an unencrypted connection.
+	if ok, _ := client.Extension("STARTTLS"); !ok {
+		return fmt.Errorf("smtp: server %s does not support STARTTLS, refusing to send credentials", host)
+	}
+	tlsCfg := &tls.Config{ServerName: host} //nolint:gosec // ServerName is set, this is safe
+	if err := client.StartTLS(tlsCfg); err != nil {
+		return fmt.Errorf("smtp: starttls: %w", err)
+	}
+
+	if user != "" {
+		if err := client.Auth(smtp.PlainAuth("", user, pass, host)); err != nil {
+			return fmt.Errorf("smtp: auth: %w", err)
+		}
+	}
+
+	if err := client.Mail(from); err != nil {
+		return fmt.Errorf("smtp: mail from: %w", err)
+	}
+	for _, rcpt := range recipients {
+		if err := client.Rcpt(rcpt); err != nil {
+			return fmt.Errorf("smtp: rcpt to %s: %w", rcpt, err)
+		}
+	}
+
+	w, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("smtp: data: %w", err)
+	}
+	if _, err := w.Write(msg); err != nil {
+		return fmt.Errorf("smtp: write: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("smtp: close data: %w", err)
+	}
+
+	return client.Quit()
 }
 
 // --- Validation helpers ---
@@ -207,7 +261,61 @@ func validatePassword(password string) error {
 	if !hasUpper || !hasLower || !hasDigit {
 		return ErrWeakPassword
 	}
+
+	// Reject common passwords that pass character-class checks.
+	lower := strings.ToLower(password)
+	for _, common := range commonPasswords {
+		if lower == common {
+			return ErrWeakPassword
+		}
+	}
+
+	// Reject passwords with excessive repetition (e.g., "Aaa111111111").
+	if hasExcessiveRepetition(password) {
+		return ErrWeakPassword
+	}
+
 	return nil
+}
+
+// hasExcessiveRepetition returns true if any single character makes up more
+// than half the password (e.g., "Aaa111111111" is 75% '1').
+func hasExcessiveRepetition(password string) bool {
+	if len(password) == 0 {
+		return false
+	}
+	counts := make(map[rune]int)
+	total := 0
+	for _, c := range password {
+		counts[c]++
+		total++
+	}
+	threshold := total / 2
+	for _, count := range counts {
+		if count > threshold {
+			return true
+		}
+	}
+	return false
+}
+
+// commonPasswords is a short list of passwords that pass 12-char + mixed-case +
+// digit checks but are still trivially guessable. Checked case-insensitively.
+var commonPasswords = []string{
+	"password1234",
+	"password123!",
+	"abcdefghij12",
+	"qwertyuiop12",
+	"admin1234567",
+	"changeme1234",
+	"welcome12345",
+	"letmein12345",
+	"iloveyou1234",
+	"trustno1trust",
+	"abc123456789",
+	"password12345",
+	"administrator1",
+	"qwerty1234567",
 }
 
 var multiHyphen = regexp.MustCompile(`-{2,}`)
