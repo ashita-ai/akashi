@@ -53,13 +53,13 @@ clean:
 	$(GO) clean -testcache
 
 docker-up:
-	docker compose -f docker/docker-compose.yml up -d
+	docker compose -f docker/docker-compose.local.yml up -d
 
 docker-down:
-	docker compose -f docker/docker-compose.yml down
+	docker compose -f docker/docker-compose.local.yml down
 
 docker-rebuild:
-	docker compose -f docker/docker-compose.yml up -d --build
+	docker compose -f docker/docker-compose.local.yml up -d --build
 
 # Atlas migration targets.
 # Requires: atlas CLI (https://atlasgo.io/getting-started#installation)

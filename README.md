@@ -154,10 +154,10 @@ Authorization: Bearer <jwt>
 # Copy and edit the environment file
 cp .env.example .env
 
-# Start the full stack (Postgres + PgBouncer + Redis + Akashi)
-docker compose -f docker/docker-compose.yml up -d
+# Start the full local stack (Postgres + PgBouncer + Redis + Akashi)
+docker compose -f docker/docker-compose.local.yml up -d
 
-# Or start just the database for local development
+# Or use the Makefile shorthand
 make docker-up
 make build                    # API-only binary
 AKASHI_ADMIN_API_KEY=dev-admin-key ./bin/akashi
@@ -252,9 +252,12 @@ ui/                        Audit dashboard (React 19, TypeScript, Vite, Tailwind
     components/            Layout, ErrorBoundary, shadcn/ui primitives
     lib/                   API client, auth context, SSE hook, utilities
 docker/
-  docker-compose.yml       Full stack: Postgres, PgBouncer, Redis, Akashi
+  docker-compose.local.yml Self-contained local stack (Postgres, PgBouncer, Redis, Akashi)
+  docker-compose.cloud.yml Cloud stack (PgBouncer → TimescaleDB Cloud, Qdrant Cloud)
   Dockerfile.postgres      Postgres 17 + pgvector 0.8.0 + TimescaleDB 2.17.2
   init.sql                 Extension initialization
+  env.local.example        Example env for local mode
+  env.cloud.example        Example env for cloud mode
 sdk/
   go/                      Go SDK (separate go.mod, no server dependencies)
   python/                  Python SDK (pydantic v2 + httpx)
@@ -296,16 +299,32 @@ When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, Akashi exports:
 
 All request logs are structured JSON via `slog` and include `request_id`, `trace_id` (when OTEL is active), and `agent_id` (when authenticated).
 
-## Docker Compose stack
+## Docker Compose
 
-The `docker/docker-compose.yml` runs four services:
+Two compose variants are provided:
 
-| Service | Image | Port | Purpose |
-|---------|-------|------|---------|
-| postgres | Custom (pgvector + TimescaleDB) | 5432 | Primary datastore |
-| pgbouncer | edoburu/pgbouncer | 6432 | Connection pooling (transaction mode, 50 pool / 1000 max) |
-| redis | redis:7-alpine | 6379 | Rate limiting (sliding window, per-agent quotas) |
-| akashi | Multi-stage Go build | 8080 | Application server |
+**Local** (`docker/docker-compose.local.yml`) — fully self-contained, no cloud dependencies. Runs Postgres (pgvector + TimescaleDB), PgBouncer, Redis, and Akashi. Semantic search uses pgvector. Embeddings default to noop.
+
+```bash
+docker compose -f docker/docker-compose.local.yml up -d
+```
+
+**Cloud** (`docker/docker-compose.cloud.yml`) — connects to TimescaleDB Cloud and Qdrant Cloud. Runs only PgBouncer (local pooling to cloud DB), Redis, and Akashi.
+
+```bash
+cp docker/env.cloud.example docker/.env.cloud
+# Edit docker/.env.cloud with your cloud credentials
+docker compose -f docker/docker-compose.cloud.yml --env-file docker/.env.cloud up -d
+```
+
+Both variants share the same service architecture:
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| postgres | 5432 | Primary datastore (local only) |
+| pgbouncer | 6432 | Connection pooling (transaction mode, 50 pool / 1000 max) |
+| redis | 6379 | Rate limiting (sliding window, per-agent quotas) |
+| akashi | 8080 | Application server |
 
 Akashi connects to PgBouncer for all queries and maintains a separate direct connection to Postgres for `LISTEN/NOTIFY` (which PgBouncer does not support in transaction pooling mode).
 
