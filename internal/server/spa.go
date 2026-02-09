@@ -34,6 +34,15 @@ func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		urlPath = "/"
 	}
 
+	// API paths that reach the SPA handler were not matched by any route.
+	// Return a proper JSON 404 instead of serving index.html.
+	if isAPIPath(urlPath) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"endpoint not found"}}`))
+		return
+	}
+
 	// Try to open the file. If it exists, serve it with appropriate cache headers.
 	if urlPath != "/" {
 		f, err := h.fs.Open(urlPath)
@@ -50,6 +59,15 @@ func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	h.static.ServeHTTP(w, r)
+}
+
+// isAPIPath returns true if the path belongs to a known API prefix.
+// Requests to these paths that reach the SPA handler are genuine 404s.
+func isAPIPath(p string) bool {
+	return strings.HasPrefix(p, "/v1/") ||
+		strings.HasPrefix(p, "/auth/") ||
+		strings.HasPrefix(p, "/billing/") ||
+		p == "/mcp"
 }
 
 // setCacheHeaders sets cache-control headers based on the file path.
