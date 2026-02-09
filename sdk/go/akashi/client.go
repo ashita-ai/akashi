@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Config holds the settings needed to construct a Client.
@@ -146,6 +148,182 @@ func (c *Client) Recent(ctx context.Context, opts *RecentOptions) ([]Decision, e
 }
 
 // ---------------------------------------------------------------------------
+// Run lifecycle
+// ---------------------------------------------------------------------------
+
+// CreateRun starts a new agent run.
+func (c *Client) CreateRun(ctx context.Context, req CreateRunRequest) (*AgentRun, error) {
+	var resp AgentRun
+	if err := c.post(ctx, "/v1/runs", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// AppendEvents appends events to an existing run.
+func (c *Client) AppendEvents(ctx context.Context, runID uuid.UUID, events []EventInput) (*AppendEventsResponse, error) {
+	body := map[string]any{"events": events}
+	var resp AppendEventsResponse
+	if err := c.post(ctx, "/v1/runs/"+runID.String()+"/events", body, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// CompleteRun marks a run as completed or failed.
+func (c *Client) CompleteRun(ctx context.Context, runID uuid.UUID, status string, metadata map[string]any) (*AgentRun, error) {
+	body := CompleteRunRequest{Status: status, Metadata: metadata}
+	var resp AgentRun
+	if err := c.post(ctx, "/v1/runs/"+runID.String()+"/complete", body, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// GetRun retrieves a run with its events and decisions.
+func (c *Client) GetRun(ctx context.Context, runID uuid.UUID) (*GetRunResponse, error) {
+	var resp GetRunResponse
+	if err := c.get(ctx, "/v1/runs/"+runID.String(), &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ---------------------------------------------------------------------------
+// Agents (admin-only)
+// ---------------------------------------------------------------------------
+
+// CreateAgent creates a new agent identity. Requires admin role.
+func (c *Client) CreateAgent(ctx context.Context, req CreateAgentRequest) (*Agent, error) {
+	var resp Agent
+	if err := c.post(ctx, "/v1/agents", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ListAgents lists all agents in the caller's organization. Requires admin role.
+func (c *Client) ListAgents(ctx context.Context) ([]Agent, error) {
+	var resp []Agent
+	if err := c.get(ctx, "/v1/agents", &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// DeleteAgent deletes an agent and all associated data. Requires admin role.
+func (c *Client) DeleteAgent(ctx context.Context, agentID string) (*DeleteAgentResponse, error) {
+	var resp DeleteAgentResponse
+	if err := c.doDelete(ctx, "/v1/agents/"+agentID, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ---------------------------------------------------------------------------
+// Temporal queries
+// ---------------------------------------------------------------------------
+
+// TemporalQuery retrieves decisions as they existed at a specific point in time.
+func (c *Client) TemporalQuery(ctx context.Context, asOf time.Time, filters *QueryFilters) (*TemporalQueryResponse, error) {
+	body := TemporalQueryRequest{AsOf: asOf}
+	if filters != nil {
+		body.Filters = *filters
+	}
+	var resp TemporalQueryResponse
+	if err := c.post(ctx, "/v1/query/temporal", body, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// AgentHistory retrieves the decision history for a specific agent.
+func (c *Client) AgentHistory(ctx context.Context, agentID string, limit int) (*AgentHistoryResponse, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	params := url.Values{}
+	params.Set("limit", strconv.Itoa(limit))
+
+	path := "/v1/agents/" + agentID + "/history?" + params.Encode()
+	var resp AgentHistoryResponse
+	if err := c.get(ctx, path, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ---------------------------------------------------------------------------
+// Grants
+// ---------------------------------------------------------------------------
+
+// CreateGrant creates a fine-grained access grant between agents.
+func (c *Client) CreateGrant(ctx context.Context, req CreateGrantRequest) (*Grant, error) {
+	var resp Grant
+	if err := c.post(ctx, "/v1/grants", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// DeleteGrant revokes an access grant. Returns nil on success (204 No Content).
+func (c *Client) DeleteGrant(ctx context.Context, grantID uuid.UUID) error {
+	return c.doDelete(ctx, "/v1/grants/"+grantID.String(), nil)
+}
+
+// ---------------------------------------------------------------------------
+// Conflicts, usage, and health
+// ---------------------------------------------------------------------------
+
+// ListConflicts retrieves detected decision conflicts, optionally filtered.
+func (c *Client) ListConflicts(ctx context.Context, opts *ConflictOptions) (*ConflictsResponse, error) {
+	params := url.Values{}
+	if opts != nil {
+		if opts.DecisionType != "" {
+			params.Set("decision_type", opts.DecisionType)
+		}
+		if opts.AgentID != "" {
+			params.Set("agent_id", opts.AgentID)
+		}
+		if opts.Limit > 0 {
+			params.Set("limit", strconv.Itoa(opts.Limit))
+		}
+		if opts.Offset > 0 {
+			params.Set("offset", strconv.Itoa(opts.Offset))
+		}
+	}
+
+	path := "/v1/conflicts"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+	var resp ConflictsResponse
+	if err := c.get(ctx, path, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// GetUsage returns the current billing period's usage statistics.
+func (c *Client) GetUsage(ctx context.Context) (*UsageResponse, error) {
+	var resp UsageResponse
+	if err := c.get(ctx, "/v1/usage", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// Health checks the server's health status. This endpoint does not require
+// authentication and will work even if the client has invalid credentials.
+func (c *Client) Health(ctx context.Context) (*HealthResponse, error) {
+	var resp HealthResponse
+	if err := c.getNoAuth(ctx, "/health", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ---------------------------------------------------------------------------
 // Wire-format body builders
 // ---------------------------------------------------------------------------
 
@@ -262,6 +440,30 @@ func (c *Client) get(ctx context.Context, path string, dest any) error {
 	return c.doRequest(ctx, req, dest)
 }
 
+func (c *Client) doDelete(ctx context.Context, path string, dest any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+path, nil)
+	if err != nil {
+		return fmt.Errorf("akashi: create request: %w", err)
+	}
+
+	return c.doRequest(ctx, req, dest)
+}
+
+func (c *Client) getNoAuth(ctx context.Context, path string, dest any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return fmt.Errorf("akashi: create request: %w", err)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("akashi: %s %s: %w", req.Method, req.URL.Path, err)
+	}
+	defer resp.Body.Close()
+
+	return handleResponse(resp, dest)
+}
+
 func (c *Client) doRequest(ctx context.Context, req *http.Request, dest any) error {
 	token, err := c.tokenMgr.getToken(ctx)
 	if err != nil {
@@ -286,6 +488,11 @@ func handleResponse(resp *http.Response, dest any) error {
 
 	if resp.StatusCode >= 400 {
 		return parseErrorResponse(resp.StatusCode, bodyBytes)
+	}
+
+	// 204 No Content — nothing to decode.
+	if resp.StatusCode == http.StatusNoContent || dest == nil {
+		return nil
 	}
 
 	// Unwrap the server's { "data": ... } envelope.

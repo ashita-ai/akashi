@@ -8,6 +8,7 @@ export {
   NotFoundError,
   ValidationError,
   ConflictError,
+  RateLimitError,
   ServerError,
 } from "./errors.js";
 export type {
@@ -15,6 +16,12 @@ export type {
   Alternative,
   Evidence,
   DecisionConflict,
+  AgentRun,
+  AgentEvent,
+  Agent,
+  Grant,
+  HealthResponse,
+  UsageResponse,
   TraceRequest,
   TraceAlternative,
   TraceEvidence,
@@ -24,6 +31,11 @@ export type {
   QueryResponse,
   SearchResult,
   SearchResponse,
+  CreateRunRequest,
+  EventInput,
+  CompleteRunRequest,
+  CreateAgentRequest,
+  CreateGrantRequest,
   Traceable,
   AkashiConfig,
 } from "./types.js";

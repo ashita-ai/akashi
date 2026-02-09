@@ -58,6 +58,74 @@ export interface DecisionConflict {
   detected_at: string;
 }
 
+/** An agent run (a unit of work that can contain decisions and events). */
+export interface AgentRun {
+  id: string;
+  agent_id: string;
+  org_id: string;
+  trace_id?: string;
+  parent_run_id?: string;
+  status: string;
+  metadata: Record<string, unknown>;
+  started_at: string;
+  completed_at?: string;
+  created_at: string;
+}
+
+/** An event within an agent run. */
+export interface AgentEvent {
+  id: string;
+  run_id: string;
+  event_type: string;
+  sequence_num: number;
+  occurred_at: string;
+  agent_id: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+/** A registered agent. */
+export interface Agent {
+  id: string;
+  agent_id: string;
+  org_id: string;
+  name: string;
+  role: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+/** An access grant between agents. */
+export interface Grant {
+  id: string;
+  grantor_agent_id: string;
+  grantee_agent_id: string;
+  resource_type: string;
+  resource_id?: string;
+  permission: string;
+  expires_at?: string;
+  created_at: string;
+}
+
+/** Health check response (not envelope-wrapped). */
+export interface HealthResponse {
+  status: string;
+  version: string;
+  postgres: string;
+  qdrant?: string;
+  uptime_seconds: number;
+}
+
+/** Usage statistics for the current org. */
+export interface UsageResponse {
+  org_id: string;
+  period: string;
+  decision_count: number;
+  decision_limit: number;
+  agent_count: number;
+  agent_limit: number;
+}
+
 // --- Request types ---
 
 /** Request body for recording a decision. */
@@ -90,6 +158,44 @@ export interface QueryFilters {
   decision_type?: string;
   confidence_min?: number;
   outcome?: string;
+}
+
+/** Request body for creating a run. */
+export interface CreateRunRequest {
+  traceId?: string;
+  parentRunId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+/** An event to append to a run. */
+export interface EventInput {
+  eventType: string;
+  occurredAt?: string;
+  payload?: Record<string, unknown>;
+}
+
+/** Request body for completing a run. */
+export interface CompleteRunRequest {
+  status: string;
+  metadata?: Record<string, unknown>;
+}
+
+/** Request body for creating an agent (admin-only). */
+export interface CreateAgentRequest {
+  agentId: string;
+  name: string;
+  role: string;
+  apiKey: string;
+  metadata?: Record<string, unknown>;
+}
+
+/** Request body for creating an access grant. */
+export interface CreateGrantRequest {
+  granteeAgentId: string;
+  resourceType: string;
+  resourceId?: string;
+  permission: string;
+  expiresAt?: string;
 }
 
 // --- Response types ---

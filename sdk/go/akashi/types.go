@@ -156,3 +156,220 @@ type SearchResponse struct {
 	Results []SearchResult `json:"results"`
 	Total   int            `json:"total"`
 }
+
+// --- Run types ---
+
+// RunStatus represents the lifecycle state of an agent run.
+type RunStatus string
+
+const (
+	RunStatusRunning   RunStatus = "running"
+	RunStatusCompleted RunStatus = "completed"
+	RunStatusFailed    RunStatus = "failed"
+)
+
+// AgentRun is the top-level execution context for an agent.
+type AgentRun struct {
+	ID          uuid.UUID      `json:"id"`
+	AgentID     string         `json:"agent_id"`
+	OrgID       uuid.UUID      `json:"org_id"`
+	TraceID     *string        `json:"trace_id,omitempty"`
+	ParentRunID *uuid.UUID     `json:"parent_run_id,omitempty"`
+	Status      RunStatus      `json:"status"`
+	StartedAt   time.Time      `json:"started_at"`
+	CompletedAt *time.Time     `json:"completed_at,omitempty"`
+	Metadata    map[string]any `json:"metadata"`
+	CreatedAt   time.Time      `json:"created_at"`
+}
+
+// EventType represents the category of an agent event.
+type EventType string
+
+const (
+	EventAgentRunStarted        EventType = "AgentRunStarted"
+	EventAgentRunCompleted      EventType = "AgentRunCompleted"
+	EventAgentRunFailed         EventType = "AgentRunFailed"
+	EventDecisionStarted        EventType = "DecisionStarted"
+	EventAlternativeConsidered  EventType = "AlternativeConsidered"
+	EventEvidenceGathered       EventType = "EvidenceGathered"
+	EventReasoningStepCompleted EventType = "ReasoningStepCompleted"
+	EventDecisionMade           EventType = "DecisionMade"
+	EventDecisionRevised        EventType = "DecisionRevised"
+	EventToolCallStarted        EventType = "ToolCallStarted"
+	EventToolCallCompleted      EventType = "ToolCallCompleted"
+	EventAgentHandoff           EventType = "AgentHandoff"
+	EventConsensusRequested     EventType = "ConsensusRequested"
+	EventConflictDetected       EventType = "ConflictDetected"
+)
+
+// AgentEvent is an append-only event in the event log.
+type AgentEvent struct {
+	ID          uuid.UUID      `json:"id"`
+	RunID       uuid.UUID      `json:"run_id"`
+	EventType   EventType      `json:"event_type"`
+	SequenceNum int64          `json:"sequence_num"`
+	OccurredAt  time.Time      `json:"occurred_at"`
+	AgentID     string         `json:"agent_id"`
+	Payload     map[string]any `json:"payload"`
+	CreatedAt   time.Time      `json:"created_at"`
+}
+
+// --- Agent types ---
+
+// AgentRole represents the RBAC role assigned to an agent.
+type AgentRole string
+
+const (
+	RolePlatformAdmin AgentRole = "platform_admin"
+	RoleOrgOwner      AgentRole = "org_owner"
+	RoleAdmin         AgentRole = "admin"
+	RoleAgent         AgentRole = "agent"
+	RoleReader        AgentRole = "reader"
+)
+
+// Agent represents an agent identity with role assignment.
+type Agent struct {
+	ID        uuid.UUID      `json:"id"`
+	AgentID   string         `json:"agent_id"`
+	OrgID     uuid.UUID      `json:"org_id"`
+	Name      string         `json:"name"`
+	Role      AgentRole      `json:"role"`
+	Metadata  map[string]any `json:"metadata"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+}
+
+// --- Grant types ---
+
+// Grant represents a fine-grained access grant between agents.
+type Grant struct {
+	ID           uuid.UUID  `json:"id"`
+	OrgID        uuid.UUID  `json:"org_id"`
+	GrantorID    uuid.UUID  `json:"grantor_id"`
+	GranteeID    uuid.UUID  `json:"grantee_id"`
+	ResourceType string     `json:"resource_type"`
+	ResourceID   *string    `json:"resource_id,omitempty"`
+	Permission   string     `json:"permission"`
+	GrantedAt    time.Time  `json:"granted_at"`
+	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
+}
+
+// --- Health and usage ---
+
+// HealthResponse is the output of Client.Health.
+type HealthResponse struct {
+	Status        string `json:"status"`
+	Version       string `json:"version"`
+	Postgres      string `json:"postgres"`
+	Qdrant        string `json:"qdrant,omitempty"`
+	UptimeSeconds int64  `json:"uptime_seconds"`
+}
+
+// UsageResponse is the output of Client.GetUsage.
+type UsageResponse struct {
+	OrgID         uuid.UUID `json:"org_id"`
+	Plan          string    `json:"plan"`
+	Period        string    `json:"period"`
+	DecisionCount int       `json:"decision_count"`
+	DecisionLimit int       `json:"decision_limit"`
+	AgentLimit    int       `json:"agent_limit"`
+}
+
+// --- Request types for new endpoints ---
+
+// CreateRunRequest is the input for Client.CreateRun.
+type CreateRunRequest struct {
+	AgentID     string         `json:"agent_id"`
+	TraceID     *string        `json:"trace_id,omitempty"`
+	ParentRunID *uuid.UUID     `json:"parent_run_id,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+}
+
+// EventInput is a single event to append to a run.
+type EventInput struct {
+	EventType  EventType      `json:"event_type"`
+	OccurredAt *time.Time     `json:"occurred_at,omitempty"`
+	Payload    map[string]any `json:"payload"`
+}
+
+// CompleteRunRequest is the input for Client.CompleteRun.
+type CompleteRunRequest struct {
+	Status   string         `json:"status"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+// TemporalQueryRequest is the input for Client.TemporalQuery.
+type TemporalQueryRequest struct {
+	AsOf    time.Time    `json:"as_of"`
+	Filters QueryFilters `json:"filters"`
+}
+
+// CreateAgentRequest is the input for Client.CreateAgent.
+type CreateAgentRequest struct {
+	AgentID  string         `json:"agent_id"`
+	Name     string         `json:"name"`
+	Role     AgentRole      `json:"role"`
+	APIKey   string         `json:"api_key"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+// CreateGrantRequest is the input for Client.CreateGrant.
+type CreateGrantRequest struct {
+	GranteeAgentID string  `json:"grantee_agent_id"`
+	ResourceType   string  `json:"resource_type"`
+	ResourceID     *string `json:"resource_id,omitempty"`
+	Permission     string  `json:"permission"`
+	ExpiresAt      *string `json:"expires_at,omitempty"`
+}
+
+// --- Response types for new endpoints ---
+
+// AppendEventsResponse is the output of Client.AppendEvents.
+type AppendEventsResponse struct {
+	Accepted int         `json:"accepted"`
+	EventIDs []uuid.UUID `json:"event_ids"`
+}
+
+// GetRunResponse is the output of Client.GetRun.
+type GetRunResponse struct {
+	Run       AgentRun     `json:"run"`
+	Events    []AgentEvent `json:"events"`
+	Decisions []Decision   `json:"decisions"`
+}
+
+// TemporalQueryResponse is the output of Client.TemporalQuery.
+type TemporalQueryResponse struct {
+	AsOf      time.Time  `json:"as_of"`
+	Decisions []Decision `json:"decisions"`
+}
+
+// AgentHistoryResponse is the output of Client.AgentHistory.
+type AgentHistoryResponse struct {
+	AgentID   string     `json:"agent_id"`
+	Decisions []Decision `json:"decisions"`
+	Total     int        `json:"total"`
+	Limit     int        `json:"limit"`
+	Offset    int        `json:"offset"`
+}
+
+// DeleteAgentResponse is the output of Client.DeleteAgent.
+type DeleteAgentResponse struct {
+	AgentID string         `json:"agent_id"`
+	Deleted map[string]any `json:"deleted"`
+}
+
+// ConflictsResponse is the output of Client.ListConflicts.
+type ConflictsResponse struct {
+	Conflicts []DecisionConflict `json:"conflicts"`
+	Total     int                `json:"total"`
+	Limit     int                `json:"limit"`
+	Offset    int                `json:"offset"`
+}
+
+// ConflictOptions are optional filters for the ListConflicts method.
+type ConflictOptions struct {
+	DecisionType string
+	AgentID      string
+	Limit        int
+	Offset       int
+}

@@ -27,6 +27,10 @@ class ConflictError(AkashiError):
     """Raised on duplicate or conflicting resources (409)."""
 
 
+class RateLimitError(AkashiError):
+    """Raised when the server returns 429 Too Many Requests."""
+
+
 class ServerError(AkashiError):
     """Raised on unexpected server-side errors (5xx)."""
 
