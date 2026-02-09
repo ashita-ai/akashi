@@ -49,8 +49,18 @@ type Config struct {
 
 // New creates a billing service. If cfg.SecretKey is empty, the service
 // operates in disabled mode (no quota enforcement, billing endpoints 503).
-func New(db *storage.DB, cfg Config, logger *slog.Logger) *Service {
+// Returns an error if billing is enabled but required fields are missing.
+func New(db *storage.DB, cfg Config, logger *slog.Logger) (*Service, error) {
 	enabled := cfg.SecretKey != ""
+
+	if enabled {
+		if cfg.WebhookSecret == "" {
+			return nil, fmt.Errorf("billing: STRIPE_WEBHOOK_SECRET is required when billing is enabled")
+		}
+		if cfg.PriceIDPro == "" {
+			return nil, fmt.Errorf("billing: STRIPE_PRO_PRICE_ID is required when billing is enabled")
+		}
+	}
 
 	var client *stripe.Client
 	if enabled {
@@ -82,7 +92,7 @@ func New(db *storage.DB, cfg Config, logger *slog.Logger) *Service {
 		webhookSecret: cfg.WebhookSecret,
 		proPriceID:    cfg.PriceIDPro,
 		enabled:       enabled,
-	}
+	}, nil
 }
 
 // Enabled returns true if Stripe is configured.

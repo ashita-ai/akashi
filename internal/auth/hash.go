@@ -34,6 +34,13 @@ func HashAPIKey(apiKey string) (string, error) {
 	return encoded, nil
 }
 
+// DummyVerify performs an Argon2id hash with the same cost parameters as real
+// verification. Call this on auth failure paths where no real hash was checked,
+// so that response timing does not reveal whether an agent_id exists.
+func DummyVerify() {
+	argon2.IDKey([]byte("dummy"), make([]byte, saltLen), argonTime, argonMemory, argonThreads, argonKeyLen)
+}
+
 // VerifyAPIKey checks an API key against an Argon2id hash.
 func VerifyAPIKey(apiKey, encoded string) (bool, error) {
 	parts := strings.SplitN(encoded, "$", 2)

@@ -80,7 +80,7 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) HandleListAgents(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 	limit := queryLimit(r, 200)
-	offset := queryInt(r, "offset", 0)
+	offset := queryOffset(r)
 
 	agents, err := h.db.ListAgents(r.Context(), orgID, limit, offset)
 	if err != nil {

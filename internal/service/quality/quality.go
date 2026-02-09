@@ -37,7 +37,8 @@ func Score(d model.TraceDecision) float32 {
 	var score float32
 
 	// Factor 1: Confidence is present and reasonable.
-	// Extreme values (0 or 1) are often defaults, so we reward mid-range values.
+	// Extreme values (exactly 0 or 1) are often defaults, so we reward mid-range.
+	// Strict inequality: exactly 0.05 and 0.95 fall to edge tier (0.10).
 	if d.Confidence > 0.05 && d.Confidence < 0.95 {
 		score += 0.15
 	} else if d.Confidence > 0 && d.Confidence < 1 {

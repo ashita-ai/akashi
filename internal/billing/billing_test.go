@@ -9,23 +9,44 @@ import (
 )
 
 func TestNewService_Enabled(t *testing.T) {
-	svc := New(nil, Config{
+	svc, err := New(nil, Config{
 		SecretKey:     "sk_test_xxx",
 		WebhookSecret: "whsec_xxx",
 		PriceIDPro:    "price_xxx",
 	}, nil)
+	require.NoError(t, err)
 
 	assert.True(t, svc.Enabled())
 }
 
 func TestNewService_Disabled(t *testing.T) {
-	svc := New(nil, Config{}, nil)
+	svc, err := New(nil, Config{}, nil)
+	require.NoError(t, err)
 
 	assert.False(t, svc.Enabled())
 }
 
+func TestNewService_EnabledMissingWebhookSecret(t *testing.T) {
+	_, err := New(nil, Config{
+		SecretKey:  "sk_test_xxx",
+		PriceIDPro: "price_xxx",
+	}, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "STRIPE_WEBHOOK_SECRET")
+}
+
+func TestNewService_EnabledMissingPriceID(t *testing.T) {
+	_, err := New(nil, Config{
+		SecretKey:     "sk_test_xxx",
+		WebhookSecret: "whsec_xxx",
+	}, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "STRIPE_PRO_PRICE_ID")
+}
+
 func TestGetPlan(t *testing.T) {
-	svc := New(nil, Config{PriceIDPro: "price_xxx"}, nil)
+	svc, err := New(nil, Config{PriceIDPro: "price_xxx"}, nil)
+	require.NoError(t, err)
 
 	tests := []struct {
 		name     string
@@ -61,30 +82,34 @@ func TestCurrentPeriod(t *testing.T) {
 }
 
 func TestCheckDecisionQuota_DisabledService(t *testing.T) {
-	svc := New(nil, Config{}, nil)
+	svc, err := New(nil, Config{}, nil)
+	require.NoError(t, err)
 
 	// Disabled service should always allow.
-	err := svc.CheckDecisionQuota(context.TODO(), [16]byte{})
+	err = svc.CheckDecisionQuota(context.TODO(), [16]byte{})
 	assert.NoError(t, err)
 }
 
 func TestCheckAgentQuota_DisabledService(t *testing.T) {
-	svc := New(nil, Config{}, nil)
+	svc, err := New(nil, Config{}, nil)
+	require.NoError(t, err)
 
-	err := svc.CheckAgentQuota(context.TODO(), [16]byte{})
+	err = svc.CheckAgentQuota(context.TODO(), [16]byte{})
 	assert.NoError(t, err)
 }
 
 func TestCreateCheckoutSession_Disabled(t *testing.T) {
-	svc := New(nil, Config{}, nil)
+	svc, err := New(nil, Config{}, nil)
+	require.NoError(t, err)
 
-	_, err := svc.CreateCheckoutSession(context.TODO(), "org-id", "test@example.com", "https://ok", "https://cancel")
+	_, err = svc.CreateCheckoutSession(context.TODO(), "org-id", "test@example.com", "https://ok", "https://cancel")
 	assert.ErrorIs(t, err, ErrBillingDisabled)
 }
 
 func TestCreatePortalSession_Disabled(t *testing.T) {
-	svc := New(nil, Config{}, nil)
+	svc, err := New(nil, Config{}, nil)
+	require.NoError(t, err)
 
-	_, err := svc.CreatePortalSession(context.TODO(), "cus_xxx", "https://return")
+	_, err = svc.CreatePortalSession(context.TODO(), "cus_xxx", "https://return")
 	assert.ErrorIs(t, err, ErrBillingDisabled)
 }

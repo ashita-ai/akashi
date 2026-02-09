@@ -84,6 +84,9 @@ func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 
 	agents, err := h.db.GetAgentsByAgentIDGlobal(r.Context(), req.AgentID)
 	if err != nil {
+		// Perform a dummy Argon2 hash to make the response time indistinguishable
+		// from a valid agent_id with wrong credentials.
+		auth.DummyVerify()
 		writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "invalid credentials")
 		return
 	}
@@ -91,17 +94,23 @@ func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 	// Iterate over all matching agents (agent_ids can collide across orgs)
 	// and verify credentials against each one. Use the first match.
 	var matched *model.Agent
+	verified := false
 	for i := range agents {
 		a := &agents[i]
 		if a.APIKeyHash == nil {
 			continue
 		}
 		valid, verr := auth.VerifyAPIKey(req.APIKey, *a.APIKeyHash)
+		verified = true
 		if verr != nil || !valid {
 			continue
 		}
 		matched = a
 		break
+	}
+	// If no agent had a hash, do a dummy verify to prevent timing side-channel.
+	if !verified {
+		auth.DummyVerify()
 	}
 	if matched == nil {
 		writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "invalid credentials")
@@ -335,6 +344,21 @@ func queryInt(r *http.Request, key string, defaultVal int) int {
 		}
 	}
 	return defaultVal
+}
+
+// maxQueryOffset prevents absurdly large offset values that cause expensive sequential scans.
+const maxQueryOffset = 100_000
+
+// queryOffset returns a bounded, non-negative offset from query params.
+func queryOffset(r *http.Request) int {
+	offset := queryInt(r, "offset", 0)
+	if offset < 0 {
+		return 0
+	}
+	if offset > maxQueryOffset {
+		return maxQueryOffset
+	}
+	return offset
 }
 
 // queryLimit returns a bounded limit value from query params.

@@ -83,7 +83,7 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decisions, total, err := h.decisionSvc.Query(r.Context(), orgID, req)
+	decisions, _, err := h.decisionSvc.Query(r.Context(), orgID, req)
 	if err != nil {
 		h.writeInternalError(w, r, "query failed", err)
 		return
@@ -97,7 +97,7 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"decisions": decisions,
-		"total":     total,
+		"total":     len(decisions),
 		"count":     len(decisions),
 		"limit":     req.Limit,
 		"offset":    req.Offset,
@@ -154,7 +154,7 @@ func (h *Handlers) HandleAgentHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	limit := queryLimit(r, 50)
-	offset := queryInt(r, "offset", 0)
+	offset := queryOffset(r)
 	from, err := queryTime(r, "from")
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
@@ -166,7 +166,7 @@ func (h *Handlers) HandleAgentHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decisions, total, err := h.db.GetDecisionsByAgent(r.Context(), orgID, agentID, limit, offset, from, to)
+	decisions, _, err := h.db.GetDecisionsByAgent(r.Context(), orgID, agentID, limit, offset, from, to)
 	if err != nil {
 		h.writeInternalError(w, r, "failed to get history", err)
 		return
@@ -175,7 +175,7 @@ func (h *Handlers) HandleAgentHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"agent_id":  agentID,
 		"decisions": decisions,
-		"total":     total,
+		"total":     len(decisions),
 		"limit":     limit,
 		"offset":    offset,
 	})
@@ -261,7 +261,7 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 		filters.DecisionType = &dt
 	}
 
-	decisions, total, err := h.decisionSvc.Recent(r.Context(), orgID, filters, limit)
+	decisions, _, err := h.decisionSvc.Recent(r.Context(), orgID, filters, limit)
 	if err != nil {
 		h.writeInternalError(w, r, "query failed", err)
 		return
@@ -275,7 +275,7 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"decisions": decisions,
-		"total":     total,
+		"total":     len(decisions),
 		"count":     len(decisions),
 		"limit":     limit,
 	})
@@ -294,7 +294,7 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 		filters.AgentID = &aid
 	}
 	limit := queryLimit(r, 25)
-	offset := queryInt(r, "offset", 0)
+	offset := queryOffset(r)
 
 	conflicts, err := h.db.ListConflicts(r.Context(), orgID, filters, limit, offset)
 	if err != nil {
