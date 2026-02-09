@@ -89,6 +89,19 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		slog.Warn("migrations failed (may already exist)", "error", err)
 	}
 
+	// Verify critical tables exist after migration. If the pgvector or timescaledb
+	// extension failed to create (e.g., missing init.sql), migrations 003+ fail
+	// silently and the server starts with no tables. Catch this early.
+	var schemaOK bool
+	if err := db.Pool().QueryRow(ctx,
+		`SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'decisions')`,
+	).Scan(&schemaOK); err != nil {
+		return fmt.Errorf("schema verification: %w", err)
+	}
+	if !schemaOK {
+		return fmt.Errorf("critical table 'decisions' does not exist after migration — check that pgvector and timescaledb extensions are created (see docker/init.sql)")
+	}
+
 	// Create JWT manager.
 	jwtMgr, err := auth.NewJWTManager(cfg.JWTPrivateKeyPath, cfg.JWTPublicKeyPath, cfg.JWTExpiration)
 	if err != nil {

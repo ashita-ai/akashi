@@ -12,7 +12,7 @@
 services:
   postgres:
     image: timescale/timescaledb-ha:pg17
-    container_name: akashi-postgres
+    container_name: akashi-local-postgres
     restart: unless-stopped
     ports:
       - "127.0.0.1:5432:5432"
@@ -38,8 +38,9 @@ services:
       retries: 5
 
   pgbouncer:
-    image: edoburu/pgbouncer:latest
-    container_name: akashi-pgbouncer
+    # Pinned 2026-02-08. Check for updates: https://hub.docker.com/r/edoburu/pgbouncer/tags
+    image: edoburu/pgbouncer:v1.25.1-p0
+    container_name: akashi-local-pgbouncer
     restart: unless-stopped
     ports:
       - "127.0.0.1:6432:5432"
@@ -59,8 +60,8 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
-    container_name: akashi-redis
+    image: redis:7.4-alpine
+    container_name: akashi-local-redis
     restart: unless-stopped
     ports:
       - "127.0.0.1:6379:6379"
@@ -82,7 +83,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    container_name: akashi-server
+    container_name: akashi-local-server
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"
@@ -110,6 +111,12 @@ services:
       AKASHI_EMBEDDING_DIMENSIONS: ${AKASHI_EMBEDDING_DIMENSIONS:-1024}
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mxbai-embed-large}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
       pgbouncer:
         condition: service_healthy
