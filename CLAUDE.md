@@ -22,7 +22,7 @@ Never commit without running these. `make ci` runs the full pipeline locally (ti
 
 ## Migrations
 
-- Migration files live in `migrations/` as sequential SQL files (001, 002, ..., 016, ...).
+- Migration files live in `migrations/` as sequential SQL files (001, 002, ..., 017).
 - Atlas manages checksums in `migrations/atlas.sum`. Any time a migration file is added or modified, rehash: `atlas migrate hash --dir file://migrations`
 - Always validate before committing: `atlas migrate validate --dir file://migrations`
 

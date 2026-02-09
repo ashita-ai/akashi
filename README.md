@@ -91,7 +91,7 @@ All three interfaces share the same storage layer, auth, and embedding provider.
 An agent records a decision to the black box either through the HTTP convenience endpoint or the MCP `akashi_trace` tool:
 
 1. A run (execution context) is created in the `agent_runs` table
-2. The decision text is embedded via the configured embedding provider (OpenAI `text-embedding-3-small` by default, or a noop zero-vector provider for development)
+2. The decision text is embedded via the configured embedding provider (auto-detected: Ollama if available, then OpenAI if `OPENAI_API_KEY` is set, then a noop zero-vector fallback)
 3. The decision is stored with its embedding in the `decisions` table (1024-dimensional vector column with an HNSW index)
 4. Alternatives and evidence are batch-inserted using the PostgreSQL COPY protocol for throughput
 5. A `NOTIFY` is sent on the `akashi_decisions` channel so SSE subscribers learn about it immediately
@@ -243,7 +243,7 @@ internal/
   signup/                  Self-serve signup with email verification
   storage/                 PostgreSQL storage layer (pgxpool + pgx for NOTIFY)
   telemetry/               OpenTelemetry tracer and meter initialization
-migrations/                14 forward-only SQL migration files
+migrations/                17 forward-only SQL migration files
 ui/                        Audit dashboard (React 19, TypeScript, Vite, Tailwind)
   ui.go                    go:embed with build tag (ui)
   ui_noop.go               nil FS fallback without build tag
@@ -343,4 +343,4 @@ go test ./... -v -count=1
 
 ## License
 
-Proprietary. See [LICENSE](LICENSE).
+Apache 2.0. See [LICENSE](LICENSE).

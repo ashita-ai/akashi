@@ -144,6 +144,7 @@ Current specs:
 - `05-multi-tenancy.md`: Org-scoped multi-tenancy (and sub-specs 05a-05e)
 - `06a-schema-optimization.md`: Schema fixes (evidence.org_id data leak, missing indexes, mat view rewrite)
 - `07-qdrant-vector-search.md`: Qdrant Cloud as primary vector search with pgvector fallback
+- `08-openapi-spec.md`: OpenAPI 3.1 specification (embedded at GET /openapi.yaml)
 
 **When to write a spec:** Any feature that touches more than 3 files, requires a migration, changes the API contract, or could be implemented multiple ways. If the work would benefit from a reviewer saying "yes, build it this way", it's a spec.
 
@@ -162,7 +163,7 @@ Single PostgreSQL 17 instance with extensions:
 - **TimescaleDB** for time-series event ingestion and partitioning
 - **JSONB** for facet-based extensibility (OpenLineage pattern)
 
-Do NOT introduce additional databases (Neo4j, Qdrant, Redis, etc.) without discussion. The unified Postgres approach is a deliberate architectural choice.
+PostgreSQL is the source of truth for all data. Redis is used for rate limiting. Qdrant is an optional acceleration layer for vector search at scale (see ADR-002). New storage dependencies require an ADR.
 
 ### Data Model
 
