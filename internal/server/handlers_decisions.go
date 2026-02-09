@@ -83,7 +83,7 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decisions, _, err := h.decisionSvc.Query(r.Context(), orgID, req)
+	decisions, total, err := h.decisionSvc.Query(r.Context(), orgID, req)
 	if err != nil {
 		h.writeInternalError(w, r, "query failed", err)
 		return
@@ -97,7 +97,7 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"decisions": decisions,
-		"total":     len(decisions),
+		"total":     total,
 		"count":     len(decisions),
 		"limit":     req.Limit,
 		"offset":    req.Offset,
@@ -261,7 +261,7 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 		filters.DecisionType = &dt
 	}
 
-	decisions, _, err := h.decisionSvc.Recent(r.Context(), orgID, filters, limit)
+	decisions, total, err := h.decisionSvc.Recent(r.Context(), orgID, filters, limit)
 	if err != nil {
 		h.writeInternalError(w, r, "query failed", err)
 		return
@@ -275,7 +275,7 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"decisions": decisions,
-		"total":     len(decisions),
+		"total":     total,
 		"count":     len(decisions),
 		"limit":     limit,
 	})
