@@ -34,46 +34,72 @@ func (s *Server) Handler() http.Handler {
 	return s.handler
 }
 
+// ServerConfig holds all dependencies and configuration for creating a Server.
+// Optional fields (nil-safe): BillingSvc, Limiter, Broker, SignupSvc, Searcher,
+// MCPServer, UIFS, OpenAPISpec.
+type ServerConfig struct {
+	// Required dependencies.
+	DB          *storage.DB
+	JWTMgr      *auth.JWTManager
+	DecisionSvc *decisions.Service
+	Buffer      *trace.Buffer
+	Logger      *slog.Logger
+
+	// Optional dependencies (nil = disabled).
+	BillingSvc *billing.Service
+	Limiter    *ratelimit.Limiter
+	Broker     *Broker
+	SignupSvc  *signup.Service
+	Searcher   search.Searcher
+	MCPServer  *mcpserver.MCPServer
+
+	// HTTP server settings.
+	Port                int
+	ReadTimeout         time.Duration
+	WriteTimeout        time.Duration
+	Version             string
+	MaxRequestBodyBytes int64
+
+	// Optional embedded assets.
+	UIFS        fs.FS  // Embedded UI filesystem (SPA).
+	OpenAPISpec []byte // Embedded OpenAPI YAML.
+}
+
 // New creates a new HTTP server with all routes configured.
-// mcpSrv is optional; if non-nil the MCP StreamableHTTP transport is mounted at /mcp.
-// limiter is optional; if nil, rate limiting is disabled (noop).
-// broker is optional; if nil, SSE subscriptions return 503.
-// uiFS is optional; if non-nil, the SPA is served at the root path.
-// openapiSpec is optional; if non-nil, GET /openapi.yaml serves the spec.
-func New(
-	db *storage.DB,
-	jwtMgr *auth.JWTManager,
-	decisionSvc *decisions.Service,
-	billingSvc *billing.Service,
-	buffer *trace.Buffer,
-	limiter *ratelimit.Limiter,
-	broker *Broker,
-	signupSvc *signup.Service,
-	searcher search.Searcher,
-	logger *slog.Logger,
-	port int,
-	readTimeout, writeTimeout time.Duration,
-	mcpSrv *mcpserver.MCPServer,
-	version string,
-	maxRequestBodyBytes int64,
-	uiFS fs.FS,
-	openapiSpec []byte,
-) *Server {
-	h := NewHandlers(db, jwtMgr, decisionSvc, billingSvc, buffer, broker, signupSvc, searcher, logger, version, maxRequestBodyBytes, openapiSpec)
+func New(cfg ServerConfig) *Server {
+	h := NewHandlers(HandlersDeps{
+		DB:                  cfg.DB,
+		JWTMgr:              cfg.JWTMgr,
+		DecisionSvc:         cfg.DecisionSvc,
+		BillingSvc:          cfg.BillingSvc,
+		Buffer:              cfg.Buffer,
+		Broker:              cfg.Broker,
+		SignupSvc:           cfg.SignupSvc,
+		Searcher:            cfg.Searcher,
+		Logger:              cfg.Logger,
+		Version:             cfg.Version,
+		MaxRequestBodyBytes: cfg.MaxRequestBodyBytes,
+		OpenAPISpec:         cfg.OpenAPISpec,
+	})
+
+	// Request ID extractor for rate limit error responses.
+	reqIDFunc := func(r *http.Request) string {
+		return RequestIDFromContext(r.Context())
+	}
 
 	// Rate limit rules.
-	ingestRL := ratelimit.Middleware(limiter, ratelimit.Rule{
+	ingestRL := ratelimit.MiddlewareWithRequestID(cfg.Limiter, ratelimit.Rule{
 		Prefix: "ingest", Limit: 300, Window: time.Minute,
-	}, agentKeyFunc)
-	queryRL := ratelimit.Middleware(limiter, ratelimit.Rule{
+	}, agentKeyFunc, reqIDFunc)
+	queryRL := ratelimit.MiddlewareWithRequestID(cfg.Limiter, ratelimit.Rule{
 		Prefix: "query", Limit: 300, Window: time.Minute,
-	}, agentKeyFunc)
-	searchRL := ratelimit.Middleware(limiter, ratelimit.Rule{
+	}, agentKeyFunc, reqIDFunc)
+	searchRL := ratelimit.MiddlewareWithRequestID(cfg.Limiter, ratelimit.Rule{
 		Prefix: "search", Limit: 100, Window: time.Minute,
-	}, agentKeyFunc)
-	authRL := ratelimit.Middleware(limiter, ratelimit.Rule{
+	}, agentKeyFunc, reqIDFunc)
+	authRL := ratelimit.MiddlewareWithRequestID(cfg.Limiter, ratelimit.Rule{
 		Prefix: "auth", Limit: 20, Window: time.Minute,
-	}, ratelimit.IPKeyFunc)
+	}, ratelimit.IPKeyFunc, reqIDFunc)
 
 	mux := http.NewServeMux()
 
@@ -135,8 +161,8 @@ func New(
 	mux.Handle("GET /v1/conflicts", queryRL(readRole(http.HandlerFunc(h.HandleListConflicts))))
 
 	// MCP StreamableHTTP transport (auth required, reader+).
-	if mcpSrv != nil {
-		mcpHTTP := mcpserver.NewStreamableHTTPServer(mcpSrv)
+	if cfg.MCPServer != nil {
+		mcpHTTP := mcpserver.NewStreamableHTTPServer(cfg.MCPServer)
 		mux.Handle("/mcp", readRole(mcpHTTP))
 	}
 
@@ -148,29 +174,29 @@ func New(
 
 	// SPA: serve the embedded UI at the root path.
 	// Registered last so all API routes take priority via the mux's longest-match rule.
-	if uiFS != nil {
-		mux.Handle("/", newSPAHandler(uiFS))
-		logger.Info("ui enabled, serving SPA at /")
+	if cfg.UIFS != nil {
+		mux.Handle("/", newSPAHandler(cfg.UIFS))
+		cfg.Logger.Info("ui enabled, serving SPA at /")
 	}
 
 	// Apply middleware chain: request ID → security headers → tracing → logging → auth.
 	var handler http.Handler = mux
-	handler = authMiddleware(jwtMgr, handler)
-	handler = loggingMiddleware(logger, handler)
+	handler = authMiddleware(cfg.JWTMgr, handler)
+	handler = loggingMiddleware(cfg.Logger, handler)
 	handler = tracingMiddleware(handler)
 	handler = securityHeadersMiddleware(handler)
 	handler = requestIDMiddleware(handler)
 
 	return &Server{
 		httpServer: &http.Server{
-			Addr:         fmt.Sprintf(":%d", port),
+			Addr:         fmt.Sprintf(":%d", cfg.Port),
 			Handler:      handler,
-			ReadTimeout:  readTimeout,
-			WriteTimeout: writeTimeout,
+			ReadTimeout:  cfg.ReadTimeout,
+			WriteTimeout: cfg.WriteTimeout,
 		},
 		handler:  handler,
 		handlers: h,
-		logger:   logger,
+		logger:   cfg.Logger,
 	}
 }
 

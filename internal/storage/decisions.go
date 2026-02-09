@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/pgvector/pgvector-go"
 
 	"github.com/ashita-ai/akashi/internal/model"
 )
@@ -173,8 +172,11 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 }
 
 // QueryDecisions executes a structured query with filters, ordering, and pagination.
+// Only returns active decisions (valid_to IS NULL). Use QueryDecisionsTemporal for
+// point-in-time queries that include superseded decisions.
 func (db *DB) QueryDecisions(ctx context.Context, orgID uuid.UUID, req model.QueryRequest) ([]model.Decision, int, error) {
 	where, args := buildDecisionWhereClause(orgID, req.Filters, 1)
+	where += " AND valid_to IS NULL"
 
 	// Count total matching decisions.
 	countQuery := "SELECT COUNT(*) FROM decisions" + where
@@ -283,59 +285,6 @@ func (db *DB) QueryDecisionsTemporal(ctx context.Context, orgID uuid.UUID, req m
 	return scanDecisions(rows)
 }
 
-// SearchDecisionsByEmbedding performs semantic similarity search over decisions using pgvector.
-func (db *DB) SearchDecisionsByEmbedding(ctx context.Context, orgID uuid.UUID, embedding pgvector.Vector, filters model.QueryFilters, limit int) ([]model.SearchResult, error) {
-	if limit <= 0 {
-		limit = 10
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
-
-	where, args := buildDecisionWhereClause(orgID, filters, 2)
-	where += " AND embedding IS NOT NULL"
-
-	// Quality-weighted relevance with temporal decay:
-	// - Semantic similarity: 60% base weight
-	// - Quality score: up to 30% bonus
-	// - Recency: decays to 50% at 90 days
-	// NULLIF handles zero-vector embeddings (from noop provider) which produce NaN cosine distance.
-	query := fmt.Sprintf(
-		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at,
-		 COALESCE(1 - NULLIF((embedding <=> $1)::float4, 'NaN'::float4), 0)
-		   * (0.6 + 0.3 * COALESCE(quality_score, 0))
-		   * (1.0 / (1.0 + EXTRACT(EPOCH FROM (NOW() - valid_from)) / 86400.0 / 90.0))
-		   AS relevance
-		 FROM decisions%s
-		 ORDER BY relevance DESC
-		 LIMIT %d`, where, limit,
-	)
-
-	allArgs := append([]any{embedding}, args...)
-	rows, err := db.pool.Query(ctx, query, allArgs...)
-	if err != nil {
-		return nil, fmt.Errorf("storage: search decisions: %w", err)
-	}
-	defer rows.Close()
-
-	var results []model.SearchResult
-	for rows.Next() {
-		var d model.Decision
-		var relevance float32
-		if err := rows.Scan(
-			&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence,
-			&d.Reasoning, &d.Metadata, &d.QualityScore, &d.PrecedentRef,
-			&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
-			&relevance,
-		); err != nil {
-			return nil, fmt.Errorf("storage: scan search result: %w", err)
-		}
-		results = append(results, model.SearchResult{Decision: d, SimilarityScore: relevance})
-	}
-	return results, rows.Err()
-}
-
 // SearchDecisionsByText performs keyword search over decision outcome and reasoning fields.
 // Used as fallback when semantic search is disabled or the embedding provider is noop.
 // Only returns active decisions (valid_to IS NULL) for consistency with the Qdrant search path.
@@ -394,7 +343,8 @@ func (db *DB) SearchDecisionsByText(ctx context.Context, orgID uuid.UUID, query 
 	return results, rows.Err()
 }
 
-// GetDecisionsByAgent returns decisions for a given agent within an org with pagination.
+// GetDecisionsByAgent returns active decisions for a given agent within an org with pagination.
+// Only returns decisions with valid_to IS NULL (not revised/invalidated).
 func (db *DB) GetDecisionsByAgent(ctx context.Context, orgID uuid.UUID, agentID string, limit, offset int, from, to *time.Time) ([]model.Decision, int, error) {
 	if limit <= 0 {
 		limit = 50
@@ -411,6 +361,7 @@ func (db *DB) GetDecisionsByAgent(ctx context.Context, orgID uuid.UUID, agentID 
 	}
 
 	where, args := buildDecisionWhereClause(orgID, filters, 1)
+	where += " AND valid_to IS NULL"
 
 	var total int
 	if err := db.pool.QueryRow(ctx, "SELECT COUNT(*) FROM decisions"+where, args...).Scan(&total); err != nil {

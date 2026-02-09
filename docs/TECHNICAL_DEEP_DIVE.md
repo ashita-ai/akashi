@@ -370,11 +370,11 @@ func VerifyAPIKey(key, hash string) (bool, error) {
 
 ### Go Patterns Used
 
-#### 1. Functional Options (implicit via config)
+#### 1. Struct-Based Configuration
 ```go
 // config/config.go loads from environment
 cfg, _ := config.Load()
-srv := server.New(db, jwtMgr, decisionSvc, buffer, limiter, broker, ...)
+srv := server.New(server.ServerConfig{DB: db, JWTMgr: jwtMgr, DecisionSvc: decisionSvc, ...})
 ```
 
 #### 2. Context Propagation

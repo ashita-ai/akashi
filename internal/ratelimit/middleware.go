@@ -1,20 +1,33 @@
 package ratelimit
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ashita-ai/akashi/internal/model"
 )
 
 // KeyFunc extracts the rate limit key from a request.
 // Returns empty string to skip rate limiting for this request (e.g., admin).
 type KeyFunc func(r *http.Request) string
 
+// RequestIDFunc extracts the request ID from the request context.
+// Injected by the caller to avoid a dependency on the server package.
+type RequestIDFunc func(r *http.Request) string
+
 // Middleware returns HTTP middleware that enforces a rate limit.
 // keyFunc determines the identifier to rate limit by.
 // If the limiter is in noop mode (nil Redis), all requests pass through.
 func Middleware(limiter *Limiter, rule Rule, keyFunc KeyFunc) func(http.Handler) http.Handler {
+	return MiddlewareWithRequestID(limiter, rule, keyFunc, nil)
+}
+
+// MiddlewareWithRequestID is like Middleware but includes the request ID in the
+// rate-limit error response, matching the standard API error envelope.
+func MiddlewareWithRequestID(limiter *Limiter, rule Rule, keyFunc KeyFunc, reqIDFunc RequestIDFunc) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if limiter == nil {
@@ -41,15 +54,34 @@ func Middleware(limiter *Limiter, rule Rule, keyFunc KeyFunc) func(http.Handler)
 					retryAfter = 1
 				}
 				w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter)))
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusTooManyRequests)
-				_, _ = w.Write([]byte(`{"error":{"code":"rate_limit_exceeded","message":"too many requests"}}`))
+
+				var requestID string
+				if reqIDFunc != nil {
+					requestID = reqIDFunc(r)
+				}
+				writeRateLimitError(w, requestID)
 				return
 			}
 
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// writeRateLimitError writes a rate-limit error using the standard API error envelope.
+func writeRateLimitError(w http.ResponseWriter, requestID string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusTooManyRequests)
+	_ = json.NewEncoder(w).Encode(model.APIError{
+		Error: model.ErrorDetail{
+			Code:    model.ErrCodeRateLimited,
+			Message: "too many requests",
+		},
+		Meta: model.ResponseMeta{
+			RequestID: requestID,
+			Timestamp: time.Now().UTC(),
+		},
+	})
 }
 
 // IPKeyFunc extracts the client IP from the request for rate limiting.

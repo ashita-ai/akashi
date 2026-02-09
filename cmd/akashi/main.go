@@ -182,9 +182,26 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}
 
 	// Create and start HTTP server (MCP mounted at /mcp).
-	srv := server.New(db, jwtMgr, decisionSvc, billingSvc, buf, limiter, broker, signupSvc, searcher, logger,
-		cfg.Port, cfg.ReadTimeout, cfg.WriteTimeout,
-		mcpSrv.MCPServer(), version, cfg.MaxRequestBodyBytes, uiFS, api.OpenAPISpec)
+	srv := server.New(server.ServerConfig{
+		DB:                  db,
+		JWTMgr:              jwtMgr,
+		DecisionSvc:         decisionSvc,
+		BillingSvc:          billingSvc,
+		Buffer:              buf,
+		Limiter:             limiter,
+		Broker:              broker,
+		SignupSvc:           signupSvc,
+		Searcher:            searcher,
+		Logger:              logger,
+		Port:                cfg.Port,
+		ReadTimeout:         cfg.ReadTimeout,
+		WriteTimeout:        cfg.WriteTimeout,
+		MCPServer:           mcpSrv.MCPServer(),
+		Version:             version,
+		MaxRequestBodyBytes: cfg.MaxRequestBodyBytes,
+		UIFS:                uiFS,
+		OpenAPISpec:         api.OpenAPISpec,
+	})
 
 	// Seed admin agent.
 	if err := srv.Handlers().SeedAdmin(ctx, cfg.AdminAPIKey); err != nil {
