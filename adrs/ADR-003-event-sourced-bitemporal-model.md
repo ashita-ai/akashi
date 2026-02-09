@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-02-03
+**Revised:** 2026-02-08
 
 ## Context
 
@@ -20,13 +21,17 @@ Event-sourced architecture with bi-temporal columns:
 
 | Table | Purpose | Mutable? |
 |-------|---------|----------|
-| `agent_runs` | Top-level execution context (OTEL trace equivalent) | No |
-| `agent_events` | Append-only event log | No (append only) |
-| `decisions` | First-class decision entities | Bi-temporal |
+| `agent_runs` | Top-level execution context | No |
+| `agent_events` | Append-only event log (TimescaleDB hypertable) | No (append only) |
+| `decisions` | Decision entities with embeddings | Bi-temporal |
 | `alternatives` | Alternatives considered with scores | No |
-| `evidence` | Evidence links with provenance | No |
-| `spans` | OTEL-compatible hierarchical traces | No |
-| `run_params` / `run_metrics` / `run_tags` | MLflow-inspired metadata | Params immutable, metrics append, tags mutable |
+| `evidence` | Evidence links with embeddings and provenance | No |
+| `agents` | Registered agents with roles and API key hashes | Yes |
+| `access_grants` | Fine-grained inter-agent permissions | Yes |
+| `organizations` | Multi-tenant org registration | Yes |
+| `email_verifications` | Signup verification tokens | Yes (consumed) |
+| `org_usage` | Billing usage counters per org | Yes |
+| `search_outbox` | Qdrant sync queue (outbox pattern) | Yes (transient) |
 
 ### Event Types
 
@@ -71,6 +76,6 @@ AgentHandoff, ConsensusRequested, ConflictDetected
 
 ## References
 
-- Research: `ventures/specs/02-data-model-patterns.md`
+- Spec 02 (data model patterns) in the `internal/` repo
 - Martin Fowler: martinfowler.com/articles/bitemporal-history.html
 - OpenLineage object model: openlineage.io/docs/spec/object-model/
