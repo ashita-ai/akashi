@@ -110,7 +110,7 @@ func TestCreateAndGetRun(t *testing.T) {
 	assert.Equal(t, "test-agent", run.AgentID)
 	assert.Equal(t, model.RunStatusRunning, run.Status)
 
-	got, err := testDB.GetRun(ctx, run.ID)
+	got, err := testDB.GetRun(ctx, run.OrgID, run.ID)
 	require.NoError(t, err)
 	assert.Equal(t, run.ID, got.ID)
 	assert.Equal(t, "test-agent", got.AgentID)
@@ -122,10 +122,10 @@ func TestCompleteRun(t *testing.T) {
 	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: "complete-test"})
 	require.NoError(t, err)
 
-	err = testDB.CompleteRun(ctx, run.ID, model.RunStatusCompleted, map[string]any{"tokens": 1500})
+	err = testDB.CompleteRun(ctx, run.OrgID, run.ID, model.RunStatusCompleted, map[string]any{"tokens": 1500})
 	require.NoError(t, err)
 
-	got, err := testDB.GetRun(ctx, run.ID)
+	got, err := testDB.GetRun(ctx, run.OrgID, run.ID)
 	require.NoError(t, err)
 	assert.Equal(t, model.RunStatusCompleted, got.Status)
 	assert.NotNil(t, got.CompletedAt)
@@ -137,10 +137,10 @@ func TestCompleteRunAlreadyCompleted(t *testing.T) {
 	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: "double-complete"})
 	require.NoError(t, err)
 
-	err = testDB.CompleteRun(ctx, run.ID, model.RunStatusCompleted, nil)
+	err = testDB.CompleteRun(ctx, run.OrgID, run.ID, model.RunStatusCompleted, nil)
 	require.NoError(t, err)
 
-	err = testDB.CompleteRun(ctx, run.ID, model.RunStatusFailed, nil)
+	err = testDB.CompleteRun(ctx, run.OrgID, run.ID, model.RunStatusFailed, nil)
 	require.Error(t, err)
 }
 
@@ -223,7 +223,7 @@ func TestCreateAndGetDecision(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "approve", d.Outcome)
 
-	got, err := testDB.GetDecision(ctx, d.ID, false, false)
+	got, err := testDB.GetDecision(ctx, d.OrgID, d.ID, false, false)
 	require.NoError(t, err)
 	assert.Equal(t, d.ID, got.ID)
 	assert.Equal(t, float32(0.87), got.Confidence)
@@ -265,7 +265,7 @@ func TestDecisionWithAlternativesAndEvidence(t *testing.T) {
 	require.NoError(t, err)
 
 	// Get decision with includes.
-	got, err := testDB.GetDecision(ctx, d.ID, true, true)
+	got, err := testDB.GetDecision(ctx, d.OrgID, d.ID, true, true)
 	require.NoError(t, err)
 	assert.Len(t, got.Alternatives, 2)
 	assert.Len(t, got.Evidence, 1)
@@ -297,12 +297,12 @@ func TestReviseDecision(t *testing.T) {
 	assert.Equal(t, "deny", revised.Outcome)
 
 	// Original should be invalidated.
-	orig, err := testDB.GetDecision(ctx, original.ID, false, false)
+	orig, err := testDB.GetDecision(ctx, original.OrgID, original.ID, false, false)
 	require.NoError(t, err)
 	assert.NotNil(t, orig.ValidTo)
 
 	// Revised should be current.
-	rev, err := testDB.GetDecision(ctx, revised.ID, false, false)
+	rev, err := testDB.GetDecision(ctx, revised.OrgID, revised.ID, false, false)
 	require.NoError(t, err)
 	assert.Nil(t, rev.ValidTo)
 }

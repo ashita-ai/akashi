@@ -67,12 +67,12 @@ func (db *DB) CreateDecision(ctx context.Context, d model.Decision) (model.Decis
 }
 
 // GetDecision retrieves a decision by ID, optionally with alternatives and evidence.
-func (db *DB) GetDecision(ctx context.Context, id uuid.UUID, includeAlts, includeEvidence bool) (model.Decision, error) {
+func (db *DB) GetDecision(ctx context.Context, orgID, id uuid.UUID, includeAlts, includeEvidence bool) (model.Decision, error) {
 	var d model.Decision
 	err := db.pool.QueryRow(ctx,
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at
-		 FROM decisions WHERE id = $1`, id,
+		 FROM decisions WHERE id = $1 AND org_id = $2`, id, orgID,
 	).Scan(
 		&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence,
 		&d.Reasoning, &d.Metadata, &d.QualityScore, &d.PrecedentRef,
@@ -272,9 +272,21 @@ func (db *DB) QueryDecisionsTemporal(ctx context.Context, orgID uuid.UUID, req m
 	)
 	args = append(args, req.AsOf, req.AsOf)
 
+	// Enforce a result cap to prevent unbounded memory allocation.
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	argIdx = len(args) + 1
+	limitClause := fmt.Sprintf(" LIMIT $%d", argIdx)
+	args = append(args, limit)
+
 	query := `SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at
-		 FROM decisions` + where + ` ORDER BY valid_from DESC`
+		 FROM decisions` + where + ` ORDER BY valid_from DESC` + limitClause
 
 	rows, err := db.pool.Query(ctx, query, args...)
 	if err != nil {

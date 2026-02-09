@@ -82,26 +82,35 @@ func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agent, err := h.db.GetAgentByAgentIDGlobal(r.Context(), req.AgentID)
+	agents, err := h.db.GetAgentsByAgentIDGlobal(r.Context(), req.AgentID)
 	if err != nil {
 		writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "invalid credentials")
 		return
 	}
 
-	if agent.APIKeyHash == nil {
-		writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "invalid credentials")
-		return
+	// Iterate over all matching agents (agent_ids can collide across orgs)
+	// and verify credentials against each one. Use the first match.
+	var matched *model.Agent
+	for i := range agents {
+		a := &agents[i]
+		if a.APIKeyHash == nil {
+			continue
+		}
+		valid, verr := auth.VerifyAPIKey(req.APIKey, *a.APIKeyHash)
+		if verr != nil || !valid {
+			continue
+		}
+		matched = a
+		break
 	}
-
-	valid, err := auth.VerifyAPIKey(req.APIKey, *agent.APIKeyHash)
-	if err != nil || !valid {
+	if matched == nil {
 		writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "invalid credentials")
 		return
 	}
 
 	// Reject unverified orgs (skip for the default org used by pre-migration seed admin).
-	if agent.OrgID != uuid.Nil {
-		org, err := h.db.GetOrganization(r.Context(), agent.OrgID)
+	if matched.OrgID != uuid.Nil {
+		org, err := h.db.GetOrganization(r.Context(), matched.OrgID)
 		if err != nil {
 			h.writeInternalError(w, r, "failed to look up organization", err)
 			return
@@ -112,7 +121,7 @@ func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	token, expiresAt, err := h.jwtMgr.IssueToken(agent)
+	token, expiresAt, err := h.jwtMgr.IssueToken(*matched)
 	if err != nil {
 		h.writeInternalError(w, r, "failed to issue token", err)
 		return

@@ -83,7 +83,7 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decisions, total, err := h.decisionSvc.Query(r.Context(), orgID, req)
+	decisions, _, err := h.decisionSvc.Query(r.Context(), orgID, req)
 	if err != nil {
 		h.writeInternalError(w, r, "query failed", err)
 		return
@@ -95,11 +95,9 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Note: total reflects DB count before access filtering.
-	// For non-admin users, the actual accessible count may be lower.
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"decisions": decisions,
-		"total":     total,
+		"total":     len(decisions),
 		"count":     len(decisions),
 		"limit":     req.Limit,
 		"offset":    req.Offset,
@@ -255,7 +253,7 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 		filters.DecisionType = &dt
 	}
 
-	decisions, total, err := h.decisionSvc.Recent(r.Context(), orgID, filters, limit)
+	decisions, _, err := h.decisionSvc.Recent(r.Context(), orgID, filters, limit)
 	if err != nil {
 		h.writeInternalError(w, r, "query failed", err)
 		return
@@ -269,7 +267,7 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"decisions": decisions,
-		"total":     total,
+		"total":     len(decisions),
 		"count":     len(decisions),
 		"limit":     limit,
 	})
@@ -290,12 +288,6 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 	limit := queryLimit(r, 25)
 	offset := queryInt(r, "offset", 0)
 
-	total, err := h.db.CountConflicts(r.Context(), orgID, filters)
-	if err != nil {
-		h.writeInternalError(w, r, "failed to count conflicts", err)
-		return
-	}
-
 	conflicts, err := h.db.ListConflicts(r.Context(), orgID, filters, limit, offset)
 	if err != nil {
 		h.writeInternalError(w, r, "failed to list conflicts", err)
@@ -310,7 +302,7 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"conflicts": conflicts,
-		"total":     total,
+		"total":     len(conflicts),
 		"limit":     limit,
 		"offset":    offset,
 	})

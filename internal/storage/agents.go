@@ -37,24 +37,38 @@ func (db *DB) CreateAgent(ctx context.Context, agent model.Agent) (model.Agent, 
 	return agent, nil
 }
 
-// GetAgentByAgentIDGlobal retrieves an agent by agent_id across all orgs.
+// GetAgentsByAgentIDGlobal returns all agents with the given agent_id across all orgs.
 // Used ONLY for authentication (token issuance) where org_id isn't known yet.
-func (db *DB) GetAgentByAgentIDGlobal(ctx context.Context, agentID string) (model.Agent, error) {
-	var a model.Agent
-	err := db.pool.QueryRow(ctx,
+// Returns all matches so the caller can verify credentials against each one,
+// preventing cross-tenant confusion when agent_ids collide across orgs.
+func (db *DB) GetAgentsByAgentIDGlobal(ctx context.Context, agentID string) ([]model.Agent, error) {
+	rows, err := db.pool.Query(ctx,
 		`SELECT id, agent_id, org_id, name, role, api_key_hash, metadata, created_at, updated_at
-		 FROM agents WHERE agent_id = $1`, agentID,
-	).Scan(
-		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash,
-		&a.Metadata, &a.CreatedAt, &a.UpdatedAt,
+		 FROM agents WHERE agent_id = $1 ORDER BY created_at ASC`, agentID,
 	)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return model.Agent{}, fmt.Errorf("storage: agent not found: %s", agentID)
-		}
-		return model.Agent{}, fmt.Errorf("storage: get agent: %w", err)
+		return nil, fmt.Errorf("storage: get agents by agent_id: %w", err)
 	}
-	return a, nil
+	defer rows.Close()
+
+	var agents []model.Agent
+	for rows.Next() {
+		var a model.Agent
+		if err := rows.Scan(
+			&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash,
+			&a.Metadata, &a.CreatedAt, &a.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("storage: scan agent: %w", err)
+		}
+		agents = append(agents, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: get agents by agent_id: %w", err)
+	}
+	if len(agents) == 0 {
+		return nil, fmt.Errorf("storage: agent not found: %s", agentID)
+	}
+	return agents, nil
 }
 
 // GetAgentByAgentID retrieves an agent by agent_id within an org.

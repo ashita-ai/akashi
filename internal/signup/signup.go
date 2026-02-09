@@ -94,43 +94,41 @@ func (s *Service) Signup(ctx context.Context, input SignupInput) (SignupResult, 
 
 	slug := slugify(input.OrgName)
 
-	org, err := s.db.CreateOrganization(ctx, model.Organization{
-		Name:          input.OrgName,
-		Slug:          slug,
-		Plan:          "free",
-		DecisionLimit: 1000,
-		AgentLimit:    5,
-		Email:         input.Email,
-		EmailVerified: false,
-	})
-	if err != nil {
-		return SignupResult{}, fmt.Errorf("signup: create org: %w", err)
-	}
-
 	hash, err := auth.HashAPIKey(input.Password)
 	if err != nil {
 		return SignupResult{}, fmt.Errorf("signup: hash password: %w", err)
 	}
 
 	agentID := "owner@" + slug
-	_, err = s.db.CreateAgent(ctx, model.Agent{
-		AgentID:    agentID,
-		OrgID:      org.ID,
-		Name:       input.OrgName + " Owner",
-		Role:       model.RoleOrgOwner,
-		APIKeyHash: &hash,
-	})
-	if err != nil {
-		return SignupResult{}, fmt.Errorf("signup: create owner agent: %w", err)
-	}
 
 	token, err := generateToken(32)
 	if err != nil {
 		return SignupResult{}, fmt.Errorf("signup: generate token: %w", err)
 	}
 
-	if err := s.db.CreateEmailVerification(ctx, org.ID, token, time.Now().Add(24*time.Hour)); err != nil {
-		return SignupResult{}, fmt.Errorf("signup: create verification: %w", err)
+	// Create org, owner agent, and verification token in a single transaction.
+	// If any step fails the entire signup is rolled back — no orphaned rows.
+	result, err := s.db.CreateSignupTx(ctx, storage.SignupParams{
+		Org: model.Organization{
+			Name:          input.OrgName,
+			Slug:          slug,
+			Plan:          "free",
+			DecisionLimit: 1000,
+			AgentLimit:    5,
+			Email:         input.Email,
+			EmailVerified: false,
+		},
+		Agent: model.Agent{
+			AgentID:    agentID,
+			Name:       input.OrgName + " Owner",
+			Role:       model.RoleOrgOwner,
+			APIKeyHash: &hash,
+		},
+		VerificationToken:  token,
+		VerificationExpiry: time.Now().Add(24 * time.Hour),
+	})
+	if err != nil {
+		return SignupResult{}, fmt.Errorf("signup: %w", err)
 	}
 
 	verifyURL := fmt.Sprintf("%s/verify?token=%s", s.baseURL, token)
@@ -140,7 +138,7 @@ func (s *Service) Signup(ctx context.Context, input SignupInput) (SignupResult, 
 	}
 
 	return SignupResult{
-		OrgID:   org.ID,
+		OrgID:   result.Org.ID,
 		AgentID: agentID,
 		Message: "check your email to verify your account",
 	}, nil
