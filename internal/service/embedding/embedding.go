@@ -119,6 +119,15 @@ func (p *OpenAIProvider) EmbedBatch(ctx context.Context, texts []string) ([]pgve
 		return nil, fmt.Errorf("embedding: read response: %w", err)
 	}
 
+	if resp.StatusCode != http.StatusOK {
+		// Try to parse a structured error from the body; fall back to raw body.
+		var errResp openAIResponse
+		if json.Unmarshal(body, &errResp) == nil && errResp.Error != nil {
+			return nil, fmt.Errorf("embedding: openai error (HTTP %d): %s: %s", resp.StatusCode, errResp.Error.Type, errResp.Error.Message)
+		}
+		return nil, fmt.Errorf("embedding: unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
 	var result openAIResponse
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("embedding: unmarshal response: %w", err)
@@ -126,10 +135,6 @@ func (p *OpenAIProvider) EmbedBatch(ctx context.Context, texts []string) ([]pgve
 
 	if result.Error != nil {
 		return nil, fmt.Errorf("embedding: openai error: %s: %s", result.Error.Type, result.Error.Message)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("embedding: unexpected status %d: %s", resp.StatusCode, string(body))
 	}
 
 	if len(result.Data) != len(texts) {

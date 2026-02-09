@@ -297,11 +297,13 @@ func hasExcessiveRepetition(password string) bool {
 	return false
 }
 
-// commonPasswords is a short list of passwords that pass 12-char + mixed-case +
-// digit checks but are still trivially guessable. Checked case-insensitively.
+// commonPasswords contains passwords that pass the formal checks (12+ chars,
+// upper + lower + digit) but are trivially guessable. Checked case-insensitively.
 var commonPasswords = []string{
+	// Classic weak passwords padded to 12+
 	"password1234",
 	"password123!",
+	"password12345",
 	"abcdefghij12",
 	"qwertyuiop12",
 	"admin1234567",
@@ -311,9 +313,34 @@ var commonPasswords = []string{
 	"iloveyou1234",
 	"trustno1trust",
 	"abc123456789",
-	"password12345",
 	"administrator1",
 	"qwerty1234567",
+	// Seasonal / year-based patterns
+	"summer202612",
+	"winter202612",
+	"spring202612",
+	"autumn202612",
+	"january12345",
+	// Keyboard walks and sequences
+	"qweasdzxc123",
+	"asdfghjkl123",
+	"zxcvbnm12345",
+	"1q2w3e4r5t6y",
+	// Company/tech cliches
+	"passw0rd1234",
+	"p@ssword1234",
+	"letmein123456",
+	"master1234567",
+	"dragon1234567",
+	"monkey1234567",
+	"shadow1234567",
+	"sunshine12345",
+	"princess12345",
+	"football12345",
+	"baseball12345",
+	"superman12345",
+	"michael123456",
+	"charlie123456",
 }
 
 var multiHyphen = regexp.MustCompile(`-{2,}`)

@@ -350,11 +350,14 @@ func queryLimit(r *http.Request, defaultVal int) int {
 	return limit
 }
 
-func queryTime(r *http.Request, key string) *time.Time {
-	if v := r.URL.Query().Get(key); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			return &t
-		}
+func queryTime(r *http.Request, key string) (*time.Time, error) {
+	v := r.URL.Query().Get(key)
+	if v == "" {
+		return nil, nil
 	}
-	return nil
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s: expected RFC3339 format (e.g. 2024-01-01T00:00:00Z)", key)
+	}
+	return &t, nil
 }

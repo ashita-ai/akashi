@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -108,6 +109,12 @@ func (w *statusWriter) Flush() {
 	}
 }
 
+// Unwrap returns the underlying ResponseWriter, enabling http.ResponseController
+// and other Go 1.20+ features (Hijack, SetReadDeadline, etc.) to find it.
+func (w *statusWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 var (
 	tracer    = otel.Tracer("akashi/http")
 	httpMeter = otel.GetMeterProvider().Meter("akashi/http")
@@ -115,6 +122,8 @@ var (
 
 // tracingMiddleware creates an OTEL span for each HTTP request
 // and records request count and duration metrics.
+// It reuses the statusWriter from loggingMiddleware if already present,
+// avoiding a redundant wrapper allocation per request.
 func tracingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, span := tracer.Start(r.Context(), r.Method+" "+r.URL.Path,
@@ -127,14 +136,19 @@ func tracingMiddleware(next http.Handler) http.Handler {
 		defer span.End()
 
 		start := time.Now()
-		wrapped := &statusWriter{ResponseWriter: w, statusCode: http.StatusOK}
-		next.ServeHTTP(wrapped, r.WithContext(ctx))
+
+		// Reuse existing statusWriter if the logging middleware already wrapped w.
+		sw, ok := w.(*statusWriter)
+		if !ok {
+			sw = &statusWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		}
+		next.ServeHTTP(sw, r.WithContext(ctx))
 
 		duration := time.Since(start)
-		statusStr := strconv.Itoa(wrapped.statusCode)
+		statusStr := strconv.Itoa(sw.statusCode)
 
 		span.SetAttributes(
-			attribute.Int("http.status_code", wrapped.statusCode),
+			attribute.Int("http.status_code", sw.statusCode),
 		)
 
 		attrs := []attribute.KeyValue{
@@ -289,6 +303,7 @@ func recoveryMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
 			if rec := recover(); rec != nil {
 				logger.Error("panic recovered",
 					"error", rec,
+					"stack", string(debug.Stack()),
 					"method", r.Method,
 					"path", r.URL.Path,
 					"request_id", RequestIDFromContext(r.Context()),
