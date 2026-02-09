@@ -13,6 +13,7 @@ services:
   postgres:
     image: timescale/timescaledb-ha:pg17
     container_name: akashi-postgres
+    restart: unless-stopped
     ports:
       - "127.0.0.1:5432:5432"
     environment:
@@ -21,6 +22,7 @@ services:
       POSTGRES_DB: akashi
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     command: >
       postgres
         -c shared_buffers=256MB
@@ -38,6 +40,7 @@ services:
   pgbouncer:
     image: edoburu/pgbouncer:latest
     container_name: akashi-pgbouncer
+    restart: unless-stopped
     ports:
       - "127.0.0.1:6432:5432"
     environment:
@@ -58,6 +61,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: akashi-redis
+    restart: unless-stopped
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
@@ -79,6 +83,7 @@ services:
       context: ..
       dockerfile: Dockerfile
     container_name: akashi-server
+    restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"
     environment:

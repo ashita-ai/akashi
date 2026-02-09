@@ -254,8 +254,7 @@ ui/                        Audit dashboard (React 19, TypeScript, Vite, Tailwind
 docker/
   docker-compose.local.yml Self-contained local stack (Postgres, PgBouncer, Redis, Akashi)
   docker-compose.cloud.yml Cloud stack (PgBouncer → TimescaleDB Cloud, Qdrant Cloud)
-  Dockerfile.postgres      Postgres 17 + pgvector 0.8.0 + TimescaleDB 2.17.2
-  init.sql                 Extension initialization
+  init.sql                 Extension initialization (pgvector + TimescaleDB)
   env.local.example        Example env for local mode
   env.cloud.example        Example env for cloud mode
 sdk/
