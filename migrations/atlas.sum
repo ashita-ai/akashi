@@ -1,4 +1,4 @@
-h1:bLTDZVAvU9bFiiq7AUreqafcbWIh4vYj0X7ESVqB+Ac=
+h1:0850KjOQVYuccA0AN7f9cxiCZX1Y2Wy72IkWEoSnejw=
 001_create_agent_runs.sql h1:kt1hhf4ttnT0iglMXihEJCZtiKBhSYli5HeMcFaKGl0=
 002_create_agent_events.sql h1:teJwKwJaghjyJj9JYW/KgD8tCMZm9h1IqAUPLtmvqmA=
 003_create_decisions.sql h1:/uCnEUGTvX6VRfOtLygpUXpx/JJ58uijEAm0mQt0MNA=
@@ -14,3 +14,4 @@ h1:bLTDZVAvU9bFiiq7AUreqafcbWIh4vYj0X7ESVqB+Ac=
 015_fix_default_org_limits.sql h1:u8NbxWaHLdkZpDV07cikLuF7Utb9AsF8z3OTJFteuKE=
 016_schema_optimization.sql h1:0yYoVKHf457vBUrSbIGTfJoxjB4yUx+n4HC4Vz/yKJ8=
 017_search_outbox.sql h1:/mr2WUe1WOxpdExx1fQPzol7hkZ9RLsGRwsy3JMdfU4=
+018_auth_lookup_index.sql h1:mWVyPxpborlQbm9+FwkzgO96DCW2hOYaIX0/HqsSBFI=
