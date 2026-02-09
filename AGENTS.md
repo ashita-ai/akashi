@@ -116,13 +116,17 @@ Architecture Decision Records. **Every significant technical decision gets an AD
 
 ADRs are committed to the repo. Read existing ADRs before proposing changes to the areas they cover.
 
-Current ADRs:
+Current ADRs (this repo — technical):
 - `ADR-001`: Go for server, Python/TypeScript for SDKs
 - `ADR-002`: Unified PostgreSQL storage (no polyglot)
 - `ADR-003`: Event-sourced data model with bi-temporal modeling
 - `ADR-004`: MCP as primary distribution channel
-- `ADR-005`: Competitive positioning — decision traces, not memory
-- `ADR-006`: Standards alignment — OTEL, MCP, A2A
+- `ADR-005`: Ed25519 JWT authentication with Argon2id API keys and tiered RBAC
+- `ADR-006`: Embedding provider chain with graceful degradation
+- `ADR-007`: Dual PostgreSQL connections (pooled + direct)
+- `ADR-008`: TimescaleDB event ingestion with COPY protocol
+
+Business ADRs live in the `internal/` repo (ADR-009, ADR-010). ADR numbering is a single sequence across both repos — next ADR is ADR-011.
 
 **When to write an ADR:** Any choice that constrains future decisions — language, database, protocol, auth scheme, isolation model. If you'd explain it to a new engineer as "here's why we did it this way", it's an ADR.
 
