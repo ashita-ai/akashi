@@ -109,7 +109,7 @@ func New(cfg ServerConfig) *Server {
 
 	// Signup endpoints (no auth required, rate limited by IP).
 	mux.Handle("POST /auth/signup", authRL(http.HandlerFunc(h.HandleSignup)))
-	mux.Handle("GET /auth/verify", http.HandlerFunc(h.HandleVerifyEmail))
+	mux.Handle("GET /auth/verify", authRL(http.HandlerFunc(h.HandleVerifyEmail)))
 
 	// Agent management (admin-only, no rate limit — admin is exempt).
 	adminOnly := requireRole(model.RoleAdmin)
@@ -179,8 +179,10 @@ func New(cfg ServerConfig) *Server {
 		cfg.Logger.Info("ui enabled, serving SPA at /")
 	}
 
-	// Apply middleware chain: request ID → security headers → tracing → logging → auth.
+	// Middleware chain (outermost executes first):
+	// request ID → security headers → tracing → logging → auth → recovery → handler.
 	var handler http.Handler = mux
+	handler = recoveryMiddleware(cfg.Logger, handler)
 	handler = authMiddleware(cfg.JWTMgr, handler)
 	handler = loggingMiddleware(cfg.Logger, handler)
 	handler = tracingMiddleware(handler)

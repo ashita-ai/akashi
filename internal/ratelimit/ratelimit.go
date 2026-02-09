@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -61,8 +62,9 @@ end
 
 // Limiter provides rate limiting backed by Redis.
 type Limiter struct {
-	client *redis.Client
-	logger *slog.Logger
+	client  *redis.Client
+	logger  *slog.Logger
+	counter atomic.Uint64
 }
 
 // Rule defines a rate limit: how many requests per window.
@@ -96,7 +98,8 @@ func (l *Limiter) Allow(ctx context.Context, rule Rule, key string) Result {
 	nowMicro := now.UnixMicro()
 	windowStart := now.Add(-rule.Window).UnixMicro()
 	ttlSeconds := int(rule.Window.Seconds()) + 10 // Key TTL = window + buffer.
-	member := fmt.Sprintf("%d:%s", nowMicro, key) // Unique per microsecond per key.
+	seq := l.counter.Add(1)
+	member := fmt.Sprintf("%d:%d", nowMicro, seq) // Unique per request (atomic counter prevents ZADD collisions).
 
 	redisKey := fmt.Sprintf("akashi:rl:%s:%s", rule.Prefix, key)
 

@@ -144,12 +144,6 @@ type HealthResponse struct {
 	Uptime   int64  `json:"uptime_seconds"`
 }
 
-// SubscriptionEvent is sent over SSE to subscribers.
-type SubscriptionEvent struct {
-	Event string `json:"event"`
-	Data  any    `json:"data"`
-}
-
 // Organization represents a tenant in the multi-tenancy model.
 type Organization struct {
 	ID                   uuid.UUID `json:"id"`

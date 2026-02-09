@@ -429,6 +429,7 @@ func buildDecisionWhereClause(orgID uuid.UUID, f model.QueryFilters, startArgIdx
 		if f.TimeRange.To != nil {
 			conditions = append(conditions, fmt.Sprintf("valid_from <= $%d", idx))
 			args = append(args, *f.TimeRange.To)
+			idx++ //nolint:ineffassign // keep idx consistent so future additions don't miscount
 		}
 	}
 

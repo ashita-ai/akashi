@@ -229,8 +229,6 @@ func TestLimiterConcurrent(t *testing.T) {
 	}
 
 	// Fire 200 concurrent requests with limit of 100.
-	// Due to microsecond-precision member IDs, requests in the same
-	// microsecond may share an ID, causing minor variance in counts.
 	results := make(chan ratelimit.Result, 200)
 	for i := 0; i < 200; i++ {
 		go func() {

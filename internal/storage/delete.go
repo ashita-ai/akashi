@@ -36,7 +36,7 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 	var result DeleteAgentResult
 
 	// Look up the agent's internal UUID for grant deletion.
-	var agentUUID string
+	var agentUUID uuid.UUID
 	err = tx.QueryRow(ctx, `SELECT id FROM agents WHERE org_id = $1 AND agent_id = $2`, orgID, agentID).Scan(&agentUUID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

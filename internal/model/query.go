@@ -52,14 +52,6 @@ type SearchResult struct {
 	SimilarityScore float32  `json:"similarity_score"`
 }
 
-// PagedResult wraps paginated query results.
-type PagedResult[T any] struct {
-	Items  []T `json:"items"`
-	Total  int `json:"total"`
-	Limit  int `json:"limit"`
-	Offset int `json:"offset"`
-}
-
 // CheckRequest is the request body for POST /v1/check.
 // It supports a lightweight precedent lookup before making a decision.
 type CheckRequest struct {

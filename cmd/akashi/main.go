@@ -71,7 +71,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	slog.Info("akashi starting", "version", version, "port", cfg.Port)
 
 	// Initialize OpenTelemetry.
-	otelShutdown, err := telemetry.Init(ctx, cfg.OTELEndpoint, cfg.ServiceName, version)
+	otelShutdown, err := telemetry.Init(ctx, cfg.OTELEndpoint, cfg.ServiceName, version, cfg.OTELInsecure)
 	if err != nil {
 		return fmt.Errorf("telemetry: %w", err)
 	}
@@ -227,7 +227,6 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}
 
 	// Graceful shutdown.
-	fmt.Println()
 	slog.Info("akashi shutting down")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)

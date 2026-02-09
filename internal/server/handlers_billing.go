@@ -11,7 +11,6 @@ import (
 // HandleBillingCheckout handles POST /billing/checkout (org_owner+).
 // Creates a Stripe Checkout session for upgrading to the Pro plan.
 func (h *Handlers) HandleBillingCheckout(w http.ResponseWriter, r *http.Request) {
-	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
 
 	if h.billingSvc == nil || !h.billingSvc.Enabled() {
@@ -21,7 +20,7 @@ func (h *Handlers) HandleBillingCheckout(w http.ResponseWriter, r *http.Request)
 
 	org, err := h.db.GetOrganization(r.Context(), orgID)
 	if err != nil {
-		h.logger.Error("billing checkout: get org", "error", err, "org_id", claims.OrgID)
+		h.logger.Error("billing checkout: get org", "error", err, "org_id", orgID)
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "internal error")
 		return
 	}
@@ -53,7 +52,6 @@ func (h *Handlers) HandleBillingCheckout(w http.ResponseWriter, r *http.Request)
 // HandleBillingPortal handles POST /billing/portal (org_owner+).
 // Creates a Stripe Billing Portal session for managing an existing subscription.
 func (h *Handlers) HandleBillingPortal(w http.ResponseWriter, r *http.Request) {
-	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
 
 	if h.billingSvc == nil || !h.billingSvc.Enabled() {
@@ -63,7 +61,7 @@ func (h *Handlers) HandleBillingPortal(w http.ResponseWriter, r *http.Request) {
 
 	org, err := h.db.GetOrganization(r.Context(), orgID)
 	if err != nil {
-		h.logger.Error("billing portal: get org", "error", err, "org_id", claims.OrgID)
+		h.logger.Error("billing portal: get org", "error", err, "org_id", orgID)
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "internal error")
 		return
 	}
@@ -135,7 +133,12 @@ func (h *Handlers) HandleUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	period := billing.CurrentPeriod()
-	usage, _ := h.db.GetUsage(r.Context(), orgID, period)
+	usage, err := h.db.GetUsage(r.Context(), orgID, period)
+	if err != nil {
+		h.logger.Error("usage: get usage", "error", err, "org_id", orgID)
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "internal error")
+		return
+	}
 
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"org_id":         orgID,

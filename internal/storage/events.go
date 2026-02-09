@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -96,22 +95,6 @@ func (db *DB) GetEventsByRun(ctx context.Context, runID uuid.UUID) ([]model.Agen
 	)
 	if err != nil {
 		return nil, fmt.Errorf("storage: get events by run: %w", err)
-	}
-	defer rows.Close()
-
-	return scanEvents(rows)
-}
-
-// GetEventsByRunBeforeTime retrieves events for a run that occurred before a given time.
-// Used for context replay.
-func (db *DB) GetEventsByRunBeforeTime(ctx context.Context, runID uuid.UUID, before time.Time) ([]model.AgentEvent, error) {
-	rows, err := db.pool.Query(ctx,
-		`SELECT id, run_id, org_id, event_type, sequence_num, occurred_at, agent_id, payload, created_at
-		 FROM agent_events WHERE run_id = $1 AND occurred_at <= $2
-		 ORDER BY sequence_num ASC`, runID, before,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("storage: get events before time: %w", err)
 	}
 	defer rows.Close()
 
