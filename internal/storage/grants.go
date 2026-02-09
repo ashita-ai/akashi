@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -47,19 +48,21 @@ func (db *DB) DeleteGrant(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// GetGrant retrieves a grant by ID.
-func (db *DB) GetGrant(ctx context.Context, id uuid.UUID) (model.AccessGrant, error) {
+// GetGrant retrieves a grant by ID, scoped to an org for defense-in-depth
+// tenant isolation. Even though the handler performs its own authz check,
+// the storage layer must enforce org boundaries on every query.
+func (db *DB) GetGrant(ctx context.Context, orgID uuid.UUID, id uuid.UUID) (model.AccessGrant, error) {
 	var g model.AccessGrant
 	err := db.pool.QueryRow(ctx,
 		`SELECT id, org_id, grantor_id, grantee_id, resource_type, resource_id,
 		 permission, granted_at, expires_at
-		 FROM access_grants WHERE id = $1`, id,
+		 FROM access_grants WHERE id = $1 AND org_id = $2`, id, orgID,
 	).Scan(
 		&g.ID, &g.OrgID, &g.GrantorID, &g.GranteeID, &g.ResourceType, &g.ResourceID,
 		&g.Permission, &g.GrantedAt, &g.ExpiresAt,
 	)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return model.AccessGrant{}, fmt.Errorf("storage: grant not found: %s", id)
 		}
 		return model.AccessGrant{}, fmt.Errorf("storage: get grant: %w", err)

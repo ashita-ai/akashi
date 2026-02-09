@@ -170,8 +170,8 @@ func (h *Handlers) HandleDeleteGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the grant exists and the caller has permission to delete it.
-	grant, err := h.db.GetGrant(r.Context(), grantID)
+	// Verify the grant exists and belongs to the caller's org.
+	grant, err := h.db.GetGrant(r.Context(), orgID, grantID)
 	if err != nil {
 		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "grant not found")
 		return
