@@ -99,15 +99,3 @@ type DecisionConflict struct {
 	DecidedAtB   time.Time `json:"decided_at_b"`
 	DetectedAt   time.Time `json:"detected_at"`
 }
-
-// AgentCurrentState is a summary of an agent's latest activity.
-type AgentCurrentState struct {
-	AgentID         string     `json:"agent_id"`
-	OrgID           uuid.UUID  `json:"org_id"`
-	LatestRunID     uuid.UUID  `json:"latest_run_id"`
-	RunStatus       RunStatus  `json:"run_status"`
-	StartedAt       time.Time  `json:"started_at"`
-	EventCount      int64      `json:"event_count"`
-	LastActivity    *time.Time `json:"last_activity,omitempty"`
-	ActiveDecisions int64      `json:"active_decisions"`
-}

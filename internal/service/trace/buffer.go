@@ -112,7 +112,10 @@ func (b *Buffer) flushLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			b.flush(context.Background()) // Final flush on shutdown.
+			// Final flush with bounded timeout so shutdown can't hang forever.
+			flushCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			b.flush(flushCtx)
+			cancel()
 			close(b.done)
 			return
 		case <-ticker.C:

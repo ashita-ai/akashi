@@ -100,7 +100,9 @@ func (w *OutboxWorker) pollLoop(ctx context.Context) {
 			w.once.Do(func() { close(w.done) })
 			return
 		case <-ticker.C:
-			w.processBatch(ctx)
+			batchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			w.processBatch(batchCtx)
+			cancel()
 		}
 	}
 }

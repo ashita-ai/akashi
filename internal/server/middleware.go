@@ -281,6 +281,25 @@ func (h *Handlers) writeInternalError(w http.ResponseWriter, r *http.Request, ms
 	writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, msg)
 }
 
+// recoveryMiddleware catches panics in downstream handlers, logs the stack trace,
+// and returns a 500 error instead of crashing the server.
+func recoveryMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				logger.Error("panic recovered",
+					"error", rec,
+					"method", r.Method,
+					"path", r.URL.Path,
+					"request_id", RequestIDFromContext(r.Context()),
+				)
+				writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "internal server error")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
 // securityHeadersMiddleware adds standard security response headers.
 func securityHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

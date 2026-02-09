@@ -40,6 +40,7 @@ type Config struct {
 
 	// OTEL settings.
 	OTELEndpoint string
+	OTELInsecure bool // Use HTTP instead of HTTPS for OTEL exporter (default: false).
 	ServiceName  string
 
 	// Stripe billing settings.
@@ -90,6 +91,7 @@ func Load() (Config, error) {
 		OllamaURL:               envStr("OLLAMA_URL", "http://localhost:11434"),
 		OllamaModel:             envStr("OLLAMA_MODEL", "mxbai-embed-large"),
 		OTELEndpoint:            envStr("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		OTELInsecure:            envBool("OTEL_EXPORTER_OTLP_INSECURE", false),
 		ServiceName:             envStr("OTEL_SERVICE_NAME", "akashi"),
 		StripeSecretKey:         envStr("STRIPE_SECRET_KEY", ""),
 		StripeWebhookSecret:     envStr("STRIPE_WEBHOOK_SECRET", ""),
@@ -143,6 +145,15 @@ func envInt(key string, defaultVal int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return defaultVal
+}
+
+func envBool(key string, defaultVal bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
 		}
 	}
 	return defaultVal

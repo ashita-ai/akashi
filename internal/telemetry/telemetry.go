@@ -22,7 +22,7 @@ type Shutdown func(ctx context.Context) error
 // Init configures the global OpenTelemetry tracer and meter providers.
 // If endpoint is empty, OTEL is disabled and no-op providers are used.
 // Returns a shutdown function that must be called during graceful shutdown.
-func Init(ctx context.Context, endpoint, serviceName, version string) (Shutdown, error) {
+func Init(ctx context.Context, endpoint, serviceName, version string, insecure bool) (Shutdown, error) {
 	if endpoint == "" {
 		return func(ctx context.Context) error { return nil }, nil
 	}
@@ -38,10 +38,13 @@ func Init(ctx context.Context, endpoint, serviceName, version string) (Shutdown,
 	}
 
 	// Trace exporter.
-	traceExp, err := otlptracehttp.New(ctx,
+	traceOpts := []otlptracehttp.Option{
 		otlptracehttp.WithEndpoint(endpoint),
-		otlptracehttp.WithInsecure(),
-	)
+	}
+	if insecure {
+		traceOpts = append(traceOpts, otlptracehttp.WithInsecure())
+	}
+	traceExp, err := otlptracehttp.New(ctx, traceOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: create trace exporter: %w", err)
 	}
@@ -55,10 +58,13 @@ func Init(ctx context.Context, endpoint, serviceName, version string) (Shutdown,
 	otel.SetTracerProvider(tp)
 
 	// Metric exporter.
-	metricExp, err := otlpmetrichttp.New(ctx,
+	metricOpts := []otlpmetrichttp.Option{
 		otlpmetrichttp.WithEndpoint(endpoint),
-		otlpmetrichttp.WithInsecure(),
-	)
+	}
+	if insecure {
+		metricOpts = append(metricOpts, otlpmetrichttp.WithInsecure())
+	}
+	metricExp, err := otlpmetrichttp.New(ctx, metricOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: create metric exporter: %w", err)
 	}

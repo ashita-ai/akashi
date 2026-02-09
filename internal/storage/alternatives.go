@@ -11,30 +11,6 @@ import (
 	"github.com/ashita-ai/akashi/internal/model"
 )
 
-// CreateAlternative inserts a single alternative for a decision.
-func (db *DB) CreateAlternative(ctx context.Context, alt model.Alternative) (model.Alternative, error) {
-	if alt.ID == uuid.Nil {
-		alt.ID = uuid.New()
-	}
-	if alt.CreatedAt.IsZero() {
-		alt.CreatedAt = time.Now().UTC()
-	}
-	if alt.Metadata == nil {
-		alt.Metadata = map[string]any{}
-	}
-
-	_, err := db.pool.Exec(ctx,
-		`INSERT INTO alternatives (id, decision_id, label, score, selected, rejection_reason, metadata, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		alt.ID, alt.DecisionID, alt.Label, alt.Score, alt.Selected,
-		alt.RejectionReason, alt.Metadata, alt.CreatedAt,
-	)
-	if err != nil {
-		return model.Alternative{}, fmt.Errorf("storage: create alternative: %w", err)
-	}
-	return alt, nil
-}
-
 // CreateAlternativesBatch inserts multiple alternatives using COPY.
 func (db *DB) CreateAlternativesBatch(ctx context.Context, alts []model.Alternative) error {
 	if len(alts) == 0 {
