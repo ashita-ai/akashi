@@ -12,8 +12,10 @@
 
 services:
   pgbouncer:
-    image: edoburu/pgbouncer:latest
-    container_name: akashi-pgbouncer
+    # Pinned 2026-02-08. Check for updates: https://hub.docker.com/r/edoburu/pgbouncer/tags
+    image: edoburu/pgbouncer:v1.25.1-p0
+    container_name: akashi-cloud-pgbouncer
+    restart: unless-stopped
     ports:
       - "127.0.0.1:6432:5432"
     environment:
@@ -35,8 +37,9 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
-    container_name: akashi-redis
+    image: redis:7.4-alpine
+    container_name: akashi-cloud-redis
+    restart: unless-stopped
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
@@ -57,7 +60,8 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    container_name: akashi-server
+    container_name: akashi-cloud-server
+    restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"
     environment:
@@ -105,6 +109,12 @@ services:
       # Observability (optional).
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-akashi}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
       pgbouncer:
         condition: service_healthy
