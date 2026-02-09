@@ -43,6 +43,12 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Verify the agent exists within the caller's org to prevent orphaned data.
+	if _, err := h.db.GetAgentByAgentID(r.Context(), orgID, req.AgentID); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "agent_id not found in this organization")
+		return
+	}
+
 	result, err := h.decisionSvc.Trace(r.Context(), orgID, decisions.TraceInput{
 		AgentID:      req.AgentID,
 		TraceID:      req.TraceID,

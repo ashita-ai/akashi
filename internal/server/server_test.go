@@ -105,7 +105,19 @@ func TestMain(m *testing.M) {
 		SMTPFrom: "test@akashi.dev",
 		BaseURL:  "http://localhost:8080",
 	}, logger)
-	srv := server.New(db, jwtMgr, decisionSvc, nil, buf, nil, nil, signupSvc, nil, logger, 0, 30*time.Second, 30*time.Second, mcpSrv.MCPServer(), "test", 1*1024*1024, nil, nil)
+	srv := server.New(server.ServerConfig{
+		DB:                  db,
+		JWTMgr:              jwtMgr,
+		DecisionSvc:         decisionSvc,
+		Buffer:              buf,
+		SignupSvc:           signupSvc,
+		Logger:              logger,
+		ReadTimeout:         30 * time.Second,
+		WriteTimeout:        30 * time.Second,
+		MCPServer:           mcpSrv.MCPServer(),
+		Version:             "test",
+		MaxRequestBodyBytes: 1 * 1024 * 1024,
+	})
 
 	// Seed admin.
 	_ = srv.Handlers().SeedAdmin(ctx, "test-admin-key")
@@ -211,8 +223,12 @@ func TestOpenAPISpec(t *testing.T) {
 
 	t.Run("embedded spec is served", func(t *testing.T) {
 		spec := []byte("openapi: \"3.1.0\"\ninfo:\n  title: Test\n  version: 0.0.1\npaths: {}\n")
-		h := server.NewHandlers(nil, nil, nil, nil, nil, nil, nil, nil,
-			slog.New(slog.NewTextHandler(os.Stderr, nil)), "test", 1*1024*1024, spec)
+		h := server.NewHandlers(server.HandlersDeps{
+			Logger:              slog.New(slog.NewTextHandler(os.Stderr, nil)),
+			Version:             "test",
+			MaxRequestBodyBytes: 1 * 1024 * 1024,
+			OpenAPISpec:         spec,
+		})
 
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/openapi.yaml", nil)

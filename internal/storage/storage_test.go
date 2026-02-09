@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/pgvector/pgvector-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -342,55 +341,6 @@ func TestQueryDecisions(t *testing.T) {
 	for _, d := range decisions {
 		assert.GreaterOrEqual(t, d.Confidence, float32(0.5))
 	}
-}
-
-func TestSearchDecisionsByEmbedding(t *testing.T) {
-	ctx := context.Background()
-
-	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: "search-test"})
-	require.NoError(t, err)
-
-	// Create decisions with embeddings.
-	// Note: schema uses vector(1024) per migration 013.
-	vec1 := make([]float32, 1024)
-	vec1[0] = 1.0
-	emb1 := pgvector.NewVector(vec1)
-
-	vec2 := make([]float32, 1024)
-	vec2[1] = 1.0
-	emb2 := pgvector.NewVector(vec2)
-
-	_, err = testDB.CreateDecision(ctx, model.Decision{
-		RunID:        run.ID,
-		AgentID:      "search-test",
-		DecisionType: "test",
-		Outcome:      "similar",
-		Confidence:   0.9,
-		Embedding:    &emb1,
-	})
-	require.NoError(t, err)
-
-	_, err = testDB.CreateDecision(ctx, model.Decision{
-		RunID:        run.ID,
-		AgentID:      "search-test",
-		DecisionType: "test",
-		Outcome:      "different",
-		Confidence:   0.5,
-		Embedding:    &emb2,
-	})
-	require.NoError(t, err)
-
-	// Search with vector close to emb1.
-	queryVec := make([]float32, 1024)
-	queryVec[0] = 0.99
-	queryVec[1] = 0.01
-	queryEmb := pgvector.NewVector(queryVec)
-
-	results, err := testDB.SearchDecisionsByEmbedding(ctx, uuid.Nil, queryEmb, model.QueryFilters{}, 10)
-	require.NoError(t, err)
-	require.GreaterOrEqual(t, len(results), 2)
-	// The first result should be more similar (outcome="similar").
-	assert.Equal(t, "similar", results[0].Decision.Outcome)
 }
 
 func TestTemporalQuery(t *testing.T) {

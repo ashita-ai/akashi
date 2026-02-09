@@ -38,27 +38,39 @@ type Handlers struct {
 	openapiSpec         []byte
 }
 
+// HandlersDeps holds all dependencies for constructing Handlers.
+// Optional (nil-safe): BillingSvc, Broker, SignupSvc, Searcher, OpenAPISpec.
+type HandlersDeps struct {
+	DB                  *storage.DB
+	JWTMgr              *auth.JWTManager
+	DecisionSvc         *decisions.Service
+	BillingSvc          *billing.Service
+	Buffer              *trace.Buffer
+	Broker              *Broker
+	SignupSvc           *signup.Service
+	Searcher            search.Searcher
+	Logger              *slog.Logger
+	Version             string
+	MaxRequestBodyBytes int64
+	OpenAPISpec         []byte
+}
+
 // NewHandlers creates a new Handlers with all dependencies.
-// broker may be nil if LISTEN/NOTIFY is not configured.
-// signupSvc may be nil if signup is not configured.
-// billingSvc may be nil if Stripe is not configured.
-// searcher may be nil if Qdrant is not configured.
-// openapiSpec may be nil if no OpenAPI spec is embedded.
-func NewHandlers(db *storage.DB, jwtMgr *auth.JWTManager, decisionSvc *decisions.Service, billingSvc *billing.Service, buffer *trace.Buffer, broker *Broker, signupSvc *signup.Service, searcher search.Searcher, logger *slog.Logger, version string, maxRequestBodyBytes int64, openapiSpec []byte) *Handlers {
+func NewHandlers(d HandlersDeps) *Handlers {
 	return &Handlers{
-		db:                  db,
-		jwtMgr:              jwtMgr,
-		decisionSvc:         decisionSvc,
-		billingSvc:          billingSvc,
-		buffer:              buffer,
-		broker:              broker,
-		signupSvc:           signupSvc,
-		searcher:            searcher,
-		logger:              logger,
+		db:                  d.DB,
+		jwtMgr:              d.JWTMgr,
+		decisionSvc:         d.DecisionSvc,
+		billingSvc:          d.BillingSvc,
+		buffer:              d.Buffer,
+		broker:              d.Broker,
+		signupSvc:           d.SignupSvc,
+		searcher:            d.Searcher,
+		logger:              d.Logger,
 		startedAt:           time.Now(),
-		version:             version,
-		maxRequestBodyBytes: maxRequestBodyBytes,
-		openapiSpec:         openapiSpec,
+		version:             d.Version,
+		maxRequestBodyBytes: d.MaxRequestBodyBytes,
+		openapiSpec:         d.OpenAPISpec,
 	}
 }
 
