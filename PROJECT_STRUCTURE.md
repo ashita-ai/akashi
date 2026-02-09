@@ -73,7 +73,7 @@ Generated: $(date -u +%Y-%m-%d)
 |---------|-------|
 |  | 2 |
 | github.com/ashita-ai/akashi/internal/billing | 7 |
-| github.com/ashita-ai/akashi/internal/signup | 16 |
+| github.com/ashita-ai/akashi/internal/signup | 15 |
 | github.com/ashita-ai/akashi/internal/service/embedding | 2 |
 | github.com/ashita-ai/akashi/internal/ratelimit | 6 |
 | github.com/ashita-ai/akashi/internal/service/quality | 3 |
