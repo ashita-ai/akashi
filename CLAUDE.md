@@ -20,6 +20,14 @@ If `golangci-lint` is not on `$PATH`, it's at `~/go/bin/golangci-lint` (install:
 
 Never commit without running these. `make ci` runs the full pipeline locally (tidy, build, lint, vet, security, test) and is the gold standard, but the five commands above are the minimum.
 
+**Also run `go test ./...` before pushing.** The five checks above catch compilation, lint, and migration issues but not test failures. CI runs `go test -race -count=1 -coverprofile=coverage.out ./...` and will reject the PR if any test fails. Do not push without a green test suite.
+
+## Changing existing behavior
+
+Before modifying any function's semantics (boundary conditions, error returns, nil behavior), **read the tests for that function first**. Tests in this repo often document intentional design choices via test names and assertion messages (e.g. `"confidence == 0.05 is not > 0.05, so falls to edge tier"`). If a test contradicts your planned change, the test is probably right — understand why before overriding it.
+
+If you still believe the behavior should change, update the tests in the same commit so the change is atomic and CI stays green.
+
 ## Migrations
 
 - Migration files live in `migrations/` as sequential SQL files (001, 002, ..., 017).
