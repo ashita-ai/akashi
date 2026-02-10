@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sort"
 	"syscall"
 	"time"
 
@@ -358,7 +357,7 @@ func newRateLimiter(cfg config.Config, logger *slog.Logger) *ratelimit.Limiter {
 			return nil
 		}
 		logger.Info("rate limiting: disabled (no REDIS_URL)")
-		return ratelimit.New(nil, logger)
+		return ratelimit.New(nil, logger, false)
 	}
 
 	opts, err := redis.ParseURL(cfg.RedisURL)
@@ -368,7 +367,7 @@ func newRateLimiter(cfg config.Config, logger *slog.Logger) *ratelimit.Limiter {
 			return nil
 		}
 		logger.Warn("rate limiting: disabled (invalid REDIS_URL)", "error", err)
-		return ratelimit.New(nil, logger)
+		return ratelimit.New(nil, logger, false)
 	}
 
 	client := redis.NewClient(opts)
@@ -383,11 +382,11 @@ func newRateLimiter(cfg config.Config, logger *slog.Logger) *ratelimit.Limiter {
 			return nil
 		}
 		logger.Warn("rate limiting: disabled (Redis unreachable)", "error", err)
-		return ratelimit.New(nil, logger)
+		return ratelimit.New(nil, logger, false)
 	}
 
 	logger.Info("rate limiting: enabled", "redis", cfg.RedisURL)
-	return ratelimit.New(client, logger)
+	return ratelimit.New(client, logger, cfg.RequireRedis)
 }
 
 func conflictRefreshLoop(ctx context.Context, db *storage.DB, logger *slog.Logger, interval time.Duration) {
@@ -490,8 +489,7 @@ func buildIntegrityProofs(ctx context.Context, db *storage.DB, logger *slog.Logg
 			continue // No new decisions; skip proof.
 		}
 
-		// Hashes are already sorted lexicographically by the SQL query.
-		sort.Strings(hashes)
+		// Hashes come pre-sorted from GetDecisionHashesForBatch (ORDER BY content_hash ASC).
 		root := integrity.BuildMerkleRoot(hashes)
 
 		proof := storage.IntegrityProof{

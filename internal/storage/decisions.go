@@ -488,6 +488,68 @@ func buildDecisionWhereClause(orgID uuid.UUID, f model.QueryFilters, startArgIdx
 	return " WHERE " + strings.Join(conditions, " AND "), args
 }
 
+// ExportDecisionsCursor returns a page of decisions using keyset pagination on
+// (valid_from, id). This avoids the O(offset) scan cost of OFFSET-based pagination,
+// making it suitable for streaming large exports. Pass a nil cursor for the first page.
+func (db *DB) ExportDecisionsCursor(ctx context.Context, orgID uuid.UUID, filters model.QueryFilters, cursor *ExportCursor, limit int) ([]model.Decision, error) {
+	where, args := buildDecisionWhereClause(orgID, filters, 1)
+	where += " AND valid_to IS NULL"
+
+	if cursor != nil {
+		idx := len(args) + 1
+		where += fmt.Sprintf(" AND (valid_from, id) > ($%d, $%d)", idx, idx+1)
+		args = append(args, cursor.ValidFrom, cursor.ID)
+	}
+
+	query := fmt.Sprintf(
+		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
+		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+		 valid_from, valid_to, transaction_time, created_at
+		 FROM decisions%s ORDER BY valid_from ASC, id ASC LIMIT %d`,
+		where, limit,
+	)
+
+	rows, err := db.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("storage: export decisions cursor: %w", err)
+	}
+	defer rows.Close()
+
+	decisions, err := scanDecisions(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	// Batch-load alternatives and evidence.
+	if len(decisions) > 0 {
+		ids := make([]uuid.UUID, len(decisions))
+		for i := range decisions {
+			ids[i] = decisions[i].ID
+		}
+
+		altsMap, err := db.GetAlternativesByDecisions(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		evsMap, err := db.GetEvidenceByDecisions(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		for i := range decisions {
+			decisions[i].Alternatives = altsMap[decisions[i].ID]
+			decisions[i].Evidence = evsMap[decisions[i].ID]
+		}
+	}
+
+	return decisions, nil
+}
+
+// ExportCursor holds the keyset cursor position for cursor-based export pagination.
+type ExportCursor struct {
+	ValidFrom time.Time
+	ID        uuid.UUID
+}
+
 func scanDecisions(rows pgx.Rows) ([]model.Decision, error) {
 	var decisions []model.Decision
 	for rows.Next() {

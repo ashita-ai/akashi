@@ -51,7 +51,7 @@ type OutboxWorker struct {
 	done        chan struct{}
 	once        sync.Once
 	lastCleanup time.Time
-	drainCtx    context.Context // set by Drain so final poll respects caller's deadline
+	drainCh     chan context.Context // carries the drain context to pollLoop for the final poll
 }
 
 // NewOutboxWorker creates a new outbox worker.
@@ -63,6 +63,7 @@ func NewOutboxWorker(pool *pgxpool.Pool, index *QdrantIndex, logger *slog.Logger
 		pollInterval: pollInterval,
 		batchSize:    batchSize,
 		done:         make(chan struct{}),
+		drainCh:      make(chan context.Context, 1),
 	}
 }
 
@@ -83,7 +84,12 @@ func (w *OutboxWorker) Start(ctx context.Context) {
 // until done or the context expires. The ctx parameter is passed to the final
 // poll so it respects the caller's deadline.
 func (w *OutboxWorker) Drain(ctx context.Context) {
-	w.drainCtx = ctx // Store so pollLoop's final batch respects caller's deadline.
+	// Send the drain context to pollLoop via channel (race-free).
+	// Must be sent before cancelLoop so pollLoop can receive it on ctx.Done().
+	select {
+	case w.drainCh <- ctx:
+	default:
+	}
 	if w.cancelLoop != nil {
 		w.cancelLoop()
 	}
@@ -101,10 +107,15 @@ func (w *OutboxWorker) pollLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			// Final drain using the context provided by Drain().
-			// We need a non-cancelled context because ctx is already done.
-			if w.drainCtx != nil {
-				w.processBatch(w.drainCtx)
+			// Final drain: prefer the drain context (sent by Drain via channel)
+			// so the final poll respects the caller's deadline.
+			var drainCtx context.Context
+			select {
+			case drainCtx = <-w.drainCh:
+			default:
+			}
+			if drainCtx != nil {
+				w.processBatch(drainCtx)
 			} else {
 				// Fallback for direct cancellation without Drain (e.g., tests).
 				fallbackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

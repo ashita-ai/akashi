@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 // HandleExportDecisions handles GET /v1/export/decisions (admin-only).
@@ -45,29 +46,21 @@ func (h *Handlers) HandleExportDecisions(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	w.Header().Set("Cache-Control", "no-cache")
 
-	// Stream in pages to avoid loading everything into memory.
+	// Stream in pages using keyset (cursor-based) pagination to avoid O(offset)
+	// degradation. Each page uses (valid_from, id) > (last_seen) instead of OFFSET,
+	// so every page is O(1) regardless of position in the result set.
 	const pageSize = 100
-	offset := 0
 	encoder := json.NewEncoder(w)
-
 	flusher, _ := w.(http.Flusher)
+	var cursor *storage.ExportCursor
 
 	for {
-		decisions, _, err := h.db.QueryDecisions(r.Context(), orgID, model.QueryRequest{
-			Filters:  filters,
-			Include:  []string{"alternatives", "evidence"},
-			OrderBy:  "valid_from",
-			OrderDir: "asc",
-			Limit:    pageSize,
-			Offset:   offset,
-		})
+		decisions, err := h.db.ExportDecisionsCursor(r.Context(), orgID, filters, cursor, pageSize)
 		if err != nil {
-			h.logger.Error("export failed", "error", err, "offset", offset)
-			// If we haven't written anything yet, we can still return an error.
-			if offset == 0 {
+			h.logger.Error("export failed", "error", err)
+			if cursor == nil {
 				writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "export failed")
 			}
-			// Otherwise we've already started streaming — just stop.
 			return
 		}
 
@@ -84,6 +77,9 @@ func (h *Handlers) HandleExportDecisions(w http.ResponseWriter, r *http.Request)
 		if len(decisions) < pageSize {
 			break // Last page.
 		}
-		offset += pageSize
+
+		// Advance cursor to the last row's position.
+		last := decisions[len(decisions)-1]
+		cursor = &storage.ExportCursor{ValidFrom: last.ValidFrom, ID: last.ID}
 	}
 }
