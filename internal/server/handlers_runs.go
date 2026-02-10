@@ -4,6 +4,8 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ashita-ai/akashi/internal/model"
 )
@@ -23,6 +25,13 @@ func (h *Handlers) HandleCreateRun(w http.ResponseWriter, r *http.Request) {
 	if !model.RoleAtLeast(claims.Role, model.RoleAdmin) && req.AgentID != claims.AgentID {
 		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "can only create runs for your own agent_id")
 		return
+	}
+
+	// Set OTEL span attributes for trace correlation.
+	span := trace.SpanFromContext(r.Context())
+	span.SetAttributes(attribute.String("akashi.agent_id", req.AgentID))
+	if req.TraceID != nil {
+		span.SetAttributes(attribute.String("akashi.trace_id", *req.TraceID))
 	}
 
 	req.OrgID = orgID

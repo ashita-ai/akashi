@@ -30,6 +30,7 @@ type QueryRequest struct {
 	OrderDir string       `json:"order_dir,omitempty"`
 	Limit    int          `json:"limit,omitempty"`
 	Offset   int          `json:"offset,omitempty"`
+	TraceID  *string      `json:"trace_id,omitempty"` // Filter by OTEL trace ID (matches agent_runs.trace_id).
 }
 
 // TemporalQueryRequest is the request body for POST /v1/query/temporal.

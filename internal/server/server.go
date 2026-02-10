@@ -186,10 +186,11 @@ func New(cfg ServerConfig) *Server {
 	}
 
 	// Middleware chain (outermost executes first):
-	// request ID → security headers → CORS → tracing → logging → auth → recovery → handler.
+	// request ID → security headers → CORS → tracing → logging → baggage → auth → recovery → handler.
 	var handler http.Handler = mux
 	handler = recoveryMiddleware(cfg.Logger, handler)
 	handler = authMiddleware(cfg.JWTMgr, handler)
+	handler = baggageMiddleware(handler)
 	handler = loggingMiddleware(cfg.Logger, handler)
 	handler = tracingMiddleware(handler)
 	handler = corsMiddleware(handler)

@@ -189,6 +189,12 @@ func (db *DB) QueryDecisions(ctx context.Context, orgID uuid.UUID, req model.Que
 	where, args := buildDecisionWhereClause(orgID, req.Filters, 1)
 	where += " AND valid_to IS NULL"
 
+	// Filter by OTEL trace_id via agent_runs join.
+	if req.TraceID != nil {
+		args = append(args, *req.TraceID)
+		where += fmt.Sprintf(" AND run_id IN (SELECT id FROM agent_runs WHERE trace_id = $%d AND org_id = $1)", len(args))
+	}
+
 	// Count total matching decisions.
 	countQuery := "SELECT COUNT(*) FROM decisions" + where
 	var total int
