@@ -51,16 +51,32 @@ func OrgIDFromContext(ctx context.Context) uuid.UUID {
 }
 
 // requestIDMiddleware assigns a unique request ID to each request.
+// Client-supplied IDs are accepted if they are reasonable length (≤128 chars)
+// and contain only printable ASCII. Otherwise, a fresh UUID is generated.
 func requestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqID := r.Header.Get("X-Request-ID")
-		if reqID == "" {
+		if !isValidRequestID(reqID) {
 			reqID = uuid.New().String()
 		}
 		ctx := context.WithValue(r.Context(), contextKeyRequestID, reqID)
 		w.Header().Set("X-Request-ID", reqID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// isValidRequestID checks that a client-supplied request ID is safe to log and echo.
+func isValidRequestID(id string) bool {
+	if len(id) == 0 || len(id) > 128 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if c < 0x20 || c > 0x7e { // reject control chars and non-ASCII
+			return false
+		}
+	}
+	return true
 }
 
 // loggingMiddleware logs each request with structured fields.
@@ -337,7 +353,6 @@ func corsMiddleware(next http.Handler) http.Handler {
 		origin := r.Header.Get("Origin")
 		if origin != "" {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Max-Age", "86400")

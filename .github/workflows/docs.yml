@@ -17,24 +17,25 @@ jobs:
       pull-requests: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Generate project structure
         run: |
-          cat > PROJECT_STRUCTURE.md << 'EOF'
+          GENERATED_DATE=$(date -u +%Y-%m-%d)
+          cat > PROJECT_STRUCTURE.md << EOF
           # Project Structure
 
-          Generated: $(date -u +%Y-%m-%d)
+          Generated: ${GENERATED_DATE}
 
-          ```
+          \`\`\`
           EOF
           find . -type f -name '*.go' | grep -v '_test.go' | grep -v vendor | sort | while read f; do
             echo "$f" >> PROJECT_STRUCTURE.md
@@ -61,10 +62,15 @@ jobs:
             echo "changed=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Commit and push
+      - name: Create PR
         if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          BRANCH="docs/update-structure-$(date +%s)"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
           git commit -m "docs: update project structure"
-          git push
+          git push -u origin "$BRANCH"
+          gh pr create --title "docs: update project structure" --body "Automated update of PROJECT_STRUCTURE.md" --base main

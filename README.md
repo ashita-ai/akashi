@@ -243,7 +243,7 @@ internal/
   signup/                  Self-serve signup with email verification
   storage/                 PostgreSQL storage layer (pgxpool + pgx for NOTIFY)
   telemetry/               OpenTelemetry tracer and meter initialization
-migrations/                17 forward-only SQL migration files
+migrations/                21 forward-only SQL migration files
 ui/                        Audit dashboard (React 19, TypeScript, Vite, Tailwind)
   ui.go                    go:embed with build tag (ui)
   ui_noop.go               nil FS fallback without build tag

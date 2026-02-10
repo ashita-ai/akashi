@@ -333,7 +333,7 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 
 	limit := request.GetInt("limit", 10)
 
-	decs, _, err := s.decisionSvc.Query(ctx, orgID, model.QueryRequest{
+	decs, total, err := s.decisionSvc.Query(ctx, orgID, model.QueryRequest{
 		Filters:  filters,
 		Include:  []string{"alternatives"},
 		OrderBy:  "valid_from",
@@ -354,7 +354,7 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 
 	resultData, _ := json.MarshalIndent(map[string]any{
 		"decisions": decs,
-		"total":     len(decs),
+		"total":     total,
 	}, "", "  ")
 
 	return &mcplib.CallToolResult{

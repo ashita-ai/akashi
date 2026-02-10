@@ -11,18 +11,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Install tools
         run: |
-          go install golang.org/x/tools/cmd/goimports@latest
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/tools/cmd/goimports@v0.42.0
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
 
       - name: Verify dependencies
         run: |
@@ -30,7 +30,9 @@ jobs:
           git diff --exit-code go.mod go.sum
 
       - name: Install Atlas
-        run: curl -sSf https://atlasgo.sh | sh
+        uses: ariga/setup-atlas@cf119a6512b9133214e3a98bd4f731bfc413e9cb
+        with:
+          version: v1.1.0
 
       - name: Verify migration integrity
         run: |
@@ -40,7 +42,7 @@ jobs:
         run: go build -ldflags "-X main.version=ci-${GITHUB_SHA::8}" -o bin/akashi ./cmd/akashi
 
       - name: Lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
         with:
           version: v2.8
 
@@ -55,7 +57,7 @@ jobs:
 
       - name: Upload coverage
         if: always()
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
           files: coverage.out
           fail_ci_if_error: false

@@ -51,6 +51,7 @@ type OutboxWorker struct {
 	done        chan struct{}
 	once        sync.Once
 	lastCleanup time.Time
+	drainCtx    context.Context // set by Drain so final poll respects caller's deadline
 }
 
 // NewOutboxWorker creates a new outbox worker.
@@ -79,8 +80,10 @@ func (w *OutboxWorker) Start(ctx context.Context) {
 }
 
 // Drain signals the poll loop to stop, processes remaining entries, and blocks
-// until done or the context expires.
+// until done or the context expires. The ctx parameter is passed to the final
+// poll so it respects the caller's deadline.
 func (w *OutboxWorker) Drain(ctx context.Context) {
+	w.drainCtx = ctx // Store so pollLoop's final batch respects caller's deadline.
 	if w.cancelLoop != nil {
 		w.cancelLoop()
 	}
@@ -98,10 +101,16 @@ func (w *OutboxWorker) pollLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			// Final drain: process whatever is left.
-			drainCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			w.processBatch(drainCtx)
-			cancel()
+			// Final drain using the context provided by Drain().
+			// We need a non-cancelled context because ctx is already done.
+			if w.drainCtx != nil {
+				w.processBatch(w.drainCtx)
+			} else {
+				// Fallback for direct cancellation without Drain (e.g., tests).
+				fallbackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				w.processBatch(fallbackCtx)
+				cancel()
+			}
 			w.once.Do(func() { close(w.done) })
 			return
 		case <-ticker.C:

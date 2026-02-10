@@ -3,6 +3,7 @@ package server
 import (
 	"io"
 	"net/http"
+	"net/url"
 
 	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/model"
@@ -36,6 +37,11 @@ func (h *Handlers) HandleBillingCheckout(w http.ResponseWriter, r *http.Request)
 
 	if req.SuccessURL == "" || req.CancelURL == "" {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "success_url and cancel_url are required")
+		return
+	}
+
+	if !isHTTPSURL(req.SuccessURL) || !isHTTPSURL(req.CancelURL) {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "success_url and cancel_url must be valid https:// URLs")
 		return
 	}
 
@@ -84,6 +90,11 @@ func (h *Handlers) HandleBillingPortal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !isHTTPSURL(req.ReturnURL) {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "return_url must be a valid https:// URL")
+		return
+	}
+
 	url, err := h.billingSvc.CreatePortalSession(r.Context(), *org.StripeCustomerID, req.ReturnURL)
 	if err != nil {
 		h.logger.Error("billing portal: create session", "error", err, "org_id", orgID)
@@ -113,7 +124,7 @@ func (h *Handlers) HandleBillingWebhook(w http.ResponseWriter, r *http.Request) 
 	status, whErr := h.billingSvc.HandleWebhook(r.Context(), body, sigHeader)
 	if whErr != nil {
 		h.logger.Error("billing webhook failed", "error", whErr, "status", status)
-		writeError(w, r, status, model.ErrCodeInternalError, whErr.Error())
+		h.writeInternalError(w, r, "billing webhook failed", whErr)
 		return
 	}
 
@@ -148,4 +159,13 @@ func (h *Handlers) HandleUsage(w http.ResponseWriter, r *http.Request) {
 		"decision_limit": org.DecisionLimit,
 		"agent_limit":    org.AgentLimit,
 	})
+}
+
+// isHTTPSURL validates that a string is a well-formed https:// URL.
+func isHTTPSURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return u.Scheme == "https" && u.Host != ""
 }

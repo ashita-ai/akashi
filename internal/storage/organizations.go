@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -47,7 +48,7 @@ func (db *DB) GetOrganization(ctx context.Context, id uuid.UUID) (model.Organiza
 		&org.DecisionLimit, &org.AgentLimit, &org.Email, &org.EmailVerified, &org.CreatedAt, &org.UpdatedAt,
 	)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return model.Organization{}, fmt.Errorf("storage: organization not found: %s", id)
 		}
 		return model.Organization{}, fmt.Errorf("storage: get organization: %w", err)
@@ -67,7 +68,7 @@ func (db *DB) GetOrganizationBySlug(ctx context.Context, slug string) (model.Org
 		&org.DecisionLimit, &org.AgentLimit, &org.Email, &org.EmailVerified, &org.CreatedAt, &org.UpdatedAt,
 	)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return model.Organization{}, fmt.Errorf("storage: organization not found: %s", slug)
 		}
 		return model.Organization{}, fmt.Errorf("storage: get organization by slug: %w", err)
@@ -119,7 +120,7 @@ func (db *DB) GetUsage(ctx context.Context, orgID uuid.UUID, period string) (mod
 		orgID, period,
 	).Scan(&usage.OrgID, &usage.Period, &usage.DecisionCount)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return model.OrgUsage{OrgID: orgID, Period: period, DecisionCount: 0}, nil
 		}
 		return model.OrgUsage{}, fmt.Errorf("storage: get usage: %w", err)
@@ -139,7 +140,7 @@ func (db *DB) GetOrganizationByStripeCustomer(ctx context.Context, customerID st
 		&org.DecisionLimit, &org.AgentLimit, &org.Email, &org.EmailVerified, &org.CreatedAt, &org.UpdatedAt,
 	)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return model.Organization{}, fmt.Errorf("storage: organization not found for customer: %s", customerID)
 		}
 		return model.Organization{}, fmt.Errorf("storage: get organization by stripe customer: %w", err)
@@ -259,7 +260,10 @@ func (db *DB) VerifyEmail(ctx context.Context, token string) error {
 		token,
 	).Scan(&orgID, &expiresAt, &usedAt)
 	if err != nil {
-		return fmt.Errorf("storage: verification token not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("storage: verification token not found")
+		}
+		return fmt.Errorf("storage: lookup verification token: %w", err)
 	}
 
 	if usedAt != nil {

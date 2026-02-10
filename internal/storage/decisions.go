@@ -72,15 +72,25 @@ func (db *DB) CreateDecision(ctx context.Context, d model.Decision) (model.Decis
 	return d, nil
 }
 
-// GetDecision retrieves a decision by ID, optionally with alternatives and evidence.
-func (db *DB) GetDecision(ctx context.Context, orgID, id uuid.UUID, includeAlts, includeEvidence bool) (model.Decision, error) {
-	var d model.Decision
-	err := db.pool.QueryRow(ctx,
-		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
+// GetDecisionOpts controls GetDecision behavior.
+type GetDecisionOpts struct {
+	IncludeAlts     bool // Load alternatives.
+	IncludeEvidence bool // Load evidence.
+	CurrentOnly     bool // If true, return only if the decision has not been superseded (valid_to IS NULL).
+}
+
+// GetDecision retrieves a decision by ID with configurable includes and filtering.
+func (db *DB) GetDecision(ctx context.Context, orgID, id uuid.UUID, opts GetDecisionOpts) (model.Decision, error) {
+	query := `SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
 		 valid_from, valid_to, transaction_time, created_at
-		 FROM decisions WHERE id = $1 AND org_id = $2`, id, orgID,
-	).Scan(
+		 FROM decisions WHERE id = $1 AND org_id = $2`
+	if opts.CurrentOnly {
+		query += ` AND valid_to IS NULL`
+	}
+
+	var d model.Decision
+	err := db.pool.QueryRow(ctx, query, id, orgID).Scan(
 		&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence,
 		&d.Reasoning, &d.Metadata, &d.QualityScore, &d.PrecedentRef,
 		&d.SupersedesID, &d.ContentHash,
@@ -93,7 +103,7 @@ func (db *DB) GetDecision(ctx context.Context, orgID, id uuid.UUID, includeAlts,
 		return model.Decision{}, fmt.Errorf("storage: get decision: %w", err)
 	}
 
-	if includeAlts {
+	if opts.IncludeAlts {
 		alts, err := db.GetAlternativesByDecision(ctx, id)
 		if err != nil {
 			return model.Decision{}, err
@@ -101,7 +111,7 @@ func (db *DB) GetDecision(ctx context.Context, orgID, id uuid.UUID, includeAlts,
 		d.Alternatives = alts
 	}
 
-	if includeEvidence {
+	if opts.IncludeEvidence {
 		ev, err := db.GetEvidenceByDecision(ctx, id)
 		if err != nil {
 			return model.Decision{}, err
@@ -123,10 +133,10 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 
 	now := time.Now().UTC()
 
-	// Invalidate original decision.
+	// Invalidate original decision, scoped by org_id for tenant isolation.
 	tag, err := tx.Exec(ctx,
-		`UPDATE decisions SET valid_to = $1 WHERE id = $2 AND valid_to IS NULL`,
-		now, originalID,
+		`UPDATE decisions SET valid_to = $1 WHERE id = $2 AND org_id = $3 AND valid_to IS NULL`,
+		now, originalID, revised.OrgID,
 	)
 	if err != nil {
 		return model.Decision{}, fmt.Errorf("storage: invalidate decision: %w", err)
@@ -331,10 +341,15 @@ func (db *DB) SearchDecisionsByText(ctx context.Context, orgID uuid.UUID, query 
 	where += " AND valid_to IS NULL"
 
 	// Use ILIKE for simple keyword matching across outcome, reasoning, and decision_type.
-	// The query is split into words, and all must match at least one field.
+	// The query is split into words (capped at 20 to prevent query explosion),
+	// and all must match at least one field. LIKE metacharacters are escaped.
 	words := strings.Fields(query)
+	if len(words) > 20 {
+		words = words[:20]
+	}
 	for _, word := range words {
-		args = append(args, "%"+strings.ToLower(word)+"%")
+		escaped := strings.NewReplacer("%", `\%`, "_", `\_`).Replace(strings.ToLower(word))
+		args = append(args, "%"+escaped+"%")
 		paramIdx := len(args)
 		where += fmt.Sprintf(` AND (LOWER(outcome) LIKE $%d OR LOWER(COALESCE(reasoning, '')) LIKE $%d OR LOWER(decision_type) LIKE $%d)`,
 			paramIdx, paramIdx, paramIdx)
@@ -384,6 +399,9 @@ func (db *DB) GetDecisionsByAgent(ctx context.Context, orgID uuid.UUID, agentID 
 	}
 	if limit > 1000 {
 		limit = 1000
+	}
+	if offset < 0 {
+		offset = 0
 	}
 
 	filters := model.QueryFilters{
@@ -529,7 +547,7 @@ func (db *DB) GetDecisionRevisions(ctx context.Context, orgID, id uuid.UUID) ([]
 		-- Anchor: the requested decision.
 		SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		       metadata, quality_score, precedent_ref, supersedes_id, content_hash,
-		       valid_from, valid_to, transaction_time, created_at
+		       valid_from, valid_to, transaction_time, created_at, 0 AS depth
 		FROM decisions
 		WHERE id = $1 AND org_id = $2
 
@@ -538,20 +556,20 @@ func (db *DB) GetDecisionRevisions(ctx context.Context, orgID, id uuid.UUID) ([]
 		-- Walk backwards: find what this decision supersedes.
 		SELECT d.id, d.run_id, d.agent_id, d.org_id, d.decision_type, d.outcome, d.confidence, d.reasoning,
 		       d.metadata, d.quality_score, d.precedent_ref, d.supersedes_id, d.content_hash,
-		       d.valid_from, d.valid_to, d.transaction_time, d.created_at
+		       d.valid_from, d.valid_to, d.transaction_time, d.created_at, c.depth + 1
 		FROM decisions d
 		INNER JOIN chain c ON d.id = c.supersedes_id
-		WHERE d.org_id = $2
+		WHERE d.org_id = $2 AND c.depth < 100
 
 		UNION
 
 		-- Walk forwards: find decisions that supersede this one.
 		SELECT d.id, d.run_id, d.agent_id, d.org_id, d.decision_type, d.outcome, d.confidence, d.reasoning,
 		       d.metadata, d.quality_score, d.precedent_ref, d.supersedes_id, d.content_hash,
-		       d.valid_from, d.valid_to, d.transaction_time, d.created_at
+		       d.valid_from, d.valid_to, d.transaction_time, d.created_at, c.depth + 1
 		FROM decisions d
 		INNER JOIN chain c ON d.supersedes_id = c.id
-		WHERE d.org_id = $2
+		WHERE d.org_id = $2 AND c.depth < 100
 	)
 	SELECT DISTINCT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 	       metadata, quality_score, precedent_ref, supersedes_id, content_hash,

@@ -75,6 +75,9 @@ func (db *DB) ListConflicts(ctx context.Context, orgID uuid.UUID, filters Confli
 	if limit <= 0 {
 		limit = 50
 	}
+	if limit > 1000 {
+		limit = 1000
+	}
 	if offset < 0 {
 		offset = 0
 	}

@@ -167,7 +167,7 @@ func TestInsertAndGetEvents(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), count)
 
-	got, err := testDB.GetEventsByRun(ctx, run.ID)
+	got, err := testDB.GetEventsByRun(ctx, run.OrgID, run.ID)
 	require.NoError(t, err)
 	assert.Len(t, got, 2)
 	assert.Equal(t, model.EventDecisionStarted, got[0].EventType)
@@ -199,7 +199,7 @@ func TestInsertEventsCOPY(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(100), count)
 
-	got, err := testDB.GetEventsByRun(ctx, run.ID)
+	got, err := testDB.GetEventsByRun(ctx, run.OrgID, run.ID)
 	require.NoError(t, err)
 	assert.Len(t, got, 100)
 }
@@ -223,7 +223,7 @@ func TestCreateAndGetDecision(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "approve", d.Outcome)
 
-	got, err := testDB.GetDecision(ctx, d.OrgID, d.ID, false, false)
+	got, err := testDB.GetDecision(ctx, d.OrgID, d.ID, storage.GetDecisionOpts{})
 	require.NoError(t, err)
 	assert.Equal(t, d.ID, got.ID)
 	assert.Equal(t, float32(0.87), got.Confidence)
@@ -265,7 +265,7 @@ func TestDecisionWithAlternativesAndEvidence(t *testing.T) {
 	require.NoError(t, err)
 
 	// Get decision with includes.
-	got, err := testDB.GetDecision(ctx, d.OrgID, d.ID, true, true)
+	got, err := testDB.GetDecision(ctx, d.OrgID, d.ID, storage.GetDecisionOpts{IncludeAlts: true, IncludeEvidence: true})
 	require.NoError(t, err)
 	assert.Len(t, got.Alternatives, 2)
 	assert.Len(t, got.Evidence, 1)
@@ -297,12 +297,12 @@ func TestReviseDecision(t *testing.T) {
 	assert.Equal(t, "deny", revised.Outcome)
 
 	// Original should be invalidated.
-	orig, err := testDB.GetDecision(ctx, original.OrgID, original.ID, false, false)
+	orig, err := testDB.GetDecision(ctx, original.OrgID, original.ID, storage.GetDecisionOpts{})
 	require.NoError(t, err)
 	assert.NotNil(t, orig.ValidTo)
 
 	// Revised should be current.
-	rev, err := testDB.GetDecision(ctx, revised.OrgID, revised.ID, false, false)
+	rev, err := testDB.GetDecision(ctx, revised.OrgID, revised.ID, storage.GetDecisionOpts{})
 	require.NoError(t, err)
 	assert.Nil(t, rev.ValidTo)
 }
@@ -439,7 +439,7 @@ func TestAccessGrants(t *testing.T) {
 	assert.False(t, has)
 
 	// Delete grant.
-	err = testDB.DeleteGrant(ctx, grant.ID)
+	err = testDB.DeleteGrant(ctx, grant.OrgID, grant.ID)
 	require.NoError(t, err)
 
 	has, err = testDB.HasAccess(ctx, uuid.Nil, grantee.ID, "agent_traces", "underwriting-agent", "read")

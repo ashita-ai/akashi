@@ -156,22 +156,30 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 	}
 
 	// 5. Execute transactional write (run + decision + alts + evidence + complete).
-	run, decision, err := s.db.CreateTraceTx(ctx, storage.CreateTraceParams{
-		AgentID:  input.AgentID,
-		OrgID:    orgID,
-		TraceID:  input.TraceID,
-		Metadata: input.Metadata,
-		Decision: model.Decision{
-			DecisionType: input.Decision.DecisionType,
-			Outcome:      input.Decision.Outcome,
-			Confidence:   input.Decision.Confidence,
-			Reasoning:    input.Decision.Reasoning,
-			Embedding:    decisionEmb,
-			QualityScore: qualityScore,
-			PrecedentRef: input.PrecedentRef,
-		},
-		Alternatives: alts,
-		Evidence:     evs,
+	// Wrapped in WithRetry to handle Postgres serialization failures (40001) and
+	// deadlocks (40P01) that can occur when concurrent traces race on indexes.
+	var run model.AgentRun
+	var decision model.Decision
+	err = storage.WithRetry(ctx, 3, 10*time.Millisecond, func() error {
+		var txErr error
+		run, decision, txErr = s.db.CreateTraceTx(ctx, storage.CreateTraceParams{
+			AgentID:  input.AgentID,
+			OrgID:    orgID,
+			TraceID:  input.TraceID,
+			Metadata: input.Metadata,
+			Decision: model.Decision{
+				DecisionType: input.Decision.DecisionType,
+				Outcome:      input.Decision.Outcome,
+				Confidence:   input.Decision.Confidence,
+				Reasoning:    input.Decision.Reasoning,
+				Embedding:    decisionEmb,
+				QualityScore: qualityScore,
+				PrecedentRef: input.PrecedentRef,
+			},
+			Alternatives: alts,
+			Evidence:     evs,
+		})
+		return txErr
 	})
 	if err != nil {
 		return TraceResult{}, fmt.Errorf("trace: %w", err)
