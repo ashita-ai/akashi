@@ -36,8 +36,8 @@ type Buffer struct {
 
 	flushCh    chan struct{}
 	done       chan struct{}
-	cancelLoop context.CancelFunc // cancels the flushLoop goroutine
-	drainCtx   context.Context    // set by Drain so final flush respects caller's deadline
+	cancelLoop context.CancelFunc   // cancels the flushLoop goroutine
+	drainCh    chan context.Context // carries the drain context to flushLoop for the final flush
 }
 
 // NewBuffer creates a new event buffer.
@@ -49,6 +49,7 @@ func NewBuffer(db *storage.DB, logger *slog.Logger, maxSize int, flushTimeout ti
 		flushTimeout: flushTimeout,
 		flushCh:      make(chan struct{}, 1),
 		done:         make(chan struct{}),
+		drainCh:      make(chan context.Context, 1),
 	}
 }
 
@@ -119,11 +120,15 @@ func (b *Buffer) flushLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			// Final flush using the drain context provided by Drain().
-			// We need a non-cancelled context because ctx is already done.
-			// The drain context has its own deadline set by the caller.
-			if b.drainCtx != nil {
-				b.flush(b.drainCtx)
+			// Final flush: prefer the drain context (sent by Drain via channel)
+			// so the final flush respects the caller's deadline.
+			var drainCtx context.Context
+			select {
+			case drainCtx = <-b.drainCh:
+			default:
+			}
+			if drainCtx != nil {
+				b.flush(drainCtx)
 			} else {
 				// Fallback for direct cancellation without Drain (e.g., tests).
 				fallbackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -179,7 +184,12 @@ func (b *Buffer) flush(ctx context.Context) {
 // to wait for the goroutine to finish and is passed to the final flush so it
 // respects the caller's deadline.
 func (b *Buffer) Drain(ctx context.Context) {
-	b.drainCtx = ctx // Store so flushLoop's final flush respects caller's deadline.
+	// Send the drain context to flushLoop via channel (race-free).
+	// Must be sent before cancelLoop so flushLoop can receive it on ctx.Done().
+	select {
+	case b.drainCh <- ctx:
+	default:
+	}
 	if b.cancelLoop != nil {
 		b.cancelLoop() // Signal flushLoop to exit; it does a final flush before closing b.done.
 	}
