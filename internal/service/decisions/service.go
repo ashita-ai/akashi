@@ -14,7 +14,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pgvector/pgvector-go"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/model"
@@ -81,7 +83,17 @@ type TraceResult struct {
 // Embeddings and quality scores are computed first, then all database writes
 // happen atomically within a single transaction. Notification is sent after commit.
 func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) (TraceResult, error) {
-	// 0. Quota check (before any DB writes or embedding calls).
+	// 0a. Set OTEL span attributes for trace correlation.
+	span := trace.SpanFromContext(ctx)
+	span.SetAttributes(
+		attribute.String("akashi.agent_id", input.AgentID),
+		attribute.String("akashi.decision_type", input.Decision.DecisionType),
+	)
+	if input.TraceID != nil {
+		span.SetAttributes(attribute.String("akashi.trace_id", *input.TraceID))
+	}
+
+	// 0b. Quota check (before any DB writes or embedding calls).
 	if s.billingSvc != nil {
 		if err := s.billingSvc.CheckDecisionQuota(ctx, orgID); err != nil {
 			return TraceResult{}, err

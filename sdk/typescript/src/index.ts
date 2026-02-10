@@ -1,6 +1,7 @@
 export { AkashiClient } from "./client.js";
 export { withAkashi } from "./middleware.js";
 export { TokenManager } from "./auth.js";
+export { traceIdFromContext } from "./otel.js";
 export {
   AkashiError,
   AuthenticationError,

@@ -14,7 +14,9 @@ import (
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	otelmetric "go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ashita-ai/akashi/internal/auth"
@@ -133,6 +135,10 @@ func tracingMiddleware(next http.Handler) http.Handler {
 		)
 		defer span.End()
 
+		// Inject trace context into response headers so clients can correlate
+		// their downstream operations with Akashi's server-side trace.
+		otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(w.Header()))
+
 		start := time.Now()
 
 		sw := &statusWriter{ResponseWriter: w, statusCode: http.StatusOK}
@@ -177,6 +183,20 @@ func traceIDFromContext(ctx context.Context) string {
 		return sc.TraceID().String()
 	}
 	return ""
+}
+
+// baggageMiddleware extracts the akashi.context_id OTEL baggage member (if present)
+// and sets it as a span attribute. This enables cross-service correlation: a calling
+// service can pass its Akashi run ID via OTEL baggage, and the span will include it.
+func baggageMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bag := baggage.FromContext(r.Context())
+		if member := bag.Member("akashi.context_id"); member.Value() != "" {
+			span := trace.SpanFromContext(r.Context())
+			span.SetAttributes(attribute.String("akashi.context_id", member.Value()))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // authMiddleware validates JWT tokens and populates context with claims.

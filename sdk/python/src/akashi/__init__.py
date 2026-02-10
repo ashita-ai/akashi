@@ -13,6 +13,7 @@ from akashi.exceptions import (
     ValidationError,
 )
 from akashi.middleware import AkashiMiddleware, AkashiSyncMiddleware
+from akashi.otel import trace_id_from_context
 from akashi.types import (
     Agent,
     AgentEvent,
@@ -76,6 +77,8 @@ __all__ = [
     "SearchResponse",
     "HealthResponse",
     "UsageResponse",
+    # OTEL helpers
+    "trace_id_from_context",
     # Exceptions
     "AkashiError",
     "AuthenticationError",
