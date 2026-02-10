@@ -30,7 +30,7 @@ The three providers, in priority order:
 | Priority | Provider | Model | Dimensions | When selected |
 |----------|----------|-------|------------|---------------|
 | 1 | `OllamaProvider` | mxbai-embed-large | 1024 | Ollama server responds to health check |
-| 2 | `OpenAIProvider` | text-embedding-3-small | 1024 (configurable, default 1536 if provider used standalone) | `OPENAI_API_KEY` is set |
+| 2 | `OpenAIProvider` | text-embedding-3-small | 1024 (truncated from native 1536 via API `dimensions` parameter) | `OPENAI_API_KEY` is set |
 | 3 | `NoopProvider` | n/a | matches configured dimensions | Always available (terminal fallback) |
 
 ### Auto-detection (default mode)
@@ -101,6 +101,7 @@ The default dimension is 1024, matching Ollama's `mxbai-embed-large` model. This
 
 ## References
 
+- ADR-002: Unified PostgreSQL storage (pgvector stores embeddings; Qdrant is derived index)
 - Implementation: `internal/service/embedding/embedding.go`, `internal/service/embedding/ollama.go`
 - Provider initialization: `cmd/akashi/main.go` (`newEmbeddingProvider`, `ollamaReachable`)
 - Configuration: `internal/config/config.go`

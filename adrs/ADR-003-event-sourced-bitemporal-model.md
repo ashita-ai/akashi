@@ -21,7 +21,7 @@ Event-sourced architecture with bi-temporal columns:
 
 | Table | Purpose | Mutable? |
 |-------|---------|----------|
-| `agent_runs` | Top-level execution context | No |
+| `agent_runs` | Top-level execution context | Yes (status transitions: running → completed/failed) |
 | `agent_events` | Append-only event log (TimescaleDB hypertable) | No (append only) |
 | `decisions` | Decision entities with embeddings | Bi-temporal |
 | `alternatives` | Alternatives considered with scores | No |
@@ -76,6 +76,8 @@ AgentHandoff, ConsensusRequested, ConflictDetected
 
 ## References
 
-- Spec 02 (data model patterns) in the `internal/` repo
+- ADR-002: Unified PostgreSQL storage (storage engine this data model runs on)
+- ADR-008: TimescaleDB for event ingestion (`agent_events` hypertable configuration)
+- Implementation: `internal/model/` (domain types), `internal/storage/` (query layer), `migrations/*.sql` (schema)
 - Martin Fowler: martinfowler.com/articles/bitemporal-history.html
 - OpenLineage object model: openlineage.io/docs/spec/object-model/

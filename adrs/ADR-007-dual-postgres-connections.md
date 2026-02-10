@@ -30,12 +30,13 @@ The `storage.DB` struct owns both:
 
 ```go
 type DB struct {
-    pool       *pgxpool.Pool  // PgBouncer: all queries
-    notifyConn *pgx.Conn      // Direct: LISTEN/NOTIFY only
-    notifyDSN  string
-    notifyMu   sync.Mutex
+    pool           *pgxpool.Pool  // PgBouncer: all queries
+    notifyConn     *pgx.Conn      // Direct: LISTEN/NOTIFY only
+    notifyDSN      string
+    notifyMu       sync.Mutex
+    notifyGen      uint64         // incremented on every reconnect; protected by notifyMu
     listenChannels []string
-    logger     *slog.Logger
+    logger         *slog.Logger
 }
 ```
 
@@ -111,6 +112,8 @@ Development environments and test suites often run without PgBouncer. In that ca
 
 ## References
 
+- ADR-002: Unified PostgreSQL storage (this decision implements the connection layer for that storage architecture)
+- ADR-008: TimescaleDB for event ingestion (COPY-based writes go through the pooled connection)
 - `internal/storage/pool.go` -- `DB` struct, `New()` constructor, `reconnectNotify()` backoff logic
 - `internal/storage/notify.go` -- `Listen()`, `WaitForNotification()`, `Notify()` methods
 - `internal/server/broker.go` -- SSE broker that consumes notifications and fans out to HTTP subscribers
