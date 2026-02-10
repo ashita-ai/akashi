@@ -7,6 +7,8 @@ package authz
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/google/uuid"
@@ -42,9 +44,16 @@ func CanAccessAgent(ctx context.Context, db *storage.DB, claims *auth.Claims, ta
 	}
 
 	// Check tag-based access: if caller has tags, check if target shares any.
+	// Distinguish "agent not found" (skip tags) from actual DB errors (propagate).
 	caller, err := db.GetAgentByAgentID(ctx, claims.OrgID, claims.AgentID)
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		return false, fmt.Errorf("authz: get caller agent: %w", err)
+	}
 	if err == nil && len(caller.Tags) > 0 {
 		target, err := db.GetAgentByAgentID(ctx, claims.OrgID, targetAgentID)
+		if err != nil && !errors.Is(err, storage.ErrNotFound) {
+			return false, fmt.Errorf("authz: get target agent: %w", err)
+		}
 		if err == nil && tagsOverlap(caller.Tags, target.Tags) {
 			return true, nil
 		}
@@ -92,13 +101,18 @@ func LoadGrantedSet(ctx context.Context, db *storage.DB, claims *auth.Claims) (m
 	granted := map[string]bool{claims.AgentID: true}
 
 	// Tag-based access: find agents sharing tags with caller.
+	// Distinguish "agent not found" (skip tags) from actual DB errors (propagate).
 	caller, err := db.GetAgentByAgentID(ctx, claims.OrgID, claims.AgentID)
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		return nil, fmt.Errorf("authz: get caller agent: %w", err)
+	}
 	if err == nil && len(caller.Tags) > 0 {
-		tagMatches, err := db.ListAgentIDsBySharedTags(ctx, claims.OrgID, caller.Tags)
-		if err == nil {
-			for _, id := range tagMatches {
-				granted[id] = true
-			}
+		tagMatches, tagErr := db.ListAgentIDsBySharedTags(ctx, claims.OrgID, caller.Tags)
+		if tagErr != nil {
+			return nil, fmt.Errorf("authz: list agents by shared tags: %w", tagErr)
+		}
+		for _, id := range tagMatches {
+			granted[id] = true
 		}
 	}
 

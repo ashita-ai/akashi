@@ -195,17 +195,18 @@ func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		httpStatus = http.StatusServiceUnavailable
 	}
 
-	// Buffer health: 50% = high, 75% = critical.
+	// Buffer health: >50% capacity = high, >75% capacity = critical.
 	bufDepth := 0
 	bufStatus := "ok"
 	if h.buffer != nil {
 		bufDepth = h.buffer.Len()
-		if bufDepth > 75_000 { // 75% of maxBufferCapacity (100,000)
+		cap := h.buffer.Capacity()
+		if bufDepth > cap*3/4 {
 			bufStatus = "critical"
 			if status == "healthy" {
 				status = "degraded"
 			}
-		} else if bufDepth > 50_000 { // 50% of maxBufferCapacity
+		} else if bufDepth > cap/2 {
 			bufStatus = "high"
 		}
 	}
@@ -340,7 +341,7 @@ func (h *Handlers) HandleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.signupSvc.Verify(r.Context(), req.Token); err != nil {
-		h.logger.Error("email verification failed", "error", err)
+		h.logger.Warn("email verification failed", "error", err)
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid or expired verification token")
 		return
 	}

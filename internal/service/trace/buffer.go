@@ -235,6 +235,11 @@ func (b *Buffer) Len() int {
 	return len(b.events)
 }
 
+// Capacity returns the hard upper limit on buffered events.
+func (b *Buffer) Capacity() int {
+	return maxBufferCapacity
+}
+
 // DroppedEvents returns the total number of events dropped due to buffer capacity
 // exhaustion after a flush failure. A non-zero value indicates data loss.
 func (b *Buffer) DroppedEvents() int64 {

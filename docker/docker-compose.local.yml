@@ -1,13 +1,13 @@
-# Local development: fully self-contained stack with no cloud dependencies.
+# Local development: self-contained stack, pgvector fallback (no Qdrant).
 #
 # Usage:
 #   docker compose -f docker/docker-compose.local.yml up -d
+#   docker exec akashi-local-ollama ollama pull mxbai-embed-large   # first run only
 #   curl http://localhost:8080/health
 #
-# Postgres (pgvector + TimescaleDB) runs locally. No Qdrant — semantic search
-# falls back to pgvector. Embedding provider defaults to noop (no external
-# service required). Override AKASHI_EMBEDDING_PROVIDER=auto if Ollama is
-# running on the host.
+# Postgres (pgvector + TimescaleDB) and Ollama run locally. No Qdrant — semantic
+# search falls back to pgvector. No PgBouncer — single-user local dev doesn't
+# need connection pooling.
 
 services:
   postgres:
@@ -37,28 +37,6 @@ services:
       timeout: 5s
       retries: 5
 
-  pgbouncer:
-    # Pinned 2026-02-08. Check for updates: https://hub.docker.com/r/edoburu/pgbouncer/tags
-    image: edoburu/pgbouncer:v1.25.1-p0
-    container_name: akashi-local-pgbouncer
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:6432:5432"
-    environment:
-      DATABASE_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi
-      POOL_MODE: transaction
-      AUTH_TYPE: scram-sha-256
-      MAX_CLIENT_CONN: 1000
-      DEFAULT_POOL_SIZE: 50
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
   redis:
     image: redis:7.4-alpine
     container_name: akashi-local-redis
@@ -79,6 +57,21 @@ services:
       timeout: 5s
       retries: 5
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: akashi-local-ollama
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:11434/api/tags || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   akashi:
     build:
       context: ..
@@ -88,9 +81,8 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     environment:
-      # Database: queries go through PgBouncer; NOTIFY goes direct to Postgres.
-      # sslmode=disable — no TLS between local containers.
-      DATABASE_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@pgbouncer:5432/akashi?sslmode=disable
+      # Database: no PgBouncer — both URLs go direct to Postgres.
+      DATABASE_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi?sslmode=disable
       NOTIFY_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi?sslmode=disable
       REDIS_URL: redis://default:${REDIS_PASSWORD:-akashi}@redis:6379/0
 
@@ -103,14 +95,15 @@ services:
       QDRANT_URL: ""
       QDRANT_API_KEY: ""
 
-      # Noop embedding by default (no external service needed for local dev).
-      # Set to "auto" if Ollama is running on the host.
-      AKASHI_EMBEDDING_PROVIDER: ${AKASHI_EMBEDDING_PROVIDER:-noop}
+      # Ollama for embeddings (running in the stack).
+      AKASHI_EMBEDDING_PROVIDER: ${AKASHI_EMBEDDING_PROVIDER:-ollama}
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-mxbai-embed-large}
+      AKASHI_EMBEDDING_DIMENSIONS: ${AKASHI_EMBEDDING_DIMENSIONS:-1024}
+
+      # OpenAI (unused by default, set AKASHI_EMBEDDING_PROVIDER=openai to enable).
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       AKASHI_EMBEDDING_MODEL: ${AKASHI_EMBEDDING_MODEL:-text-embedding-3-small}
-      AKASHI_EMBEDDING_DIMENSIONS: ${AKASHI_EMBEDDING_DIMENSIONS:-1024}
-      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-mxbai-embed-large}
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health || exit 1"]
       interval: 10s
@@ -118,13 +111,14 @@ services:
       retries: 5
       start_period: 15s
     depends_on:
-      pgbouncer:
-        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      ollama:
         condition: service_healthy
 
 volumes:
   pgdata:
   redisdata:
+  ollama_data:

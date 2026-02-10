@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -22,6 +23,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/ctxutil"
 	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 type contextKey string
@@ -268,11 +270,17 @@ var noAuthPaths = map[string]bool{
 	"/openapi.yaml": true,
 }
 
-// authMiddleware validates JWT tokens and populates context with claims.
+// authMiddleware validates JWT tokens or API keys and populates context with claims.
 // Uses an explicit allowlist of paths that skip auth. All paths under the
-// authenticated prefixes (/v1/, /billing/, /mcp) require a valid JWT unless
+// authenticated prefixes (/v1/, /billing/, /mcp) require valid credentials unless
 // they appear in noAuthPaths or have their own auth mechanism.
-func authMiddleware(jwtMgr *auth.JWTManager, next http.Handler) http.Handler {
+//
+// Supported authorization schemes:
+//   - Bearer <jwt>           — standard JWT (fast, Ed25519 signature check)
+//   - ApiKey <agent_id>:<key> — direct API key auth (Argon2 verify per request,
+//     suitable for MCP clients and machine-to-machine integrations where token
+//     refresh is impractical)
+func authMiddleware(jwtMgr *auth.JWTManager, db *storage.DB, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Webhook has its own auth (Stripe signature verification).
 		if r.URL.Path == "/billing/webhooks" && r.Method == http.MethodPost {
@@ -297,7 +305,7 @@ func authMiddleware(jwtMgr *auth.JWTManager, next http.Handler) http.Handler {
 			return
 		}
 
-		// All other paths require a valid JWT.
+		// All other paths require valid credentials.
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
 			writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "missing authorization header")
@@ -305,20 +313,86 @@ func authMiddleware(jwtMgr *auth.JWTManager, next http.Handler) http.Handler {
 		}
 
 		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		if len(parts) != 2 {
 			writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "invalid authorization format")
 			return
 		}
 
-		claims, err := jwtMgr.ValidateToken(parts[1])
-		if err != nil {
-			writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "invalid or expired token")
+		scheme := parts[0]
+		credential := parts[1]
+
+		var claims *auth.Claims
+
+		switch {
+		case strings.EqualFold(scheme, "Bearer"):
+			var err error
+			claims, err = jwtMgr.ValidateToken(credential)
+			if err != nil {
+				writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "invalid or expired token")
+				return
+			}
+
+		case strings.EqualFold(scheme, "ApiKey"):
+			var err error
+			claims, err = verifyAPIKey(r.Context(), db, credential)
+			if err != nil {
+				writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "invalid api key")
+				return
+			}
+
+		default:
+			writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized,
+				"unsupported authorization scheme (use Bearer or ApiKey)")
 			return
 		}
 
 		ctx := ctxutil.WithClaims(r.Context(), claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// verifyAPIKey authenticates a request using "ApiKey agent_id:secret" credentials.
+// Performs the same agent lookup + Argon2id verification as POST /auth/token.
+// Returns synthesized claims on success; the claims are equivalent to what a JWT
+// would contain but skip token issuance entirely.
+func verifyAPIKey(ctx context.Context, db *storage.DB, credential string) (*auth.Claims, error) {
+	// Parse "agent_id:api_key" — agent_ids cannot contain colons (validated on creation).
+	colonIdx := strings.IndexByte(credential, ':')
+	if colonIdx < 1 || colonIdx == len(credential)-1 {
+		auth.DummyVerify()
+		return nil, fmt.Errorf("invalid api key format")
+	}
+	agentID := credential[:colonIdx]
+	apiKey := credential[colonIdx+1:]
+
+	agents, err := db.GetAgentsByAgentIDGlobal(ctx, agentID)
+	if err != nil {
+		auth.DummyVerify()
+		return nil, fmt.Errorf("invalid credentials")
+	}
+
+	verified := false
+	for _, a := range agents {
+		if a.APIKeyHash == nil {
+			continue
+		}
+		valid, verr := auth.VerifyAPIKey(apiKey, *a.APIKeyHash)
+		verified = true
+		if verr != nil || !valid {
+			continue
+		}
+		// Matched — synthesize claims equivalent to a JWT.
+		return &auth.Claims{
+			AgentID: a.AgentID,
+			OrgID:   a.OrgID,
+			Role:    a.Role,
+		}, nil
+	}
+
+	if !verified {
+		auth.DummyVerify()
+	}
+	return nil, fmt.Errorf("invalid credentials")
 }
 
 // requireRole returns middleware that enforces a minimum role level.
@@ -407,15 +481,26 @@ func recoveryMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
 }
 
 // corsMiddleware handles CORS preflight requests and sets response headers.
-// Allows any origin to facilitate SDK and browser-based integrations.
-// Authentication is enforced per-request via JWT, so open CORS is safe.
-func corsMiddleware(next http.Handler) http.Handler {
+// Only origins listed in allowedOrigins are reflected. A single entry of "*"
+// permits any origin (suitable for development or APIs using only bearer tokens).
+func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
+	// Pre-compute a set for O(1) lookup.
+	originSet := make(map[string]bool, len(allowedOrigins))
+	allowAll := false
+	for _, o := range allowedOrigins {
+		if o == "*" {
+			allowAll = true
+			break
+		}
+		originSet[o] = true
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin != "" {
+		if origin != "" && (allowAll || originSet[origin]) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, PATCH, OPTIONS")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 			w.Header().Set("Vary", "Origin")
 		}
