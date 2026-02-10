@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -69,12 +70,21 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate tags if provided.
+	for _, tag := range req.Tags {
+		if err := model.ValidateTag(tag); err != nil {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+			return
+		}
+	}
+
 	agent, err := h.db.CreateAgent(r.Context(), model.Agent{
 		AgentID:    req.AgentID,
 		OrgID:      orgID,
 		Name:       req.Name,
 		Role:       req.Role,
 		APIKeyHash: &hash,
+		Tags:       req.Tags,
 		Metadata:   req.Metadata,
 	})
 	if err != nil {
@@ -239,8 +249,63 @@ func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleUpdateAgentTags handles PATCH /v1/agents/{agent_id}/tags (admin-only).
+func (h *Handlers) HandleUpdateAgentTags(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+	agentID := r.PathValue("agent_id")
+	if err := model.ValidateAgentID(agentID); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
+
+	var req model.UpdateAgentTagsRequest
+	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+		return
+	}
+
+	if req.Tags == nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "tags field is required")
+		return
+	}
+
+	for _, tag := range req.Tags {
+		if err := model.ValidateTag(tag); err != nil {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+			return
+		}
+	}
+
+	// Deduplicate tags while preserving order.
+	seen := make(map[string]struct{}, len(req.Tags))
+	deduped := make([]string, 0, len(req.Tags))
+	for _, tag := range req.Tags {
+		if _, ok := seen[tag]; !ok {
+			seen[tag] = struct{}{}
+			deduped = append(deduped, tag)
+		}
+	}
+
+	agent, err := h.db.UpdateAgentTags(r.Context(), orgID, agentID, deduped)
+	if err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "agent not found")
+			return
+		}
+		h.writeInternalError(w, r, "failed to update agent tags", err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, agent)
+}
+
 // isDuplicateKeyError checks if a Postgres error is a unique_violation (23505).
 func isDuplicateKeyError(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// isNotFoundError checks if the error indicates a missing resource.
+func isNotFoundError(err error) bool {
+	return errors.Is(err, storage.ErrAgentNotFound) || strings.Contains(err.Error(), "not found")
 }

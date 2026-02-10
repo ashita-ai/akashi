@@ -26,6 +26,7 @@ type Agent struct {
 	Name       string         `json:"name"`
 	Role       AgentRole      `json:"role"`
 	APIKeyHash *string        `json:"-"`
+	Tags       []string       `json:"tags"`
 	Metadata   map[string]any `json:"metadata"`
 	CreatedAt  time.Time      `json:"created_at"`
 	UpdatedAt  time.Time      `json:"updated_at"`
@@ -80,6 +81,31 @@ func RoleRank(r AgentRole) int {
 // RoleAtLeast returns true if role r has at least the privileges of minRole.
 func RoleAtLeast(r, minRole AgentRole) bool {
 	return RoleRank(r) >= RoleRank(minRole)
+}
+
+// ValidateTag checks that a tag conforms to the allowed format.
+// Tags must start with a lowercase letter and contain only lowercase
+// alphanumeric characters, hyphens, and underscores.
+func ValidateTag(tag string) error {
+	if len(tag) == 0 {
+		return fmt.Errorf("tag must not be empty")
+	}
+	if len(tag) > 64 {
+		return fmt.Errorf("tag must be at most 64 characters")
+	}
+	for i := 0; i < len(tag); i++ {
+		c := tag[i]
+		if i == 0 {
+			if c < 'a' || c > 'z' {
+				return fmt.Errorf("tag must start with a lowercase letter, got %q", c)
+			}
+			continue
+		}
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' && c != '_' {
+			return fmt.Errorf("tag contains invalid character at position %d: %q", i, c)
+		}
+	}
+	return nil
 }
 
 // ValidateAgentID checks that an agent ID conforms to the allowed format.

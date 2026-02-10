@@ -123,7 +123,13 @@ type CreateAgentRequest struct {
 	Name     string         `json:"name"`
 	Role     AgentRole      `json:"role"`
 	APIKey   string         `json:"api_key"`
+	Tags     []string       `json:"tags,omitempty"`
 	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+// UpdateAgentTagsRequest is the request body for PATCH /v1/agents/{agent_id}/tags.
+type UpdateAgentTagsRequest struct {
+	Tags []string `json:"tags"`
 }
 
 // CreateGrantRequest is the request body for POST /v1/grants.

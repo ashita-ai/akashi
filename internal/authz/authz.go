@@ -19,15 +19,16 @@ import (
 // CanAccessAgent checks whether the authenticated caller may read data belonging
 // to targetAgentID. The rules are:
 //   - admin+: always allowed
-//   - agent: allowed for own data (claims.AgentID == targetAgentID), otherwise
-//     requires an access grant with resource_type="agent_traces", permission="read"
-//   - reader: always requires an explicit access grant
+//   - agent: allowed for own data (claims.AgentID == targetAgentID)
+//   - tag overlap: allowed if caller and target share at least one tag
+//   - grant: allowed if an explicit access grant exists
+//   - reader: requires tag overlap or explicit access grant
 func CanAccessAgent(ctx context.Context, db *storage.DB, claims *auth.Claims, targetAgentID string) (bool, error) {
 	if model.RoleAtLeast(claims.Role, model.RoleAdmin) {
 		return true, nil
 	}
 
-	if claims.Role == model.RoleAgent && claims.AgentID == targetAgentID {
+	if claims.AgentID == targetAgentID {
 		return true, nil
 	}
 
@@ -40,12 +41,39 @@ func CanAccessAgent(ctx context.Context, db *storage.DB, claims *auth.Claims, ta
 		return false, nil
 	}
 
+	// Check tag-based access: if caller has tags, check if target shares any.
+	caller, err := db.GetAgentByAgentID(ctx, claims.OrgID, claims.AgentID)
+	if err == nil && len(caller.Tags) > 0 {
+		target, err := db.GetAgentByAgentID(ctx, claims.OrgID, targetAgentID)
+		if err == nil && tagsOverlap(caller.Tags, target.Tags) {
+			return true, nil
+		}
+	}
+
+	// Fall back to grant-based access.
 	return db.HasAccess(ctx, claims.OrgID, callerUUID, string(model.ResourceAgentTraces), targetAgentID, string(model.PermissionRead))
 }
 
+// tagsOverlap returns true if the two slices share at least one element.
+func tagsOverlap(a, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	set := make(map[string]struct{}, len(a))
+	for _, t := range a {
+		set[t] = struct{}{}
+	}
+	for _, t := range b {
+		if _, ok := set[t]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // LoadGrantedSet returns the set of agent_ids the caller can access.
-// For admin+ this returns nil (meaning unrestricted). For others it loads
-// granted agent_ids in a single query.
+// For admin+ this returns nil (meaning unrestricted). For others it merges
+// tag-based matches (agents sharing at least one tag) with per-agent grants.
 func LoadGrantedSet(ctx context.Context, db *storage.DB, claims *auth.Claims) (map[string]bool, error) {
 	if model.RoleAtLeast(claims.Role, model.RoleAdmin) {
 		return nil, nil // nil means unrestricted
@@ -60,7 +88,30 @@ func LoadGrantedSet(ctx context.Context, db *storage.DB, claims *auth.Claims) (m
 		return map[string]bool{}, nil // empty set = no access
 	}
 
-	return db.ListGrantedAgentIDs(ctx, claims.OrgID, callerUUID, claims.AgentID)
+	// Start with self.
+	granted := map[string]bool{claims.AgentID: true}
+
+	// Tag-based access: find agents sharing tags with caller.
+	caller, err := db.GetAgentByAgentID(ctx, claims.OrgID, claims.AgentID)
+	if err == nil && len(caller.Tags) > 0 {
+		tagMatches, err := db.ListAgentIDsBySharedTags(ctx, claims.OrgID, caller.Tags)
+		if err == nil {
+			for _, id := range tagMatches {
+				granted[id] = true
+			}
+		}
+	}
+
+	// Grant-based access: existing per-agent grants.
+	grantMatches, err := db.ListGrantedAgentIDs(ctx, claims.OrgID, callerUUID, claims.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	for id := range grantMatches {
+		granted[id] = true
+	}
+
+	return granted, nil
 }
 
 // FilterDecisions removes decisions the caller is not authorized to see.

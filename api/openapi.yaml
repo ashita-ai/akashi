@@ -273,6 +273,38 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /v1/agents/{agent_id}/tags:
+    patch:
+      operationId: updateAgentTags
+      tags: [Agents]
+      summary: Update an agent's tags
+      description: |
+        Replace the tags for an agent. Tags enable group-based access control:
+        agents sharing at least one tag can see each other's decisions without
+        explicit grants. Tags coexist with the existing grant system.
+        Requires `admin` role or higher.
+      parameters:
+        - $ref: "#/components/parameters/AgentIDPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAgentTagsRequest"
+      responses:
+        "200":
+          description: Tags updated. Returns the updated agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_Agent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   # ── Runs ───────────────────────────────────────────────────────────
   /v1/runs:
     post:
@@ -1285,7 +1317,7 @@ components:
 
     Agent:
       type: object
-      required: [id, agent_id, org_id, name, role, metadata, created_at, updated_at]
+      required: [id, agent_id, org_id, name, role, tags, metadata, created_at, updated_at]
       properties:
         id:
           type: string
@@ -1299,6 +1331,13 @@ components:
           type: string
         role:
           $ref: "#/components/schemas/AgentRole"
+        tags:
+          type: array
+          items:
+            type: string
+          description: |
+            Tags for group-based access control. Agents sharing at least one
+            tag can see each other's decisions. Must match `^[a-z][a-z0-9_-]*$`.
         metadata:
           type: object
           additionalProperties: true
@@ -1321,9 +1360,26 @@ components:
           $ref: "#/components/schemas/AgentRole"
         api_key:
           type: string
+        tags:
+          type: array
+          items:
+            type: string
+          description: Optional tags for group-based access control.
         metadata:
           type: object
           additionalProperties: true
+
+    UpdateAgentTagsRequest:
+      type: object
+      required: [tags]
+      properties:
+        tags:
+          type: array
+          items:
+            type: string
+          description: |
+            New set of tags for the agent. Replaces existing tags entirely.
+            Each tag must match `^[a-z][a-z0-9_-]*$`.
 
     DeleteAgentResponse:
       type: object
