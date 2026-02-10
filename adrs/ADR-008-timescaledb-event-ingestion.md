@@ -19,9 +19,10 @@ Vanilla PostgreSQL handles this adequately at low volumes, but table scans degra
 
 The `agent_events` table is a **TimescaleDB hypertable**, partitioned automatically by `occurred_at`. TimescaleDB manages chunk creation, query routing, and compression transparently. The application issues standard SQL -- no TimescaleDB-specific syntax in queries.
 
-### Hypertable creation (migration 002)
+### Hypertable creation (migration 002, extended by migration 014)
 
 ```sql
+-- Migration 002: initial schema
 CREATE TABLE agent_events (
     id              UUID NOT NULL DEFAULT gen_random_uuid(),
     run_id          UUID NOT NULL,
@@ -35,9 +36,13 @@ CREATE TABLE agent_events (
 );
 
 SELECT create_hypertable('agent_events', 'occurred_at');
+
+-- Migration 014: multi-tenancy added org_id for tenant isolation.
+-- All queries and COPY inserts now include org_id.
+ALTER TABLE agent_events ADD COLUMN org_id UUID NOT NULL;
 ```
 
-The primary key includes `occurred_at` because TimescaleDB requires the partitioning column in the primary key.
+The primary key includes `occurred_at` because TimescaleDB requires the partitioning column in the primary key. The `org_id` column was added in migration 014 (multi-tenancy) and is required on all inserts and filtered on all queries for tenant isolation.
 
 ### Chunk interval (migration 010)
 
@@ -131,11 +136,12 @@ The tradeoff is that COPY does not return per-row conflict information (no `ON C
 
 ## References
 
-- Commit a5471da: "Phase A: Storage foundation with migrations, domain model, and storage layer"
-- ADR-002: Unified PostgreSQL storage
-- ADR-003: Event-sourced data model with bi-temporal modeling
-- Spec 06a: Schema optimization (chunk interval tuning, retention policy recommendations)
-- Migration 002: `migrations/002_create_agent_events.sql`
-- Migration 010: `migrations/010_create_hypertable_and_compression.sql`
+- ADR-002: Unified PostgreSQL storage (parent architecture: Postgres as single source of truth)
+- ADR-003: Event-sourced data model with bi-temporal modeling (data model that defines the event schema)
+- ADR-007: Dual Postgres connection strategy (COPY writes use the pooled connection path)
+- Migration 002: `migrations/002_create_agent_events.sql` (initial table + hypertable creation)
+- Migration 010: `migrations/010_create_hypertable_and_compression.sql` (chunk interval + compression)
 - Migration 013: `migrations/013_schema_improvements.sql` (sequence creation)
+- Migration 014: `migrations/014_multi_tenancy.sql` (added `org_id` column)
+- Implementation: `internal/storage/events.go` (COPY insertion, sequence reservation)
 - TimescaleDB compression docs: docs.timescale.com/use-timescale/latest/compression/

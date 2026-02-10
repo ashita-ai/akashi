@@ -75,3 +75,12 @@ The MCP server runs in the same binary as the HTTP API and shares the `decisions
 - SDKs must maintain backward compatibility, since framework integrations and direct users both depend on them. Breaking SDK changes require a major version bump and coordinated framework integration updates.
 - The HTTP API is the contract. SDKs, MCP, and framework integrations are all projections of the same API surface. New capabilities are added to the HTTP API and service layer first, then exposed through MCP tools and SDK methods.
 - Documentation should lead with MCP setup (lowest friction), then framework integration examples, then SDK usage. Raw HTTP API docs are the reference, not the tutorial.
+
+## References
+
+- ADR-001: Go for server, Go/Python/TypeScript for SDKs (language selection for server and SDK ecosystem)
+- ADR-005: Ed25519 JWT authentication with Argon2id API keys and tiered RBAC (shared auth for HTTP and MCP paths)
+- ADR-006: Embedding provider chain (service layer shared between HTTP handlers and MCP tools)
+- Implementation: `internal/mcp/` (MCP server, resources, tools, prompts), `internal/service/decisions/` (shared service layer)
+- SDKs: `sdk/go/akashi/`, `sdk/python/src/akashi/`, `sdk/typescript/src/`
+- OpenAPI spec: `openapi.yaml` (embedded, served at GET /openapi.yaml)

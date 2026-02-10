@@ -51,13 +51,13 @@ Roles are ordered by privilege level:
 
 | Role | Rank | Purpose |
 |------|------|---------|
-| `platform_admin` | 100 | Cross-org operations, billing management, system configuration |
+| `platform_admin` | 5 | Cross-org operations, billing management, system configuration |
 | `org_owner` | 4 | Full control within their organization |
 | `admin` | 3 | Manage agents, grants, and configuration within the org |
 | `agent` | 2 | Submit traces, query own data, query granted data |
 | `reader` | 1 | Read-only access to explicitly granted resources |
 
-The `platform_admin` rank is intentionally set at 100 (not 5) to leave headroom for future roles between `org_owner` and `platform_admin` without re-numbering. Role comparison uses `RoleAtLeast(r, minRole)`, which compares numeric ranks.
+Ranks are sequential (1 through 5). Role comparison uses `RoleAtLeast(r, minRole)`, which compares numeric ranks via `RoleRank(r) >= RoleRank(minRole)`. Only relative ordering matters; if a new role is needed between existing ones, the ranks can be renumbered since they are internal to `RoleRank` and not persisted.
 
 Route-level enforcement uses the `requireRole` middleware. For example, data export endpoints require `admin`, while agent registration requires `agent`. The middleware reads claims from context and returns 403 if the caller's role is below the required minimum.
 
@@ -70,9 +70,9 @@ Below the role hierarchy, Akashi supports per-agent access grants for cross-agen
 | `grantor_id` | UUID | Agent that created the grant |
 | `grantee_id` | UUID | Agent receiving access |
 | `org_id` | UUID | Organization scope (grants never cross org boundaries) |
-| `resource_type` | enum | `agent_traces`, `decision`, or `run` |
+| `resource_type` | enum | `agent_traces` (only value currently implemented) |
 | `resource_id` | string (nullable) | Specific resource, or NULL for all resources of the type |
-| `permission` | enum | `read` or `write` |
+| `permission` | enum | `read` (only value currently implemented) |
 | `expires_at` | timestamp (nullable) | Optional expiry; NULL means no expiration |
 
 Access checks follow a short-circuit evaluation in `canAccessAgent`:
@@ -120,4 +120,10 @@ Akashi serves three distinct personas with different trust boundaries:
 - API key verification incurs Argon2id computation cost (~50-100ms) on every request authenticated via API key. This is acceptable for programmatic access patterns but would be prohibitive for high-frequency polling; such callers should use JWT tokens instead.
 - Access grants are checked per-agent, not per-decision. This means granting `agent_traces` read access to an agent grants access to all of that agent's decisions, not individual ones. Per-decision grants are supported by the `resource_id` field but are not yet used by the authorization middleware.
 - The `platform_admin` role operates outside org boundaries. Any bug in org-scoping logic that fails to check role rank could inadvertently leak data across organizations.
-- Adding new roles requires updating the `RoleRank` function and any `requireRole` middleware invocations. Ranks are 1 through 4 for standard roles plus 100 for `platform_admin` (with headroom for future roles); inserting a new role between existing ones requires only that relative ordering is preserved.
+- Adding new roles requires updating the `RoleRank` function and any `requireRole` middleware invocations. Ranks are 1 through 5; inserting a new role between existing ones requires renumbering, but ranks are internal to `RoleRank` and not persisted, so this is safe.
+
+## References
+
+- ADR-004: MCP and framework integrations (MCP server shares the same auth middleware chain)
+- Implementation: `internal/auth/auth.go` (JWT signing/validation, ephemeral keys), `internal/server/middleware.go` (authMiddleware, requireRole), `internal/authz/authz.go` (access grant checks, filtering), `internal/model/agent.go` (role hierarchy, RoleRank)
+- OWASP Password Storage Cheat Sheet: cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html

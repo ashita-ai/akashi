@@ -53,3 +53,8 @@ All three SDKs live in the same repo under `sdk/`. API and SDK changes are commi
 - Server development uses Go tooling (go test, golangci-lint, goimports).
 - SDKs live in `sdk/` within the same repo. API and SDK changes are committed together, eliminating version drift.
 - API contract is HTTP/JSON, validated by all three SDK test suites in a single CI pipeline.
+
+## References
+
+- ADR-004: MCP and framework integrations as primary distribution channels (SDK layering, test counts)
+- ADR-006: Embedding provider chain (example of Go ecosystem leverage: pgx, pgvector driver)
