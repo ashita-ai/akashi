@@ -22,7 +22,7 @@ The storage architecture:
 
 | Concern | Technology | Deployment |
 |---------|-----------|------------|
-| Source of truth | PostgreSQL 17 | Always |
+| Source of truth | PostgreSQL 18 | Always |
 | Embeddings (source of truth) | pgvector column | Always (stored for Qdrant sync, not indexed for search) |
 | Vector search | Qdrant | Optional (cloud, multi-tenant) |
 | Time-series events | TimescaleDB | Always |
@@ -82,7 +82,7 @@ The vector search trigger from the original ADR has been exercised — Qdrant wa
 - Core storage in `internal/storage/`, search abstraction in `internal/search/`.
 - Migrations are forward-only SQL files in `migrations/`.
 - The `Searcher` interface abstracts vector search backend selection.
-- Docker Compose for OSS bundles Postgres 17 + pgvector + TimescaleDB. No Qdrant.
+- Docker Compose for OSS bundles Postgres 18 + pgvector + TimescaleDB. No Qdrant.
 - Cloud deployment adds Qdrant as a separate service with outbox-based sync.
 - The pgvector HNSW index on `decisions.embedding` was dropped in migration 017 (Qdrant replaces it). The `evidence.embedding` HNSW index remains. The `decisions.embedding` column is retained as source of truth for Qdrant outbox sync.
 

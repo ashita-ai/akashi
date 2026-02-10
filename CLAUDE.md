@@ -1,6 +1,6 @@
 # ashita-ai/akashi
 
-Decision trace layer for multi-agent AI systems. Go 1.25, PostgreSQL 17 + pgvector + TimescaleDB.
+Decision trace layer for multi-agent AI systems. Go 1.25, PostgreSQL 18 + pgvector + TimescaleDB.
 
 ## Before every commit
 

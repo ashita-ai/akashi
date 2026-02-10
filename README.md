@@ -115,7 +115,7 @@ flowchart TD
     CONFLICT --> PG
     BILLING --> PG
 
-    PG[("PostgreSQL 17<br/>pgvector + TimescaleDB")]
+    PG[("PostgreSQL 18<br/>pgvector + TimescaleDB")]
 
     style C1 fill:#f0f4ff,stroke:#4a6fa5
     style C2 fill:#f0f4ff,stroke:#4a6fa5

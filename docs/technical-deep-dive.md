@@ -60,7 +60,7 @@ Akashi is a decision audit layer for multi-agent AI systems. It captures, stores
                 │                              │
                 ▼                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    PostgreSQL 17                                     │
+│                    PostgreSQL 18                                     │
 │  ┌───────────────┐  ┌────────────────┐  ┌─────────────────────────┐ │
 │  │   pgvector    │  │  TimescaleDB   │  │    LISTEN/NOTIFY        │ │
 │  │ (similarity)  │  │ (time-series)  │  │  (real-time events)     │ │

@@ -27,7 +27,7 @@ func TestMain(m *testing.M) {
 
 	// Start a TimescaleDB container with pgvector.
 	req := testcontainers.ContainerRequest{
-		Image:        "timescale/timescaledb:latest-pg17",
+		Image:        "timescale/timescaledb:latest-pg18",
 		ExposedPorts: []string{"5432/tcp"},
 		Env: map[string]string{
 			"POSTGRES_USER":     "akashi",

@@ -73,7 +73,7 @@ go vet ./...
 # Build
 go build -o bin/akashi ./cmd/akashi
 
-# Docker — local stack (Postgres 17 + pgvector + TimescaleDB, no cloud deps)
+# Docker — local stack (Postgres 18 + pgvector + TimescaleDB, no cloud deps)
 docker compose -f docker/docker-compose.local.yml up -d
 docker compose -f docker/docker-compose.local.yml down
 
@@ -162,7 +162,7 @@ Gitignored. Use for temporary research, drafts, debugging notes, SQL experiments
 
 ### Storage
 
-Single PostgreSQL 17 instance with extensions:
+Single PostgreSQL 18 instance with extensions:
 - **pgvector** (HNSW indexes) for semantic search over decision traces
 - **TimescaleDB** for time-series event ingestion and partitioning
 - **JSONB** for facet-based extensibility (OpenLineage pattern)
