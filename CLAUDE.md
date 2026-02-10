@@ -20,7 +20,7 @@ If `golangci-lint` is not on `$PATH`, it's at `~/go/bin/golangci-lint` (install:
 
 Never commit without running these. `make ci` runs the full pipeline locally (tidy, build, lint, vet, security, test) and is the gold standard, but the five commands above are the minimum.
 
-**Also run `go test ./...` before pushing.** The five checks above catch compilation, lint, and migration issues but not test failures. CI runs `go test -race -count=1 -coverprofile=coverage.out ./...` and will reject the PR if any test fails. Do not push without a green test suite.
+**Also run `go test -race ./...` before pushing.** The five checks above catch compilation, lint, and migration issues but not test failures or data races. CI runs `go test -race -count=1 -coverprofile=coverage.out ./...` and will reject the PR on any test failure or race detected. Always use `-race` locally — a test that passes without it can still fail in CI.
 
 ## Changing existing behavior
 
