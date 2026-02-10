@@ -88,6 +88,9 @@ The vector search trigger from the original ADR has been exercised — Qdrant wa
 
 ## References
 
-- Spec 07: Qdrant vector search (internal/specs/07-qdrant-vector-search.md)
+- ADR-003: Event-sourced data model with bi-temporal modeling (data model built on this storage layer)
+- ADR-007: Dual Postgres connection strategy (pooled queries + direct LISTEN/NOTIFY)
+- ADR-008: TimescaleDB for event ingestion (time-series partition of this unified storage)
+- Implementation: `internal/storage/` (queries), `internal/search/` (Qdrant + fallback)
 - pgvector benchmarks: jkatz05.com/post/postgres/pgvector-performance-150x-speedup/
 - TimescaleDB benchmarks: timescale.com/blog/timescaledb-vs-6a696248104e/
