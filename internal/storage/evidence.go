@@ -73,7 +73,9 @@ func (db *DB) CreateEvidenceBatch(ctx context.Context, evs []model.Evidence) err
 
 // GetEvidenceByDecisions retrieves all evidence for a set of decision IDs in a single query.
 // Results are returned as a map from decision ID to its evidence.
-func (db *DB) GetEvidenceByDecisions(ctx context.Context, decisionIDs []uuid.UUID) (map[uuid.UUID][]model.Evidence, error) {
+// orgID provides defense-in-depth tenant isolation; even though callers gate access
+// upstream, the storage layer enforces org boundaries on every query.
+func (db *DB) GetEvidenceByDecisions(ctx context.Context, decisionIDs []uuid.UUID, orgID uuid.UUID) (map[uuid.UUID][]model.Evidence, error) {
 	if len(decisionIDs) == 0 {
 		return nil, nil
 	}
@@ -81,8 +83,8 @@ func (db *DB) GetEvidenceByDecisions(ctx context.Context, decisionIDs []uuid.UUI
 	rows, err := db.pool.Query(ctx,
 		`SELECT id, decision_id, org_id, source_type, source_uri, content,
 		 relevance_score, metadata, created_at
-		 FROM evidence WHERE decision_id = ANY($1)
-		 ORDER BY relevance_score DESC NULLS LAST`, decisionIDs,
+		 FROM evidence WHERE decision_id = ANY($1) AND org_id = $2
+		 ORDER BY relevance_score DESC NULLS LAST`, decisionIDs, orgID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("storage: get evidence batch: %w", err)
@@ -104,12 +106,13 @@ func (db *DB) GetEvidenceByDecisions(ctx context.Context, decisionIDs []uuid.UUI
 }
 
 // GetEvidenceByDecision retrieves all evidence for a decision.
-func (db *DB) GetEvidenceByDecision(ctx context.Context, decisionID uuid.UUID) ([]model.Evidence, error) {
+// orgID provides defense-in-depth tenant isolation.
+func (db *DB) GetEvidenceByDecision(ctx context.Context, decisionID uuid.UUID, orgID uuid.UUID) ([]model.Evidence, error) {
 	rows, err := db.pool.Query(ctx,
 		`SELECT id, decision_id, org_id, source_type, source_uri, content,
 		 relevance_score, metadata, created_at
-		 FROM evidence WHERE decision_id = $1
-		 ORDER BY relevance_score DESC NULLS LAST`, decisionID,
+		 FROM evidence WHERE decision_id = $1 AND org_id = $2
+		 ORDER BY relevance_score DESC NULLS LAST`, decisionID, orgID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("storage: get evidence: %w", err)

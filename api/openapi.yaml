@@ -1693,15 +1693,13 @@ components:
 
     SourceType:
       type: string
-      enum:
-        - document
-        - api_response
-        - agent_output
-        - user_input
-        - search_result
-        - tool_output
-        - memory
-        - database_query
+      pattern: '^[a-z][a-z0-9_]*$'
+      description: |
+        Type of evidence source. Common values: document, api_response,
+        agent_output, user_input, search_result, tool_output, memory,
+        database_query. Any lowercase alphanumeric string with underscores
+        is accepted.
+      example: "document"
 
     Evidence:
       type: object

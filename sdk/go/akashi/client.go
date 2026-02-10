@@ -44,7 +44,18 @@ type Client struct {
 }
 
 // NewClient creates a Client from the given configuration.
-func NewClient(cfg Config) *Client {
+// Returns an error if BaseURL, AgentID, or APIKey is empty.
+func NewClient(cfg Config) (*Client, error) {
+	if cfg.BaseURL == "" {
+		return nil, fmt.Errorf("akashi: BaseURL is required")
+	}
+	if cfg.AgentID == "" {
+		return nil, fmt.Errorf("akashi: AgentID is required")
+	}
+	if cfg.APIKey == "" {
+		return nil, fmt.Errorf("akashi: APIKey is required")
+	}
+
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")
 
 	httpClient := cfg.HTTPClient
@@ -61,7 +72,7 @@ func NewClient(cfg Config) *Client {
 		agentID:  cfg.AgentID,
 		client:   httpClient,
 		tokenMgr: newTokenManager(baseURL, cfg.AgentID, cfg.APIKey, httpClient),
-	}
+	}, nil
 }
 
 // Check looks up existing decisions before making a new one.
@@ -272,6 +283,43 @@ func (c *Client) DeleteGrant(ctx context.Context, grantID uuid.UUID) error {
 }
 
 // ---------------------------------------------------------------------------
+// Integrity
+// ---------------------------------------------------------------------------
+
+// GetDecisionRevisions retrieves the full revision chain for a decision.
+func (c *Client) GetDecisionRevisions(ctx context.Context, decisionID uuid.UUID) (*RevisionsResponse, error) {
+	var resp RevisionsResponse
+	if err := c.get(ctx, "/v1/decisions/"+decisionID.String()+"/revisions", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// VerifyDecision recomputes the SHA-256 content hash for a decision and
+// compares it to the stored hash. Returns whether the decision is intact.
+func (c *Client) VerifyDecision(ctx context.Context, decisionID uuid.UUID) (*VerifyResponse, error) {
+	var resp VerifyResponse
+	if err := c.get(ctx, "/v1/verify/"+decisionID.String(), &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ---------------------------------------------------------------------------
+// Agent tags
+// ---------------------------------------------------------------------------
+
+// UpdateAgentTags replaces the tags for an agent. Requires admin role.
+func (c *Client) UpdateAgentTags(ctx context.Context, agentID string, tags []string) (*Agent, error) {
+	body := map[string]any{"tags": tags}
+	var resp Agent
+	if err := c.patch(ctx, "/v1/agents/"+agentID+"/tags", body, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ---------------------------------------------------------------------------
 // Conflicts, usage, and health
 // ---------------------------------------------------------------------------
 
@@ -330,9 +378,10 @@ func (c *Client) Health(ctx context.Context) (*HealthResponse, error) {
 // traceBody is the wire format for POST /v1/trace. The server expects a
 // nested "decision" object rather than flat fields.
 type traceBody struct {
-	AgentID  string         `json:"agent_id"`
-	Decision traceDecision  `json:"decision"`
-	Metadata map[string]any `json:"metadata,omitempty"`
+	AgentID      string         `json:"agent_id"`
+	Decision     traceDecision  `json:"decision"`
+	PrecedentRef *uuid.UUID     `json:"precedent_ref,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
 }
 
 type traceDecision struct {
@@ -355,7 +404,8 @@ func buildTraceBody(agentID string, req TraceRequest) traceBody {
 			Alternatives: req.Alternatives,
 			Evidence:     req.Evidence,
 		},
-		Metadata: req.Metadata,
+		PrecedentRef: req.PrecedentRef,
+		Metadata:     req.Metadata,
 	}
 }
 
@@ -445,6 +495,21 @@ func (c *Client) doDelete(ctx context.Context, path string, dest any) error {
 	if err != nil {
 		return fmt.Errorf("akashi: create request: %w", err)
 	}
+
+	return c.doRequest(ctx, req, dest)
+}
+
+func (c *Client) patch(ctx context.Context, path string, body any, dest any) error {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("akashi: marshal request body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.baseURL+path, bytes.NewReader(encoded))
+	if err != nil {
+		return fmt.Errorf("akashi: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
 
 	return c.doRequest(ctx, req, dest)
 }

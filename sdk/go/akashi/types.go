@@ -10,20 +10,31 @@ import (
 // It omits the Embedding field (internal to the server) and uses
 // standard Go types instead of pgvector.
 type Decision struct {
-	ID              uuid.UUID      `json:"id"`
-	RunID           uuid.UUID      `json:"run_id"`
-	AgentID         string         `json:"agent_id"`
-	DecisionType    string         `json:"decision_type"`
-	Outcome         string         `json:"outcome"`
-	Confidence      float32        `json:"confidence"`
-	Reasoning       *string        `json:"reasoning,omitempty"`
-	Metadata        map[string]any `json:"metadata"`
-	ValidFrom       time.Time      `json:"valid_from"`
-	ValidTo         *time.Time     `json:"valid_to,omitempty"`
-	TransactionTime time.Time      `json:"transaction_time"`
-	CreatedAt       time.Time      `json:"created_at"`
-	Alternatives    []Alternative  `json:"alternatives,omitempty"`
-	Evidence        []Evidence     `json:"evidence,omitempty"`
+	ID           uuid.UUID      `json:"id"`
+	RunID        uuid.UUID      `json:"run_id"`
+	AgentID      string         `json:"agent_id"`
+	OrgID        uuid.UUID      `json:"org_id"`
+	DecisionType string         `json:"decision_type"`
+	Outcome      string         `json:"outcome"`
+	Confidence   float32        `json:"confidence"`
+	Reasoning    *string        `json:"reasoning,omitempty"`
+	Metadata     map[string]any `json:"metadata"`
+	QualityScore float64        `json:"quality_score"`
+	PrecedentRef *uuid.UUID     `json:"precedent_ref,omitempty"`
+	SupersedesID *uuid.UUID     `json:"supersedes_id,omitempty"`
+	ContentHash  string         `json:"content_hash,omitempty"`
+	Tags         []string       `json:"tags,omitempty"`
+
+	// Bi-temporal columns.
+	ValidFrom       time.Time  `json:"valid_from"`
+	ValidTo         *time.Time `json:"valid_to,omitempty"`
+	TransactionTime time.Time  `json:"transaction_time"`
+
+	CreatedAt time.Time `json:"created_at"`
+
+	// Joined data (populated by queries that request includes).
+	Alternatives []Alternative `json:"alternatives,omitempty"`
+	Evidence     []Evidence    `json:"evidence,omitempty"`
 }
 
 // Alternative represents an option considered for a decision.
@@ -54,6 +65,7 @@ type Evidence struct {
 type DecisionConflict struct {
 	DecisionAID  uuid.UUID `json:"decision_a_id"`
 	DecisionBID  uuid.UUID `json:"decision_b_id"`
+	OrgID        uuid.UUID `json:"org_id"`
 	AgentA       string    `json:"agent_a"`
 	AgentB       string    `json:"agent_b"`
 	RunA         uuid.UUID `json:"run_a"`
@@ -63,6 +75,8 @@ type DecisionConflict struct {
 	OutcomeB     string    `json:"outcome_b"`
 	ConfidenceA  float32   `json:"confidence_a"`
 	ConfidenceB  float32   `json:"confidence_b"`
+	ReasoningA   *string   `json:"reasoning_a,omitempty"`
+	ReasoningB   *string   `json:"reasoning_b,omitempty"`
 	DecidedAtA   time.Time `json:"decided_at_a"`
 	DecidedAtB   time.Time `json:"decided_at_b"`
 	DetectedAt   time.Time `json:"detected_at"`
@@ -84,6 +98,7 @@ type TraceRequest struct {
 	Outcome      string             `json:"outcome"`
 	Confidence   float32            `json:"confidence"`
 	Reasoning    *string            `json:"reasoning,omitempty"`
+	PrecedentRef *uuid.UUID         `json:"precedent_ref,omitempty"`
 	Alternatives []TraceAlternative `json:"alternatives,omitempty"`
 	Evidence     []TraceEvidence    `json:"evidence,omitempty"`
 	Metadata     map[string]any     `json:"metadata,omitempty"`
@@ -141,6 +156,7 @@ type TraceResponse struct {
 type QueryResponse struct {
 	Decisions []Decision `json:"decisions"`
 	Total     int        `json:"total"`
+	Count     int        `json:"count"`
 	Limit     int        `json:"limit"`
 	Offset    int        `json:"offset"`
 }
@@ -206,10 +222,13 @@ const (
 type AgentEvent struct {
 	ID          uuid.UUID      `json:"id"`
 	RunID       uuid.UUID      `json:"run_id"`
+	OrgID       uuid.UUID      `json:"org_id"`
 	EventType   EventType      `json:"event_type"`
 	SequenceNum int64          `json:"sequence_num"`
 	OccurredAt  time.Time      `json:"occurred_at"`
 	AgentID     string         `json:"agent_id"`
+	TraceID     string         `json:"trace_id,omitempty"`
+	SpanID      string         `json:"span_id,omitempty"`
 	Payload     map[string]any `json:"payload"`
 	CreatedAt   time.Time      `json:"created_at"`
 }
@@ -234,6 +253,7 @@ type Agent struct {
 	OrgID     uuid.UUID      `json:"org_id"`
 	Name      string         `json:"name"`
 	Role      AgentRole      `json:"role"`
+	Tags      []string       `json:"tags"`
 	Metadata  map[string]any `json:"metadata"`
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
@@ -310,6 +330,7 @@ type CreateAgentRequest struct {
 	Name     string         `json:"name"`
 	Role     AgentRole      `json:"role"`
 	APIKey   string         `json:"api_key"`
+	Tags     []string       `json:"tags,omitempty"`
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
@@ -364,6 +385,21 @@ type ConflictsResponse struct {
 	Total     int                `json:"total"`
 	Limit     int                `json:"limit"`
 	Offset    int                `json:"offset"`
+}
+
+// VerifyResponse is the output of Client.VerifyDecision.
+type VerifyResponse struct {
+	DecisionID  uuid.UUID `json:"decision_id"`
+	Valid       bool      `json:"valid"`
+	StoredHash  string    `json:"stored_hash"`
+	ComputedHash string   `json:"computed_hash"`
+}
+
+// RevisionsResponse is the output of Client.GetDecisionRevisions.
+type RevisionsResponse struct {
+	DecisionID uuid.UUID  `json:"decision_id"`
+	Revisions  []Decision `json:"revisions"`
+	Count      int        `json:"count"`
 }
 
 // ConflictOptions are optional filters for the ListConflicts method.

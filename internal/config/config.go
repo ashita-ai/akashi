@@ -2,10 +2,11 @@
 package config
 
 import (
+	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -77,48 +78,68 @@ type Config struct {
 }
 
 // Load reads configuration from environment variables with sensible defaults.
+// Returns an error if any environment variable contains an unparseable value.
+// Missing variables use sensible defaults; only malformed values are rejected.
 func Load() (Config, error) {
+	var errs []error
 	cfg := Config{
-		Port:                    envInt("AKASHI_PORT", 8080),
-		ReadTimeout:             envDuration("AKASHI_READ_TIMEOUT", 30*time.Second),
-		WriteTimeout:            envDuration("AKASHI_WRITE_TIMEOUT", 30*time.Second),
-		DatabaseURL:             envStr("DATABASE_URL", "postgres://akashi:akashi@localhost:6432/akashi?sslmode=verify-full"),
-		NotifyURL:               envStr("NOTIFY_URL", "postgres://akashi:akashi@localhost:5432/akashi?sslmode=verify-full"),
-		RedisURL:                envStr("REDIS_URL", ""),
-		JWTPrivateKeyPath:       envStr("AKASHI_JWT_PRIVATE_KEY", ""),
-		JWTPublicKeyPath:        envStr("AKASHI_JWT_PUBLIC_KEY", ""),
-		JWTExpiration:           envDuration("AKASHI_JWT_EXPIRATION", 24*time.Hour),
-		AdminAPIKey:             envStr("AKASHI_ADMIN_API_KEY", ""),
-		EmbeddingProvider:       envStr("AKASHI_EMBEDDING_PROVIDER", "auto"),
-		OpenAIAPIKey:            envStr("OPENAI_API_KEY", ""),
-		EmbeddingModel:          envStr("AKASHI_EMBEDDING_MODEL", "text-embedding-3-small"),
-		EmbeddingDimensions:     envInt("AKASHI_EMBEDDING_DIMENSIONS", 1024),
-		OllamaURL:               envStr("OLLAMA_URL", "http://localhost:11434"),
-		OllamaModel:             envStr("OLLAMA_MODEL", "mxbai-embed-large"),
-		OTELEndpoint:            envStr("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
-		OTELInsecure:            envBool("OTEL_EXPORTER_OTLP_INSECURE", false),
-		ServiceName:             envStr("OTEL_SERVICE_NAME", "akashi"),
-		StripeSecretKey:         envStr("STRIPE_SECRET_KEY", ""),
-		StripeWebhookSecret:     envStr("STRIPE_WEBHOOK_SECRET", ""),
-		StripePriceIDPro:        envStr("STRIPE_PRO_PRICE_ID", ""),
-		SMTPHost:                envStr("AKASHI_SMTP_HOST", ""),
-		SMTPPort:                envInt("AKASHI_SMTP_PORT", 587),
-		SMTPUser:                envStr("AKASHI_SMTP_USER", ""),
-		SMTPPassword:            envStr("AKASHI_SMTP_PASSWORD", ""),
-		SMTPFrom:                envStr("AKASHI_SMTP_FROM", "noreply@akashi.dev"),
-		BaseURL:                 envStr("AKASHI_BASE_URL", "http://localhost:8080"),
-		QdrantURL:               envStr("QDRANT_URL", ""),
-		QdrantAPIKey:            envStr("QDRANT_API_KEY", ""),
-		QdrantCollection:        envStr("QDRANT_COLLECTION", "akashi_decisions"),
-		OutboxPollInterval:      envDuration("AKASHI_OUTBOX_POLL_INTERVAL", 1*time.Second),
-		OutboxBatchSize:         envInt("AKASHI_OUTBOX_BATCH_SIZE", 100),
-		RequireRedis:            envBool("AKASHI_REQUIRE_REDIS", false),
-		LogLevel:                envStr("AKASHI_LOG_LEVEL", "info"),
-		ConflictRefreshInterval: envDuration("AKASHI_CONFLICT_REFRESH_INTERVAL", 30*time.Second),
-		IntegrityProofInterval:  envDuration("AKASHI_INTEGRITY_PROOF_INTERVAL", 5*time.Minute),
-		EventBufferSize:         envInt("AKASHI_EVENT_BUFFER_SIZE", 1000),
-		EventFlushTimeout:       envDuration("AKASHI_EVENT_FLUSH_TIMEOUT", 100*time.Millisecond),
-		MaxRequestBodyBytes:     int64(envInt("AKASHI_MAX_REQUEST_BODY_BYTES", 1*1024*1024)), // 1 MB default
+		DatabaseURL:         envStr("DATABASE_URL", "postgres://akashi:akashi@localhost:6432/akashi?sslmode=verify-full"),
+		NotifyURL:           envStr("NOTIFY_URL", "postgres://akashi:akashi@localhost:5432/akashi?sslmode=verify-full"),
+		RedisURL:            envStr("REDIS_URL", ""),
+		JWTPrivateKeyPath:   envStr("AKASHI_JWT_PRIVATE_KEY", ""),
+		JWTPublicKeyPath:    envStr("AKASHI_JWT_PUBLIC_KEY", ""),
+		AdminAPIKey:         envStr("AKASHI_ADMIN_API_KEY", ""),
+		EmbeddingProvider:   envStr("AKASHI_EMBEDDING_PROVIDER", "auto"),
+		OpenAIAPIKey:        envStr("OPENAI_API_KEY", ""),
+		EmbeddingModel:      envStr("AKASHI_EMBEDDING_MODEL", "text-embedding-3-small"),
+		OllamaURL:           envStr("OLLAMA_URL", "http://localhost:11434"),
+		OllamaModel:         envStr("OLLAMA_MODEL", "mxbai-embed-large"),
+		OTELEndpoint:        envStr("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		ServiceName:         envStr("OTEL_SERVICE_NAME", "akashi"),
+		StripeSecretKey:     envStr("STRIPE_SECRET_KEY", ""),
+		StripeWebhookSecret: envStr("STRIPE_WEBHOOK_SECRET", ""),
+		StripePriceIDPro:    envStr("STRIPE_PRO_PRICE_ID", ""),
+		SMTPHost:            envStr("AKASHI_SMTP_HOST", ""),
+		SMTPUser:            envStr("AKASHI_SMTP_USER", ""),
+		SMTPPassword:        envStr("AKASHI_SMTP_PASSWORD", ""),
+		SMTPFrom:            envStr("AKASHI_SMTP_FROM", "noreply@akashi.dev"),
+		BaseURL:             envStr("AKASHI_BASE_URL", "http://localhost:8080"),
+		QdrantURL:           envStr("QDRANT_URL", ""),
+		QdrantAPIKey:        envStr("QDRANT_API_KEY", ""),
+		QdrantCollection:    envStr("QDRANT_COLLECTION", "akashi_decisions"),
+		LogLevel:            envStr("AKASHI_LOG_LEVEL", "info"),
+	}
+
+	// Integer fields.
+	cfg.Port, errs = collectInt(errs, "AKASHI_PORT", 8080)
+	cfg.EmbeddingDimensions, errs = collectInt(errs, "AKASHI_EMBEDDING_DIMENSIONS", 1024)
+	cfg.SMTPPort, errs = collectInt(errs, "AKASHI_SMTP_PORT", 587)
+	cfg.OutboxBatchSize, errs = collectInt(errs, "AKASHI_OUTBOX_BATCH_SIZE", 100)
+	cfg.EventBufferSize, errs = collectInt(errs, "AKASHI_EVENT_BUFFER_SIZE", 1000)
+
+	var maxReqBody int
+	maxReqBody, errs = collectInt(errs, "AKASHI_MAX_REQUEST_BODY_BYTES", 1*1024*1024)
+	cfg.MaxRequestBodyBytes = int64(maxReqBody)
+
+	// Boolean fields.
+	cfg.OTELInsecure, errs = collectBool(errs, "OTEL_EXPORTER_OTLP_INSECURE", false)
+	cfg.RequireRedis, errs = collectBool(errs, "AKASHI_REQUIRE_REDIS", false)
+
+	// Duration fields.
+	cfg.ReadTimeout, errs = collectDuration(errs, "AKASHI_READ_TIMEOUT", 30*time.Second)
+	cfg.WriteTimeout, errs = collectDuration(errs, "AKASHI_WRITE_TIMEOUT", 30*time.Second)
+	cfg.JWTExpiration, errs = collectDuration(errs, "AKASHI_JWT_EXPIRATION", 24*time.Hour)
+	cfg.OutboxPollInterval, errs = collectDuration(errs, "AKASHI_OUTBOX_POLL_INTERVAL", 1*time.Second)
+	cfg.ConflictRefreshInterval, errs = collectDuration(errs, "AKASHI_CONFLICT_REFRESH_INTERVAL", 30*time.Second)
+	cfg.IntegrityProofInterval, errs = collectDuration(errs, "AKASHI_INTEGRITY_PROOF_INTERVAL", 5*time.Minute)
+	cfg.EventFlushTimeout, errs = collectDuration(errs, "AKASHI_EVENT_FLUSH_TIMEOUT", 100*time.Millisecond)
+
+	if len(errs) > 0 {
+		msgs := make([]string, len(errs))
+		for i, e := range errs {
+			msgs[i] = e.Error()
+		}
+		return Config{}, fmt.Errorf("config: invalid environment variables:\n  %s", strings.Join(msgs, "\n  "))
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -127,52 +148,82 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
+// collectInt parses an int env var, appending any error to the accumulator.
+func collectInt(errs []error, key string, fallback int) (int, []error) {
+	v, err := envInt(key, fallback)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	return v, errs
+}
+
+// collectBool parses a bool env var, appending any error to the accumulator.
+func collectBool(errs []error, key string, fallback bool) (bool, []error) {
+	v, err := envBool(key, fallback)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	return v, errs
+}
+
+// collectDuration parses a duration env var, appending any error to the accumulator.
+func collectDuration(errs []error, key string, fallback time.Duration) (time.Duration, []error) {
+	v, err := envDuration(key, fallback)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	return v, errs
+}
+
 // Validate checks that required configuration is present and sane.
 func (c Config) Validate() error {
+	var errs []error
+
 	if c.DatabaseURL == "" {
-		return fmt.Errorf("config: DATABASE_URL is required")
+		errs = append(errs, errors.New("config: DATABASE_URL is required"))
 	}
 	if c.EmbeddingDimensions <= 0 {
-		return fmt.Errorf("config: AKASHI_EMBEDDING_DIMENSIONS must be positive")
+		errs = append(errs, errors.New("config: AKASHI_EMBEDDING_DIMENSIONS must be positive"))
 	}
 	if c.MaxRequestBodyBytes <= 0 {
-		return fmt.Errorf("config: AKASHI_MAX_REQUEST_BODY_BYTES must be positive")
+		errs = append(errs, errors.New("config: AKASHI_MAX_REQUEST_BODY_BYTES must be positive"))
 	}
 	if c.Port < 1 || c.Port > 65535 {
-		return fmt.Errorf("config: AKASHI_PORT must be between 1 and 65535")
+		errs = append(errs, errors.New("config: AKASHI_PORT must be between 1 and 65535"))
 	}
 	if c.ReadTimeout <= 0 {
-		return fmt.Errorf("config: AKASHI_READ_TIMEOUT must be positive")
+		errs = append(errs, errors.New("config: AKASHI_READ_TIMEOUT must be positive"))
 	}
 	if c.WriteTimeout <= 0 {
-		return fmt.Errorf("config: AKASHI_WRITE_TIMEOUT must be positive")
+		errs = append(errs, errors.New("config: AKASHI_WRITE_TIMEOUT must be positive"))
 	}
 	if c.EventFlushTimeout <= 0 {
-		return fmt.Errorf("config: AKASHI_EVENT_FLUSH_TIMEOUT must be positive")
+		errs = append(errs, errors.New("config: AKASHI_EVENT_FLUSH_TIMEOUT must be positive"))
 	}
 	if c.EventBufferSize <= 0 {
-		return fmt.Errorf("config: AKASHI_EVENT_BUFFER_SIZE must be positive")
+		errs = append(errs, errors.New("config: AKASHI_EVENT_BUFFER_SIZE must be positive"))
 	}
 	if c.OutboxPollInterval <= 0 {
-		return fmt.Errorf("config: AKASHI_OUTBOX_POLL_INTERVAL must be positive")
+		errs = append(errs, errors.New("config: AKASHI_OUTBOX_POLL_INTERVAL must be positive"))
 	}
 	if c.ConflictRefreshInterval <= 0 {
-		return fmt.Errorf("config: AKASHI_CONFLICT_REFRESH_INTERVAL must be positive")
+		errs = append(errs, errors.New("config: AKASHI_CONFLICT_REFRESH_INTERVAL must be positive"))
 	}
 	if c.IntegrityProofInterval <= 0 {
-		return fmt.Errorf("config: AKASHI_INTEGRITY_PROOF_INTERVAL must be positive")
+		errs = append(errs, errors.New("config: AKASHI_INTEGRITY_PROOF_INTERVAL must be positive"))
 	}
 	if c.JWTPrivateKeyPath != "" {
 		if err := validateKeyFile(c.JWTPrivateKeyPath, "AKASHI_JWT_PRIVATE_KEY"); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
 	if c.JWTPublicKeyPath != "" {
 		if err := validateKeyFile(c.JWTPublicKeyPath, "AKASHI_JWT_PUBLIC_KEY"); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
-	return nil
+
+	return errors.Join(errs...)
 }
 
 // validateKeyFile checks that a key file exists, is readable, is non-empty,
@@ -204,41 +255,38 @@ func envStr(key, defaultVal string) string {
 	return defaultVal
 }
 
-func envInt(key string, defaultVal int) int {
-	if v := os.Getenv(key); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			slog.Warn("config: ignoring invalid integer value, using default",
-				"key", key, "value", v, "default", defaultVal, "error", err)
-			return defaultVal
-		}
-		return n
+func envInt(key string, fallback int) (int, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback, nil
 	}
-	return defaultVal
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q is not a valid integer", key, v)
+	}
+	return n, nil
 }
 
-func envBool(key string, defaultVal bool) bool {
-	if v := os.Getenv(key); v != "" {
-		b, err := strconv.ParseBool(v)
-		if err != nil {
-			slog.Warn("config: ignoring invalid boolean value, using default",
-				"key", key, "value", v, "default", defaultVal, "error", err)
-			return defaultVal
-		}
-		return b
+func envBool(key string, fallback bool) (bool, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback, nil
 	}
-	return defaultVal
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("%s=%q is not a valid boolean", key, v)
+	}
+	return b, nil
 }
 
-func envDuration(key string, defaultVal time.Duration) time.Duration {
-	if v := os.Getenv(key); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			slog.Warn("config: ignoring invalid duration value, using default",
-				"key", key, "value", v, "default", defaultVal, "error", err)
-			return defaultVal
-		}
-		return d
+func envDuration(key string, fallback time.Duration) (time.Duration, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback, nil
 	}
-	return defaultVal
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q is not a valid duration", key, v)
+	}
+	return d, nil
 }

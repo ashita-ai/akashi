@@ -2,8 +2,10 @@ package server
 
 import (
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/model"
@@ -124,6 +126,10 @@ func (h *Handlers) HandleBillingWebhook(w http.ResponseWriter, r *http.Request) 
 	status, whErr := h.billingSvc.HandleWebhook(r.Context(), body, sigHeader)
 	if whErr != nil {
 		h.logger.Error("billing webhook failed", "error", whErr, "status", status)
+		if status >= 400 && status < 500 {
+			writeError(w, r, status, model.ErrCodeInvalidInput, "webhook rejected")
+			return
+		}
 		h.writeInternalError(w, r, "billing webhook failed", whErr)
 		return
 	}
@@ -161,11 +167,35 @@ func (h *Handlers) HandleUsage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// isHTTPSURL validates that a string is a well-formed https:// URL.
+// isHTTPSURL validates that a string is a well-formed https:// URL and rejects
+// loopback, private (RFC 1918), link-local, and cloud metadata addresses to
+// prevent SSRF attacks via checkout/portal return URLs.
 func isHTTPSURL(raw string) bool {
 	u, err := url.Parse(raw)
-	if err != nil {
+	if err != nil || u.Scheme != "https" || u.Host == "" {
 		return false
 	}
-	return u.Scheme == "https" && u.Host != ""
+
+	host := u.Hostname()
+
+	// Reject known cloud metadata hostnames (case-insensitive).
+	blockedHosts := []string{
+		"metadata.google.internal",
+		"169.254.169.254",
+	}
+	for _, b := range blockedHosts {
+		if strings.EqualFold(host, b) {
+			return false
+		}
+	}
+
+	// If the host resolves to an IP, reject loopback, private, and link-local ranges.
+	ip := net.ParseIP(host)
+	if ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return false
+		}
+	}
+
+	return true
 }

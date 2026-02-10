@@ -1,5 +1,5 @@
 .PHONY: all build build-ui build-with-ui test lint fmt vet clean docker-up docker-down ci security tidy \
-       dev-ui migrate-apply migrate-lint migrate-hash migrate-diff migrate-status
+       dev-ui migrate-apply migrate-lint migrate-hash migrate-diff migrate-status migrate-validate
 
 BINARY := bin/akashi
 GO := go
@@ -10,7 +10,7 @@ LDFLAGS := -ldflags "-X main.version=$(VERSION)"
 all: fmt lint vet test build
 
 # Run the full CI pipeline locally (mirrors .github/workflows/ci.yml)
-ci: tidy build lint vet security test
+ci: tidy build lint vet security test migrate-validate
 	@echo "CI passed"
 
 build:
@@ -31,6 +31,8 @@ dev-ui:
 test:
 	$(GO) test $(GOFLAGS) ./... -v
 
+# NOTE: CI uses golangci-lint v2.8.0. Install locally with:
+#   go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.8.0
 lint:
 	golangci-lint run ./...
 
@@ -84,3 +86,6 @@ migrate-diff: ## Generate a new migration from schema changes (usage: make migra
 
 migrate-status: ## Show migration status
 	$(ATLAS) migrate status --env local
+
+migrate-validate: ## Validate migration file integrity (checksums + SQL)
+	$(ATLAS) migrate validate --dir file://migrations

@@ -34,6 +34,7 @@ type Buffer struct {
 
 	droppedEvents atomic.Int64 // total events dropped due to capacity after flush failure
 
+	started    atomic.Bool // guards against double Start calls
 	flushCh    chan struct{}
 	done       chan struct{}
 	cancelLoop context.CancelFunc   // cancels the flushLoop goroutine
@@ -54,7 +55,12 @@ func NewBuffer(db *storage.DB, logger *slog.Logger, maxSize int, flushTimeout ti
 }
 
 // Start begins the background flush loop and registers OTEL metrics. Call Drain to stop.
+// It is safe to call only once; subsequent calls are no-ops and log a warning.
 func (b *Buffer) Start(ctx context.Context) {
+	if !b.started.CompareAndSwap(false, true) {
+		b.logger.Warn("trace: buffer Start called more than once, ignoring")
+		return
+	}
 	b.registerMetrics()
 	loopCtx, cancel := context.WithCancel(ctx)
 	b.cancelLoop = cancel

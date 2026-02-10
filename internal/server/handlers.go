@@ -286,6 +286,11 @@ func (h *Handlers) SeedAdmin(ctx context.Context, adminAPIKey string) error {
 
 // HandleSignup handles POST /auth/signup.
 func (h *Handlers) HandleSignup(w http.ResponseWriter, r *http.Request) {
+	if h.signupSvc == nil {
+		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "signup is not enabled")
+		return
+	}
+
 	var req model.SignupRequest
 	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
@@ -304,7 +309,7 @@ func (h *Handlers) HandleSignup(w http.ResponseWriter, r *http.Request) {
 			errors.Is(err, signup.ErrOrgNameRequired):
 			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
 		default:
-			h.logger.Error("signup failed", "error", err, "email", req.Email)
+			h.logger.Error("signup failed", "error", err)
 			writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "signup failed")
 		}
 		return
@@ -317,6 +322,11 @@ func (h *Handlers) HandleSignup(w http.ResponseWriter, r *http.Request) {
 // Accepts {"token": "..."} in the request body (not as a query parameter)
 // to avoid token exposure in server/proxy logs and browser history.
 func (h *Handlers) HandleVerifyEmail(w http.ResponseWriter, r *http.Request) {
+	if h.signupSvc == nil {
+		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "signup is not enabled")
+		return
+	}
+
 	var req struct {
 		Token string `json:"token"`
 	}

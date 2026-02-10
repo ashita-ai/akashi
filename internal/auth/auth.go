@@ -5,6 +5,7 @@
 package auth
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -79,6 +80,13 @@ func NewJWTManager(privateKeyPath, publicKeyPath string, expiration time.Duratio
 	edPub, ok := pubKey.(ed25519.PublicKey)
 	if !ok {
 		return nil, fmt.Errorf("auth: public key is not Ed25519")
+	}
+
+	// Verify the public key matches the private key to catch misconfiguration
+	// (e.g., deploying a private key from one environment with a public key from another).
+	derivedPub := edPriv.Public().(ed25519.PublicKey)
+	if !bytes.Equal(derivedPub, edPub) {
+		return nil, fmt.Errorf("auth: public key does not match private key")
 	}
 
 	return &JWTManager{privateKey: edPriv, publicKey: edPub, expiration: expiration}, nil

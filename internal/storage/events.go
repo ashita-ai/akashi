@@ -86,12 +86,19 @@ func (db *DB) InsertEvent(ctx context.Context, event model.AgentEvent) error {
 	return nil
 }
 
-// GetEventsByRun retrieves all events for a run, scoped by org_id for tenant isolation.
-func (db *DB) GetEventsByRun(ctx context.Context, orgID, runID uuid.UUID) ([]model.AgentEvent, error) {
+// GetEventsByRun retrieves events for a run, scoped by org_id for tenant isolation.
+// The limit parameter caps the number of rows returned; if limit <= 0, it defaults
+// to 10000. Callers should check if the returned slice length equals the limit to
+// detect truncation.
+func (db *DB) GetEventsByRun(ctx context.Context, orgID, runID uuid.UUID, limit int) ([]model.AgentEvent, error) {
+	if limit <= 0 {
+		limit = 10000
+	}
 	rows, err := db.pool.Query(ctx,
 		`SELECT id, run_id, org_id, event_type, sequence_num, occurred_at, agent_id, payload, created_at
 		 FROM agent_events WHERE run_id = $1 AND org_id = $2
-		 ORDER BY sequence_num ASC`, runID, orgID,
+		 ORDER BY sequence_num ASC
+		 LIMIT $3`, runID, orgID, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("storage: get events by run: %w", err)

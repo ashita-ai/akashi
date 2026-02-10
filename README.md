@@ -88,8 +88,10 @@ Every decision trace records:
 | Language | Path | Install |
 |----------|------|---------|
 | Go | [`sdk/go/`](sdk/go/) | `go get github.com/ashita-ai/akashi/sdk/go/akashi` |
-| Python | [`sdk/python/`](sdk/python/) | `pip install akashi` |
-| TypeScript | [`sdk/typescript/`](sdk/typescript/) | `npm install @akashi/sdk` |
+| Python | [`sdk/python/`](sdk/python/) | `pip install git+https://github.com/ashita-ai/akashi.git#subdirectory=sdk/python` |
+| TypeScript | [`sdk/typescript/`](sdk/typescript/) | `npm install github:ashita-ai/akashi#path:sdk/typescript` |
+
+Package registry publication is planned for the 1.0 release. Install from source for now.
 
 All SDKs provide: `Check`, `Trace`, `Query`, `Search`, `Recent`. Auth token management is automatic.
 

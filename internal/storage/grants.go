@@ -43,7 +43,7 @@ func (db *DB) DeleteGrant(ctx context.Context, orgID, id uuid.UUID) error {
 		return fmt.Errorf("storage: delete grant: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("storage: grant not found: %s", id)
+		return fmt.Errorf("storage: grant %s: %w", id, ErrNotFound)
 	}
 	return nil
 }
@@ -63,7 +63,7 @@ func (db *DB) GetGrant(ctx context.Context, orgID uuid.UUID, id uuid.UUID) (mode
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return model.AccessGrant{}, fmt.Errorf("storage: grant not found: %s", id)
+			return model.AccessGrant{}, fmt.Errorf("storage: grant %s: %w", id, ErrNotFound)
 		}
 		return model.AccessGrant{}, fmt.Errorf("storage: get grant: %w", err)
 	}

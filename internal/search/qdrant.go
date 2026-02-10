@@ -6,11 +6,12 @@ import (
 	"log/slog"
 	"net/url"
 	"strconv"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/qdrant/go-client/qdrant"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/ashita-ai/akashi/internal/model"
 )
@@ -42,9 +43,9 @@ type QdrantIndex struct {
 	dims       uint64
 	logger     *slog.Logger
 
-	healthMu  sync.Mutex
-	lastCheck time.Time
-	lastErr   error
+	healthGroup singleflight.Group
+	healthErr   atomic.Value // stores *error (pointer-to-error, never nil pointer; inner error may be nil)
+	healthAt    atomic.Int64 // unix nanos of last check
 }
 
 // parseQdrantURL extracts host, port, and TLS flag from a Qdrant URL.
@@ -314,23 +315,49 @@ func (q *QdrantIndex) DeleteByOrg(ctx context.Context, orgID uuid.UUID) error {
 }
 
 // Healthy returns nil if Qdrant is reachable. Results are cached for 5 seconds
-// to avoid hammering the health endpoint on every search request.
+// to avoid hammering the health endpoint on every search request. Concurrent
+// calls after cache expiry are deduplicated via singleflight so only one gRPC
+// call is made; all waiters share its result.
 func (q *QdrantIndex) Healthy(ctx context.Context) error {
-	q.healthMu.Lock()
-	defer q.healthMu.Unlock()
-
-	if time.Since(q.lastCheck) < 5*time.Second {
-		return q.lastErr
+	// Fast path: return the cached result if fresh.
+	if time.Since(time.Unix(0, q.healthAt.Load())) < 5*time.Second {
+		return q.loadHealthErr()
 	}
 
-	_, err := q.client.HealthCheck(ctx)
-	q.lastCheck = time.Now()
-	if err != nil {
-		q.lastErr = fmt.Errorf("search: qdrant unhealthy: %w", err)
-	} else {
-		q.lastErr = nil
+	// Deduplicate concurrent checks.
+	result, _, _ := q.healthGroup.Do("health", func() (any, error) {
+		checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+
+		_, err := q.client.HealthCheck(checkCtx)
+		if err != nil {
+			wrapped := fmt.Errorf("search: qdrant unhealthy: %w", err)
+			q.storeHealthErr(wrapped)
+		} else {
+			q.storeHealthErr(nil)
+		}
+		q.healthAt.Store(time.Now().UnixNano())
+		return q.loadHealthErr(), nil
+	})
+	if result == nil {
+		return nil
 	}
-	return q.lastErr
+	return result.(error)
+}
+
+// storeHealthErr stores an error (or nil) in the atomic.Value.
+// atomic.Value cannot store nil directly, so we wrap it in a pointer.
+func (q *QdrantIndex) storeHealthErr(err error) {
+	q.healthErr.Store(&err)
+}
+
+// loadHealthErr loads the cached health error.
+func (q *QdrantIndex) loadHealthErr() error {
+	v := q.healthErr.Load()
+	if v == nil {
+		return nil
+	}
+	return *v.(*error)
 }
 
 // Close shuts down the Qdrant gRPC connection.

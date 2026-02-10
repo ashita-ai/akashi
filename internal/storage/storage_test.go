@@ -167,7 +167,7 @@ func TestInsertAndGetEvents(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), count)
 
-	got, err := testDB.GetEventsByRun(ctx, run.OrgID, run.ID)
+	got, err := testDB.GetEventsByRun(ctx, run.OrgID, run.ID, 0)
 	require.NoError(t, err)
 	assert.Len(t, got, 2)
 	assert.Equal(t, model.EventDecisionStarted, got[0].EventType)
@@ -199,7 +199,7 @@ func TestInsertEventsCOPY(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(100), count)
 
-	got, err := testDB.GetEventsByRun(ctx, run.OrgID, run.ID)
+	got, err := testDB.GetEventsByRun(ctx, run.OrgID, run.ID, 0)
 	require.NoError(t, err)
 	assert.Len(t, got, 100)
 }
@@ -396,7 +396,7 @@ func TestAgentCRUD(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, agent.ID, got.ID)
 
-	gotByID, err := testDB.GetAgentByID(ctx, agent.ID)
+	gotByID, err := testDB.GetAgentByID(ctx, agent.ID, agent.OrgID)
 	require.NoError(t, err)
 	assert.Equal(t, "crud-agent", gotByID.AgentID)
 }
@@ -516,7 +516,7 @@ func TestAgentTagsPersistence(t *testing.T) {
 	assert.Equal(t, []string{"finance", "compliance"}, got.Tags)
 
 	// Also test GetAgentByID.
-	gotByID, err := testDB.GetAgentByID(ctx, agent.ID)
+	gotByID, err := testDB.GetAgentByID(ctx, agent.ID, agent.OrgID)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"finance", "compliance"}, gotByID.Tags)
 }
@@ -666,11 +666,11 @@ func TestListAgentsIncludesTags(t *testing.T) {
 	require.NoError(t, err)
 
 	// Retrieve individually to verify tags are present in list results.
-	got1, err := testDB.GetAgentByID(ctx, a1.ID)
+	got1, err := testDB.GetAgentByID(ctx, a1.ID, a1.OrgID)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"team-a"}, got1.Tags)
 
-	got2, err := testDB.GetAgentByID(ctx, a2.ID)
+	got2, err := testDB.GetAgentByID(ctx, a2.ID, a2.OrgID)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"team-b", "team-c"}, got2.Tags)
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -44,12 +45,16 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func newTestClient(t *testing.T, serverURL string) *Client {
 	t.Helper()
-	return NewClient(Config{
+	c, err := NewClient(Config{
 		BaseURL: serverURL,
 		AgentID: "test-agent",
 		APIKey:  "test-key",
 		Timeout: 5 * time.Second,
 	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	return c
 }
 
 // ---------------------------------------------------------------------------
@@ -298,12 +303,15 @@ func TestTimeoutHandling(t *testing.T) {
 	})
 	defer srv.Close()
 
-	client := NewClient(Config{
+	client, cErr := NewClient(Config{
 		BaseURL: srv.URL,
 		AgentID: "test-agent",
 		APIKey:  "test-key",
 		Timeout: 100 * time.Millisecond, // Very short timeout.
 	})
+	if cErr != nil {
+		t.Fatalf("NewClient failed: %v", cErr)
+	}
 
 	_, err := client.Check(context.Background(), CheckRequest{DecisionType: "test"})
 	if err == nil {
@@ -1191,12 +1199,15 @@ func TestHealth(t *testing.T) {
 	defer srv.Close()
 
 	// Intentionally use bad credentials to prove health doesn't need auth.
-	client := NewClient(Config{
+	client, cErr := NewClient(Config{
 		BaseURL: srv.URL,
 		AgentID: "bad-agent",
 		APIKey:  "bad-key",
 		Timeout: 5 * time.Second,
 	})
+	if cErr != nil {
+		t.Fatalf("NewClient failed: %v", cErr)
+	}
 
 	health, err := client.Health(context.Background())
 	if err != nil {
@@ -1243,12 +1254,15 @@ func TestHealthNoAuth(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	client := NewClient(Config{
+	client, cErr := NewClient(Config{
 		BaseURL: srv.URL,
 		AgentID: "test",
 		APIKey:  "test",
 		Timeout: 5 * time.Second,
 	})
+	if cErr != nil {
+		t.Fatalf("NewClient failed: %v", cErr)
+	}
 
 	_, err := client.Health(context.Background())
 	if err != nil {
@@ -1283,5 +1297,307 @@ func TestIsConflict(t *testing.T) {
 	}
 	if IsConflict(&Error{StatusCode: 200}) {
 		t.Error("IsConflict should return false for 200")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NewClient validation (SDK3)
+// ---------------------------------------------------------------------------
+
+func TestNewClientValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     Config
+		wantErr string
+	}{
+		{
+			name:    "empty BaseURL",
+			cfg:     Config{AgentID: "a", APIKey: "k"},
+			wantErr: "BaseURL is required",
+		},
+		{
+			name:    "empty AgentID",
+			cfg:     Config{BaseURL: "http://localhost:8080", APIKey: "k"},
+			wantErr: "AgentID is required",
+		},
+		{
+			name:    "empty APIKey",
+			cfg:     Config{BaseURL: "http://localhost:8080", AgentID: "a"},
+			wantErr: "APIKey is required",
+		},
+		{
+			name: "all empty",
+			cfg:  Config{},
+			// First check is BaseURL.
+			wantErr: "BaseURL is required",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := NewClient(tc.cfg)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if c != nil {
+				t.Error("expected nil client on error")
+			}
+			if got := err.Error(); !strings.Contains(got, tc.wantErr) {
+				t.Errorf("error %q does not contain %q", got, tc.wantErr)
+			}
+		})
+	}
+
+	// Happy path.
+	c, err := NewClient(Config{
+		BaseURL: "http://localhost:8080/",
+		AgentID: "test",
+		APIKey:  "key",
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if c == nil {
+		t.Fatal("expected non-nil client")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests for new endpoint methods (SDK2)
+// ---------------------------------------------------------------------------
+
+func TestGetDecisionRevisions(t *testing.T) {
+	decisionID := uuid.New()
+	orgID := uuid.New()
+	runID := uuid.New()
+	supersededID := uuid.New()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"GET /v1/decisions/" + decisionID.String() + "/revisions": func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"data": map[string]any{
+					"decision_id": decisionID,
+					"revisions": []Decision{
+						{
+							ID:           supersededID,
+							RunID:        runID,
+							AgentID:      "planner",
+							OrgID:        orgID,
+							DecisionType: "architecture",
+							Outcome:      "monolith",
+							Confidence:   0.7,
+							CreatedAt:    now.Add(-1 * time.Hour),
+						},
+						{
+							ID:           decisionID,
+							RunID:        runID,
+							AgentID:      "planner",
+							OrgID:        orgID,
+							DecisionType: "architecture",
+							Outcome:      "microservices",
+							Confidence:   0.85,
+							SupersedesID: &supersededID,
+							CreatedAt:    now,
+						},
+					},
+					"count": 2,
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	resp, err := client.GetDecisionRevisions(context.Background(), decisionID)
+	if err != nil {
+		t.Fatalf("GetDecisionRevisions failed: %v", err)
+	}
+	if resp.DecisionID != decisionID {
+		t.Errorf("expected decision_id %s, got %s", decisionID, resp.DecisionID)
+	}
+	if resp.Count != 2 {
+		t.Errorf("expected count 2, got %d", resp.Count)
+	}
+	if len(resp.Revisions) != 2 {
+		t.Fatalf("expected 2 revisions, got %d", len(resp.Revisions))
+	}
+	if resp.Revisions[0].Outcome != "monolith" {
+		t.Errorf("expected first revision outcome 'monolith', got %q", resp.Revisions[0].Outcome)
+	}
+	if resp.Revisions[1].SupersedesID == nil || *resp.Revisions[1].SupersedesID != supersededID {
+		t.Errorf("expected second revision to supersede %s", supersededID)
+	}
+}
+
+func TestVerifyDecision(t *testing.T) {
+	decisionID := uuid.New()
+
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"GET /v1/verify/" + decisionID.String(): func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"data": map[string]any{
+					"decision_id":   decisionID,
+					"valid":         true,
+					"stored_hash":   "sha256:abc123",
+					"computed_hash": "sha256:abc123",
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	resp, err := client.VerifyDecision(context.Background(), decisionID)
+	if err != nil {
+		t.Fatalf("VerifyDecision failed: %v", err)
+	}
+	if resp.DecisionID != decisionID {
+		t.Errorf("expected decision_id %s, got %s", decisionID, resp.DecisionID)
+	}
+	if !resp.Valid {
+		t.Error("expected valid to be true")
+	}
+	if resp.StoredHash != "sha256:abc123" {
+		t.Errorf("expected stored_hash 'sha256:abc123', got %q", resp.StoredHash)
+	}
+	if resp.ComputedHash != "sha256:abc123" {
+		t.Errorf("expected computed_hash 'sha256:abc123', got %q", resp.ComputedHash)
+	}
+}
+
+func TestUpdateAgentTags(t *testing.T) {
+	agentUUID := uuid.New()
+	orgID := uuid.New()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	var receivedBody map[string]any
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"PATCH /v1/agents/planner/tags": func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPatch {
+				t.Errorf("expected PATCH method, got %s", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&receivedBody); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{
+					"error": map[string]any{"code": "INVALID_INPUT", "message": err.Error()},
+				})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"data": Agent{
+					ID:        agentUUID,
+					AgentID:   "planner",
+					OrgID:     orgID,
+					Name:      "Planner",
+					Role:      RoleAgent,
+					Tags:      []string{"backend", "infra"},
+					CreatedAt: now,
+					UpdatedAt: now,
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	agent, err := client.UpdateAgentTags(context.Background(), "planner", []string{"backend", "infra"})
+	if err != nil {
+		t.Fatalf("UpdateAgentTags failed: %v", err)
+	}
+	if agent.AgentID != "planner" {
+		t.Errorf("expected agent_id 'planner', got %q", agent.AgentID)
+	}
+	if len(agent.Tags) != 2 {
+		t.Fatalf("expected 2 tags, got %d", len(agent.Tags))
+	}
+	if agent.Tags[0] != "backend" || agent.Tags[1] != "infra" {
+		t.Errorf("expected tags [backend, infra], got %v", agent.Tags)
+	}
+
+	// Verify request body was sent correctly.
+	tags, ok := receivedBody["tags"].([]any)
+	if !ok {
+		t.Fatal("expected tags in request body")
+	}
+	if len(tags) != 2 {
+		t.Errorf("expected 2 tags in body, got %d", len(tags))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test deserialization of new fields (SDK1)
+// ---------------------------------------------------------------------------
+
+func TestDecisionDeserializesAllFields(t *testing.T) {
+	orgID := uuid.New()
+	decisionID := uuid.New()
+	runID := uuid.New()
+	precedentRef := uuid.New()
+	supersedesID := uuid.New()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"POST /v1/query": func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"data": map[string]any{
+					"decisions": []map[string]any{
+						{
+							"id":               decisionID,
+							"run_id":            runID,
+							"agent_id":          "planner",
+							"org_id":            orgID,
+							"decision_type":     "architecture",
+							"outcome":           "microservices",
+							"confidence":        0.85,
+							"metadata":          map[string]any{},
+							"quality_score":     0.92,
+							"precedent_ref":     precedentRef,
+							"supersedes_id":     supersedesID,
+							"content_hash":      "sha256:abc123def456",
+							"tags":              []string{"backend", "infra"},
+							"valid_from":        now,
+							"transaction_time":  now,
+							"created_at":        now,
+						},
+					},
+					"total":  1,
+					"count":  1,
+					"limit":  50,
+					"offset": 0,
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	dt := "architecture"
+	resp, err := client.Query(context.Background(), &QueryFilters{DecisionType: &dt}, nil)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if resp.Count != 1 {
+		t.Errorf("expected count 1, got %d", resp.Count)
+	}
+
+	d := resp.Decisions[0]
+	if d.OrgID != orgID {
+		t.Errorf("expected org_id %s, got %s", orgID, d.OrgID)
+	}
+	if d.QualityScore != 0.92 {
+		t.Errorf("expected quality_score 0.92, got %f", d.QualityScore)
+	}
+	if d.PrecedentRef == nil || *d.PrecedentRef != precedentRef {
+		t.Errorf("expected precedent_ref %s, got %v", precedentRef, d.PrecedentRef)
+	}
+	if d.SupersedesID == nil || *d.SupersedesID != supersedesID {
+		t.Errorf("expected supersedes_id %s, got %v", supersedesID, d.SupersedesID)
+	}
+	if d.ContentHash != "sha256:abc123def456" {
+		t.Errorf("expected content_hash 'sha256:abc123def456', got %q", d.ContentHash)
+	}
+	if len(d.Tags) != 2 || d.Tags[0] != "backend" || d.Tags[1] != "infra" {
+		t.Errorf("expected tags [backend, infra], got %v", d.Tags)
 	}
 }

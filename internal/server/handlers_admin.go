@@ -3,10 +3,10 @@ package server
 import (
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/ashita-ai/akashi/internal/auth"
@@ -128,6 +128,22 @@ func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate resource_type and permission against known constants.
+	validResourceTypes := map[string]bool{
+		string(model.ResourceAgentTraces): true,
+	}
+	validPermissions := map[string]bool{
+		string(model.PermissionRead): true,
+	}
+	if !validResourceTypes[req.ResourceType] {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid resource_type")
+		return
+	}
+	if !validPermissions[req.Permission] {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid permission")
+		return
+	}
+
 	// Get grantor agent.
 	grantor, err := h.db.GetAgentByAgentID(r.Context(), orgID, claims.AgentID)
 	if err != nil {
@@ -136,7 +152,12 @@ func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Only admins and the owner of the resource can grant access.
+	// Non-admin agents can only create grants for agent_traces on their own traces.
 	if !model.RoleAtLeast(claims.Role, model.RoleAdmin) {
+		if req.ResourceType != string(model.ResourceAgentTraces) {
+			writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "agents can only grant access to their own traces")
+			return
+		}
 		if req.ResourceID == nil || *req.ResourceID != claims.AgentID {
 			writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "can only grant access to your own traces")
 			return
@@ -227,7 +248,8 @@ func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prevent deleting the admin account to avoid lockout.
+	// Protect the seed admin (agent_id="admin") created during org signup.
+	// Other admin-role agents are deletable by org_owner+ callers.
 	if agentID == "admin" {
 		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "cannot delete the admin agent")
 		return
@@ -306,6 +328,7 @@ func isDuplicateKeyError(err error) bool {
 }
 
 // isNotFoundError checks if the error indicates a missing resource.
+// Uses sentinel error matching instead of fragile string comparison.
 func isNotFoundError(err error) bool {
-	return errors.Is(err, storage.ErrAgentNotFound) || strings.Contains(err.Error(), "not found")
+	return errors.Is(err, storage.ErrNotFound) || errors.Is(err, pgx.ErrNoRows)
 }

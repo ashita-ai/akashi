@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -40,15 +42,16 @@ func NewBroker(db *storage.DB, logger *slog.Logger) *Broker {
 
 // Start begins listening on the decisions and conflicts channels.
 // It blocks, so call it in a goroutine. Returns when ctx is cancelled.
+// Each Listen call is retried with exponential backoff (up to 5 attempts)
+// to handle transient connection issues during startup.
 func (b *Broker) Start(ctx context.Context) {
-	// Subscribe to the notification channels.
-	if err := b.db.Listen(ctx, storage.ChannelDecisions); err != nil {
-		b.logger.Error("broker: listen decisions", "error", err)
-		return
-	}
-	if err := b.db.Listen(ctx, storage.ChannelConflicts); err != nil {
-		b.logger.Error("broker: listen conflicts", "error", err)
-		return
+	// Subscribe to the notification channels with retry.
+	for _, ch := range []string{storage.ChannelDecisions, storage.ChannelConflicts} {
+		if err := b.listenWithRetry(ctx, ch); err != nil {
+			b.logger.Error("broker: failed to listen after retries, giving up",
+				"channel", ch, "error", err)
+			return
+		}
 	}
 
 	b.logger.Info("broker: listening for notifications",
@@ -71,6 +74,27 @@ func (b *Broker) Start(ctx context.Context) {
 		event := formatSSE(channel, payload)
 		b.broadcastToOrg(event, orgID)
 	}
+}
+
+// listenWithRetry attempts to subscribe to a Postgres LISTEN channel with
+// exponential backoff. Returns nil on success, or the last error after 5 attempts.
+func (b *Broker) listenWithRetry(ctx context.Context, ch string) error {
+	const maxAttempts = 5
+	var err error
+	for attempt := range maxAttempts {
+		if err = b.db.Listen(ctx, ch); err == nil {
+			return nil
+		}
+		backoff := time.Duration(1<<attempt) * time.Second
+		b.logger.Warn("broker: listen failed, retrying",
+			"channel", ch, "attempt", attempt+1, "backoff", backoff, "error", err)
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return fmt.Errorf("broker: listen %s failed after %d attempts: %w", ch, maxAttempts, err)
 }
 
 // Subscribe returns a channel that receives SSE-formatted events scoped to

@@ -125,8 +125,12 @@ func (db *DB) ListConflicts(ctx context.Context, orgID uuid.UUID, filters Confli
 
 // NewConflictsSince returns conflicts detected after the given time, ordered by
 // detected_at ascending. Used by the conflict refresh loop to detect new conflicts
-// and send pg_notify events.
-func (db *DB) NewConflictsSince(ctx context.Context, since time.Time) ([]model.DecisionConflict, error) {
+// and send pg_notify events. The limit parameter caps the number of rows returned;
+// if limit <= 0, it defaults to 1000.
+func (db *DB) NewConflictsSince(ctx context.Context, since time.Time, limit int) ([]model.DecisionConflict, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
 	rows, err := db.pool.Query(ctx,
 		`SELECT dc.decision_a_id, dc.decision_b_id, dc.org_id,
 		 dc.agent_a, dc.agent_b, dc.run_a, dc.run_b,
@@ -138,7 +142,8 @@ func (db *DB) NewConflictsSince(ctx context.Context, since time.Time) ([]model.D
 		 LEFT JOIN decisions da ON da.id = dc.decision_a_id
 		 LEFT JOIN decisions db ON db.id = dc.decision_b_id
 		 WHERE dc.detected_at > $1
-		 ORDER BY dc.detected_at ASC`, since,
+		 ORDER BY dc.detected_at ASC
+		 LIMIT $2`, since, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("storage: new conflicts since: %w", err)

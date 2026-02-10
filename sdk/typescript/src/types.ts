@@ -3,11 +3,17 @@ export interface Decision {
   id: string;
   run_id: string;
   agent_id: string;
+  org_id: string;
   decision_type: string;
   outcome: string;
   confidence: number;
   reasoning?: string;
   metadata: Record<string, unknown>;
+  quality_score: number;
+  precedent_ref?: string;
+  supersedes_id?: string;
+  content_hash?: string;
+  tags?: string[];
   valid_from: string;
   valid_to?: string;
   transaction_time: string;
@@ -44,6 +50,7 @@ export interface Evidence {
 export interface DecisionConflict {
   decision_a_id: string;
   decision_b_id: string;
+  org_id: string;
   agent_a: string;
   agent_b: string;
   run_a: string;
@@ -53,6 +60,8 @@ export interface DecisionConflict {
   outcome_b: string;
   confidence_a: number;
   confidence_b: number;
+  reasoning_a?: string;
+  reasoning_b?: string;
   decided_at_a: string;
   decided_at_b: string;
   detected_at: string;
@@ -76,10 +85,13 @@ export interface AgentRun {
 export interface AgentEvent {
   id: string;
   run_id: string;
+  org_id: string;
   event_type: string;
   sequence_num: number;
   occurred_at: string;
   agent_id: string;
+  trace_id?: string;
+  span_id?: string;
   payload: Record<string, unknown>;
   created_at: string;
 }
@@ -91,6 +103,7 @@ export interface Agent {
   org_id: string;
   name: string;
   role: string;
+  tags: string[];
   metadata: Record<string, unknown>;
   created_at: string;
 }
@@ -215,6 +228,7 @@ export interface CheckResponse {
 export interface QueryResponse {
   decisions: Decision[];
   total: number;
+  count: number;
   limit: number;
   offset: number;
 }

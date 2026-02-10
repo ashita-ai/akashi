@@ -1109,8 +1109,12 @@ func TestSignupAndVerifyFullFlow(t *testing.T) {
 	}
 	data, _ := io.ReadAll(resp.Body)
 	require.NoError(t, json.Unmarshal(data, &signupResult))
-	orgID := signupResult.Data.OrgID
 	agentID := signupResult.Data.AgentID
+
+	// In dev mode (no SMTP), the raw verification token is included in the response.
+	// This avoids querying the DB for a value that is now stored as a SHA-256 hash.
+	verifyToken := signupResult.Data.VerificationToken
+	require.NotEmpty(t, verifyToken, "dev mode should include verification_token in signup response")
 
 	// 2. Confirm token is rejected before email verification.
 	tokenBody, _ := json.Marshal(model.AuthTokenRequest{AgentID: agentID, APIKey: "MyStr0ngPasswd"})
@@ -1119,17 +1123,8 @@ func TestSignupAndVerifyFullFlow(t *testing.T) {
 	defer func() { _ = resp2.Body.Close() }()
 	assert.Equal(t, http.StatusForbidden, resp2.StatusCode)
 
-	// 3. Get the verification token from the DB directly (in production this comes via email).
-	var verifyToken string
+	// 3. Verify the DB stores a hash, not the raw token.
 	ctx := context.Background()
-	// We need DB access to retrieve the token. Use the exported test DB via a storage query.
-	// Since we can't access the DB directly from the test package, we'll use a
-	// roundabout approach: look up the token via the org_id we got back.
-	// Actually, we can use the storage package directly since we have the DSN.
-	// Instead, let's just verify the full flow works via the org_id.
-	// We'll directly query the DB that the test server uses.
-	// The test container DSN is not exported, so let's use the signup service's DB.
-	// Actually, the simplest approach: query the verification token from email_verifications.
 	host, _ := testcontainer.Host(ctx)
 	port, _ := testcontainer.MappedPort(ctx, "5432")
 	dsn := fmt.Sprintf("postgres://akashi:akashi@%s:%s/akashi?sslmode=disable", host, port.Port())
@@ -1137,14 +1132,15 @@ func TestSignupAndVerifyFullFlow(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = conn.Close(ctx) }()
 
+	var storedHash string
 	err = conn.QueryRow(ctx,
-		"SELECT token FROM email_verifications WHERE org_id = $1 AND used_at IS NULL ORDER BY created_at DESC LIMIT 1",
-		orgID,
-	).Scan(&verifyToken)
-	require.NoError(t, err, "should find verification token in DB")
-	require.NotEmpty(t, verifyToken)
+		"SELECT token_hash FROM email_verifications WHERE org_id = $1 AND used_at IS NULL ORDER BY created_at DESC LIMIT 1",
+		signupResult.Data.OrgID,
+	).Scan(&storedHash)
+	require.NoError(t, err, "should find verification token hash in DB")
+	assert.NotEqual(t, verifyToken, storedHash, "DB should store a hash, not the raw token")
 
-	// 4. Verify email.
+	// 4. Verify email using the raw token (the service hashes it before lookup).
 	verifyBody, _ := json.Marshal(map[string]string{"token": verifyToken})
 	resp3, err := http.Post(testSrv.URL+"/auth/verify", "application/json", bytes.NewReader(verifyBody))
 	require.NoError(t, err)
@@ -1284,7 +1280,6 @@ func TestBillingPortalEndpoint(t *testing.T) {
 // for the org_owner agent. This is a helper for tests that need an org_owner role.
 func createVerifiedOrgOwner(t *testing.T, email, password, orgName string) string {
 	t.Helper()
-	ctx := context.Background()
 
 	// 1. Sign up.
 	signupBody, _ := json.Marshal(model.SignupRequest{Email: email, Password: password, OrgName: orgName})
@@ -1299,20 +1294,9 @@ func createVerifiedOrgOwner(t *testing.T, email, password, orgName string) strin
 	data, _ := io.ReadAll(resp.Body)
 	require.NoError(t, json.Unmarshal(data, &signupResult))
 
-	// 2. Verify email directly via DB.
-	host, _ := testcontainer.Host(ctx)
-	port, _ := testcontainer.MappedPort(ctx, "5432")
-	dsn := fmt.Sprintf("postgres://akashi:akashi@%s:%s/akashi?sslmode=disable", host, port.Port())
-	conn, err := pgx.Connect(ctx, dsn)
-	require.NoError(t, err)
-	defer func() { _ = conn.Close(ctx) }()
-
-	var verifyToken string
-	err = conn.QueryRow(ctx,
-		"SELECT token FROM email_verifications WHERE org_id = $1 AND used_at IS NULL ORDER BY created_at DESC LIMIT 1",
-		signupResult.Data.OrgID,
-	).Scan(&verifyToken)
-	require.NoError(t, err)
+	// 2. Verify email using the raw token from the signup response (dev mode).
+	verifyToken := signupResult.Data.VerificationToken
+	require.NotEmpty(t, verifyToken, "dev mode should include verification_token in signup response")
 
 	verifyBody, _ := json.Marshal(map[string]string{"token": verifyToken})
 	resp2, err := http.Post(testSrv.URL+"/auth/verify", "application/json", bytes.NewReader(verifyBody))

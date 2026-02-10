@@ -10,7 +10,8 @@ import (
 )
 
 // ErrAgentNotFound is returned when an agent doesn't exist.
-var ErrAgentNotFound = errors.New("storage: agent not found")
+// It wraps ErrNotFound so callers can use errors.Is(err, ErrNotFound) generically.
+var ErrAgentNotFound = fmt.Errorf("storage: agent: %w", ErrNotFound)
 
 // DeleteAgentResult contains the count of rows deleted per table.
 type DeleteAgentResult struct {
