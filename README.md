@@ -95,32 +95,53 @@ All SDKs provide: `Check`, `Trace`, `Query`, `Search`, `Recent`. Auth token mana
 
 ## Architecture
 
-```
-     Browser (SPA)        MCP Clients              HTTP Clients
-          |                    |                         |
-          v                    v                         v
-     +---------+         +---------+               +---------+
-     |    /    |         |   /mcp  |               | /v1/... |
-     +---------+         +---------+               +---------+
-          |                    |                         |
-          +----------- Akashi Server (Go, single binary) +
-          |                                              |
-+---------+----------+---------+---------+---------+-----+
-|         |          |         |         |         |
-Auth    Trace Buffer Query   Search   Conflict   Billing
-Ed25519  (in-memory  (SQL    (Qdrant/  Detection  (Stripe)
- JWT    + COPY flush) WHERE)  pgvector) (mat. view)
-|         |          |         |         |
-+----+----+----+-----+---------+---------+
-     |              |
-PgBouncer       Direct Conn
-(port 6432)     (port 5432)
-  queries     LISTEN/NOTIFY
-     |              |
-     +------+-------+
-            |
-     PostgreSQL 17
-  pgvector + TimescaleDB
+```mermaid
+flowchart TD
+    subgraph Clients
+        SPA["Browser (SPA)"]
+        MCP["MCP Clients<br/><small>Claude, Cursor, Windsurf</small>"]
+        HTTP["HTTP Clients<br/><small>SDKs, CI/CD, scripts</small>"]
+    end
+
+    subgraph Server["Akashi Server &ensp;(Go, single binary)"]
+        direction TB
+        subgraph Interfaces["Interface Layer"]
+            UI["/ &ensp;Audit Dashboard"]
+            MCPE["/mcp &ensp;MCP Protocol"]
+            API["/v1/... &ensp;REST API"]
+        end
+
+        subgraph Services["Service Layer"]
+            AUTH["Auth<br/><small>Ed25519 JWT</small>"]
+            TRACE["Trace Buffer<br/><small>in-memory + COPY flush</small>"]
+            QUERY["Query<br/><small>SQL WHERE</small>"]
+            SEARCH["Search<br/><small>Qdrant / pgvector</small>"]
+            CONFLICT["Conflict Detection<br/><small>materialized view</small>"]
+            BILLING["Billing<br/><small>Stripe</small>"]
+        end
+    end
+
+    subgraph Storage["PostgreSQL 17 &ensp;&ensp; pgvector + TimescaleDB"]
+        PGB["PgBouncer<br/><small>:6432 &ensp;queries</small>"]
+        DIRECT["Direct Conn<br/><small>:5432 &ensp;LISTEN/NOTIFY</small>"]
+    end
+
+    SPA --> UI
+    MCP --> MCPE
+    HTTP --> API
+
+    UI --> Services
+    MCPE --> Services
+    API --> Services
+
+    Services --> PGB
+    Services --> DIRECT
+
+    style Clients fill:#f0f4ff,stroke:#4a6fa5
+    style Server fill:#fff,stroke:#333
+    style Interfaces fill:#e8f0fe,stroke:#4a6fa5
+    style Services fill:#f9f9f9,stroke:#999
+    style Storage fill:#e8f5e9,stroke:#2e7d32
 ```
 
 ## Documentation
