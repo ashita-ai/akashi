@@ -495,3 +495,182 @@ func TestNotify(t *testing.T) {
 	err := testDB.Notify(ctx, "test_channel", `{"test": true}`)
 	require.NoError(t, err)
 }
+
+func TestAgentTagsPersistence(t *testing.T) {
+	ctx := context.Background()
+
+	hash := "hashed_tag_test"
+	agent, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID:    "tag-agent-" + uuid.New().String()[:8],
+		Name:       "Tag Test Agent",
+		Role:       model.RoleAgent,
+		APIKeyHash: &hash,
+		Tags:       []string{"finance", "compliance"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"finance", "compliance"}, agent.Tags)
+
+	// Read it back and verify tags survive round-trip.
+	got, err := testDB.GetAgentByAgentID(ctx, uuid.Nil, agent.AgentID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"finance", "compliance"}, got.Tags)
+
+	// Also test GetAgentByID.
+	gotByID, err := testDB.GetAgentByID(ctx, agent.ID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"finance", "compliance"}, gotByID.Tags)
+}
+
+func TestAgentTagsDefaultEmpty(t *testing.T) {
+	ctx := context.Background()
+
+	hash := "hashed_default_tag"
+	agent, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID:    "no-tag-agent-" + uuid.New().String()[:8],
+		Name:       "No Tag Agent",
+		Role:       model.RoleAgent,
+		APIKeyHash: &hash,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{}, agent.Tags)
+
+	got, err := testDB.GetAgentByAgentID(ctx, uuid.Nil, agent.AgentID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{}, got.Tags)
+}
+
+func TestListAgentIDsBySharedTags(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	// Create three agents: two share "finance", one has only "legal".
+	hash := "hashed_shared_tags"
+	a1, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID:    "finance-1-" + suffix,
+		Name:       "Finance Agent 1",
+		Role:       model.RoleAgent,
+		APIKeyHash: &hash,
+		Tags:       []string{"finance", "compliance"},
+	})
+	require.NoError(t, err)
+
+	a2, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID:    "finance-2-" + suffix,
+		Name:       "Finance Agent 2",
+		Role:       model.RoleAgent,
+		APIKeyHash: &hash,
+		Tags:       []string{"finance"},
+	})
+	require.NoError(t, err)
+
+	a3, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID:    "legal-1-" + suffix,
+		Name:       "Legal Agent",
+		Role:       model.RoleAgent,
+		APIKeyHash: &hash,
+		Tags:       []string{"legal"},
+	})
+	require.NoError(t, err)
+
+	// Query for agents sharing "finance" tag — should find a1 and a2.
+	ids, err := testDB.ListAgentIDsBySharedTags(ctx, uuid.Nil, []string{"finance"})
+	require.NoError(t, err)
+
+	idSet := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		idSet[id] = true
+	}
+	assert.True(t, idSet[a1.AgentID], "finance-1 should match finance tag")
+	assert.True(t, idSet[a2.AgentID], "finance-2 should match finance tag")
+	assert.False(t, idSet[a3.AgentID], "legal-1 should not match finance tag")
+
+	// Query for "compliance" — only a1.
+	ids2, err := testDB.ListAgentIDsBySharedTags(ctx, uuid.Nil, []string{"compliance"})
+	require.NoError(t, err)
+
+	idSet2 := make(map[string]bool, len(ids2))
+	for _, id := range ids2 {
+		idSet2[id] = true
+	}
+	assert.True(t, idSet2[a1.AgentID], "finance-1 should match compliance tag")
+	assert.False(t, idSet2[a2.AgentID], "finance-2 has no compliance tag")
+
+	// Query for "legal" OR "finance" — all three.
+	ids3, err := testDB.ListAgentIDsBySharedTags(ctx, uuid.Nil, []string{"legal", "finance"})
+	require.NoError(t, err)
+
+	idSet3 := make(map[string]bool, len(ids3))
+	for _, id := range ids3 {
+		idSet3[id] = true
+	}
+	assert.True(t, idSet3[a1.AgentID])
+	assert.True(t, idSet3[a2.AgentID])
+	assert.True(t, idSet3[a3.AgentID])
+}
+
+func TestUpdateAgentTags(t *testing.T) {
+	ctx := context.Background()
+
+	hash := "hashed_update_tags"
+	agent, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID:    "update-tag-" + uuid.New().String()[:8],
+		Name:       "Update Tag Agent",
+		Role:       model.RoleAgent,
+		APIKeyHash: &hash,
+		Tags:       []string{"original"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"original"}, agent.Tags)
+
+	// Update tags.
+	updated, err := testDB.UpdateAgentTags(ctx, uuid.Nil, agent.AgentID, []string{"finance", "compliance"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"finance", "compliance"}, updated.Tags)
+
+	// Verify round-trip.
+	got, err := testDB.GetAgentByAgentID(ctx, uuid.Nil, agent.AgentID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"finance", "compliance"}, got.Tags)
+
+	// Clear tags.
+	cleared, err := testDB.UpdateAgentTags(ctx, uuid.Nil, agent.AgentID, []string{})
+	require.NoError(t, err)
+	assert.Equal(t, []string{}, cleared.Tags)
+
+	// Update nonexistent agent.
+	_, err = testDB.UpdateAgentTags(ctx, uuid.Nil, "nonexistent-agent", []string{"tag"})
+	require.Error(t, err)
+}
+
+func TestListAgentsIncludesTags(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	hash := "hashed_list_tags"
+	a1, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID:    "list-tag-1-" + suffix,
+		Name:       "List Tag Agent 1",
+		Role:       model.RoleAgent,
+		APIKeyHash: &hash,
+		Tags:       []string{"team-a"},
+	})
+	require.NoError(t, err)
+
+	a2, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID:    "list-tag-2-" + suffix,
+		Name:       "List Tag Agent 2",
+		Role:       model.RoleAgent,
+		APIKeyHash: &hash,
+		Tags:       []string{"team-b", "team-c"},
+	})
+	require.NoError(t, err)
+
+	// Retrieve individually to verify tags are present in list results.
+	got1, err := testDB.GetAgentByID(ctx, a1.ID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"team-a"}, got1.Tags)
+
+	got2, err := testDB.GetAgentByID(ctx, a2.ID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"team-b", "team-c"}, got2.Tags)
+}
