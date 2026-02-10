@@ -137,11 +137,14 @@ type CreateGrantRequest struct {
 
 // HealthResponse is the response for GET /health.
 type HealthResponse struct {
-	Status   string `json:"status"`
-	Version  string `json:"version"`
-	Postgres string `json:"postgres"`
-	Qdrant   string `json:"qdrant,omitempty"`
-	Uptime   int64  `json:"uptime_seconds"`
+	Status       string `json:"status"`
+	Version      string `json:"version"`
+	Postgres     string `json:"postgres"`
+	Qdrant       string `json:"qdrant,omitempty"`
+	BufferDepth  int    `json:"buffer_depth"`
+	BufferStatus string `json:"buffer_status"` // "ok", "high", "critical"
+	SSEBroker    string `json:"sse_broker,omitempty"`
+	Uptime       int64  `json:"uptime_seconds"`
 }
 
 // Organization represents a tenant in the multi-tenancy model.

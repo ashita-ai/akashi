@@ -363,7 +363,7 @@ func (h *Handlers) HandleVerifyDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	d, err := h.db.GetDecision(r.Context(), orgID, id, false, false)
+	d, err := h.db.GetDecision(r.Context(), orgID, id, storage.GetDecisionOpts{})
 	if err != nil {
 		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "decision not found")
 		return

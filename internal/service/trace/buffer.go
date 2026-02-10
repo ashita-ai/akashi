@@ -37,6 +37,7 @@ type Buffer struct {
 	flushCh    chan struct{}
 	done       chan struct{}
 	cancelLoop context.CancelFunc // cancels the flushLoop goroutine
+	drainCtx   context.Context    // set by Drain so final flush respects caller's deadline
 }
 
 // NewBuffer creates a new event buffer.
@@ -118,10 +119,17 @@ func (b *Buffer) flushLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			// Final flush with bounded timeout so shutdown can't hang forever.
-			flushCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			b.flush(flushCtx)
-			cancel()
+			// Final flush using the drain context provided by Drain().
+			// We need a non-cancelled context because ctx is already done.
+			// The drain context has its own deadline set by the caller.
+			if b.drainCtx != nil {
+				b.flush(b.drainCtx)
+			} else {
+				// Fallback for direct cancellation without Drain (e.g., tests).
+				fallbackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				b.flush(fallbackCtx)
+				cancel()
+			}
 			close(b.done)
 			return
 		case <-ticker.C:
@@ -168,8 +176,10 @@ func (b *Buffer) flush(ctx context.Context) {
 
 // Drain signals the background flush loop to stop, waits for it to complete
 // its final flush, and returns. The ctx parameter controls the maximum time
-// to wait for the goroutine to finish.
+// to wait for the goroutine to finish and is passed to the final flush so it
+// respects the caller's deadline.
 func (b *Buffer) Drain(ctx context.Context) {
+	b.drainCtx = ctx // Store so flushLoop's final flush respects caller's deadline.
 	if b.cancelLoop != nil {
 		b.cancelLoop() // Signal flushLoop to exit; it does a final flush before closing b.done.
 	}

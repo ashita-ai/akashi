@@ -87,6 +87,9 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}
 	defer db.Close(ctx)
 
+	// Register connection pool OTEL metrics (after telemetry.Init).
+	db.RegisterPoolMetrics()
+
 	// Run migrations (dev mode only; production uses Atlas).
 	if err := db.RunMigrations(ctx, os.DirFS("migrations")); err != nil {
 		slog.Warn("migrations failed (may already exist)", "error", err)
@@ -165,6 +168,9 @@ func run(ctx context.Context, logger *slog.Logger) error {
 
 	// Create rate limiter (backed by Redis if configured, noop otherwise).
 	limiter := newRateLimiter(cfg, logger)
+	if limiter == nil && cfg.RequireRedis {
+		return fmt.Errorf("rate limiting required but Redis unavailable (AKASHI_REQUIRE_REDIS=true)")
+	}
 	if limiter != nil {
 		defer func() { _ = limiter.Close() }()
 	}
@@ -248,24 +254,27 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		return err
 	}
 
-	// Graceful shutdown.
+	// Graceful shutdown. Each phase gets its own timeout so early completion
+	// doesn't steal budget from later phases. Total worst-case: 30s.
+	// Order is intentional: outbox reads from Postgres, buffer writes to Postgres,
+	// HTTP shutdown waits for in-flight requests that may still append to the buffer.
 	slog.Info("akashi shutting down")
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer shutdownCancel()
-
-	// Drain outbox worker first (syncs remaining entries to Qdrant before closing connection).
 	if outboxWorker != nil {
-		outboxWorker.Drain(shutdownCtx)
+		outboxCtx, outboxCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		outboxWorker.Drain(outboxCtx)
+		outboxCancel()
 	}
 
-	// Drain event buffer.
-	buf.Drain(shutdownCtx)
+	bufCtx, bufCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	buf.Drain(bufCtx)
+	bufCancel()
 
-	// Shutdown HTTP server.
-	if err := srv.Shutdown(shutdownCtx); err != nil {
+	httpCtx, httpCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := srv.Shutdown(httpCtx); err != nil {
 		slog.Error("http shutdown error", "error", err)
 	}
+	httpCancel()
 
 	slog.Info("akashi stopped")
 	return nil
@@ -339,15 +348,24 @@ func ollamaReachable(baseURL string) bool {
 }
 
 // newRateLimiter creates a Redis-backed rate limiter. If Redis is not configured
-// or not reachable, returns a noop limiter (all requests allowed).
+// or not reachable, returns a noop limiter (all requests allowed) — unless
+// RequireRedis is set, in which case it returns nil to signal a fatal error.
 func newRateLimiter(cfg config.Config, logger *slog.Logger) *ratelimit.Limiter {
 	if cfg.RedisURL == "" {
+		if cfg.RequireRedis {
+			logger.Error("rate limiting: AKASHI_REQUIRE_REDIS is set but REDIS_URL is empty")
+			return nil
+		}
 		logger.Info("rate limiting: disabled (no REDIS_URL)")
 		return ratelimit.New(nil, logger)
 	}
 
 	opts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
+		if cfg.RequireRedis {
+			logger.Error("rate limiting: AKASHI_REQUIRE_REDIS is set but REDIS_URL is invalid", "error", err)
+			return nil
+		}
 		logger.Warn("rate limiting: disabled (invalid REDIS_URL)", "error", err)
 		return ratelimit.New(nil, logger)
 	}
@@ -358,8 +376,12 @@ func newRateLimiter(cfg config.Config, logger *slog.Logger) *ratelimit.Limiter {
 	defer cancel()
 
 	if err := client.Ping(ctx).Err(); err != nil {
-		logger.Warn("rate limiting: disabled (Redis unreachable)", "error", err)
 		_ = client.Close()
+		if cfg.RequireRedis {
+			logger.Error("rate limiting: AKASHI_REQUIRE_REDIS is set but Redis unreachable", "error", err)
+			return nil
+		}
+		logger.Warn("rate limiting: disabled (Redis unreachable)", "error", err)
 		return ratelimit.New(nil, logger)
 	}
 

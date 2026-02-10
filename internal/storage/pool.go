@@ -16,6 +16,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	pgxvector "github.com/pgvector/pgvector-go/pgx"
+	"go.opentelemetry.io/otel/metric"
+
+	"github.com/ashita-ai/akashi/internal/telemetry"
 )
 
 // DB wraps a pgxpool.Pool for normal queries (via PgBouncer)
@@ -25,6 +28,7 @@ type DB struct {
 	notifyConn *pgx.Conn
 	notifyDSN  string
 	notifyMu   sync.Mutex
+	notifyGen  uint64 // incremented on every reconnect; protected by notifyMu
 	// listenChannels tracks subscribed channels so they can be re-established after reconnect.
 	listenChannels []string
 	logger         *slog.Logger
@@ -177,6 +181,7 @@ func (db *DB) reconnectNotify(ctx context.Context) error {
 		}
 
 		db.notifyConn = conn
+		db.notifyGen++ // Signal that the connection has changed.
 		db.logger.Info("storage: notify connection restored",
 			"attempt", attempt+1,
 			"channels", db.listenChannels,
@@ -185,4 +190,28 @@ func (db *DB) reconnectNotify(ctx context.Context) error {
 	}
 
 	return fmt.Errorf("storage: notify reconnect failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+// RegisterPoolMetrics registers observable OTEL gauges for connection pool health.
+// Called after telemetry.Init() has configured the global meter provider.
+func (db *DB) RegisterPoolMetrics() {
+	meter := telemetry.Meter("akashi/pool")
+
+	totalConns, _ := meter.Int64ObservableGauge("akashi.pool.connections.total",
+		metric.WithDescription("Total number of connections in the pool"),
+	)
+	idleConns, _ := meter.Int64ObservableGauge("akashi.pool.connections.idle",
+		metric.WithDescription("Number of idle connections in the pool"),
+	)
+	acquiredConns, _ := meter.Int64ObservableGauge("akashi.pool.connections.acquired",
+		metric.WithDescription("Number of connections currently acquired by queries"),
+	)
+
+	_, _ = meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		stat := db.pool.Stat()
+		o.ObserveInt64(totalConns, int64(stat.TotalConns()))
+		o.ObserveInt64(idleConns, int64(stat.IdleConns()))
+		o.ObserveInt64(acquiredConns, int64(stat.AcquiredConns()))
+		return nil
+	}, totalConns, idleConns, acquiredConns)
 }

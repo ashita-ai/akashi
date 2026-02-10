@@ -554,7 +554,7 @@ func TestAppendEvents(t *testing.T) {
 				})
 				return
 			}
-			writeJSON(w, http.StatusCreated, map[string]any{
+			writeJSON(w, http.StatusAccepted, map[string]any{
 				"data": map[string]any{
 					"accepted":  len(events),
 					"event_ids": []uuid.UUID{eventID1, eventID2},

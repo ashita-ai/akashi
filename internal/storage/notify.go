@@ -41,9 +41,14 @@ func (db *DB) Listen(ctx context.Context, channel string) error {
 // If the connection is lost, it attempts to reconnect with exponential backoff.
 // Returns the channel name and payload. The caller should retry on error after
 // a successful reconnect (indicated by an error wrapping the original failure).
+//
+// A generation counter (notifyGen) detects concurrent reconnects: if another
+// goroutine replaces the connection while we're waiting, we detect the stale
+// pointer via a generation mismatch instead of using a potentially-closed connection.
 func (db *DB) WaitForNotification(ctx context.Context) (channel, payload string, err error) {
 	db.notifyMu.Lock()
 	conn := db.notifyConn
+	gen := db.notifyGen
 	db.notifyMu.Unlock()
 
 	if conn == nil {
@@ -52,8 +57,14 @@ func (db *DB) WaitForNotification(ctx context.Context) (channel, payload string,
 
 	notification, err := conn.WaitForNotification(ctx)
 	if err != nil {
-		// Connection may have dropped. Attempt reconnect.
 		db.notifyMu.Lock()
+		if db.notifyGen != gen {
+			// Connection was replaced by a concurrent reconnect.
+			// The error is expected (stale connection) — caller should retry.
+			db.notifyMu.Unlock()
+			return "", "", fmt.Errorf("storage: notification interrupted, connection replaced (retry): %w", err)
+		}
+		// Same generation — this is a real failure. Attempt reconnect.
 		reconnectErr := db.reconnectNotify(ctx)
 		db.notifyMu.Unlock()
 

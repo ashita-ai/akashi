@@ -459,7 +459,7 @@ func (c *Client) getNoAuth(ctx context.Context, path string, dest any) error {
 	if err != nil {
 		return fmt.Errorf("akashi: %s %s: %w", req.Method, req.URL.Path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	return handleResponse(resp, dest)
 }
@@ -475,7 +475,7 @@ func (c *Client) doRequest(ctx context.Context, req *http.Request, dest any) err
 	if err != nil {
 		return fmt.Errorf("akashi: %s %s: %w", req.Method, req.URL.Path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	return handleResponse(resp, dest)
 }

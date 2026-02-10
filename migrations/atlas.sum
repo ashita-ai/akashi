@@ -1,4 +1,4 @@
-h1:UpDp/k4k7XAFvDW18IqchcAMO45dqHYxKkahChYd2Ww=
+h1:X7VwaYIXHiwll+eimqLMoys2S9EyqcYYHGrimg8W74U=
 001_create_agent_runs.sql h1:kt1hhf4ttnT0iglMXihEJCZtiKBhSYli5HeMcFaKGl0=
 002_create_agent_events.sql h1:teJwKwJaghjyJj9JYW/KgD8tCMZm9h1IqAUPLtmvqmA=
 003_create_decisions.sql h1:/uCnEUGTvX6VRfOtLygpUXpx/JJ58uijEAm0mQt0MNA=
@@ -17,3 +17,4 @@ h1:UpDp/k4k7XAFvDW18IqchcAMO45dqHYxKkahChYd2Ww=
 018_auth_lookup_index.sql h1:mWVyPxpborlQbm9+FwkzgO96DCW2hOYaIX0/HqsSBFI=
 019_text_search_index.sql h1:24xjvADSB+/E2O1uOPl8Yxw6SkfOwqravuOhQqURidM=
 020_revision_chain.sql h1:8vsQ3FSUAZCSTjfR7dXae10+BWx7v+Y3ZA4E4ePQWIM=
+021_remove_unused_rls.sql h1:TPRW1jP23Rbbpe+tcCBSBE/EkAiXsg67NQO9pQk/TR0=

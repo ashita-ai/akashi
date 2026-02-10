@@ -72,15 +72,25 @@ func (db *DB) CreateDecision(ctx context.Context, d model.Decision) (model.Decis
 	return d, nil
 }
 
-// GetDecision retrieves a decision by ID, optionally with alternatives and evidence.
-func (db *DB) GetDecision(ctx context.Context, orgID, id uuid.UUID, includeAlts, includeEvidence bool) (model.Decision, error) {
-	var d model.Decision
-	err := db.pool.QueryRow(ctx,
-		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
+// GetDecisionOpts controls GetDecision behavior.
+type GetDecisionOpts struct {
+	IncludeAlts     bool // Load alternatives.
+	IncludeEvidence bool // Load evidence.
+	CurrentOnly     bool // If true, return only if the decision has not been superseded (valid_to IS NULL).
+}
+
+// GetDecision retrieves a decision by ID with configurable includes and filtering.
+func (db *DB) GetDecision(ctx context.Context, orgID, id uuid.UUID, opts GetDecisionOpts) (model.Decision, error) {
+	query := `SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
 		 valid_from, valid_to, transaction_time, created_at
-		 FROM decisions WHERE id = $1 AND org_id = $2`, id, orgID,
-	).Scan(
+		 FROM decisions WHERE id = $1 AND org_id = $2`
+	if opts.CurrentOnly {
+		query += ` AND valid_to IS NULL`
+	}
+
+	var d model.Decision
+	err := db.pool.QueryRow(ctx, query, id, orgID).Scan(
 		&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence,
 		&d.Reasoning, &d.Metadata, &d.QualityScore, &d.PrecedentRef,
 		&d.SupersedesID, &d.ContentHash,
@@ -93,7 +103,7 @@ func (db *DB) GetDecision(ctx context.Context, orgID, id uuid.UUID, includeAlts,
 		return model.Decision{}, fmt.Errorf("storage: get decision: %w", err)
 	}
 
-	if includeAlts {
+	if opts.IncludeAlts {
 		alts, err := db.GetAlternativesByDecision(ctx, id)
 		if err != nil {
 			return model.Decision{}, err
@@ -101,7 +111,7 @@ func (db *DB) GetDecision(ctx context.Context, orgID, id uuid.UUID, includeAlts,
 		d.Alternatives = alts
 	}
 
-	if includeEvidence {
+	if opts.IncludeEvidence {
 		ev, err := db.GetEvidenceByDecision(ctx, id)
 		if err != nil {
 			return model.Decision{}, err

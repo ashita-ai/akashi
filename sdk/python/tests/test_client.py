@@ -354,7 +354,7 @@ class TestAppendEvents:
         _mock_auth(respx)
         run_id = uuid.UUID(RUN_ID)
         respx.post(f"{BASE_URL}/v1/runs/{run_id}/events").respond(
-            201,
+            202,
             json={
                 "data": {
                     "accepted": 1,

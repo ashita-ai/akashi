@@ -195,11 +195,28 @@ func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		httpStatus = http.StatusServiceUnavailable
 	}
 
+	// Buffer health: 50% = high, 75% = critical.
+	bufDepth := 0
+	bufStatus := "ok"
+	if h.buffer != nil {
+		bufDepth = h.buffer.Len()
+		if bufDepth > 75_000 { // 75% of maxBufferCapacity (100,000)
+			bufStatus = "critical"
+			if status == "healthy" {
+				status = "degraded"
+			}
+		} else if bufDepth > 50_000 { // 50% of maxBufferCapacity
+			bufStatus = "high"
+		}
+	}
+
 	resp := model.HealthResponse{
-		Status:   status,
-		Version:  h.version,
-		Postgres: pgStatus,
-		Uptime:   int64(time.Since(h.startedAt).Seconds()),
+		Status:       status,
+		Version:      h.version,
+		Postgres:     pgStatus,
+		BufferDepth:  bufDepth,
+		BufferStatus: bufStatus,
+		Uptime:       int64(time.Since(h.startedAt).Seconds()),
 	}
 
 	if h.searcher != nil {
@@ -208,6 +225,10 @@ func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		} else {
 			resp.Qdrant = "disconnected"
 		}
+	}
+
+	if h.broker != nil {
+		resp.SSEBroker = "running"
 	}
 
 	writeJSON(w, r, httpStatus, resp)

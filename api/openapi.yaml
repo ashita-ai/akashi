@@ -345,8 +345,8 @@ paths:
             schema:
               $ref: "#/components/schemas/AppendEventsRequest"
       responses:
-        "201":
-          description: Events accepted.
+        "202":
+          description: Events accepted for processing; durable after next flush.
           content:
             application/json:
               schema:

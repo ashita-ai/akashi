@@ -301,7 +301,7 @@ func TestCreateRunAndAppendEvents(t *testing.T) {
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp2.Body.Close() }()
-	assert.Equal(t, http.StatusCreated, resp2.StatusCode)
+	assert.Equal(t, http.StatusAccepted, resp2.StatusCode)
 
 	// Wait for buffer flush.
 	time.Sleep(200 * time.Millisecond)

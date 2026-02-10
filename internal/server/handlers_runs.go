@@ -83,9 +83,11 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 		eventIDs[i] = e.ID
 	}
 
-	writeJSON(w, r, http.StatusCreated, map[string]any{
+	writeJSON(w, r, http.StatusAccepted, map[string]any{
 		"accepted":  len(events),
 		"event_ids": eventIDs,
+		"status":    "buffered",
+		"message":   "events accepted for processing; durable after next flush",
 	})
 }
 

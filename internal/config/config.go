@@ -64,6 +64,9 @@ type Config struct {
 	OutboxPollInterval time.Duration
 	OutboxBatchSize    int
 
+	// Reliability settings.
+	RequireRedis bool // If true, server refuses to start without a healthy Redis connection.
+
 	// Operational settings.
 	LogLevel                string
 	ConflictRefreshInterval time.Duration
@@ -109,6 +112,7 @@ func Load() (Config, error) {
 		QdrantCollection:        envStr("QDRANT_COLLECTION", "akashi_decisions"),
 		OutboxPollInterval:      envDuration("AKASHI_OUTBOX_POLL_INTERVAL", 1*time.Second),
 		OutboxBatchSize:         envInt("AKASHI_OUTBOX_BATCH_SIZE", 100),
+		RequireRedis:            envBool("AKASHI_REQUIRE_REDIS", false),
 		LogLevel:                envStr("AKASHI_LOG_LEVEL", "info"),
 		ConflictRefreshInterval: envDuration("AKASHI_CONFLICT_REFRESH_INTERVAL", 30*time.Second),
 		IntegrityProofInterval:  envDuration("AKASHI_INTEGRITY_PROOF_INTERVAL", 5*time.Minute),
