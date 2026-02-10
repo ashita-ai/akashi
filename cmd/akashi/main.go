@@ -256,25 +256,26 @@ func run(ctx context.Context, logger *slog.Logger) error {
 
 	// Graceful shutdown. Each phase gets its own timeout so early completion
 	// doesn't steal budget from later phases. Total worst-case: 30s.
-	// Order is intentional: outbox reads from Postgres, buffer writes to Postgres,
-	// HTTP shutdown waits for in-flight requests that may still append to the buffer.
+	// Order: (1) stop accepting new HTTP requests and drain in-flight (they may
+	// still append to the buffer), (2) flush the event buffer to Postgres,
+	// (3) sync remaining outbox entries to Qdrant.
 	slog.Info("akashi shutting down")
-
-	if outboxWorker != nil {
-		outboxCtx, outboxCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		outboxWorker.Drain(outboxCtx)
-		outboxCancel()
-	}
-
-	bufCtx, bufCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	buf.Drain(bufCtx)
-	bufCancel()
 
 	httpCtx, httpCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := srv.Shutdown(httpCtx); err != nil {
 		slog.Error("http shutdown error", "error", err)
 	}
 	httpCancel()
+
+	bufCtx, bufCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	buf.Drain(bufCtx)
+	bufCancel()
+
+	if outboxWorker != nil {
+		outboxCtx, outboxCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		outboxWorker.Drain(outboxCtx)
+		outboxCancel()
+	}
 
 	slog.Info("akashi stopped")
 	return nil

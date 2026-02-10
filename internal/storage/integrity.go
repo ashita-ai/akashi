@@ -2,10 +2,12 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // IntegrityProof represents a Merkle tree batch proof for an organization.
@@ -32,7 +34,7 @@ func (db *DB) GetLatestIntegrityProof(ctx context.Context, orgID uuid.UUID) (*In
 		 LIMIT 1`, orgID,
 	).Scan(&p.ID, &p.OrgID, &p.BatchStart, &p.BatchEnd, &p.DecisionCount, &p.RootHash, &p.PreviousRoot, &p.CreatedAt)
 	if err != nil {
-		if err.Error() == "no rows in result set" {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("storage: get latest integrity proof: %w", err)

@@ -34,10 +34,10 @@ func (db *DB) CreateGrant(ctx context.Context, grant model.AccessGrant) (model.A
 	return grant, nil
 }
 
-// DeleteGrant removes an access grant by ID.
-func (db *DB) DeleteGrant(ctx context.Context, id uuid.UUID) error {
+// DeleteGrant removes an access grant by ID, scoped to an org for tenant isolation.
+func (db *DB) DeleteGrant(ctx context.Context, orgID, id uuid.UUID) error {
 	tag, err := db.pool.Exec(ctx,
-		`DELETE FROM access_grants WHERE id = $1`, id,
+		`DELETE FROM access_grants WHERE id = $1 AND org_id = $2`, id, orgID,
 	)
 	if err != nil {
 		return fmt.Errorf("storage: delete grant: %w", err)

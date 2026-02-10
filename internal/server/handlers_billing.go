@@ -113,7 +113,7 @@ func (h *Handlers) HandleBillingWebhook(w http.ResponseWriter, r *http.Request) 
 	status, whErr := h.billingSvc.HandleWebhook(r.Context(), body, sigHeader)
 	if whErr != nil {
 		h.logger.Error("billing webhook failed", "error", whErr, "status", status)
-		writeError(w, r, status, model.ErrCodeInternalError, whErr.Error())
+		h.writeInternalError(w, r, "billing webhook failed", whErr)
 		return
 	}
 

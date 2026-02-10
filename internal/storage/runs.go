@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -51,7 +52,7 @@ func (db *DB) GetRun(ctx context.Context, orgID, id uuid.UUID) (model.AgentRun, 
 		&run.Status, &run.StartedAt, &run.CompletedAt, &run.Metadata, &run.CreatedAt,
 	)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return model.AgentRun{}, fmt.Errorf("storage: run not found: %s", id)
 		}
 		return model.AgentRun{}, fmt.Errorf("storage: get run: %w", err)

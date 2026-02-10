@@ -38,10 +38,11 @@ except ImportError:
 # Configuration
 # ---------------------------------------------------------------------------
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgres://tsdbadmin:y7umgb9h487bgckm@xmrlv6epap.uy8qsyc8jg.tsdb.cloud.timescale.com:39116/tsdb?sslmode=require",
-)
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    print("Error: DATABASE_URL environment variable is required.", file=sys.stderr)
+    print("Example: DATABASE_URL='postgres://user:pass@host:5432/db?sslmode=require'", file=sys.stderr)
+    sys.exit(1)
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/embed")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "mxbai-embed-large")
 EMBED_BATCH_SIZE = int(os.environ.get("EMBED_BATCH_SIZE", "50"))

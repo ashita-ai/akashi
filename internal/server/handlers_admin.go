@@ -50,6 +50,19 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		req.Role = model.RoleAgent
 	}
 
+	// Validate role is known and caller outranks the requested role.
+	if model.RoleRank(req.Role) == 0 {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"invalid role: must be one of platform_admin, org_owner, admin, agent, reader")
+		return
+	}
+	callerRole := ClaimsFromContext(r.Context()).Role
+	if model.RoleRank(callerRole) < model.RoleRank(req.Role) {
+		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden,
+			"cannot create agent with role higher than your own")
+		return
+	}
+
 	hash, err := auth.HashAPIKey(req.APIKey)
 	if err != nil {
 		h.writeInternalError(w, r, "failed to hash api key", err)
@@ -186,7 +199,7 @@ func (h *Handlers) HandleDeleteGrant(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.db.DeleteGrant(r.Context(), grantID); err != nil {
+	if err := h.db.DeleteGrant(r.Context(), orgID, grantID); err != nil {
 		h.writeInternalError(w, r, "failed to delete grant", err)
 		return
 	}

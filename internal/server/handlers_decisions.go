@@ -169,7 +169,7 @@ func (h *Handlers) HandleAgentHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decisions, _, err := h.db.GetDecisionsByAgent(r.Context(), orgID, agentID, limit, offset, from, to)
+	decisions, total, err := h.db.GetDecisionsByAgent(r.Context(), orgID, agentID, limit, offset, from, to)
 	if err != nil {
 		h.writeInternalError(w, r, "failed to get history", err)
 		return
@@ -178,7 +178,7 @@ func (h *Handlers) HandleAgentHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"agent_id":  agentID,
 		"decisions": decisions,
-		"total":     len(decisions),
+		"total":     total,
 		"limit":     limit,
 		"offset":    offset,
 	})

@@ -162,7 +162,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, err := h.db.GetEventsByRun(r.Context(), runID)
+	events, err := h.db.GetEventsByRun(r.Context(), orgID, runID)
 	if err != nil {
 		h.writeInternalError(w, r, "failed to get events", err)
 		return

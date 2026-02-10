@@ -86,12 +86,12 @@ func (db *DB) InsertEvent(ctx context.Context, event model.AgentEvent) error {
 	return nil
 }
 
-// GetEventsByRun retrieves all events for a run, ordered by sequence_num.
-func (db *DB) GetEventsByRun(ctx context.Context, runID uuid.UUID) ([]model.AgentEvent, error) {
+// GetEventsByRun retrieves all events for a run, scoped by org_id for tenant isolation.
+func (db *DB) GetEventsByRun(ctx context.Context, orgID, runID uuid.UUID) ([]model.AgentEvent, error) {
 	rows, err := db.pool.Query(ctx,
 		`SELECT id, run_id, org_id, event_type, sequence_num, occurred_at, agent_id, payload, created_at
-		 FROM agent_events WHERE run_id = $1
-		 ORDER BY sequence_num ASC`, runID,
+		 FROM agent_events WHERE run_id = $1 AND org_id = $2
+		 ORDER BY sequence_num ASC`, runID, orgID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("storage: get events by run: %w", err)

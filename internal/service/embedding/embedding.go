@@ -66,8 +66,9 @@ func (p *OpenAIProvider) Dimensions() int {
 }
 
 type openAIRequest struct {
-	Input []string `json:"input"`
-	Model string   `json:"model"`
+	Input      []string `json:"input"`
+	Model      string   `json:"model"`
+	Dimensions int      `json:"dimensions,omitempty"`
 }
 
 type openAIResponse struct {
@@ -100,7 +101,7 @@ func (p *OpenAIProvider) EmbedBatch(ctx context.Context, texts []string) ([]pgve
 		return nil, nil
 	}
 
-	reqBody, err := json.Marshal(openAIRequest{Input: texts, Model: p.model})
+	reqBody, err := json.Marshal(openAIRequest{Input: texts, Model: p.model, Dimensions: p.dimensions})
 	if err != nil {
 		return nil, fmt.Errorf("embedding: marshal request: %w", err)
 	}
