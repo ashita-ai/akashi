@@ -13,6 +13,7 @@ Generated: $(date -u +%Y-%m-%d)
 ./internal/billing/webhooks.go
 ./internal/config/config.go
 ./internal/ctxutil/ctxutil.go
+./internal/integrity/integrity.go
 ./internal/mcp/mcp.go
 ./internal/mcp/prompts.go
 ./internal/mcp/resources.go
@@ -53,6 +54,7 @@ Generated: $(date -u +%Y-%m-%d)
 ./internal/storage/events.go
 ./internal/storage/evidence.go
 ./internal/storage/grants.go
+./internal/storage/integrity.go
 ./internal/storage/migrate.go
 ./internal/storage/notify.go
 ./internal/storage/organizations.go
@@ -73,7 +75,8 @@ Generated: $(date -u +%Y-%m-%d)
 | Package | Tests |
 |---------|-------|
 |  | 5 |
-| github.com/ashita-ai/akashi/internal/billing | 1 |
+| github.com/ashita-ai/akashi/internal/integrity | 1 |
+| github.com/ashita-ai/akashi/internal/billing | 9 |
 | github.com/ashita-ai/akashi/internal/signup | 15 |
 | github.com/ashita-ai/akashi/internal/service/embedding | 29 |
 | github.com/ashita-ai/akashi/internal/ratelimit | 6 |
