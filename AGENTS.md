@@ -130,7 +130,7 @@ Current ADRs (this repo — technical):
 - `ADR-007`: Dual PostgreSQL connections (pooled + direct)
 - `ADR-008`: TimescaleDB event ingestion with COPY protocol
 
-Business ADRs live in the `internal/` repo (ADR-009, ADR-010). ADR numbering is a single sequence across both repos — next ADR is ADR-011.
+Business ADRs live in the `internal/` repo (ADR-009, ADR-010, ADR-011). ADR numbering is a single sequence across both repos — next ADR is ADR-012.
 
 **When to write an ADR:** Any choice that constrains future decisions — language, database, protocol, auth scheme, isolation model. If you'd explain it to a new engineer as "here's why we did it this way", it's an ADR.
 

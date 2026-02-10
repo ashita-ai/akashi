@@ -1970,6 +1970,21 @@ components:
         postgres:
           type: string
           enum: [connected, disconnected]
+        qdrant:
+          type: string
+          enum: [connected, disconnected]
+          description: Qdrant vector search status. Only present when Qdrant is configured.
+        buffer_depth:
+          type: integer
+          description: Number of events currently buffered for batch insertion.
+        buffer_status:
+          type: string
+          enum: [ok, high, critical]
+          description: Health of the event buffer.
+        sse_broker:
+          type: string
+          enum: [running]
+          description: SSE broker status. Only present when the broker is active.
         uptime_seconds:
           type: integer
           format: int64
