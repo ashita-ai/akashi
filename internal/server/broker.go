@@ -69,6 +69,10 @@ func (b *Broker) Start(ctx context.Context) {
 
 		// Extract org_id from the notification payload for tenant isolation.
 		orgID := extractOrgID(payload)
+		if orgID == uuid.Nil {
+			b.logger.Warn("broker: could not extract org_id from notification payload",
+				"channel", channel)
+		}
 
 		// Format as SSE event.
 		event := formatSSE(channel, payload)

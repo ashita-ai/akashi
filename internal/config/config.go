@@ -65,6 +65,9 @@ type Config struct {
 	OutboxPollInterval time.Duration
 	OutboxBatchSize    int
 
+	// CORS settings.
+	CORSAllowedOrigins []string // Allowed origins for CORS; ["*"] permits all.
+
 	// Reliability settings.
 	RequireRedis bool // If true, server refuses to start without a healthy Redis connection.
 
@@ -108,6 +111,7 @@ func Load() (Config, error) {
 		QdrantAPIKey:        envStr("QDRANT_API_KEY", ""),
 		QdrantCollection:    envStr("QDRANT_COLLECTION", "akashi_decisions"),
 		LogLevel:            envStr("AKASHI_LOG_LEVEL", "info"),
+		CORSAllowedOrigins:  envStrSlice("AKASHI_CORS_ALLOWED_ORIGINS", []string{"*"}),
 	}
 
 	// Integer fields.
@@ -289,4 +293,25 @@ func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("%s=%q is not a valid duration", key, v)
 	}
 	return d, nil
+}
+
+// envStrSlice reads a comma-separated env var into a string slice.
+// Returns fallback if the env var is empty or unset.
+func envStrSlice(key string, fallback []string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return fallback
+	}
+	return out
 }

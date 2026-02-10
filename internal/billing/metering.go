@@ -71,7 +71,22 @@ func (s *Service) CheckAgentQuota(ctx context.Context, orgID uuid.UUID) error {
 }
 
 // IncrementDecisionCount atomically increments the usage counter after a successful trace.
+//
+// Deprecated: prefer passing QuotaLimit/BillingPeriod to CreateTraceTx for atomic enforcement.
 func (s *Service) IncrementDecisionCount(ctx context.Context, orgID uuid.UUID) error {
 	_, err := s.db.IncrementUsage(ctx, orgID, CurrentPeriod())
 	return err
+}
+
+// DecisionLimit returns the org's decision limit for quota enforcement.
+// Returns 0 if billing is disabled or the org has unlimited decisions.
+func (s *Service) DecisionLimit(ctx context.Context, orgID uuid.UUID) int {
+	if !s.enabled {
+		return 0
+	}
+	org, err := s.db.GetOrganization(ctx, orgID)
+	if err != nil {
+		return 0 // On error, treat as unlimited (the pre-check already handles errors).
+	}
+	return org.DecisionLimit
 }

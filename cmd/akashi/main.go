@@ -223,6 +223,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		MCPServer:           mcpSrv.MCPServer(),
 		Version:             version,
 		MaxRequestBodyBytes: cfg.MaxRequestBodyBytes,
+		CORSAllowedOrigins:  cfg.CORSAllowedOrigins,
 		UIFS:                uiFS,
 		OpenAPISpec:         api.OpenAPISpec,
 	})

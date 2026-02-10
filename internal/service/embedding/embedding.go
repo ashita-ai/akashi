@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,11 @@ import (
 
 	"github.com/pgvector/pgvector-go"
 )
+
+// ErrNoProvider is returned by NoopProvider to signal that no real embedding
+// provider is configured. Callers should treat this as "no embedding available"
+// rather than a transient failure.
+var ErrNoProvider = errors.New("embedding: no provider configured (noop)")
 
 // maxResponseBody is the maximum size of an OpenAI embedding response we'll read (10 MB).
 const maxResponseBody = 10 * 1024 * 1024
@@ -173,16 +179,13 @@ func (p *NoopProvider) Dimensions() int {
 	return p.dims
 }
 
-// Embed returns a zero vector.
+// Embed returns ErrNoProvider. Callers skip embedding storage on error,
+// avoiding ~4KB of zero-vector bloat per decision in Postgres.
 func (p *NoopProvider) Embed(_ context.Context, _ string) (pgvector.Vector, error) {
-	return pgvector.NewVector(make([]float32, p.dims)), nil
+	return pgvector.Vector{}, ErrNoProvider
 }
 
-// EmbedBatch returns zero vectors.
-func (p *NoopProvider) EmbedBatch(_ context.Context, texts []string) ([]pgvector.Vector, error) {
-	vecs := make([]pgvector.Vector, len(texts))
-	for i := range vecs {
-		vecs[i] = pgvector.NewVector(make([]float32, p.dims))
-	}
-	return vecs, nil
+// EmbedBatch returns ErrNoProvider.
+func (p *NoopProvider) EmbedBatch(_ context.Context, _ []string) ([]pgvector.Vector, error) {
+	return nil, ErrNoProvider
 }

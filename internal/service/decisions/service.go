@@ -8,6 +8,7 @@ package decisions
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -93,11 +94,15 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 		span.SetAttributes(attribute.String("akashi.trace_id", *input.TraceID))
 	}
 
-	// 0b. Quota check (before any DB writes or embedding calls).
+	// 0b. Pre-check quota (fast reject before expensive embedding API calls).
+	// The definitive check happens inside CreateTraceTx with row-level locking
+	// to eliminate the TOCTOU race between check and write.
+	var quotaLimit int
 	if s.billingSvc != nil {
 		if err := s.billingSvc.CheckDecisionQuota(ctx, orgID); err != nil {
 			return TraceResult{}, err
 		}
+		quotaLimit = s.billingSvc.DecisionLimit(ctx, orgID)
 	}
 
 	// 1. Generate decision embedding (outside tx — may call external API).
@@ -176,12 +181,18 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 				QualityScore: qualityScore,
 				PrecedentRef: input.PrecedentRef,
 			},
-			Alternatives: alts,
-			Evidence:     evs,
+			Alternatives:  alts,
+			Evidence:      evs,
+			QuotaLimit:    quotaLimit,
+			BillingPeriod: billing.CurrentPeriod(),
 		})
 		return txErr
 	})
 	if err != nil {
+		// Map storage-level quota error to billing error for the HTTP handler.
+		if errors.Is(err, storage.ErrQuotaExceeded) {
+			return TraceResult{}, fmt.Errorf("%w", billing.ErrQuotaExceeded)
+		}
 		return TraceResult{}, fmt.Errorf("trace: %w", err)
 	}
 
@@ -198,12 +209,9 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 		s.logger.Error("trace: notify subscribers", "error", err)
 	}
 
-	// 7. Increment usage counter (after successful commit, non-fatal).
-	if s.billingSvc != nil {
-		if err := s.billingSvc.IncrementDecisionCount(ctx, orgID); err != nil {
-			s.logger.Warn("trace: increment usage counter failed (non-fatal)", "error", err, "org_id", orgID)
-		}
-	}
+	// 7. Usage counter is now incremented atomically inside CreateTraceTx
+	// (via QuotaLimit/BillingPeriod params) to eliminate the TOCTOU race.
+	// No separate IncrementDecisionCount call needed.
 
 	eventCount := len(alts) + len(evs) + 1 // +1 for the decision itself
 	return TraceResult{

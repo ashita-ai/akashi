@@ -1,9 +1,10 @@
-# Cloud deployment: PgBouncer → TimescaleDB Cloud, Redis local, Qdrant Cloud.
+# Cloud deployment: PgBouncer → TimescaleDB Cloud, Qdrant Cloud, Ollama local.
 #
 # Usage:
 #   cp docker/env.cloud.example docker/.env.cloud
 #   # Edit docker/.env.cloud with your cloud credentials
 #   docker compose -f docker/docker-compose.cloud.yml --env-file docker/.env.cloud up -d
+#   docker exec akashi-cloud-ollama ollama pull mxbai-embed-large   # first run only
 #
 # No local Postgres or Qdrant — both are managed cloud services.
 # PgBouncer is local because the app's dual-connection architecture needs
@@ -56,6 +57,21 @@ services:
       timeout: 5s
       retries: 5
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: akashi-cloud-ollama
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:11434/api/tags || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   akashi:
     build:
       context: ..
@@ -83,15 +99,15 @@ services:
       QDRANT_API_KEY: ${QDRANT_API_KEY}
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-akashi_decisions}
 
-      # Embedding provider — cloud mode typically uses OpenAI.
-      AKASHI_EMBEDDING_PROVIDER: ${AKASHI_EMBEDDING_PROVIDER:-auto}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      AKASHI_EMBEDDING_MODEL: ${AKASHI_EMBEDDING_MODEL:-text-embedding-3-small}
+      # Ollama for embeddings (running in the stack).
+      AKASHI_EMBEDDING_PROVIDER: ${AKASHI_EMBEDDING_PROVIDER:-ollama}
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-mxbai-embed-large}
       AKASHI_EMBEDDING_DIMENSIONS: ${AKASHI_EMBEDDING_DIMENSIONS:-1024}
 
-      # Ollama (alternative to OpenAI — only if you have a host-accessible instance).
-      OLLAMA_URL: ${OLLAMA_URL:-}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-mxbai-embed-large}
+      # OpenAI (alternative to Ollama — set AKASHI_EMBEDDING_PROVIDER=openai).
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AKASHI_EMBEDDING_MODEL: ${AKASHI_EMBEDDING_MODEL:-text-embedding-3-small}
 
       # Stripe billing (optional).
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
@@ -120,6 +136,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      ollama:
+        condition: service_healthy
 
 volumes:
   redisdata:
+  ollama_data:

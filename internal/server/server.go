@@ -59,6 +59,7 @@ type ServerConfig struct {
 	WriteTimeout        time.Duration
 	Version             string
 	MaxRequestBodyBytes int64
+	CORSAllowedOrigins  []string // Allowed origins for CORS; ["*"] permits all.
 
 	// Optional embedded assets.
 	UIFS        fs.FS  // Embedded UI filesystem (SPA).
@@ -190,11 +191,11 @@ func New(cfg ServerConfig) *Server {
 	// request ID → security headers → CORS → tracing → logging → baggage → auth → recovery → handler.
 	var handler http.Handler = mux
 	handler = recoveryMiddleware(cfg.Logger, handler)
-	handler = authMiddleware(cfg.JWTMgr, handler)
+	handler = authMiddleware(cfg.JWTMgr, cfg.DB, handler)
 	handler = baggageMiddleware(handler)
 	handler = loggingMiddleware(cfg.Logger, handler)
 	handler = tracingMiddleware(handler)
-	handler = corsMiddleware(handler)
+	handler = corsMiddleware(cfg.CORSAllowedOrigins, handler)
 	handler = securityHeadersMiddleware(handler)
 	handler = requestIDMiddleware(handler)
 

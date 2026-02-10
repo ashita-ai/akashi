@@ -22,6 +22,15 @@ type CreateTraceParams struct {
 	Decision     model.Decision
 	Alternatives []model.Alternative
 	Evidence     []model.Evidence
+
+	// QuotaLimit is the org's decision limit for the current billing period.
+	// If > 0, the transaction atomically increments org_usage and checks the
+	// count against this limit. Exceeding the limit rolls back the entire tx,
+	// returning ErrQuotaExceeded. A value of 0 means unlimited (no check).
+	QuotaLimit int
+	// BillingPeriod is the current billing period key (e.g. "2026-02").
+	// Required when QuotaLimit > 0.
+	BillingPeriod string
 }
 
 // CreateTraceTx creates a run, decision, alternatives, evidence, and completes
@@ -160,6 +169,28 @@ func (db *DB) CreateTraceTx(ctx context.Context, params CreateTraceParams) (mode
 	}
 	run.Status = model.RunStatusCompleted
 	run.CompletedAt = &now
+
+	// 6. Atomic quota check + usage increment (inside tx to eliminate TOCTOU).
+	// The INSERT ... ON CONFLICT acquires a row-level lock on org_usage,
+	// serializing concurrent traces for the same org within the same period.
+	// If the new count exceeds the limit, the entire tx rolls back.
+	if params.QuotaLimit > 0 && params.BillingPeriod != "" {
+		var count int
+		if err := tx.QueryRow(ctx,
+			`INSERT INTO org_usage (org_id, period, decision_count)
+			 VALUES ($1, $2, 1)
+			 ON CONFLICT (org_id, period)
+			 DO UPDATE SET decision_count = org_usage.decision_count + 1
+			 RETURNING decision_count`,
+			params.OrgID, params.BillingPeriod,
+		).Scan(&count); err != nil {
+			return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: increment usage in trace tx: %w", err)
+		}
+		if count > params.QuotaLimit {
+			return model.AgentRun{}, model.Decision{}, fmt.Errorf(
+				"%w: %d/%d decisions this period", ErrQuotaExceeded, count, params.QuotaLimit)
+		}
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: commit trace tx: %w", err)
