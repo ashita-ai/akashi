@@ -20,7 +20,16 @@ ALTER TABLE decisions DISABLE ROW LEVEL SECURITY;
 ALTER TABLE access_grants DISABLE ROW LEVEL SECURITY;
 ALTER TABLE evidence DISABLE ROW LEVEL SECURITY;
 
--- DROP OWNED removes all privileges granted to the role across every object
--- in the current database, which is more robust than enumerating tables.
-DROP OWNED BY akashi_app;
-DROP ROLE IF EXISTS akashi_app;
+-- Best-effort role cleanup. DROP OWNED / DROP ROLE require superuser-like
+-- privileges that managed services (TigerData, Timescale Cloud) don't grant.
+-- Wrap in an exception block so the migration succeeds either way — the role
+-- is unused and harmless if it remains.
+DO $$
+BEGIN
+    EXECUTE 'DROP OWNED BY akashi_app';
+    EXECUTE 'DROP ROLE IF EXISTS akashi_app';
+EXCEPTION
+    WHEN insufficient_privilege OR dependent_objects_still_exist THEN
+        RAISE NOTICE 'skipping DROP OWNED/ROLE akashi_app: insufficient privileges (managed service)';
+END
+$$;
