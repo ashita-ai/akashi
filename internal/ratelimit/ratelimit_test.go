@@ -70,7 +70,7 @@ func TestMain(m *testing.M) {
 func newTestLimiter(t *testing.T) *ratelimit.Limiter {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	return ratelimit.New(testRedis, logger)
+	return ratelimit.New(testRedis, logger, false)
 }
 
 func TestLimiterAllow(t *testing.T) {
@@ -156,7 +156,7 @@ func TestLimiterNoopMode(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	// Noop mode: nil client allows all requests.
-	limiter := ratelimit.New(nil, logger)
+	limiter := ratelimit.New(nil, logger, false)
 
 	rule := ratelimit.Rule{
 		Prefix: "test-noop",

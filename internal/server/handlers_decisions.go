@@ -92,10 +92,18 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	preFilterCount := len(decisions)
 	decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, decisions)
 	if err != nil {
 		h.writeInternalError(w, r, "authorization check failed", err)
 		return
+	}
+
+	// If access filtering removed results, the DB total is stale (it counted
+	// decisions the caller can't see). Adjust to the filtered page count.
+	// For admin+ users no filtering occurs and the DB total is accurate.
+	if len(decisions) < preFilterCount {
+		total = len(decisions)
 	}
 
 	writeJSON(w, r, http.StatusOK, map[string]any{
@@ -264,21 +272,26 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 		filters.DecisionType = &dt
 	}
 
-	decisions, _, err := h.decisionSvc.Recent(r.Context(), orgID, filters, limit)
+	decisions, total, err := h.decisionSvc.Recent(r.Context(), orgID, filters, limit)
 	if err != nil {
 		h.writeInternalError(w, r, "query failed", err)
 		return
 	}
 
+	preFilterCount := len(decisions)
 	decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, decisions)
 	if err != nil {
 		h.writeInternalError(w, r, "authorization check failed", err)
 		return
 	}
 
+	if len(decisions) < preFilterCount {
+		total = len(decisions)
+	}
+
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"decisions": decisions,
-		"total":     len(decisions),
+		"total":     total,
 		"count":     len(decisions),
 		"limit":     limit,
 	})

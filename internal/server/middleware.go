@@ -134,9 +134,25 @@ func (w *statusWriter) Unwrap() http.ResponseWriter {
 }
 
 var (
-	tracer    = otel.Tracer("akashi/http")
-	httpMeter = otel.GetMeterProvider().Meter("akashi/http")
+	tracer           = otel.Tracer("akashi/http")
+	httpMeter        = otel.GetMeterProvider().Meter("akashi/http")
+	httpRequestCount otelmetric.Int64Counter
+	httpDuration     otelmetric.Float64Histogram
 )
+
+func init() {
+	var err error
+	httpRequestCount, err = httpMeter.Int64Counter("http.server.request_count")
+	if err != nil {
+		httpRequestCount, _ = httpMeter.Int64Counter("http.server.request_count.fallback")
+	}
+	httpDuration, err = httpMeter.Float64Histogram("http.server.duration",
+		otelmetric.WithUnit("ms"))
+	if err != nil {
+		httpDuration, _ = httpMeter.Float64Histogram("http.server.duration.fallback",
+			otelmetric.WithUnit("ms"))
+	}
+}
 
 // tracingMiddleware creates an OTEL span for each HTTP request
 // and records request count and duration metrics.
@@ -181,14 +197,9 @@ func tracingMiddleware(next http.Handler) http.Handler {
 			attrs = append(attrs, attribute.String("akashi.agent_id", claims.AgentID))
 		}
 
-		// Record metrics (best-effort, instruments lazily created).
-		if counter, err := httpMeter.Int64Counter("http.server.request_count"); err == nil {
-			counter.Add(ctx, 1, otelmetric.WithAttributes(attrs...))
-		}
-		if hist, err := httpMeter.Float64Histogram("http.server.duration",
-			otelmetric.WithUnit("ms")); err == nil {
-			hist.Record(ctx, float64(duration.Milliseconds()), otelmetric.WithAttributes(attrs...))
-		}
+		// Record metrics using pre-created instruments (no per-request allocation).
+		httpRequestCount.Add(ctx, 1, otelmetric.WithAttributes(attrs...))
+		httpDuration.Record(ctx, float64(duration.Milliseconds()), otelmetric.WithAttributes(attrs...))
 	})
 }
 

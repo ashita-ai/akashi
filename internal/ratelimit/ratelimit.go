@@ -62,9 +62,10 @@ end
 
 // Limiter provides rate limiting backed by Redis.
 type Limiter struct {
-	client  *redis.Client
-	logger  *slog.Logger
-	counter atomic.Uint64
+	client     *redis.Client
+	logger     *slog.Logger
+	counter    atomic.Uint64
+	failClosed bool // If true, deny requests when Redis errors (fail-closed).
 }
 
 // Rule defines a rate limit: how many requests per window.
@@ -83,8 +84,9 @@ type Result struct {
 }
 
 // New creates a Limiter. If client is nil, all requests are allowed (noop mode).
-func New(client *redis.Client, logger *slog.Logger) *Limiter {
-	return &Limiter{client: client, logger: logger}
+// If failClosed is true, Redis errors at runtime deny requests instead of allowing them.
+func New(client *redis.Client, logger *slog.Logger, failClosed bool) *Limiter {
+	return &Limiter{client: client, logger: logger, failClosed: failClosed}
 }
 
 // Allow checks whether the request identified by key is within the rate limit.
@@ -109,7 +111,11 @@ func (l *Limiter) Allow(ctx context.Context, rule Rule, key string) Result {
 	).Int64Slice()
 
 	if err != nil {
-		l.logger.Warn("ratelimit: redis error, allowing request", "error", err, "key", redisKey)
+		if l.failClosed {
+			l.logger.Error("ratelimit: redis error, denying request (fail-closed)", "error", err, "key", redisKey)
+			return Result{Allowed: false, Limit: rule.Limit, Remaining: 0, ResetAt: now.Add(rule.Window)}
+		}
+		l.logger.Warn("ratelimit: redis error, allowing request (fail-open)", "error", err, "key", redisKey)
 		return Result{Allowed: true, Limit: rule.Limit, Remaining: rule.Limit}
 	}
 

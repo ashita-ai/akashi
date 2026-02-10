@@ -203,6 +203,7 @@ func New(cfg ServerConfig) *Server {
 			Handler:      handler,
 			ReadTimeout:  cfg.ReadTimeout,
 			WriteTimeout: cfg.WriteTimeout,
+			IdleTimeout:  2 * cfg.ReadTimeout, // Prevent accumulation of idle connections.
 		},
 		handler:  handler,
 		handlers: h,
