@@ -70,7 +70,7 @@ func (db *DB) GetAgentsByAgentIDGlobal(ctx context.Context, agentID string) ([]m
 		return nil, fmt.Errorf("storage: get agents by agent_id: %w", err)
 	}
 	if len(agents) == 0 {
-		return nil, fmt.Errorf("storage: agent not found: %s", agentID)
+		return nil, fmt.Errorf("storage: agent %s: %w", agentID, ErrNotFound)
 	}
 	return agents, nil
 }
@@ -87,26 +87,27 @@ func (db *DB) GetAgentByAgentID(ctx context.Context, orgID uuid.UUID, agentID st
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return model.Agent{}, fmt.Errorf("storage: agent not found: %s", agentID)
+			return model.Agent{}, fmt.Errorf("storage: agent %s: %w", agentID, ErrNotFound)
 		}
 		return model.Agent{}, fmt.Errorf("storage: get agent: %w", err)
 	}
 	return a, nil
 }
 
-// GetAgentByID retrieves an agent by its internal UUID.
-func (db *DB) GetAgentByID(ctx context.Context, id uuid.UUID) (model.Agent, error) {
+// GetAgentByID retrieves an agent by its internal UUID, scoped to an org for
+// defense-in-depth tenant isolation.
+func (db *DB) GetAgentByID(ctx context.Context, id uuid.UUID, orgID uuid.UUID) (model.Agent, error) {
 	var a model.Agent
 	err := db.pool.QueryRow(ctx,
 		`SELECT id, agent_id, org_id, name, role, api_key_hash, tags, metadata, created_at, updated_at
-		 FROM agents WHERE id = $1`, id,
+		 FROM agents WHERE id = $1 AND org_id = $2`, id, orgID,
 	).Scan(
 		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash,
 		&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return model.Agent{}, fmt.Errorf("storage: agent not found: %s", id)
+			return model.Agent{}, fmt.Errorf("storage: agent %s: %w", id, ErrNotFound)
 		}
 		return model.Agent{}, fmt.Errorf("storage: get agent by id: %w", err)
 	}
@@ -201,7 +202,7 @@ func (db *DB) UpdateAgentTags(ctx context.Context, orgID uuid.UUID, agentID stri
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return model.Agent{}, fmt.Errorf("storage: agent not found: %s", agentID)
+			return model.Agent{}, fmt.Errorf("storage: agent %s: %w", agentID, ErrNotFound)
 		}
 		return model.Agent{}, fmt.Errorf("storage: update agent tags: %w", err)
 	}

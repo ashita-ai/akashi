@@ -358,14 +358,23 @@ func (w *OutboxWorker) registerMetrics() {
 	meter := telemetry.Meter("akashi/outbox")
 
 	_, _ = meter.Int64ObservableGauge("akashi.outbox.depth",
-		metric.WithDescription("Number of pending entries in the search outbox"),
+		metric.WithDescription("Estimated pending entries in the search outbox (via pg_class.reltuples)"),
 		metric.WithInt64Callback(func(ctx context.Context, o metric.Int64Observer) error {
-			var count int64
-			err := w.pool.QueryRow(ctx, `SELECT COUNT(*) FROM search_outbox WHERE attempts < $1`, maxOutboxAttempts).Scan(&count)
+			// Use pg_class.reltuples for an O(1) estimate instead of SELECT COUNT(*),
+			// which requires a full table scan and becomes expensive under sustained
+			// Qdrant outages when the outbox table grows.
+			var estimate float64
+			err := w.pool.QueryRow(ctx,
+				`SELECT reltuples FROM pg_class WHERE relname = 'search_outbox'`,
+			).Scan(&estimate)
 			if err != nil {
 				return nil // Non-fatal: just skip this observation.
 			}
-			o.Observe(count)
+			// reltuples can be -1 before the first VACUUM/ANALYZE; treat as zero.
+			if estimate < 0 {
+				estimate = 0
+			}
+			o.Observe(int64(estimate))
 			return nil
 		}),
 	)

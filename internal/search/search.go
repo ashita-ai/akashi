@@ -46,7 +46,7 @@ func ReScore(results []Result, decisions map[uuid.UUID]model.Decision, limit int
 			continue
 		}
 
-		ageDays := now.Sub(d.ValidFrom).Hours() / 24.0
+		ageDays := math.Max(0, now.Sub(d.ValidFrom).Hours()/24.0)
 		qualityBonus := 0.6 + 0.3*float64(d.QualityScore)
 		recencyDecay := 1.0 / (1.0 + ageDays/90.0)
 		relevance := float64(r.Score) * qualityBonus * recencyDecay

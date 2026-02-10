@@ -84,6 +84,7 @@ def _decision_json(decision_id: str | None = None, run_id: str | None = None) ->
         "id": decision_id or DECISION_ID,
         "run_id": run_id or RUN_ID,
         "agent_id": "test-agent",
+        "org_id": ORG_ID,
         "decision_type": "architecture",
         "outcome": "chose event sourcing",
         "confidence": 0.9,
@@ -137,6 +138,7 @@ def _conflict_json() -> dict:
     return {
         "decision_a_id": str(uuid.uuid4()),
         "decision_b_id": str(uuid.uuid4()),
+        "org_id": ORG_ID,
         "agent_a": "planner",
         "agent_b": "coder",
         "run_a": str(uuid.uuid4()),
@@ -166,6 +168,7 @@ class TestCheck:
                             "id": DECISION_ID,
                             "run_id": RUN_ID,
                             "agent_id": "other-agent",
+                            "org_id": ORG_ID,
                             "decision_type": "deployment",
                             "outcome": "approved",
                             "confidence": 0.95,

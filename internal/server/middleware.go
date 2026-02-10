@@ -154,11 +154,30 @@ func init() {
 	}
 }
 
+// routePattern extracts the registered mux pattern for metrics/spans.
+// Falls back to method + first two path segments if the pattern is empty
+// (e.g., for middleware-handled paths like /health that resolve before the mux).
+func routePattern(r *http.Request) string {
+	if pat := r.Pattern; pat != "" {
+		return pat
+	}
+	// Fallback: use the first two path segments to bound cardinality.
+	parts := strings.SplitN(r.URL.Path, "/", 4)
+	if len(parts) >= 3 {
+		return r.Method + " /" + parts[1] + "/" + parts[2]
+	}
+	return r.Method + " " + r.URL.Path
+}
+
 // tracingMiddleware creates an OTEL span for each HTTP request
-// and records request count and duration metrics.
+// and records request count and duration metrics. The span name and
+// metric labels use the mux route pattern (e.g., "GET /v1/runs/{run_id}")
+// instead of the resolved URL path to avoid unbounded OTEL cardinality.
 func tracingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, span := tracer.Start(r.Context(), r.Method+" "+r.URL.Path,
+		// Start the span with a generic name; we update it after mux dispatch
+		// once r.Pattern is populated.
+		ctx, span := tracer.Start(r.Context(), "http.request",
 			trace.WithAttributes(
 				attribute.String("http.method", r.Method),
 				attribute.String("http.url", r.URL.Path),
@@ -173,8 +192,17 @@ func tracingMiddleware(next http.Handler) http.Handler {
 
 		start := time.Now()
 
-		sw := &statusWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		// Reuse an existing statusWriter if the logging middleware already
+		// wrapped the ResponseWriter (avoids one allocation per request).
+		sw, ok := w.(*statusWriter)
+		if !ok {
+			sw = &statusWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		}
 		next.ServeHTTP(sw, r.WithContext(ctx))
+
+		// After mux dispatch, r.Pattern is available.
+		pattern := routePattern(r)
+		span.SetName(pattern)
 
 		duration := time.Since(start)
 		statusStr := strconv.Itoa(sw.statusCode)
@@ -185,7 +213,7 @@ func tracingMiddleware(next http.Handler) http.Handler {
 
 		attrs := []attribute.KeyValue{
 			attribute.String("http.method", r.Method),
-			attribute.String("http.route", r.URL.Path),
+			attribute.String("http.route", pattern),
 			attribute.String("http.status_code", statusStr),
 		}
 
@@ -226,28 +254,50 @@ func baggageMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// noAuthPaths are exact paths that skip JWT authentication entirely.
+// These endpoints use their own auth (e.g., Stripe signature) or are public.
+// WARNING: Every authenticated route prefix (/v1/, /billing/, /mcp) MUST appear
+// in the guard below. Adding a new prefix without updating the guard will silently
+// bypass authentication.
+var noAuthPaths = map[string]bool{
+	"/auth/token":   true,
+	"/auth/refresh": true,
+	"/auth/signup":  true,
+	"/auth/verify":  true,
+	"/health":       true,
+	"/openapi.yaml": true,
+}
+
 // authMiddleware validates JWT tokens and populates context with claims.
-// Skips auth for paths that don't require it (e.g., /health, /auth/token).
+// Uses an explicit allowlist of paths that skip auth. All paths under the
+// authenticated prefixes (/v1/, /billing/, /mcp) require a valid JWT unless
+// they appear in noAuthPaths or have their own auth mechanism.
 func authMiddleware(jwtMgr *auth.JWTManager, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Paths that don't require auth.
-		if r.URL.Path == "/health" || r.URL.Path == "/auth/token" ||
-			r.URL.Path == "/auth/signup" || r.URL.Path == "/auth/verify" ||
-			r.URL.Path == "/billing/webhooks" {
+		// Webhook has its own auth (Stripe signature verification).
+		if r.URL.Path == "/billing/webhooks" && r.Method == http.MethodPost {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// SPA static assets and client-side routes don't require auth.
-		// Auth is enforced client-side and on the API endpoints.
+		// SPA static assets and client-side routes don't need auth.
+		// Only paths under authenticated prefixes require JWT validation.
+		// WARNING: Every authenticated route prefix MUST appear in this guard.
 		if !strings.HasPrefix(r.URL.Path, "/v1/") &&
 			!strings.HasPrefix(r.URL.Path, "/billing/") &&
-			!strings.HasPrefix(r.URL.Path, "/auth/") &&
-			r.URL.Path != "/mcp" {
+			!strings.HasPrefix(r.URL.Path, "/mcp") &&
+			!noAuthPaths[r.URL.Path] {
 			next.ServeHTTP(w, r)
 			return
 		}
 
+		// Exact-match allowlist for public endpoints.
+		if noAuthPaths[r.URL.Path] {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// All other paths require a valid JWT.
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
 			writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "missing authorization header")

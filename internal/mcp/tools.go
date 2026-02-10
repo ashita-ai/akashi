@@ -344,11 +344,17 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 		return errorResult(fmt.Sprintf("query failed: %v", err)), nil
 	}
 
-	// Apply access filtering.
+	// Apply access filtering and adjust total to match filtered results.
+	// Without this adjustment, the unfiltered DB total leaks the count of
+	// decisions the caller cannot see (same fix as the HTTP handler).
 	if claims != nil {
+		preFilterCount := len(decs)
 		decs, err = authz.FilterDecisions(ctx, s.db, claims, decs)
 		if err != nil {
 			return errorResult(fmt.Sprintf("authorization check failed: %v", err)), nil
+		}
+		if len(decs) < preFilterCount {
+			total = len(decs)
 		}
 	}
 

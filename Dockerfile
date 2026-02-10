@@ -27,8 +27,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -tags ui -trimpath -ldflags="-s -w" -o /ak
 # Stage 3: Runtime
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata wget
 RUN adduser -D -u 10001 akashi
+
+WORKDIR /
 
 COPY --from=builder /akashi /usr/local/bin/akashi
 COPY migrations /migrations
@@ -36,5 +38,8 @@ COPY migrations /migrations
 USER akashi
 
 EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -qO- http://localhost:${AKASHI_PORT:-8080}/health || exit 1
 
 ENTRYPOINT ["akashi"]

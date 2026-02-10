@@ -406,7 +406,9 @@ func conflictRefreshLoop(ctx context.Context, db *storage.DB, logger *slog.Logge
 			}
 
 			// Detect new conflicts since last notification and send pg_notify for each.
-			newConflicts, err := db.NewConflictsSince(ctx, lastNotifiedAt)
+			// Cap at 1000 to avoid unbounded memory use; the SSE notification path
+			// only needs to signal *that* new conflicts exist — clients re-fetch via API.
+			newConflicts, err := db.NewConflictsSince(ctx, lastNotifiedAt, 1000)
 			if err != nil {
 				logger.Warn("new conflicts query failed", "error", err)
 				continue

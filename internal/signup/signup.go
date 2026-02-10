@@ -4,6 +4,7 @@ package signup
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
@@ -78,6 +79,9 @@ type SignupResult struct {
 	OrgID   uuid.UUID `json:"org_id"`
 	AgentID string    `json:"agent_id"`
 	Message string    `json:"message"`
+	// VerificationToken is only populated when SMTP is not configured (dev mode).
+	// In production the token is sent via email and never exposed in the API response.
+	VerificationToken string `json:"verification_token,omitempty"`
 }
 
 // Signup creates a new organization with an owner agent and sends a verification email.
@@ -101,10 +105,16 @@ func (s *Service) Signup(ctx context.Context, input SignupInput) (SignupResult, 
 
 	agentID := "owner@" + slug
 
-	token, err := generateToken(32)
+	rawToken, err := generateToken(32)
 	if err != nil {
 		return SignupResult{}, fmt.Errorf("signup: generate token: %w", err)
 	}
+
+	// Hash the token before storing it in the DB. If the database is compromised,
+	// an attacker cannot use the stored hash to verify pending organizations.
+	// The raw (unhashed) token is sent in the verification email.
+	tokenHash := sha256.Sum256([]byte(rawToken))
+	tokenHashHex := hex.EncodeToString(tokenHash[:])
 
 	// Create org, owner agent, and verification token in a single transaction.
 	// If any step fails the entire signup is rolled back — no orphaned rows.
@@ -124,29 +134,41 @@ func (s *Service) Signup(ctx context.Context, input SignupInput) (SignupResult, 
 			Role:       model.RoleOrgOwner,
 			APIKeyHash: &hash,
 		},
-		VerificationToken:  token,
+		VerificationToken:  tokenHashHex,
 		VerificationExpiry: time.Now().Add(24 * time.Hour),
 	})
 	if err != nil {
 		return SignupResult{}, fmt.Errorf("signup: %w", err)
 	}
 
-	verifyURL := fmt.Sprintf("%s/verify?token=%s", s.baseURL, token)
+	verifyURL := fmt.Sprintf("%s/verify?token=%s", s.baseURL, rawToken)
 	if err := s.sendVerificationEmail(input.Email, verifyURL); err != nil {
 		// Log but don't fail — the user can request a resend later.
 		s.logger.Error("signup: send verification email failed", "error", err, "email", input.Email)
 	}
 
-	return SignupResult{
+	sr := SignupResult{
 		OrgID:   result.Org.ID,
 		AgentID: agentID,
 		Message: "check your email to verify your account",
-	}, nil
+	}
+
+	// In dev mode (no SMTP configured), include the raw token in the response
+	// so developers can verify without email infrastructure.
+	if s.smtpHost == "" {
+		sr.VerificationToken = rawToken
+	}
+
+	return sr, nil
 }
 
 // Verify validates a verification token and marks the org's email as verified.
+// The incoming raw token is hashed with SHA-256 before the DB lookup, since
+// only the hash is stored (see Signup).
 func (s *Service) Verify(ctx context.Context, token string) error {
-	return s.db.VerifyEmail(ctx, token)
+	tokenHash := sha256.Sum256([]byte(token))
+	tokenHashHex := hex.EncodeToString(tokenHash[:])
+	return s.db.VerifyEmail(ctx, tokenHashHex)
 }
 
 func (s *Service) sendVerificationEmail(to, verifyURL string) error {

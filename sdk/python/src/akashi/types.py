@@ -15,11 +15,17 @@ class Decision(BaseModel):
     id: UUID
     run_id: UUID
     agent_id: str
+    org_id: UUID
     decision_type: str
     outcome: str
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    quality_score: float = 0.0
+    precedent_ref: UUID | None = None
+    supersedes_id: UUID | None = None
+    content_hash: str = ""
+    tags: list[str] = Field(default_factory=list)
     valid_from: datetime
     valid_to: datetime | None = None
     transaction_time: datetime
@@ -59,6 +65,7 @@ class DecisionConflict(BaseModel):
 
     decision_a_id: UUID
     decision_b_id: UUID
+    org_id: UUID
     agent_a: str
     agent_b: str
     run_a: UUID
@@ -68,6 +75,8 @@ class DecisionConflict(BaseModel):
     outcome_b: str
     confidence_a: float
     confidence_b: float
+    reasoning_a: str | None = None
+    reasoning_b: str | None = None
     decided_at_a: datetime
     decided_at_b: datetime
     detected_at: datetime
@@ -93,10 +102,13 @@ class AgentEvent(BaseModel):
 
     id: UUID
     run_id: UUID
+    org_id: UUID
     event_type: str
     sequence_num: int
     occurred_at: datetime
     agent_id: str
+    trace_id: str = ""
+    span_id: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 
@@ -109,6 +121,7 @@ class Agent(BaseModel):
     org_id: UUID
     name: str
     role: str
+    tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 
@@ -271,6 +284,7 @@ class QueryResponse(BaseModel):
 
     decisions: list[Decision]
     total: int
+    count: int = 0
     limit: int
     offset: int = 0
 

@@ -26,17 +26,25 @@ func (h *Handlers) HandleExportDecisions(w http.ResponseWriter, r *http.Request)
 		filters.DecisionType = &dt
 	}
 	if fromStr := q.Get("from"); fromStr != "" {
-		if t, err := time.Parse(time.RFC3339, fromStr); err == nil {
-			filters.TimeRange = &model.TimeRange{From: &t}
+		t, err := time.Parse(time.RFC3339, fromStr)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+				"invalid 'from' parameter: must be RFC 3339 format (e.g., 2025-01-01T00:00:00Z)")
+			return
 		}
+		filters.TimeRange = &model.TimeRange{From: &t}
 	}
 	if toStr := q.Get("to"); toStr != "" {
-		if t, err := time.Parse(time.RFC3339, toStr); err == nil {
-			if filters.TimeRange == nil {
-				filters.TimeRange = &model.TimeRange{}
-			}
-			filters.TimeRange.To = &t
+		t, err := time.Parse(time.RFC3339, toStr)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+				"invalid 'to' parameter: must be RFC 3339 format (e.g., 2025-12-31T23:59:59Z)")
+			return
 		}
+		if filters.TimeRange == nil {
+			filters.TimeRange = &model.TimeRange{}
+		}
+		filters.TimeRange.To = &t
 	}
 
 	// Filename with timestamp.

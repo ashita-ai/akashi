@@ -77,6 +77,11 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(req.Events) == 0 {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "events array must not be empty")
+		return
+	}
+
 	events, err := h.buffer.Append(r.Context(), runID, run.AgentID, run.OrgID, req.Events)
 	if err != nil {
 		h.writeInternalError(w, r, "failed to buffer events", err)
@@ -173,28 +178,46 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, err := h.db.GetEventsByRun(r.Context(), orgID, runID)
+	const maxRunEvents = 10_000
+	events, err := h.db.GetEventsByRun(r.Context(), orgID, runID, maxRunEvents)
 	if err != nil {
 		h.writeInternalError(w, r, "failed to get events", err)
 		return
 	}
 
-	// Get decisions for this run.
-	decisions, _, err := h.db.QueryDecisions(r.Context(), orgID, model.QueryRequest{
+	// Get decisions for this run. Use a high ceiling rather than an arbitrary
+	// limit — an audit endpoint must not silently drop records. If the ceiling
+	// is hit, signal truncation so the caller knows the data is incomplete.
+	const maxRunDecisions = 10_000
+	decisions, total, err := h.db.QueryDecisions(r.Context(), orgID, model.QueryRequest{
 		Filters: model.QueryFilters{
 			RunID: &runID,
 		},
 		Include: []string{"alternatives", "evidence"},
-		Limit:   100,
+		Limit:   maxRunDecisions,
 	})
 	if err != nil {
 		h.writeInternalError(w, r, "failed to get decisions", err)
 		return
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"run":       run,
 		"events":    events,
 		"decisions": decisions,
-	})
+	}
+	truncated := false
+	if len(events) >= maxRunEvents {
+		resp["truncated_events"] = true
+		truncated = true
+	}
+	if total > maxRunDecisions {
+		resp["truncated_decisions"] = true
+		resp["total_decisions"] = total
+		truncated = true
+	}
+	if truncated {
+		resp["truncated"] = true
+	}
+	writeJSON(w, r, http.StatusOK, resp)
 }

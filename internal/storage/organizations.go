@@ -217,7 +217,7 @@ func (db *DB) CreateSignupTx(ctx context.Context, params SignupParams) (SignupRe
 	}
 
 	_, err = tx.Exec(ctx,
-		`INSERT INTO email_verifications (org_id, token, expires_at) VALUES ($1, $2, $3)`,
+		`INSERT INTO email_verifications (org_id, token_hash, expires_at) VALUES ($1, $2, $3)`,
 		org.ID, params.VerificationToken, params.VerificationExpiry,
 	)
 	if err != nil {
@@ -231,11 +231,12 @@ func (db *DB) CreateSignupTx(ctx context.Context, params SignupParams) (SignupRe
 	return SignupResult{Org: org, Agent: agent}, nil
 }
 
-// CreateEmailVerification inserts a verification token for an org.
-func (db *DB) CreateEmailVerification(ctx context.Context, orgID uuid.UUID, token string, expiresAt time.Time) error {
+// CreateEmailVerification inserts a verification token hash for an org.
+// The caller is responsible for hashing the token before passing it here.
+func (db *DB) CreateEmailVerification(ctx context.Context, orgID uuid.UUID, tokenHash string, expiresAt time.Time) error {
 	_, err := db.pool.Exec(ctx,
-		`INSERT INTO email_verifications (org_id, token, expires_at) VALUES ($1, $2, $3)`,
-		orgID, token, expiresAt,
+		`INSERT INTO email_verifications (org_id, token_hash, expires_at) VALUES ($1, $2, $3)`,
+		orgID, tokenHash, expiresAt,
 	)
 	if err != nil {
 		return fmt.Errorf("storage: create email verification: %w", err)
@@ -244,8 +245,10 @@ func (db *DB) CreateEmailVerification(ctx context.Context, orgID uuid.UUID, toke
 }
 
 // VerifyEmail marks a verification token as used and sets the org's email as verified.
+// The caller passes the SHA-256 hash of the raw token (not the raw token itself),
+// since only hashes are stored in the database.
 // Returns an error if the token is invalid, expired, or already used.
-func (db *DB) VerifyEmail(ctx context.Context, token string) error {
+func (db *DB) VerifyEmail(ctx context.Context, tokenHash string) error {
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("storage: begin verify tx: %w", err)
@@ -256,8 +259,8 @@ func (db *DB) VerifyEmail(ctx context.Context, token string) error {
 	var expiresAt time.Time
 	var usedAt *time.Time
 	err = tx.QueryRow(ctx,
-		`SELECT org_id, expires_at, used_at FROM email_verifications WHERE token = $1`,
-		token,
+		`SELECT org_id, expires_at, used_at FROM email_verifications WHERE token_hash = $1`,
+		tokenHash,
 	).Scan(&orgID, &expiresAt, &usedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -275,8 +278,8 @@ func (db *DB) VerifyEmail(ctx context.Context, token string) error {
 
 	now := time.Now().UTC()
 	if _, err := tx.Exec(ctx,
-		`UPDATE email_verifications SET used_at = $1 WHERE token = $2`,
-		now, token,
+		`UPDATE email_verifications SET used_at = $1 WHERE token_hash = $2`,
+		now, tokenHash,
 	); err != nil {
 		return fmt.Errorf("storage: mark verification used: %w", err)
 	}

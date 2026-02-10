@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -98,13 +99,13 @@ func (db *DB) GetDecision(ctx context.Context, orgID, id uuid.UUID, opts GetDeci
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return model.Decision{}, fmt.Errorf("storage: decision not found: %s", id)
+			return model.Decision{}, fmt.Errorf("storage: decision %s: %w", id, ErrNotFound)
 		}
 		return model.Decision{}, fmt.Errorf("storage: get decision: %w", err)
 	}
 
 	if opts.IncludeAlts {
-		alts, err := db.GetAlternativesByDecision(ctx, id)
+		alts, err := db.GetAlternativesByDecision(ctx, id, orgID)
 		if err != nil {
 			return model.Decision{}, err
 		}
@@ -112,7 +113,7 @@ func (db *DB) GetDecision(ctx context.Context, orgID, id uuid.UUID, opts GetDeci
 	}
 
 	if opts.IncludeEvidence {
-		ev, err := db.GetEvidenceByDecision(ctx, id)
+		ev, err := db.GetEvidenceByDecision(ctx, id, orgID)
 		if err != nil {
 			return model.Decision{}, err
 		}
@@ -142,7 +143,7 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 		return model.Decision{}, fmt.Errorf("storage: invalidate decision: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return model.Decision{}, fmt.Errorf("storage: original decision not found or already revised: %s", originalID)
+		return model.Decision{}, fmt.Errorf("storage: original decision %s (or already revised): %w", originalID, ErrNotFound)
 	}
 
 	// Insert revised decision.
@@ -266,7 +267,7 @@ func (db *DB) QueryDecisions(ctx context.Context, orgID uuid.UUID, req model.Que
 		}
 
 		if includeAlts {
-			altsMap, err := db.GetAlternativesByDecisions(ctx, ids)
+			altsMap, err := db.GetAlternativesByDecisions(ctx, ids, orgID)
 			if err != nil {
 				return nil, 0, err
 			}
@@ -275,7 +276,7 @@ func (db *DB) QueryDecisions(ctx context.Context, orgID uuid.UUID, req model.Que
 			}
 		}
 		if includeEvidence {
-			evsMap, err := db.GetEvidenceByDecisions(ctx, ids)
+			evsMap, err := db.GetEvidenceByDecisions(ctx, ids, orgID)
 			if err != nil {
 				return nil, 0, err
 			}
@@ -527,11 +528,11 @@ func (db *DB) ExportDecisionsCursor(ctx context.Context, orgID uuid.UUID, filter
 			ids[i] = decisions[i].ID
 		}
 
-		altsMap, err := db.GetAlternativesByDecisions(ctx, ids)
+		altsMap, err := db.GetAlternativesByDecisions(ctx, ids, orgID)
 		if err != nil {
 			return nil, err
 		}
-		evsMap, err := db.GetEvidenceByDecisions(ctx, ids)
+		evsMap, err := db.GetEvidenceByDecisions(ctx, ids, orgID)
 		if err != nil {
 			return nil, err
 		}
@@ -603,41 +604,68 @@ func (db *DB) GetDecisionsByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid
 // GetDecisionRevisions returns the full revision chain for a decision, walking
 // both backwards (via supersedes_id) and forwards (via decisions that reference
 // this one's id as their supersedes_id). Results are ordered by valid_from ASC.
+//
+// The CTE is split into two separate recursive queries (forward_chain and
+// backward_chain) then UNIONed, because PostgreSQL only treats the last
+// branch of a UNION as the recursive term. A single CTE with three branches
+// would only recurse on the last (forward) branch, truncating deep backward chains.
+// Each recursive branch has a LIMIT 100 safety cap to prevent infinite loops from
+// circular supersedes_id references.
 func (db *DB) GetDecisionRevisions(ctx context.Context, orgID, id uuid.UUID) ([]model.Decision, error) {
 	query := `
-	WITH RECURSIVE chain AS (
-		-- Anchor: the requested decision.
+	WITH RECURSIVE
+	forward_chain AS (
+		-- Anchor: the target decision.
 		SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		       metadata, quality_score, precedent_ref, supersedes_id, content_hash,
 		       valid_from, valid_to, transaction_time, created_at, 0 AS depth
 		FROM decisions
 		WHERE id = $1 AND org_id = $2
 
-		UNION
+		UNION ALL
 
-		-- Walk backwards: find what this decision supersedes.
+		-- Walk forward: find decisions that supersede the current one.
 		SELECT d.id, d.run_id, d.agent_id, d.org_id, d.decision_type, d.outcome, d.confidence, d.reasoning,
 		       d.metadata, d.quality_score, d.precedent_ref, d.supersedes_id, d.content_hash,
-		       d.valid_from, d.valid_to, d.transaction_time, d.created_at, c.depth + 1
+		       d.valid_from, d.valid_to, d.transaction_time, d.created_at, fc.depth + 1
 		FROM decisions d
-		INNER JOIN chain c ON d.id = c.supersedes_id
-		WHERE d.org_id = $2 AND c.depth < 100
+		INNER JOIN forward_chain fc ON d.supersedes_id = fc.id
+		WHERE d.org_id = $2 AND fc.depth < 100
+	),
+	backward_chain AS (
+		-- Anchor: the target decision.
+		SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
+		       metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+		       valid_from, valid_to, transaction_time, created_at, 0 AS depth
+		FROM decisions
+		WHERE id = $1 AND org_id = $2
 
-		UNION
+		UNION ALL
 
-		-- Walk forwards: find decisions that supersede this one.
+		-- Walk backward: follow supersedes_id links.
 		SELECT d.id, d.run_id, d.agent_id, d.org_id, d.decision_type, d.outcome, d.confidence, d.reasoning,
 		       d.metadata, d.quality_score, d.precedent_ref, d.supersedes_id, d.content_hash,
-		       d.valid_from, d.valid_to, d.transaction_time, d.created_at, c.depth + 1
+		       d.valid_from, d.valid_to, d.transaction_time, d.created_at, bc.depth + 1
 		FROM decisions d
-		INNER JOIN chain c ON d.supersedes_id = c.id
-		WHERE d.org_id = $2 AND c.depth < 100
+		INNER JOIN backward_chain bc ON bc.supersedes_id = d.id
+		WHERE d.org_id = $2 AND bc.depth < 100
+	),
+	all_revisions AS (
+		SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
+		       metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+		       valid_from, valid_to, transaction_time, created_at
+		FROM forward_chain
+		UNION
+		SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
+		       metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+		       valid_from, valid_to, transaction_time, created_at
+		FROM backward_chain
 	)
-	SELECT DISTINCT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
+	SELECT DISTINCT ON (id) id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 	       metadata, quality_score, precedent_ref, supersedes_id, content_hash,
 	       valid_from, valid_to, transaction_time, created_at
-	FROM chain
-	ORDER BY valid_from ASC`
+	FROM all_revisions
+	ORDER BY id, valid_from ASC`
 
 	rows, err := db.pool.Query(ctx, query, id, orgID)
 	if err != nil {
@@ -645,7 +673,22 @@ func (db *DB) GetDecisionRevisions(ctx context.Context, orgID, id uuid.UUID) ([]
 	}
 	defer rows.Close()
 
-	return scanDecisions(rows)
+	decisions, err := scanDecisions(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	// Re-sort by valid_from ASC for chronological ordering.
+	// DISTINCT ON (id) sorts by (id, valid_from) which doesn't give us valid_from ASC across IDs.
+	sortDecisionsByValidFrom(decisions)
+	return decisions, nil
+}
+
+// sortDecisionsByValidFrom sorts a slice of decisions by valid_from ascending.
+func sortDecisionsByValidFrom(decisions []model.Decision) {
+	sort.Slice(decisions, func(i, j int) bool {
+		return decisions[i].ValidFrom.Before(decisions[j].ValidFrom)
+	})
 }
 
 func containsStr(slice []string, s string) bool {

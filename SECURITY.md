@@ -91,7 +91,7 @@ A recovery middleware wraps all HTTP handlers. If a handler panics, the stack tr
 
 All data is scoped by `org_id`. Every database query includes an `org_id` WHERE clause. SSE event subscriptions are org-scoped. The storage layer enforces org boundaries independently of the handler layer (defense-in-depth).
 
-PostgreSQL row-level security (RLS) policies exist on tenant-scoped tables as an additional layer. Application-level WHERE clauses are the primary enforcement mechanism.
+Tenant isolation is enforced via `org_id` WHERE clauses on every query. All storage-layer functions require `org_id` as a parameter and include it in query predicates.
 
 Access grants are org-scoped: a grant in one organization cannot authorize access to data in another organization. The `access_grants` table includes `org_id` in all queries, and grant lookups enforce both `org_id` and `grantee_id`.
 

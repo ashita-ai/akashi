@@ -54,7 +54,7 @@ func (db *DB) GetRun(ctx context.Context, orgID, id uuid.UUID) (model.AgentRun, 
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return model.AgentRun{}, fmt.Errorf("storage: run not found: %s", id)
+			return model.AgentRun{}, fmt.Errorf("storage: run %s: %w", id, ErrNotFound)
 		}
 		return model.AgentRun{}, fmt.Errorf("storage: get run: %w", err)
 	}
@@ -76,7 +76,7 @@ func (db *DB) CompleteRun(ctx context.Context, orgID, id uuid.UUID, status model
 		return fmt.Errorf("storage: complete run: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("storage: run not found or already completed: %s", id)
+		return fmt.Errorf("storage: run %s (or already completed): %w", id, ErrNotFound)
 	}
 	return nil
 }

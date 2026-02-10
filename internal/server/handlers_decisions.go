@@ -99,20 +99,22 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If access filtering removed results, the DB total is stale (it counted
-	// decisions the caller can't see). Adjust to the filtered page count.
-	// For admin+ users no filtering occurs and the DB total is accurate.
-	if len(decisions) < preFilterCount {
-		total = len(decisions)
-	}
-
-	writeJSON(w, r, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"decisions": decisions,
-		"total":     total,
 		"count":     len(decisions),
 		"limit":     req.Limit,
 		"offset":    req.Offset,
-	})
+	}
+	if len(decisions) < preFilterCount {
+		// Access filtering is active — the DB total counted decisions the caller
+		// can't see, so it's unknowable without scanning all pages. Omit total
+		// and use has_more instead.
+		resp["has_more"] = len(decisions) == req.Limit
+	} else {
+		resp["total"] = total
+		resp["has_more"] = req.Offset+len(decisions) < total
+	}
+	writeJSON(w, r, http.StatusOK, resp)
 }
 
 // HandleTemporalQuery handles POST /v1/query/temporal.
@@ -253,7 +255,6 @@ func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 		h.writeInternalError(w, r, "authorization check failed", err)
 		return
 	}
-	resp.HasPrecedent = len(resp.Decisions) > 0
 
 	writeJSON(w, r, http.StatusOK, resp)
 }
@@ -285,16 +286,18 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if len(decisions) < preFilterCount {
-		total = len(decisions)
-	}
-
-	writeJSON(w, r, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"decisions": decisions,
-		"total":     total,
 		"count":     len(decisions),
 		"limit":     limit,
-	})
+	}
+	if len(decisions) < preFilterCount {
+		resp["has_more"] = len(decisions) == limit
+	} else {
+		resp["total"] = total
+		resp["has_more"] = len(decisions) == limit
+	}
+	writeJSON(w, r, http.StatusOK, resp)
 }
 
 // HandleListConflicts handles GET /v1/conflicts.
@@ -318,18 +321,26 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	preFilterCount := len(conflicts)
 	conflicts, err = filterConflictsByAccess(r.Context(), h.db, claims, conflicts)
 	if err != nil {
 		h.writeInternalError(w, r, "authorization check failed", err)
 		return
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"conflicts": conflicts,
-		"total":     len(conflicts),
+		"count":     len(conflicts),
 		"limit":     limit,
 		"offset":    offset,
-	})
+	}
+	if len(conflicts) < preFilterCount {
+		resp["has_more"] = len(conflicts) == limit
+	} else {
+		resp["total"] = len(conflicts)
+		resp["has_more"] = len(conflicts) == limit
+	}
+	writeJSON(w, r, http.StatusOK, resp)
 }
 
 // HandleDecisionRevisions handles GET /v1/decisions/{id}/revisions.
@@ -394,13 +405,22 @@ func (h *Handlers) HandleVerifyDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	computed := integrity.ComputeContentHash(d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
-	valid := d.ContentHash != "" && d.ContentHash == computed
+	resp := map[string]any{"decision_id": id}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"decision_id":   id,
-		"valid":         valid,
-		"stored_hash":   d.ContentHash,
-		"computed_hash": computed,
-	})
+	if d.ContentHash == "" {
+		// Pre-migration decisions have no hash — don't report them as tampered.
+		resp["status"] = "no_hash"
+		resp["message"] = "this decision was created before content hashing was enabled"
+	} else {
+		valid := integrity.VerifyContentHash(d.ContentHash, d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
+		resp["valid"] = valid
+		if valid {
+			resp["status"] = "verified"
+		} else {
+			resp["status"] = "tampered"
+		}
+		resp["content_hash"] = d.ContentHash
+	}
+
+	writeJSON(w, r, http.StatusOK, resp)
 }
