@@ -363,9 +363,21 @@ func (h *Handlers) HandleVerifyDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	claims := ClaimsFromContext(r.Context())
+
 	d, err := h.db.GetDecision(r.Context(), orgID, id, storage.GetDecisionOpts{})
 	if err != nil {
 		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "decision not found")
+		return
+	}
+
+	ok, err := canAccessAgent(r.Context(), h.db, claims, d.AgentID)
+	if err != nil {
+		h.writeInternalError(w, r, "authorization check failed", err)
+		return
+	}
+	if !ok {
+		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "no access to this decision")
 		return
 	}
 

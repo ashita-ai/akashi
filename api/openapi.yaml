@@ -660,6 +660,69 @@ paths:
         "429":
           $ref: "#/components/responses/RateLimited"
 
+  /v1/decisions/{id}/revisions:
+    get:
+      operationId: getDecisionRevisions
+      tags: [Query]
+      summary: Get decision revision history
+      description: |
+        Retrieve the full revision chain for a decision, including all
+        prior and subsequent versions linked via `supersedes_id`.
+        Requires `reader` role or higher. Rate limited (query: 300/min).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The decision ID to get revisions for.
+      responses:
+        "200":
+          description: Revision chain for the decision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_RevisionsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /v1/verify/{id}:
+    get:
+      operationId: verifyDecision
+      tags: [Integrity]
+      summary: Verify decision integrity
+      description: |
+        Recomputes the SHA-256 content hash from the decision's stored
+        fields and compares it to the stored hash. Returns whether the
+        decision has been tampered with.
+        Requires `reader` role or higher. Rate limited (query: 300/min).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The decision ID to verify.
+      responses:
+        "200":
+          description: Integrity verification result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_VerifyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
   /v1/conflicts:
     get:
       operationId: listConflicts
@@ -2273,5 +2336,54 @@ components:
       properties:
         data:
           $ref: "#/components/schemas/HealthResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    RevisionsResponse:
+      type: object
+      required: [decision_id, revisions, count]
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+        revisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Decision"
+        count:
+          type: integer
+
+    APIResponse_RevisionsResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/RevisionsResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    VerifyResponse:
+      type: object
+      required: [decision_id, valid, stored_hash, computed_hash]
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+        valid:
+          type: boolean
+          description: Whether the stored content hash matches the recomputed hash.
+        stored_hash:
+          type: string
+          description: The hash stored in the database.
+        computed_hash:
+          type: string
+          description: The hash recomputed from current field values.
+
+    APIResponse_VerifyResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/VerifyResponse"
         meta:
           $ref: "#/components/schemas/ResponseMeta"

@@ -14,6 +14,7 @@ import (
 
 // CreateRun inserts a new agent run and returns it.
 func (db *DB) CreateRun(ctx context.Context, req model.CreateRunRequest) (model.AgentRun, error) {
+	now := time.Now().UTC()
 	run := model.AgentRun{
 		ID:          uuid.New(),
 		AgentID:     req.AgentID,
@@ -21,9 +22,9 @@ func (db *DB) CreateRun(ctx context.Context, req model.CreateRunRequest) (model.
 		TraceID:     req.TraceID,
 		ParentRunID: req.ParentRunID,
 		Status:      model.RunStatusRunning,
-		StartedAt:   time.Now().UTC(),
+		StartedAt:   now,
 		Metadata:    req.Metadata,
-		CreatedAt:   time.Now().UTC(),
+		CreatedAt:   now,
 	}
 	if run.Metadata == nil {
 		run.Metadata = map[string]any{}
@@ -84,6 +85,12 @@ func (db *DB) CompleteRun(ctx context.Context, orgID, id uuid.UUID, status model
 func (db *DB) ListRunsByAgent(ctx context.Context, orgID uuid.UUID, agentID string, limit, offset int) ([]model.AgentRun, int, error) {
 	if limit <= 0 {
 		limit = 50
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	if offset < 0 {
+		offset = 0
 	}
 
 	var total int

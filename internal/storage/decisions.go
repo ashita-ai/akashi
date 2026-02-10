@@ -400,6 +400,9 @@ func (db *DB) GetDecisionsByAgent(ctx context.Context, orgID uuid.UUID, agentID 
 	if limit > 1000 {
 		limit = 1000
 	}
+	if offset < 0 {
+		offset = 0
+	}
 
 	filters := model.QueryFilters{
 		AgentIDs: []string{agentID},

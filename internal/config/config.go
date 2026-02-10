@@ -127,7 +127,7 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-// Validate checks that required configuration is present.
+// Validate checks that required configuration is present and sane.
 func (c Config) Validate() error {
 	if c.DatabaseURL == "" {
 		return fmt.Errorf("config: DATABASE_URL is required")
@@ -137,6 +137,30 @@ func (c Config) Validate() error {
 	}
 	if c.MaxRequestBodyBytes <= 0 {
 		return fmt.Errorf("config: AKASHI_MAX_REQUEST_BODY_BYTES must be positive")
+	}
+	if c.Port < 1 || c.Port > 65535 {
+		return fmt.Errorf("config: AKASHI_PORT must be between 1 and 65535")
+	}
+	if c.ReadTimeout <= 0 {
+		return fmt.Errorf("config: AKASHI_READ_TIMEOUT must be positive")
+	}
+	if c.WriteTimeout <= 0 {
+		return fmt.Errorf("config: AKASHI_WRITE_TIMEOUT must be positive")
+	}
+	if c.EventFlushTimeout <= 0 {
+		return fmt.Errorf("config: AKASHI_EVENT_FLUSH_TIMEOUT must be positive")
+	}
+	if c.EventBufferSize <= 0 {
+		return fmt.Errorf("config: AKASHI_EVENT_BUFFER_SIZE must be positive")
+	}
+	if c.OutboxPollInterval <= 0 {
+		return fmt.Errorf("config: AKASHI_OUTBOX_POLL_INTERVAL must be positive")
+	}
+	if c.ConflictRefreshInterval <= 0 {
+		return fmt.Errorf("config: AKASHI_CONFLICT_REFRESH_INTERVAL must be positive")
+	}
+	if c.IntegrityProofInterval <= 0 {
+		return fmt.Errorf("config: AKASHI_INTEGRITY_PROOF_INTERVAL must be positive")
 	}
 	if c.JWTPrivateKeyPath != "" {
 		if err := validateKeyFile(c.JWTPrivateKeyPath, "AKASHI_JWT_PRIVATE_KEY"); err != nil {

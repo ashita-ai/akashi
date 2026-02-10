@@ -1,7 +1,10 @@
 // Package akashi provides a Go client for the Akashi decision-tracing API.
 package akashi
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // Error represents an error from the Akashi API with the HTTP status code
 // and the server's error message.
@@ -17,7 +20,8 @@ func (e *Error) Error() string {
 
 // IsNotFound returns true if the error is a 404.
 func IsNotFound(err error) bool {
-	if e, ok := err.(*Error); ok {
+	var e *Error
+	if errors.As(err, &e) {
 		return e.StatusCode == 404
 	}
 	return false
@@ -25,7 +29,8 @@ func IsNotFound(err error) bool {
 
 // IsUnauthorized returns true if the error is a 401.
 func IsUnauthorized(err error) bool {
-	if e, ok := err.(*Error); ok {
+	var e *Error
+	if errors.As(err, &e) {
 		return e.StatusCode == 401
 	}
 	return false
@@ -33,7 +38,8 @@ func IsUnauthorized(err error) bool {
 
 // IsForbidden returns true if the error is a 403.
 func IsForbidden(err error) bool {
-	if e, ok := err.(*Error); ok {
+	var e *Error
+	if errors.As(err, &e) {
 		return e.StatusCode == 403
 	}
 	return false
@@ -41,7 +47,8 @@ func IsForbidden(err error) bool {
 
 // IsRateLimited returns true if the error is a 429 (Too Many Requests).
 func IsRateLimited(err error) bool {
-	if e, ok := err.(*Error); ok {
+	var e *Error
+	if errors.As(err, &e) {
 		return e.StatusCode == 429
 	}
 	return false
@@ -49,7 +56,8 @@ func IsRateLimited(err error) bool {
 
 // IsConflict returns true if the error is a 409.
 func IsConflict(err error) bool {
-	if e, ok := err.(*Error); ok {
+	var e *Error
+	if errors.As(err, &e) {
 		return e.StatusCode == 409
 	}
 	return false

@@ -21,6 +21,11 @@ func (h *Handlers) HandleCreateRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := model.ValidateAgentID(req.AgentID); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
+
 	// Agents can only create runs for themselves.
 	if !model.RoleAtLeast(claims.Role, model.RoleAdmin) && req.AgentID != claims.AgentID {
 		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "can only create runs for your own agent_id")
@@ -117,9 +122,15 @@ func (h *Handlers) HandleCompleteRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status := model.RunStatusCompleted
-	if req.Status == "failed" {
+	var status model.RunStatus
+	switch req.Status {
+	case "completed", "":
+		status = model.RunStatusCompleted
+	case "failed":
 		status = model.RunStatusFailed
+	default:
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "status must be 'completed' or 'failed'")
+		return
 	}
 
 	if err := h.db.CompleteRun(r.Context(), orgID, runID, status, req.Metadata); err != nil {

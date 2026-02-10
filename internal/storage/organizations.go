@@ -260,7 +260,10 @@ func (db *DB) VerifyEmail(ctx context.Context, token string) error {
 		token,
 	).Scan(&orgID, &expiresAt, &usedAt)
 	if err != nil {
-		return fmt.Errorf("storage: verification token not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("storage: verification token not found")
+		}
+		return fmt.Errorf("storage: lookup verification token: %w", err)
 	}
 
 	if usedAt != nil {
