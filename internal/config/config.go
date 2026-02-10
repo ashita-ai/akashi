@@ -67,6 +67,7 @@ type Config struct {
 	// Operational settings.
 	LogLevel                string
 	ConflictRefreshInterval time.Duration
+	IntegrityProofInterval  time.Duration // How often to build Merkle tree proofs.
 	EventBufferSize         int
 	EventFlushTimeout       time.Duration
 	MaxRequestBodyBytes     int64 // Maximum request body size in bytes.
@@ -110,6 +111,7 @@ func Load() (Config, error) {
 		OutboxBatchSize:         envInt("AKASHI_OUTBOX_BATCH_SIZE", 100),
 		LogLevel:                envStr("AKASHI_LOG_LEVEL", "info"),
 		ConflictRefreshInterval: envDuration("AKASHI_CONFLICT_REFRESH_INTERVAL", 30*time.Second),
+		IntegrityProofInterval:  envDuration("AKASHI_INTEGRITY_PROOF_INTERVAL", 5*time.Minute),
 		EventBufferSize:         envInt("AKASHI_EVENT_BUFFER_SIZE", 1000),
 		EventFlushTimeout:       envDuration("AKASHI_EVENT_FLUSH_TIMEOUT", 100*time.Millisecond),
 		MaxRequestBodyBytes:     int64(envInt("AKASHI_MAX_REQUEST_BODY_BYTES", 1*1024*1024)), // 1 MB default

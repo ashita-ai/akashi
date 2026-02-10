@@ -4,7 +4,10 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/google/uuid"
+
 	"github.com/ashita-ai/akashi/internal/billing"
+	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/storage"
@@ -83,7 +86,7 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decisions, _, err := h.decisionSvc.Query(r.Context(), orgID, req)
+	decisions, total, err := h.decisionSvc.Query(r.Context(), orgID, req)
 	if err != nil {
 		h.writeInternalError(w, r, "query failed", err)
 		return
@@ -97,7 +100,7 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"decisions": decisions,
-		"total":     len(decisions),
+		"total":     total,
 		"count":     len(decisions),
 		"limit":     req.Limit,
 		"offset":    req.Offset,
@@ -313,5 +316,66 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 		"total":     len(conflicts),
 		"limit":     limit,
 		"offset":    offset,
+	})
+}
+
+// HandleDecisionRevisions handles GET /v1/decisions/{id}/revisions.
+// Returns the full revision chain for a decision (all versions, ordered by valid_from).
+func (h *Handlers) HandleDecisionRevisions(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
+
+	idStr := r.PathValue("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid decision ID")
+		return
+	}
+
+	revisions, err := h.db.GetDecisionRevisions(r.Context(), orgID, id)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to get revisions", err)
+		return
+	}
+
+	revisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, revisions)
+	if err != nil {
+		h.writeInternalError(w, r, "authorization check failed", err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"decision_id": id,
+		"revisions":   revisions,
+		"count":       len(revisions),
+	})
+}
+
+// HandleVerifyDecision handles GET /v1/verify/{id}.
+// Recomputes the SHA-256 content hash from stored fields and compares to the stored hash.
+func (h *Handlers) HandleVerifyDecision(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+
+	idStr := r.PathValue("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid decision ID")
+		return
+	}
+
+	d, err := h.db.GetDecision(r.Context(), orgID, id, false, false)
+	if err != nil {
+		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "decision not found")
+		return
+	}
+
+	computed := integrity.ComputeContentHash(d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
+	valid := d.ContentHash != "" && d.ContentHash == computed
+
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"decision_id":   id,
+		"valid":         valid,
+		"stored_hash":   d.ContentHash,
+		"computed_hash": computed,
 	})
 }
