@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/model"
 )
 
@@ -33,6 +34,8 @@ func (db *DB) CreateDecision(ctx context.Context, d model.Decision) (model.Decis
 		d.Metadata = map[string]any{}
 	}
 
+	d.ContentHash = integrity.ComputeContentHash(d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
+
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
 		return model.Decision{}, fmt.Errorf("storage: begin create decision tx: %w", err)
@@ -41,10 +44,12 @@ func (db *DB) CreateDecision(ctx context.Context, d model.Decision) (model.Decis
 
 	_, err = tx.Exec(ctx,
 		`INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome, confidence,
-		 reasoning, embedding, metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+		 reasoning, embedding, metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+		 valid_from, valid_to, transaction_time, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
 		d.ID, d.RunID, d.AgentID, d.OrgID, d.DecisionType, d.Outcome, d.Confidence,
 		d.Reasoning, d.Embedding, d.Metadata, d.QualityScore, d.PrecedentRef,
+		d.SupersedesID, d.ContentHash,
 		d.ValidFrom, d.ValidTo, d.TransactionTime, d.CreatedAt,
 	)
 	if err != nil {
@@ -72,11 +77,13 @@ func (db *DB) GetDecision(ctx context.Context, orgID, id uuid.UUID, includeAlts,
 	var d model.Decision
 	err := db.pool.QueryRow(ctx,
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at
+		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+		 valid_from, valid_to, transaction_time, created_at
 		 FROM decisions WHERE id = $1 AND org_id = $2`, id, orgID,
 	).Scan(
 		&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence,
 		&d.Reasoning, &d.Metadata, &d.QualityScore, &d.PrecedentRef,
+		&d.SupersedesID, &d.ContentHash,
 		&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
 	)
 	if err != nil {
@@ -133,17 +140,20 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 	revised.ValidFrom = now
 	revised.TransactionTime = now
 	revised.CreatedAt = now
+	revised.SupersedesID = &originalID
 	if revised.Metadata == nil {
 		revised.Metadata = map[string]any{}
 	}
+	revised.ContentHash = integrity.ComputeContentHash(revised.ID, revised.DecisionType, revised.Outcome, revised.Confidence, revised.Reasoning, revised.ValidFrom)
 
 	_, err = tx.Exec(ctx,
 		`INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome, confidence,
-		 reasoning, embedding, metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+		 reasoning, embedding, metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+		 valid_from, valid_to, transaction_time, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
 		revised.ID, revised.RunID, revised.AgentID, revised.OrgID, revised.DecisionType, revised.Outcome,
 		revised.Confidence, revised.Reasoning, revised.Embedding, revised.Metadata,
-		revised.QualityScore, revised.PrecedentRef,
+		revised.QualityScore, revised.PrecedentRef, revised.SupersedesID, revised.ContentHash,
 		revised.ValidFrom, revised.ValidTo, revised.TransactionTime, revised.CreatedAt,
 	)
 	if err != nil {
@@ -213,7 +223,8 @@ func (db *DB) QueryDecisions(ctx context.Context, orgID uuid.UUID, req model.Que
 
 	selectQuery := fmt.Sprintf(
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at
+		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+		 valid_from, valid_to, transaction_time, created_at
 		 FROM decisions%s ORDER BY %s %s LIMIT %d OFFSET %d`,
 		where, orderBy, orderDir, limit, offset,
 	)
@@ -286,7 +297,8 @@ func (db *DB) QueryDecisionsTemporal(ctx context.Context, orgID uuid.UUID, req m
 	args = append(args, limit)
 
 	query := `SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at
+		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+		 valid_from, valid_to, transaction_time, created_at
 		 FROM decisions` + where + ` ORDER BY valid_from DESC` + limitClause
 
 	rows, err := db.pool.Query(ctx, query, args...)
@@ -324,7 +336,8 @@ func (db *DB) SearchDecisionsByText(ctx context.Context, orgID uuid.UUID, query 
 
 	sql := fmt.Sprintf(
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at,
+		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+		 valid_from, valid_to, transaction_time, created_at,
 		 (0.6 + 0.3 * COALESCE(quality_score, 0))
 		   * (1.0 / (1.0 + EXTRACT(EPOCH FROM (NOW() - valid_from)) / 86400.0 / 90.0))
 		   AS relevance
@@ -346,6 +359,7 @@ func (db *DB) SearchDecisionsByText(ctx context.Context, orgID uuid.UUID, query 
 		if err := rows.Scan(
 			&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence,
 			&d.Reasoning, &d.Metadata, &d.QualityScore, &d.PrecedentRef,
+			&d.SupersedesID, &d.ContentHash,
 			&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
 			&relevance,
 		); err != nil {
@@ -383,7 +397,8 @@ func (db *DB) GetDecisionsByAgent(ctx context.Context, orgID uuid.UUID, agentID 
 
 	query := fmt.Sprintf(
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at
+		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+		 valid_from, valid_to, transaction_time, created_at
 		 FROM decisions%s ORDER BY valid_from DESC LIMIT %d OFFSET %d`,
 		where, limit, offset,
 	)
@@ -456,6 +471,7 @@ func scanDecisions(rows pgx.Rows) ([]model.Decision, error) {
 		if err := rows.Scan(
 			&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence,
 			&d.Reasoning, &d.Metadata, &d.QualityScore, &d.PrecedentRef,
+			&d.SupersedesID, &d.ContentHash,
 			&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan decision: %w", err)
@@ -475,7 +491,8 @@ func (db *DB) GetDecisionsByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid
 
 	rows, err := db.pool.Query(ctx,
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 metadata, quality_score, precedent_ref, valid_from, valid_to, transaction_time, created_at
+		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+		 valid_from, valid_to, transaction_time, created_at
 		 FROM decisions
 		 WHERE org_id = $1 AND id = ANY($2) AND valid_to IS NULL`,
 		orgID, ids,
@@ -495,6 +512,54 @@ func (db *DB) GetDecisionsByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid
 		result[d.ID] = d
 	}
 	return result, nil
+}
+
+// GetDecisionRevisions returns the full revision chain for a decision, walking
+// both backwards (via supersedes_id) and forwards (via decisions that reference
+// this one's id as their supersedes_id). Results are ordered by valid_from ASC.
+func (db *DB) GetDecisionRevisions(ctx context.Context, orgID, id uuid.UUID) ([]model.Decision, error) {
+	query := `
+	WITH RECURSIVE chain AS (
+		-- Anchor: the requested decision.
+		SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
+		       metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+		       valid_from, valid_to, transaction_time, created_at
+		FROM decisions
+		WHERE id = $1 AND org_id = $2
+
+		UNION
+
+		-- Walk backwards: find what this decision supersedes.
+		SELECT d.id, d.run_id, d.agent_id, d.org_id, d.decision_type, d.outcome, d.confidence, d.reasoning,
+		       d.metadata, d.quality_score, d.precedent_ref, d.supersedes_id, d.content_hash,
+		       d.valid_from, d.valid_to, d.transaction_time, d.created_at
+		FROM decisions d
+		INNER JOIN chain c ON d.id = c.supersedes_id
+		WHERE d.org_id = $2
+
+		UNION
+
+		-- Walk forwards: find decisions that supersede this one.
+		SELECT d.id, d.run_id, d.agent_id, d.org_id, d.decision_type, d.outcome, d.confidence, d.reasoning,
+		       d.metadata, d.quality_score, d.precedent_ref, d.supersedes_id, d.content_hash,
+		       d.valid_from, d.valid_to, d.transaction_time, d.created_at
+		FROM decisions d
+		INNER JOIN chain c ON d.supersedes_id = c.id
+		WHERE d.org_id = $2
+	)
+	SELECT DISTINCT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
+	       metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+	       valid_from, valid_to, transaction_time, created_at
+	FROM chain
+	ORDER BY valid_from ASC`
+
+	rows, err := db.pool.Query(ctx, query, id, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: get decision revisions: %w", err)
+	}
+	defer rows.Close()
+
+	return scanDecisions(rows)
 }
 
 func containsStr(slice []string, s string) bool {

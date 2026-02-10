@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"syscall"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/config"
+	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/mcp"
 	"github.com/ashita-ai/akashi/internal/ratelimit"
 	"github.com/ashita-ai/akashi/internal/search"
@@ -227,6 +230,9 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	// Start conflict refresh loop.
 	go conflictRefreshLoop(ctx, db, logger, cfg.ConflictRefreshInterval)
 
+	// Start integrity proof loop (Merkle tree batch proofs).
+	go integrityProofLoop(ctx, db, logger, cfg.IntegrityProofInterval)
+
 	// Start HTTP server in background.
 	errCh := make(chan error, 1)
 	go func() {
@@ -365,6 +371,8 @@ func conflictRefreshLoop(ctx context.Context, db *storage.DB, logger *slog.Logge
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	lastNotifiedAt := time.Now().UTC()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -372,7 +380,116 @@ func conflictRefreshLoop(ctx context.Context, db *storage.DB, logger *slog.Logge
 		case <-ticker.C:
 			if err := db.RefreshConflicts(ctx); err != nil {
 				logger.Warn("conflict refresh failed", "error", err)
+				continue
+			}
+
+			// Detect new conflicts since last notification and send pg_notify for each.
+			newConflicts, err := db.NewConflictsSince(ctx, lastNotifiedAt)
+			if err != nil {
+				logger.Warn("new conflicts query failed", "error", err)
+				continue
+			}
+
+			for _, c := range newConflicts {
+				payload, err := json.Marshal(map[string]any{
+					"org_id":        c.OrgID,
+					"decision_a_id": c.DecisionAID,
+					"decision_b_id": c.DecisionBID,
+					"agent_a":       c.AgentA,
+					"agent_b":       c.AgentB,
+					"decision_type": c.DecisionType,
+				})
+				if err != nil {
+					logger.Warn("conflict notify marshal failed", "error", err)
+					continue
+				}
+				if err := db.Notify(ctx, storage.ChannelConflicts, string(payload)); err != nil {
+					logger.Warn("conflict notify failed", "error", err)
+				}
+				if c.DetectedAt.After(lastNotifiedAt) {
+					lastNotifiedAt = c.DetectedAt
+				}
+			}
+
+			if len(newConflicts) > 0 {
+				logger.Info("conflict notifications sent", "count", len(newConflicts))
 			}
 		}
+	}
+}
+
+func integrityProofLoop(ctx context.Context, db *storage.DB, logger *slog.Logger, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			buildIntegrityProofs(ctx, db, logger)
+		}
+	}
+}
+
+func buildIntegrityProofs(ctx context.Context, db *storage.DB, logger *slog.Logger) {
+	orgIDs, err := db.ListOrganizationIDs(ctx)
+	if err != nil {
+		logger.Warn("integrity proof: list orgs failed", "error", err)
+		return
+	}
+
+	now := time.Now().UTC()
+
+	for _, orgID := range orgIDs {
+		// Get the latest proof to determine the batch window start.
+		latest, err := db.GetLatestIntegrityProof(ctx, orgID)
+		if err != nil {
+			logger.Warn("integrity proof: get latest failed", "error", err, "org_id", orgID)
+			continue
+		}
+
+		batchStart := time.Time{} // Zero time: include all decisions from the beginning.
+		var previousRoot *string
+		if latest != nil {
+			batchStart = latest.BatchEnd
+			previousRoot = &latest.RootHash
+		}
+
+		// Get content hashes for decisions in this batch window.
+		hashes, err := db.GetDecisionHashesForBatch(ctx, orgID, batchStart, now)
+		if err != nil {
+			logger.Warn("integrity proof: get hashes failed", "error", err, "org_id", orgID)
+			continue
+		}
+
+		if len(hashes) == 0 {
+			continue // No new decisions; skip proof.
+		}
+
+		// Hashes are already sorted lexicographically by the SQL query.
+		sort.Strings(hashes)
+		root := integrity.BuildMerkleRoot(hashes)
+
+		proof := storage.IntegrityProof{
+			OrgID:         orgID,
+			BatchStart:    batchStart,
+			BatchEnd:      now,
+			DecisionCount: len(hashes),
+			RootHash:      root,
+			PreviousRoot:  previousRoot,
+			CreatedAt:     now,
+		}
+
+		if err := db.CreateIntegrityProof(ctx, proof); err != nil {
+			logger.Warn("integrity proof: create failed", "error", err, "org_id", orgID)
+			continue
+		}
+
+		logger.Info("integrity proof created",
+			"org_id", orgID,
+			"decisions", len(hashes),
+			"root_hash", root[:16]+"...",
+		)
 	}
 }

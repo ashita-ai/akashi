@@ -11,6 +11,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/metric"
+
+	"github.com/ashita-ai/akashi/internal/telemetry"
 )
 
 // outboxEntry represents a single row from the search_outbox table.
@@ -69,6 +72,7 @@ func (w *OutboxWorker) Start(ctx context.Context) {
 		w.logger.Warn("search outbox: Start called more than once, ignoring")
 		return
 	}
+	w.registerMetrics()
 	loopCtx, cancel := context.WithCancel(ctx)
 	w.cancelLoop = cancel
 	go w.pollLoop(loopCtx)
@@ -327,6 +331,24 @@ func (w *OutboxWorker) fetchDecisionsForIndex(ctx context.Context, ids []uuid.UU
 		results = append(results, d)
 	}
 	return results, rows.Err()
+}
+
+// registerMetrics registers observable OTEL gauges for outbox health monitoring.
+func (w *OutboxWorker) registerMetrics() {
+	meter := telemetry.Meter("akashi/outbox")
+
+	_, _ = meter.Int64ObservableGauge("akashi.outbox.depth",
+		metric.WithDescription("Number of pending entries in the search outbox"),
+		metric.WithInt64Callback(func(ctx context.Context, o metric.Int64Observer) error {
+			var count int64
+			err := w.pool.QueryRow(ctx, `SELECT COUNT(*) FROM search_outbox WHERE attempts < $1`, maxOutboxAttempts).Scan(&count)
+			if err != nil {
+				return nil // Non-fatal: just skip this observation.
+			}
+			o.Observe(count)
+			return nil
+		}),
+	)
 }
 
 func scanOutboxEntries(rows pgx.Rows) ([]outboxEntry, error) {

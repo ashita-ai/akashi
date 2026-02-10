@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -113,6 +114,44 @@ func (db *DB) ListConflicts(ctx context.Context, orgID uuid.UUID, filters Confli
 			&c.DecidedAtA, &c.DecidedAtB, &c.DetectedAt,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan conflict: %w", err)
+		}
+		conflicts = append(conflicts, c)
+	}
+	return conflicts, rows.Err()
+}
+
+// NewConflictsSince returns conflicts detected after the given time, ordered by
+// detected_at ascending. Used by the conflict refresh loop to detect new conflicts
+// and send pg_notify events.
+func (db *DB) NewConflictsSince(ctx context.Context, since time.Time) ([]model.DecisionConflict, error) {
+	rows, err := db.pool.Query(ctx,
+		`SELECT dc.decision_a_id, dc.decision_b_id, dc.org_id,
+		 dc.agent_a, dc.agent_b, dc.run_a, dc.run_b,
+		 dc.decision_type, dc.outcome_a, dc.outcome_b,
+		 dc.confidence_a, dc.confidence_b,
+		 da.reasoning, db.reasoning,
+		 dc.decided_at_a, dc.decided_at_b, dc.detected_at
+		 FROM decision_conflicts dc
+		 LEFT JOIN decisions da ON da.id = dc.decision_a_id
+		 LEFT JOIN decisions db ON db.id = dc.decision_b_id
+		 WHERE dc.detected_at > $1
+		 ORDER BY dc.detected_at ASC`, since,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("storage: new conflicts since: %w", err)
+	}
+	defer rows.Close()
+
+	var conflicts []model.DecisionConflict
+	for rows.Next() {
+		var c model.DecisionConflict
+		if err := rows.Scan(
+			&c.DecisionAID, &c.DecisionBID, &c.OrgID, &c.AgentA, &c.AgentB, &c.RunA, &c.RunB,
+			&c.DecisionType, &c.OutcomeA, &c.OutcomeB, &c.ConfidenceA, &c.ConfidenceB,
+			&c.ReasoningA, &c.ReasoningB,
+			&c.DecidedAtA, &c.DecidedAtB, &c.DetectedAt,
+		); err != nil {
+			return nil, fmt.Errorf("storage: scan new conflict: %w", err)
 		}
 		conflicts = append(conflicts, c)
 	}

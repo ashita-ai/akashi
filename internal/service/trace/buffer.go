@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/storage"
+	"github.com/ashita-ai/akashi/internal/telemetry"
 )
 
 // maxBufferCapacity is the hard upper limit on buffered events to prevent OOM.
@@ -49,8 +51,9 @@ func NewBuffer(db *storage.DB, logger *slog.Logger, maxSize int, flushTimeout ti
 	}
 }
 
-// Start begins the background flush loop. Call Drain to stop.
+// Start begins the background flush loop and registers OTEL metrics. Call Drain to stop.
 func (b *Buffer) Start(ctx context.Context) {
+	b.registerMetrics()
 	loopCtx, cancel := context.WithCancel(ctx)
 	b.cancelLoop = cancel
 	go b.flushLoop(loopCtx)
@@ -175,6 +178,28 @@ func (b *Buffer) Drain(ctx context.Context) {
 	case <-ctx.Done():
 		b.logger.Warn("trace: drain timed out waiting for flush loop")
 	}
+}
+
+// registerMetrics registers observable OTEL gauges for buffer health monitoring.
+// Called from Start() after the global meter provider has been initialized.
+func (b *Buffer) registerMetrics() {
+	meter := telemetry.Meter("akashi/buffer")
+
+	_, _ = meter.Int64ObservableGauge("akashi.buffer.depth",
+		metric.WithDescription("Current number of events in the write buffer"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(int64(b.Len()))
+			return nil
+		}),
+	)
+
+	_, _ = meter.Int64ObservableGauge("akashi.buffer.dropped_total",
+		metric.WithDescription("Total events dropped due to buffer capacity exhaustion"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(b.DroppedEvents())
+			return nil
+		}),
+	)
 }
 
 // Len returns the current number of buffered events.

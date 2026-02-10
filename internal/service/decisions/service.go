@@ -10,9 +10,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/pgvector/pgvector-go"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/model"
@@ -20,6 +22,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/service/embedding"
 	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/storage"
+	"github.com/ashita-ai/akashi/internal/telemetry"
 )
 
 // Service encapsulates decision business logic shared by HTTP and MCP handlers.
@@ -29,18 +32,32 @@ type Service struct {
 	searcher   search.Searcher
 	billingSvc *billing.Service
 	logger     *slog.Logger
+
+	embeddingDuration metric.Float64Histogram
+	searchDuration    metric.Float64Histogram
 }
 
 // New creates a new decision Service.
 // searcher may be nil if Qdrant is not configured (falls back to text search).
 // billingSvc may be nil if billing is not configured.
 func New(db *storage.DB, embedder embedding.Provider, searcher search.Searcher, billingSvc *billing.Service, logger *slog.Logger) *Service {
+	meter := telemetry.Meter("akashi/decisions")
+	embDur, _ := meter.Float64Histogram("akashi.embedding.duration",
+		metric.WithDescription("Time to generate embeddings (ms)"),
+		metric.WithUnit("ms"),
+	)
+	searchDur, _ := meter.Float64Histogram("akashi.search.duration",
+		metric.WithDescription("Time to execute search queries (ms)"),
+		metric.WithUnit("ms"),
+	)
 	return &Service{
-		db:         db,
-		embedder:   embedder,
-		searcher:   searcher,
-		billingSvc: billingSvc,
-		logger:     logger,
+		db:                db,
+		embedder:          embedder,
+		searcher:          searcher,
+		billingSvc:        billingSvc,
+		logger:            logger,
+		embeddingDuration: embDur,
+		searchDuration:    searchDur,
 	}
 }
 
@@ -77,7 +94,9 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 		embText += " " + *input.Decision.Reasoning
 	}
 	var decisionEmb *pgvector.Vector
+	embStart := time.Now()
 	emb, err := s.embedder.Embed(ctx, embText)
+	s.embeddingDuration.Record(ctx, float64(time.Since(embStart).Milliseconds()))
 	if err != nil {
 		s.logger.Warn("trace: decision embedding failed, continuing without", "error", err)
 	} else if err := s.validateEmbeddingDims(emb); err != nil {
@@ -235,11 +254,15 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, decisionType, quer
 func (s *Service) Search(ctx context.Context, orgID uuid.UUID, query string, semantic bool, filters model.QueryFilters, limit int) ([]model.SearchResult, error) {
 	if semantic && s.searcher != nil {
 		if err := s.searcher.Healthy(ctx); err == nil {
+			embStart := time.Now()
 			queryEmb, err := s.embedder.Embed(ctx, query)
+			s.embeddingDuration.Record(ctx, float64(time.Since(embStart).Milliseconds()))
 			if err != nil {
 				s.logger.Warn("search: embedding failed, falling back to text", "error", err)
 			} else if !isZeroVector(queryEmb) {
+				searchStart := time.Now()
 				results, err := s.searcher.Search(ctx, orgID, queryEmb.Slice(), filters, limit)
+				s.searchDuration.Record(ctx, float64(time.Since(searchStart).Milliseconds()))
 				if err != nil {
 					s.logger.Warn("search: qdrant query failed, falling back to text", "error", err)
 				} else {

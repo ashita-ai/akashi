@@ -27,6 +27,12 @@ type Decision struct {
 	// Precedent reference: decision that influenced this one.
 	PrecedentRef *uuid.UUID `json:"precedent_ref,omitempty"`
 
+	// Revision chain: ID of the decision this one supersedes.
+	SupersedesID *uuid.UUID `json:"supersedes_id,omitempty"`
+
+	// Tamper-evident SHA-256 content hash of canonical decision fields.
+	ContentHash string `json:"content_hash,omitempty"`
+
 	// Bi-temporal columns.
 	ValidFrom       time.Time  `json:"valid_from"`
 	ValidTo         *time.Time `json:"valid_to,omitempty"`

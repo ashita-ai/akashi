@@ -141,6 +141,12 @@ func New(cfg ServerConfig) *Server {
 	// Recent decisions (reader+).
 	mux.Handle("GET /v1/decisions/recent", queryRL(readRole(http.HandlerFunc(h.HandleDecisionsRecent))))
 
+	// Decision revision history (reader+).
+	mux.Handle("GET /v1/decisions/{id}/revisions", queryRL(readRole(http.HandlerFunc(h.HandleDecisionRevisions))))
+
+	// Integrity verification (reader+).
+	mux.Handle("GET /v1/verify/{id}", queryRL(readRole(http.HandlerFunc(h.HandleVerifyDecision))))
+
 	// Subscription endpoint (reader+, no rate limit — long-lived connection).
 	mux.Handle("GET /v1/subscribe", readRole(http.HandlerFunc(h.HandleSubscribe)))
 
