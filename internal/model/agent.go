@@ -48,8 +48,7 @@ type AccessGrant struct {
 type Permission string
 
 const (
-	PermissionRead  Permission = "read"
-	PermissionWrite Permission = "write"
+	PermissionRead Permission = "read"
 )
 
 // ResourceType enumerates valid grant resource types.
@@ -57,8 +56,6 @@ type ResourceType string
 
 const (
 	ResourceAgentTraces ResourceType = "agent_traces"
-	ResourceDecision    ResourceType = "decision"
-	ResourceRun         ResourceType = "run"
 )
 
 // RoleRank returns the numeric rank of a role (higher = more privileges).
