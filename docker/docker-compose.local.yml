@@ -11,7 +11,7 @@
 
 services:
   postgres:
-    image: timescale/timescaledb-ha:pg17
+    image: timescale/timescaledb-ha:pg18
     container_name: akashi-local-postgres
     restart: unless-stopped
     ports:
