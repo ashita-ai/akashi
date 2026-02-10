@@ -97,51 +97,36 @@ All SDKs provide: `Check`, `Trace`, `Query`, `Search`, `Recent`. Auth token mana
 
 ```mermaid
 flowchart TD
-    subgraph Clients
-        SPA["Browser (SPA)"]
-        MCP["MCP Clients<br/><small>Claude, Cursor, Windsurf</small>"]
-        HTTP["HTTP Clients<br/><small>SDKs, CI/CD, scripts</small>"]
-    end
+    C1["Audit Dashboard"] -->|"/"| AUTH
+    C2["MCP Clients<br/>Claude, Cursor, Windsurf"] -->|"/mcp"| AUTH
+    C3["HTTP Clients<br/>SDKs, CI/CD, scripts"] -->|"/v1/"| AUTH
 
-    subgraph Server["Akashi Server &ensp;(Go, single binary)"]
-        direction TB
-        subgraph Interfaces["Interface Layer"]
-            UI["/ &ensp;Audit Dashboard"]
-            MCPE["/mcp &ensp;MCP Protocol"]
-            API["/v1/... &ensp;REST API"]
-        end
+    AUTH["Auth + Middleware<br/>Ed25519 JWT, RBAC, rate limiting, tracing"]
 
-        subgraph Services["Service Layer"]
-            AUTH["Auth<br/><small>Ed25519 JWT</small>"]
-            TRACE["Trace Buffer<br/><small>in-memory + COPY flush</small>"]
-            QUERY["Query<br/><small>SQL WHERE</small>"]
-            SEARCH["Search<br/><small>Qdrant / pgvector</small>"]
-            CONFLICT["Conflict Detection<br/><small>materialized view</small>"]
-            BILLING["Billing<br/><small>Stripe</small>"]
-        end
-    end
+    AUTH --> TRACE["Trace Buffer<br/>in-memory batch + COPY flush"]
+    AUTH --> QUERY["Query Engine<br/>SQL filters + bi-temporal"]
+    AUTH --> SEARCH["Semantic Search<br/>Qdrant / pgvector fallback"]
+    AUTH --> CONFLICT["Conflict Detection<br/>materialized view"]
+    AUTH --> BILLING["Billing<br/>Stripe quota enforcement"]
 
-    subgraph Storage["PostgreSQL 17 &ensp;&ensp; pgvector + TimescaleDB"]
-        PGB["PgBouncer<br/><small>:6432 &ensp;queries</small>"]
-        DIRECT["Direct Conn<br/><small>:5432 &ensp;LISTEN/NOTIFY</small>"]
-    end
+    TRACE --> PG
+    QUERY --> PG
+    SEARCH --> PG
+    CONFLICT --> PG
+    BILLING --> PG
 
-    SPA --> UI
-    MCP --> MCPE
-    HTTP --> API
+    PG[("PostgreSQL 17<br/>pgvector + TimescaleDB")]
 
-    UI --> Services
-    MCPE --> Services
-    API --> Services
-
-    Services --> PGB
-    Services --> DIRECT
-
-    style Clients fill:#f0f4ff,stroke:#4a6fa5
-    style Server fill:#fff,stroke:#333
-    style Interfaces fill:#e8f0fe,stroke:#4a6fa5
-    style Services fill:#f9f9f9,stroke:#999
-    style Storage fill:#e8f5e9,stroke:#2e7d32
+    style C1 fill:#f0f4ff,stroke:#4a6fa5
+    style C2 fill:#f0f4ff,stroke:#4a6fa5
+    style C3 fill:#f0f4ff,stroke:#4a6fa5
+    style AUTH fill:#fff3e0,stroke:#e65100
+    style TRACE fill:#f9f9f9,stroke:#999
+    style QUERY fill:#f9f9f9,stroke:#999
+    style SEARCH fill:#f9f9f9,stroke:#999
+    style CONFLICT fill:#f9f9f9,stroke:#999
+    style BILLING fill:#f9f9f9,stroke:#999
+    style PG fill:#e8f5e9,stroke:#2e7d32
 ```
 
 ## Documentation
