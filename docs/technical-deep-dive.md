@@ -498,10 +498,6 @@ akashi/
 │   │   ├── resources.go     # MCP resource definitions
 │   │   └── prompts.go       # MCP prompt templates
 │   │
-│   ├── ratelimit/
-│   │   ├── ratelimit.go     # Redis-backed rate limiter
-│   │   └── middleware.go    # HTTP rate limit middleware
-│   │
 │   └── telemetry/
 │       └── telemetry.go     # OpenTelemetry setup
 │
@@ -518,20 +514,14 @@ akashi/
 The HTTP server constructor wires everything together:
 
 ```go
-func New(db, jwtMgr, decisionSvc, buffer, limiter, broker, ...) *Server {
+func New(db, jwtMgr, decisionSvc, buffer, broker, ...) *Server {
     h := NewHandlers(...)
-
-    // Rate limit rules by category
-    ingestRL := ratelimit.Middleware(limiter, Rule{Prefix: "ingest", Limit: 300, Window: time.Minute}, agentKeyFunc)
-    queryRL := ...
-    searchRL := ...
-    authRL := ratelimit.Middleware(limiter, Rule{...}, ratelimit.IPKeyFunc)  // By IP
 
     mux := http.NewServeMux()
 
     // Route registration with middleware composition
-    mux.Handle("POST /auth/token", authRL(http.HandlerFunc(h.HandleAuthToken)))
-    mux.Handle("POST /v1/runs", ingestRL(writeRoles(http.HandlerFunc(h.HandleCreateRun))))
+    mux.Handle("POST /auth/token", http.HandlerFunc(h.HandleAuthToken))
+    mux.Handle("POST /v1/runs", writeRoles(http.HandlerFunc(h.HandleCreateRun)))
     // ... more routes
 
     // Middleware chain (applied inside-out)
@@ -765,5 +755,4 @@ func filterDecisionsByAccess(ctx, db, claims, decisions) ([]Decision, error) {
 | `AKASHI_EMBEDDING_PROVIDER` | auto | ollama/openai/noop/auto |
 | `OLLAMA_URL` | http://localhost:11434 | Ollama server |
 | `OPENAI_API_KEY` | - | OpenAI API key |
-| `REDIS_URL` | - | Redis for rate limiting |
 | `AKASHI_ADMIN_API_KEY` | - | Initial admin seed |

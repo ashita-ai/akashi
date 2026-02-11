@@ -73,13 +73,13 @@ go vet ./...
 # Build
 go build -o bin/akashi ./cmd/akashi
 
-# Docker — local stack (Postgres 18 + pgvector + TimescaleDB, no cloud deps)
-docker compose -f docker/docker-compose.local.yml up -d
-docker compose -f docker/docker-compose.local.yml down
+# Docker — local stack (Postgres 18 + pgvector + TimescaleDB + Ollama)
+docker compose up -d
+docker compose down
 
-# Docker — cloud stack (TimescaleDB Cloud + Qdrant Cloud)
-docker compose -f docker/docker-compose.cloud.yml --env-file docker/.env.cloud up -d
-docker compose -f docker/docker-compose.cloud.yml --env-file docker/.env.cloud down
+# Docker — with Qdrant vector search
+docker compose --profile qdrant up -d
+docker compose --profile qdrant down
 
 # Run full quality suite
 make all
@@ -109,7 +109,7 @@ akashi/
 ├── specs/              # Design specifications — *how* features should be built
 ├── docs/               # Supplementary docs — strategy, standards, deep dives
 ├── scratchpad/         # Temporary notes, drafts, research (gitignored)
-└── docker/             # Postgres Dockerfile + compose variants (local, cloud)
+└── docker/             # Postgres init script + env example
 ```
 
 Use `internal/` for all application code. Nothing in `pkg/` until SDK clients need shared types.
@@ -167,7 +167,7 @@ Single PostgreSQL 18 instance with extensions:
 - **TimescaleDB** for time-series event ingestion and partitioning
 - **JSONB** for facet-based extensibility (OpenLineage pattern)
 
-PostgreSQL is the source of truth for all data. Redis is used for rate limiting. Qdrant is an optional acceleration layer for vector search at scale (see ADR-002). New storage dependencies require an ADR.
+PostgreSQL is the source of truth for all data. Qdrant is an optional acceleration layer for vector search at scale (see ADR-002). New storage dependencies require an ADR.
 
 ### Data Model
 

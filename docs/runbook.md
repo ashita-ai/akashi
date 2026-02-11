@@ -12,7 +12,7 @@ Production operations guide for the Akashi decision trace server.
 GET /health
 ```
 
-No authentication required. No rate limiting.
+No authentication required.
 
 ### Response
 
@@ -101,7 +101,6 @@ Akashi logs JSON to stdout. Key log messages to monitor:
 | `"search outbox: dead-letter entry"`            | Outbox entry exceeded 10 retry attempts               |
 | `"search outbox: qdrant upsert"` + `error`      | Qdrant write failure (entries will retry)             |
 | `"storage: notify reconnect attempt failed"`    | LISTEN/NOTIFY connection dropped, attempting recovery |
-| `"ratelimit: redis error, allowing request"`    | Redis unreachable, rate limiting failed open          |
 | `"conflict refresh failed"`                     | Materialized view refresh failed                      |
 
 ---
@@ -120,20 +119,6 @@ Akashi logs JSON to stdout. Key log messages to monitor:
 3. Verify: `SELECT count(*) FROM search_outbox WHERE attempts < 10;` should trend to 0.
 
 **No operator intervention required** once Qdrant is restored.
-
----
-
-### Redis is Down
-
-**Symptoms**: Log line `"ratelimit: redis error, allowing request"`. Rate limit headers still present but limits are not enforced.
-
-**Impact**: Rate limiting fails open -- all requests are allowed. The server continues to function normally otherwise.
-
-**Remediation**:
-1. Restore Redis.
-2. Rate limiting resumes automatically on next request.
-
-**No restart required.**
 
 ---
 
@@ -342,14 +327,12 @@ Run multiple Akashi instances behind a load balancer.
 | Outbox worker           | Per-instance. Uses `FOR UPDATE SKIP LOCKED` -- multiple workers safely share work.|
 | LISTEN/NOTIFY           | Per-instance. Each instance maintains its own direct PostgreSQL connection.        |
 | SSE broker              | Per-instance. Clients receive events only from the instance they are connected to.|
-| Rate limiting           | Shared via Redis. Limits are enforced consistently across all instances.           |
 | JWT validation          | Stateless. All instances must have the same public key.                            |
 
 ### Bottlenecks
 
 1. **PostgreSQL** is the primary bottleneck. Scale read replicas for query load. Consider connection pooling (PgBouncer) tuning.
 2. **Qdrant** for vector search at scale. Monitor query latency via `http.server.duration` on `/v1/search`.
-3. **Redis** is lightweight (rate limiting only). A single Redis instance handles millions of operations per second.
 
 ### SSE Limitation
 
@@ -377,12 +360,6 @@ All configuration is via environment variables. No config files.
 |-----------------|----------------------------------------------------------------|-----------------------------------------------|
 | `DATABASE_URL`  | `postgres://akashi:akashi@localhost:6432/akashi?sslmode=verify-full` | PgBouncer / pooled connection URL (queries)   |
 | `NOTIFY_URL`    | `postgres://akashi:akashi@localhost:5432/akashi?sslmode=verify-full` | Direct PostgreSQL URL (LISTEN/NOTIFY, SSE)    |
-
-### Redis
-
-| Variable    | Default | Description                                   |
-|-------------|---------|-----------------------------------------------|
-| `REDIS_URL` | (empty) | Redis URL for rate limiting. Empty = disabled. |
 
 ### Authentication
 
@@ -424,25 +401,6 @@ Provider auto-detection order: Ollama (if reachable) > OpenAI (if key set) > noo
 | `OTEL_EXPORTER_OTLP_INSECURE`    | `false`   | Use HTTP instead of HTTPS for OTLP        |
 | `OTEL_SERVICE_NAME`              | `akashi`  | Service name in traces/metrics            |
 
-### Stripe Billing
-
-| Variable                | Default | Description                                   |
-|-------------------------|---------|-----------------------------------------------|
-| `STRIPE_SECRET_KEY`     | (empty) | Stripe secret key. Empty = billing disabled.  |
-| `STRIPE_WEBHOOK_SECRET` | (empty) | Stripe webhook signing secret (required if billing enabled) |
-| `STRIPE_PRO_PRICE_ID`   | (empty) | Stripe Price ID for the Pro plan (required if billing enabled) |
-
-### SMTP (Email Verification)
-
-| Variable              | Default              | Description                        |
-|-----------------------|----------------------|------------------------------------|
-| `AKASHI_SMTP_HOST`   | (empty)              | SMTP host. Empty = dev mode (logs URL instead). |
-| `AKASHI_SMTP_PORT`   | `587`                | SMTP port (STARTTLS required)      |
-| `AKASHI_SMTP_USER`   | (empty)              | SMTP username                      |
-| `AKASHI_SMTP_PASSWORD`| (empty)             | SMTP password                      |
-| `AKASHI_SMTP_FROM`   | `noreply@akashi.dev` | Sender address for verification emails |
-| `AKASHI_BASE_URL`    | `http://localhost:8080` | Public base URL for verification links |
-
 ### Operational
 
 | Variable                            | Default  | Description                                         |
@@ -482,27 +440,7 @@ The overall shutdown context has a **15-second** timeout. Each subsystem has its
 
 ---
 
-## 9. Rate Limit Rules
-
-These are the rate limit rules enforced when Redis is configured:
-
-| Prefix   | Limit           | Window   | Key           | Applies To                                     |
-|----------|-----------------|----------|---------------|-------------------------------------------------|
-| `auth`   | 20 req/min      | 1 min    | Client IP     | `POST /auth/token`, `/auth/refresh`, `/auth/signup`, `/auth/verify` |
-| `ingest` | 300 req/min     | 1 min    | Agent ID      | `POST /v1/trace`, `/v1/runs`, `/v1/runs/*/events`, `/v1/runs/*/complete` |
-| `query`  | 300 req/min     | 1 min    | Agent ID      | `POST /v1/query`, `/v1/query/temporal`, `GET /v1/runs/*`, etc. |
-| `search` | 100 req/min     | 1 min    | Agent ID      | `POST /v1/search`                               |
-
-Agents with `admin` role or higher are **exempt** from ingest, query, and search rate limits. Auth rate limits apply to everyone (keyed by IP).
-
-Response headers on rate-limited requests:
-- `X-RateLimit-Limit` -- max requests per window
-- `X-RateLimit-Remaining` -- requests remaining
-- `X-RateLimit-Reset` -- Unix timestamp when the window resets
-
----
-
-## 10. Quick Diagnostic Commands
+## 9. Quick Diagnostic Commands
 
 ```sh
 # Is the server running?

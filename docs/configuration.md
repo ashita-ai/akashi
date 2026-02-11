@@ -63,32 +63,6 @@ In `auto` mode: Ollama is tried first (health check with 2s timeout), then OpenA
 
 Qdrant is optional. When not configured, search falls back to ILIKE text matching. See [ADR-002](../adrs/ADR-002-unified-postgres-storage.md).
 
-## Rate Limiting (Redis)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `REDIS_URL` | _(empty)_ | Redis URL for sliding-window rate limiting. Empty = no rate limiting |
-| `AKASHI_REQUIRE_REDIS` | `false` | If `true`, server refuses to start without Redis (fail-closed) |
-
-## Billing (Stripe)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `STRIPE_SECRET_KEY` | _(empty)_ | Stripe secret key. Empty = billing disabled, no quota enforcement |
-| `STRIPE_WEBHOOK_SECRET` | _(empty)_ | Stripe webhook signing secret |
-| `STRIPE_PRO_PRICE_ID` | _(empty)_ | Stripe Price ID for the Pro plan |
-
-## Email (SMTP)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AKASHI_SMTP_HOST` | _(empty)_ | SMTP host. Empty = verification URLs logged to stdout |
-| `AKASHI_SMTP_PORT` | `587` | SMTP port (STARTTLS) |
-| `AKASHI_SMTP_USER` | _(empty)_ | SMTP username |
-| `AKASHI_SMTP_PASSWORD` | _(empty)_ | SMTP password |
-| `AKASHI_SMTP_FROM` | `noreply@akashi.dev` | From address for verification emails |
-| `AKASHI_BASE_URL` | `http://localhost:8080` | Base URL for verification links |
-
 ## Observability (OpenTelemetry)
 
 | Variable | Default | Description |

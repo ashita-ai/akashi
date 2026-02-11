@@ -9,8 +9,9 @@ Akashi is the audit trail. Every agent decision gets recorded with its full reas
 ## Quick start
 
 ```bash
-# Start the local stack (Postgres + PgBouncer + Redis + Akashi)
-docker compose -f docker/docker-compose.local.yml up -d
+# Start the local stack (Postgres + Ollama + Akashi)
+docker compose up -d
+docker exec akashi-ollama ollama pull mxbai-embed-large   # first run only
 
 # Or build from source
 make build
@@ -103,19 +104,17 @@ flowchart TD
     C2["MCP Clients<br/>Claude, Cursor, Windsurf"] -->|"/mcp"| AUTH
     C3["HTTP Clients<br/>SDKs, CI/CD, scripts"] -->|"/v1/"| AUTH
 
-    AUTH["Auth + Middleware<br/>Ed25519 JWT, RBAC, rate limiting, tracing"]
+    AUTH["Auth + Middleware<br/>Ed25519 JWT, RBAC, tracing"]
 
     AUTH --> TRACE["Trace Buffer<br/>in-memory batch + COPY flush"]
     AUTH --> QUERY["Query Engine<br/>SQL filters + bi-temporal"]
     AUTH --> SEARCH["Semantic Search<br/>Qdrant / pgvector fallback"]
     AUTH --> CONFLICT["Conflict Detection<br/>materialized view"]
-    AUTH --> BILLING["Billing<br/>Stripe quota enforcement"]
 
     TRACE --> PG
     QUERY --> PG
     SEARCH --> PG
     CONFLICT --> PG
-    BILLING --> PG
 
     PG[("PostgreSQL 18<br/>pgvector + TimescaleDB")]
 
@@ -127,7 +126,6 @@ flowchart TD
     style QUERY fill:#f9f9f9,stroke:#999
     style SEARCH fill:#f9f9f9,stroke:#999
     style CONFLICT fill:#f9f9f9,stroke:#999
-    style BILLING fill:#f9f9f9,stroke:#999
     style PG fill:#e8f5e9,stroke:#2e7d32
 ```
 

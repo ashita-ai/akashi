@@ -23,12 +23,10 @@ sequenceDiagram
     participant RR as requireRole(agent)
     participant H as HandleTrace
     participant DS as decisionSvc.Trace()
-    participant B as billing.CheckDecisionQuota()
     participant E as embedder.Embed()
     participant Q as quality.Score()
     participant DB as storage.CreateTraceTx()
     participant N as storage.Notify()
-    participant BI as billing.IncrementDecisionCount()
 
     C->>MW: POST /v1/trace (Bearer JWT)
     MW->>MW: requestID, securityHeaders, CORS, tracing, logging
@@ -39,8 +37,6 @@ sequenceDiagram
     H->>H: decodeJSON (MaxBytesReader), validate fields
     H->>H: verify agent_id exists in caller's org
     H->>DS: Trace(ctx, orgID, TraceInput)
-    DS->>B: CheckDecisionQuota(orgID)
-    B-->>DS: OK (or ErrQuotaExceeded)
     DS->>E: Embed(decisionType + outcome + reasoning)
     E-->>DS: vector(1024) or warning
     DS->>E: Embed(evidence[i].content) for each evidence
@@ -63,8 +59,6 @@ sequenceDiagram
     DB-->>DS: (run, decision)
     DS->>N: pg_notify('akashi_decisions', payload)
     N-->>DS: OK (non-fatal on error)
-    DS->>BI: IncrementDecisionCount(orgID)
-    BI-->>DS: OK (non-fatal on error)
     DS-->>H: TraceResult{RunID, DecisionID, EventCount}
     H-->>C: 201 Created {run_id, decision_id, event_count}
 ```
@@ -306,13 +300,7 @@ erDiagram
         uuid id PK
         text name
         text slug UK
-        text plan "free | pro | enterprise"
-        text stripe_customer_id UK
-        text stripe_subscription_id UK
-        int decision_limit
-        int agent_limit
-        text email
-        bool email_verified
+        text plan "enterprise"
         timestamptz created_at
         timestamptz updated_at
     }

@@ -1,18 +1,20 @@
-# Local development: self-contained stack, pgvector fallback (no Qdrant).
+# Akashi: single-file Docker Compose for local development.
 #
-# Usage:
-#   docker compose -f docker/docker-compose.local.yml up -d
-#   docker exec akashi-local-ollama ollama pull mxbai-embed-large   # first run only
+# Default (Postgres + Ollama + Akashi):
+#   docker compose up -d
+#   docker exec akashi-ollama ollama pull mxbai-embed-large   # first run only
 #   curl http://localhost:8080/health
 #
-# Postgres (pgvector + TimescaleDB) and Ollama run locally. No Qdrant — semantic
-# search falls back to pgvector. No PgBouncer — single-user local dev doesn't
-# need connection pooling.
+# With Qdrant vector search:
+#   docker compose --profile qdrant up -d
+#
+# No external services required. Postgres (pgvector + TimescaleDB) and Ollama
+# run locally. Qdrant is optional via the "qdrant" profile.
 
 services:
   postgres:
     image: timescale/timescaledb-ha:pg18
-    container_name: akashi-local-postgres
+    container_name: akashi-postgres
     restart: unless-stopped
     ports:
       - "127.0.0.1:5432:5432"
@@ -22,7 +24,7 @@ services:
       POSTGRES_DB: akashi
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     command: >
       postgres
         -c shared_buffers=256MB
@@ -37,29 +39,9 @@ services:
       timeout: 5s
       retries: 5
 
-  redis:
-    image: redis:7.4-alpine
-    container_name: akashi-local-redis
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:6379:6379"
-    volumes:
-      - redisdata:/data
-    command: >
-      redis-server
-        --appendonly yes
-        --maxmemory 128mb
-        --maxmemory-policy allkeys-lru
-        --requirepass ${REDIS_PASSWORD:-akashi}
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-akashi}", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
   ollama:
     image: ollama/ollama:latest
-    container_name: akashi-local-ollama
+    container_name: akashi-ollama
     restart: unless-stopped
     ports:
       - "127.0.0.1:11434:11434"
@@ -72,28 +54,47 @@ services:
       retries: 5
       start_period: 10s
 
+  qdrant:
+    image: qdrant/qdrant:v1.13.6
+    container_name: akashi-qdrant
+    restart: unless-stopped
+    profiles: ["qdrant"]
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   akashi:
     build:
-      context: ..
+      context: .
       dockerfile: Dockerfile
-    container_name: akashi-local-server
+    container_name: akashi-server
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"
     environment:
-      # Database: no PgBouncer — both URLs go direct to Postgres.
+      # Database: both URLs go direct to Postgres (no PgBouncer for local dev).
       DATABASE_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi?sslmode=disable
       NOTIFY_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi?sslmode=disable
-      REDIS_URL: redis://default:${REDIS_PASSWORD:-akashi}@redis:6379/0
 
       # Core settings.
       AKASHI_PORT: "8080"
       AKASHI_ADMIN_API_KEY: ${AKASHI_ADMIN_API_KEY:-admin}
       AKASHI_LOG_LEVEL: ${AKASHI_LOG_LEVEL:-debug}
 
-      # No Qdrant — empty QDRANT_URL forces pgvector fallback.
-      QDRANT_URL: ""
-      QDRANT_API_KEY: ""
+      # Qdrant (empty by default; set via .env or --profile qdrant).
+      QDRANT_URL: ${QDRANT_URL:-}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-akashi_decisions}
 
       # Ollama for embeddings (running in the stack).
       AKASHI_EMBEDDING_PROVIDER: ${AKASHI_EMBEDDING_PROVIDER:-ollama}
@@ -101,9 +102,13 @@ services:
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mxbai-embed-large}
       AKASHI_EMBEDDING_DIMENSIONS: ${AKASHI_EMBEDDING_DIMENSIONS:-1024}
 
-      # OpenAI (unused by default, set AKASHI_EMBEDDING_PROVIDER=openai to enable).
+      # OpenAI (alternative to Ollama — set AKASHI_EMBEDDING_PROVIDER=openai).
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       AKASHI_EMBEDDING_MODEL: ${AKASHI_EMBEDDING_MODEL:-text-embedding-3-small}
+
+      # Observability (optional).
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-akashi}
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health || exit 1"]
       interval: 10s
@@ -113,12 +118,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
       ollama:
         condition: service_healthy
 
 volumes:
   pgdata:
-  redisdata:
   ollama_data:
+  qdrant_data:
