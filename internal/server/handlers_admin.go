@@ -40,7 +40,7 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	// Validate role is known and caller outranks the requested role.
 	if model.RoleRank(req.Role) == 0 {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
-			"invalid role: must be one of platform_admin, org_owner, admin, agent, reader")
+			"invalid role: must be one of admin, agent, reader")
 		return
 	}
 	callerRole := ClaimsFromContext(r.Context()).Role
@@ -235,7 +235,7 @@ func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Protect the seed admin (agent_id="admin") created during server startup.
-	// Other admin-role agents are deletable by org_owner+ callers.
+	// Other admin-role agents are deletable by admin+ callers.
 	if agentID == "admin" {
 		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "cannot delete the admin agent")
 		return

@@ -239,11 +239,9 @@ type AgentEvent struct {
 type AgentRole string
 
 const (
-	RolePlatformAdmin AgentRole = "platform_admin"
-	RoleOrgOwner      AgentRole = "org_owner"
-	RoleAdmin         AgentRole = "admin"
-	RoleAgent         AgentRole = "agent"
-	RoleReader        AgentRole = "reader"
+	RoleAdmin  AgentRole = "admin"
+	RoleAgent  AgentRole = "agent"
+	RoleReader AgentRole = "reader"
 )
 
 // Agent represents an agent identity with role assignment.
