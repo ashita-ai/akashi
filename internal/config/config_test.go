@@ -95,7 +95,7 @@ func TestLoadFailsOnInvalidPort(t *testing.T) {
 
 func TestLoadFailsOnMultipleInvalid(t *testing.T) {
 	t.Setenv("AKASHI_PORT", "abc")
-	t.Setenv("AKASHI_SMTP_PORT", "xyz")
+	t.Setenv("AKASHI_EMBEDDING_DIMENSIONS", "xyz")
 	_, err := Load()
 	if err == nil {
 		t.Fatal("expected Load() to fail with multiple invalid vars")
@@ -104,8 +104,8 @@ func TestLoadFailsOnMultipleInvalid(t *testing.T) {
 	if !contains(got, "AKASHI_PORT") {
 		t.Fatalf("error should mention AKASHI_PORT, got: %s", got)
 	}
-	if !contains(got, "AKASHI_SMTP_PORT") {
-		t.Fatalf("error should mention AKASHI_SMTP_PORT, got: %s", got)
+	if !contains(got, "AKASHI_EMBEDDING_DIMENSIONS") {
+		t.Fatalf("error should mention AKASHI_EMBEDDING_DIMENSIONS, got: %s", got)
 	}
 }
 

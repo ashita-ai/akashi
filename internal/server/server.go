@@ -11,12 +11,10 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/ashita-ai/akashi/internal/auth"
-	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/trace"
-	"github.com/ashita-ai/akashi/internal/signup"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
@@ -34,8 +32,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 // ServerConfig holds all dependencies and configuration for creating a Server.
-// Optional fields (nil-safe): BillingSvc, Broker, SignupSvc, Searcher,
-// MCPServer, UIFS, OpenAPISpec.
+// Optional fields (nil-safe): Broker, Searcher, MCPServer, UIFS, OpenAPISpec.
 type ServerConfig struct {
 	// Required dependencies.
 	DB          *storage.DB
@@ -45,11 +42,9 @@ type ServerConfig struct {
 	Logger      *slog.Logger
 
 	// Optional dependencies (nil = disabled).
-	BillingSvc *billing.Service
-	Broker     *Broker
-	SignupSvc  *signup.Service
-	Searcher   search.Searcher
-	MCPServer  *mcpserver.MCPServer
+	Broker    *Broker
+	Searcher  search.Searcher
+	MCPServer *mcpserver.MCPServer
 
 	// HTTP server settings.
 	Port                int
@@ -70,10 +65,8 @@ func New(cfg ServerConfig) *Server {
 		DB:                  cfg.DB,
 		JWTMgr:              cfg.JWTMgr,
 		DecisionSvc:         cfg.DecisionSvc,
-		BillingSvc:          cfg.BillingSvc,
 		Buffer:              cfg.Buffer,
 		Broker:              cfg.Broker,
-		SignupSvc:           cfg.SignupSvc,
 		Searcher:            cfg.Searcher,
 		Logger:              cfg.Logger,
 		Version:             cfg.Version,
@@ -86,10 +79,6 @@ func New(cfg ServerConfig) *Server {
 	// Auth endpoints (no auth required).
 	mux.Handle("POST /auth/token", http.HandlerFunc(h.HandleAuthToken))
 	mux.Handle("POST /auth/refresh", http.HandlerFunc(h.HandleAuthToken))
-
-	// Signup endpoints (no auth required).
-	mux.Handle("POST /auth/signup", http.HandlerFunc(h.HandleSignup))
-	mux.Handle("POST /auth/verify", http.HandlerFunc(h.HandleVerifyEmail))
 
 	// Agent management (admin-only).
 	adminOnly := requireRole(model.RoleAdmin)
@@ -134,15 +123,6 @@ func New(cfg ServerConfig) *Server {
 	// Access control (agent+ can grant access to own traces).
 	mux.Handle("POST /v1/grants", writeRole(http.HandlerFunc(h.HandleCreateGrant)))
 	mux.Handle("DELETE /v1/grants/{grant_id}", writeRole(http.HandlerFunc(h.HandleDeleteGrant)))
-
-	// Billing endpoints (org_owner+ for checkout/portal, no auth for webhooks).
-	ownerOnly := requireRole(model.RoleOrgOwner)
-	mux.Handle("POST /billing/checkout", ownerOnly(http.HandlerFunc(h.HandleBillingCheckout)))
-	mux.Handle("POST /billing/portal", ownerOnly(http.HandlerFunc(h.HandleBillingPortal)))
-	mux.Handle("POST /billing/webhooks", http.HandlerFunc(h.HandleBillingWebhook))
-
-	// Usage endpoint (reader+).
-	mux.Handle("GET /v1/usage", readRole(http.HandlerFunc(h.HandleUsage)))
 
 	// Conflicts (reader+).
 	mux.Handle("GET /v1/conflicts", readRole(http.HandlerFunc(h.HandleListConflicts)))

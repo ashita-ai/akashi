@@ -16,7 +16,6 @@ import (
 
 	"github.com/ashita-ai/akashi/api"
 	"github.com/ashita-ai/akashi/internal/auth"
-	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/config"
 	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/mcp"
@@ -25,7 +24,6 @@ import (
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
 	"github.com/ashita-ai/akashi/internal/service/trace"
-	"github.com/ashita-ai/akashi/internal/signup"
 	"github.com/ashita-ai/akashi/internal/storage"
 	"github.com/ashita-ai/akashi/internal/telemetry"
 	"github.com/ashita-ai/akashi/ui"
@@ -114,21 +112,6 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	// Create embedding provider.
 	embedder := newEmbeddingProvider(cfg, logger)
 
-	// Create billing service (Stripe integration; disabled if STRIPE_SECRET_KEY is empty).
-	billingSvc, err := billing.New(db, billing.Config{
-		SecretKey:     cfg.StripeSecretKey,
-		WebhookSecret: cfg.StripeWebhookSecret,
-		PriceIDPro:    cfg.StripePriceIDPro,
-	}, logger)
-	if err != nil {
-		return fmt.Errorf("billing: %w", err)
-	}
-	if billingSvc.Enabled() {
-		logger.Info("billing: enabled (Stripe configured)")
-	} else {
-		logger.Info("billing: disabled (no STRIPE_SECRET_KEY)")
-	}
-
 	// Initialize Qdrant search index and outbox worker (optional — disabled if QDRANT_URL is empty).
 	var searcher search.Searcher
 	var outboxWorker *search.OutboxWorker
@@ -157,21 +140,11 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}
 
 	// Create decision service (shared by HTTP and MCP handlers).
-	decisionSvc := decisions.New(db, embedder, searcher, billingSvc, logger)
+	decisionSvc := decisions.New(db, embedder, searcher, logger)
 
 	// Create event buffer.
 	buf := trace.NewBuffer(db, logger, cfg.EventBufferSize, cfg.EventFlushTimeout)
 	buf.Start(ctx)
-
-	// Create signup service.
-	signupSvc := signup.New(db, signup.Config{
-		SMTPHost: cfg.SMTPHost,
-		SMTPPort: cfg.SMTPPort,
-		SMTPUser: cfg.SMTPUser,
-		SMTPPass: cfg.SMTPPassword,
-		SMTPFrom: cfg.SMTPFrom,
-		BaseURL:  cfg.BaseURL,
-	}, logger)
 
 	// Create MCP server.
 	mcpSrv := mcp.New(db, decisionSvc, logger, version)
@@ -199,10 +172,8 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		DB:                  db,
 		JWTMgr:              jwtMgr,
 		DecisionSvc:         decisionSvc,
-		BillingSvc:          billingSvc,
 		Buffer:              buf,
 		Broker:              broker,
-		SignupSvc:           signupSvc,
 		Searcher:            searcher,
 		Logger:              logger,
 		Port:                cfg.Port,

@@ -8,7 +8,6 @@ package decisions
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -19,7 +18,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
@@ -30,11 +28,10 @@ import (
 
 // Service encapsulates decision business logic shared by HTTP and MCP handlers.
 type Service struct {
-	db         *storage.DB
-	embedder   embedding.Provider
-	searcher   search.Searcher
-	billingSvc *billing.Service
-	logger     *slog.Logger
+	db       *storage.DB
+	embedder embedding.Provider
+	searcher search.Searcher
+	logger   *slog.Logger
 
 	embeddingDuration metric.Float64Histogram
 	searchDuration    metric.Float64Histogram
@@ -42,8 +39,7 @@ type Service struct {
 
 // New creates a new decision Service.
 // searcher may be nil if Qdrant is not configured (falls back to text search).
-// billingSvc may be nil if billing is not configured.
-func New(db *storage.DB, embedder embedding.Provider, searcher search.Searcher, billingSvc *billing.Service, logger *slog.Logger) *Service {
+func New(db *storage.DB, embedder embedding.Provider, searcher search.Searcher, logger *slog.Logger) *Service {
 	meter := telemetry.Meter("akashi/decisions")
 	embDur, _ := meter.Float64Histogram("akashi.embedding.duration",
 		metric.WithDescription("Time to generate embeddings (ms)"),
@@ -57,7 +53,6 @@ func New(db *storage.DB, embedder embedding.Provider, searcher search.Searcher, 
 		db:                db,
 		embedder:          embedder,
 		searcher:          searcher,
-		billingSvc:        billingSvc,
 		logger:            logger,
 		embeddingDuration: embDur,
 		searchDuration:    searchDur,
@@ -92,17 +87,6 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 	)
 	if input.TraceID != nil {
 		span.SetAttributes(attribute.String("akashi.trace_id", *input.TraceID))
-	}
-
-	// 0b. Pre-check quota (fast reject before expensive embedding API calls).
-	// The definitive check happens inside CreateTraceTx with row-level locking
-	// to eliminate the TOCTOU race between check and write.
-	var quotaLimit int
-	if s.billingSvc != nil {
-		if err := s.billingSvc.CheckDecisionQuota(ctx, orgID); err != nil {
-			return TraceResult{}, err
-		}
-		quotaLimit = s.billingSvc.DecisionLimit(ctx, orgID)
 	}
 
 	// 1. Generate decision embedding (outside tx — may call external API).
@@ -181,18 +165,12 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 				QualityScore: qualityScore,
 				PrecedentRef: input.PrecedentRef,
 			},
-			Alternatives:  alts,
-			Evidence:      evs,
-			QuotaLimit:    quotaLimit,
-			BillingPeriod: billing.CurrentPeriod(),
+			Alternatives: alts,
+			Evidence:     evs,
 		})
 		return txErr
 	})
 	if err != nil {
-		// Map storage-level quota error to billing error for the HTTP handler.
-		if errors.Is(err, storage.ErrQuotaExceeded) {
-			return TraceResult{}, fmt.Errorf("%w", billing.ErrQuotaExceeded)
-		}
 		return TraceResult{}, fmt.Errorf("trace: %w", err)
 	}
 

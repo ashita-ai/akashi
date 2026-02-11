@@ -257,15 +257,12 @@ func baggageMiddleware(next http.Handler) http.Handler {
 }
 
 // noAuthPaths are exact paths that skip JWT authentication entirely.
-// These endpoints use their own auth (e.g., Stripe signature) or are public.
-// WARNING: Every authenticated route prefix (/v1/, /billing/, /mcp) MUST appear
+// WARNING: Every authenticated route prefix (/v1/, /mcp) MUST appear
 // in the guard below. Adding a new prefix without updating the guard will silently
 // bypass authentication.
 var noAuthPaths = map[string]bool{
 	"/auth/token":   true,
 	"/auth/refresh": true,
-	"/auth/signup":  true,
-	"/auth/verify":  true,
 	"/config":       true,
 	"/health":       true,
 	"/openapi.yaml": true,
@@ -273,8 +270,8 @@ var noAuthPaths = map[string]bool{
 
 // authMiddleware validates JWT tokens or API keys and populates context with claims.
 // Uses an explicit allowlist of paths that skip auth. All paths under the
-// authenticated prefixes (/v1/, /billing/, /mcp) require valid credentials unless
-// they appear in noAuthPaths or have their own auth mechanism.
+// authenticated prefixes (/v1/, /mcp) require valid credentials unless
+// they appear in noAuthPaths.
 //
 // Supported authorization schemes:
 //   - Bearer <jwt>           — standard JWT (fast, Ed25519 signature check)
@@ -283,17 +280,10 @@ var noAuthPaths = map[string]bool{
 //     refresh is impractical)
 func authMiddleware(jwtMgr *auth.JWTManager, db *storage.DB, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Webhook has its own auth (Stripe signature verification).
-		if r.URL.Path == "/billing/webhooks" && r.Method == http.MethodPost {
-			next.ServeHTTP(w, r)
-			return
-		}
-
 		// SPA static assets and client-side routes don't need auth.
 		// Only paths under authenticated prefixes require JWT validation.
 		// WARNING: Every authenticated route prefix MUST appear in this guard.
 		if !strings.HasPrefix(r.URL.Path, "/v1/") &&
-			!strings.HasPrefix(r.URL.Path, "/billing/") &&
 			!strings.HasPrefix(r.URL.Path, "/mcp") &&
 			!noAuthPaths[r.URL.Path] {
 			next.ServeHTTP(w, r)
@@ -397,7 +387,7 @@ func verifyAPIKey(ctx context.Context, db *storage.DB, credential string) (*auth
 }
 
 // requireRole returns middleware that enforces a minimum role level.
-// Uses the role hierarchy: platform_admin > org_owner > admin > agent > reader.
+// Uses the role hierarchy: admin > agent > reader.
 func requireRole(minRole model.AgentRole) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

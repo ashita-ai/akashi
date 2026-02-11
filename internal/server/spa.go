@@ -66,7 +66,6 @@ func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func isAPIPath(p string) bool {
 	return strings.HasPrefix(p, "/v1/") ||
 		strings.HasPrefix(p, "/auth/") ||
-		strings.HasPrefix(p, "/billing/") ||
 		p == "/mcp"
 }
 

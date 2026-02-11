@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,12 +11,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ashita-ai/akashi/internal/auth"
-	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/trace"
-	"github.com/ashita-ai/akashi/internal/signup"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
@@ -26,10 +23,8 @@ type Handlers struct {
 	db                  *storage.DB
 	jwtMgr              *auth.JWTManager
 	decisionSvc         *decisions.Service
-	billingSvc          *billing.Service
 	buffer              *trace.Buffer
 	broker              *Broker
-	signupSvc           *signup.Service
 	searcher            search.Searcher
 	logger              *slog.Logger
 	startedAt           time.Time
@@ -39,15 +34,13 @@ type Handlers struct {
 }
 
 // HandlersDeps holds all dependencies for constructing Handlers.
-// Optional (nil-safe): BillingSvc, Broker, SignupSvc, Searcher, OpenAPISpec.
+// Optional (nil-safe): Broker, Searcher, OpenAPISpec.
 type HandlersDeps struct {
 	DB                  *storage.DB
 	JWTMgr              *auth.JWTManager
 	DecisionSvc         *decisions.Service
-	BillingSvc          *billing.Service
 	Buffer              *trace.Buffer
 	Broker              *Broker
-	SignupSvc           *signup.Service
 	Searcher            search.Searcher
 	Logger              *slog.Logger
 	Version             string
@@ -61,10 +54,8 @@ func NewHandlers(d HandlersDeps) *Handlers {
 		db:                  d.DB,
 		jwtMgr:              d.JWTMgr,
 		decisionSvc:         d.DecisionSvc,
-		billingSvc:          d.BillingSvc,
 		buffer:              d.Buffer,
 		broker:              d.Broker,
-		signupSvc:           d.SignupSvc,
 		searcher:            d.Searcher,
 		logger:              d.Logger,
 		startedAt:           time.Now(),
@@ -115,19 +106,6 @@ func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 	if matched == nil {
 		writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "invalid credentials")
 		return
-	}
-
-	// Reject unverified orgs (skip for the default org used by pre-migration seed admin).
-	if matched.OrgID != uuid.Nil {
-		org, err := h.db.GetOrganization(r.Context(), matched.OrgID)
-		if err != nil {
-			h.writeInternalError(w, r, "failed to look up organization", err)
-			return
-		}
-		if !org.EmailVerified {
-			writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "email not verified — check your inbox or request a new verification link")
-			return
-		}
 	}
 
 	token, expiresAt, err := h.jwtMgr.IssueToken(*matched)
@@ -291,78 +269,10 @@ func (h *Handlers) SeedAdmin(ctx context.Context, adminAPIKey string) error {
 }
 
 // HandleConfig returns feature flags for the current deployment so the UI
-// can hide billing/search when they are not configured. No auth required.
+// can adapt to optional capabilities. No auth required.
 func (h *Handlers) HandleConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, map[string]bool{
-		"billing_enabled": h.billingSvc != nil && h.billingSvc.Enabled(),
-		"search_enabled":  h.searcher != nil,
-	})
-}
-
-// HandleSignup handles POST /auth/signup.
-func (h *Handlers) HandleSignup(w http.ResponseWriter, r *http.Request) {
-	if h.signupSvc == nil {
-		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "signup is not enabled")
-		return
-	}
-
-	var req model.SignupRequest
-	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
-		return
-	}
-
-	result, err := h.signupSvc.Signup(r.Context(), signup.SignupInput{
-		Email:    req.Email,
-		Password: req.Password,
-		OrgName:  req.OrgName,
-	})
-	if err != nil {
-		switch {
-		case errors.Is(err, signup.ErrInvalidEmail),
-			errors.Is(err, signup.ErrWeakPassword),
-			errors.Is(err, signup.ErrOrgNameRequired):
-			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
-		default:
-			h.logger.Error("signup failed", "error", err)
-			writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "signup failed")
-		}
-		return
-	}
-
-	writeJSON(w, r, http.StatusCreated, result)
-}
-
-// HandleVerifyEmail handles POST /auth/verify.
-// Accepts {"token": "..."} in the request body (not as a query parameter)
-// to avoid token exposure in server/proxy logs and browser history.
-func (h *Handlers) HandleVerifyEmail(w http.ResponseWriter, r *http.Request) {
-	if h.signupSvc == nil {
-		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "signup is not enabled")
-		return
-	}
-
-	var req struct {
-		Token string `json:"token"`
-	}
-	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
-		return
-	}
-	if req.Token == "" {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "token is required")
-		return
-	}
-
-	if err := h.signupSvc.Verify(r.Context(), req.Token); err != nil {
-		h.logger.Warn("email verification failed", "error", err)
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid or expired verification token")
-		return
-	}
-
-	writeJSON(w, r, http.StatusOK, map[string]string{
-		"status":  "verified",
-		"message": "email verified successfully — you can now authenticate",
+		"search_enabled": h.searcher != nil,
 	})
 }
 

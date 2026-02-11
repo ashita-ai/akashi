@@ -38,7 +38,6 @@ const (
 	ErrCodeForbidden     = "FORBIDDEN"
 	ErrCodeNotFound      = "NOT_FOUND"
 	ErrCodeConflict      = "CONFLICT"
-	ErrCodeQuotaExceeded = "QUOTA_EXCEEDED"
 	ErrCodeInternalError = "INTERNAL_ERROR"
 )
 
@@ -154,30 +153,10 @@ type HealthResponse struct {
 
 // Organization represents a tenant in the multi-tenancy model.
 type Organization struct {
-	ID                   uuid.UUID `json:"id"`
-	Name                 string    `json:"name"`
-	Slug                 string    `json:"slug"`
-	Plan                 string    `json:"plan"`
-	StripeCustomerID     *string   `json:"stripe_customer_id,omitempty"`
-	StripeSubscriptionID *string   `json:"stripe_subscription_id,omitempty"`
-	DecisionLimit        int       `json:"decision_limit"`
-	AgentLimit           int       `json:"agent_limit"`
-	Email                string    `json:"email"`
-	EmailVerified        bool      `json:"email_verified"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
-}
-
-// OrgUsage tracks decision counts per org per billing period.
-type OrgUsage struct {
-	OrgID         uuid.UUID `json:"org_id"`
-	Period        string    `json:"period"`
-	DecisionCount int       `json:"decision_count"`
-}
-
-// SignupRequest is the request body for POST /auth/signup.
-type SignupRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	OrgName  string `json:"org_name"`
+	ID        uuid.UUID `json:"id"`
+	Name      string    `json:"name"`
+	Slug      string    `json:"slug"`
+	Plan      string    `json:"plan"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }

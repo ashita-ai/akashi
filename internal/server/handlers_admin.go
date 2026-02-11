@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/ashita-ai/akashi/internal/auth"
-	"github.com/ashita-ai/akashi/internal/billing"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
@@ -18,19 +17,6 @@ import (
 // HandleCreateAgent handles POST /v1/agents (admin-only).
 func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
-
-	// Check agent quota before creating.
-	if h.billingSvc != nil && h.billingSvc.Enabled() {
-		if err := h.billingSvc.CheckAgentQuota(r.Context(), orgID); err != nil {
-			if errors.Is(err, billing.ErrAgentLimitExceeded) {
-				writeError(w, r, http.StatusTooManyRequests, model.ErrCodeQuotaExceeded, err.Error())
-				return
-			}
-			h.logger.Error("agent quota check failed", "error", err, "org_id", orgID)
-			writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "quota check failed")
-			return
-		}
-	}
 
 	var req model.CreateAgentRequest
 	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
@@ -248,7 +234,7 @@ func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Protect the seed admin (agent_id="admin") created during org signup.
+	// Protect the seed admin (agent_id="admin") created during server startup.
 	// Other admin-role agents are deletable by org_owner+ callers.
 	if agentID == "admin" {
 		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "cannot delete the admin agent")

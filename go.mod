@@ -11,7 +11,6 @@ require (
 	github.com/pgvector/pgvector-go v0.3.0
 	github.com/qdrant/go-client v1.16.2
 	github.com/stretchr/testify v1.11.1
-	github.com/stripe/stripe-go/v84 v84.3.0
 	github.com/testcontainers/testcontainers-go v0.40.0
 	go.opentelemetry.io/otel v1.40.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.40.0

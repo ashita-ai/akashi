@@ -42,19 +42,6 @@ type Config struct {
 	OTELInsecure bool // Use HTTP instead of HTTPS for OTEL exporter (default: false).
 	ServiceName  string
 
-	// Stripe billing settings.
-	StripeSecretKey     string
-	StripeWebhookSecret string
-	StripePriceIDPro    string // Stripe Price ID for the Pro plan.
-
-	// SMTP settings for email verification.
-	SMTPHost     string
-	SMTPPort     int
-	SMTPUser     string
-	SMTPPassword string
-	SMTPFrom     string
-	BaseURL      string // e.g., "https://akashi.example.com" for verification links.
-
 	// Qdrant vector search settings.
 	QdrantURL          string // gRPC-compatible URL (e.g. "https://xyz.cloud.qdrant.io:6334")
 	QdrantAPIKey       string
@@ -80,37 +67,28 @@ type Config struct {
 func Load() (Config, error) {
 	var errs []error
 	cfg := Config{
-		DatabaseURL:         envStr("DATABASE_URL", "postgres://akashi:akashi@localhost:6432/akashi?sslmode=verify-full"),
-		NotifyURL:           envStr("NOTIFY_URL", "postgres://akashi:akashi@localhost:5432/akashi?sslmode=verify-full"),
-		JWTPrivateKeyPath:   envStr("AKASHI_JWT_PRIVATE_KEY", ""),
-		JWTPublicKeyPath:    envStr("AKASHI_JWT_PUBLIC_KEY", ""),
-		AdminAPIKey:         envStr("AKASHI_ADMIN_API_KEY", ""),
-		EmbeddingProvider:   envStr("AKASHI_EMBEDDING_PROVIDER", "auto"),
-		OpenAIAPIKey:        envStr("OPENAI_API_KEY", ""),
-		EmbeddingModel:      envStr("AKASHI_EMBEDDING_MODEL", "text-embedding-3-small"),
-		OllamaURL:           envStr("OLLAMA_URL", "http://localhost:11434"),
-		OllamaModel:         envStr("OLLAMA_MODEL", "mxbai-embed-large"),
-		OTELEndpoint:        envStr("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
-		ServiceName:         envStr("OTEL_SERVICE_NAME", "akashi"),
-		StripeSecretKey:     envStr("STRIPE_SECRET_KEY", ""),
-		StripeWebhookSecret: envStr("STRIPE_WEBHOOK_SECRET", ""),
-		StripePriceIDPro:    envStr("STRIPE_PRO_PRICE_ID", ""),
-		SMTPHost:            envStr("AKASHI_SMTP_HOST", ""),
-		SMTPUser:            envStr("AKASHI_SMTP_USER", ""),
-		SMTPPassword:        envStr("AKASHI_SMTP_PASSWORD", ""),
-		SMTPFrom:            envStr("AKASHI_SMTP_FROM", "noreply@akashi.dev"),
-		BaseURL:             envStr("AKASHI_BASE_URL", "http://localhost:8080"),
-		QdrantURL:           envStr("QDRANT_URL", ""),
-		QdrantAPIKey:        envStr("QDRANT_API_KEY", ""),
-		QdrantCollection:    envStr("QDRANT_COLLECTION", "akashi_decisions"),
-		LogLevel:            envStr("AKASHI_LOG_LEVEL", "info"),
-		CORSAllowedOrigins:  envStrSlice("AKASHI_CORS_ALLOWED_ORIGINS", []string{"*"}),
+		DatabaseURL:        envStr("DATABASE_URL", "postgres://akashi:akashi@localhost:6432/akashi?sslmode=verify-full"),
+		NotifyURL:          envStr("NOTIFY_URL", "postgres://akashi:akashi@localhost:5432/akashi?sslmode=verify-full"),
+		JWTPrivateKeyPath:  envStr("AKASHI_JWT_PRIVATE_KEY", ""),
+		JWTPublicKeyPath:   envStr("AKASHI_JWT_PUBLIC_KEY", ""),
+		AdminAPIKey:        envStr("AKASHI_ADMIN_API_KEY", ""),
+		EmbeddingProvider:  envStr("AKASHI_EMBEDDING_PROVIDER", "auto"),
+		OpenAIAPIKey:       envStr("OPENAI_API_KEY", ""),
+		EmbeddingModel:     envStr("AKASHI_EMBEDDING_MODEL", "text-embedding-3-small"),
+		OllamaURL:          envStr("OLLAMA_URL", "http://localhost:11434"),
+		OllamaModel:        envStr("OLLAMA_MODEL", "mxbai-embed-large"),
+		OTELEndpoint:       envStr("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		ServiceName:        envStr("OTEL_SERVICE_NAME", "akashi"),
+		QdrantURL:          envStr("QDRANT_URL", ""),
+		QdrantAPIKey:       envStr("QDRANT_API_KEY", ""),
+		QdrantCollection:   envStr("QDRANT_COLLECTION", "akashi_decisions"),
+		LogLevel:           envStr("AKASHI_LOG_LEVEL", "info"),
+		CORSAllowedOrigins: envStrSlice("AKASHI_CORS_ALLOWED_ORIGINS", []string{"*"}),
 	}
 
 	// Integer fields.
 	cfg.Port, errs = collectInt(errs, "AKASHI_PORT", 8080)
 	cfg.EmbeddingDimensions, errs = collectInt(errs, "AKASHI_EMBEDDING_DIMENSIONS", 1024)
-	cfg.SMTPPort, errs = collectInt(errs, "AKASHI_SMTP_PORT", 587)
 	cfg.OutboxBatchSize, errs = collectInt(errs, "AKASHI_OUTBOX_BATCH_SIZE", 100)
 	cfg.EventBufferSize, errs = collectInt(errs, "AKASHI_EVENT_BUFFER_SIZE", 1000)
 
