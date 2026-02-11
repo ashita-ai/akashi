@@ -1,4 +1,4 @@
-h1:Z/oLwvN0UuWaBF1AFya1mYpu7Jzii87u9uNKlie/MWg=
+h1:YElhKjm8UG8NNCehBQdE1pZk0t//x5MHBgSorcgCN3U=
 001_create_agent_runs.sql h1:kt1hhf4ttnT0iglMXihEJCZtiKBhSYli5HeMcFaKGl0=
 002_create_agent_events.sql h1:teJwKwJaghjyJj9JYW/KgD8tCMZm9h1IqAUPLtmvqmA=
 003_create_decisions.sql h1:/uCnEUGTvX6VRfOtLygpUXpx/JJ58uijEAm0mQt0MNA=
@@ -20,3 +20,4 @@ h1:Z/oLwvN0UuWaBF1AFya1mYpu7Jzii87u9uNKlie/MWg=
 021_remove_unused_rls.sql h1:t6TRfph0JLYI0O6YGKWP61J+vbRCSH2Jh5wvG0wfpZg=
 022_agent_tags.sql h1:ptl5K6k5jKlLPdLWtiB36FNk7oQ0uIpRbeMpdw16F4M=
 023_hash_verification_tokens.sql h1:BCwY1Rf1WqMEoZxPuF1F9kIMS/WSlHNsvqtlPFtAAhw=
+024_drop_billing_columns.sql h1:ZtXKHyE5nDaJMtgrovYk0BE9H44o2D8Ncv4+8IH3b3k=

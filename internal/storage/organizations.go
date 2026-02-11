@@ -16,10 +16,8 @@ import (
 // before inserting the admin agent.
 func (db *DB) EnsureDefaultOrg(ctx context.Context) error {
 	_, err := db.pool.Exec(ctx,
-		`INSERT INTO organizations (id, name, slug, plan, decision_limit, agent_limit,
-		 email, email_verified, created_at, updated_at)
-		 VALUES ($1, 'Default', 'default', 'enterprise', 0, 0,
-		         'admin@localhost', true, NOW(), NOW())
+		`INSERT INTO organizations (id, name, slug, plan, created_at, updated_at)
+		 VALUES ($1, 'Default', 'default', 'enterprise', NOW(), NOW())
 		 ON CONFLICT (id) DO NOTHING`,
 		uuid.Nil,
 	)
