@@ -11,22 +11,9 @@ info:
 
     ## Authentication
 
-    All `/v1/` and `/billing/` endpoints require a Bearer JWT token obtained
-    from `POST /auth/token`. Tokens are scoped to an organization and carry
+    All `/v1/` endpoints require a Bearer JWT token obtained from
+    `POST /auth/token`. Tokens are scoped to an organization and carry
     the agent's RBAC role.
-
-    ## Rate Limits
-
-    Rate limits are enforced per agent (or per IP for auth endpoints).
-    Admin+ roles are exempt. When rate-limited, the API returns HTTP 429
-    with error code `RATE_LIMITED`.
-
-    | Category | Limit | Endpoints |
-    |----------|-------|-----------|
-    | Ingestion | 300/min | runs, events, trace |
-    | Query | 300/min | query, temporal, history, recent, usage, conflicts, check |
-    | Search | 100/min | search |
-    | Auth | 20/min | token, signup |
 
     ## Response Envelope
 
@@ -67,7 +54,7 @@ servers:
 
 tags:
   - name: Auth
-    description: Authentication and signup
+    description: Authentication
   - name: Agents
     description: Agent management (admin-only)
   - name: Runs
@@ -80,8 +67,6 @@ tags:
     description: Full-text and semantic search
   - name: Access
     description: Fine-grained access grants between agents
-  - name: Billing
-    description: Stripe billing integration
   - name: Export
     description: Bulk data export for auditors
   - name: System
@@ -98,8 +83,7 @@ paths:
       tags: [Auth]
       summary: Authenticate and obtain a JWT
       description: |
-        Exchange agent credentials for a JWT. Rate limited to 20 requests
-        per minute per IP address.
+        Exchange agent credentials for a JWT.
       security: []
       requestBody:
         required: true
@@ -118,8 +102,6 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
-        "429":
-          $ref: "#/components/responses/RateLimited"
 
   /auth/refresh:
     post:
@@ -143,64 +125,6 @@ paths:
                 $ref: "#/components/schemas/APIResponse_AuthTokenResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
-        "429":
-          $ref: "#/components/responses/RateLimited"
-
-  /auth/signup:
-    post:
-      operationId: signup
-      tags: [Auth]
-      summary: Create a new organization
-      description: |
-        Self-serve signup. Creates an organization, an admin agent, and sends
-        a verification email. The organization cannot authenticate until the
-        email is verified. Rate limited to 20 requests per minute per IP.
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/SignupRequest"
-      responses:
-        "201":
-          description: Organization created. Check email for verification link.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/APIResponse_SignupResult"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "429":
-          $ref: "#/components/responses/RateLimited"
-
-  /auth/verify:
-    post:
-      operationId: verifyEmail
-      tags: [Auth]
-      summary: Verify organization email
-      description: Confirms the email address for an organization using a one-time token sent via POST body to avoid token exposure in server logs and URLs.
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [token]
-              properties:
-                token:
-                  type: string
-                  description: Verification token from the email link.
-      responses:
-        "200":
-          description: Email verified successfully.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/APIResponse_VerifyEmailResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
 
   # ── Agents ─────────────────────────────────────────────────────────
   /v1/agents:
@@ -314,7 +238,7 @@ paths:
       description: |
         Create a new run for the authenticated agent. Runs are the top-level
         execution context for recording events and decisions.
-        Requires `agent` role or higher. Rate limited (ingestion: 300/min).
+        Requires `agent` role or higher.
       requestBody:
         required: true
         content:
@@ -332,8 +256,6 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "403":
           $ref: "#/components/responses/Forbidden"
-        "429":
-          $ref: "#/components/responses/RateLimited"
 
   /v1/runs/{run_id}:
     get:
@@ -342,7 +264,7 @@ paths:
       summary: Get a run with events and decisions
       description: |
         Retrieve a run along with all its events and decisions.
-        Requires `reader` role or higher. Rate limited (query: 300/min).
+        Requires `reader` role or higher.
       parameters:
         - $ref: "#/components/parameters/RunIDPath"
       responses:
@@ -356,8 +278,6 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
-        "429":
-          $ref: "#/components/responses/RateLimited"
 
   /v1/runs/{run_id}/events:
     post:
@@ -367,7 +287,7 @@ paths:
       description: |
         Append one or more events to an existing run. Events are buffered
         and batch-inserted via PostgreSQL COPY for throughput.
-        Requires `agent` role or higher. Rate limited (ingestion: 300/min).
+        Requires `agent` role or higher.
       parameters:
         - $ref: "#/components/parameters/RunIDPath"
       requestBody:
@@ -387,8 +307,6 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
-        "429":
-          $ref: "#/components/responses/RateLimited"
 
   /v1/runs/{run_id}/complete:
     post:
@@ -398,7 +316,7 @@ paths:
       description: |
         Mark a run as completed or failed. Updates the run status and
         records the completion time.
-        Requires `agent` role or higher. Rate limited (ingestion: 300/min).
+        Requires `agent` role or higher.
       parameters:
         - $ref: "#/components/parameters/RunIDPath"
       requestBody:
@@ -418,8 +336,6 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
-        "429":
-          $ref: "#/components/responses/RateLimited"
 
   # ── Trace ──────────────────────────────────────────────────────────
   /v1/trace:
@@ -431,7 +347,7 @@ paths:
         Convenience endpoint that creates a run, records a decision with
         alternatives and evidence, appends lifecycle events, and completes
         the run — all in a single transaction.
-        Requires `agent` role or higher. Rate limited (ingestion: 300/min).
+        Requires `agent` role or higher.
       requestBody:
         required: true
         content:
@@ -487,8 +403,6 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "403":
           $ref: "#/components/responses/Forbidden"
-        "429":
-          $ref: "#/components/responses/RateLimited"
 
   # ── Query ──────────────────────────────────────────────────────────
   /v1/query:
@@ -499,7 +413,7 @@ paths:
       description: |
         Query decisions with flexible filters, ordering, and pagination.
         Optionally include alternatives and evidence in the response.
-        Requires `reader` role or higher. Rate limited (query: 300/min).
+        Requires `reader` role or higher.
       requestBody:
         required: true
         content:
@@ -579,8 +493,6 @@ paths:
                   timestamp: "2026-01-15T10:31:00Z"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "429":
-          $ref: "#/components/responses/RateLimited"
 
   /v1/query/temporal:
     post:
@@ -590,7 +502,7 @@ paths:
       description: |
         Bi-temporal query: returns decisions that were valid at the specified
         `as_of` timestamp. Uses the valid_from/valid_to temporal columns.
-        Requires `reader` role or higher. Rate limited (query: 300/min).
+        Requires `reader` role or higher.
       requestBody:
         required: true
         content:
@@ -606,8 +518,6 @@ paths:
                 $ref: "#/components/schemas/APIResponse_TemporalQueryResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "429":
-          $ref: "#/components/responses/RateLimited"
 
   /v1/agents/{agent_id}/history:
     get:
@@ -617,7 +527,7 @@ paths:
       description: |
         Retrieve the decision history for a specific agent with pagination
         and optional time range filtering.
-        Requires `reader` role or higher. Rate limited (query: 300/min).
+        Requires `reader` role or higher.
       parameters:
         - $ref: "#/components/parameters/AgentIDPath"
         - name: limit
@@ -654,8 +564,6 @@ paths:
                 $ref: "#/components/schemas/APIResponse_AgentHistoryResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "429":
-          $ref: "#/components/responses/RateLimited"
 
   /v1/decisions/recent:
     get:
@@ -665,7 +573,7 @@ paths:
       description: |
         Retrieve the most recent decisions, optionally filtered by agent
         or decision type.
-        Requires `reader` role or higher. Rate limited (query: 300/min).
+        Requires `reader` role or higher.
       parameters:
         - name: agent_id
           in: query
@@ -689,8 +597,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/APIResponse_RecentDecisionsResponse"
-        "429":
-          $ref: "#/components/responses/RateLimited"
 
   /v1/decisions/{id}/revisions:
     get:
@@ -700,7 +606,7 @@ paths:
       description: |
         Retrieve the full revision chain for a decision, including all
         prior and subsequent versions linked via `supersedes_id`.
-        Requires `reader` role or higher. Rate limited (query: 300/min).
+        Requires `reader` role or higher.
       parameters:
         - name: id
           in: path
@@ -720,8 +626,6 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
-        "429":
-          $ref: "#/components/responses/RateLimited"
 
   /v1/verify/{id}:
     get:
@@ -732,7 +636,7 @@ paths:
         Recomputes the SHA-256 content hash from the decision's stored
         fields and compares it to the stored hash. Returns whether the
         decision has been tampered with.
-        Requires `reader` role or higher. Rate limited (query: 300/min).
+        Requires `reader` role or higher.
       parameters:
         - name: id
           in: path
@@ -752,8 +656,6 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
-        "429":
-          $ref: "#/components/responses/RateLimited"
 
   /v1/conflicts:
     get:
@@ -763,7 +665,7 @@ paths:
       description: |
         List conflicts between decisions of the same type made by different
         agents. Conflicts are detected by a background materialized view
-        refresh. Requires `reader` role or higher. Rate limited (query: 300/min).
+        refresh. Requires `reader` role or higher.
       parameters:
         - name: decision_type
           in: query
@@ -793,8 +695,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/APIResponse_ConflictsResponse"
-        "429":
-          $ref: "#/components/responses/RateLimited"
 
   /v1/check:
     post:
@@ -805,7 +705,7 @@ paths:
         Lightweight lookup for existing decisions of a given type, optionally
         filtered by agent or semantic query. Returns whether a precedent
         exists and any detected conflicts.
-        Requires `reader` role or higher. Rate limited (query: 300/min).
+        Requires `reader` role or higher.
       requestBody:
         required: true
         content:
@@ -821,8 +721,6 @@ paths:
                 $ref: "#/components/schemas/APIResponse_CheckResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "429":
-          $ref: "#/components/responses/RateLimited"
 
   # ── Search ─────────────────────────────────────────────────────────
   /v1/search:
@@ -834,7 +732,6 @@ paths:
         Search decisions by keyword or semantic similarity. When `semantic`
         is true, the query is embedded and compared against decision embeddings
         using cosine similarity. Requires `reader` role or higher.
-        Rate limited (search: 100/min).
       requestBody:
         required: true
         content:
@@ -850,8 +747,6 @@ paths:
                 $ref: "#/components/schemas/APIResponse_SearchResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "429":
-          $ref: "#/components/responses/RateLimited"
 
   # ── Access Grants ──────────────────────────────────────────────────
   /v1/grants:
@@ -909,100 +804,6 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-
-  # ── Billing ────────────────────────────────────────────────────────
-  /billing/checkout:
-    post:
-      operationId: billingCheckout
-      tags: [Billing]
-      summary: Create a Stripe Checkout session
-      description: |
-        Create a Stripe Checkout session for upgrading the organization's plan.
-        Requires `org_owner` role or higher.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/BillingCheckoutRequest"
-      responses:
-        "200":
-          description: Checkout session created.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/APIResponse_CheckoutResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-
-  /billing/portal:
-    post:
-      operationId: billingPortal
-      tags: [Billing]
-      summary: Create a Stripe Billing Portal session
-      description: |
-        Create a Stripe Billing Portal session for managing the organization's
-        subscription. Requires `org_owner` role or higher.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/BillingPortalRequest"
-      responses:
-        "200":
-          description: Portal session created.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/APIResponse_PortalResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-
-  /billing/webhooks:
-    post:
-      operationId: billingWebhook
-      tags: [Billing]
-      summary: Stripe webhook receiver
-      description: |
-        Receives Stripe webhook events. Signature is verified using the
-        `Stripe-Signature` header. No JWT authentication required.
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-      responses:
-        "200":
-          description: Webhook processed.
-        "400":
-          $ref: "#/components/responses/BadRequest"
-
-  # ── Usage ──────────────────────────────────────────────────────────
-  /v1/usage:
-    get:
-      operationId: getUsage
-      tags: [Billing]
-      summary: Get organization usage and limits
-      description: |
-        Returns the current billing period's usage counters and plan limits
-        for the authenticated agent's organization.
-        Requires `reader` role or higher. Rate limited (query: 300/min).
-      responses:
-        "200":
-          description: Usage and limit details.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/APIResponse_UsageResponse"
-        "429":
-          $ref: "#/components/responses/RateLimited"
 
   # ── Export ─────────────────────────────────────────────────────────
   /v1/export/decisions:
@@ -1072,14 +873,10 @@ paths:
                   data:
                     type: object
                     properties:
-                      billing_enabled:
-                        type: boolean
-                        description: True when Stripe billing is configured.
                       search_enabled:
                         type: boolean
                         description: True when a vector search backend (Qdrant) is configured.
                     required:
-                      - billing_enabled
                       - search_enabled
                   meta:
                     $ref: "#/components/schemas/ResponseMeta"
@@ -1113,8 +910,8 @@ paths:
       description: |
         Opens a Server-Sent Events stream for real-time notifications about
         new decisions, run completions, and other events within the
-        authenticated agent's organization. Long-lived connection; not
-        rate limited. Requires `reader` role or higher.
+        authenticated agent's organization. Long-lived connection.
+        Requires `reader` role or higher.
       responses:
         "200":
           description: SSE stream opened.
@@ -1233,12 +1030,6 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/APIError"
-    RateLimited:
-      description: Rate limit exceeded.
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/APIError"
 
   schemas:
     # ── Response envelopes ───────────────────────────────────────────
@@ -1274,8 +1065,6 @@ components:
             - FORBIDDEN
             - NOT_FOUND
             - CONFLICT
-            - RATE_LIMITED
-            - QUOTA_EXCEEDED
             - INTERNAL_ERROR
         message:
           type: string
@@ -1301,41 +1090,6 @@ components:
         expires_at:
           type: string
           format: date-time
-
-    SignupRequest:
-      type: object
-      required: [email, password, org_name]
-      properties:
-        email:
-          type: string
-          format: email
-        password:
-          type: string
-          description: Must be at least 12 characters with uppercase, lowercase, and digit.
-        org_name:
-          type: string
-
-    SignupResult:
-      type: object
-      required: [org_id, agent_id, message]
-      properties:
-        org_id:
-          type: string
-          format: uuid
-        agent_id:
-          type: string
-        message:
-          type: string
-
-    VerifyEmailResponse:
-      type: object
-      required: [status, message]
-      properties:
-        status:
-          type: string
-          enum: [verified]
-        message:
-          type: string
 
     # ── Agent schemas ────────────────────────────────────────────────
     AgentRole:
@@ -2023,26 +1777,6 @@ components:
           items:
             $ref: "#/components/schemas/DecisionConflict"
 
-    # ── Billing schemas ──────────────────────────────────────────────
-    BillingCheckoutRequest:
-      type: object
-      required: [success_url, cancel_url]
-      properties:
-        success_url:
-          type: string
-          format: uri
-        cancel_url:
-          type: string
-          format: uri
-
-    BillingPortalRequest:
-      type: object
-      required: [return_url]
-      properties:
-        return_url:
-          type: string
-          format: uri
-
     # ── Health schemas ───────────────────────────────────────────────
     HealthResponse:
       type: object
@@ -2205,40 +1939,6 @@ components:
         total:
           type: integer
 
-    UsageResponse:
-      type: object
-      required: [org_id, plan, period, decision_count, decision_limit, agent_limit]
-      properties:
-        org_id:
-          type: string
-          format: uuid
-        plan:
-          type: string
-        period:
-          type: string
-        decision_count:
-          type: integer
-        decision_limit:
-          type: integer
-        agent_limit:
-          type: integer
-
-    CheckoutResponse:
-      type: object
-      required: [checkout_url]
-      properties:
-        checkout_url:
-          type: string
-          format: uri
-
-    PortalResponse:
-      type: object
-      required: [portal_url]
-      properties:
-        portal_url:
-          type: string
-          format: uri
-
     # ── Generic envelope wrappers (for typed $ref in path responses) ─
     APIResponse_AuthTokenResponse:
       type: object
@@ -2246,24 +1946,6 @@ components:
       properties:
         data:
           $ref: "#/components/schemas/AuthTokenResponse"
-        meta:
-          $ref: "#/components/schemas/ResponseMeta"
-
-    APIResponse_SignupResult:
-      type: object
-      required: [data, meta]
-      properties:
-        data:
-          $ref: "#/components/schemas/SignupResult"
-        meta:
-          $ref: "#/components/schemas/ResponseMeta"
-
-    APIResponse_VerifyEmailResponse:
-      type: object
-      required: [data, meta]
-      properties:
-        data:
-          $ref: "#/components/schemas/VerifyEmailResponse"
         meta:
           $ref: "#/components/schemas/ResponseMeta"
 
@@ -2401,33 +2083,6 @@ components:
       properties:
         data:
           $ref: "#/components/schemas/AccessGrant"
-        meta:
-          $ref: "#/components/schemas/ResponseMeta"
-
-    APIResponse_CheckoutResponse:
-      type: object
-      required: [data, meta]
-      properties:
-        data:
-          $ref: "#/components/schemas/CheckoutResponse"
-        meta:
-          $ref: "#/components/schemas/ResponseMeta"
-
-    APIResponse_PortalResponse:
-      type: object
-      required: [data, meta]
-      properties:
-        data:
-          $ref: "#/components/schemas/PortalResponse"
-        meta:
-          $ref: "#/components/schemas/ResponseMeta"
-
-    APIResponse_UsageResponse:
-      type: object
-      required: [data, meta]
-      properties:
-        data:
-          $ref: "#/components/schemas/UsageResponse"
         meta:
           $ref: "#/components/schemas/ResponseMeta"
 

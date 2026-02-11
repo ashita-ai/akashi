@@ -1,6 +1,5 @@
 import { NavLink, Outlet } from "react-router";
 import { useAuth } from "@/lib/auth";
-import { useConfig } from "@/lib/config";
 import { useSSE, type SSEStatus } from "@/lib/sse";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -9,13 +8,12 @@ import {
   FileText,
   Users,
   AlertTriangle,
-  CreditCard,
   Search,
   LogOut,
   Menu,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { cn } from "@/lib/utils";
 
 function ConnectionDot({ status }: { status: SSEStatus }) {
@@ -37,25 +35,18 @@ function ConnectionDot({ status }: { status: SSEStatus }) {
   );
 }
 
+const navItems = [
+  { to: "/", label: "Dashboard", icon: LayoutDashboard },
+  { to: "/decisions", label: "Decisions", icon: FileText },
+  { to: "/agents", label: "Agents", icon: Users },
+  { to: "/conflicts", label: "Conflicts", icon: AlertTriangle },
+  { to: "/search", label: "Search", icon: Search },
+];
+
 export default function Layout() {
   const { agentId, token, logout } = useAuth();
-  const config = useConfig();
   const sseStatus = useSSE(token);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-
-  const navItems = useMemo(
-    () => [
-      { to: "/", label: "Dashboard", icon: LayoutDashboard },
-      { to: "/decisions", label: "Decisions", icon: FileText },
-      { to: "/agents", label: "Agents", icon: Users },
-      { to: "/conflicts", label: "Conflicts", icon: AlertTriangle },
-      ...(config.billing_enabled
-        ? [{ to: "/billing", label: "Usage & Billing", icon: CreditCard }]
-        : []),
-      { to: "/search", label: "Search", icon: Search },
-    ],
-    [config.billing_enabled],
-  );
 
   return (
     <div className="flex h-screen overflow-hidden">

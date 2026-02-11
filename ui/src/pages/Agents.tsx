@@ -35,8 +35,6 @@ import { formatDate } from "@/lib/utils";
 import { Plus, Trash2 } from "lucide-react";
 
 const roleColors: Record<AgentRole, "default" | "secondary" | "destructive" | "success" | "warning" | "outline"> = {
-  platform_admin: "destructive",
-  org_owner: "warning",
   admin: "default",
   agent: "secondary",
   reader: "outline",

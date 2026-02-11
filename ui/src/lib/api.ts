@@ -11,7 +11,6 @@ import type {
   QueryRequest,
   ConflictsList,
   SearchResponse,
-  UsageData,
   AgentRun,
 } from "@/types/api";
 
@@ -161,34 +160,6 @@ export async function searchDecisions(
   return request<SearchResponse>("/v1/search", {
     method: "POST",
     body: JSON.stringify({ query, semantic, limit }),
-  });
-}
-
-// Usage
-export async function getUsage(): Promise<UsageData> {
-  return request<UsageData>("/v1/usage");
-}
-
-// Billing
-export async function createCheckoutSession(
-  successUrl: string,
-  cancelUrl: string,
-): Promise<{ checkout_url: string }> {
-  return request<{ checkout_url: string }>("/billing/checkout", {
-    method: "POST",
-    body: JSON.stringify({
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-    }),
-  });
-}
-
-export async function createPortalSession(
-  returnUrl: string,
-): Promise<{ portal_url: string }> {
-  return request<{ portal_url: string }>("/billing/portal", {
-    method: "POST",
-    body: JSON.stringify({ return_url: returnUrl }),
   });
 }
 

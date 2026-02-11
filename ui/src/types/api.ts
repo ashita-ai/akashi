@@ -32,8 +32,6 @@ export interface AuthTokenResponse {
 
 // Agent
 export type AgentRole =
-  | "platform_admin"
-  | "org_owner"
   | "admin"
   | "agent"
   | "reader";
@@ -172,16 +170,6 @@ export interface DecisionConflict {
 export interface SearchResult {
   decision: Decision;
   similarity_score: number;
-}
-
-// Usage
-export interface UsageData {
-  org_id: string;
-  plan: string;
-  period: string;
-  decision_count: number;
-  decision_limit: number;
-  agent_limit: number;
 }
 
 // Query

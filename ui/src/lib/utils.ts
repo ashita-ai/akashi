@@ -31,8 +31,3 @@ export function truncate(str: string, maxLength: number): string {
   if (str.length <= maxLength) return str;
   return str.slice(0, maxLength - 1) + "\u2026";
 }
-
-export function percentOf(value: number, total: number): number {
-  if (total === 0) return 0;
-  return Math.min(100, Math.round((value / total) * 100));
-}
