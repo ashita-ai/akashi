@@ -21,9 +21,6 @@ type Config struct {
 	DatabaseURL string // PgBouncer or direct Postgres URL for queries.
 	NotifyURL   string // Direct Postgres URL for LISTEN/NOTIFY.
 
-	// Redis settings.
-	RedisURL string
-
 	// JWT settings.
 	JWTPrivateKeyPath string // Path to Ed25519 private key PEM file.
 	JWTPublicKeyPath  string // Path to Ed25519 public key PEM file.
@@ -68,9 +65,6 @@ type Config struct {
 	// CORS settings.
 	CORSAllowedOrigins []string // Allowed origins for CORS; ["*"] permits all.
 
-	// Reliability settings.
-	RequireRedis bool // If true, server refuses to start without a healthy Redis connection.
-
 	// Operational settings.
 	LogLevel                string
 	ConflictRefreshInterval time.Duration
@@ -88,7 +82,6 @@ func Load() (Config, error) {
 	cfg := Config{
 		DatabaseURL:         envStr("DATABASE_URL", "postgres://akashi:akashi@localhost:6432/akashi?sslmode=verify-full"),
 		NotifyURL:           envStr("NOTIFY_URL", "postgres://akashi:akashi@localhost:5432/akashi?sslmode=verify-full"),
-		RedisURL:            envStr("REDIS_URL", ""),
 		JWTPrivateKeyPath:   envStr("AKASHI_JWT_PRIVATE_KEY", ""),
 		JWTPublicKeyPath:    envStr("AKASHI_JWT_PUBLIC_KEY", ""),
 		AdminAPIKey:         envStr("AKASHI_ADMIN_API_KEY", ""),
@@ -127,7 +120,6 @@ func Load() (Config, error) {
 
 	// Boolean fields.
 	cfg.OTELInsecure, errs = collectBool(errs, "OTEL_EXPORTER_OTLP_INSECURE", false)
-	cfg.RequireRedis, errs = collectBool(errs, "AKASHI_REQUIRE_REDIS", false)
 
 	// Duration fields.
 	cfg.ReadTimeout, errs = collectDuration(errs, "AKASHI_READ_TIMEOUT", 30*time.Second)

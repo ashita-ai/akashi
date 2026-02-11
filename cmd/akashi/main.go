@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	"github.com/redis/go-redis/v9"
 
 	"github.com/ashita-ai/akashi/api"
 	"github.com/ashita-ai/akashi/internal/auth"
@@ -21,7 +20,6 @@ import (
 	"github.com/ashita-ai/akashi/internal/config"
 	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/mcp"
-	"github.com/ashita-ai/akashi/internal/ratelimit"
 	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/server"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
@@ -165,15 +163,6 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	buf := trace.NewBuffer(db, logger, cfg.EventBufferSize, cfg.EventFlushTimeout)
 	buf.Start(ctx)
 
-	// Create rate limiter (backed by Redis if configured, noop otherwise).
-	limiter := newRateLimiter(cfg, logger)
-	if limiter == nil && cfg.RequireRedis {
-		return fmt.Errorf("rate limiting required but Redis unavailable (AKASHI_REQUIRE_REDIS=true)")
-	}
-	if limiter != nil {
-		defer func() { _ = limiter.Close() }()
-	}
-
 	// Create signup service.
 	signupSvc := signup.New(db, signup.Config{
 		SMTPHost: cfg.SMTPHost,
@@ -212,7 +201,6 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		DecisionSvc:         decisionSvc,
 		BillingSvc:          billingSvc,
 		Buffer:              buf,
-		Limiter:             limiter,
 		Broker:              broker,
 		SignupSvc:           signupSvc,
 		Searcher:            searcher,
@@ -346,48 +334,6 @@ func ollamaReachable(baseURL string) bool {
 	}
 	_ = resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
-}
-
-// newRateLimiter creates a Redis-backed rate limiter. If Redis is not configured
-// or not reachable, returns a noop limiter (all requests allowed) — unless
-// RequireRedis is set, in which case it returns nil to signal a fatal error.
-func newRateLimiter(cfg config.Config, logger *slog.Logger) *ratelimit.Limiter {
-	if cfg.RedisURL == "" {
-		if cfg.RequireRedis {
-			logger.Error("rate limiting: AKASHI_REQUIRE_REDIS is set but REDIS_URL is empty")
-			return nil
-		}
-		logger.Info("rate limiting: disabled (no REDIS_URL)")
-		return ratelimit.New(nil, logger, false)
-	}
-
-	opts, err := redis.ParseURL(cfg.RedisURL)
-	if err != nil {
-		if cfg.RequireRedis {
-			logger.Error("rate limiting: AKASHI_REQUIRE_REDIS is set but REDIS_URL is invalid", "error", err)
-			return nil
-		}
-		logger.Warn("rate limiting: disabled (invalid REDIS_URL)", "error", err)
-		return ratelimit.New(nil, logger, false)
-	}
-
-	client := redis.NewClient(opts)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	if err := client.Ping(ctx).Err(); err != nil {
-		_ = client.Close()
-		if cfg.RequireRedis {
-			logger.Error("rate limiting: AKASHI_REQUIRE_REDIS is set but Redis unreachable", "error", err)
-			return nil
-		}
-		logger.Warn("rate limiting: disabled (Redis unreachable)", "error", err)
-		return ratelimit.New(nil, logger, false)
-	}
-
-	logger.Info("rate limiting: enabled", "redis", cfg.RedisURL)
-	return ratelimit.New(client, logger, cfg.RequireRedis)
 }
 
 func conflictRefreshLoop(ctx context.Context, db *storage.DB, logger *slog.Logger, interval time.Duration) {
