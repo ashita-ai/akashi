@@ -256,6 +256,11 @@ func (h *Handlers) SeedAdmin(ctx context.Context, adminAPIKey string) error {
 	// Default org UUID for the pre-migration seed admin.
 	defaultOrgID := uuid.Nil
 
+	// Ensure the default org exists so the agents FK is satisfied on fresh DBs.
+	if err := h.db.EnsureDefaultOrg(ctx); err != nil {
+		return fmt.Errorf("seed admin: ensure default org: %w", err)
+	}
+
 	count, err := h.db.CountAgents(ctx, defaultOrgID)
 	if err != nil {
 		return fmt.Errorf("seed admin: count agents: %w", err)
@@ -283,6 +288,15 @@ func (h *Handlers) SeedAdmin(ctx context.Context, adminAPIKey string) error {
 
 	h.logger.Info("seeded initial admin agent")
 	return nil
+}
+
+// HandleConfig returns feature flags for the current deployment so the UI
+// can hide billing/search when they are not configured. No auth required.
+func (h *Handlers) HandleConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, r, http.StatusOK, map[string]bool{
+		"billing_enabled": h.billingSvc != nil && h.billingSvc.Enabled(),
+		"search_enabled":  h.searcher != nil,
+	})
 }
 
 // HandleSignup handles POST /auth/signup.

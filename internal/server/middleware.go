@@ -266,6 +266,7 @@ var noAuthPaths = map[string]bool{
 	"/auth/refresh": true,
 	"/auth/signup":  true,
 	"/auth/verify":  true,
+	"/config":       true,
 	"/health":       true,
 	"/openapi.yaml": true,
 }

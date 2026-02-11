@@ -177,6 +177,9 @@ func New(cfg ServerConfig) *Server {
 	// OpenAPI spec (no auth, no rate limit).
 	mux.HandleFunc("GET /openapi.yaml", h.HandleOpenAPISpec)
 
+	// Config (no auth, no rate limit — feature flags for UI).
+	mux.HandleFunc("GET /config", h.HandleConfig)
+
 	// Health (no auth, no rate limit).
 	mux.HandleFunc("GET /health", h.HandleHealth)
 
