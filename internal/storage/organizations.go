@@ -12,6 +12,24 @@ import (
 	"github.com/ashita-ai/akashi/internal/model"
 )
 
+// EnsureDefaultOrg idempotently creates the default organization (uuid.Nil)
+// with unlimited limits. Used by SeedAdmin to guarantee the FK target exists
+// on a fresh database before inserting the admin agent.
+func (db *DB) EnsureDefaultOrg(ctx context.Context) error {
+	_, err := db.pool.Exec(ctx,
+		`INSERT INTO organizations (id, name, slug, plan, decision_limit, agent_limit,
+		 email, email_verified, created_at, updated_at)
+		 VALUES ($1, 'Default', 'default', 'enterprise', 0, 0,
+		         'admin@localhost', true, NOW(), NOW())
+		 ON CONFLICT (id) DO NOTHING`,
+		uuid.Nil,
+	)
+	if err != nil {
+		return fmt.Errorf("storage: ensure default org: %w", err)
+	}
+	return nil
+}
+
 // CreateOrganization inserts a new organization.
 func (db *DB) CreateOrganization(ctx context.Context, org model.Organization) (model.Organization, error) {
 	if org.ID == uuid.Nil {

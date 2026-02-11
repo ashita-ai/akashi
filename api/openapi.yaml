@@ -1052,6 +1052,38 @@ paths:
           $ref: "#/components/responses/Forbidden"
 
   # ── System ─────────────────────────────────────────────────────────
+  /config:
+    get:
+      operationId: getConfig
+      tags: [System]
+      summary: Feature flags
+      description: |
+        Returns deployment feature flags so the UI can adapt to the current
+        configuration. No authentication required.
+      security: []
+      responses:
+        "200":
+          description: Feature flag values.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      billing_enabled:
+                        type: boolean
+                        description: True when Stripe billing is configured.
+                      search_enabled:
+                        type: boolean
+                        description: True when a vector search backend (Qdrant) is configured.
+                    required:
+                      - billing_enabled
+                      - search_enabled
+                  meta:
+                    $ref: "#/components/schemas/ResponseMeta"
+
   /health:
     get:
       operationId: healthCheck

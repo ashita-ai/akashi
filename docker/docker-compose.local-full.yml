@@ -1,21 +1,24 @@
-# Local development: self-contained stack, pgvector fallback (no Qdrant).
+# Local development: full stack with local Qdrant for vector search.
 #
 # Usage:
-#   docker compose -f docker/docker-compose.local.yml up -d
-#   docker exec akashi-local-ollama ollama pull mxbai-embed-large   # first run only
-#   curl http://localhost:8080/health
+#   docker compose -f docker/docker-compose.local-full.yml up -d
+#   docker exec akashi-full-ollama ollama pull mxbai-embed-large   # first run only
+#   curl http://localhost:8081/health
 #
-# Postgres (pgvector + TimescaleDB) and Ollama run locally. No Qdrant — semantic
-# search falls back to pgvector. No PgBouncer — single-user local dev doesn't
-# need connection pooling.
+# Same as docker-compose.local.yml but adds a local Qdrant instance for vector
+# search instead of falling back to pgvector. No PgBouncer — single-user local
+# dev doesn't need connection pooling.
+#
+# Infrastructure services (Postgres, Redis, Qdrant, Ollama) are network-only —
+# no host port bindings. They communicate via the Compose-managed network.
+# Only Akashi is exposed to the host on port 8081, so this stack can run
+# alongside the cloud stack (port 8080) without conflicts.
 
 services:
   postgres:
     image: timescale/timescaledb-ha:pg18
-    container_name: akashi-local-postgres
+    container_name: akashi-full-postgres
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_USER: akashi
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-akashi}
@@ -39,10 +42,8 @@ services:
 
   redis:
     image: redis:7.4-alpine
-    container_name: akashi-local-redis
+    container_name: akashi-full-redis
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:6379:6379"
     volumes:
       - redisdata:/data
     command: >
@@ -57,12 +58,25 @@ services:
       timeout: 5s
       retries: 5
 
+  qdrant:
+    image: qdrant/qdrant:v1.13.6
+    container_name: akashi-full-qdrant
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   ollama:
     image: ollama/ollama:latest
-    container_name: akashi-local-ollama
+    container_name: akashi-full-ollama
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:11434:11434"
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
@@ -76,26 +90,27 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    container_name: akashi-local-server
+    container_name: akashi-full-server
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8081:8081"
     environment:
-      # Database: no PgBouncer — both URLs go direct to Postgres.
+      # Database: no PgBouncer — both URLs go direct to Postgres via Docker network.
       DATABASE_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi?sslmode=disable
       NOTIFY_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi?sslmode=disable
       REDIS_URL: redis://default:${REDIS_PASSWORD:-akashi}@redis:6379/0
 
       # Core settings.
-      AKASHI_PORT: "8080"
+      AKASHI_PORT: "8081"
       AKASHI_ADMIN_API_KEY: ${AKASHI_ADMIN_API_KEY:-admin}
       AKASHI_LOG_LEVEL: ${AKASHI_LOG_LEVEL:-debug}
 
-      # No Qdrant — empty QDRANT_URL forces pgvector fallback.
-      QDRANT_URL: ""
+      # Qdrant for vector search (local instance via Docker network).
+      QDRANT_URL: http://qdrant:6333
       QDRANT_API_KEY: ""
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-akashi_decisions}
 
-      # Ollama for embeddings (running in the stack).
+      # Ollama for embeddings (running in the stack via Docker network).
       AKASHI_EMBEDDING_PROVIDER: ${AKASHI_EMBEDDING_PROVIDER:-ollama}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mxbai-embed-large}
@@ -105,7 +120,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       AKASHI_EMBEDDING_MODEL: ${AKASHI_EMBEDDING_MODEL:-text-embedding-3-small}
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -115,10 +130,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      qdrant:
+        condition: service_healthy
       ollama:
         condition: service_healthy
 
 volumes:
   pgdata:
   redisdata:
+  qdrant_data:
   ollama_data:

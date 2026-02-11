@@ -1308,6 +1308,35 @@ func createVerifiedOrgOwner(t *testing.T, email, password, orgName string) strin
 	return getToken(testSrv.URL, signupResult.Data.AgentID, password)
 }
 
+func TestConfigEndpoint(t *testing.T) {
+	t.Run("returns feature flags", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/config", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data struct {
+				BillingEnabled bool `json:"billing_enabled"`
+				SearchEnabled  bool `json:"search_enabled"`
+			} `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		err = json.Unmarshal(data, &result)
+		require.NoError(t, err)
+		// Test environment has no Stripe and no Qdrant searcher.
+		assert.False(t, result.Data.BillingEnabled, "billing should be disabled without Stripe")
+		assert.False(t, result.Data.SearchEnabled, "search should be disabled without Qdrant")
+	})
+
+	t.Run("accessible without auth", func(t *testing.T) {
+		resp, err := http.Get(testSrv.URL + "/config")
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+}
+
 func TestAccessGrantEnforcement(t *testing.T) {
 	// Create a reader agent with no grants.
 	createAgent(testSrv.URL, adminToken, "reader-agent", "Reader", "reader", "reader-key")
