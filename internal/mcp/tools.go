@@ -62,6 +62,10 @@ decision_type="architecture" to see if anyone already decided on caching.`),
 		mcplib.NewTool("akashi_trace",
 			mcplib.WithDescription(`Record a decision to the black box so there is proof of why it was made.
 
+IMPORTANT: Call akashi_check FIRST to look for existing precedents before
+recording. Tracing without checking risks contradicting prior decisions
+and duplicating work that was already done.
+
 WHEN TO USE: After you make any non-trivial decision — choosing a model,
 selecting an approach, picking a data source, resolving an ambiguity,
 or committing to a course of action.
@@ -79,8 +83,7 @@ reasoning="Redis handles our expected QPS, TTL prevents stale reads"`),
 			mcplib.WithIdempotentHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 			mcplib.WithString("agent_id",
-				mcplib.Description("Your agent identifier — who is making this decision"),
-				mcplib.Required(),
+				mcplib.Description("Your agent identifier — who is making this decision. Defaults to your authenticated identity if omitted."),
 			),
 			mcplib.WithString("decision_type",
 				mcplib.Description("Category of decision. Use a standard type when possible."),
@@ -223,6 +226,12 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 		return errorResult("decision_type is required"), nil
 	}
 
+	// Record that this caller checked precedents for this decision type.
+	// handleTrace uses this to detect the check-before-trace workflow.
+	if claims != nil {
+		s.checkTracker.Record(claims.AgentID, decisionType)
+	}
+
 	query := request.GetString("query", "")
 	agentID := request.GetString("agent_id", "")
 	limit := request.GetInt("limit", 5)
@@ -263,8 +272,17 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	confidence := float32(request.GetFloat("confidence", 0))
 	reasoning := request.GetString("reasoning", "")
 
-	if agentID == "" || decisionType == "" || outcome == "" {
-		return errorResult("agent_id, decision_type, and outcome are required"), nil
+	// Default agent_id to the caller's authenticated identity.
+	if agentID == "" {
+		if claims != nil {
+			agentID = claims.AgentID
+		} else {
+			return errorResult("agent_id is required"), nil
+		}
+	}
+
+	if decisionType == "" || outcome == "" {
+		return errorResult("decision_type and outcome are required"), nil
 	}
 
 	// Validate agent_id format (same as HTTP handler).
@@ -277,9 +295,14 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		return errorResult("agents can only record decisions for their own agent_id"), nil
 	}
 
-	// Verify the agent exists within the org.
-	if _, err := s.db.GetAgentByAgentID(ctx, orgID, agentID); err != nil {
-		return errorResult(fmt.Sprintf("agent %q not found in this organization", agentID)), nil
+	// Verify the agent exists within the org, auto-registering if the caller
+	// is admin+ and the agent is new (reduces friction for first-time traces).
+	callerRole := model.AgentRole("")
+	if claims != nil {
+		callerRole = claims.Role
+	}
+	if err := s.decisionSvc.ResolveOrCreateAgent(ctx, orgID, agentID, callerRole); err != nil {
+		return errorResult(err.Error()), nil
 	}
 
 	var reasoningPtr *string
@@ -306,11 +329,27 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		"status":      "recorded",
 	})
 
-	return &mcplib.CallToolResult{
-		Content: []mcplib.Content{
-			mcplib.TextContent{Type: "text", Text: string(resultData)},
-		},
-	}, nil
+	contents := []mcplib.Content{
+		mcplib.TextContent{Type: "text", Text: string(resultData)},
+	}
+
+	// Nudge: if the caller didn't call akashi_check for this decision_type
+	// recently, include a reminder. The trace still succeeds — this is
+	// advisory, not a gate.
+	callerID := ""
+	if claims != nil {
+		callerID = claims.AgentID
+	}
+	if callerID != "" && !s.checkTracker.WasChecked(callerID, decisionType) {
+		contents = append(contents, mcplib.TextContent{
+			Type: "text",
+			Text: "NOTE: No akashi_check was called for decision_type=\"" + decisionType + "\" before this trace. " +
+				"Checking for precedents first prevents contradictions and duplicate work. " +
+				"Next time, call akashi_check before akashi_trace.",
+		})
+	}
+
+	return &mcplib.CallToolResult{Content: contents}, nil
 }
 
 func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {

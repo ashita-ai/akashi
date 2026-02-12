@@ -7,6 +7,7 @@ package mcp
 
 import (
 	"log/slog"
+	"time"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -17,18 +18,20 @@ import (
 
 // Server wraps the MCP server with Akashi's service layer.
 type Server struct {
-	mcpServer   *mcpserver.MCPServer
-	db          *storage.DB        // for resources (read-only queries)
-	decisionSvc *decisions.Service // for tools (shared business logic)
-	logger      *slog.Logger
+	mcpServer    *mcpserver.MCPServer
+	db           *storage.DB        // for resources (read-only queries)
+	decisionSvc  *decisions.Service // for tools (shared business logic)
+	logger       *slog.Logger
+	checkTracker *checkTracker // tracks check-before-trace workflow compliance
 }
 
 // New creates and configures a new MCP server with all resources, tools, and prompts.
 func New(db *storage.DB, decisionSvc *decisions.Service, logger *slog.Logger, version string) *Server {
 	s := &Server{
-		db:          db,
-		decisionSvc: decisionSvc,
-		logger:      logger,
+		db:           db,
+		decisionSvc:  decisionSvc,
+		logger:       logger,
+		checkTracker: newCheckTracker(time.Hour),
 	}
 
 	s.mcpServer = mcpserver.NewMCPServer(
