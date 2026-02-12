@@ -8,11 +8,13 @@ package decisions
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pgvector/pgvector-go"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -336,4 +338,59 @@ func (s *Service) Recent(ctx context.Context, orgID uuid.UUID, filters model.Que
 		OrderDir: "desc",
 		Limit:    limit,
 	})
+}
+
+// ErrAgentNotFound indicates the agent does not exist and the caller lacks
+// permission to auto-create it.
+var ErrAgentNotFound = errors.New("agent_id not found in this organization")
+
+// ResolveOrCreateAgent looks up an agent by agent_id within an org. If the
+// agent does not exist and the caller has admin+ privileges, it auto-registers
+// a trace-only agent (role=agent, no API key). Non-admin callers receive
+// ErrAgentNotFound.
+//
+// This eliminates friction when an admin traces on behalf of a new agent for
+// the first time — the agent is created implicitly rather than requiring a
+// separate POST /v1/agents call.
+func (s *Service) ResolveOrCreateAgent(ctx context.Context, orgID uuid.UUID, agentID string, callerRole model.AgentRole) error {
+	_, err := s.db.GetAgentByAgentID(ctx, orgID, agentID)
+	if err == nil {
+		return nil
+	}
+
+	// Only auto-register on not-found errors. Propagate anything else.
+	if !errors.Is(err, storage.ErrNotFound) {
+		return err
+	}
+
+	// Non-admin callers cannot auto-register agents.
+	if !model.RoleAtLeast(callerRole, model.RoleAdmin) {
+		return ErrAgentNotFound
+	}
+
+	// Admin+ caller: auto-register the agent with default role.
+	_, createErr := s.db.CreateAgent(ctx, model.Agent{
+		AgentID: agentID,
+		OrgID:   orgID,
+		Name:    agentID,
+		Role:    model.RoleAgent,
+	})
+	if createErr != nil {
+		// A concurrent request may have created the same agent between our
+		// GetAgentByAgentID and CreateAgent calls. That's fine — treat the
+		// duplicate key constraint as success.
+		if isDuplicateKey(createErr) {
+			return nil
+		}
+		return fmt.Errorf("auto-register agent: %w", createErr)
+	}
+
+	s.logger.Info("auto-registered agent on first trace", "agent_id", agentID, "org_id", orgID)
+	return nil
+}
+
+// isDuplicateKey checks if a Postgres error is a unique_violation (23505).
+func isDuplicateKey(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

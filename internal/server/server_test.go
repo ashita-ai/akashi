@@ -1170,3 +1170,159 @@ func TestAccessGrantEnforcement(t *testing.T) {
 		assert.NotEmpty(t, result.Data.Decisions, "agent should see own decisions")
 	})
 }
+
+func TestMCPTraceDefaultAgentID(t *testing.T) {
+	// When agent_id is omitted, handleTrace should default to the caller's identity.
+	c := newMCPClient(t, agentToken)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
+		Params: mcplib.InitializeParams{
+			ClientInfo: mcplib.Implementation{Name: "test-client", Version: "1.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	// Trace without agent_id — should succeed using the caller's identity.
+	traceResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name: "akashi_trace",
+			Arguments: map[string]any{
+				"decision_type": "trade_off",
+				"outcome":       "default agent_id test",
+				"confidence":    0.7,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, traceResult.IsError, "trace should succeed without agent_id: %v", traceResult.Content)
+
+	// Verify the recorded decision used test-agent's identity.
+	var resp struct {
+		RunID      string `json:"run_id"`
+		DecisionID string `json:"decision_id"`
+		Status     string `json:"status"`
+	}
+	for _, content := range traceResult.Content {
+		if tc, ok := content.(mcplib.TextContent); ok {
+			err := json.Unmarshal([]byte(tc.Text), &resp)
+			require.NoError(t, err)
+			break
+		}
+	}
+	assert.Equal(t, "recorded", resp.Status)
+	assert.NotEmpty(t, resp.DecisionID)
+}
+
+func TestMCPTraceAutoRegister(t *testing.T) {
+	// Admin traces for a new agent_id that doesn't exist yet — should auto-register it.
+	c := newMCPClient(t, adminToken)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
+		Params: mcplib.InitializeParams{
+			ClientInfo: mcplib.Implementation{Name: "test-client", Version: "1.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	// Trace as admin with a brand-new agent_id.
+	newAgentID := fmt.Sprintf("auto-reg-mcp-%d", time.Now().UnixNano())
+	traceResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name: "akashi_trace",
+			Arguments: map[string]any{
+				"agent_id":      newAgentID,
+				"decision_type": "architecture",
+				"outcome":       "auto-registered agent test",
+				"confidence":    0.8,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, traceResult.IsError, "admin trace with new agent_id should succeed: %v", traceResult.Content)
+
+	// Verify the agent was created by listing agents.
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/agents", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var agentList struct {
+		Data struct {
+			Agents []model.Agent `json:"agents"`
+		} `json:"data"`
+	}
+	data, _ := io.ReadAll(resp.Body)
+	_ = json.Unmarshal(data, &agentList)
+
+	found := false
+	for _, a := range agentList.Data.Agents {
+		if a.AgentID == newAgentID {
+			found = true
+			assert.Equal(t, model.RoleAgent, a.Role, "auto-registered agent should have role=agent")
+			assert.Equal(t, newAgentID, a.Name, "auto-registered agent should use agent_id as name")
+			break
+		}
+	}
+	assert.True(t, found, "expected auto-registered agent %q in agent list", newAgentID)
+}
+
+func TestTraceAutoRegisterHTTP(t *testing.T) {
+	// Admin traces via HTTP for a new agent_id — should auto-register.
+	newAgentID := fmt.Sprintf("auto-reg-http-%d", time.Now().UnixNano())
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken,
+		model.TraceRequest{
+			AgentID: newAgentID,
+			Decision: model.TraceDecision{
+				DecisionType: "feature_scope",
+				Outcome:      "http auto-register test",
+				Confidence:   0.75,
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	// Verify the agent was created.
+	resp2, err := authedRequest("GET", testSrv.URL+"/v1/agents", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp2.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp2.StatusCode)
+
+	var agentList struct {
+		Data struct {
+			Agents []model.Agent `json:"agents"`
+		} `json:"data"`
+	}
+	data, _ := io.ReadAll(resp2.Body)
+	_ = json.Unmarshal(data, &agentList)
+
+	found := false
+	for _, a := range agentList.Data.Agents {
+		if a.AgentID == newAgentID {
+			found = true
+			assert.Equal(t, model.RoleAgent, a.Role, "auto-registered agent should have role=agent")
+			break
+		}
+	}
+	assert.True(t, found, "expected auto-registered agent %q in agent list", newAgentID)
+
+	// Non-admin tracing for a non-existent agent should still fail.
+	nonExistentID := fmt.Sprintf("no-such-agent-%d", time.Now().UnixNano())
+	resp3, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken,
+		model.TraceRequest{
+			AgentID: nonExistentID,
+			Decision: model.TraceDecision{
+				DecisionType: "test",
+				Outcome:      "should fail",
+				Confidence:   0.5,
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp3.Body.Close() }()
+	// Non-admin can only trace for their own agent_id, so this should be forbidden.
+	assert.Equal(t, http.StatusForbidden, resp3.StatusCode)
+}
