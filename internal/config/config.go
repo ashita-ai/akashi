@@ -52,6 +52,11 @@ type Config struct {
 	// CORS settings.
 	CORSAllowedOrigins []string // Allowed origins for CORS; ["*"] permits all.
 
+	// Rate limiting.
+	RateLimitEnabled bool    // Enable rate limiting middleware (default: true).
+	RateLimitRPS     float64 // Sustained requests per second per key (default: 100).
+	RateLimitBurst   int     // Token bucket capacity per key (default: 200).
+
 	// Operational settings.
 	LogLevel                string
 	ConflictRefreshInterval time.Duration
@@ -91,12 +96,17 @@ func Load() (Config, error) {
 	cfg.EmbeddingDimensions, errs = collectInt(errs, "AKASHI_EMBEDDING_DIMENSIONS", 1024)
 	cfg.OutboxBatchSize, errs = collectInt(errs, "AKASHI_OUTBOX_BATCH_SIZE", 100)
 	cfg.EventBufferSize, errs = collectInt(errs, "AKASHI_EVENT_BUFFER_SIZE", 1000)
+	cfg.RateLimitBurst, errs = collectInt(errs, "AKASHI_RATE_LIMIT_BURST", 200)
 
 	var maxReqBody int
 	maxReqBody, errs = collectInt(errs, "AKASHI_MAX_REQUEST_BODY_BYTES", 1*1024*1024)
 	cfg.MaxRequestBodyBytes = int64(maxReqBody)
 
+	// Float fields.
+	cfg.RateLimitRPS, errs = collectFloat64(errs, "AKASHI_RATE_LIMIT_RPS", 100.0)
+
 	// Boolean fields.
+	cfg.RateLimitEnabled, errs = collectBool(errs, "AKASHI_RATE_LIMIT_ENABLED", true)
 	cfg.OTELInsecure, errs = collectBool(errs, "OTEL_EXPORTER_OTLP_INSECURE", false)
 
 	// Duration fields.
@@ -186,6 +196,14 @@ func (c Config) Validate() error {
 	if c.IntegrityProofInterval <= 0 {
 		errs = append(errs, errors.New("config: AKASHI_INTEGRITY_PROOF_INTERVAL must be positive"))
 	}
+	if c.RateLimitEnabled {
+		if c.RateLimitRPS <= 0 {
+			errs = append(errs, errors.New("config: AKASHI_RATE_LIMIT_RPS must be positive when rate limiting is enabled"))
+		}
+		if c.RateLimitBurst <= 0 {
+			errs = append(errs, errors.New("config: AKASHI_RATE_LIMIT_BURST must be positive when rate limiting is enabled"))
+		}
+	}
 	if c.JWTPrivateKeyPath != "" {
 		if err := validateKeyFile(c.JWTPrivateKeyPath, "AKASHI_JWT_PRIVATE_KEY"); err != nil {
 			errs = append(errs, err)
@@ -239,6 +257,27 @@ func envInt(key string, fallback int) (int, error) {
 		return 0, fmt.Errorf("%s=%q is not a valid integer", key, v)
 	}
 	return n, nil
+}
+
+func envFloat64(key string, fallback float64) (float64, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback, nil
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q is not a valid float", key, v)
+	}
+	return f, nil
+}
+
+// collectFloat64 parses a float64 env var, appending any error to the accumulator.
+func collectFloat64(errs []error, key string, fallback float64) (float64, []error) {
+	v, err := envFloat64(key, fallback)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	return v, errs
 }
 
 func envBool(key string, fallback bool) (bool, error) {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/ratelimit"
 	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/trace"
@@ -42,9 +43,10 @@ type ServerConfig struct {
 	Logger      *slog.Logger
 
 	// Optional dependencies (nil = disabled).
-	Broker    *Broker
-	Searcher  search.Searcher
-	MCPServer *mcpserver.MCPServer
+	Broker      *Broker
+	Searcher    search.Searcher
+	MCPServer   *mcpserver.MCPServer
+	RateLimiter ratelimit.Limiter
 
 	// HTTP server settings.
 	Port                int
@@ -150,8 +152,11 @@ func New(cfg ServerConfig) *Server {
 	}
 
 	// Middleware chain (outermost executes first):
-	// request ID → security headers → CORS → tracing → logging → baggage → auth → recovery → handler.
+	// request ID → security headers → CORS → tracing → logging → baggage → auth → recovery → rateLimit → handler.
 	var handler http.Handler = mux
+	if cfg.RateLimiter != nil {
+		handler = rateLimitMiddleware(cfg.RateLimiter, cfg.Logger, handler)
+	}
 	handler = recoveryMiddleware(cfg.Logger, handler)
 	handler = authMiddleware(cfg.JWTMgr, cfg.DB, handler)
 	handler = baggageMiddleware(handler)
