@@ -52,7 +52,8 @@ type OutboxWorker struct {
 	started     atomic.Bool
 	cancelLoop  context.CancelFunc
 	done        chan struct{}
-	once        sync.Once
+	once        sync.Once // guards close(done)
+	drainOnce   sync.Once // guards Drain to prevent double-drain panics
 	lastCleanup time.Time
 	drainCh     chan context.Context // carries the drain context to pollLoop for the final poll
 }
@@ -85,17 +86,20 @@ func (w *OutboxWorker) Start(ctx context.Context) {
 
 // Drain signals the poll loop to stop, processes remaining entries, and blocks
 // until done or the context expires. The ctx parameter is passed to the final
-// poll so it respects the caller's deadline.
+// poll so it respects the caller's deadline. Safe to call multiple times;
+// only the first call triggers the drain.
 func (w *OutboxWorker) Drain(ctx context.Context) {
-	// Send the drain context to pollLoop via channel (race-free).
-	// Must be sent before cancelLoop so pollLoop can receive it on ctx.Done().
-	select {
-	case w.drainCh <- ctx:
-	default:
-	}
-	if w.cancelLoop != nil {
-		w.cancelLoop()
-	}
+	w.drainOnce.Do(func() {
+		// Send the drain context to pollLoop via channel (race-free).
+		// Must be sent before cancelLoop so pollLoop can receive it on ctx.Done().
+		select {
+		case w.drainCh <- ctx:
+		default:
+		}
+		if w.cancelLoop != nil {
+			w.cancelLoop()
+		}
+	})
 	select {
 	case <-w.done:
 	case <-ctx.Done():

@@ -77,13 +77,19 @@ func computeV2Hash(id uuid.UUID, decisionType, outcome string, confidence float3
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// hashPair produces SHA-256(0x01 || a || b) as a hex string.
+// hashPair produces SHA-256(0x01 || len(a) || a || b) as a hex string.
 // The 0x01 prefix is a domain separator for internal Merkle tree nodes (per RFC 6962),
 // ensuring internal node hashes can never collide with leaf content hashes.
+// The 4-byte big-endian length prefix on `a` prevents second-preimage attacks
+// from boundary ambiguity (e.g. hashPair("ab","c") != hashPair("a","bc")).
 func hashPair(a, b string) string {
 	h := sha256.New()
 	h.Write([]byte{0x01}) // internal node domain separator
-	h.Write([]byte(a))
+	aBytes := []byte(a)
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(aBytes))) //nolint:gosec // hash inputs are bounded-length hex strings
+	h.Write(lenBuf[:])
+	h.Write(aBytes)
 	h.Write([]byte(b))
 	return hex.EncodeToString(h.Sum(nil))
 }

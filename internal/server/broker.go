@@ -101,9 +101,11 @@ func (b *Broker) listenWithRetry(ctx context.Context, ch string) error {
 		backoff := time.Duration(1<<attempt) * time.Second
 		b.logger.Warn("broker: listen failed, retrying",
 			"channel", ch, "attempt", attempt+1, "backoff", backoff, "error", err)
+		timer := time.NewTimer(backoff)
 		select {
-		case <-time.After(backoff):
+		case <-timer.C:
 		case <-ctx.Done():
+			timer.Stop()
 			return ctx.Err()
 		}
 	}
