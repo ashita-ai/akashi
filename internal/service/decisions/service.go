@@ -260,7 +260,8 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, decisionType, quer
 // Search performs semantic or text-based search over decisions.
 // Fallback chain: Qdrant (semantic) → ILIKE text search (keyword).
 // When semantic is true and Qdrant is healthy, it queries Qdrant and hydrates
-// results from Postgres. On any Qdrant failure, it falls through to text search.
+// results from Postgres. On any Qdrant failure or empty result set, it falls
+// through to text search.
 func (s *Service) Search(ctx context.Context, orgID uuid.UUID, query string, semantic bool, filters model.QueryFilters, limit int) ([]model.SearchResult, error) {
 	if semantic && s.searcher != nil {
 		if err := s.searcher.Healthy(ctx); err == nil {
@@ -273,10 +274,13 @@ func (s *Service) Search(ctx context.Context, orgID uuid.UUID, query string, sem
 				searchStart := time.Now()
 				results, err := s.searcher.Search(ctx, orgID, queryEmb.Slice(), filters, limit)
 				s.searchDuration.Record(ctx, float64(time.Since(searchStart).Milliseconds()))
-				if err != nil {
+				switch {
+				case err != nil:
 					s.logger.Warn("search: qdrant query failed, falling back to text", "error", err)
-				} else {
+				case len(results) > 0:
 					return s.hydrateAndReScore(ctx, orgID, results, limit)
+				default:
+					s.logger.Debug("search: qdrant returned no results, falling back to text")
 				}
 			}
 		} else {
