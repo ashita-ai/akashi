@@ -239,11 +239,11 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 
 	// Apply access filtering (same as HTTP handlers).
 	if claims != nil {
-		resp.Decisions, err = authz.FilterDecisions(ctx, s.db, claims, resp.Decisions)
+		resp.Decisions, err = authz.FilterDecisions(ctx, s.db, claims, resp.Decisions, s.grantCache)
 		if err != nil {
 			return errorResult(fmt.Sprintf("authorization check failed: %v", err)), nil
 		}
-		resp.Conflicts, err = authz.FilterConflicts(ctx, s.db, claims, resp.Conflicts)
+		resp.Conflicts, err = authz.FilterConflicts(ctx, s.db, claims, resp.Conflicts, s.grantCache)
 		if err != nil {
 			return errorResult(fmt.Sprintf("authorization check failed: %v", err)), nil
 		}
@@ -384,7 +384,7 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 	// decisions the caller cannot see (same fix as the HTTP handler).
 	if claims != nil {
 		preFilterCount := len(decs)
-		decs, err = authz.FilterDecisions(ctx, s.db, claims, decs)
+		decs, err = authz.FilterDecisions(ctx, s.db, claims, decs, s.grantCache)
 		if err != nil {
 			return errorResult(fmt.Sprintf("authorization check failed: %v", err)), nil
 		}
@@ -427,7 +427,7 @@ func (s *Server) handleSearch(ctx context.Context, request mcplib.CallToolReques
 
 	// Apply access filtering.
 	if claims != nil {
-		results, err = authz.FilterSearchResults(ctx, s.db, claims, results)
+		results, err = authz.FilterSearchResults(ctx, s.db, claims, results, s.grantCache)
 		if err != nil {
 			return errorResult(fmt.Sprintf("authorization check failed: %v", err)), nil
 		}
@@ -465,7 +465,7 @@ func (s *Server) handleRecent(ctx context.Context, request mcplib.CallToolReques
 
 	// Apply access filtering.
 	if claims != nil {
-		decs, err = authz.FilterDecisions(ctx, s.db, claims, decs)
+		decs, err = authz.FilterDecisions(ctx, s.db, claims, decs, s.grantCache)
 		if err != nil {
 			return errorResult(fmt.Sprintf("authorization check failed: %v", err)), nil
 		}

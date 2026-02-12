@@ -55,18 +55,40 @@ func (db *DB) RunMigrations(ctx context.Context, migrationsFS fs.FS) error {
 		}
 
 		db.logger.Info("running migration", "file", name)
-		if _, err := db.pool.Exec(ctx, string(content)); err != nil {
-			return fmt.Errorf("storage: execute migration %s: %w", name, err)
-		}
 
-		// Record the migration as applied.
-		if _, err := db.pool.Exec(ctx,
-			`INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`, name,
-		); err != nil {
-			return fmt.Errorf("storage: record migration %s: %w", name, err)
+		// Execute and record the migration within a single transaction so a
+		// failure between execution and recording can't leave an applied-but-
+		// unrecorded migration.
+		if err := db.runMigrationTx(ctx, name, string(content)); err != nil {
+			return err
 		}
 	}
 
+	return nil
+}
+
+// runMigrationTx executes a migration and records it in schema_migrations within
+// a single transaction. If either step fails, both are rolled back.
+func (db *DB) runMigrationTx(ctx context.Context, name, sql string) error {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("storage: begin migration tx %s: %w", name, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, sql); err != nil {
+		return fmt.Errorf("storage: execute migration %s: %w", name, err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`, name,
+	); err != nil {
+		return fmt.Errorf("storage: record migration %s: %w", name, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("storage: commit migration %s: %w", name, err)
+	}
 	return nil
 }
 
