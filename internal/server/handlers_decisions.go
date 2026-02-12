@@ -244,6 +244,10 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Limit <= 0 || req.Limit > 1000 {
+		req.Limit = 100
+	}
+
 	results, err := h.decisionSvc.Search(r.Context(), orgID, req.Query, req.Semantic, req.Filters, req.Limit)
 	if err != nil {
 		h.writeInternalError(w, r, "search failed", err)
@@ -289,6 +293,12 @@ func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 		h.writeInternalError(w, r, "authorization check failed", err)
 		return
 	}
+	resp.Conflicts, err = filterConflictsByAccess(r.Context(), h.db, claims, resp.Conflicts, h.grantCache)
+	if err != nil {
+		h.writeInternalError(w, r, "authorization check failed", err)
+		return
+	}
+	resp.HasPrecedent = len(resp.Decisions) > 0
 
 	writeJSON(w, r, http.StatusOK, resp)
 }

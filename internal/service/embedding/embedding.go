@@ -205,16 +205,18 @@ func (p *NoopProvider) EmbedBatch(_ context.Context, _ []string) ([]pgvector.Vec
 	return nil, ErrNoProvider
 }
 
-// truncateText limits text to maxChars, breaking at the last space boundary
-// to avoid splitting words. Returns the original text if it's within the limit.
+// truncateText limits text to maxChars (measured in runes, not bytes), breaking
+// at the last space boundary to avoid splitting words or multi-byte UTF-8 sequences.
+// Returns the original text if it's within the limit.
 func truncateText(text string, maxChars int) string {
-	if len(text) <= maxChars {
+	runes := []rune(text)
+	if len(runes) <= maxChars {
 		return text
 	}
 
 	// Find the last space before the limit to break at a word boundary.
 	cut := maxChars
-	for cut > 0 && text[cut] != ' ' {
+	for cut > 0 && runes[cut] != ' ' {
 		cut--
 	}
 	if cut == 0 {
@@ -222,5 +224,5 @@ func truncateText(text string, maxChars int) string {
 		cut = maxChars
 	}
 
-	return text[:cut]
+	return string(runes[:cut])
 }

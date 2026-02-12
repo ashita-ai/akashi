@@ -265,19 +265,10 @@ func baggageMiddleware(next http.Handler) http.Handler {
 // static assets and public endpoints).
 var authenticatedPrefixes = []string{"/v1/", "/mcp"}
 
-// noAuthPaths are exact paths under authenticated prefixes that skip JWT auth.
-var noAuthPaths = map[string]bool{
-	"/auth/token":   true,
-	"/auth/refresh": true,
-	"/config":       true,
-	"/health":       true,
-	"/openapi.yaml": true,
-}
-
 // authMiddleware validates JWT tokens or API keys and populates context with claims.
-// Uses an explicit allowlist of paths that skip auth. All paths under the
-// authenticated prefixes (/v1/, /mcp) require valid credentials unless
-// they appear in noAuthPaths.
+// Only paths under authenticatedPrefixes (/v1/, /mcp) require valid credentials.
+// All other paths (SPA static assets, /auth/token, /health, etc.) pass through
+// without authentication.
 //
 // Supported authorization schemes:
 //   - Bearer <jwt>           — standard JWT (fast, Ed25519 signature check)
@@ -286,12 +277,6 @@ var noAuthPaths = map[string]bool{
 //     refresh is impractical)
 func authMiddleware(jwtMgr *auth.JWTManager, db *storage.DB, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Exact-match allowlist for public endpoints.
-		if noAuthPaths[r.URL.Path] {
-			next.ServeHTTP(w, r)
-			return
-		}
-
 		// Only paths under authenticated prefixes require credentials.
 		// Unlisted paths (SPA static assets, client-side routes) pass through.
 		needsAuth := false
@@ -493,8 +478,15 @@ func rateLimitMiddleware(limiter ratelimit.Limiter, logger *slog.Logger, next ht
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		claims := ctxutil.ClaimsFromContext(r.Context())
 		if claims == nil {
-			// Unauthenticated path — let it through; auth middleware
-			// already controls which paths skip authentication.
+			// Unauthenticated path — apply IP-based rate limiting to protect
+			// endpoints like /auth/token from brute-force attacks.
+			key := "ip:" + r.RemoteAddr
+			allowed, err := limiter.Allow(r.Context(), key)
+			if err == nil && !allowed {
+				w.Header().Set("Retry-After", "1")
+				writeError(w, r, http.StatusTooManyRequests, model.ErrCodeRateLimited, "rate limit exceeded")
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -543,12 +535,14 @@ func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
+		// Always set Vary: Origin so caches know the response varies by origin,
+		// even when the request origin doesn't match the allowlist.
+		w.Header().Set("Vary", "Origin")
 		if origin != "" && (allowAll || originSet[origin]) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, PATCH, OPTIONS")
 			w.Header().Set("Access-Control-Max-Age", "86400")
-			w.Header().Set("Vary", "Origin")
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
