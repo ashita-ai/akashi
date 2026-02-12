@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -44,9 +45,14 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the agent exists within the caller's org to prevent orphaned data.
-	if _, err := h.db.GetAgentByAgentID(r.Context(), orgID, req.AgentID); err != nil {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "agent_id not found in this organization")
+	// Verify the agent exists within the caller's org, auto-registering if the
+	// caller is admin+ and the agent is new (reduces friction for first-time traces).
+	if err := h.decisionSvc.ResolveOrCreateAgent(r.Context(), orgID, req.AgentID, claims.Role); err != nil {
+		if errors.Is(err, decisions.ErrAgentNotFound) {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+			return
+		}
+		h.writeInternalError(w, r, "failed to resolve agent", err)
 		return
 	}
 
