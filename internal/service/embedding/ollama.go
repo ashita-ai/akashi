@@ -226,4 +226,3 @@ func (p *OllamaProvider) embedBatchConcurrent(ctx context.Context, texts []strin
 	}
 	return vecs, nil
 }
-

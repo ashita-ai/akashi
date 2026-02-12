@@ -15,16 +15,16 @@ func canAccessAgent(ctx context.Context, db *storage.DB, claims *auth.Claims, ta
 }
 
 // filterDecisionsByAccess delegates to the shared authz package.
-func filterDecisionsByAccess(ctx context.Context, db *storage.DB, claims *auth.Claims, decisions []model.Decision) ([]model.Decision, error) {
-	return authz.FilterDecisions(ctx, db, claims, decisions)
+func filterDecisionsByAccess(ctx context.Context, db *storage.DB, claims *auth.Claims, decisions []model.Decision, cache *authz.GrantCache) ([]model.Decision, error) {
+	return authz.FilterDecisions(ctx, db, claims, decisions, cache)
 }
 
 // filterSearchResultsByAccess delegates to the shared authz package.
-func filterSearchResultsByAccess(ctx context.Context, db *storage.DB, claims *auth.Claims, results []model.SearchResult) ([]model.SearchResult, error) {
-	return authz.FilterSearchResults(ctx, db, claims, results)
+func filterSearchResultsByAccess(ctx context.Context, db *storage.DB, claims *auth.Claims, results []model.SearchResult, cache *authz.GrantCache) ([]model.SearchResult, error) {
+	return authz.FilterSearchResults(ctx, db, claims, results, cache)
 }
 
 // filterConflictsByAccess delegates to the shared authz package.
-func filterConflictsByAccess(ctx context.Context, db *storage.DB, claims *auth.Claims, conflicts []model.DecisionConflict) ([]model.DecisionConflict, error) {
-	return authz.FilterConflicts(ctx, db, claims, conflicts)
+func filterConflictsByAccess(ctx context.Context, db *storage.DB, claims *auth.Claims, conflicts []model.DecisionConflict, cache *authz.GrantCache) ([]model.DecisionConflict, error) {
+	return authz.FilterConflicts(ctx, db, claims, conflicts, cache)
 }
