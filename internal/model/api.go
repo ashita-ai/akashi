@@ -39,6 +39,7 @@ const (
 	ErrCodeNotFound      = "NOT_FOUND"
 	ErrCodeConflict      = "CONFLICT"
 	ErrCodeInternalError = "INTERNAL_ERROR"
+	ErrCodeRateLimited   = "RATE_LIMITED"
 )
 
 // CreateRunRequest is the request body for POST /v1/runs.
