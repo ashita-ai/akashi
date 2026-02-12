@@ -524,6 +524,5 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 func decodeJSON(r *http.Request, target any, maxBytes int64) error {
 	r.Body = http.MaxBytesReader(nil, r.Body, maxBytes)
 	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
 	return decoder.Decode(target)
 }

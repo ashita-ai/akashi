@@ -77,10 +77,15 @@ func computeV2Hash(id uuid.UUID, decisionType, outcome string, confidence float3
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// hashPair produces SHA-256(a || b) as a hex string.
+// hashPair produces SHA-256(0x01 || a || b) as a hex string.
+// The 0x01 prefix is a domain separator for internal Merkle tree nodes (per RFC 6962),
+// ensuring internal node hashes can never collide with leaf content hashes.
 func hashPair(a, b string) string {
-	sum := sha256.Sum256([]byte(a + b))
-	return hex.EncodeToString(sum[:])
+	h := sha256.New()
+	h.Write([]byte{0x01}) // internal node domain separator
+	h.Write([]byte(a))
+	h.Write([]byte(b))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // BuildMerkleRoot constructs a Merkle tree from leaf hashes and returns the root.
