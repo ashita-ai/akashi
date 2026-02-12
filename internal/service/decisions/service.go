@@ -68,6 +68,8 @@ type TraceInput struct {
 	Metadata     map[string]any
 	Decision     model.TraceDecision
 	PrecedentRef *uuid.UUID
+	SessionID    *uuid.UUID     // MCP session or X-Akashi-Session header.
+	AgentContext map[string]any // Merged server-extracted + client-supplied context.
 }
 
 // TraceResult is the outcome of recording a decision.
@@ -169,6 +171,8 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 			},
 			Alternatives: alts,
 			Evidence:     evs,
+			SessionID:    input.SessionID,
+			AgentContext: input.AgentContext,
 		})
 		return txErr
 	})

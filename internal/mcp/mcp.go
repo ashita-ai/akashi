@@ -17,6 +17,30 @@ import (
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
+// serverInstructions is sent to every MCP client during the initialize handshake.
+// This ensures every connected agent knows the check-before/record-after workflow
+// without requiring per-project configuration (CLAUDE.md, agents.md, etc.).
+const serverInstructions = `You have access to Akashi, a decision audit trail for AI agents.
+
+WORKFLOW — follow this for every non-trivial decision:
+
+1. BEFORE deciding: call akashi_check with the decision_type you're about to make.
+   This returns prior precedents and conflicts. Use them to make a better decision
+   and avoid contradicting prior work.
+
+2. AFTER deciding: call akashi_trace with what you decided (outcome), why (reasoning),
+   and your confidence (0.0–1.0). This creates a provable record so other agents
+   can learn from it.
+
+TOOLS:
+- akashi_check: look up precedents before deciding (always call first)
+- akashi_trace: record a decision after making it (always call after)
+- akashi_query: filter the audit trail by type, agent, confidence, time range
+- akashi_search: semantic similarity search across decisions
+- akashi_recent: see recent decisions for context
+
+Be honest about confidence. Reference precedents when they influence you.`
+
 // Server wraps the MCP server with Akashi's service layer.
 type Server struct {
 	mcpServer    *mcpserver.MCPServer
@@ -43,6 +67,7 @@ func New(db *storage.DB, decisionSvc *decisions.Service, grantCache *authz.Grant
 		mcpserver.WithResourceCapabilities(true, true),
 		mcpserver.WithToolCapabilities(true),
 		mcpserver.WithPromptCapabilities(true),
+		mcpserver.WithInstructions(serverInstructions),
 	)
 
 	s.registerResources()

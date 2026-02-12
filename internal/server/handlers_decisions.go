@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -56,12 +57,45 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Session from header.
+	var sessionID *uuid.UUID
+	if sh := r.Header.Get("X-Akashi-Session"); sh != "" {
+		if sid, parseErr := uuid.Parse(sh); parseErr == nil {
+			sessionID = &sid
+		}
+	}
+
+	// Agent context from request body + headers.
+	agentContext := map[string]any{}
+	for k, v := range req.Context {
+		agentContext[k] = v
+	}
+
+	// Tool from User-Agent header (SDKs send "akashi-go/0.1.0" etc).
+	if ua := r.Header.Get("User-Agent"); ua != "" && strings.HasPrefix(ua, "akashi-") {
+		parts := strings.SplitN(ua, "/", 2)
+		agentContext["tool"] = parts[0]
+		if len(parts) > 1 {
+			agentContext["tool_version"] = parts[1]
+		}
+	}
+
+	// Operator from JWT claims: use the agent's display name if distinct from agent_id.
+	if claims != nil {
+		agent, agentErr := h.db.GetAgentByAgentID(r.Context(), orgID, claims.AgentID)
+		if agentErr == nil && agent.Name != "" && agent.Name != agent.AgentID {
+			agentContext["operator"] = agent.Name
+		}
+	}
+
 	result, err := h.decisionSvc.Trace(r.Context(), orgID, decisions.TraceInput{
 		AgentID:      req.AgentID,
 		TraceID:      req.TraceID,
 		Metadata:     req.Metadata,
 		Decision:     req.Decision,
 		PrecedentRef: req.PrecedentRef,
+		SessionID:    sessionID,
+		AgentContext: agentContext,
 	})
 	if err != nil {
 		h.writeInternalError(w, r, "failed to create trace", err)
@@ -428,4 +462,65 @@ func (h *Handlers) HandleVerifyDecision(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, r, http.StatusOK, resp)
+}
+
+// HandleSessionView handles GET /v1/sessions/{session_id}.
+// Returns all decisions from a given MCP/HTTP session, with summary statistics.
+func (h *Handlers) HandleSessionView(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
+
+	sidStr := r.PathValue("session_id")
+	sid, err := uuid.Parse(sidStr)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid session_id")
+		return
+	}
+
+	decs, err := h.db.GetSessionDecisions(r.Context(), orgID, sid)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to get session decisions", err)
+		return
+	}
+
+	decs, err = filterDecisionsByAccess(r.Context(), h.db, claims, decs, h.grantCache)
+	if err != nil {
+		h.writeInternalError(w, r, "authorization check failed", err)
+		return
+	}
+
+	if len(decs) == 0 {
+		writeJSON(w, r, http.StatusOK, map[string]any{
+			"session_id":     sid,
+			"decisions":      []any{},
+			"decision_count": 0,
+		})
+		return
+	}
+
+	// Compute summary.
+	startedAt := decs[0].ValidFrom
+	endedAt := decs[len(decs)-1].ValidFrom
+	duration := endedAt.Sub(startedAt).Seconds()
+
+	decisionTypes := map[string]int{}
+	var totalConf float64
+	for _, d := range decs {
+		decisionTypes[d.DecisionType]++
+		totalConf += float64(d.Confidence)
+	}
+	avgConfidence := totalConf / float64(len(decs))
+
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"session_id":     sid,
+		"decisions":      decs,
+		"decision_count": len(decs),
+		"summary": map[string]any{
+			"started_at":     startedAt,
+			"ended_at":       endedAt,
+			"duration_secs":  duration,
+			"decision_types": decisionTypes,
+			"avg_confidence": avgConfidence,
+		},
+	})
 }
