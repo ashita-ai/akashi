@@ -178,6 +178,7 @@ flowchart TD
 | Document | Description |
 |----------|-------------|
 | [Configuration](docs/configuration.md) | All environment variables with defaults and descriptions |
+| [Subsystems](docs/subsystems.md) | Embedding provider, rate limiting, and Qdrant search pipeline internals |
 | [Technical Deep Dive](docs/technical-deep-dive.md) | Architecture walkthrough, data model, code organization |
 | [Runbook](docs/runbook.md) | Production operations: health checks, monitoring, troubleshooting |
 | [Diagrams](docs/diagrams.md) | Mermaid diagrams of write path, read path, auth flow, schema |
