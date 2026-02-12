@@ -67,8 +67,8 @@ type Config struct {
 func Load() (Config, error) {
 	var errs []error
 	cfg := Config{
-		DatabaseURL:        envStr("DATABASE_URL", "postgres://akashi:akashi@localhost:6432/akashi?sslmode=verify-full"),
-		NotifyURL:          envStr("NOTIFY_URL", "postgres://akashi:akashi@localhost:5432/akashi?sslmode=verify-full"),
+		DatabaseURL:        envStr("DATABASE_URL", "postgres://akashi:akashi@localhost:6432/akashi?sslmode=disable"),
+		NotifyURL:          envStr("NOTIFY_URL", "postgres://akashi:akashi@localhost:5432/akashi?sslmode=disable"),
 		JWTPrivateKeyPath:  envStr("AKASHI_JWT_PRIVATE_KEY", ""),
 		JWTPublicKeyPath:   envStr("AKASHI_JWT_PUBLIC_KEY", ""),
 		AdminAPIKey:        envStr("AKASHI_ADMIN_API_KEY", ""),
