@@ -1,69 +1,114 @@
 # Akashi
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8.svg)](https://go.dev/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-336791.svg)](https://www.postgresql.org/)
+
 **Git blame for AI decisions.**
 
-When multiple AI agents collaborate, their decisions are invisible. If something goes wrong, you can't answer: *who decided what, when, why, and what alternatives were considered?*
+Multi-agent AI systems are moving from demos to production, but their decisions are invisible. When something goes wrong, nobody can answer: *who decided what, when, why, and what alternatives were considered?*
 
-Akashi is the audit trail. Every agent decision gets recorded with its full reasoning chain, the alternatives that were weighed, the evidence that informed it, and the confidence level. When someone asks "why did the AI do that?", you have the answer.
+Akashi is the decision audit trail. Every agent decision gets recorded with its full reasoning chain, the alternatives that were weighed, the evidence that informed it, and the confidence level. When the CTO asks "why did the AI do that?" or an auditor asks for proof of decision traceability, you have the answer.
 
 ## Quick start
 
 ```bash
-# Start the local stack (Postgres + Ollama + Akashi)
+# Start the full stack (Postgres + TimescaleDB + Ollama + Qdrant + Akashi)
 docker compose up -d
 docker exec akashi-ollama ollama pull mxbai-embed-large   # first run only
 
-# Or build from source
-make build
-AKASHI_ADMIN_API_KEY=dev-admin-key ./bin/akashi
-
-# Build with the embedded audit dashboard
-make build-with-ui
-AKASHI_ADMIN_API_KEY=dev-admin-key ./bin/akashi
-# Open http://localhost:8080
+curl http://localhost:8080/health
+# Open http://localhost:8080 for the audit dashboard
 ```
+
+No external services required. Everything runs locally.
 
 ### Record your first decision
 
 ```bash
+# Get a token (default admin key for local dev is "admin")
 TOKEN=$(curl -s -X POST http://localhost:8080/auth/token \
   -H 'Content-Type: application/json' \
-  -d '{"agent_id": "admin", "api_key": "dev-admin-key"}' \
+  -d '{"agent_id": "admin", "api_key": "admin"}' \
   | jq -r '.data.token')
 
+# Record a decision with reasoning, alternatives, and evidence
 curl -X POST http://localhost:8080/v1/trace \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "agent_id": "admin",
     "decision": {
-      "decision_type": "model_selection",
-      "outcome": "chose gpt-4o for summarization",
-      "confidence": 0.92,
-      "reasoning": "gpt-4o balances quality and cost for this task",
+      "decision_type": "architecture",
+      "outcome": "use microservices for the payment system",
+      "confidence": 0.85,
+      "reasoning": "Payment processing needs independent scaling and deployment. A monolith couples payment latency to unrelated features.",
       "alternatives": [
-        {"label": "gpt-4o", "selected": true, "score": 0.92},
-        {"label": "claude-3-haiku", "selected": false, "score": 0.78}
+        {"label": "microservices", "selected": true, "score": 0.85,
+         "rationale": "Independent scaling, isolated failures, team autonomy"},
+        {"label": "monolith", "selected": false, "score": 0.65,
+         "rationale": "Simpler deployment but couples all domains"}
       ],
       "evidence": [
-        {"source_type": "benchmark", "content": "gpt-4o scored 94% on summarization eval"}
+        {"source_type": "analysis", "content": "Payment traffic spikes 10x during promotions while other services stay flat"}
       ]
     }
   }'
 ```
 
-### Search for similar decisions
+### Check for precedents before deciding
+
+```bash
+# Before making a decision, check if similar ones exist
+curl -X POST http://localhost:8080/v1/check \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"decision_type": "architecture", "query": "microservices vs monolith"}'
+```
+
+### Search the audit trail
 
 ```bash
 curl -X POST http://localhost:8080/v1/search \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"query": "which model to use for text tasks", "limit": 5}'
+  -d '{"query": "scaling decisions for high-traffic services", "limit": 5}'
 ```
 
-## Three interfaces, one service
+## MCP integration
 
-Akashi exposes the same capabilities through three interfaces. All share the same storage, auth, and embedding provider.
+The fastest way to use Akashi is through MCP. Add it to your Claude, Cursor, or Windsurf configuration and your agent gains decision tracing with zero code changes.
+
+```json
+{
+  "mcpServers": {
+    "akashi": {
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer <your-jwt-token>"
+      }
+    }
+  }
+}
+```
+
+The MCP server provides five tools:
+
+| Tool | Purpose |
+|------|---------|
+| `akashi_check` | Look for precedents before making a decision |
+| `akashi_trace` | Record a decision with reasoning and confidence |
+| `akashi_query` | Structured query with filters (type, agent, confidence) |
+| `akashi_search` | Semantic similarity search over past decisions |
+| `akashi_recent` | Quick overview of recent decisions |
+
+Three prompts guide the workflow: `agent-setup` (system prompt with the check-before/record-after pattern), `before-decision` (precedent lookup guidance), and `after-decision` (recording reminder).
+
+### What this looks like in practice
+
+A planner agent decides to use microservices for a payment system and records it via `akashi_trace`. Later, a coder agent is about to choose a monolith for the same system. It calls `akashi_check` first and discovers the planner already made a conflicting decision with different reasoning. The coder sees the conflict, reviews the planner's evidence, and either aligns or records a competing decision with its own rationale. Either way, the disagreement is visible and auditable.
+
+## Three interfaces, one service
 
 | Interface | Endpoint | Audience |
 |-----------|----------|----------|
@@ -71,7 +116,7 @@ Akashi exposes the same capabilities through three interfaces. All share the sam
 | **MCP server** | `/mcp` | AI agents in Claude, Cursor, Windsurf |
 | **Audit dashboard** | `/` | Human reviewers, auditors, operators |
 
-The MCP server provides five tools (`akashi_check`, `akashi_trace`, `akashi_query`, `akashi_search`, `akashi_recent`), three resources, and three prompts. Any MCP-compatible agent can connect with one line of config.
+All three share the same storage, auth, and embedding provider.
 
 ## What the audit trail captures
 
@@ -81,7 +126,8 @@ Every decision trace records:
 - **Reasoning** -- step-by-step logic explaining why
 - **Rejected alternatives** -- what else was considered, with scores and rejection reasons
 - **Supporting evidence** -- what information backed the decision, with provenance
-- **Temporal context** -- when it was made, when it was valid (bi-temporal)
+- **Temporal context** -- when it was made, when it was valid (bi-temporal model)
+- **Integrity proof** -- SHA-256 content hash and Merkle tree batch verification
 - **Conflicts** -- when two agents disagree on the same question
 
 ## SDKs
@@ -91,8 +137,6 @@ Every decision trace records:
 | Go | [`sdk/go/`](sdk/go/) | `go get github.com/ashita-ai/akashi/sdk/go/akashi` |
 | Python | [`sdk/python/`](sdk/python/) | `pip install git+https://github.com/ashita-ai/akashi.git#subdirectory=sdk/python` |
 | TypeScript | [`sdk/typescript/`](sdk/typescript/) | `npm install github:ashita-ai/akashi#path:sdk/typescript` |
-
-Package registry publication is planned for the 1.0 release. Install from source for now.
 
 All SDKs provide: `Check`, `Trace`, `Query`, `Search`, `Recent`. Auth token management is automatic.
 
@@ -138,7 +182,22 @@ flowchart TD
 | [Runbook](docs/runbook.md) | Production operations: health checks, monitoring, troubleshooting |
 | [Diagrams](docs/diagrams.md) | Mermaid diagrams of write path, read path, auth flow, schema |
 | [ADRs](adrs/) | Architecture decision records (8 technical decisions) |
-| [OpenAPI Spec](openapi.yaml) | Full API specification (also served at `GET /openapi.yaml`) |
+| [OpenAPI Spec](api/openapi.yaml) | Full API specification (also served at `GET /openapi.yaml`) |
+
+## Building from source
+
+```bash
+# Without UI
+make build
+AKASHI_ADMIN_API_KEY=admin ./bin/akashi
+
+# With the embedded audit dashboard
+make build-with-ui
+AKASHI_ADMIN_API_KEY=admin ./bin/akashi
+# Open http://localhost:8080
+```
+
+Requires a running PostgreSQL instance with pgvector and TimescaleDB extensions. See [Configuration](docs/configuration.md) for all environment variables.
 
 ## Testing
 
