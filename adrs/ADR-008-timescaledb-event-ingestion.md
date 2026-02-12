@@ -19,32 +19,30 @@ Vanilla PostgreSQL handles this adequately at low volumes, but table scans degra
 
 The `agent_events` table is a **TimescaleDB hypertable**, partitioned automatically by `occurred_at`. TimescaleDB manages chunk creation, query routing, and compression transparently. The application issues standard SQL -- no TimescaleDB-specific syntax in queries.
 
-### Hypertable creation (migration 002, extended by migration 014)
+### Hypertable creation (001_initial.sql)
+
+All schema definitions below are consolidated in `migrations/001_initial.sql`. Earlier drafts of this ADR referenced separate migrations (002, 010, 013, 014) that were merged into the single initial migration before first release.
 
 ```sql
--- Migration 002: initial schema
 CREATE TABLE agent_events (
-    id              UUID NOT NULL DEFAULT gen_random_uuid(),
-    run_id          UUID NOT NULL,
-    event_type      TEXT NOT NULL,
-    sequence_num    BIGINT NOT NULL,
-    occurred_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    agent_id        TEXT NOT NULL,
-    payload         JSONB NOT NULL DEFAULT '{}',
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    id           UUID NOT NULL DEFAULT gen_random_uuid(),
+    run_id       UUID NOT NULL,
+    event_type   TEXT NOT NULL,
+    sequence_num BIGINT NOT NULL,
+    occurred_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    agent_id     TEXT NOT NULL,
+    payload      JSONB NOT NULL DEFAULT '{}',
+    org_id       UUID NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (id, occurred_at)
 );
 
-SELECT create_hypertable('agent_events', 'occurred_at');
-
--- Migration 014: multi-tenancy added org_id for tenant isolation.
--- All queries and COPY inserts now include org_id.
-ALTER TABLE agent_events ADD COLUMN org_id UUID NOT NULL;
+SELECT create_hypertable('agent_events', 'occurred_at', if_not_exists => TRUE);
 ```
 
-The primary key includes `occurred_at` because TimescaleDB requires the partitioning column in the primary key. The `org_id` column was added in migration 014 (multi-tenancy) and is required on all inserts and filtered on all queries for tenant isolation.
+The primary key includes `occurred_at` because TimescaleDB requires the partitioning column in the primary key. The `org_id` column provides multi-tenant isolation and is required on all inserts and filtered on all queries.
 
-### Chunk interval (migration 010)
+### Chunk interval
 
 ```sql
 SELECT set_chunk_time_interval('agent_events', INTERVAL '1 day');
@@ -52,7 +50,7 @@ SELECT set_chunk_time_interval('agent_events', INTERVAL '1 day');
 
 One-day chunks are the starting configuration. For Akashi's current traffic volume (~1K-100K events/day), this may produce small, sparse chunks. Spec 06a recommends monitoring chunk sizes for 30 days and increasing to 7 days if chunks are consistently under 100MB. This is a live operation that only affects future chunks.
 
-### Compression (migration 010)
+### Compression
 
 ```sql
 ALTER TABLE agent_events SET (
@@ -66,10 +64,10 @@ SELECT add_compression_policy('agent_events', INTERVAL '7 days');
 
 Chunks older than 7 days are compressed automatically. Segmenting by `agent_id` and `run_id` means queries that filter on these columns can skip irrelevant compressed segments entirely. Ordering by `occurred_at DESC` optimizes the common pattern of reading the most recent events first within a segment. Typical compression ratio is ~90%, meaning 10GB of raw event data compresses to ~1GB while remaining fully queryable via standard SQL.
 
-### Event ordering (migration 013)
+### Event ordering
 
 ```sql
-CREATE SEQUENCE event_sequence_num_seq START WITH ...;
+CREATE SEQUENCE event_sequence_num_seq START WITH 1;
 ```
 
 Event ordering uses a Postgres SEQUENCE rather than `SELECT MAX(sequence_num) + 1`. The sequence provides globally unique, monotonically increasing values under concurrent access. Gaps in the sequence are harmless -- they indicate concurrent callers, not lost events. The application pre-allocates a batch of sequence numbers via `generate_series` before bulk insertion.
@@ -139,9 +137,6 @@ The tradeoff is that COPY does not return per-row conflict information (no `ON C
 - ADR-002: Unified PostgreSQL storage (parent architecture: Postgres as single source of truth)
 - ADR-003: Event-sourced data model with bi-temporal modeling (data model that defines the event schema)
 - ADR-007: Dual Postgres connection strategy (COPY writes use the pooled connection path)
-- Migration 002: `migrations/002_create_agent_events.sql` (initial table + hypertable creation)
-- Migration 010: `migrations/010_create_hypertable_and_compression.sql` (chunk interval + compression)
-- Migration 013: `migrations/013_schema_improvements.sql` (sequence creation)
-- Migration 014: `migrations/014_multi_tenancy.sql` (added `org_id` column)
+- Migration: `migrations/001_initial.sql` (complete schema: tables, hypertable, compression, sequence, multi-tenancy)
 - Implementation: `internal/storage/events.go` (COPY insertion, sequence reservation)
 - TimescaleDB compression docs: docs.timescale.com/use-timescale/latest/compression/

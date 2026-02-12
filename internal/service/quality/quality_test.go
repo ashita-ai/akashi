@@ -380,6 +380,7 @@ func TestStandardDecisionTypes_Contains(t *testing.T) {
 	expected := []string{
 		"model_selection", "architecture", "data_source", "error_handling",
 		"feature_scope", "trade_off", "deployment", "security",
+		"code_review", "investigation", "planning", "assessment",
 	}
 	assert.Equal(t, len(expected), len(StandardDecisionTypes),
 		"StandardDecisionTypes should have exactly %d entries", len(expected))

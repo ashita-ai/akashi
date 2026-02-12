@@ -86,8 +86,10 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	db.RegisterPoolMetrics()
 
 	// Run migrations (dev mode only; production uses Atlas).
+	// RunMigrations tracks applied files in schema_migrations and skips duplicates,
+	// so errors here indicate real failures (not "already exists").
 	if err := db.RunMigrations(ctx, os.DirFS("migrations")); err != nil {
-		slog.Warn("migrations failed (may already exist)", "error", err)
+		slog.Warn("migrations failed", "error", err)
 	}
 
 	// Verify critical tables exist after migration. If the pgvector or timescaledb
@@ -141,6 +143,14 @@ func run(ctx context.Context, logger *slog.Logger) error {
 
 	// Create decision service (shared by HTTP and MCP handlers).
 	decisionSvc := decisions.New(db, embedder, searcher, logger)
+
+	// Backfill embeddings for decisions stored without one (e.g. when the
+	// provider was previously noop). Runs once at startup, non-fatal.
+	if n, err := decisionSvc.BackfillEmbeddings(ctx, 500); err != nil {
+		logger.Warn("embedding backfill failed", "error", err)
+	} else if n > 0 {
+		logger.Info("embedding backfill complete", "count", n)
+	}
 
 	// Create event buffer.
 	buf := trace.NewBuffer(db, logger, cfg.EventBufferSize, cfg.EventFlushTimeout)
