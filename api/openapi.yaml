@@ -1,0 +1,2145 @@
+openapi: "3.1.0"
+info:
+  title: Akashi API
+  description: |
+    Decision trace layer for multi-agent AI systems.
+
+    Akashi records, queries, and audits every decision made by AI agents —
+    providing "git blame for AI decisions." It captures the full decision
+    lifecycle: what was decided, why, what alternatives were considered,
+    and what evidence was used.
+
+    ## Authentication
+
+    All `/v1/` endpoints require a Bearer JWT token obtained from
+    `POST /auth/token`. Tokens are scoped to an organization and carry
+    the agent's RBAC role.
+
+    ## Response Envelope
+
+    All JSON responses are wrapped in a standard envelope:
+
+    ```json
+    {
+      "data": { ... },
+      "meta": {
+        "request_id": "uuid",
+        "timestamp": "2026-01-15T10:30:00Z"
+      }
+    }
+    ```
+
+    Error responses use a parallel structure:
+
+    ```json
+    {
+      "error": {
+        "code": "INVALID_INPUT",
+        "message": "description"
+      },
+      "meta": {
+        "request_id": "uuid",
+        "timestamp": "2026-01-15T10:30:00Z"
+      }
+    }
+    ```
+  version: 0.1.0
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: Auth
+    description: Authentication
+  - name: Agents
+    description: Agent management (admin-only)
+  - name: Runs
+    description: Agent run lifecycle
+  - name: Trace
+    description: Convenience endpoint for single-call decision recording
+  - name: Query
+    description: Decision querying and history
+  - name: Search
+    description: Full-text and semantic search
+  - name: Access
+    description: Fine-grained access grants between agents
+  - name: Export
+    description: Bulk data export for auditors
+  - name: System
+    description: Health, SSE, and infrastructure
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ── Auth ───────────────────────────────────────────────────────────
+  /auth/token:
+    post:
+      operationId: createToken
+      tags: [Auth]
+      summary: Authenticate and obtain a JWT
+      description: |
+        Exchange agent credentials for a JWT.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthTokenRequest"
+      responses:
+        "200":
+          description: JWT issued successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_AuthTokenResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /auth/refresh:
+    post:
+      operationId: refreshToken
+      tags: [Auth]
+      summary: Refresh a JWT
+      description: Same as `/auth/token` — exchange credentials for a new JWT.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthTokenRequest"
+      responses:
+        "200":
+          description: JWT issued successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_AuthTokenResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ── Agents ─────────────────────────────────────────────────────────
+  /v1/agents:
+    post:
+      operationId: createAgent
+      tags: [Agents]
+      summary: Create an agent
+      description: |
+        Register a new agent within the caller's organization.
+        Requires `admin` role or higher.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAgentRequest"
+      responses:
+        "201":
+          description: Agent created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_Agent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    get:
+      operationId: listAgents
+      tags: [Agents]
+      summary: List all agents
+      description: |
+        List all agents in the caller's organization.
+        Requires `admin` role or higher.
+      responses:
+        "200":
+          description: List of agents.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_AgentList"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/agents/{agent_id}:
+    delete:
+      operationId: deleteAgent
+      tags: [Agents]
+      summary: Delete an agent and all associated data
+      description: |
+        Permanently deletes the agent and all associated runs, events,
+        decisions, evidence, alternatives, and access grants. This is a
+        GDPR-compliant erasure operation. Cannot delete the "admin" agent.
+        Requires `admin` role or higher.
+      parameters:
+        - $ref: "#/components/parameters/AgentIDPath"
+      responses:
+        "200":
+          description: Agent and all data deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_DeleteAgentResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/agents/{agent_id}/tags:
+    patch:
+      operationId: updateAgentTags
+      tags: [Agents]
+      summary: Update an agent's tags
+      description: |
+        Replace the tags for an agent. Tags enable group-based access control:
+        agents sharing at least one tag can see each other's decisions without
+        explicit grants. Tags coexist with the existing grant system.
+        Requires `admin` role or higher.
+      parameters:
+        - $ref: "#/components/parameters/AgentIDPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAgentTagsRequest"
+      responses:
+        "200":
+          description: Tags updated. Returns the updated agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_Agent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Runs ───────────────────────────────────────────────────────────
+  /v1/runs:
+    post:
+      operationId: createRun
+      tags: [Runs]
+      summary: Start a new agent run
+      description: |
+        Create a new run for the authenticated agent. Runs are the top-level
+        execution context for recording events and decisions.
+        Requires `agent` role or higher.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRunRequest"
+      responses:
+        "201":
+          description: Run created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_AgentRun"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/runs/{run_id}:
+    get:
+      operationId: getRun
+      tags: [Runs]
+      summary: Get a run with events and decisions
+      description: |
+        Retrieve a run along with all its events and decisions.
+        Requires `reader` role or higher.
+      parameters:
+        - $ref: "#/components/parameters/RunIDPath"
+      responses:
+        "200":
+          description: Run details with events and decisions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_GetRunResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/runs/{run_id}/events:
+    post:
+      operationId: appendEvents
+      tags: [Runs]
+      summary: Append events to a run
+      description: |
+        Append one or more events to an existing run. Events are buffered
+        and batch-inserted via PostgreSQL COPY for throughput.
+        Requires `agent` role or higher.
+      parameters:
+        - $ref: "#/components/parameters/RunIDPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppendEventsRequest"
+      responses:
+        "202":
+          description: Events accepted for processing; durable after next flush.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_AppendEventsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/runs/{run_id}/complete:
+    post:
+      operationId: completeRun
+      tags: [Runs]
+      summary: Complete or fail a run
+      description: |
+        Mark a run as completed or failed. Updates the run status and
+        records the completion time.
+        Requires `agent` role or higher.
+      parameters:
+        - $ref: "#/components/parameters/RunIDPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompleteRunRequest"
+      responses:
+        "200":
+          description: Run completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_AgentRun"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Trace ──────────────────────────────────────────────────────────
+  /v1/trace:
+    post:
+      operationId: trace
+      tags: [Trace]
+      summary: Record a decision in a single call
+      description: |
+        Convenience endpoint that creates a run, records a decision with
+        alternatives and evidence, appends lifecycle events, and completes
+        the run — all in a single transaction.
+        Requires `agent` role or higher.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TraceRequest"
+            example:
+              agent_id: planner
+              decision:
+                decision_type: architecture
+                outcome: "Use Redis for session caching"
+                confidence: 0.85
+                reasoning: "Redis handles expected QPS with sub-ms latency. TTL-based expiry prevents stale sessions without manual cleanup."
+                alternatives:
+                  - label: "Redis"
+                    score: 0.85
+                    selected: true
+                  - label: "Memcached"
+                    score: 0.6
+                    selected: false
+                    rejection_reason: "No persistence — sessions lost on restart"
+                  - label: "Database sessions"
+                    score: 0.3
+                    selected: false
+                    rejection_reason: "Adds read load to primary database"
+                evidence:
+                  - source_type: document
+                    source_uri: "https://redis.io/docs/latest/develop/use/client-side-caching/"
+                    content: "Redis supports client-side caching with server-assisted invalidation via RESP3."
+                    relevance_score: 0.9
+                  - source_type: agent_output
+                    content: "Load test showed p99 < 2ms at 10k req/s with Redis 7 cluster."
+                    relevance_score: 0.85
+              metadata:
+                sprint: "2026-Q1"
+                ticket: "ARCH-142"
+      responses:
+        "201":
+          description: Decision traced successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_TraceResponse"
+              example:
+                data:
+                  run_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                  decision_id: "f9e8d7c6-b5a4-3210-fedc-ba9876543210"
+                  event_count: 6
+                meta:
+                  request_id: "11223344-5566-7788-99aa-bbccddeeff00"
+                  timestamp: "2026-01-15T10:30:00Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  # ── Query ──────────────────────────────────────────────────────────
+  /v1/query:
+    post:
+      operationId: queryDecisions
+      tags: [Query]
+      summary: Query decisions with filters
+      description: |
+        Query decisions with flexible filters, ordering, and pagination.
+        Optionally include alternatives and evidence in the response.
+        Requires `reader` role or higher.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QueryRequest"
+            example:
+              filters:
+                decision_type: architecture
+                confidence_min: 0.7
+                time_range:
+                  from: "2026-01-01T00:00:00Z"
+              include:
+                - alternatives
+                - evidence
+              order_by: created_at
+              order_dir: desc
+              limit: 10
+              offset: 0
+      responses:
+        "200":
+          description: Matching decisions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_QueryResponse"
+              example:
+                data:
+                  decisions:
+                    - id: "f9e8d7c6-b5a4-3210-fedc-ba9876543210"
+                      run_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                      agent_id: planner
+                      org_id: "00000000-0000-0000-0000-000000000001"
+                      decision_type: architecture
+                      outcome: "Use Redis for session caching"
+                      confidence: 0.85
+                      reasoning: "Redis handles expected QPS with sub-ms latency."
+                      metadata:
+                        sprint: "2026-Q1"
+                        ticket: "ARCH-142"
+                      quality_score: 0.85
+                      valid_from: "2026-01-15T10:30:00Z"
+                      transaction_time: "2026-01-15T10:30:00Z"
+                      created_at: "2026-01-15T10:30:00Z"
+                      alternatives:
+                        - id: "11111111-1111-1111-1111-111111111111"
+                          decision_id: "f9e8d7c6-b5a4-3210-fedc-ba9876543210"
+                          label: "Redis"
+                          score: 0.85
+                          selected: true
+                          metadata: {}
+                          created_at: "2026-01-15T10:30:00Z"
+                        - id: "22222222-2222-2222-2222-222222222222"
+                          decision_id: "f9e8d7c6-b5a4-3210-fedc-ba9876543210"
+                          label: "Memcached"
+                          score: 0.6
+                          selected: false
+                          rejection_reason: "No persistence — sessions lost on restart"
+                          metadata: {}
+                          created_at: "2026-01-15T10:30:00Z"
+                      evidence:
+                        - id: "33333333-3333-3333-3333-333333333333"
+                          decision_id: "f9e8d7c6-b5a4-3210-fedc-ba9876543210"
+                          org_id: "00000000-0000-0000-0000-000000000001"
+                          source_type: document
+                          source_uri: "https://redis.io/docs/latest/develop/use/client-side-caching/"
+                          content: "Redis supports client-side caching with server-assisted invalidation via RESP3."
+                          relevance_score: 0.9
+                          metadata: {}
+                          created_at: "2026-01-15T10:30:00Z"
+                  total: 1
+                  count: 1
+                  limit: 10
+                  offset: 0
+                meta:
+                  request_id: "aabbccdd-eeff-0011-2233-445566778899"
+                  timestamp: "2026-01-15T10:31:00Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /v1/query/temporal:
+    post:
+      operationId: temporalQuery
+      tags: [Query]
+      summary: Query decisions as of a point in time
+      description: |
+        Bi-temporal query: returns decisions that were valid at the specified
+        `as_of` timestamp. Uses the valid_from/valid_to temporal columns.
+        Requires `reader` role or higher.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TemporalQueryRequest"
+      responses:
+        "200":
+          description: Decisions valid at the specified time.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_TemporalQueryResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /v1/agents/{agent_id}/history:
+    get:
+      operationId: agentHistory
+      tags: [Query]
+      summary: Get decision history for an agent
+      description: |
+        Retrieve the decision history for a specific agent with pagination
+        and optional time range filtering.
+        Requires `reader` role or higher.
+      parameters:
+        - $ref: "#/components/parameters/AgentIDPath"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 1000
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - name: from
+          in: query
+          description: Start of time range (RFC 3339).
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: End of time range (RFC 3339).
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Agent decision history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_AgentHistoryResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /v1/decisions/recent:
+    get:
+      operationId: recentDecisions
+      tags: [Query]
+      summary: List recent decisions
+      description: |
+        Retrieve the most recent decisions, optionally filtered by agent
+        or decision type.
+        Requires `reader` role or higher.
+      parameters:
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - name: decision_type
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 1000
+      responses:
+        "200":
+          description: Recent decisions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_RecentDecisionsResponse"
+
+  /v1/decisions/{id}/revisions:
+    get:
+      operationId: getDecisionRevisions
+      tags: [Query]
+      summary: Get decision revision history
+      description: |
+        Retrieve the full revision chain for a decision, including all
+        prior and subsequent versions linked via `supersedes_id`.
+        Requires `reader` role or higher.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The decision ID to get revisions for.
+      responses:
+        "200":
+          description: Revision chain for the decision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_RevisionsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/verify/{id}:
+    get:
+      operationId: verifyDecision
+      tags: [Integrity]
+      summary: Verify decision integrity
+      description: |
+        Recomputes the SHA-256 content hash from the decision's stored
+        fields and compares it to the stored hash. Returns whether the
+        decision has been tampered with.
+        Requires `reader` role or higher.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The decision ID to verify.
+      responses:
+        "200":
+          description: Integrity verification result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_VerifyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/conflicts:
+    get:
+      operationId: listConflicts
+      tags: [Query]
+      summary: List detected decision conflicts
+      description: |
+        List conflicts between decisions of the same type made by different
+        agents. Conflicts are detected by a background materialized view
+        refresh. Requires `reader` role or higher.
+      parameters:
+        - name: decision_type
+          in: query
+          schema:
+            type: string
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 25
+            minimum: 1
+            maximum: 1000
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+      responses:
+        "200":
+          description: Decision conflicts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_ConflictsResponse"
+
+  /v1/check:
+    post:
+      operationId: checkPrecedent
+      tags: [Query]
+      summary: Check for precedent decisions and conflicts
+      description: |
+        Lightweight lookup for existing decisions of a given type, optionally
+        filtered by agent or semantic query. Returns whether a precedent
+        exists and any detected conflicts.
+        Requires `reader` role or higher.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CheckRequest"
+      responses:
+        "200":
+          description: Precedent check result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_CheckResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  # ── Search ─────────────────────────────────────────────────────────
+  /v1/search:
+    post:
+      operationId: searchDecisions
+      tags: [Search]
+      summary: Full-text and semantic search
+      description: |
+        Search decisions by keyword or semantic similarity. When `semantic`
+        is true, the query is embedded and compared against decision embeddings
+        using cosine similarity. Requires `reader` role or higher.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: Search results with similarity scores.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_SearchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  # ── Access Grants ──────────────────────────────────────────────────
+  /v1/grants:
+    post:
+      operationId: createGrant
+      tags: [Access]
+      summary: Grant access to another agent
+      description: |
+        Create a fine-grained access grant allowing another agent to read
+        or write specific resources. Agents can grant access to their own
+        traces; admins can grant access to any resource.
+        Requires `agent` role or higher.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateGrantRequest"
+      responses:
+        "201":
+          description: Grant created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_AccessGrant"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /v1/grants/{grant_id}:
+    delete:
+      operationId: deleteGrant
+      tags: [Access]
+      summary: Revoke an access grant
+      description: |
+        Delete an access grant. Agents can delete their own grants; admins
+        can delete any grant. Requires `agent` role or higher.
+      parameters:
+        - name: grant_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The UUID of the grant to delete.
+      responses:
+        "204":
+          description: Grant deleted.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Export ─────────────────────────────────────────────────────────
+  /v1/export/decisions:
+    get:
+      operationId: exportDecisions
+      tags: [Export]
+      summary: Export decisions as NDJSON
+      description: |
+        Stream all decisions matching the filters as newline-delimited JSON.
+        Intended for audit and compliance workflows. Uses cursor-based
+        pagination internally — one JSON object per line.
+        Requires `admin` role or higher.
+      parameters:
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - name: decision_type
+          in: query
+          schema:
+            type: string
+        - name: from
+          in: query
+          description: Start of time range (RFC 3339).
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: End of time range (RFC 3339).
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: NDJSON stream of decisions.
+          content:
+            application/x-ndjson:
+              schema:
+                $ref: "#/components/schemas/Decision"
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: 'Attachment filename, e.g. `attachment; filename="akashi-export-20260115-103000.ndjson"`'
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  # ── System ─────────────────────────────────────────────────────────
+  /config:
+    get:
+      operationId: getConfig
+      tags: [System]
+      summary: Feature flags
+      description: |
+        Returns deployment feature flags so the UI can adapt to the current
+        configuration. No authentication required.
+      security: []
+      responses:
+        "200":
+          description: Feature flag values.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      search_enabled:
+                        type: boolean
+                        description: True when a vector search backend (Qdrant) is configured.
+                    required:
+                      - search_enabled
+                  meta:
+                    $ref: "#/components/schemas/ResponseMeta"
+
+  /health:
+    get:
+      operationId: healthCheck
+      tags: [System]
+      summary: Health check
+      description: Returns server health status including database connectivity.
+      security: []
+      responses:
+        "200":
+          description: Server is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_HealthResponse"
+        "503":
+          description: Server is unhealthy (database disconnected).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_HealthResponse"
+
+  /v1/subscribe:
+    get:
+      operationId: subscribe
+      tags: [System]
+      summary: Subscribe to real-time events (SSE)
+      description: |
+        Opens a Server-Sent Events stream for real-time notifications about
+        new decisions, run completions, and other events within the
+        authenticated agent's organization. Long-lived connection.
+        Requires `reader` role or higher.
+      responses:
+        "200":
+          description: SSE stream opened.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "503":
+          description: SSE not available (LISTEN/NOTIFY not configured).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+
+  /mcp:
+    post:
+      operationId: mcpRequest
+      tags: [System]
+      summary: MCP StreamableHTTP transport
+      description: |
+        Model Context Protocol endpoint. Speaks MCP protocol over HTTP,
+        not REST. See the [MCP specification](https://modelcontextprotocol.io/)
+        for protocol details. Requires `reader` role or higher.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: MCP JSON-RPC request.
+      responses:
+        "200":
+          description: MCP JSON-RPC response.
+          content:
+            application/json:
+              schema:
+                type: object
+                description: MCP JSON-RPC response.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /openapi.yaml:
+    get:
+      operationId: getOpenAPISpec
+      tags: [System]
+      summary: OpenAPI specification
+      description: Returns this OpenAPI 3.1 specification as YAML.
+      security: []
+      responses:
+        "200":
+          description: OpenAPI spec.
+          content:
+            application/yaml:
+              schema:
+                type: string
+
+# ════════════════════════════════════════════════════════════════════
+# Components
+# ════════════════════════════════════════════════════════════════════
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Ed25519-signed JWT obtained from `POST /auth/token`.
+        Include as `Authorization: Bearer <token>`.
+
+  parameters:
+    RunIDPath:
+      name: run_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: The UUID of the run.
+
+    AgentIDPath:
+      name: agent_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: The string identifier of the agent.
+
+  responses:
+    BadRequest:
+      description: Invalid request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+    Unauthorized:
+      description: Invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+    Forbidden:
+      description: Insufficient permissions.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+    Conflict:
+      description: Resource already exists.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+
+  schemas:
+    # ── Response envelopes ───────────────────────────────────────────
+    ResponseMeta:
+      type: object
+      required: [request_id, timestamp]
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        timestamp:
+          type: string
+          format: date-time
+
+    APIError:
+      type: object
+      required: [error, meta]
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorDetail"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    ErrorDetail:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - INVALID_INPUT
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - NOT_FOUND
+            - CONFLICT
+            - INTERNAL_ERROR
+        message:
+          type: string
+        details:
+          description: Additional context about the error.
+
+    # ── Auth schemas ─────────────────────────────────────────────────
+    AuthTokenRequest:
+      type: object
+      required: [agent_id, api_key]
+      properties:
+        agent_id:
+          type: string
+        api_key:
+          type: string
+
+    AuthTokenResponse:
+      type: object
+      required: [token, expires_at]
+      properties:
+        token:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+
+    # ── Agent schemas ────────────────────────────────────────────────
+    AgentRole:
+      type: string
+      enum:
+        - platform_admin
+        - org_owner
+        - admin
+        - agent
+        - reader
+
+    Agent:
+      type: object
+      required: [id, agent_id, org_id, name, role, tags, metadata, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+        org_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        role:
+          $ref: "#/components/schemas/AgentRole"
+        tags:
+          type: array
+          items:
+            type: string
+          description: |
+            Tags for group-based access control. Agents sharing at least one
+            tag can see each other's decisions. Must match `^[a-z][a-z0-9_-]*$`.
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateAgentRequest:
+      type: object
+      required: [agent_id, name, api_key]
+      properties:
+        agent_id:
+          type: string
+        name:
+          type: string
+        role:
+          $ref: "#/components/schemas/AgentRole"
+        api_key:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+          description: Optional tags for group-based access control.
+        metadata:
+          type: object
+          additionalProperties: true
+
+    UpdateAgentTagsRequest:
+      type: object
+      required: [tags]
+      properties:
+        tags:
+          type: array
+          items:
+            type: string
+          description: |
+            New set of tags for the agent. Replaces existing tags entirely.
+            Each tag must match `^[a-z][a-z0-9_-]*$`.
+
+    DeleteAgentResponse:
+      type: object
+      required: [agent_id, deleted]
+      properties:
+        agent_id:
+          type: string
+        deleted:
+          $ref: "#/components/schemas/DeleteAgentResult"
+
+    DeleteAgentResult:
+      type: object
+      required: [evidence, alternatives, decisions, events, runs, grants, agents]
+      properties:
+        evidence:
+          type: integer
+          format: int64
+        alternatives:
+          type: integer
+          format: int64
+        decisions:
+          type: integer
+          format: int64
+        events:
+          type: integer
+          format: int64
+        runs:
+          type: integer
+          format: int64
+        grants:
+          type: integer
+          format: int64
+        agents:
+          type: integer
+          format: int64
+
+    # ── Access grant schemas ─────────────────────────────────────────
+    AccessGrant:
+      type: object
+      required: [id, org_id, grantor_id, grantee_id, resource_type, permission, granted_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        grantor_id:
+          type: string
+          format: uuid
+        grantee_id:
+          type: string
+          format: uuid
+        resource_type:
+          type: string
+        resource_id:
+          type: string
+        permission:
+          type: string
+        granted_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+
+    CreateGrantRequest:
+      type: object
+      required: [grantee_agent_id, resource_type, permission]
+      properties:
+        grantee_agent_id:
+          type: string
+        resource_type:
+          type: string
+        resource_id:
+          type: string
+        permission:
+          type: string
+        expires_at:
+          type: string
+          description: RFC 3339 timestamp.
+
+    # ── Run schemas ──────────────────────────────────────────────────
+    RunStatus:
+      type: string
+      enum: [running, completed, failed]
+
+    AgentRun:
+      type: object
+      required: [id, agent_id, org_id, status, started_at, metadata, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+        org_id:
+          type: string
+          format: uuid
+        trace_id:
+          type: string
+        parent_run_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/RunStatus"
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+
+    CreateRunRequest:
+      type: object
+      required: [agent_id]
+      properties:
+        agent_id:
+          type: string
+        trace_id:
+          type: string
+        parent_run_id:
+          type: string
+          format: uuid
+        metadata:
+          type: object
+          additionalProperties: true
+
+    CompleteRunRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [completed, failed]
+        metadata:
+          type: object
+          additionalProperties: true
+
+    # ── Event schemas ────────────────────────────────────────────────
+    EventType:
+      type: string
+      enum:
+        - AgentRunStarted
+        - AgentRunCompleted
+        - AgentRunFailed
+        - DecisionStarted
+        - AlternativeConsidered
+        - EvidenceGathered
+        - ReasoningStepCompleted
+        - DecisionMade
+        - DecisionRevised
+        - ToolCallStarted
+        - ToolCallCompleted
+        - AgentHandoff
+        - ConsensusRequested
+        - ConflictDetected
+
+    AgentEvent:
+      type: object
+      required: [id, run_id, org_id, event_type, sequence_num, occurred_at, agent_id, payload, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        event_type:
+          $ref: "#/components/schemas/EventType"
+        sequence_num:
+          type: integer
+          format: int64
+        occurred_at:
+          type: string
+          format: date-time
+        agent_id:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+
+    EventInput:
+      type: object
+      required: [event_type, payload]
+      properties:
+        event_type:
+          $ref: "#/components/schemas/EventType"
+        occurred_at:
+          type: string
+          format: date-time
+        payload:
+          type: object
+          additionalProperties: true
+
+    AppendEventsRequest:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/EventInput"
+
+    # ── Decision schemas ─────────────────────────────────────────────
+    Decision:
+      type: object
+      required:
+        - id
+        - run_id
+        - agent_id
+        - org_id
+        - decision_type
+        - outcome
+        - confidence
+        - metadata
+        - quality_score
+        - valid_from
+        - transaction_time
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+        org_id:
+          type: string
+          format: uuid
+        decision_type:
+          type: string
+        outcome:
+          type: string
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        reasoning:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        quality_score:
+          type: number
+          format: float
+        precedent_ref:
+          type: string
+          format: uuid
+        valid_from:
+          type: string
+          format: date-time
+        valid_to:
+          type: string
+          format: date-time
+        transaction_time:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        alternatives:
+          type: array
+          items:
+            $ref: "#/components/schemas/Alternative"
+        evidence:
+          type: array
+          items:
+            $ref: "#/components/schemas/Evidence"
+
+    Alternative:
+      type: object
+      required: [id, decision_id, label, selected, metadata, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        decision_id:
+          type: string
+          format: uuid
+        label:
+          type: string
+        score:
+          type: number
+          format: float
+        selected:
+          type: boolean
+        rejection_reason:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+
+    SourceType:
+      type: string
+      pattern: '^[a-z][a-z0-9_]*$'
+      description: |
+        Type of evidence source. Common values: document, api_response,
+        agent_output, user_input, search_result, tool_output, memory,
+        database_query. Any lowercase alphanumeric string with underscores
+        is accepted.
+      example: "document"
+
+    Evidence:
+      type: object
+      required: [id, decision_id, org_id, source_type, content, metadata, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        decision_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        source_type:
+          $ref: "#/components/schemas/SourceType"
+        source_uri:
+          type: string
+        content:
+          type: string
+        relevance_score:
+          type: number
+          format: float
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+
+    DecisionConflict:
+      type: object
+      required:
+        - decision_a_id
+        - decision_b_id
+        - org_id
+        - agent_a
+        - agent_b
+        - run_a
+        - run_b
+        - decision_type
+        - outcome_a
+        - outcome_b
+        - confidence_a
+        - confidence_b
+        - decided_at_a
+        - decided_at_b
+        - detected_at
+      properties:
+        decision_a_id:
+          type: string
+          format: uuid
+        decision_b_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        agent_a:
+          type: string
+        agent_b:
+          type: string
+        run_a:
+          type: string
+          format: uuid
+        run_b:
+          type: string
+          format: uuid
+        decision_type:
+          type: string
+        outcome_a:
+          type: string
+        outcome_b:
+          type: string
+        confidence_a:
+          type: number
+          format: float
+        confidence_b:
+          type: number
+          format: float
+        reasoning_a:
+          type: string
+        reasoning_b:
+          type: string
+        decided_at_a:
+          type: string
+          format: date-time
+        decided_at_b:
+          type: string
+          format: date-time
+        detected_at:
+          type: string
+          format: date-time
+
+    # ── Trace schemas ────────────────────────────────────────────────
+    TraceRequest:
+      type: object
+      required: [agent_id, decision]
+      properties:
+        agent_id:
+          type: string
+        trace_id:
+          type: string
+        decision:
+          $ref: "#/components/schemas/TraceDecision"
+        precedent_ref:
+          type: string
+          format: uuid
+        metadata:
+          type: object
+          additionalProperties: true
+
+    TraceDecision:
+      type: object
+      required: [decision_type, outcome, confidence]
+      properties:
+        decision_type:
+          type: string
+        outcome:
+          type: string
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        reasoning:
+          type: string
+        alternatives:
+          type: array
+          items:
+            $ref: "#/components/schemas/TraceAlternative"
+        evidence:
+          type: array
+          items:
+            $ref: "#/components/schemas/TraceEvidence"
+
+    TraceAlternative:
+      type: object
+      required: [label, selected]
+      properties:
+        label:
+          type: string
+        score:
+          type: number
+          format: float
+        selected:
+          type: boolean
+        rejection_reason:
+          type: string
+
+    TraceEvidence:
+      type: object
+      required: [source_type, content]
+      properties:
+        source_type:
+          type: string
+        source_uri:
+          type: string
+        content:
+          type: string
+        relevance_score:
+          type: number
+          format: float
+
+    # ── Query schemas ────────────────────────────────────────────────
+    QueryFilters:
+      type: object
+      properties:
+        agent_id:
+          type: array
+          items:
+            type: string
+        run_id:
+          type: string
+          format: uuid
+        decision_type:
+          type: string
+        confidence_min:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        outcome:
+          type: string
+        time_range:
+          $ref: "#/components/schemas/TimeRange"
+
+    TimeRange:
+      type: object
+      properties:
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+
+    QueryRequest:
+      type: object
+      required: [filters]
+      properties:
+        filters:
+          $ref: "#/components/schemas/QueryFilters"
+        include:
+          type: array
+          items:
+            type: string
+            enum: [alternatives, evidence]
+          description: Related data to include in the response.
+        order_by:
+          type: string
+        order_dir:
+          type: string
+          enum: [asc, desc]
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        offset:
+          type: integer
+          minimum: 0
+
+    TemporalQueryRequest:
+      type: object
+      required: [as_of, filters]
+      properties:
+        as_of:
+          type: string
+          format: date-time
+          description: Point-in-time for bi-temporal query.
+        filters:
+          $ref: "#/components/schemas/QueryFilters"
+
+    # ── Search schemas ───────────────────────────────────────────────
+    SearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+        semantic:
+          type: boolean
+          default: false
+        filters:
+          $ref: "#/components/schemas/QueryFilters"
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 1000
+
+    SearchResult:
+      type: object
+      required: [decision, similarity_score]
+      properties:
+        decision:
+          $ref: "#/components/schemas/Decision"
+        similarity_score:
+          type: number
+          format: float
+
+    # ── Check schemas ────────────────────────────────────────────────
+    CheckRequest:
+      type: object
+      required: [decision_type]
+      properties:
+        decision_type:
+          type: string
+        query:
+          type: string
+        agent_id:
+          type: string
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 1000
+
+    CheckResponse:
+      type: object
+      required: [has_precedent, decisions]
+      properties:
+        has_precedent:
+          type: boolean
+        decisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Decision"
+        conflicts:
+          type: array
+          items:
+            $ref: "#/components/schemas/DecisionConflict"
+
+    # ── Health schemas ───────────────────────────────────────────────
+    HealthResponse:
+      type: object
+      required: [status, version, postgres, uptime_seconds]
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+        version:
+          type: string
+        postgres:
+          type: string
+          enum: [connected, disconnected]
+        qdrant:
+          type: string
+          enum: [connected, disconnected]
+          description: Qdrant vector search status. Only present when Qdrant is configured.
+        buffer_depth:
+          type: integer
+          description: Number of events currently buffered for batch insertion.
+        buffer_status:
+          type: string
+          enum: [ok, high, critical]
+          description: Health of the event buffer.
+        sse_broker:
+          type: string
+          enum: [running]
+          description: SSE broker status. Only present when the broker is active.
+        uptime_seconds:
+          type: integer
+          format: int64
+
+    # ── Inline response wrappers ─────────────────────────────────────
+    # These represent the `data` field contents in APIResponse envelopes.
+
+    TraceResponse:
+      type: object
+      required: [run_id, decision_id, event_count]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        decision_id:
+          type: string
+          format: uuid
+        event_count:
+          type: integer
+
+    AppendEventsResponse:
+      type: object
+      required: [accepted, event_ids]
+      properties:
+        accepted:
+          type: integer
+        event_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    GetRunResponse:
+      type: object
+      required: [run, events, decisions]
+      properties:
+        run:
+          $ref: "#/components/schemas/AgentRun"
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentEvent"
+        decisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Decision"
+
+    QueryResponse:
+      type: object
+      required: [decisions, total, count, limit, offset]
+      properties:
+        decisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Decision"
+        total:
+          type: integer
+        count:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    TemporalQueryResponse:
+      type: object
+      required: [as_of, decisions]
+      properties:
+        as_of:
+          type: string
+          format: date-time
+        decisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Decision"
+
+    AgentHistoryResponse:
+      type: object
+      required: [agent_id, decisions, total, limit, offset]
+      properties:
+        agent_id:
+          type: string
+        decisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Decision"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    RecentDecisionsResponse:
+      type: object
+      required: [decisions, total, count, limit]
+      properties:
+        decisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Decision"
+        total:
+          type: integer
+        count:
+          type: integer
+        limit:
+          type: integer
+
+    ConflictsResponse:
+      type: object
+      required: [conflicts, total, limit, offset]
+      properties:
+        conflicts:
+          type: array
+          items:
+            $ref: "#/components/schemas/DecisionConflict"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    SearchResponse:
+      type: object
+      required: [results, total]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchResult"
+        total:
+          type: integer
+
+    # ── Generic envelope wrappers (for typed $ref in path responses) ─
+    APIResponse_AuthTokenResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/AuthTokenResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_Agent:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/Agent"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_AgentList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Agent"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_DeleteAgentResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/DeleteAgentResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_AgentRun:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/AgentRun"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_GetRunResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/GetRunResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_AppendEventsResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/AppendEventsResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_TraceResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/TraceResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_QueryResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/QueryResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_TemporalQueryResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/TemporalQueryResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_AgentHistoryResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/AgentHistoryResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_RecentDecisionsResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/RecentDecisionsResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_ConflictsResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ConflictsResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_CheckResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/CheckResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_SearchResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/SearchResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_AccessGrant:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/AccessGrant"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_HealthResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/HealthResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    RevisionsResponse:
+      type: object
+      required: [decision_id, revisions, count]
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+        revisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Decision"
+        count:
+          type: integer
+
+    APIResponse_RevisionsResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/RevisionsResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    VerifyResponse:
+      type: object
+      required: [decision_id, valid, stored_hash, computed_hash]
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+        valid:
+          type: boolean
+          description: Whether the stored content hash matches the recomputed hash.
+        stored_hash:
+          type: string
+          description: The hash stored in the database.
+        computed_hash:
+          type: string
+          description: The hash recomputed from current field values.
+
+    APIResponse_VerifyResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/VerifyResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"

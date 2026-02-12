@@ -1,0 +1,18 @@
+apiVersion: v2
+name: akashi
+description: Decision trace layer for multi-agent AI systems
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - ai
+  - decisions
+  - audit
+  - mcp
+  - agents
+home: https://github.com/ashita-ai/akashi
+sources:
+  - https://github.com/ashita-ai/akashi
+maintainers:
+  - name: ashita-ai
+    url: https://github.com/ashita-ai

@@ -1,0 +1,85 @@
+{{- if .Values.pgbouncer.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "akashi.fullname" . }}-pgbouncer
+  labels:
+    {{- include "akashi.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pgbouncer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "akashi.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: pgbouncer
+  template:
+    metadata:
+      labels:
+        {{- include "akashi.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: pgbouncer
+    spec:
+      containers:
+        - name: pgbouncer
+          image: "{{ .Values.pgbouncer.image.repository }}:{{ .Values.pgbouncer.image.tag }}"
+          imagePullPolicy: {{ .Values.pgbouncer.image.pullPolicy }}
+          ports:
+            - name: pgbouncer
+              containerPort: 5432
+              protocol: TCP
+          env:
+            - name: DB_HOST
+              value: {{ .Values.database.host | quote }}
+            - name: DB_PORT
+              value: {{ .Values.database.port | quote }}
+            - name: DB_USER
+              value: {{ .Values.database.user | quote }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "akashi.fullname" . }}
+                  key: database-password
+            - name: DB_NAME
+              value: {{ .Values.database.name | quote }}
+            - name: POOL_MODE
+              value: {{ .Values.pgbouncer.poolMode | quote }}
+            - name: AUTH_TYPE
+              value: scram-sha-256
+            - name: SERVER_TLS_SSLMODE
+              value: {{ .Values.database.sslMode | quote }}
+            - name: MAX_CLIENT_CONN
+              value: {{ .Values.pgbouncer.maxClientConn | quote }}
+            - name: DEFAULT_POOL_SIZE
+              value: {{ .Values.pgbouncer.defaultPoolSize | quote }}
+          readinessProbe:
+            tcpSocket:
+              port: pgbouncer
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: pgbouncer
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          {{- with .Values.pgbouncer.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "akashi.fullname" . }}-pgbouncer
+  labels:
+    {{- include "akashi.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pgbouncer
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: pgbouncer
+      protocol: TCP
+      name: pgbouncer
+  selector:
+    {{- include "akashi.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: pgbouncer
+{{- end }}

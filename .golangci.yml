@@ -1,0 +1,27 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - errcheck
+    - gosec
+    - gocritic
+
+formatters:
+  enable:
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/ashita-ai/akashi
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

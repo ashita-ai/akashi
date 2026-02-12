@@ -1,0 +1,94 @@
+{{- if .Values.ollama.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "akashi.fullname" . }}-ollama
+  labels:
+    {{- include "akashi.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "akashi.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ollama
+  template:
+    metadata:
+      labels:
+        {{- include "akashi.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ollama
+    spec:
+      containers:
+        - name: ollama
+          image: "{{ .Values.ollama.image.repository }}:{{ .Values.ollama.image.tag }}"
+          imagePullPolicy: {{ .Values.ollama.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 11434
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /api/tags
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/tags
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          {{- with .Values.ollama.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .Values.ollama.persistence.enabled }}
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /root/.ollama
+          {{- end }}
+      {{- if .Values.ollama.persistence.enabled }}
+      volumes:
+        - name: ollama-data
+          persistentVolumeClaim:
+            claimName: {{ include "akashi.fullname" . }}-ollama
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "akashi.fullname" . }}-ollama
+  labels:
+    {{- include "akashi.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+spec:
+  type: ClusterIP
+  ports:
+    - port: 11434
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "akashi.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+{{- if .Values.ollama.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "akashi.fullname" . }}-ollama
+  labels:
+    {{- include "akashi.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.ollama.persistence.size }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,32 @@
+Akashi has been deployed.
+
+1. Get the application URL:
+{{- if .Values.ingress.enabled }}
+{{- range $host := .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}
+{{- end }}
+{{- else if contains "NodePort" .Values.service.type }}
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "akashi.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT
+{{- else if contains "LoadBalancer" .Values.service.type }}
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "akashi.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
+  echo http://$SERVICE_IP:{{ .Values.service.port }}
+{{- else }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "akashi.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  echo http://localhost:{{ .Values.service.port }}
+{{- end }}
+
+2. Health check:
+  curl http://localhost:{{ .Values.service.port }}/health
+
+{{- if .Values.ollama.enabled }}
+
+3. Pull the embedding model (first deploy only):
+  kubectl --namespace {{ .Release.Namespace }} exec deploy/{{ include "akashi.fullname" . }}-ollama -- ollama pull {{ .Values.ollama.model }}
+{{- end }}
+
+4. Get a JWT token for MCP:
+  curl -X POST http://localhost:{{ .Values.service.port }}/auth/token \
+    -H 'Content-Type: application/json' \
+    -d '{"agent_id": "admin", "api_key": "<your-admin-api-key>"}'

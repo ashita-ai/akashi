@@ -1,0 +1,62 @@
+# Binaries
+bin/
+/akashi
+/akashi-*
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+coverage.html
+
+# Build cache
+*.o
+*.a
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Scratchpad (temporary notes, drafts, not committed)
+scratchpad/
+
+# Node
+node_modules/
+
+# Docker volumes and runtime env files
+docker/data/
+docker/.env.*
+docker/*.test.yml
+docker-compose.override.yml
+
+# Generated index
+PROJECT_INDEX.md
+PROJECT_INDEX.json
+
+# Python virtual environments
+sdk/python/.venv/
+sdk/python/uv.lock
+__pycache__/
+*.pyc
+
+# Tool state
+.claude-flow/
+.swarm/

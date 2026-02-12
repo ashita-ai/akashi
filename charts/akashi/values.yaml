@@ -1,0 +1,136 @@
+# Akashi Helm Chart — default values.
+# Override per-environment with -f values-production.yaml, etc.
+
+# -- Akashi server
+replicaCount: 1
+
+image:
+  repository: ghcr.io/ashita-ai/akashi
+  tag: ""  # Defaults to Chart.appVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: akashi.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 75
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# -- Akashi configuration
+akashi:
+  port: "8080"
+  logLevel: info
+  # Admin API key for bootstrapping. Set via --set or external secret.
+  adminApiKey: ""
+
+# -- Database (TimescaleDB Cloud / any PostgreSQL)
+# Both URLs are required. DATABASE_URL goes through PgBouncer (if enabled).
+# NOTIFY_URL goes direct to Postgres for LISTEN/NOTIFY.
+database:
+  # Connection string for queries (routed through PgBouncer).
+  url: ""
+  # Direct connection string for LISTEN/NOTIFY (bypasses PgBouncer).
+  notifyUrl: ""
+  # Used by PgBouncer to connect to the upstream database.
+  host: ""
+  port: "5432"
+  user: ""
+  password: ""
+  name: ""
+  sslMode: require
+
+# -- PgBouncer (connection pooler, recommended for production)
+pgbouncer:
+  enabled: true
+  image:
+    repository: edoburu/pgbouncer
+    tag: v1.25.1-p0
+    pullPolicy: IfNotPresent
+  poolMode: transaction
+  maxClientConn: 1000
+  defaultPoolSize: 50
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+# -- Qdrant (vector search, optional — pgvector fallback if disabled)
+qdrant:
+  enabled: false
+  # External Qdrant Cloud URL (e.g., https://xyz.cloud.qdrant.io:6333)
+  url: ""
+  apiKey: ""
+  collection: akashi_decisions
+
+# -- Ollama (local embedding provider)
+ollama:
+  enabled: true
+  image:
+    repository: ollama/ollama
+    tag: latest
+    pullPolicy: IfNotPresent
+  model: mxbai-embed-large
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      memory: 4Gi
+  persistence:
+    enabled: true
+    size: 10Gi
+
+# -- Embedding configuration
+embedding:
+  # Provider: auto, openai, ollama, noop
+  provider: ollama
+  model: text-embedding-3-small
+  dimensions: "1024"
+  # OpenAI API key (only needed if provider=openai or auto).
+  openaiApiKey: ""
+
+# -- Observability (optional)
+observability:
+  otlpEndpoint: ""
+  serviceName: akashi
+
+# -- Base URL (used in generated links)
+baseUrl: ""
