@@ -375,11 +375,15 @@ func verifyAPIKey(ctx context.Context, db *storage.DB, credential string) (*auth
 			continue
 		}
 		// Matched — synthesize claims equivalent to a JWT.
-		return &auth.Claims{
+		// Subject must be set to the agent's internal UUID so that
+		// authz.LoadGrantedSet can parse it for grant-based access filtering.
+		claims := &auth.Claims{
 			AgentID: a.AgentID,
 			OrgID:   a.OrgID,
 			Role:    a.Role,
-		}, nil
+		}
+		claims.Subject = a.ID.String()
+		return claims, nil
 	}
 
 	if !verified {
