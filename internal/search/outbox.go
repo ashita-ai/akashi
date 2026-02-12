@@ -37,6 +37,8 @@ type DecisionForIndex struct {
 	QualityScore float32
 	ValidFrom    time.Time
 	Embedding    []float32
+	SessionID    *uuid.UUID
+	AgentContext map[string]any
 }
 
 // OutboxWorker polls the search_outbox table and syncs changes to Qdrant.
@@ -250,10 +252,32 @@ func (w *OutboxWorker) processUpserts(ctx context.Context, entries []outboxEntry
 		return
 	}
 
-	// Build Qdrant points.
+	// Build Qdrant points from fetched decisions.
 	points := make([]Point, 0, len(decisions))
 	for _, d := range decisions {
-		points = append(points, Point(d))
+		p := Point{
+			ID:           d.ID,
+			OrgID:        d.OrgID,
+			AgentID:      d.AgentID,
+			DecisionType: d.DecisionType,
+			Confidence:   d.Confidence,
+			QualityScore: d.QualityScore,
+			ValidFrom:    d.ValidFrom,
+			Embedding:    d.Embedding,
+			SessionID:    d.SessionID,
+		}
+		if d.AgentContext != nil {
+			if v, ok := d.AgentContext["tool"].(string); ok {
+				p.Tool = v
+			}
+			if v, ok := d.AgentContext["model"].(string); ok {
+				p.Model = v
+			}
+			if v, ok := d.AgentContext["repo"].(string); ok {
+				p.Repo = v
+			}
+		}
+		points = append(points, p)
 	}
 
 	if err := w.index.Upsert(ctx, points); err != nil {
@@ -328,7 +352,8 @@ func (w *OutboxWorker) failEntries(ctx context.Context, entries []outboxEntry, e
 
 func (w *OutboxWorker) fetchDecisionsForIndex(ctx context.Context, ids []uuid.UUID) ([]DecisionForIndex, error) {
 	rows, err := w.pool.Query(ctx,
-		`SELECT id, org_id, agent_id, decision_type, confidence, quality_score, valid_from, embedding
+		`SELECT id, org_id, agent_id, decision_type, confidence, quality_score, valid_from, embedding,
+		        session_id, agent_context
 		 FROM decisions
 		 WHERE id = ANY($1) AND valid_to IS NULL AND embedding IS NOT NULL`,
 		ids,
@@ -345,6 +370,7 @@ func (w *OutboxWorker) fetchDecisionsForIndex(ctx context.Context, ids []uuid.UU
 		if err := rows.Scan(
 			&d.ID, &d.OrgID, &d.AgentID, &d.DecisionType,
 			&d.Confidence, &d.QualityScore, &d.ValidFrom, &emb,
+			&d.SessionID, &d.AgentContext,
 		); err != nil {
 			return nil, fmt.Errorf("search outbox: scan decision: %w", err)
 		}

@@ -76,6 +76,7 @@ type TraceRequest struct {
 	Decision     TraceDecision  `json:"decision"`
 	PrecedentRef *uuid.UUID     `json:"precedent_ref,omitempty"` // decision that influenced this one
 	Metadata     map[string]any `json:"metadata,omitempty"`
+	Context      map[string]any `json:"context,omitempty"` // Agent context (model, task, repo, branch).
 }
 
 // TraceDecision is the decision portion of a trace convenience request.
