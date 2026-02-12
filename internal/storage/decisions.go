@@ -44,15 +44,20 @@ func (db *DB) CreateDecision(ctx context.Context, d model.Decision) (model.Decis
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if d.AgentContext == nil {
+		d.AgentContext = map[string]any{}
+	}
+
 	_, err = tx.Exec(ctx,
 		`INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome, confidence,
 		 reasoning, embedding, metadata, quality_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
 		d.ID, d.RunID, d.AgentID, d.OrgID, d.DecisionType, d.Outcome, d.Confidence,
 		d.Reasoning, d.Embedding, d.Metadata, d.QualityScore, d.PrecedentRef,
 		d.SupersedesID, d.ContentHash,
 		d.ValidFrom, d.ValidTo, d.TransactionTime, d.CreatedAt,
+		d.SessionID, d.AgentContext,
 	)
 	if err != nil {
 		return model.Decision{}, fmt.Errorf("storage: create decision: %w", err)
@@ -86,7 +91,7 @@ type GetDecisionOpts struct {
 func (db *DB) GetDecision(ctx context.Context, orgID, id uuid.UUID, opts GetDecisionOpts) (model.Decision, error) {
 	query := `SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at
+		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context
 		 FROM decisions WHERE id = $1 AND org_id = $2`
 	if opts.CurrentOnly {
 		query += ` AND valid_to IS NULL`
@@ -98,6 +103,7 @@ func (db *DB) GetDecision(ctx context.Context, orgID, id uuid.UUID, opts GetDeci
 		&d.Reasoning, &d.Metadata, &d.QualityScore, &d.PrecedentRef,
 		&d.SupersedesID, &d.ContentHash,
 		&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
+		&d.SessionID, &d.AgentContext,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -158,16 +164,20 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 		revised.Metadata = map[string]any{}
 	}
 	revised.ContentHash = integrity.ComputeContentHash(revised.ID, revised.DecisionType, revised.Outcome, revised.Confidence, revised.Reasoning, revised.ValidFrom)
+	if revised.AgentContext == nil {
+		revised.AgentContext = map[string]any{}
+	}
 
 	_, err = tx.Exec(ctx,
 		`INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome, confidence,
 		 reasoning, embedding, metadata, quality_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
 		revised.ID, revised.RunID, revised.AgentID, revised.OrgID, revised.DecisionType, revised.Outcome,
 		revised.Confidence, revised.Reasoning, revised.Embedding, revised.Metadata,
 		revised.QualityScore, revised.PrecedentRef, revised.SupersedesID, revised.ContentHash,
 		revised.ValidFrom, revised.ValidTo, revised.TransactionTime, revised.CreatedAt,
+		revised.SessionID, revised.AgentContext,
 	)
 	if err != nil {
 		return model.Decision{}, fmt.Errorf("storage: insert revised decision: %w", err)
@@ -245,7 +255,7 @@ func (db *DB) QueryDecisions(ctx context.Context, orgID uuid.UUID, req model.Que
 	selectQuery := fmt.Sprintf(
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at
+		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context
 		 FROM decisions%s ORDER BY %s %s LIMIT %d OFFSET %d`,
 		where, orderBy, orderDir, limit, offset,
 	)
@@ -319,7 +329,7 @@ func (db *DB) QueryDecisionsTemporal(ctx context.Context, orgID uuid.UUID, req m
 
 	query := `SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at
+		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context
 		 FROM decisions` + where + ` ORDER BY valid_from DESC` + limitClause
 
 	rows, err := db.pool.Query(ctx, query, args...)
@@ -377,7 +387,7 @@ func (db *DB) searchByFTS(ctx context.Context, orgID uuid.UUID, query string, fi
 	sql := fmt.Sprintf(
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at,
+		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context,
 		 ts_rank(search_vector, websearch_to_tsquery('english', $%d))
 		   * (0.6 + 0.3 * COALESCE(quality_score, 0))
 		   * (1.0 / (1.0 + EXTRACT(EPOCH FROM (NOW() - valid_from)) / 86400.0 / 90.0))
@@ -419,7 +429,7 @@ func (db *DB) searchByILIKE(ctx context.Context, orgID uuid.UUID, query string, 
 	sql := fmt.Sprintf(
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at,
+		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context,
 		 (0.6 + 0.3 * COALESCE(quality_score, 0))
 		   * (1.0 / (1.0 + EXTRACT(EPOCH FROM (NOW() - valid_from)) / 86400.0 / 90.0))
 		   AS relevance
@@ -448,6 +458,7 @@ func (db *DB) execSearchQuery(ctx context.Context, sql string, args []any) ([]mo
 			&d.Reasoning, &d.Metadata, &d.QualityScore, &d.PrecedentRef,
 			&d.SupersedesID, &d.ContentHash,
 			&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
+			&d.SessionID, &d.AgentContext,
 			&relevance,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan text search result: %w", err)
@@ -488,7 +499,7 @@ func (db *DB) GetDecisionsByAgent(ctx context.Context, orgID uuid.UUID, agentID 
 	query := fmt.Sprintf(
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at
+		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context
 		 FROM decisions%s ORDER BY valid_from DESC LIMIT %d OFFSET %d`,
 		where, limit, offset,
 	)
@@ -547,8 +558,28 @@ func buildDecisionWhereClause(orgID uuid.UUID, f model.QueryFilters, startArgIdx
 		if f.TimeRange.To != nil {
 			conditions = append(conditions, fmt.Sprintf("valid_from <= $%d", idx))
 			args = append(args, *f.TimeRange.To)
-			idx++ //nolint:ineffassign // keep idx consistent so future additions don't miscount
+			idx++
 		}
+	}
+	if f.SessionID != nil {
+		conditions = append(conditions, fmt.Sprintf("session_id = $%d", idx))
+		args = append(args, *f.SessionID)
+		idx++
+	}
+	if f.Tool != nil {
+		conditions = append(conditions, fmt.Sprintf("agent_context->>'tool' = $%d", idx))
+		args = append(args, *f.Tool)
+		idx++
+	}
+	if f.Model != nil {
+		conditions = append(conditions, fmt.Sprintf("agent_context->>'model' = $%d", idx))
+		args = append(args, *f.Model)
+		idx++
+	}
+	if f.Repo != nil {
+		conditions = append(conditions, fmt.Sprintf("agent_context->>'repo' = $%d", idx))
+		args = append(args, *f.Repo)
+		idx++ //nolint:ineffassign // keep idx consistent so future additions don't miscount
 	}
 
 	return " WHERE " + strings.Join(conditions, " AND "), args
@@ -570,7 +601,7 @@ func (db *DB) ExportDecisionsCursor(ctx context.Context, orgID uuid.UUID, filter
 	query := fmt.Sprintf(
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at
+		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context
 		 FROM decisions%s ORDER BY valid_from ASC, id ASC LIMIT %d`,
 		where, limit,
 	)
@@ -625,6 +656,7 @@ func scanDecisions(rows pgx.Rows) ([]model.Decision, error) {
 			&d.Reasoning, &d.Metadata, &d.QualityScore, &d.PrecedentRef,
 			&d.SupersedesID, &d.ContentHash,
 			&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
+			&d.SessionID, &d.AgentContext,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan decision: %w", err)
 		}
@@ -644,7 +676,7 @@ func (db *DB) GetDecisionsByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid
 	rows, err := db.pool.Query(ctx,
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at
+		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context
 		 FROM decisions
 		 WHERE org_id = $1 AND id = ANY($2) AND valid_to IS NULL`,
 		orgID, ids,
@@ -683,7 +715,7 @@ func (db *DB) GetDecisionRevisions(ctx context.Context, orgID, id uuid.UUID) ([]
 		-- Anchor: the target decision.
 		SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		       metadata, quality_score, precedent_ref, supersedes_id, content_hash,
-		       valid_from, valid_to, transaction_time, created_at, 0 AS depth
+		       valid_from, valid_to, transaction_time, created_at, session_id, agent_context, 0 AS depth
 		FROM decisions
 		WHERE id = $1 AND org_id = $2
 
@@ -692,7 +724,7 @@ func (db *DB) GetDecisionRevisions(ctx context.Context, orgID, id uuid.UUID) ([]
 		-- Walk forward: find decisions that supersede the current one.
 		SELECT d.id, d.run_id, d.agent_id, d.org_id, d.decision_type, d.outcome, d.confidence, d.reasoning,
 		       d.metadata, d.quality_score, d.precedent_ref, d.supersedes_id, d.content_hash,
-		       d.valid_from, d.valid_to, d.transaction_time, d.created_at, fc.depth + 1
+		       d.valid_from, d.valid_to, d.transaction_time, d.created_at, d.session_id, d.agent_context, fc.depth + 1
 		FROM decisions d
 		INNER JOIN forward_chain fc ON d.supersedes_id = fc.id
 		WHERE d.org_id = $2 AND fc.depth < 100
@@ -701,7 +733,7 @@ func (db *DB) GetDecisionRevisions(ctx context.Context, orgID, id uuid.UUID) ([]
 		-- Anchor: the target decision.
 		SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		       metadata, quality_score, precedent_ref, supersedes_id, content_hash,
-		       valid_from, valid_to, transaction_time, created_at, 0 AS depth
+		       valid_from, valid_to, transaction_time, created_at, session_id, agent_context, 0 AS depth
 		FROM decisions
 		WHERE id = $1 AND org_id = $2
 
@@ -710,7 +742,7 @@ func (db *DB) GetDecisionRevisions(ctx context.Context, orgID, id uuid.UUID) ([]
 		-- Walk backward: follow supersedes_id links.
 		SELECT d.id, d.run_id, d.agent_id, d.org_id, d.decision_type, d.outcome, d.confidence, d.reasoning,
 		       d.metadata, d.quality_score, d.precedent_ref, d.supersedes_id, d.content_hash,
-		       d.valid_from, d.valid_to, d.transaction_time, d.created_at, bc.depth + 1
+		       d.valid_from, d.valid_to, d.transaction_time, d.created_at, d.session_id, d.agent_context, bc.depth + 1
 		FROM decisions d
 		INNER JOIN backward_chain bc ON bc.supersedes_id = d.id
 		WHERE d.org_id = $2 AND bc.depth < 100
@@ -718,17 +750,17 @@ func (db *DB) GetDecisionRevisions(ctx context.Context, orgID, id uuid.UUID) ([]
 	all_revisions AS (
 		SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		       metadata, quality_score, precedent_ref, supersedes_id, content_hash,
-		       valid_from, valid_to, transaction_time, created_at
+		       valid_from, valid_to, transaction_time, created_at, session_id, agent_context
 		FROM forward_chain
 		UNION
 		SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		       metadata, quality_score, precedent_ref, supersedes_id, content_hash,
-		       valid_from, valid_to, transaction_time, created_at
+		       valid_from, valid_to, transaction_time, created_at, session_id, agent_context
 		FROM backward_chain
 	)
 	SELECT DISTINCT ON (id) id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 	       metadata, quality_score, precedent_ref, supersedes_id, content_hash,
-	       valid_from, valid_to, transaction_time, created_at
+	       valid_from, valid_to, transaction_time, created_at, session_id, agent_context
 	FROM all_revisions
 	ORDER BY id, valid_from ASC`
 

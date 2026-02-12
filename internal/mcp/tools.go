@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/google/uuid"
 	mcplib "github.com/mark3labs/mcp-go/mcp"
+	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/ashita-ai/akashi/internal/authz"
 	"github.com/ashita-ai/akashi/internal/ctxutil"
@@ -82,7 +84,7 @@ reasoning="Redis handles our expected QPS, TTL prevents stale reads"`),
 			mcplib.WithIdempotentHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 			mcplib.WithString("agent_id",
-				mcplib.Description("Your agent identifier — who is making this decision. Defaults to your authenticated identity if omitted."),
+				mcplib.Description(`Your role in this task — "reviewer", "coder", "planner", "security-auditor", or similar. Describes what you're doing, not who you authenticate as. Defaults to your authenticated identity if omitted.`),
 			),
 			mcplib.WithString("decision_type",
 				mcplib.Description("Category of decision. Common types: architecture, security, code_review, investigation, planning, assessment, trade_off, feature_scope, deployment, error_handling, model_selection, data_source. Any string is accepted."),
@@ -100,6 +102,12 @@ reasoning="Redis handles our expected QPS, TTL prevents stale reads"`),
 			),
 			mcplib.WithString("reasoning",
 				mcplib.Description("Your chain of thought. Why this choice? What trade-offs did you consider?"),
+			),
+			mcplib.WithString("model",
+				mcplib.Description(`The model powering you (e.g. "claude-opus-4-6", "gpt-4o"). Helps distinguish decisions by capability tier.`),
+			),
+			mcplib.WithString("task",
+				mcplib.Description(`What you're working on (e.g. "codebase review", "implement rate limiting"). Groups related decisions.`),
 			),
 		),
 		s.handleTrace,
@@ -306,8 +314,45 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		reasoningPtr = &reasoning
 	}
 
+	// Extract MCP session ID and client info from context.
+	var sessionID *uuid.UUID
+	agentContext := map[string]any{}
+
+	if session := mcpserver.ClientSessionFromContext(ctx); session != nil {
+		if sid, parseErr := uuid.Parse(session.SessionID()); parseErr == nil {
+			sessionID = &sid
+		}
+		if clientInfoSession, ok := session.(mcpserver.SessionWithClientInfo); ok {
+			info := clientInfoSession.GetClientInfo()
+			if info.Name != "" {
+				agentContext["tool"] = info.Name
+			}
+			if info.Version != "" {
+				agentContext["tool_version"] = info.Version
+			}
+		}
+	}
+
+	// Self-reported context from tool parameters.
+	if m := request.GetString("model", ""); m != "" {
+		agentContext["model"] = m
+	}
+	if t := request.GetString("task", ""); t != "" {
+		agentContext["task"] = t
+	}
+
+	// Operator from JWT claims: use the agent's display name if distinct from agent_id.
+	if claims != nil {
+		agent, agentErr := s.db.GetAgentByAgentID(ctx, orgID, claims.AgentID)
+		if agentErr == nil && agent.Name != "" && agent.Name != agent.AgentID {
+			agentContext["operator"] = agent.Name
+		}
+	}
+
 	result, err := s.decisionSvc.Trace(ctx, orgID, decisions.TraceInput{
-		AgentID: agentID,
+		AgentID:      agentID,
+		SessionID:    sessionID,
+		AgentContext: agentContext,
 		Decision: model.TraceDecision{
 			DecisionType: decisionType,
 			Outcome:      outcome,
@@ -364,6 +409,20 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 	}
 	if confMin := float32(request.GetFloat("confidence_min", 0)); confMin > 0 {
 		filters.ConfidenceMin = &confMin
+	}
+	if sidStr := request.GetString("session_id", ""); sidStr != "" {
+		if sid, parseErr := uuid.Parse(sidStr); parseErr == nil {
+			filters.SessionID = &sid
+		}
+	}
+	if tool := request.GetString("tool", ""); tool != "" {
+		filters.Tool = &tool
+	}
+	if m := request.GetString("model", ""); m != "" {
+		filters.Model = &m
+	}
+	if repo := request.GetString("repo", ""); repo != "" {
+		filters.Repo = &repo
 	}
 
 	limit := request.GetInt("limit", 10)
@@ -456,6 +515,17 @@ func (s *Server) handleRecent(ctx context.Context, request mcplib.CallToolReques
 	}
 	if dt := request.GetString("decision_type", ""); dt != "" {
 		filters.DecisionType = &dt
+	}
+	if sidStr := request.GetString("session_id", ""); sidStr != "" {
+		if sid, parseErr := uuid.Parse(sidStr); parseErr == nil {
+			filters.SessionID = &sid
+		}
+	}
+	if tool := request.GetString("tool", ""); tool != "" {
+		filters.Tool = &tool
+	}
+	if m := request.GetString("model", ""); m != "" {
+		filters.Model = &m
 	}
 
 	decs, _, err := s.decisionSvc.Recent(ctx, orgID, filters, limit, 0)

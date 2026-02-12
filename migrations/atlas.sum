@@ -1,4 +1,5 @@
-h1:ceEMvO7+NPjuXQvgyOo162e1UvVKsmacES8RdEHeido=
+h1:Zh6GXClDSasQBJ6kzRUcA90nAewune3I04U3QIxuyLA=
 001_initial.sql h1:CHP1Jr6Rx3DJnm5Ms4ZMCbI5f1mR1L/t0AytzkrWrYQ=
 022_full_text_search.sql h1:+tVYf3wB0yIXZlVof84iRrMphSyt2/9NSYPKF/DPVCw=
 023_fix_outbox_index.sql h1:qxDvX19cp/8leTbcj+1hrCv+UHKRnCpno2jfF1eYghw=
+024_composite_agent_identity.sql h1:BY9WpwmJQ5mx3xFbk8XRbfRKKCUD7zyWSkPVgTlOu3M=

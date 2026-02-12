@@ -40,6 +40,10 @@ type Decision struct {
 
 	CreatedAt time.Time `json:"created_at"`
 
+	// Composite agent identity (Spec 31): multi-dimensional trace attribution.
+	SessionID    *uuid.UUID     `json:"session_id,omitempty"`
+	AgentContext map[string]any `json:"agent_context,omitempty"`
+
 	// Joined data (populated by queries, not stored in decisions table).
 	Alternatives []Alternative `json:"alternatives,omitempty"`
 	Evidence     []Evidence    `json:"evidence,omitempty"`

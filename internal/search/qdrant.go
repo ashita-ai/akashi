@@ -34,6 +34,10 @@ type Point struct {
 	QualityScore float32
 	ValidFrom    time.Time
 	Embedding    []float32
+	SessionID    *uuid.UUID
+	Tool         string
+	Model        string
+	Repo         string
 }
 
 // QdrantIndex implements Searcher backed by Qdrant Cloud.
@@ -134,7 +138,7 @@ func (q *QdrantIndex) EnsureCollection(ctx context.Context) error {
 
 	// Create payload indexes for filtered search.
 	keywordType := qdrant.FieldType_FieldTypeKeyword
-	for _, field := range []string{"org_id", "agent_id", "decision_type"} {
+	for _, field := range []string{"org_id", "agent_id", "decision_type", "session_id", "tool", "model", "repo"} {
 		if _, err := q.client.CreateFieldIndex(ctx, &qdrant.CreateFieldIndexCollection{
 			CollectionName: q.collection,
 			FieldName:      field,
@@ -196,6 +200,19 @@ func (q *QdrantIndex) Search(ctx context.Context, orgID uuid.UUID, embedding []f
 		}
 	}
 
+	if filters.SessionID != nil {
+		must = append(must, qdrant.NewMatch("session_id", filters.SessionID.String()))
+	}
+	if filters.Tool != nil {
+		must = append(must, qdrant.NewMatch("tool", *filters.Tool))
+	}
+	if filters.Model != nil {
+		must = append(must, qdrant.NewMatch("model", *filters.Model))
+	}
+	if filters.Repo != nil {
+		must = append(must, qdrant.NewMatch("repo", *filters.Repo))
+	}
+
 	fetchLimit := uint64(limit) * 3 //nolint:gosec // limit is bounded by caller (max 1000)
 	scored, err := q.client.Query(ctx, &qdrant.QueryPoints{
 		CollectionName: q.collection,
@@ -243,6 +260,18 @@ func (q *QdrantIndex) Upsert(ctx context.Context, points []Point) error {
 			"confidence":      float64(p.Confidence),
 			"quality_score":   float64(p.QualityScore),
 			"valid_from_unix": float64(p.ValidFrom.Unix()),
+		}
+		if p.SessionID != nil {
+			payload["session_id"] = p.SessionID.String()
+		}
+		if p.Tool != "" {
+			payload["tool"] = p.Tool
+		}
+		if p.Model != "" {
+			payload["model"] = p.Model
+		}
+		if p.Repo != "" {
+			payload["repo"] = p.Repo
 		}
 		qdrantPoints[i] = &qdrant.PointStruct{
 			Id:      qdrant.NewID(p.ID.String()),
