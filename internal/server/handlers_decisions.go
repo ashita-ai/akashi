@@ -93,7 +93,7 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	preFilterCount := len(decisions)
-	decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, decisions)
+	decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, decisions, h.grantCache)
 	if err != nil {
 		h.writeInternalError(w, r, "authorization check failed", err)
 		return
@@ -134,7 +134,7 @@ func (h *Handlers) HandleTemporalQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, decisions)
+	decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, decisions, h.grantCache)
 	if err != nil {
 		h.writeInternalError(w, r, "authorization check failed", err)
 		return
@@ -216,7 +216,7 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err = filterSearchResultsByAccess(r.Context(), h.db, claims, results)
+	results, err = filterSearchResultsByAccess(r.Context(), h.db, claims, results, h.grantCache)
 	if err != nil {
 		h.writeInternalError(w, r, "authorization check failed", err)
 		return
@@ -250,7 +250,7 @@ func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp.Decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, resp.Decisions)
+	resp.Decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, resp.Decisions, h.grantCache)
 	if err != nil {
 		h.writeInternalError(w, r, "authorization check failed", err)
 		return
@@ -281,7 +281,7 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 	}
 
 	preFilterCount := len(decisions)
-	decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, decisions)
+	decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, decisions, h.grantCache)
 	if err != nil {
 		h.writeInternalError(w, r, "authorization check failed", err)
 		return
@@ -324,7 +324,7 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	preFilterCount := len(conflicts)
-	conflicts, err = filterConflictsByAccess(r.Context(), h.db, claims, conflicts)
+	conflicts, err = filterConflictsByAccess(r.Context(), h.db, claims, conflicts, h.grantCache)
 	if err != nil {
 		h.writeInternalError(w, r, "authorization check failed", err)
 		return
@@ -367,7 +367,7 @@ func (h *Handlers) HandleDecisionRevisions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	revisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, revisions)
+	revisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, revisions, h.grantCache)
 	if err != nil {
 		h.writeInternalError(w, r, "authorization check failed", err)
 		return

@@ -72,6 +72,11 @@ Metrics are exported via OTLP/HTTP to the endpoint specified by `OTEL_EXPORTER_O
 |--------------------------------|-----------|------|-----------------------------------------------------------|
 | `http.server.request_count`    | Counter   | 1    | `http.method`, `http.route`, `http.status_code`, `akashi.agent_id` |
 | `http.server.duration`         | Histogram | ms   | `http.method`, `http.route`, `http.status_code`, `akashi.agent_id` |
+| `akashi.buffer.depth`          | Gauge     | 1    | _(none)_ |
+| `akashi.buffer.dropped`        | Gauge     | 1    | _(none)_ |
+| `akashi.embedding.duration`    | Histogram | ms   | _(none)_ |
+| `akashi.search.duration`       | Histogram | ms   | _(none)_ |
+| `akashi.outbox.depth`          | Gauge     | 1    | _(none, via pg_class.reltuples estimate)_ |
 
 Trace spans include `http.method`, `http.url`, `http.request_id`, `http.status_code`, `akashi.agent_id`, and `akashi.role`.
 
@@ -89,6 +94,7 @@ Trace spans include `http.method`, `http.url`, `http.request_id`, `http.status_c
 | Event buffer dropped events           | Log line `"trace: dropping events"` (structured field `dropped`)           | Any occurrence              | Critical |
 | PostgreSQL pool exhaustion            | pgxpool metrics or connection wait time                                    | > 80% utilization           | Warning  |
 | Qdrant health                         | `/health` response `qdrant: "disconnected"`                                | Sustained > 5 min           | Warning  |
+| Rate limit 429s                       | `rate(http.server.request_count{http.status_code="429"})`                  | > 10/s sustained            | Warning  |
 
 ### Log-Based Alerts
 
@@ -102,6 +108,8 @@ Akashi logs JSON to stdout. Key log messages to monitor:
 | `"search outbox: qdrant upsert"` + `error`      | Qdrant write failure (entries will retry)             |
 | `"storage: notify reconnect attempt failed"`    | LISTEN/NOTIFY connection dropped, attempting recovery |
 | `"conflict refresh failed"`                     | Materialized view refresh failed                      |
+| `"rate limiter error, permitting request"`      | Limiter malfunction; request allowed (fail-open)      |
+| `"rate limit exceeded"`                         | Agent hit rate limit; request rejected with 429       |
 
 ---
 
@@ -194,6 +202,38 @@ Akashi logs JSON to stdout. Key log messages to monitor:
 4. The outbox worker will pick them up on the next poll cycle.
 
 **Automatic cleanup**: Dead-letter entries older than 7 days are automatically deleted by the outbox worker (checked hourly).
+
+### Rate Limiting (429s)
+
+**Symptoms**: Agents receiving `429 Too Many Requests` responses. Log line: `"rate limit exceeded"`.
+
+**Default limits**: 100 requests/second sustained, 200 burst per agent per org.
+
+**Tuning**:
+
+```sh
+AKASHI_RATE_LIMIT_RPS=200      # Double the sustained rate
+AKASHI_RATE_LIMIT_BURST=500    # Allow larger bursts
+```
+
+**Disable entirely** (not recommended for production):
+
+```sh
+AKASHI_RATE_LIMIT_ENABLED=false
+```
+
+Platform admins are exempt from rate limiting. If a specific agent needs higher limits, either raise the global limit or promote the agent to platform_admin.
+
+### Embedding Failures
+
+**Symptoms**: Log line `"embedding: ... error"`. Decisions stored with `embedding = NULL`. Semantic search returns fewer results than expected.
+
+**Common causes**:
+- Ollama is down or unreachable (check `OLLAMA_URL`)
+- Model not pulled (`docker exec akashi-ollama ollama pull mxbai-embed-large`)
+- Embedding dimension mismatch between config and model output
+
+**Recovery**: Fix the provider, then restart the server. The startup backfill job will embed any decisions that have `embedding IS NULL`.
 
 ---
 

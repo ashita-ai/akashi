@@ -99,7 +99,7 @@ func TestMain(m *testing.M) {
 	buf := trace.NewBuffer(db, logger, 1000, 50*time.Millisecond)
 	buf.Start(ctx)
 
-	mcpSrv := mcp.New(db, decisionSvc, logger, "test")
+	mcpSrv := mcp.New(db, decisionSvc, nil, logger, "test")
 	srv := server.New(server.ServerConfig{
 		DB:                  db,
 		JWTMgr:              jwtMgr,

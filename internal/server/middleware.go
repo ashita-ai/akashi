@@ -259,10 +259,13 @@ func baggageMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// noAuthPaths are exact paths that skip JWT authentication entirely.
-// WARNING: Every authenticated route prefix (/v1/, /mcp) MUST appear
-// in the guard below. Adding a new prefix without updating the guard will silently
-// bypass authentication.
+// authenticatedPrefixes is the positive allowlist of path prefixes that require
+// valid credentials. Every new API prefix MUST be added here — unlisted
+// prefixes default to "no auth required", which is safe (they serve only
+// static assets and public endpoints).
+var authenticatedPrefixes = []string{"/v1/", "/mcp"}
+
+// noAuthPaths are exact paths under authenticated prefixes that skip JWT auth.
 var noAuthPaths = map[string]bool{
 	"/auth/token":   true,
 	"/auth/refresh": true,
@@ -283,23 +286,27 @@ var noAuthPaths = map[string]bool{
 //     refresh is impractical)
 func authMiddleware(jwtMgr *auth.JWTManager, db *storage.DB, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// SPA static assets and client-side routes don't need auth.
-		// Only paths under authenticated prefixes require JWT validation.
-		// WARNING: Every authenticated route prefix MUST appear in this guard.
-		if !strings.HasPrefix(r.URL.Path, "/v1/") &&
-			!strings.HasPrefix(r.URL.Path, "/mcp") &&
-			!noAuthPaths[r.URL.Path] {
-			next.ServeHTTP(w, r)
-			return
-		}
-
 		// Exact-match allowlist for public endpoints.
 		if noAuthPaths[r.URL.Path] {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// All other paths require valid credentials.
+		// Only paths under authenticated prefixes require credentials.
+		// Unlisted paths (SPA static assets, client-side routes) pass through.
+		needsAuth := false
+		for _, prefix := range authenticatedPrefixes {
+			if strings.HasPrefix(r.URL.Path, prefix) {
+				needsAuth = true
+				break
+			}
+		}
+		if !needsAuth {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// All authenticated-prefix paths require valid credentials.
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
 			writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "missing authorization header")
