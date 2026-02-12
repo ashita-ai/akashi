@@ -22,6 +22,8 @@ type CreateTraceParams struct {
 	Decision     model.Decision
 	Alternatives []model.Alternative
 	Evidence     []model.Evidence
+	SessionID    *uuid.UUID
+	AgentContext map[string]any
 }
 
 // CreateTraceTx creates a run, decision, alternatives, evidence, and completes
@@ -65,6 +67,13 @@ func (db *DB) CreateTraceTx(ctx context.Context, params CreateTraceParams) (mode
 	d.RunID = run.ID
 	d.AgentID = params.AgentID
 	d.OrgID = params.OrgID
+	d.SessionID = params.SessionID
+	if params.AgentContext != nil {
+		d.AgentContext = params.AgentContext
+	}
+	if d.AgentContext == nil {
+		d.AgentContext = map[string]any{}
+	}
 	if d.ValidFrom.IsZero() {
 		d.ValidFrom = now
 	}
@@ -81,12 +90,13 @@ func (db *DB) CreateTraceTx(ctx context.Context, params CreateTraceParams) (mode
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome, confidence,
 		 reasoning, embedding, metadata, quality_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
 		d.ID, d.RunID, d.AgentID, d.OrgID, d.DecisionType, d.Outcome, d.Confidence,
 		d.Reasoning, d.Embedding, d.Metadata, d.QualityScore, d.PrecedentRef,
 		d.SupersedesID, d.ContentHash,
 		d.ValidFrom, d.ValidTo, d.TransactionTime, d.CreatedAt,
+		d.SessionID, d.AgentContext,
 	); err != nil {
 		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: create decision in trace tx: %w", err)
 	}

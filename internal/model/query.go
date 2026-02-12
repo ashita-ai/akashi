@@ -14,6 +14,10 @@ type QueryFilters struct {
 	ConfidenceMin *float32   `json:"confidence_min,omitempty"`
 	Outcome       *string    `json:"outcome,omitempty"`
 	TimeRange     *TimeRange `json:"time_range,omitempty"`
+	SessionID     *uuid.UUID `json:"session_id,omitempty"`
+	Tool          *string    `json:"tool,omitempty"`
+	Model         *string    `json:"model,omitempty"`
+	Repo          *string    `json:"repo,omitempty"`
 }
 
 // TimeRange defines a time range for queries.
