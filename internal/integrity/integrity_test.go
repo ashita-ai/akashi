@@ -1,6 +1,8 @@
 package integrity
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
@@ -176,5 +178,23 @@ func TestBuildMerkleRoot_OddLeafCount(t *testing.T) {
 	}
 	if len(root) != 64 {
 		t.Fatalf("expected 64-char hex SHA-256 root, got %d chars", len(root))
+	}
+}
+
+func TestHashPair_DomainSeparation(t *testing.T) {
+	// hashPair uses a 0x01 domain separator for internal Merkle tree nodes (RFC 6962).
+	// Verify that plain SHA-256(a || b) differs from hashPair(a, b).
+	a, b := "leaf_hash_a", "leaf_hash_b"
+
+	withDomain := hashPair(a, b)
+
+	plainSum := sha256.Sum256([]byte(a + b))
+	withoutDomain := hex.EncodeToString(plainSum[:])
+
+	if withDomain == withoutDomain {
+		t.Fatal("hashPair should differ from plain SHA-256(a||b) due to domain separator")
+	}
+	if len(withDomain) != 64 {
+		t.Fatalf("expected 64-char hex hash, got %d chars", len(withDomain))
 	}
 }

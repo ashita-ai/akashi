@@ -88,7 +88,7 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 	_, err = tx.Exec(ctx,
 		`INSERT INTO search_outbox (decision_id, org_id, operation)
 		 SELECT id, org_id, 'delete' FROM decisions WHERE org_id = $1 AND agent_id = $2
-		 ON CONFLICT (decision_id, operation) DO NOTHING`,
+		 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
 		orgID, agentID)
 	if err != nil {
 		return DeleteAgentResult{}, fmt.Errorf("storage: queue search outbox deletes: %w", err)

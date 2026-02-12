@@ -423,7 +423,7 @@ func (s *Server) handleRecent(ctx context.Context, request mcplib.CallToolReques
 		filters.DecisionType = &dt
 	}
 
-	decs, _, err := s.decisionSvc.Recent(ctx, orgID, filters, limit)
+	decs, _, err := s.decisionSvc.Recent(ctx, orgID, filters, limit, 0)
 	if err != nil {
 		return errorResult(fmt.Sprintf("query failed: %v", err)), nil
 	}

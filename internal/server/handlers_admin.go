@@ -44,9 +44,9 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	callerRole := ClaimsFromContext(r.Context()).Role
-	if model.RoleRank(callerRole) < model.RoleRank(req.Role) {
+	if model.RoleRank(callerRole) <= model.RoleRank(req.Role) {
 		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden,
-			"cannot create agent with role higher than your own")
+			"cannot create agent with role equal to or higher than your own")
 		return
 	}
 
@@ -96,10 +96,17 @@ func (h *Handlers) HandleListAgents(w http.ResponseWriter, r *http.Request) {
 		h.writeInternalError(w, r, "failed to list agents", err)
 		return
 	}
+	total, err := h.db.CountAgents(r.Context(), orgID)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to count agents", err)
+		return
+	}
 	writeJSON(w, r, http.StatusOK, map[string]any{
-		"agents": agents,
-		"limit":  limit,
-		"offset": offset,
+		"agents":   agents,
+		"total":    total,
+		"limit":    limit,
+		"offset":   offset,
+		"has_more": offset+len(agents) < total,
 	})
 }
 

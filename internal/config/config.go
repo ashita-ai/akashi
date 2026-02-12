@@ -83,7 +83,7 @@ func Load() (Config, error) {
 		QdrantAPIKey:       envStr("QDRANT_API_KEY", ""),
 		QdrantCollection:   envStr("QDRANT_COLLECTION", "akashi_decisions"),
 		LogLevel:           envStr("AKASHI_LOG_LEVEL", "info"),
-		CORSAllowedOrigins: envStrSlice("AKASHI_CORS_ALLOWED_ORIGINS", []string{"*"}),
+		CORSAllowedOrigins: envStrSlice("AKASHI_CORS_ALLOWED_ORIGINS", nil),
 	}
 
 	// Integer fields.

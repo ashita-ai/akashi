@@ -187,9 +187,11 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 		s.logger.Error("trace: notify subscribers", "error", err)
 	}
 
-	// 7. Usage counter is now incremented atomically inside CreateTraceTx
-	// (via QuotaLimit/BillingPeriod params) to eliminate the TOCTOU race.
-	// No separate IncrementDecisionCount call needed.
+	// 7. Billing: the decision count for quota enforcement is checked by the
+	// caller (HandleTrace) before invoking Trace. This is a known TOCTOU gap
+	// (P1-8) — concurrent traces can slightly overshoot the quota. Moving the
+	// check inside CreateTraceTx requires passing billing params into the
+	// storage layer, tracked as future work.
 
 	eventCount := len(alts) + len(evs) + 1 // +1 for the decision itself
 	return TraceResult{
@@ -327,13 +329,14 @@ func (s *Service) Query(ctx context.Context, orgID uuid.UUID, req model.QueryReq
 	return s.db.QueryDecisions(ctx, orgID, req)
 }
 
-// Recent returns recent decisions with optional filters.
-func (s *Service) Recent(ctx context.Context, orgID uuid.UUID, filters model.QueryFilters, limit int) ([]model.Decision, int, error) {
+// Recent returns recent decisions with optional filters and pagination.
+func (s *Service) Recent(ctx context.Context, orgID uuid.UUID, filters model.QueryFilters, limit, offset int) ([]model.Decision, int, error) {
 	return s.db.QueryDecisions(ctx, orgID, model.QueryRequest{
 		Filters:  filters,
 		Include:  []string{"alternatives"},
 		OrderBy:  "valid_from",
 		OrderDir: "desc",
 		Limit:    limit,
+		Offset:   offset,
 	})
 }
