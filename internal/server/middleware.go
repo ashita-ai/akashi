@@ -23,6 +23,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/ctxutil"
 	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/ratelimit"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
@@ -473,6 +474,47 @@ func recoveryMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
 				writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "internal server error")
 			}
 		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// rateLimitMiddleware enforces per-key rate limiting on authenticated requests.
+// Unauthenticated paths pass through (auth middleware limits which paths skip auth).
+// Platform admins bypass rate limiting as a safety valve.
+// On limiter error, the request is permitted (fail-open).
+func rateLimitMiddleware(limiter ratelimit.Limiter, logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		claims := ctxutil.ClaimsFromContext(r.Context())
+		if claims == nil {
+			// Unauthenticated path — let it through; auth middleware
+			// already controls which paths skip authentication.
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Platform admins bypass rate limiting.
+		if claims.Role == model.RolePlatformAdmin {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		key := "org:" + claims.OrgID.String() + ":agent:" + claims.AgentID
+		allowed, err := limiter.Allow(r.Context(), key)
+		if err != nil {
+			// Fail-open: a broken limiter should not block all traffic.
+			logger.Warn("rate limiter error, permitting request",
+				"error", err,
+				"key", key,
+				"request_id", RequestIDFromContext(r.Context()))
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !allowed {
+			w.Header().Set("Retry-After", "1")
+			writeError(w, r, http.StatusTooManyRequests, model.ErrCodeRateLimited, "rate limit exceeded")
+			return
+		}
+
 		next.ServeHTTP(w, r)
 	})
 }
