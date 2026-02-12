@@ -37,12 +37,20 @@ type Provider interface {
 	Dimensions() int
 }
 
+// openAIMaxInputChars is a safe default for text-embedding-3-small (8191 tokens).
+// At ~4 chars/token for English prose, 30000 chars ≈ 7500 tokens — well within the
+// 8191-token limit. Code-heavy content tokenizes at ~2-3 chars/token, but even at
+// 3 chars/token this yields ~10000 tokens, which exceeds the limit; the API returns
+// a clear error in that case. This is a first-pass safety net, not an exact guarantee.
+const openAIMaxInputChars = 30000
+
 // OpenAIProvider generates embeddings using the OpenAI API.
 type OpenAIProvider struct {
-	apiKey     string
-	model      string
-	httpClient *http.Client
-	dimensions int
+	apiKey        string
+	model         string
+	httpClient    *http.Client
+	dimensions    int
+	maxInputChars int
 }
 
 // NewOpenAIProvider creates a new OpenAI embedding provider.
@@ -62,7 +70,8 @@ func NewOpenAIProvider(apiKey, model string, dimensions int) (*OpenAIProvider, e
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		dimensions: dimensions,
+		dimensions:    dimensions,
+		maxInputChars: openAIMaxInputChars,
 	}, nil
 }
 
@@ -102,12 +111,18 @@ func (p *OpenAIProvider) Embed(ctx context.Context, text string) (pgvector.Vecto
 }
 
 // EmbedBatch generates embeddings for multiple texts in a single API call.
+// Texts exceeding maxInputChars are truncated at a word boundary before sending.
 func (p *OpenAIProvider) EmbedBatch(ctx context.Context, texts []string) ([]pgvector.Vector, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
 
-	reqBody, err := json.Marshal(openAIRequest{Input: texts, Model: p.model, Dimensions: p.dimensions})
+	truncated := make([]string, len(texts))
+	for i, t := range texts {
+		truncated[i] = truncateText(t, p.maxInputChars)
+	}
+
+	reqBody, err := json.Marshal(openAIRequest{Input: truncated, Model: p.model, Dimensions: p.dimensions})
 	if err != nil {
 		return nil, fmt.Errorf("embedding: marshal request: %w", err)
 	}
@@ -188,4 +203,24 @@ func (p *NoopProvider) Embed(_ context.Context, _ string) (pgvector.Vector, erro
 // EmbedBatch returns ErrNoProvider.
 func (p *NoopProvider) EmbedBatch(_ context.Context, _ []string) ([]pgvector.Vector, error) {
 	return nil, ErrNoProvider
+}
+
+// truncateText limits text to maxChars, breaking at the last space boundary
+// to avoid splitting words. Returns the original text if it's within the limit.
+func truncateText(text string, maxChars int) string {
+	if len(text) <= maxChars {
+		return text
+	}
+
+	// Find the last space before the limit to break at a word boundary.
+	cut := maxChars
+	for cut > 0 && text[cut] != ' ' {
+		cut--
+	}
+	if cut == 0 {
+		// No space found — hard truncate at the limit.
+		cut = maxChars
+	}
+
+	return text[:cut]
 }
