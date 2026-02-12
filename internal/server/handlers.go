@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ashita-ai/akashi/internal/auth"
+	"github.com/ashita-ai/akashi/internal/authz"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
@@ -26,6 +27,7 @@ type Handlers struct {
 	buffer              *trace.Buffer
 	broker              *Broker
 	searcher            search.Searcher
+	grantCache          *authz.GrantCache
 	logger              *slog.Logger
 	startedAt           time.Time
 	version             string
@@ -34,7 +36,7 @@ type Handlers struct {
 }
 
 // HandlersDeps holds all dependencies for constructing Handlers.
-// Optional (nil-safe): Broker, Searcher, OpenAPISpec.
+// Optional (nil-safe): Broker, Searcher, GrantCache, OpenAPISpec.
 type HandlersDeps struct {
 	DB                  *storage.DB
 	JWTMgr              *auth.JWTManager
@@ -42,6 +44,7 @@ type HandlersDeps struct {
 	Buffer              *trace.Buffer
 	Broker              *Broker
 	Searcher            search.Searcher
+	GrantCache          *authz.GrantCache
 	Logger              *slog.Logger
 	Version             string
 	MaxRequestBodyBytes int64
@@ -57,6 +60,7 @@ func NewHandlers(d HandlersDeps) *Handlers {
 		buffer:              d.Buffer,
 		broker:              d.Broker,
 		searcher:            d.Searcher,
+		grantCache:          d.GrantCache,
 		logger:              d.Logger,
 		startedAt:           time.Now(),
 		version:             d.Version,

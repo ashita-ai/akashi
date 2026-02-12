@@ -63,7 +63,7 @@ func (s *Server) handleSessionCurrent(ctx context.Context, request mcplib.ReadRe
 
 	// Apply access filtering.
 	if claims != nil {
-		decisions, err = authz.FilterDecisions(ctx, s.db, claims, decisions)
+		decisions, err = authz.FilterDecisions(ctx, s.db, claims, decisions, s.grantCache)
 		if err != nil {
 			return nil, fmt.Errorf("mcp: session current: access filter: %w", err)
 		}
@@ -99,7 +99,7 @@ func (s *Server) handleDecisionsRecent(ctx context.Context, request mcplib.ReadR
 
 	// Apply access filtering.
 	if claims != nil {
-		decisions, err = authz.FilterDecisions(ctx, s.db, claims, decisions)
+		decisions, err = authz.FilterDecisions(ctx, s.db, claims, decisions, s.grantCache)
 		if err != nil {
 			return nil, fmt.Errorf("mcp: recent decisions: access filter: %w", err)
 		}

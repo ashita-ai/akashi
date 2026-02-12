@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pgvector/pgvector-go"
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/ashita-ai/akashi/internal/telemetry"
@@ -340,14 +341,14 @@ func (w *OutboxWorker) fetchDecisionsForIndex(ctx context.Context, ids []uuid.UU
 	var results []DecisionForIndex
 	for rows.Next() {
 		var d DecisionForIndex
-		var emb []float32
+		var emb pgvector.Vector
 		if err := rows.Scan(
 			&d.ID, &d.OrgID, &d.AgentID, &d.DecisionType,
 			&d.Confidence, &d.QualityScore, &d.ValidFrom, &emb,
 		); err != nil {
 			return nil, fmt.Errorf("search outbox: scan decision: %w", err)
 		}
-		d.Embedding = emb
+		d.Embedding = emb.Slice()
 		results = append(results, d)
 	}
 	return results, rows.Err()

@@ -11,6 +11,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/ashita-ai/akashi/internal/auth"
+	"github.com/ashita-ai/akashi/internal/authz"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/ratelimit"
 	"github.com/ashita-ai/akashi/internal/search"
@@ -45,6 +46,7 @@ type ServerConfig struct {
 	// Optional dependencies (nil = disabled).
 	Broker      *Broker
 	Searcher    search.Searcher
+	GrantCache  *authz.GrantCache
 	MCPServer   *mcpserver.MCPServer
 	RateLimiter ratelimit.Limiter
 
@@ -70,6 +72,7 @@ func New(cfg ServerConfig) *Server {
 		Buffer:              cfg.Buffer,
 		Broker:              cfg.Broker,
 		Searcher:            cfg.Searcher,
+		GrantCache:          cfg.GrantCache,
 		Logger:              cfg.Logger,
 		Version:             cfg.Version,
 		MaxRequestBodyBytes: cfg.MaxRequestBodyBytes,

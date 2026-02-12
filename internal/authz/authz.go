@@ -83,9 +83,19 @@ func tagsOverlap(a, b []string) bool {
 // LoadGrantedSet returns the set of agent_ids the caller can access.
 // For admin+ this returns nil (meaning unrestricted). For others it merges
 // tag-based matches (agents sharing at least one tag) with per-agent grants.
-func LoadGrantedSet(ctx context.Context, db *storage.DB, claims *auth.Claims) (map[string]bool, error) {
+//
+// If cache is non-nil, results are cached by org_id:subject for the cache's TTL.
+func LoadGrantedSet(ctx context.Context, db *storage.DB, claims *auth.Claims, cache *GrantCache) (map[string]bool, error) {
 	if model.RoleAtLeast(claims.Role, model.RoleAdmin) {
 		return nil, nil // nil means unrestricted
+	}
+
+	// Check cache before hitting the DB.
+	cacheKey := claims.OrgID.String() + ":" + claims.Subject
+	if cache != nil {
+		if granted, ok := cache.Get(cacheKey); ok {
+			return granted, nil
+		}
 	}
 
 	callerUUID, err := uuid.Parse(claims.Subject)
@@ -125,12 +135,18 @@ func LoadGrantedSet(ctx context.Context, db *storage.DB, claims *auth.Claims) (m
 		granted[id] = true
 	}
 
+	// Store in cache for future requests.
+	if cache != nil {
+		cache.Set(cacheKey, granted)
+	}
+
 	return granted, nil
 }
 
 // FilterDecisions removes decisions the caller is not authorized to see.
-func FilterDecisions(ctx context.Context, db *storage.DB, claims *auth.Claims, decisions []model.Decision) ([]model.Decision, error) {
-	granted, err := LoadGrantedSet(ctx, db, claims)
+// cache may be nil to disable caching.
+func FilterDecisions(ctx context.Context, db *storage.DB, claims *auth.Claims, decisions []model.Decision, cache *GrantCache) ([]model.Decision, error) {
+	granted, err := LoadGrantedSet(ctx, db, claims, cache)
 	if err != nil {
 		return nil, err
 	}
@@ -148,8 +164,9 @@ func FilterDecisions(ctx context.Context, db *storage.DB, claims *auth.Claims, d
 }
 
 // FilterSearchResults removes search results the caller is not authorized to see.
-func FilterSearchResults(ctx context.Context, db *storage.DB, claims *auth.Claims, results []model.SearchResult) ([]model.SearchResult, error) {
-	granted, err := LoadGrantedSet(ctx, db, claims)
+// cache may be nil to disable caching.
+func FilterSearchResults(ctx context.Context, db *storage.DB, claims *auth.Claims, results []model.SearchResult, cache *GrantCache) ([]model.SearchResult, error) {
+	granted, err := LoadGrantedSet(ctx, db, claims, cache)
 	if err != nil {
 		return nil, err
 	}
@@ -168,8 +185,9 @@ func FilterSearchResults(ctx context.Context, db *storage.DB, claims *auth.Claim
 
 // FilterConflicts removes conflicts the caller cannot see.
 // A caller must have access to BOTH agents involved in a conflict to see it.
-func FilterConflicts(ctx context.Context, db *storage.DB, claims *auth.Claims, conflicts []model.DecisionConflict) ([]model.DecisionConflict, error) {
-	granted, err := LoadGrantedSet(ctx, db, claims)
+// cache may be nil to disable caching.
+func FilterConflicts(ctx context.Context, db *storage.DB, claims *auth.Claims, conflicts []model.DecisionConflict, cache *GrantCache) ([]model.DecisionConflict, error) {
+	granted, err := LoadGrantedSet(ctx, db, claims, cache)
 	if err != nil {
 		return nil, err
 	}

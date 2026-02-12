@@ -16,6 +16,7 @@ import (
 
 	"github.com/ashita-ai/akashi/api"
 	"github.com/ashita-ai/akashi/internal/auth"
+	"github.com/ashita-ai/akashi/internal/authz"
 	"github.com/ashita-ai/akashi/internal/config"
 	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/mcp"
@@ -157,8 +158,13 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	buf := trace.NewBuffer(db, logger, cfg.EventBufferSize, cfg.EventFlushTimeout)
 	buf.Start(ctx)
 
+	// Create grant cache (30s TTL — short enough to pick up new grants quickly,
+	// long enough to eliminate 2-3 DB queries per request for non-admin users).
+	grantCache := authz.NewGrantCache(30 * time.Second)
+	defer grantCache.Close()
+
 	// Create MCP server.
-	mcpSrv := mcp.New(db, decisionSvc, logger, version)
+	mcpSrv := mcp.New(db, decisionSvc, grantCache, logger, version)
 
 	// Create SSE broker (requires LISTEN/NOTIFY connection).
 	var broker *server.Broker
@@ -198,6 +204,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		Buffer:              buf,
 		Broker:              broker,
 		Searcher:            searcher,
+		GrantCache:          grantCache,
 		Logger:              logger,
 		Port:                cfg.Port,
 		ReadTimeout:         cfg.ReadTimeout,
