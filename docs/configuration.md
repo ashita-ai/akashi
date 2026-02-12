@@ -63,6 +63,18 @@ In `auto` mode: Ollama is tried first (health check with 2s timeout), then OpenA
 
 Qdrant is optional. When not configured, search falls back to ILIKE text matching. See [ADR-002](../adrs/ADR-002-unified-postgres-storage.md).
 
+## Rate Limiting
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AKASHI_RATE_LIMIT_ENABLED` | `true` | Enable rate limiting middleware |
+| `AKASHI_RATE_LIMIT_RPS` | `100` | Sustained requests per second per key |
+| `AKASHI_RATE_LIMIT_BURST` | `200` | Token bucket capacity (max burst size) per key |
+
+Keys are constructed as `org:<uuid>:agent:<id>` so each agent within each org gets an independent bucket. When disabled, all requests are permitted unconditionally.
+
+The OSS distribution uses an in-memory token bucket. Enterprise deployments can substitute a Redis-backed implementation via the `ratelimit.Limiter` interface.
+
 ## Observability (OpenTelemetry)
 
 | Variable | Default | Description |

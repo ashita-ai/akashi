@@ -19,6 +19,8 @@
 ./internal/model/event.go
 ./internal/model/query.go
 ./internal/model/run.go
+./internal/ratelimit/memory.go
+./internal/ratelimit/ratelimit.go
 ./internal/search/outbox.go
 ./internal/search/qdrant.go
 ./internal/search/search.go
@@ -72,9 +74,10 @@
 | github.com/ashita-ai/akashi/internal/integrity | 12 |
 | github.com/ashita-ai/akashi/internal/mcp | 1 |
 | github.com/ashita-ai/akashi/internal/model | 2 |
+| github.com/ashita-ai/akashi/internal/ratelimit | 10 |
 | github.com/ashita-ai/akashi/internal/search | 6 |
 | github.com/ashita-ai/akashi/internal/server | 35 |
-| github.com/ashita-ai/akashi/internal/service/embedding | 2 |
+| github.com/ashita-ai/akashi/internal/service/embedding | 3 |
 | github.com/ashita-ai/akashi/internal/service/quality | 29 |
 | github.com/ashita-ai/akashi/internal/service/trace | 1 |
 | github.com/ashita-ai/akashi/internal/storage | 21 |
