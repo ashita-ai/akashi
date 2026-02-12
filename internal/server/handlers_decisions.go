@@ -264,6 +264,7 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
 	limit := queryLimit(r, 10)
+	offset := queryOffset(r)
 
 	filters := model.QueryFilters{}
 	if agentID := r.URL.Query().Get("agent_id"); agentID != "" {
@@ -273,7 +274,7 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 		filters.DecisionType = &dt
 	}
 
-	decisions, total, err := h.decisionSvc.Recent(r.Context(), orgID, filters, limit)
+	decisions, total, err := h.decisionSvc.Recent(r.Context(), orgID, filters, limit, offset)
 	if err != nil {
 		h.writeInternalError(w, r, "query failed", err)
 		return
@@ -290,12 +291,13 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 		"decisions": decisions,
 		"count":     len(decisions),
 		"limit":     limit,
+		"offset":    offset,
 	}
 	if len(decisions) < preFilterCount {
 		resp["has_more"] = len(decisions) == limit
 	} else {
 		resp["total"] = total
-		resp["has_more"] = len(decisions) == limit
+		resp["has_more"] = offset+len(decisions) < total
 	}
 	writeJSON(w, r, http.StatusOK, resp)
 }
