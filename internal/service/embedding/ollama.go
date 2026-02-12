@@ -227,22 +227,3 @@ func (p *OllamaProvider) embedBatchConcurrent(ctx context.Context, texts []strin
 	return vecs, nil
 }
 
-// truncateText limits text to maxChars, breaking at the last space boundary
-// to avoid splitting words. Returns the original text if it's within the limit.
-func truncateText(text string, maxChars int) string {
-	if len(text) <= maxChars {
-		return text
-	}
-
-	// Find the last space before the limit to break at a word boundary.
-	cut := maxChars
-	for cut > 0 && text[cut] != ' ' {
-		cut--
-	}
-	if cut == 0 {
-		// No space found — hard truncate at the limit.
-		cut = maxChars
-	}
-
-	return text[:cut]
-}

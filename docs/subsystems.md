@@ -34,21 +34,24 @@ Set `AKASHI_EMBEDDING_PROVIDER` to `ollama`, `openai`, or `noop` to skip auto-de
 | `OpenAIProvider` | `text-embedding-3-small` | 1024 | 8191 tokens | OpenAI servers |
 | `NoopProvider` | N/A | configurable | N/A | N/A |
 
-### Input Truncation (Ollama)
+### Input Truncation
 
-mxbai-embed-large has a 512-token context window. The Ollama provider truncates input in two layers:
+Both providers truncate input at a word boundary before sending, using a shared `truncateText` function. This prevents silent failures where the API rejects oversized input and the decision stores with `embedding = NULL`.
 
-1. **Client-side** (`truncateText`): Cuts text to 2000 characters at a word boundary before sending. At ~4 chars/token for English, this yields ~500 tokens — safely within the 512-token limit for prose. Code-heavy content tokenizes at ~2-3 chars/token, so some inputs may still exceed the limit.
+| Provider | Max chars | Approx tokens | Model limit |
+|----------|-----------|---------------|-------------|
+| Ollama | 2,000 | ~500 | 512 tokens |
+| OpenAI | 30,000 | ~7,500 | 8,191 tokens |
 
-2. **Server-side**: The `/api/embed` endpoint truncates at the token level as a safety net if the character-based estimate overshoots.
+**Ollama** also has a server-side safety net: the `/api/embed` endpoint truncates at the token level if the character-based estimate overshoots.
 
-Decisions whose embedding text exceeds the limit are still stored in full — only the embedding input is truncated.
+Decisions are always stored in full — only the embedding input is truncated.
 
 ### Batch Support
 
 `EmbedBatch` first tries Ollama's native batch API (`/api/embed` with an array input). If that fails (e.g., older Ollama versions), it falls back to concurrent single-text requests with a semaphore (max 4 concurrent).
 
-OpenAI's `EmbedBatch` sends all texts in a single API call (native batch).
+OpenAI's `EmbedBatch` truncates all texts, then sends them in a single API call (native batch).
 
 ### Embedding Backfill
 
