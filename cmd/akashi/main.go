@@ -19,6 +19,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/config"
 	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/mcp"
+	"github.com/ashita-ai/akashi/internal/ratelimit"
 	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/server"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
@@ -177,6 +178,18 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		logger.Info("ui: embedded SPA loaded")
 	}
 
+	// Create rate limiter.
+	var limiter ratelimit.Limiter
+	if cfg.RateLimitEnabled {
+		limiter = ratelimit.NewMemoryLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst)
+		defer func() { _ = limiter.Close() }()
+		logger.Info("rate limiting: memory (in-process token bucket)",
+			"rps", cfg.RateLimitRPS, "burst", cfg.RateLimitBurst)
+	} else {
+		limiter = ratelimit.NoopLimiter{}
+		logger.Info("rate limiting: disabled")
+	}
+
 	// Create and start HTTP server (MCP mounted at /mcp).
 	srv := server.New(server.ServerConfig{
 		DB:                  db,
@@ -192,6 +205,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		MCPServer:           mcpSrv.MCPServer(),
 		Version:             version,
 		MaxRequestBodyBytes: cfg.MaxRequestBodyBytes,
+		RateLimiter:         limiter,
 		CORSAllowedOrigins:  cfg.CORSAllowedOrigins,
 		UIFS:                uiFS,
 		OpenAPISpec:         api.OpenAPISpec,
