@@ -20,6 +20,10 @@ var StandardDecisionTypes = map[string]bool{
 	"trade_off":       true,
 	"deployment":      true,
 	"security":        true,
+	"code_review":     true,
+	"investigation":   true,
+	"planning":        true,
+	"assessment":      true,
 }
 
 // Score computes a quality score (0.0-1.0) for a trace decision.
