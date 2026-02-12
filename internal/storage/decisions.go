@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/pgvector/pgvector-go"
 
 	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/model"
@@ -330,9 +331,17 @@ func (db *DB) QueryDecisionsTemporal(ctx context.Context, orgID uuid.UUID, req m
 	return scanDecisions(rows)
 }
 
-// SearchDecisionsByText performs keyword search over decision outcome and reasoning fields.
+// SearchDecisionsByText performs full-text search over decision outcome, reasoning,
+// and decision_type using PostgreSQL tsvector/tsquery (migration 022).
 // Used as fallback when semantic search is disabled or the embedding provider is noop.
 // Only returns active decisions (valid_to IS NULL) for consistency with the Qdrant search path.
+//
+// Search strategy:
+//  1. websearch_to_tsquery: handles stemming, stop word removal, and supports
+//     "quoted phrases", OR, and -exclusion. Most queries resolve here.
+//  2. ILIKE fallback (OR-any-term): if FTS returns nothing (e.g. all stop words,
+//     partial words, or terms absent from the English dictionary), try lenient
+//     substring matching where any single term hitting any field is a match.
 func (db *DB) SearchDecisionsByText(ctx context.Context, orgID uuid.UUID, query string, filters model.QueryFilters, limit int) ([]model.SearchResult, error) {
 	if limit <= 0 {
 		limit = 10
@@ -341,23 +350,71 @@ func (db *DB) SearchDecisionsByText(ctx context.Context, orgID uuid.UUID, query 
 		limit = 1000
 	}
 
+	// Primary: PostgreSQL full-text search with ts_rank.
+	results, err := db.searchByFTS(ctx, orgID, query, filters, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(results) > 0 {
+		return results, nil
+	}
+
+	// Fallback: OR-based ILIKE for cases FTS misses (typos, partial words,
+	// all stop words, non-English terms).
+	return db.searchByILIKE(ctx, orgID, query, filters, limit)
+}
+
+// searchByFTS uses PostgreSQL websearch_to_tsquery for full-text search with
+// stemming, stop word removal, and weighted ranking (outcome > type > reasoning).
+func (db *DB) searchByFTS(ctx context.Context, orgID uuid.UUID, query string, filters model.QueryFilters, limit int) ([]model.SearchResult, error) {
 	where, args := buildDecisionWhereClause(orgID, filters, 1)
 	where += " AND valid_to IS NULL"
 
-	// Use ILIKE for simple keyword matching across outcome, reasoning, and decision_type.
-	// The query is split into words (capped at 20 to prevent query explosion),
-	// and all must match at least one field. LIKE metacharacters are escaped.
+	args = append(args, query)
+	qp := len(args)
+	where += fmt.Sprintf(` AND search_vector @@ websearch_to_tsquery('english', $%d)`, qp)
+
+	sql := fmt.Sprintf(
+		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
+		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+		 valid_from, valid_to, transaction_time, created_at,
+		 ts_rank(search_vector, websearch_to_tsquery('english', $%d))
+		   * (0.6 + 0.3 * COALESCE(quality_score, 0))
+		   * (1.0 / (1.0 + EXTRACT(EPOCH FROM (NOW() - valid_from)) / 86400.0 / 90.0))
+		   AS relevance
+		 FROM decisions%s
+		 ORDER BY relevance DESC
+		 LIMIT %d`, qp, where, limit,
+	)
+
+	return db.execSearchQuery(ctx, sql, args)
+}
+
+// searchByILIKE uses OR-any-term ILIKE matching as a fallback when FTS returns nothing.
+// A result matches if any single query term appears in any searchable field.
+func (db *DB) searchByILIKE(ctx context.Context, orgID uuid.UUID, query string, filters model.QueryFilters, limit int) ([]model.SearchResult, error) {
+	where, args := buildDecisionWhereClause(orgID, filters, 1)
+	where += " AND valid_to IS NULL"
+
 	words := strings.Fields(query)
 	if len(words) > 20 {
 		words = words[:20]
 	}
+	if len(words) == 0 {
+		return nil, nil
+	}
+
+	// OR across all terms: any word matching any field qualifies the row.
+	var termClauses []string
 	for _, word := range words {
 		escaped := strings.NewReplacer("%", `\%`, "_", `\_`).Replace(strings.ToLower(word))
 		args = append(args, "%"+escaped+"%")
-		paramIdx := len(args)
-		where += fmt.Sprintf(` AND (LOWER(outcome) LIKE $%d OR LOWER(COALESCE(reasoning, '')) LIKE $%d OR LOWER(decision_type) LIKE $%d)`,
-			paramIdx, paramIdx, paramIdx)
+		p := len(args)
+		termClauses = append(termClauses, fmt.Sprintf(
+			`(LOWER(outcome) LIKE $%d OR LOWER(COALESCE(reasoning, '')) LIKE $%d OR LOWER(decision_type) LIKE $%d)`,
+			p, p, p))
 	}
+	where += " AND (" + strings.Join(termClauses, " OR ") + ")"
 
 	sql := fmt.Sprintf(
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
@@ -371,6 +428,11 @@ func (db *DB) SearchDecisionsByText(ctx context.Context, orgID uuid.UUID, query 
 		 LIMIT %d`, where, limit,
 	)
 
+	return db.execSearchQuery(ctx, sql, args)
+}
+
+// execSearchQuery runs a search SQL and scans results into SearchResult structs.
+func (db *DB) execSearchQuery(ctx context.Context, sql string, args []any) ([]model.SearchResult, error) {
 	rows, err := db.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("storage: text search decisions: %w", err)
@@ -701,4 +763,71 @@ func containsStr(slice []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// UnembeddedDecision holds the minimal fields needed to backfill an embedding.
+type UnembeddedDecision struct {
+	ID           uuid.UUID
+	OrgID        uuid.UUID
+	DecisionType string
+	Outcome      string
+	Reasoning    *string
+}
+
+// FindUnembeddedDecisions returns active decisions that have no embedding vector,
+// ordered oldest-first so the backfill processes them chronologically.
+func (db *DB) FindUnembeddedDecisions(ctx context.Context, limit int) ([]UnembeddedDecision, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := db.pool.Query(ctx,
+		`SELECT id, org_id, decision_type, outcome, reasoning
+		 FROM decisions
+		 WHERE embedding IS NULL AND valid_to IS NULL
+		 ORDER BY valid_from ASC
+		 LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("storage: find unembedded decisions: %w", err)
+	}
+	defer rows.Close()
+
+	var results []UnembeddedDecision
+	for rows.Next() {
+		var d UnembeddedDecision
+		if err := rows.Scan(&d.ID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Reasoning); err != nil {
+			return nil, fmt.Errorf("storage: scan unembedded decision: %w", err)
+		}
+		results = append(results, d)
+	}
+	return results, rows.Err()
+}
+
+// BackfillEmbedding updates a decision's embedding and queues a search outbox
+// entry so the outbox worker syncs it to Qdrant. Both writes are atomic.
+func (db *DB) BackfillEmbedding(ctx context.Context, id, orgID uuid.UUID, emb pgvector.Vector) error {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("storage: begin backfill tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE decisions SET embedding = $1 WHERE id = $2 AND org_id = $3 AND valid_to IS NULL`,
+		emb, id, orgID)
+	if err != nil {
+		return fmt.Errorf("storage: update embedding: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil // Decision was revised or deleted — skip silently.
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO search_outbox (decision_id, org_id, operation)
+		 VALUES ($1, $2, 'upsert')
+		 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
+		id, orgID); err != nil {
+		return fmt.Errorf("storage: queue backfill outbox: %w", err)
+	}
+
+	return tx.Commit(ctx)
 }

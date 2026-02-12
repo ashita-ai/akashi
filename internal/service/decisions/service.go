@@ -396,6 +396,60 @@ func (s *Service) ResolveOrCreateAgent(ctx context.Context, orgID uuid.UUID, age
 	return nil
 }
 
+// BackfillEmbeddings generates embeddings for decisions that were stored without
+// one (e.g. because the embedding provider was noop at trace time). Each decision
+// is embedded, the vector is written to Postgres, and a search outbox entry is
+// queued so the outbox worker can sync it to Qdrant.
+//
+// Returns the number of decisions backfilled. Skips silently if the embedding
+// provider is noop (returns 0, nil).
+func (s *Service) BackfillEmbeddings(ctx context.Context, batchSize int) (int, error) {
+	// Probe the provider — skip entirely if noop.
+	if _, err := s.embedder.Embed(ctx, "probe"); errors.Is(err, embedding.ErrNoProvider) {
+		return 0, nil
+	}
+
+	decs, err := s.db.FindUnembeddedDecisions(ctx, batchSize)
+	if err != nil {
+		return 0, fmt.Errorf("backfill: find unembedded: %w", err)
+	}
+	if len(decs) == 0 {
+		return 0, nil
+	}
+
+	// Build embedding texts (same format as Trace).
+	texts := make([]string, len(decs))
+	for i, d := range decs {
+		texts[i] = d.DecisionType + ": " + d.Outcome
+		if d.Reasoning != nil {
+			texts[i] += " " + *d.Reasoning
+		}
+	}
+
+	vecs, err := s.embedder.EmbedBatch(ctx, texts)
+	if err != nil {
+		return 0, fmt.Errorf("backfill: embed batch: %w", err)
+	}
+
+	var backfilled int
+	for i, d := range decs {
+		if err := s.validateEmbeddingDims(vecs[i]); err != nil {
+			s.logger.Warn("backfill: dimension mismatch, skipping", "decision_id", d.ID, "error", err)
+			continue
+		}
+		if err := s.db.BackfillEmbedding(ctx, d.ID, d.OrgID, vecs[i]); err != nil {
+			s.logger.Warn("backfill: update failed", "decision_id", d.ID, "error", err)
+			continue
+		}
+		backfilled++
+	}
+
+	if backfilled > 0 {
+		s.logger.Info("backfill: embedded decisions", "count", backfilled, "batch", len(decs))
+	}
+	return backfilled, nil
+}
+
 // isDuplicateKey checks if a Postgres error is a unique_violation (23505).
 func isDuplicateKey(err error) bool {
 	var pgErr *pgconn.PgError

@@ -35,6 +35,7 @@ type Buffer struct {
 	droppedEvents atomic.Int64 // total events dropped due to capacity after flush failure
 
 	started    atomic.Bool // guards against double Start calls
+	drainOnce  sync.Once
 	flushCh    chan struct{}
 	done       chan struct{}
 	cancelLoop context.CancelFunc   // cancels the flushLoop goroutine
@@ -191,17 +192,19 @@ func (b *Buffer) flush(ctx context.Context) {
 // Drain signals the background flush loop to stop, waits for it to complete
 // its final flush, and returns. The ctx parameter controls the maximum time
 // to wait for the goroutine to finish and is passed to the final flush so it
-// respects the caller's deadline.
+// respects the caller's deadline. Drain is idempotent; subsequent calls are no-ops.
 func (b *Buffer) Drain(ctx context.Context) {
-	// Send the drain context to flushLoop via channel (race-free).
-	// Must be sent before cancelLoop so flushLoop can receive it on ctx.Done().
-	select {
-	case b.drainCh <- ctx:
-	default:
-	}
-	if b.cancelLoop != nil {
-		b.cancelLoop() // Signal flushLoop to exit; it does a final flush before closing b.done.
-	}
+	b.drainOnce.Do(func() {
+		// Send the drain context to flushLoop via channel (race-free).
+		// Must be sent before cancelLoop so flushLoop can receive it on ctx.Done().
+		select {
+		case b.drainCh <- ctx:
+		default:
+		}
+		if b.cancelLoop != nil {
+			b.cancelLoop() // Signal flushLoop to exit; it does a final flush before closing b.done.
+		}
+	})
 	select {
 	case <-b.done:
 	case <-ctx.Done():

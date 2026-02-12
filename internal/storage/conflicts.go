@@ -21,7 +21,7 @@ func (db *DB) RefreshConflicts(ctx context.Context) error {
 
 // RefreshAgentState refreshes the agent_current_state materialized view.
 // Uses CONCURRENTLY to avoid blocking reads during refresh (requires the
-// unique index idx_agent_current_state_agent_org from migration 016).
+// unique index idx_agent_current_state_agent_org from 001_initial.sql).
 func (db *DB) RefreshAgentState(ctx context.Context) error {
 	_, err := db.pool.Exec(ctx, `REFRESH MATERIALIZED VIEW CONCURRENTLY agent_current_state`)
 	if err != nil {

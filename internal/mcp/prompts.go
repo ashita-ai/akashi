@@ -154,15 +154,22 @@ can learn from it, and so the decision is provable later.
 
 ## Decision Types
 
-Use standard categories when possible:
-- model_selection: Choosing AI models, parameters, or configurations
+Any string is accepted. Common categories (these get a small quality score bonus):
 - architecture: System design, patterns, infrastructure choices
-- data_source: Where to get data, which datasets, data formats
-- error_handling: How to handle failures, retries, fallbacks
-- feature_scope: What to include/exclude, prioritization
-- trade_off: Explicit trade-off resolutions (speed vs accuracy, etc.)
-- deployment: Deployment strategy, environments, rollout plans
 - security: Authentication, authorization, encryption choices
+- code_review: Codebase reviews, audits, quality assessments
+- investigation: Debugging, root cause analysis, exploring unknowns
+- planning: Task planning, sprint planning, roadmap decisions
+- assessment: Risk assessments, evaluations, fitness judgments
+- trade_off: Explicit trade-off resolutions (speed vs accuracy, etc.)
+- feature_scope: What to include/exclude, prioritization
+- deployment: Deployment strategy, environments, rollout plans
+- error_handling: How to handle failures, retries, fallbacks
+- model_selection: Choosing AI models, parameters, or configurations
+- data_source: Where to get data, which datasets, data formats
+
+Use whatever string best describes your decision. Semantic search finds
+decisions by meaning, not by exact type match.
 
 ## Confidence Levels
 
