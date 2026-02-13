@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -9,7 +10,7 @@ import httpx
 import pytest
 import respx
 
-from akashi.client import AkashiClient, AkashiSyncClient, _handle_response
+from akashi.client import AkashiClient, AkashiSyncClient, _handle_response, _USER_AGENT
 from akashi.exceptions import (
     AuthenticationError,
     AuthorizationError,
@@ -199,8 +200,6 @@ class TestTrace:
 
         def _check_trace_body(request: httpx.Request) -> httpx.Response:
             body = request.content.decode()
-            import json
-
             data = json.loads(body)
             assert data["agent_id"] == "test-agent"
             assert data["decision"]["decision_type"] == "model_selection"
@@ -232,6 +231,153 @@ class TestTrace:
         assert str(resp.run_id) == RUN_ID
         assert str(resp.decision_id) == DECISION_ID
         assert resp.event_count == 3
+
+    @respx.mock
+    def test_trace_sends_user_agent_and_session_headers(self) -> None:
+        _mock_auth(respx)
+
+        captured_headers: dict[str, str] = {}
+
+        def _capture_headers(request: httpx.Request) -> httpx.Response:
+            captured_headers["user-agent"] = request.headers.get("user-agent", "")
+            captured_headers["x-akashi-session"] = request.headers.get("x-akashi-session", "")
+            return httpx.Response(
+                201,
+                json={
+                    "data": {
+                        "run_id": RUN_ID,
+                        "decision_id": DECISION_ID,
+                        "event_count": 1,
+                    }
+                },
+            )
+
+        respx.post(f"{BASE_URL}/v1/trace").mock(side_effect=_capture_headers)
+
+        with _make_client() as client:
+            client.trace(
+                TraceRequest(
+                    decision_type="test",
+                    outcome="pass",
+                    confidence=1.0,
+                )
+            )
+
+        assert captured_headers["user-agent"] == _USER_AGENT
+        # Session ID should be a valid UUID.
+        session_str = captured_headers["x-akashi-session"]
+        assert session_str != ""
+        uuid.UUID(session_str)  # raises if invalid
+
+    @respx.mock
+    def test_trace_with_context(self) -> None:
+        _mock_auth(respx)
+
+        captured_body: dict = {}
+
+        def _capture_body(request: httpx.Request) -> httpx.Response:
+            captured_body.update(json.loads(request.content.decode()))
+            return httpx.Response(
+                201,
+                json={
+                    "data": {
+                        "run_id": RUN_ID,
+                        "decision_id": DECISION_ID,
+                        "event_count": 1,
+                    }
+                },
+            )
+
+        respx.post(f"{BASE_URL}/v1/trace").mock(side_effect=_capture_body)
+
+        with _make_client() as client:
+            client.trace(
+                TraceRequest(
+                    decision_type="model_selection",
+                    outcome="gpt-4o",
+                    confidence=0.9,
+                    context={"model": "gpt-4o", "task": "summarization", "repo": "example/repo"},
+                )
+            )
+
+        assert "context" in captured_body
+        assert captured_body["context"]["model"] == "gpt-4o"
+        assert captured_body["context"]["task"] == "summarization"
+        assert captured_body["context"]["repo"] == "example/repo"
+
+    @respx.mock
+    def test_session_id_override(self) -> None:
+        _mock_auth(respx)
+
+        fixed_session = uuid.UUID("11111111-1111-1111-1111-111111111111")
+        captured_session: str = ""
+
+        def _capture_session(request: httpx.Request) -> httpx.Response:
+            nonlocal captured_session
+            captured_session = request.headers.get("x-akashi-session", "")
+            return httpx.Response(
+                201,
+                json={
+                    "data": {
+                        "run_id": RUN_ID,
+                        "decision_id": DECISION_ID,
+                        "event_count": 1,
+                    }
+                },
+            )
+
+        respx.post(f"{BASE_URL}/v1/trace").mock(side_effect=_capture_session)
+
+        with AkashiSyncClient(
+            base_url=BASE_URL,
+            agent_id="test-agent",
+            api_key="test-key",
+            session_id=fixed_session,
+        ) as client:
+            client.trace(
+                TraceRequest(
+                    decision_type="test",
+                    outcome="pass",
+                    confidence=1.0,
+                )
+            )
+
+        assert captured_session == str(fixed_session)
+
+    @respx.mock
+    def test_session_id_consistent_across_traces(self) -> None:
+        _mock_auth(respx)
+
+        captured_sessions: list[str] = []
+
+        def _capture_session(request: httpx.Request) -> httpx.Response:
+            captured_sessions.append(request.headers.get("x-akashi-session", ""))
+            return httpx.Response(
+                201,
+                json={
+                    "data": {
+                        "run_id": RUN_ID,
+                        "decision_id": DECISION_ID,
+                        "event_count": 1,
+                    }
+                },
+            )
+
+        respx.post(f"{BASE_URL}/v1/trace").mock(side_effect=_capture_session)
+
+        with _make_client() as client:
+            for _ in range(3):
+                client.trace(
+                    TraceRequest(
+                        decision_type="test",
+                        outcome="pass",
+                        confidence=1.0,
+                    )
+                )
+
+        assert len(captured_sessions) == 3
+        assert captured_sessions[0] == captured_sessions[1] == captured_sessions[2]
+        uuid.UUID(captured_sessions[0])  # valid UUID
 
 
 class TestQuery:
@@ -614,6 +760,73 @@ class TestHealth:
 
         with _make_client() as client:
             client.health()
+
+
+class TestUserAgent:
+    @respx.mock
+    def test_user_agent_on_all_requests(self) -> None:
+        """Verify User-Agent is sent on check (POST) and recent (GET) requests."""
+        _mock_auth(respx)
+
+        captured_uas: list[str] = []
+
+        def _capture_ua(request: httpx.Request) -> httpx.Response:
+            captured_uas.append(request.headers.get("user-agent", ""))
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "has_precedent": False,
+                        "decisions": [],
+                        "conflicts": [],
+                    }
+                },
+            )
+
+        respx.post(f"{BASE_URL}/v1/check").mock(side_effect=_capture_ua)
+
+        with _make_client() as client:
+            client.check("test")
+
+        assert len(captured_uas) == 1
+        assert captured_uas[0] == _USER_AGENT
+
+
+class TestDecisionSpec31Fields:
+    @respx.mock
+    def test_decision_deserializes_session_id_and_agent_context(self) -> None:
+        _mock_auth(respx)
+        session_id = str(uuid.uuid4())
+        respx.post(f"{BASE_URL}/v1/query").respond(
+            200,
+            json={
+                "data": {
+                    "decisions": [
+                        {
+                            **_decision_json(),
+                            "session_id": session_id,
+                            "agent_context": {
+                                "tool": "claude-code",
+                                "tool_version": "akashi-python/0.2.0",
+                                "model": "claude-opus-4-6",
+                            },
+                        }
+                    ],
+                    "total": 1,
+                    "limit": 50,
+                    "offset": 0,
+                }
+            },
+        )
+
+        with _make_client() as client:
+            resp = client.query()
+
+        assert len(resp.decisions) == 1
+        d = resp.decisions[0]
+        assert str(d.session_id) == session_id
+        assert d.agent_context["tool"] == "claude-code"
+        assert d.agent_context["model"] == "claude-opus-4-6"
 
 
 class TestErrorMapping:

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
+
+_USER_AGENT = "akashi-python/0.2.0"
 
 from akashi.auth import TokenManager
 from akashi.exceptions import (
@@ -82,6 +84,8 @@ def _build_trace_body(agent_id: str, request: TraceRequest) -> dict[str, Any]:
     body: dict[str, Any] = {"agent_id": agent_id, "decision": decision}
     if request.metadata:
         body["metadata"] = request.metadata
+    if request.context:
+        body["context"] = request.context
     return body
 
 
@@ -278,9 +282,11 @@ class AkashiClient:
         api_key: str,
         *,
         timeout: float = 30.0,
+        session_id: UUID | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.agent_id = agent_id
+        self.session_id: UUID = session_id if session_id is not None else uuid4()
         self._token_mgr = TokenManager(
             base_url=self.base_url,
             agent_id=agent_id,
@@ -314,7 +320,17 @@ class AkashiClient:
 
     async def trace(self, request: TraceRequest) -> TraceResponse:
         """Record a decision trace."""
-        data = await self._post("/v1/trace", _build_trace_body(self.agent_id, request))
+        token = await self._token_mgr.get_token(self._client)
+        resp = await self._client.post(
+            f"{self.base_url}/v1/trace",
+            json=_build_trace_body(self.agent_id, request),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "User-Agent": _USER_AGENT,
+                "X-Akashi-Session": str(self.session_id),
+            },
+        )
+        data = _handle_response(resp)
         return TraceResponse.model_validate(data)
 
     async def query(
@@ -467,7 +483,7 @@ class AkashiClient:
         resp = await self._client.post(
             f"{self.base_url}{path}",
             json=body,
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
         )
         return _handle_response(resp)
 
@@ -476,7 +492,7 @@ class AkashiClient:
         resp = await self._client.get(
             f"{self.base_url}{path}",
             params=params,
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
         )
         return _handle_response(resp)
 
@@ -484,12 +500,15 @@ class AkashiClient:
         token = await self._token_mgr.get_token(self._client)
         resp = await self._client.delete(
             f"{self.base_url}{path}",
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
         )
         _handle_no_content(resp)
 
     async def _get_no_auth(self, path: str) -> dict[str, Any]:
-        resp = await self._client.get(f"{self.base_url}{path}")
+        resp = await self._client.get(
+            f"{self.base_url}{path}",
+            headers={"User-Agent": _USER_AGENT},
+        )
         return _handle_response(resp)
 
 
@@ -516,9 +535,11 @@ class AkashiSyncClient:
         api_key: str,
         *,
         timeout: float = 30.0,
+        session_id: UUID | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.agent_id = agent_id
+        self.session_id: UUID = session_id if session_id is not None else uuid4()
         self._token_mgr = TokenManager(
             base_url=self.base_url,
             agent_id=agent_id,
@@ -550,7 +571,17 @@ class AkashiSyncClient:
 
     def trace(self, request: TraceRequest) -> TraceResponse:
         """Record a decision trace."""
-        data = self._post("/v1/trace", _build_trace_body(self.agent_id, request))
+        token = self._token_mgr.get_token_sync(self._client)
+        resp = self._client.post(
+            f"{self.base_url}/v1/trace",
+            json=_build_trace_body(self.agent_id, request),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "User-Agent": _USER_AGENT,
+                "X-Akashi-Session": str(self.session_id),
+            },
+        )
+        data = _handle_response(resp)
         return TraceResponse.model_validate(data)
 
     def query(
@@ -702,7 +733,7 @@ class AkashiSyncClient:
         resp = self._client.post(
             f"{self.base_url}{path}",
             json=body,
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
         )
         return _handle_response(resp)
 
@@ -711,7 +742,7 @@ class AkashiSyncClient:
         resp = self._client.get(
             f"{self.base_url}{path}",
             params=params,
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
         )
         return _handle_response(resp)
 
@@ -719,10 +750,13 @@ class AkashiSyncClient:
         token = self._token_mgr.get_token_sync(self._client)
         resp = self._client.delete(
             f"{self.base_url}{path}",
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
         )
         _handle_no_content(resp)
 
     def _get_no_auth(self, path: str) -> dict[str, Any]:
-        resp = self._client.get(f"{self.base_url}{path}")
+        resp = self._client.get(
+            f"{self.base_url}{path}",
+            headers={"User-Agent": _USER_AGENT},
+        )
         return _handle_response(resp)
