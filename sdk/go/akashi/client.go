@@ -15,6 +15,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const userAgent = "akashi-go/0.2.0"
+
 // Config holds the settings needed to construct a Client.
 type Config struct {
 	// BaseURL is the root URL of the Akashi server (e.g. "http://localhost:8080").
@@ -32,15 +34,20 @@ type Config struct {
 
 	// Timeout applies to individual API requests. Defaults to 30 seconds.
 	Timeout time.Duration
+
+	// SessionID overrides the auto-generated session UUID. If nil, a random
+	// UUID is generated on client construction.
+	SessionID *uuid.UUID
 }
 
 // Client is an HTTP client for the Akashi decision-tracing API.
 // All methods are safe for concurrent use.
 type Client struct {
-	baseURL  string
-	agentID  string
-	client   *http.Client
-	tokenMgr *tokenManager
+	baseURL   string
+	agentID   string
+	sessionID uuid.UUID
+	client    *http.Client
+	tokenMgr  *tokenManager
 }
 
 // NewClient creates a Client from the given configuration.
@@ -67,11 +74,17 @@ func NewClient(cfg Config) (*Client, error) {
 		httpClient = &http.Client{Timeout: timeout}
 	}
 
+	sessionID := uuid.New()
+	if cfg.SessionID != nil {
+		sessionID = *cfg.SessionID
+	}
+
 	return &Client{
-		baseURL:  baseURL,
-		agentID:  cfg.AgentID,
-		client:   httpClient,
-		tokenMgr: newTokenManager(baseURL, cfg.AgentID, cfg.APIKey, httpClient),
+		baseURL:   baseURL,
+		agentID:   cfg.AgentID,
+		sessionID: sessionID,
+		client:    httpClient,
+		tokenMgr:  newTokenManager(baseURL, cfg.AgentID, cfg.APIKey, httpClient),
 	}, nil
 }
 
@@ -91,11 +104,24 @@ func (c *Client) Check(ctx context.Context, req CheckRequest) (*CheckResponse, e
 }
 
 // Trace records a decision so other agents can learn from it.
-// The client's AgentID is automatically included in the request body.
+// The client's AgentID and SessionID are automatically included.
 func (c *Client) Trace(ctx context.Context, req TraceRequest) (*TraceResponse, error) {
 	body := buildTraceBody(c.agentID, req)
+
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("akashi: marshal request body: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/trace", bytes.NewReader(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("akashi: create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-Akashi-Session", c.sessionID.String())
+
 	var resp TraceResponse
-	if err := c.post(ctx, "/v1/trace", body, &resp); err != nil {
+	if err := c.doRequest(ctx, httpReq, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -373,6 +399,7 @@ type traceBody struct {
 	Decision     traceDecision  `json:"decision"`
 	PrecedentRef *uuid.UUID     `json:"precedent_ref,omitempty"`
 	Metadata     map[string]any `json:"metadata,omitempty"`
+	Context      map[string]any `json:"context,omitempty"`
 }
 
 type traceDecision struct {
@@ -397,6 +424,7 @@ func buildTraceBody(agentID string, req TraceRequest) traceBody {
 		},
 		PrecedentRef: req.PrecedentRef,
 		Metadata:     req.Metadata,
+		Context:      req.Context,
 	}
 }
 
@@ -510,6 +538,7 @@ func (c *Client) getNoAuth(ctx context.Context, path string, dest any) error {
 	if err != nil {
 		return fmt.Errorf("akashi: create request: %w", err)
 	}
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -521,6 +550,8 @@ func (c *Client) getNoAuth(ctx context.Context, path string, dest any) error {
 }
 
 func (c *Client) doRequest(ctx context.Context, req *http.Request, dest any) error {
+	req.Header.Set("User-Agent", userAgent)
+
 	token, err := c.tokenMgr.getToken(ctx)
 	if err != nil {
 		return err

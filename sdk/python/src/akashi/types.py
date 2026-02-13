@@ -26,6 +26,8 @@ class Decision(BaseModel):
     supersedes_id: UUID | None = None
     content_hash: str = ""
     tags: list[str] = Field(default_factory=list)
+    session_id: UUID | None = None
+    agent_context: dict[str, Any] = Field(default_factory=dict)
     valid_from: datetime
     valid_to: datetime | None = None
     transaction_time: datetime
@@ -162,6 +164,7 @@ class TraceRequest(BaseModel):
     alternatives: list[TraceAlternative] = Field(default_factory=list)
     evidence: list[TraceEvidence] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    context: dict[str, Any] = Field(default_factory=dict)
 
 
 class TraceAlternative(BaseModel):
@@ -189,6 +192,10 @@ class QueryFilters(BaseModel):
     decision_type: str | None = None
     confidence_min: float | None = Field(default=None, ge=0.0, le=1.0)
     outcome: str | None = None
+    session_id: str | None = None
+    tool: str | None = None
+    model: str | None = None
+    repo: str | None = None
 
 
 class CheckRequest(BaseModel):

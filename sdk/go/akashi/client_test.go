@@ -119,8 +119,10 @@ func TestTraceRecordsDecision(t *testing.T) {
 	decisionID := uuid.New()
 
 	var receivedBody traceBody
+	var receivedHeaders http.Header
 	srv := mockServer(t, map[string]http.HandlerFunc{
 		"POST /v1/trace": func(w http.ResponseWriter, r *http.Request) {
+			receivedHeaders = r.Header.Clone()
 			if err := json.NewDecoder(r.Body).Decode(&receivedBody); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]any{
 					"error": map[string]any{"code": "INVALID_INPUT", "message": err.Error()},
@@ -165,6 +167,180 @@ func TestTraceRecordsDecision(t *testing.T) {
 	}
 	if receivedBody.Decision.DecisionType != "model_selection" {
 		t.Errorf("expected decision_type 'model_selection', got %q", receivedBody.Decision.DecisionType)
+	}
+
+	// Verify User-Agent header.
+	if got := receivedHeaders.Get("User-Agent"); got != "akashi-go/0.2.0" {
+		t.Errorf("expected User-Agent 'akashi-go/0.2.0', got %q", got)
+	}
+
+	// Verify X-Akashi-Session header is a valid UUID.
+	sessionStr := receivedHeaders.Get("X-Akashi-Session")
+	if sessionStr == "" {
+		t.Fatal("expected X-Akashi-Session header to be set")
+	}
+	if _, err := uuid.Parse(sessionStr); err != nil {
+		t.Errorf("X-Akashi-Session %q is not a valid UUID: %v", sessionStr, err)
+	}
+}
+
+func TestTraceWithContext(t *testing.T) {
+	var receivedBody traceBody
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"POST /v1/trace": func(w http.ResponseWriter, r *http.Request) {
+			if err := json.NewDecoder(r.Body).Decode(&receivedBody); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{
+					"error": map[string]any{"code": "INVALID_INPUT", "message": err.Error()},
+				})
+				return
+			}
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"data": TraceResponse{
+					RunID:      uuid.New(),
+					DecisionID: uuid.New(),
+					EventCount: 1,
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	_, err := client.Trace(context.Background(), TraceRequest{
+		DecisionType: "model_selection",
+		Outcome:      "gpt-4o",
+		Confidence:   0.9,
+		Context: map[string]any{
+			"model": "gpt-4o",
+			"task":  "summarization",
+			"repo":  "github.com/example/repo",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Trace with context failed: %v", err)
+	}
+
+	if receivedBody.Context == nil {
+		t.Fatal("expected context in wire body, got nil")
+	}
+	if receivedBody.Context["model"] != "gpt-4o" {
+		t.Errorf("expected context.model 'gpt-4o', got %v", receivedBody.Context["model"])
+	}
+	if receivedBody.Context["task"] != "summarization" {
+		t.Errorf("expected context.task 'summarization', got %v", receivedBody.Context["task"])
+	}
+	if receivedBody.Context["repo"] != "github.com/example/repo" {
+		t.Errorf("expected context.repo 'github.com/example/repo', got %v", receivedBody.Context["repo"])
+	}
+}
+
+func TestSessionIDOverride(t *testing.T) {
+	fixedSession := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+
+	var receivedSessionHeader string
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"POST /v1/trace": func(w http.ResponseWriter, r *http.Request) {
+			receivedSessionHeader = r.Header.Get("X-Akashi-Session")
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"data": TraceResponse{
+					RunID:      uuid.New(),
+					DecisionID: uuid.New(),
+					EventCount: 1,
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client, err := NewClient(Config{
+		BaseURL:   srv.URL,
+		AgentID:   "test-agent",
+		APIKey:    "test-key",
+		SessionID: &fixedSession,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+
+	_, err = client.Trace(context.Background(), TraceRequest{
+		DecisionType: "test",
+		Outcome:      "pass",
+		Confidence:   1.0,
+	})
+	if err != nil {
+		t.Fatalf("Trace failed: %v", err)
+	}
+
+	if receivedSessionHeader != fixedSession.String() {
+		t.Errorf("expected session %s, got %q", fixedSession, receivedSessionHeader)
+	}
+}
+
+func TestUserAgentOnAllRequests(t *testing.T) {
+	var checkUA, getUA string
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"POST /v1/check": func(w http.ResponseWriter, r *http.Request) {
+			checkUA = r.Header.Get("User-Agent")
+			writeJSON(w, http.StatusOK, map[string]any{
+				"data": CheckResponse{HasPrecedent: false},
+			})
+		},
+		"GET /v1/decisions/recent": func(w http.ResponseWriter, r *http.Request) {
+			getUA = r.Header.Get("User-Agent")
+			writeJSON(w, http.StatusOK, map[string]any{
+				"data": map[string]any{"decisions": []Decision{}},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	_, _ = client.Check(context.Background(), CheckRequest{DecisionType: "test"})
+	_, _ = client.Recent(context.Background(), nil)
+
+	if checkUA != "akashi-go/0.2.0" {
+		t.Errorf("Check: expected User-Agent 'akashi-go/0.2.0', got %q", checkUA)
+	}
+	if getUA != "akashi-go/0.2.0" {
+		t.Errorf("Recent: expected User-Agent 'akashi-go/0.2.0', got %q", getUA)
+	}
+}
+
+func TestSessionIDConsistentAcrossTraces(t *testing.T) {
+	var sessions []string
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"POST /v1/trace": func(w http.ResponseWriter, r *http.Request) {
+			sessions = append(sessions, r.Header.Get("X-Akashi-Session"))
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"data": TraceResponse{
+					RunID:      uuid.New(),
+					DecisionID: uuid.New(),
+					EventCount: 1,
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	for range 3 {
+		_, _ = client.Trace(context.Background(), TraceRequest{
+			DecisionType: "test",
+			Outcome:      "pass",
+			Confidence:   1.0,
+		})
+	}
+
+	if len(sessions) != 3 {
+		t.Fatalf("expected 3 trace calls, got %d", len(sessions))
+	}
+	// All three should have the same session ID.
+	if sessions[0] != sessions[1] || sessions[1] != sessions[2] {
+		t.Errorf("expected consistent session IDs, got %v", sessions)
+	}
+	// And it should be a valid UUID.
+	if _, err := uuid.Parse(sessions[0]); err != nil {
+		t.Errorf("session ID %q is not a valid UUID: %v", sessions[0], err)
 	}
 }
 
@@ -1561,5 +1737,66 @@ func TestDecisionDeserializesAllFields(t *testing.T) {
 	}
 	if len(d.Tags) != 2 || d.Tags[0] != "backend" || d.Tags[1] != "infra" {
 		t.Errorf("expected tags [backend, infra], got %v", d.Tags)
+	}
+}
+
+func TestDecisionDeserializesSpec31Fields(t *testing.T) {
+	sessionID := uuid.New()
+
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"POST /v1/query": func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"data": map[string]any{
+					"decisions": []map[string]any{
+						{
+							"id":            uuid.New(),
+							"run_id":        uuid.New(),
+							"agent_id":      "coder",
+							"org_id":        uuid.New(),
+							"decision_type": "architecture",
+							"outcome":       "microservices",
+							"confidence":    0.85,
+							"metadata":      map[string]any{},
+							"session_id":    sessionID,
+							"agent_context": map[string]any{
+								"tool":         "claude-code",
+								"tool_version": "akashi-go/0.2.0",
+								"model":        "claude-opus-4-6",
+								"task":         "code review",
+							},
+							"valid_from":       time.Now(),
+							"transaction_time": time.Now(),
+							"created_at":       time.Now(),
+						},
+					},
+					"total":  1,
+					"count":  1,
+					"limit":  50,
+					"offset": 0,
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	dt := "architecture"
+	resp, err := client.Query(context.Background(), &QueryFilters{DecisionType: &dt}, nil)
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	d := resp.Decisions[0]
+	if d.SessionID == nil || *d.SessionID != sessionID {
+		t.Errorf("expected session_id %s, got %v", sessionID, d.SessionID)
+	}
+	if d.AgentContext == nil {
+		t.Fatal("expected agent_context to be non-nil")
+	}
+	if d.AgentContext["tool"] != "claude-code" {
+		t.Errorf("expected agent_context.tool 'claude-code', got %v", d.AgentContext["tool"])
+	}
+	if d.AgentContext["model"] != "claude-opus-4-6" {
+		t.Errorf("expected agent_context.model 'claude-opus-4-6', got %v", d.AgentContext["model"])
 	}
 }

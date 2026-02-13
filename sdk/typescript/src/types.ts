@@ -14,6 +14,9 @@ export interface Decision {
   supersedes_id?: string;
   content_hash?: string;
   tags?: string[];
+  /** Composite agent identity (spec 31). */
+  session_id?: string;
+  agent_context?: Record<string, unknown>;
   valid_from: string;
   valid_to?: string;
   transaction_time: string;
@@ -140,6 +143,7 @@ export interface TraceRequest {
   alternatives?: TraceAlternative[];
   evidence?: TraceEvidence[];
   metadata?: Record<string, unknown>;
+  context?: Record<string, unknown>;
 }
 
 export interface TraceAlternative {
@@ -161,6 +165,11 @@ export interface QueryFilters {
   decision_type?: string;
   confidence_min?: number;
   outcome?: string;
+  /** Composite agent identity filters (spec 31). */
+  session_id?: string;
+  tool?: string;
+  model?: string;
+  repo?: string;
 }
 
 /** Request body for creating a run. */
@@ -245,4 +254,6 @@ export interface AkashiConfig {
   apiKey: string;
   /** Request timeout in milliseconds. Default: 30_000. */
   timeoutMs?: number;
+  /** Override the auto-generated session UUID. If omitted, one is generated. */
+  sessionId?: string;
 }
