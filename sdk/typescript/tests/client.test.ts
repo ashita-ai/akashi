@@ -205,6 +205,79 @@ describe("AkashiClient", () => {
       expect(body.decision.evidence).toHaveLength(1);
     });
 
+    it("sends User-Agent and X-Akashi-Session headers", async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse(200, { data: { run_id: "r", decision_id: "d" } }),
+      );
+
+      await client.trace({
+        decisionType: "test",
+        outcome: "pass",
+        confidence: 1.0,
+      });
+
+      const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+      const headers = lastCall[1].headers;
+      expect(headers["User-Agent"]).toBe("akashi-typescript/0.2.0");
+      expect(headers["X-Akashi-Session"]).toBeDefined();
+      // Should be a valid UUID format.
+      expect(headers["X-Akashi-Session"]).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      );
+    });
+
+    it("sends context field in wire body", async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse(200, { data: { run_id: "r", decision_id: "d" } }),
+      );
+
+      await client.trace({
+        decisionType: "model_selection",
+        outcome: "gpt-4o",
+        confidence: 0.9,
+        context: {
+          model: "gpt-4o",
+          task: "summarization",
+          repo: "example/repo",
+        },
+      });
+
+      const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+      const body = JSON.parse(lastCall[1].body);
+      expect(body.context).toEqual({
+        model: "gpt-4o",
+        task: "summarization",
+        repo: "example/repo",
+      });
+    });
+
+    it("uses consistent session ID across traces", async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse(200, { data: { run_id: "r", decision_id: "d" } }),
+      );
+      mockFetch.mockResolvedValueOnce(
+        mockResponse(200, { data: { run_id: "r2", decision_id: "d2" } }),
+      );
+
+      await client.trace({
+        decisionType: "a",
+        outcome: "a",
+        confidence: 1.0,
+      });
+      await client.trace({
+        decisionType: "b",
+        outcome: "b",
+        confidence: 1.0,
+      });
+
+      // Skip token call (index 0), trace calls are 1 and 2.
+      const session1 =
+        mockFetch.mock.calls[1][1].headers["X-Akashi-Session"];
+      const session2 =
+        mockFetch.mock.calls[2][1].headers["X-Akashi-Session"];
+      expect(session1).toBe(session2);
+    });
+
     it("handles minimal trace request", async () => {
       mockFetch.mockResolvedValueOnce(
         mockResponse(200, { data: { run_id: "r", decision_id: "d" } }),
@@ -221,6 +294,7 @@ describe("AkashiClient", () => {
       expect(body.decision.reasoning).toBeUndefined();
       expect(body.decision.alternatives).toBeUndefined();
       expect(body.decision.evidence).toBeUndefined();
+      expect(body.context).toBeUndefined();
     });
 
     it("sends correct wire format for trace body", async () => {
@@ -250,6 +324,34 @@ describe("AkashiClient", () => {
         },
         metadata: { env: "prod" },
       });
+    });
+  });
+
+  describe("sessionId override", () => {
+    it("uses provided sessionId from config", async () => {
+      const fixedClient = new AkashiClient({
+        baseUrl: "http://localhost:8080",
+        agentId: "test-agent",
+        apiKey: "test-key",
+        sessionId: "11111111-1111-1111-1111-111111111111",
+      });
+
+      mockFetch
+        .mockResolvedValueOnce(mockResponse(200, TOKEN_RESPONSE))
+        .mockResolvedValueOnce(
+          mockResponse(200, { data: { run_id: "r", decision_id: "d" } }),
+        );
+
+      await fixedClient.trace({
+        decisionType: "test",
+        outcome: "pass",
+        confidence: 1.0,
+      });
+
+      const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+      expect(lastCall[1].headers["X-Akashi-Session"]).toBe(
+        "11111111-1111-1111-1111-111111111111",
+      );
     });
   });
 
@@ -1029,8 +1131,9 @@ describe("AkashiClient", () => {
       const lastCall = mockFetch.mock.calls[0];
       expect(lastCall[0]).toBe("http://localhost:8080/health");
       expect(lastCall[1].method).toBe("GET");
-      // No Authorization header.
-      expect(lastCall[1].headers).toBeUndefined();
+      // No Authorization header, but User-Agent is still sent.
+      expect(lastCall[1].headers).toEqual({ "User-Agent": "akashi-typescript/0.2.0" });
+      expect(lastCall[1].headers.Authorization).toBeUndefined();
     });
 
     it("returns health without qdrant field", async () => {
