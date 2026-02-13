@@ -25,6 +25,10 @@ type Decision struct {
 	ContentHash  string         `json:"content_hash,omitempty"`
 	Tags         []string       `json:"tags,omitempty"`
 
+	// Composite agent identity (spec 31).
+	SessionID    *uuid.UUID     `json:"session_id,omitempty"`
+	AgentContext map[string]any `json:"agent_context,omitempty"`
+
 	// Bi-temporal columns.
 	ValidFrom       time.Time  `json:"valid_from"`
 	ValidTo         *time.Time `json:"valid_to,omitempty"`
@@ -102,6 +106,7 @@ type TraceRequest struct {
 	Alternatives []TraceAlternative `json:"alternatives,omitempty"`
 	Evidence     []TraceEvidence    `json:"evidence,omitempty"`
 	Metadata     map[string]any     `json:"metadata,omitempty"`
+	Context      map[string]any     `json:"context,omitempty"`
 }
 
 // TraceAlternative is an alternative in a trace request.
@@ -126,6 +131,12 @@ type QueryFilters struct {
 	DecisionType  *string  `json:"decision_type,omitempty"`
 	ConfidenceMin *float32 `json:"confidence_min,omitempty"`
 	Outcome       *string  `json:"outcome,omitempty"`
+
+	// Composite agent identity filters (spec 31).
+	SessionID *string `json:"session_id,omitempty"`
+	Tool      *string `json:"tool,omitempty"`
+	Model     *string `json:"model,omitempty"`
+	Repo      *string `json:"repo,omitempty"`
 }
 
 // QueryOptions control ordering and pagination for Client.Query.
