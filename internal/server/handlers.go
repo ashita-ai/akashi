@@ -144,15 +144,28 @@ func (h *Handlers) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
+	// Disable the server's WriteTimeout for this long-lived connection.
+	// Without this, idle SSE connections are killed after WriteTimeout (default 30s).
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
 	orgID := OrgIDFromContext(r.Context())
 	ch := h.broker.Subscribe(orgID)
 	defer h.broker.Unsubscribe(ch)
+
+	keepalive := time.NewTicker(15 * time.Second)
+	defer keepalive.Stop()
 
 	ctx := r.Context()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-keepalive.C:
+			if _, err := w.Write([]byte(":keepalive\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
 		case event, ok := <-ch:
 			if !ok {
 				return

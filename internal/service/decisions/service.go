@@ -101,12 +101,12 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 	var decisionEmb *pgvector.Vector
 	embStart := time.Now()
 	emb, err := s.embedder.Embed(ctx, embText)
-	s.embeddingDuration.Record(ctx, float64(time.Since(embStart).Milliseconds()))
 	if err != nil {
 		s.logger.Warn("trace: decision embedding failed, continuing without", "error", err)
 	} else if err := s.validateEmbeddingDims(emb); err != nil {
 		return TraceResult{}, fmt.Errorf("trace: %w (check AKASHI_EMBEDDING_DIMENSIONS config)", err)
 	} else {
+		s.embeddingDuration.Record(ctx, float64(time.Since(embStart).Milliseconds()))
 		decisionEmb = &emb
 	}
 

@@ -353,9 +353,11 @@ func (q *QdrantIndex) Healthy(ctx context.Context) error {
 		return q.loadHealthErr()
 	}
 
-	// Deduplicate concurrent checks.
+	// Deduplicate concurrent checks. Use context.Background() instead of the
+	// caller's ctx because singleflight reuses the first caller's context —
+	// if that caller cancels, all waiters would get a stale error.
 	result, _, _ := q.healthGroup.Do("health", func() (any, error) {
-		checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		checkCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 
 		_, err := q.client.HealthCheck(checkCtx)

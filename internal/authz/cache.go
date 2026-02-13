@@ -60,6 +60,15 @@ func (c *GrantCache) Set(key string, granted map[string]bool) {
 	}
 }
 
+// Invalidate removes a specific cache entry. Call this when a grant is created
+// or deleted to ensure the affected grantee's access set is recomputed on the
+// next request rather than served stale from cache.
+func (c *GrantCache) Invalidate(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, key)
+}
+
 // Close stops the background eviction goroutine.
 func (c *GrantCache) Close() {
 	close(c.done)
