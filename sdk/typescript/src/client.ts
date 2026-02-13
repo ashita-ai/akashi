@@ -30,6 +30,8 @@ import type {
   TraceResponse,
 } from "./types.js";
 
+const USER_AGENT = "akashi-typescript/0.2.0";
+
 // ---------------------------------------------------------------------------
 // Shared body builders — single source of truth for request shapes.
 // ---------------------------------------------------------------------------
@@ -65,6 +67,7 @@ function buildTraceBody(
 
   const body: Record<string, unknown> = { agent_id: agentId, decision };
   if (request.metadata !== undefined) body.metadata = request.metadata;
+  if (request.context !== undefined) body.context = request.context;
   return body;
 }
 
@@ -276,12 +279,14 @@ async function handleResponse<T>(resp: Response): Promise<T> {
 export class AkashiClient {
   private readonly baseUrl: string;
   private readonly agentId: string;
+  private readonly sessionId: string;
   private readonly timeoutMs: number;
   private readonly tokenManager: TokenManager;
 
   constructor(config: AkashiConfig) {
     this.baseUrl = config.baseUrl.replace(/\/+$/, "");
     this.agentId = config.agentId;
+    this.sessionId = config.sessionId ?? crypto.randomUUID();
     this.timeoutMs = config.timeoutMs ?? 30_000;
     this.tokenManager = new TokenManager(
       this.baseUrl,
@@ -305,10 +310,19 @@ export class AkashiClient {
 
   /** Record a decision trace. */
   async trace(request: TraceRequest): Promise<TraceResponse> {
-    return this.post<TraceResponse>(
-      "/v1/trace",
-      buildTraceBody(this.agentId, request),
-    );
+    const token = await this.tokenManager.getToken();
+    const resp = await fetch(`${this.baseUrl}/v1/trace`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        "User-Agent": USER_AGENT,
+        "X-Akashi-Session": this.sessionId,
+      },
+      body: JSON.stringify(buildTraceBody(this.agentId, request)),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    return handleResponse<TraceResponse>(resp);
   }
 
   /** Query past decisions with structured filters. */
@@ -480,6 +494,7 @@ export class AkashiClient {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
+        "User-Agent": USER_AGENT,
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(this.timeoutMs),
@@ -491,7 +506,10 @@ export class AkashiClient {
     const token = await this.tokenManager.getToken();
     const resp = await fetch(`${this.baseUrl}${path}`, {
       method: "GET",
-      headers: { Authorization: `Bearer ${token}` },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "User-Agent": USER_AGENT,
+      },
       signal: AbortSignal.timeout(this.timeoutMs),
     });
     return handleResponse<T>(resp);
@@ -501,7 +519,10 @@ export class AkashiClient {
     const token = await this.tokenManager.getToken();
     const resp = await fetch(`${this.baseUrl}${path}`, {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${token}` },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "User-Agent": USER_AGENT,
+      },
       signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (resp.status === 204) return;
@@ -511,6 +532,7 @@ export class AkashiClient {
   private async getNoAuth<T>(path: string): Promise<T> {
     const resp = await fetch(`${this.baseUrl}${path}`, {
       method: "GET",
+      headers: { "User-Agent": USER_AGENT },
       signal: AbortSignal.timeout(this.timeoutMs),
     });
     // Health endpoint returns JSON directly, not wrapped in {data: ...}.
