@@ -38,10 +38,12 @@ func WithRetry(ctx context.Context, maxRetries int, baseDelay time.Duration, fn 
 			break
 		}
 		jitter := time.Duration(rand.Int64N(int64(baseDelay))) //nolint:gosec // jitter doesn't need crypto-strength randomness
+		timer := time.NewTimer(baseDelay + jitter)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return ctx.Err()
-		case <-time.After(baseDelay + jitter):
+		case <-timer.C:
 		}
 		baseDelay *= 2
 	}

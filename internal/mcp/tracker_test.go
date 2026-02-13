@@ -73,17 +73,20 @@ func TestCheckTracker_UpdateTimestamp(t *testing.T) {
 }
 
 func TestCheckTracker_PurgeStale(t *testing.T) {
-	// Use a 100ms window so entries don't expire during the tight insert loop,
-	// then sleep long enough for all entries to go stale before triggering purge.
-	tracker := newCheckTracker(100 * time.Millisecond)
+	// Insert 1100 entries with timestamps we control, then verify purgeStale
+	// removes the stale ones. We use a short window and a generous sleep to
+	// avoid flaky failures on slow CI runners with -race overhead.
+	tracker := newCheckTracker(50 * time.Millisecond)
 
 	// Fill with >1000 entries.
 	for i := range 1100 {
 		tracker.Record("agent-1", string(rune('A'+i%26))+string(rune('0'+i/26)))
 	}
 
-	// Wait for all entries to become stale.
-	time.Sleep(150 * time.Millisecond)
+	// Wait well beyond the window for all entries to become stale.
+	// The generous margin (10x the window) absorbs GC pauses, scheduler
+	// jitter, and -race instrumentation overhead on slow CI machines.
+	time.Sleep(500 * time.Millisecond)
 
 	// Record two fresh entries. The first one exceeds the 1000-entry threshold
 	// and triggers purgeStale, which should remove all 1100 stale entries.

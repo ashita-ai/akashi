@@ -192,6 +192,11 @@ func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Invalidate the grantee's cached access set so the new grant takes effect immediately.
+	if h.grantCache != nil {
+		h.grantCache.Invalidate(orgID.String() + ":" + grantee.ID.String())
+	}
+
 	writeJSON(w, r, http.StatusCreated, grant)
 }
 
@@ -226,6 +231,11 @@ func (h *Handlers) HandleDeleteGrant(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.DeleteGrant(r.Context(), orgID, grantID); err != nil {
 		h.writeInternalError(w, r, "failed to delete grant", err)
 		return
+	}
+
+	// Invalidate the grantee's cached access set so the revocation takes effect immediately.
+	if h.grantCache != nil {
+		h.grantCache.Invalidate(orgID.String() + ":" + grant.GranteeID.String())
 	}
 
 	w.WriteHeader(http.StatusNoContent)

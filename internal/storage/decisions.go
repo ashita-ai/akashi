@@ -415,13 +415,14 @@ func (db *DB) searchByILIKE(ctx context.Context, orgID uuid.UUID, query string, 
 	}
 
 	// OR across all terms: any word matching any field qualifies the row.
+	// Uses ILIKE instead of LOWER()+LIKE so PostgreSQL can use pg_trgm GIN indexes.
 	var termClauses []string
 	for _, word := range words {
-		escaped := strings.NewReplacer("%", `\%`, "_", `\_`).Replace(strings.ToLower(word))
+		escaped := strings.NewReplacer("%", `\%`, "_", `\_`).Replace(word)
 		args = append(args, "%"+escaped+"%")
 		p := len(args)
 		termClauses = append(termClauses, fmt.Sprintf(
-			`(LOWER(outcome) LIKE $%d OR LOWER(COALESCE(reasoning, '')) LIKE $%d OR LOWER(decision_type) LIKE $%d)`,
+			`(outcome ILIKE $%d OR COALESCE(reasoning, '') ILIKE $%d OR decision_type ILIKE $%d)`,
 			p, p, p))
 	}
 	where += " AND (" + strings.Join(termClauses, " OR ") + ")"
