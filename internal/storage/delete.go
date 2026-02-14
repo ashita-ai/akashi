@@ -47,6 +47,19 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 	}
 
 	// 1. Delete evidence (via decision_id for this agent's decisions within the org).
+	_, err = tx.Exec(ctx,
+		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		 SELECT $1, $2, 'evidence', e.id::text, to_jsonb(e)
+		 FROM evidence e
+		 WHERE e.decision_id IN (
+		     SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2
+		 )`,
+		orgID, agentID,
+	)
+	if err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: archive evidence for delete: %w", err)
+	}
+
 	tag, err := tx.Exec(ctx,
 		`DELETE FROM evidence WHERE decision_id IN (
 			SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2
@@ -57,6 +70,19 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 	result.Evidence = tag.RowsAffected()
 
 	// 2. Delete alternatives (via decision_id for this agent's decisions within the org).
+	_, err = tx.Exec(ctx,
+		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		 SELECT $1, $2, 'alternatives', a.id::text, to_jsonb(a)
+		 FROM alternatives a
+		 WHERE a.decision_id IN (
+		     SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2
+		 )`,
+		orgID, agentID,
+	)
+	if err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: archive alternatives for delete: %w", err)
+	}
+
 	tag, err = tx.Exec(ctx,
 		`DELETE FROM alternatives WHERE decision_id IN (
 			SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2
@@ -83,6 +109,15 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 		return DeleteAgentResult{}, fmt.Errorf("storage: clear external precedent refs: %w", err)
 	}
 
+	// Also clear supersedes_id from OTHER agents that reference this agent's decisions.
+	_, err = tx.Exec(ctx,
+		`UPDATE decisions SET supersedes_id = NULL
+		 WHERE supersedes_id IN (SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2)`,
+		orgID, agentID)
+	if err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: clear external supersedes refs: %w", err)
+	}
+
 	// 3b. Queue search index deletions for this agent's decisions.
 	// Insert outbox entries before deleting the decisions so the worker can remove them from Qdrant.
 	_, err = tx.Exec(ctx,
@@ -94,21 +129,67 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 		return DeleteAgentResult{}, fmt.Errorf("storage: queue search outbox deletes: %w", err)
 	}
 
-	// 4. Delete decisions.
+	// 4. Delete scored conflicts referencing this agent's decisions.
+	_, err = tx.Exec(ctx,
+		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		 SELECT $1, $2, 'scored_conflicts',
+		        (sc.decision_a_id::text || '::' || sc.decision_b_id::text),
+		        to_jsonb(sc)
+		 FROM scored_conflicts sc
+		 WHERE sc.decision_a_id IN (SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2)
+		    OR sc.decision_b_id IN (SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2)`,
+		orgID, agentID,
+	)
+	if err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: archive scored conflicts for delete: %w", err)
+	}
+
+	_, err = tx.Exec(ctx,
+		`DELETE FROM scored_conflicts
+		 WHERE decision_a_id IN (SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2)
+		    OR decision_b_id IN (SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2)`,
+		orgID, agentID)
+	if err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: delete scored conflicts: %w", err)
+	}
+
+	// 5. Delete decisions.
+	_, err = tx.Exec(ctx,
+		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		 SELECT $1, $2, 'decisions', d.id::text, to_jsonb(d)
+		 FROM decisions d
+		 WHERE d.org_id = $1 AND d.agent_id = $2`,
+		orgID, agentID,
+	)
+	if err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: archive decisions for delete: %w", err)
+	}
+
 	tag, err = tx.Exec(ctx, `DELETE FROM decisions WHERE org_id = $1 AND agent_id = $2`, orgID, agentID)
 	if err != nil {
 		return DeleteAgentResult{}, fmt.Errorf("storage: delete decisions: %w", err)
 	}
 	result.Decisions = tag.RowsAffected()
 
-	// 5. Delete agent_events (hypertable — no FK, uses agent_id text).
+	// 6. Delete agent_events (hypertable — no FK, uses agent_id text).
+	_, err = tx.Exec(ctx,
+		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		 SELECT $1, $2, 'agent_events', ae.id::text, to_jsonb(ae)
+		 FROM agent_events ae
+		 WHERE ae.org_id = $1 AND ae.agent_id = $2`,
+		orgID, agentID,
+	)
+	if err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: archive events for delete: %w", err)
+	}
+
 	tag, err = tx.Exec(ctx, `DELETE FROM agent_events WHERE org_id = $1 AND agent_id = $2`, orgID, agentID)
 	if err != nil {
 		return DeleteAgentResult{}, fmt.Errorf("storage: delete events: %w", err)
 	}
 	result.Events = tag.RowsAffected()
 
-	// 6. Clear parent_run_id self-references before deleting runs.
+	// 7. Clear parent_run_id self-references before deleting runs.
 	_, err = tx.Exec(ctx,
 		`UPDATE agent_runs SET parent_run_id = NULL WHERE org_id = $1 AND agent_id = $2 AND parent_run_id IS NOT NULL`,
 		orgID, agentID)
@@ -125,14 +206,36 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 		return DeleteAgentResult{}, fmt.Errorf("storage: clear external parent run refs: %w", err)
 	}
 
-	// 7. Delete agent_runs.
+	// 8. Delete agent_runs.
+	_, err = tx.Exec(ctx,
+		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		 SELECT $1, $2, 'agent_runs', ar.id::text, to_jsonb(ar)
+		 FROM agent_runs ar
+		 WHERE ar.org_id = $1 AND ar.agent_id = $2`,
+		orgID, agentID,
+	)
+	if err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: archive runs for delete: %w", err)
+	}
+
 	tag, err = tx.Exec(ctx, `DELETE FROM agent_runs WHERE org_id = $1 AND agent_id = $2`, orgID, agentID)
 	if err != nil {
 		return DeleteAgentResult{}, fmt.Errorf("storage: delete runs: %w", err)
 	}
 	result.Runs = tag.RowsAffected()
 
-	// 8. Delete access_grants (where agent is grantor or grantee within org).
+	// 9. Delete access_grants (where agent is grantor or grantee within org).
+	_, err = tx.Exec(ctx,
+		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		 SELECT $1, $3, 'access_grants', g.id::text, to_jsonb(g)
+		 FROM access_grants g
+		 WHERE g.org_id = $1 AND (g.grantor_id = $2 OR g.grantee_id = $2)`,
+		orgID, agentUUID, agentID,
+	)
+	if err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: archive grants for delete: %w", err)
+	}
+
 	tag, err = tx.Exec(ctx,
 		`DELETE FROM access_grants WHERE org_id = $1 AND (grantor_id = $2 OR grantee_id = $2)`, orgID, agentUUID)
 	if err != nil {
@@ -140,7 +243,18 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 	}
 	result.Grants = tag.RowsAffected()
 
-	// 9. Delete the agent itself.
+	// 10. Delete the agent itself.
+	_, err = tx.Exec(ctx,
+		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		 SELECT $1, $2, 'agents', a.id::text, to_jsonb(a)
+		 FROM agents a
+		 WHERE a.org_id = $1 AND a.agent_id = $2`,
+		orgID, agentID,
+	)
+	if err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: archive agent for delete: %w", err)
+	}
+
 	tag, err = tx.Exec(ctx, `DELETE FROM agents WHERE org_id = $1 AND agent_id = $2`, orgID, agentID)
 	if err != nil {
 		return DeleteAgentResult{}, fmt.Errorf("storage: delete agent: %w", err)

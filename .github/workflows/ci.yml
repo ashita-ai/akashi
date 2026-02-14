@@ -29,6 +29,9 @@ jobs:
           go mod tidy
           git diff --exit-code go.mod go.sum
 
+      - name: Check doc/config consistency
+        run: python3 scripts/check_doc_config_consistency.py
+
       - name: Install Atlas
         uses: ariga/setup-atlas@cf119a6512b9133214e3a98bd4f731bfc413e9cb
         with:
@@ -94,7 +97,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.22'
+          go-version-file: go.mod
           cache: true
 
       - name: Run Go SDK tests
@@ -127,3 +130,46 @@ jobs:
 
       - name: Install dependencies and run tests
         run: cd sdk/typescript && npm ci && npm test
+
+  verify-exit-criteria:
+    name: Verify Exit Criteria
+    runs-on: ubuntu-latest
+    services:
+      timescaledb:
+        image: timescale/timescaledb:latest-pg18
+        env:
+          POSTGRES_USER: akashi
+          POSTGRES_PASSWORD: akashi
+          POSTGRES_DB: akashi
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U akashi -d akashi"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://akashi:akashi@localhost:5432/akashi?sslmode=disable
+      MAX_DEAD_LETTERS: "0"
+      MAX_OUTBOX_OLDEST_SECONDS: "1800"
+      STRICT_RETENTION_CHECK: "false"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Atlas
+        uses: ariga/setup-atlas@cf119a6512b9133214e3a98bd4f731bfc413e9cb
+        with:
+          version: v1.1.0
+
+      - name: Bootstrap extensions
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS vector;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS timescaledb;"
+
+      - name: Apply migrations
+        run: |
+          atlas migrate apply --dir file://migrations --url "$DATABASE_URL"
+
+      - name: Verify durability exit criteria
+        run: |
+          make verify-exit-criteria

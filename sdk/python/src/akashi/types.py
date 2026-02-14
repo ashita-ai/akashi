@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 from typing import Any
 from uuid import UUID
 
@@ -62,9 +63,15 @@ class Evidence(BaseModel):
     created_at: datetime
 
 
+class ConflictKind(str, Enum):
+    cross_agent = "cross_agent"
+    self_contradiction = "self_contradiction"
+
+
 class DecisionConflict(BaseModel):
     """A detected conflict between two decisions."""
 
+    conflict_kind: ConflictKind
     decision_a_id: UUID
     decision_b_id: UUID
     org_id: UUID
@@ -73,6 +80,8 @@ class DecisionConflict(BaseModel):
     run_a: UUID
     run_b: UUID
     decision_type: str
+    decision_type_a: str | None = None
+    decision_type_b: str | None = None
     outcome_a: str
     outcome_b: str
     confidence_a: float
@@ -82,6 +91,10 @@ class DecisionConflict(BaseModel):
     decided_at_a: datetime
     decided_at_b: datetime
     detected_at: datetime
+    topic_similarity: float | None = None
+    outcome_divergence: float | None = None
+    significance: float | None = None
+    scoring_method: str = ""
 
 
 class AgentRun(BaseModel):

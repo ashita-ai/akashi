@@ -194,6 +194,8 @@ def _build_create_grant_body(req: CreateGrantRequest) -> dict[str, Any]:
 
 def _build_conflicts_params(
     decision_type: str | None,
+    agent_id: str | None,
+    conflict_kind: str | None,
     limit: int,
     offset: int,
 ) -> dict[str, str]:
@@ -201,6 +203,10 @@ def _build_conflicts_params(
     params: dict[str, str] = {"limit": str(limit), "offset": str(offset)}
     if decision_type is not None:
         params["decision_type"] = decision_type
+    if agent_id is not None:
+        params["agent_id"] = agent_id
+    if conflict_kind is not None:
+        params["conflict_kind"] = conflict_kind
     return params
 
 
@@ -459,13 +465,17 @@ class AkashiClient:
         self,
         *,
         decision_type: str | None = None,
+        agent_id: str | None = None,
+        conflict_kind: str | None = None,
         limit: int = 25,
         offset: int = 0,
     ) -> list[DecisionConflict]:
         """List detected decision conflicts."""
         data = await self._get(
             "/v1/conflicts",
-            params=_build_conflicts_params(decision_type, limit, offset),
+            params=_build_conflicts_params(
+                decision_type, agent_id, conflict_kind, limit, offset
+            ),
         )
         return [DecisionConflict.model_validate(c) for c in data.get("conflicts", [])]
 
@@ -709,13 +719,17 @@ class AkashiSyncClient:
         self,
         *,
         decision_type: str | None = None,
+        agent_id: str | None = None,
+        conflict_kind: str | None = None,
         limit: int = 25,
         offset: int = 0,
     ) -> list[DecisionConflict]:
         """List detected decision conflicts."""
         data = self._get(
             "/v1/conflicts",
-            params=_build_conflicts_params(decision_type, limit, offset),
+            params=_build_conflicts_params(
+                decision_type, agent_id, conflict_kind, limit, offset
+            ),
         )
         return [DecisionConflict.model_validate(c) for c in data.get("conflicts", [])]
 

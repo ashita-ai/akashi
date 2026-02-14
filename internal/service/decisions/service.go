@@ -28,12 +28,18 @@ import (
 	"github.com/ashita-ai/akashi/internal/telemetry"
 )
 
+// ConflictScorer scores semantic conflicts for new decisions.
+type ConflictScorer interface {
+	ScoreForDecision(ctx context.Context, decisionID, orgID uuid.UUID)
+}
+
 // Service encapsulates decision business logic shared by HTTP and MCP handlers.
 type Service struct {
-	db       *storage.DB
-	embedder embedding.Provider
-	searcher search.Searcher
-	logger   *slog.Logger
+	db             *storage.DB
+	embedder       embedding.Provider
+	searcher       search.Searcher
+	conflictScorer ConflictScorer
+	logger         *slog.Logger
 
 	embeddingDuration metric.Float64Histogram
 	searchDuration    metric.Float64Histogram
@@ -41,7 +47,8 @@ type Service struct {
 
 // New creates a new decision Service.
 // searcher may be nil if Qdrant is not configured (falls back to text search).
-func New(db *storage.DB, embedder embedding.Provider, searcher search.Searcher, logger *slog.Logger) *Service {
+// conflictScorer may be nil to disable semantic conflict detection.
+func New(db *storage.DB, embedder embedding.Provider, searcher search.Searcher, logger *slog.Logger, conflictScorer ConflictScorer) *Service {
 	meter := telemetry.Meter("akashi/decisions")
 	embDur, _ := meter.Float64Histogram("akashi.embedding.duration",
 		metric.WithDescription("Time to generate embeddings (ms)"),
@@ -55,6 +62,7 @@ func New(db *storage.DB, embedder embedding.Provider, searcher search.Searcher, 
 		db:                db,
 		embedder:          embedder,
 		searcher:          searcher,
+		conflictScorer:    conflictScorer,
 		logger:            logger,
 		embeddingDuration: embDur,
 		searchDuration:    searchDur,
@@ -93,12 +101,12 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 		span.SetAttributes(attribute.String("akashi.trace_id", *input.TraceID))
 	}
 
-	// 1. Generate decision embedding (outside tx — may call external API).
+	// 1. Generate decision embedding (full) and outcome embedding (Option B).
 	embText := input.Decision.DecisionType + ": " + input.Decision.Outcome
 	if input.Decision.Reasoning != nil {
 		embText += " " + *input.Decision.Reasoning
 	}
-	var decisionEmb *pgvector.Vector
+	var decisionEmb, outcomeEmb *pgvector.Vector
 	embStart := time.Now()
 	emb, err := s.embedder.Embed(ctx, embText)
 	if err != nil {
@@ -108,6 +116,10 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 	} else {
 		s.embeddingDuration.Record(ctx, float64(time.Since(embStart).Milliseconds()))
 		decisionEmb = &emb
+	}
+	// Outcome-only embedding for precise conflict outcome comparison.
+	if outcomeVec, err := s.embedder.Embed(ctx, input.Decision.Outcome); err == nil && s.validateEmbeddingDims(outcomeVec) == nil {
+		outcomeEmb = &outcomeVec
 	}
 
 	// 2. Compute quality score.
@@ -161,13 +173,14 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 			TraceID:  input.TraceID,
 			Metadata: input.Metadata,
 			Decision: model.Decision{
-				DecisionType: input.Decision.DecisionType,
-				Outcome:      input.Decision.Outcome,
-				Confidence:   input.Decision.Confidence,
-				Reasoning:    input.Decision.Reasoning,
-				Embedding:    decisionEmb,
-				QualityScore: qualityScore,
-				PrecedentRef: input.PrecedentRef,
+				DecisionType:     input.Decision.DecisionType,
+				Outcome:          input.Decision.Outcome,
+				Confidence:       input.Decision.Confidence,
+				Reasoning:        input.Decision.Reasoning,
+				Embedding:        decisionEmb,
+				OutcomeEmbedding: outcomeEmb,
+				QualityScore:     qualityScore,
+				PrecedentRef:     input.PrecedentRef,
 			},
 			Alternatives: alts,
 			Evidence:     evs,
@@ -191,6 +204,20 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 		s.logger.Error("trace: marshal notify payload", "error", err)
 	} else if err := s.db.Notify(ctx, storage.ChannelDecisions, string(notifyPayload)); err != nil {
 		s.logger.Error("trace: notify subscribers", "error", err)
+	}
+
+	// 7. Trigger semantic conflict scoring (async, non-blocking).
+	if s.conflictScorer != nil {
+		go func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					s.logger.Error("trace: conflict scorer panicked", "panic", rec, "decision_id", decision.ID, "org_id", orgID)
+				}
+			}()
+			scoreCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			s.conflictScorer.ScoreForDecision(scoreCtx, decision.ID, orgID)
+		}()
 	}
 
 	eventCount := len(alts) + len(evs) + 1 // +1 for the decision itself
@@ -265,10 +292,10 @@ func (s *Service) Search(ctx context.Context, orgID uuid.UUID, query string, sem
 		if err := s.searcher.Healthy(ctx); err == nil {
 			embStart := time.Now()
 			queryEmb, err := s.embedder.Embed(ctx, query)
-			s.embeddingDuration.Record(ctx, float64(time.Since(embStart).Milliseconds()))
 			if err != nil {
 				s.logger.Warn("search: embedding failed, falling back to text", "error", err)
 			} else if !isZeroVector(queryEmb) {
+				s.embeddingDuration.Record(ctx, float64(time.Since(embStart).Milliseconds()))
 				searchStart := time.Now()
 				results, err := s.searcher.Search(ctx, orgID, queryEmb.Slice(), filters, limit)
 				s.searchDuration.Record(ctx, float64(time.Since(searchStart).Milliseconds()))
@@ -333,6 +360,13 @@ func (s *Service) Query(ctx context.Context, orgID uuid.UUID, req model.QueryReq
 	return s.db.QueryDecisions(ctx, orgID, req)
 }
 
+// QueryTemporal executes a bi-temporal point-in-time query over decisions.
+// Returns decisions visible as of the given timestamp (transaction_time <= as_of,
+// and either valid_to IS NULL or valid_to > as_of).
+func (s *Service) QueryTemporal(ctx context.Context, orgID uuid.UUID, req model.TemporalQueryRequest) ([]model.Decision, error) {
+	return s.db.QueryDecisionsTemporal(ctx, orgID, req)
+}
+
 // Recent returns recent decisions with optional filters and pagination.
 func (s *Service) Recent(ctx context.Context, orgID uuid.UUID, filters model.QueryFilters, limit, offset int) ([]model.Decision, int, error) {
 	return s.db.QueryDecisions(ctx, orgID, model.QueryRequest{
@@ -343,6 +377,17 @@ func (s *Service) Recent(ctx context.Context, orgID uuid.UUID, filters model.Que
 		Limit:    limit,
 		Offset:   offset,
 	})
+}
+
+// SemanticSearchAvailable returns true when both Qdrant and a real embedding
+// provider are configured. Used by the config endpoint so the UI can accurately
+// show whether semantic (vector) search is available.
+func (s *Service) SemanticSearchAvailable() bool {
+	if s.searcher == nil {
+		return false
+	}
+	_, isNoop := s.embedder.(*embedding.NoopProvider)
+	return !isNoop
 }
 
 // ErrAgentNotFound indicates the agent does not exist and the caller lacks
@@ -444,6 +489,50 @@ func (s *Service) BackfillEmbeddings(ctx context.Context, batchSize int) (int, e
 
 	if backfilled > 0 {
 		s.logger.Info("backfill: embedded decisions", "count", backfilled, "batch", len(decs))
+	}
+	return backfilled, nil
+}
+
+// BackfillOutcomeEmbeddings populates outcome_embedding for decisions that have
+// embedding but no outcome_embedding (Option B). Returns the number backfilled.
+func (s *Service) BackfillOutcomeEmbeddings(ctx context.Context, batchSize int) (int, error) {
+	if _, err := s.embedder.Embed(ctx, "probe"); errors.Is(err, embedding.ErrNoProvider) {
+		return 0, nil
+	}
+
+	decs, err := s.db.FindDecisionsMissingOutcomeEmbedding(ctx, batchSize)
+	if err != nil {
+		return 0, fmt.Errorf("backfill outcome: find: %w", err)
+	}
+	if len(decs) == 0 {
+		return 0, nil
+	}
+
+	texts := make([]string, len(decs))
+	for i, d := range decs {
+		texts[i] = d.Outcome
+	}
+
+	vecs, err := s.embedder.EmbedBatch(ctx, texts)
+	if err != nil {
+		return 0, fmt.Errorf("backfill outcome: embed: %w", err)
+	}
+
+	var backfilled int
+	for i, d := range decs {
+		if err := s.validateEmbeddingDims(vecs[i]); err != nil {
+			s.logger.Warn("backfill outcome: dimension mismatch", "decision_id", d.ID, "error", err)
+			continue
+		}
+		if err := s.db.BackfillOutcomeEmbedding(ctx, d.ID, d.OrgID, vecs[i]); err != nil {
+			s.logger.Warn("backfill outcome: update failed", "decision_id", d.ID, "error", err)
+			continue
+		}
+		backfilled++
+	}
+
+	if backfilled > 0 {
+		s.logger.Info("backfill: outcome embeddings", "count", backfilled, "batch", len(decs))
 	}
 	return backfilled, nil
 }

@@ -77,9 +77,9 @@ go build -o bin/akashi ./cmd/akashi
 docker compose up -d
 docker compose down
 
-# Docker — with Qdrant vector search
-docker compose --profile qdrant up -d
-docker compose --profile qdrant down
+# Docker — includes Qdrant vector search service
+docker compose up -d
+docker compose down
 
 # Run full quality suite
 make all
@@ -106,7 +106,6 @@ akashi/
 │   └── mcp/            # MCP server implementation
 ├── migrations/         # SQL migration files (numbered, forward-only)
 ├── adrs/               # Architecture Decision Records — *why* decisions were made
-├── specs/              # Design specifications — *how* features should be built
 ├── docs/               # Supplementary docs — strategy, standards, deep dives
 ├── scratchpad/         # Temporary notes, drafts, research (gitignored)
 └── docker/             # Postgres init script + env example
@@ -134,27 +133,9 @@ Business ADRs live in the `internal/` repo (ADR-009, ADR-010, ADR-011). ADR numb
 
 **When to write an ADR:** Any choice that constrains future decisions — language, database, protocol, auth scheme, isolation model. If you'd explain it to a new engineer as "here's why we did it this way", it's an ADR.
 
-### specs/
-
-Design specifications. **Feature specs, system design docs, API contracts, and implementation plans go here.** Specs describe *how* something should work — the detailed blueprint that an engineer or agent can execute against.
-
-Format: `NN-short-title.md` (numbered for ordering). Sub-specs use letter suffixes: `05a-schema-migration.md`.
-
-Current specs:
-- `01-system-overview.md`: Architecture overview
-- `02-data-model.md`: Event-sourced bi-temporal schema
-- `03-api-contracts.md`: HTTP + MCP API surface
-- `04-scaling-and-operations.md`: Deployment, monitoring, scaling
-- `05-multi-tenancy.md`: Org-scoped multi-tenancy (and sub-specs 05a-05e)
-- `06a-schema-optimization.md`: Schema fixes (evidence.org_id data leak, missing indexes, mat view rewrite)
-- `07-qdrant-vector-search.md`: Qdrant Cloud as primary vector search with pgvector fallback
-- `08-openapi-spec.md`: OpenAPI 3.1 specification (embedded at GET /openapi.yaml)
-
-**When to write a spec:** Any feature that touches more than 3 files, requires a migration, changes the API contract, or could be implemented multiple ways. If the work would benefit from a reviewer saying "yes, build it this way", it's a spec.
-
 ### docs/
 
-Supplementary documentation — strategy papers, standards alignment notes, deep dives for external audiences. Not implementation blueprints (those go in `specs/`) and not decision rationale (those go in `adrs/`).
+Supplementary documentation — strategy papers, standards alignment notes, deep dives for external audiences. Put implementation blueprints under `docs/` alongside the subsystem docs.
 
 ### scratchpad/
 
@@ -182,7 +163,7 @@ Event-sourced with bi-temporal modeling. Core tables:
 | `evidence` | Evidence links with provenance and embeddings |
 | `agents` | Registered agents with roles and API key hashes |
 | `access_grants` | Fine-grained cross-agent visibility |
-| `decision_conflicts` | Materialized view of conflicting decisions |
+| `scored_conflicts` | Semantic conflict pairs (event-driven, see docs/decisions.md) |
 
 **Bi-temporal columns** on mutable tables:
 - `valid_from` / `valid_to`: business time (when the decision was valid)

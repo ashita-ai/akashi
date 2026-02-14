@@ -76,10 +76,19 @@ function ConflictCard({ conflict }: { conflict: DecisionConflict }) {
           </span>
         </div>
         <p className="text-xs text-muted-foreground mt-1">
-          <span className="font-medium text-foreground">{conflict.agent_a}</span>
-          {" and "}
-          <span className="font-medium text-foreground">{conflict.agent_b}</span>
-          {" reached different conclusions on the same decision type within an hour"}
+          {conflict.conflict_kind === "self_contradiction" ? (
+            <>
+              <span className="font-medium text-foreground">{conflict.agent_a}</span>
+              {" contradicted themselves on the same decision type within 7 days"}
+            </>
+          ) : (
+            <>
+              <span className="font-medium text-foreground">{conflict.agent_a}</span>
+              {" and "}
+              <span className="font-medium text-foreground">{conflict.agent_b}</span>
+              {" reached different conclusions on the same decision type within an hour"}
+            </>
+          )}
         </p>
       </CardHeader>
       <CardContent>

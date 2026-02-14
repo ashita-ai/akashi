@@ -738,7 +738,7 @@ func TestAppendEvents(t *testing.T) {
 				})
 				return
 			}
-			writeJSON(w, http.StatusAccepted, map[string]any{
+			writeJSON(w, http.StatusOK, map[string]any{
 				"data": map[string]any{
 					"accepted":  len(events),
 					"event_ids": []uuid.UUID{eventID1, eventID2},
@@ -1239,6 +1239,7 @@ func TestListConflicts(t *testing.T) {
 				"data": map[string]any{
 					"conflicts": []DecisionConflict{
 						{
+							ConflictKind: ConflictKindCrossAgent,
 							DecisionAID:  uuid.New(),
 							DecisionBID:  uuid.New(),
 							AgentA:       "planner",

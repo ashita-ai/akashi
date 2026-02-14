@@ -12,12 +12,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 
 	"github.com/ashita-ai/akashi/api"
 	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/authz"
 	"github.com/ashita-ai/akashi/internal/config"
+	"github.com/ashita-ai/akashi/internal/conflicts"
 	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/mcp"
 	"github.com/ashita-ai/akashi/internal/ratelimit"
@@ -28,6 +30,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/service/trace"
 	"github.com/ashita-ai/akashi/internal/storage"
 	"github.com/ashita-ai/akashi/internal/telemetry"
+	"github.com/ashita-ai/akashi/migrations"
 	"github.com/ashita-ai/akashi/ui"
 )
 
@@ -39,10 +42,7 @@ func main() {
 }
 
 func run0() int {
-	level := slog.LevelInfo
-	if os.Getenv("AKASHI_LOG_LEVEL") == "debug" {
-		level = slog.LevelDebug
-	}
+	level := parseLogLevel(os.Getenv("AKASHI_LOG_LEVEL"))
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: level,
 	}))
@@ -87,11 +87,13 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	// Register connection pool OTEL metrics (after telemetry.Init).
 	db.RegisterPoolMetrics()
 
-	// Run migrations (dev mode only; production uses Atlas).
-	// RunMigrations tracks applied files in schema_migrations and skips duplicates,
-	// so errors here indicate real failures (not "already exists").
-	if err := db.RunMigrations(ctx, os.DirFS("migrations")); err != nil {
-		slog.Warn("migrations failed", "error", err)
+	// Run embedded migrations unless explicitly disabled for external orchestration.
+	// RunMigrations tracks applied files in schema_migrations and skips duplicates.
+	// Migrations are embedded so they work regardless of working directory.
+	if cfg.SkipEmbeddedMigrations {
+		slog.Info("embedded migrations skipped by config")
+	} else if err := db.RunMigrations(ctx, migrations.FS); err != nil {
+		return fmt.Errorf("migrations: %w", err)
 	}
 
 	// Verify critical tables exist after migration. If the pgvector or timescaledb
@@ -143,8 +145,11 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		logger.Info("qdrant: disabled (no QDRANT_URL)")
 	}
 
+	// Create conflict scorer for semantic conflict detection (Option B).
+	conflictScorer := conflicts.NewScorer(db, logger, cfg.ConflictSignificanceThreshold)
+
 	// Create decision service (shared by HTTP and MCP handlers).
-	decisionSvc := decisions.New(db, embedder, searcher, logger)
+	decisionSvc := decisions.New(db, embedder, searcher, logger, conflictScorer)
 
 	// Backfill embeddings for decisions stored without one (e.g. when the
 	// provider was previously noop). Runs once at startup, non-fatal.
@@ -152,6 +157,12 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		logger.Warn("embedding backfill failed", "error", err)
 	} else if n > 0 {
 		logger.Info("embedding backfill complete", "count", n)
+	}
+	// Backfill outcome embeddings (Option B) for semantic conflict detection.
+	if n, err := decisionSvc.BackfillOutcomeEmbeddings(ctx, 500); err != nil {
+		logger.Warn("outcome embedding backfill failed", "error", err)
+	} else if n > 0 {
+		logger.Info("outcome embedding backfill complete", "count", n)
 	}
 
 	// Create event buffer.
@@ -198,29 +209,32 @@ func run(ctx context.Context, logger *slog.Logger) error {
 
 	// Create and start HTTP server (MCP mounted at /mcp).
 	srv := server.New(server.ServerConfig{
-		DB:                  db,
-		JWTMgr:              jwtMgr,
-		DecisionSvc:         decisionSvc,
-		Buffer:              buf,
-		Broker:              broker,
-		Searcher:            searcher,
-		GrantCache:          grantCache,
-		Logger:              logger,
-		Port:                cfg.Port,
-		ReadTimeout:         cfg.ReadTimeout,
-		WriteTimeout:        cfg.WriteTimeout,
-		MCPServer:           mcpSrv.MCPServer(),
-		Version:             version,
-		MaxRequestBodyBytes: cfg.MaxRequestBodyBytes,
-		RateLimiter:         limiter,
-		CORSAllowedOrigins:  cfg.CORSAllowedOrigins,
-		UIFS:                uiFS,
-		OpenAPISpec:         api.OpenAPISpec,
+		DB:                       db,
+		JWTMgr:                   jwtMgr,
+		DecisionSvc:              decisionSvc,
+		Buffer:                   buf,
+		Broker:                   broker,
+		Searcher:                 searcher,
+		GrantCache:               grantCache,
+		Logger:                   logger,
+		Port:                     cfg.Port,
+		ReadTimeout:              cfg.ReadTimeout,
+		WriteTimeout:             cfg.WriteTimeout,
+		MCPServer:                mcpSrv.MCPServer(),
+		Version:                  version,
+		MaxRequestBodyBytes:      cfg.MaxRequestBodyBytes,
+		RateLimiter:              limiter,
+		TrustProxy:               cfg.TrustProxy,
+		CORSAllowedOrigins:       cfg.CORSAllowedOrigins,
+		IdempotencyInProgressTTL: cfg.IdempotencyInProgressTTL,
+		EnableDestructiveDelete:  cfg.EnableDestructiveDelete,
+		UIFS:                     uiFS,
+		OpenAPISpec:              api.OpenAPISpec,
 	})
 
 	// Seed admin agent.
 	if err := srv.Handlers().SeedAdmin(ctx, cfg.AdminAPIKey); err != nil {
-		slog.Warn("admin seed failed", "error", err)
+		return fmt.Errorf("admin seed: %w", err)
 	}
 
 	// Start conflict refresh loop.
@@ -228,6 +242,8 @@ func run(ctx context.Context, logger *slog.Logger) error {
 
 	// Start integrity proof loop (Merkle tree batch proofs).
 	go integrityProofLoop(ctx, db, logger, cfg.IntegrityProofInterval)
+	// Start idempotency retention cleanup loop.
+	go idempotencyCleanupLoop(ctx, db, logger, cfg.IdempotencyCleanupInterval, cfg.IdempotencyCompletedTTL, cfg.IdempotencyAbandonedTTL)
 
 	// Start HTTP server in background.
 	errCh := make(chan error, 1)
@@ -244,31 +260,57 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		return err
 	}
 
-	// Graceful shutdown. Each phase gets its own timeout so early completion
-	// doesn't steal budget from later phases. Total worst-case: 30s.
+	// Graceful shutdown. Timeouts are independently configurable per phase.
+	// A timeout value of 0 waits indefinitely (durability-first behavior).
 	// Order: (1) stop accepting new HTTP requests and drain in-flight (they may
 	// still append to the buffer), (2) flush the event buffer to Postgres,
 	// (3) sync remaining outbox entries to Qdrant.
 	slog.Info("akashi shutting down")
 
-	httpCtx, httpCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	httpCtx, httpCancel := contextWithOptionalTimeout(context.Background(), cfg.ShutdownHTTPTimeout)
 	if err := srv.Shutdown(httpCtx); err != nil {
 		slog.Error("http shutdown error", "error", err)
 	}
 	httpCancel()
 
-	bufCtx, bufCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Durability-first shutdown: always wait for event buffer drain to finish.
+	// A partial drain can lose in-memory events that were already accepted.
+	if cfg.ShutdownBufferDrainTimeout > 0 {
+		slog.Warn("ignoring AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT for durability; waiting indefinitely for buffer drain",
+			"configured_timeout", cfg.ShutdownBufferDrainTimeout)
+	}
+	bufCtx, bufCancel := contextWithOptionalTimeout(context.Background(), 0)
 	buf.Drain(bufCtx)
 	bufCancel()
 
 	if outboxWorker != nil {
-		outboxCtx, outboxCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		outboxCtx, outboxCancel := contextWithOptionalTimeout(context.Background(), cfg.ShutdownOutboxDrainTimeout)
 		outboxWorker.Drain(outboxCtx)
 		outboxCancel()
 	}
 
 	slog.Info("akashi stopped")
 	return nil
+}
+
+func parseLogLevel(raw string) slog.Level {
+	switch raw {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
+func contextWithOptionalTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return context.WithCancel(parent)
+	}
+	return context.WithTimeout(parent, timeout)
 }
 
 // newEmbeddingProvider creates an embedding provider based on configuration.
@@ -342,53 +384,85 @@ func conflictRefreshLoop(ctx context.Context, db *storage.DB, logger *slog.Logge
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	lastNotifiedAt := time.Now().UTC()
+	lastNotifiedAt := make(map[uuid.UUID]time.Time)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := db.RefreshConflicts(ctx); err != nil {
+			opCtx, cancel := context.WithTimeout(ctx, conflictRefreshTimeout(interval))
+			if err := db.RefreshConflicts(opCtx); err != nil {
+				cancel()
 				logger.Warn("conflict refresh failed", "error", err)
 				continue
 			}
+			if err := db.RefreshAgentState(opCtx); err != nil {
+				logger.Warn("agent state refresh failed", "error", err)
+			}
 
-			// Detect new conflicts since last notification and send pg_notify for each.
-			// Cap at 1000 to avoid unbounded memory use; the SSE notification path
-			// only needs to signal *that* new conflicts exist — clients re-fetch via API.
-			newConflicts, err := db.NewConflictsSince(ctx, lastNotifiedAt, 1000)
+			// Fetch orgs and query new conflicts per org to avoid scanning all tenants.
+			orgIDs, err := db.ListOrganizationIDs(opCtx)
 			if err != nil {
-				logger.Warn("new conflicts query failed", "error", err)
+				cancel()
+				logger.Warn("conflict org list failed", "error", err)
 				continue
 			}
 
-			for _, c := range newConflicts {
-				payload, err := json.Marshal(map[string]any{
-					"org_id":        c.OrgID,
-					"decision_a_id": c.DecisionAID,
-					"decision_b_id": c.DecisionBID,
-					"agent_a":       c.AgentA,
-					"agent_b":       c.AgentB,
-					"decision_type": c.DecisionType,
-				})
+			var totalNotified int
+			for _, orgID := range orgIDs {
+				since, ok := lastNotifiedAt[orgID]
+				if !ok {
+					since = time.Now().UTC()
+					lastNotifiedAt[orgID] = since
+				}
+
+				// Cap per-org results to avoid unbounded memory use.
+				newConflicts, err := db.NewConflictsSinceByOrg(opCtx, orgID, since, 1000)
 				if err != nil {
-					logger.Warn("conflict notify marshal failed", "error", err)
+					logger.Warn("new conflicts query failed", "error", err, "org_id", orgID)
 					continue
 				}
-				if err := db.Notify(ctx, storage.ChannelConflicts, string(payload)); err != nil {
-					logger.Warn("conflict notify failed", "error", err)
-				}
-				if c.DetectedAt.After(lastNotifiedAt) {
-					lastNotifiedAt = c.DetectedAt
+
+				for _, c := range newConflicts {
+					payload, err := json.Marshal(map[string]any{
+						"org_id":        c.OrgID,
+						"conflict_kind": c.ConflictKind,
+						"decision_a_id": c.DecisionAID,
+						"decision_b_id": c.DecisionBID,
+						"agent_a":       c.AgentA,
+						"agent_b":       c.AgentB,
+						"decision_type": c.DecisionType,
+					})
+					if err != nil {
+						logger.Warn("conflict notify marshal failed", "error", err)
+						continue
+					}
+					if err := db.Notify(opCtx, storage.ChannelConflicts, string(payload)); err != nil {
+						logger.Warn("conflict notify failed", "error", err)
+					}
+					if c.DetectedAt.After(lastNotifiedAt[orgID]) {
+						lastNotifiedAt[orgID] = c.DetectedAt
+					}
+					totalNotified++
 				}
 			}
+			cancel()
 
-			if len(newConflicts) > 0 {
-				logger.Info("conflict notifications sent", "count", len(newConflicts))
+			if totalNotified > 0 {
+				logger.Info("conflict notifications sent", "count", totalNotified)
 			}
 		}
 	}
+}
+
+func conflictRefreshTimeout(interval time.Duration) time.Duration {
+	// Keep each cycle bounded so shutdown cancellation is respected promptly.
+	const max = 15 * time.Second
+	if interval < max {
+		return interval
+	}
+	return max
 }
 
 func integrityProofLoop(ctx context.Context, db *storage.DB, logger *slog.Logger, interval time.Duration) {
@@ -400,7 +474,14 @@ func integrityProofLoop(ctx context.Context, db *storage.DB, logger *slog.Logger
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			buildIntegrityProofs(ctx, db, logger)
+			// Per-cycle timeout so one slow org doesn't block shutdown or subsequent cycles.
+			opCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			buildIntegrityProofs(opCtx, db, logger)
+			// Lightweight check: active decisions with NULL search_vector won't match FTS.
+			if hasNull, err := db.HasDecisionsWithNullSearchVector(opCtx); err == nil && hasNull {
+				logger.Warn("decisions with NULL search_vector detected — FTS excludes these rows; check trigger and migration 022 backfill")
+			}
+			cancel()
 		}
 	}
 }
@@ -463,5 +544,28 @@ func buildIntegrityProofs(ctx context.Context, db *storage.DB, logger *slog.Logg
 			"decisions", len(hashes),
 			"root_hash", root[:16]+"...",
 		)
+	}
+}
+
+func idempotencyCleanupLoop(ctx context.Context, db *storage.DB, logger *slog.Logger, interval, completedTTL, abandonedTTL time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			opCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			deleted, err := db.CleanupIdempotencyKeys(opCtx, completedTTL, abandonedTTL)
+			cancel()
+			if err != nil {
+				logger.Warn("idempotency cleanup failed", "error", err)
+				continue
+			}
+			if deleted > 0 {
+				logger.Info("idempotency cleanup deleted rows", "deleted", deleted)
+			}
+		}
 	}
 }

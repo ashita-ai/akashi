@@ -56,14 +56,25 @@ type Config struct {
 	RateLimitEnabled bool    // Enable rate limiting middleware (default: true).
 	RateLimitRPS     float64 // Sustained requests per second per key (default: 100).
 	RateLimitBurst   int     // Token bucket capacity per key (default: 200).
+	TrustProxy       bool    // When true, use X-Forwarded-For for rate limit keys (default: false).
 
 	// Operational settings.
-	LogLevel                string
-	ConflictRefreshInterval time.Duration
-	IntegrityProofInterval  time.Duration // How often to build Merkle tree proofs.
-	EventBufferSize         int
-	EventFlushTimeout       time.Duration
-	MaxRequestBodyBytes     int64 // Maximum request body size in bytes.
+	LogLevel                      string
+	SkipEmbeddedMigrations        bool // Skip startup embedded migrations; for external migration orchestration.
+	EnableDestructiveDelete       bool // Enables irreversible DELETE /v1/agents/{agent_id}; default false.
+	ConflictRefreshInterval       time.Duration
+	ConflictSignificanceThreshold float64       // Minimum significance to store (default 0.30).
+	IntegrityProofInterval        time.Duration // How often to build Merkle tree proofs.
+	EventBufferSize               int
+	EventFlushTimeout             time.Duration
+	ShutdownHTTPTimeout           time.Duration // 0 disables timeout (wait indefinitely).
+	ShutdownBufferDrainTimeout    time.Duration // 0 disables timeout (wait indefinitely).
+	ShutdownOutboxDrainTimeout    time.Duration // 0 disables timeout (wait indefinitely).
+	IdempotencyInProgressTTL      time.Duration // Reclaim in-progress idempotency keys older than this.
+	IdempotencyCleanupInterval    time.Duration // Background cleanup cadence for idempotency keys.
+	IdempotencyCompletedTTL       time.Duration // Retention for completed idempotency records.
+	IdempotencyAbandonedTTL       time.Duration // Hard TTL for abandoned in-progress idempotency records.
+	MaxRequestBodyBytes           int64         // Maximum request body size in bytes.
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -104,10 +115,14 @@ func Load() (Config, error) {
 
 	// Float fields.
 	cfg.RateLimitRPS, errs = collectFloat64(errs, "AKASHI_RATE_LIMIT_RPS", 100.0)
+	cfg.ConflictSignificanceThreshold, errs = collectFloat64(errs, "AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD", 0.30)
 
 	// Boolean fields.
 	cfg.RateLimitEnabled, errs = collectBool(errs, "AKASHI_RATE_LIMIT_ENABLED", true)
+	cfg.TrustProxy, errs = collectBool(errs, "AKASHI_TRUST_PROXY", false)
 	cfg.OTELInsecure, errs = collectBool(errs, "OTEL_EXPORTER_OTLP_INSECURE", false)
+	cfg.SkipEmbeddedMigrations, errs = collectBool(errs, "AKASHI_SKIP_EMBEDDED_MIGRATIONS", false)
+	cfg.EnableDestructiveDelete, errs = collectBool(errs, "AKASHI_ENABLE_DESTRUCTIVE_DELETE", false)
 
 	// Duration fields.
 	cfg.ReadTimeout, errs = collectDuration(errs, "AKASHI_READ_TIMEOUT", 30*time.Second)
@@ -117,6 +132,13 @@ func Load() (Config, error) {
 	cfg.ConflictRefreshInterval, errs = collectDuration(errs, "AKASHI_CONFLICT_REFRESH_INTERVAL", 30*time.Second)
 	cfg.IntegrityProofInterval, errs = collectDuration(errs, "AKASHI_INTEGRITY_PROOF_INTERVAL", 5*time.Minute)
 	cfg.EventFlushTimeout, errs = collectDuration(errs, "AKASHI_EVENT_FLUSH_TIMEOUT", 100*time.Millisecond)
+	cfg.ShutdownHTTPTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_HTTP_TIMEOUT", 10*time.Second)
+	cfg.ShutdownBufferDrainTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT", 0)
+	cfg.ShutdownOutboxDrainTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT", 0)
+	cfg.IdempotencyInProgressTTL, errs = collectDuration(errs, "AKASHI_IDEMPOTENCY_IN_PROGRESS_TTL", 5*time.Minute)
+	cfg.IdempotencyCleanupInterval, errs = collectDuration(errs, "AKASHI_IDEMPOTENCY_CLEANUP_INTERVAL", time.Hour)
+	cfg.IdempotencyCompletedTTL, errs = collectDuration(errs, "AKASHI_IDEMPOTENCY_COMPLETED_TTL", 7*24*time.Hour)
+	cfg.IdempotencyAbandonedTTL, errs = collectDuration(errs, "AKASHI_IDEMPOTENCY_ABANDONED_TTL", 24*time.Hour)
 
 	if len(errs) > 0 {
 		msgs := make([]string, len(errs))
@@ -184,6 +206,27 @@ func (c Config) Validate() error {
 	if c.EventFlushTimeout <= 0 {
 		errs = append(errs, errors.New("config: AKASHI_EVENT_FLUSH_TIMEOUT must be positive"))
 	}
+	if c.ShutdownHTTPTimeout < 0 {
+		errs = append(errs, errors.New("config: AKASHI_SHUTDOWN_HTTP_TIMEOUT must be >= 0"))
+	}
+	if c.ShutdownBufferDrainTimeout < 0 {
+		errs = append(errs, errors.New("config: AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT must be >= 0"))
+	}
+	if c.ShutdownOutboxDrainTimeout < 0 {
+		errs = append(errs, errors.New("config: AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT must be >= 0"))
+	}
+	if c.IdempotencyInProgressTTL <= 0 {
+		errs = append(errs, errors.New("config: AKASHI_IDEMPOTENCY_IN_PROGRESS_TTL must be positive"))
+	}
+	if c.IdempotencyCleanupInterval <= 0 {
+		errs = append(errs, errors.New("config: AKASHI_IDEMPOTENCY_CLEANUP_INTERVAL must be positive"))
+	}
+	if c.IdempotencyCompletedTTL <= 0 {
+		errs = append(errs, errors.New("config: AKASHI_IDEMPOTENCY_COMPLETED_TTL must be positive"))
+	}
+	if c.IdempotencyAbandonedTTL <= 0 {
+		errs = append(errs, errors.New("config: AKASHI_IDEMPOTENCY_ABANDONED_TTL must be positive"))
+	}
 	if c.EventBufferSize <= 0 {
 		errs = append(errs, errors.New("config: AKASHI_EVENT_BUFFER_SIZE must be positive"))
 	}
@@ -204,12 +247,19 @@ func (c Config) Validate() error {
 			errs = append(errs, errors.New("config: AKASHI_RATE_LIMIT_BURST must be positive when rate limiting is enabled"))
 		}
 	}
-	if c.JWTPrivateKeyPath != "" {
+	// JWT keys must be both set or both empty (ephemeral mode). Mismatched config
+	// would cause token validation to fail for all clients.
+	privSet := c.JWTPrivateKeyPath != ""
+	pubSet := c.JWTPublicKeyPath != ""
+	if privSet != pubSet {
+		errs = append(errs, errors.New("config: AKASHI_JWT_PRIVATE_KEY and AKASHI_JWT_PUBLIC_KEY must both be set or both be empty"))
+	}
+	if privSet {
 		if err := validateKeyFile(c.JWTPrivateKeyPath, "AKASHI_JWT_PRIVATE_KEY"); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	if c.JWTPublicKeyPath != "" {
+	if pubSet {
 		if err := validateKeyFile(c.JWTPublicKeyPath, "AKASHI_JWT_PUBLIC_KEY"); err != nil {
 			errs = append(errs, err)
 		}

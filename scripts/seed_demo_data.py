@@ -578,12 +578,9 @@ def insert_data(conn, decisions: list[dict]):
 
 
 def refresh_conflict_view(conn):
-    """Refresh the materialized view so conflicts are detected."""
-    print("Refreshing conflict materialized view...")
-    with conn.cursor() as cur:
-        cur.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY decision_conflicts")
-    conn.commit()
-    print("  Done!")
+    """No-op. Semantic conflicts are now populated event-driven by the conflict scorer
+    when new decisions are traced (migration 027). The decision_conflicts mat view was dropped."""
+    print("Skipping conflict refresh (semantic conflicts are event-driven).")
 
 
 # ---------------------------------------------------------------------------

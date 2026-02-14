@@ -146,7 +146,10 @@ export interface AgentEvent {
 }
 
 // Conflict
+export type ConflictKind = "cross_agent" | "self_contradiction";
+
 export interface DecisionConflict {
+  conflict_kind: ConflictKind;
   decision_a_id: string;
   decision_b_id: string;
   org_id: string;
@@ -174,7 +177,7 @@ export interface SearchResult {
 
 // Query
 export interface QueryFilters {
-  agent_ids?: string[];
+  agent_id?: string[];
   run_id?: string;
   decision_type?: string;
   confidence_min?: number;

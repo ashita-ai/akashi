@@ -3,6 +3,7 @@ package trace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -21,6 +22,13 @@ import (
 // When this limit is reached, Append applies backpressure by returning an error.
 const maxBufferCapacity = 100_000
 
+var (
+	// ErrBufferDraining indicates the server is shutting down and no new events are accepted.
+	ErrBufferDraining = errors.New("trace: buffer is draining")
+	// ErrBufferAtCapacity indicates the in-memory buffer hit its hard cap.
+	ErrBufferAtCapacity = errors.New("trace: buffer at capacity")
+)
+
 // Buffer accumulates events in memory and flushes to the database
 // using COPY when either the buffer size or flush timeout is reached.
 type Buffer struct {
@@ -32,7 +40,8 @@ type Buffer struct {
 	mu     sync.Mutex
 	events []model.AgentEvent
 
-	droppedEvents atomic.Int64 // total events dropped due to capacity after flush failure
+	droppedEvents atomic.Int64 // total events rejected (capacity or drain in progress)
+	draining      atomic.Bool  // true after Drain is initiated; rejects new appends
 
 	started    atomic.Bool // guards against double Start calls
 	drainOnce  sync.Once
@@ -71,21 +80,27 @@ func (b *Buffer) Start(ctx context.Context) {
 // Append adds events to the buffer, assigning server-side sequence numbers.
 // Returns the assigned events with populated IDs and sequence numbers.
 // Returns an error if the buffer is at capacity (backpressure).
+//
+// Holds the lock during ReserveSequenceNums to avoid sequence leaks: if we
+// reserved sequences then failed a post-reserve capacity check (race with
+// another goroutine), those sequences would be consumed but never used.
 func (b *Buffer) Append(ctx context.Context, runID uuid.UUID, agentID string, orgID uuid.UUID, inputs []model.EventInput) ([]model.AgentEvent, error) {
-	// Reserve sequence numbers outside the mutex. Sequences are globally unique;
-	// if the append fails after this point, the reserved numbers become gaps,
-	// which is acceptable (sequence_num is for ordering, not continuity).
-	seqNums, err := b.db.ReserveSequenceNums(ctx, len(inputs))
-	if err != nil {
-		return nil, fmt.Errorf("trace: reserve sequence nums: %w", err)
+	if b.draining.Load() {
+		b.droppedEvents.Add(int64(len(inputs)))
+		return nil, fmt.Errorf("%w: rejecting %d new events", ErrBufferDraining, len(inputs))
 	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// Backpressure: reject writes when the buffer is full.
 	if len(b.events)+len(inputs) > maxBufferCapacity {
-		return nil, fmt.Errorf("trace: buffer at capacity (%d events), try again later", len(b.events))
+		b.droppedEvents.Add(int64(len(inputs)))
+		return nil, fmt.Errorf("%w (%d events), try again later", ErrBufferAtCapacity, len(b.events))
+	}
+
+	seqNums, err := b.db.ReserveSequenceNums(ctx, len(inputs))
+	if err != nil {
+		return nil, fmt.Errorf("trace: reserve sequence nums: %w", err)
 	}
 
 	now := time.Now().UTC()
@@ -135,11 +150,15 @@ func (b *Buffer) flushLoop(ctx context.Context) {
 			default:
 			}
 			if drainCtx != nil {
-				b.flush(drainCtx)
+				if err := b.flushUntilEmpty(drainCtx); err != nil {
+					b.logger.Warn("trace: final drain flush incomplete", "error", err, "remaining_events", b.Len())
+				}
 			} else {
 				// Fallback for direct cancellation without Drain (e.g., tests).
 				fallbackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				b.flush(fallbackCtx)
+				if err := b.flushUntilEmpty(fallbackCtx); err != nil {
+					b.logger.Warn("trace: fallback final flush incomplete", "error", err, "remaining_events", b.Len())
+				}
 				cancel()
 			}
 			close(b.done)
@@ -153,13 +172,57 @@ func (b *Buffer) flushLoop(ctx context.Context) {
 }
 
 func (b *Buffer) flush(ctx context.Context) {
+	_, _ = b.flushOnce(ctx)
+}
+
+// FlushNow blocks until buffered events are durably written or ctx expires.
+func (b *Buffer) FlushNow(ctx context.Context) error {
+	return b.flushUntilEmpty(ctx)
+}
+
+// flushUntilEmpty retries flushes until the buffer is empty or ctx expires.
+// This is used during shutdown so we don't exit after a single transient write failure.
+func (b *Buffer) flushUntilEmpty(ctx context.Context) error {
+	const maxBackoff = 2 * time.Second
+	backoff := 50 * time.Millisecond
+
+	for {
+		flushed, err := b.flushOnce(ctx)
+		if err == nil {
+			if !flushed {
+				return nil // nothing left to flush
+			}
+			// Flushed at least one batch; continue immediately in case more are queued.
+			backoff = 50 * time.Millisecond
+			continue
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("trace: flush incomplete before deadline: %w", ctx.Err())
+		case <-time.After(backoff):
+		}
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
+}
+
+// flushOnce attempts a single COPY flush.
+// Returns (flushedAny, err): flushedAny=true when a batch was written successfully.
+func (b *Buffer) flushOnce(ctx context.Context) (bool, error) {
 	b.mu.Lock()
 	if len(b.events) == 0 {
 		b.mu.Unlock()
-		return
+		return false, nil
 	}
-	batch := b.events
-	b.events = nil
+	// Keep events in memory until COPY succeeds.
+	// This avoids data loss on transient flush failures.
+	batch := make([]model.AgentEvent, len(b.events))
+	copy(batch, b.events)
 	b.mu.Unlock()
 
 	start := time.Now()
@@ -168,25 +231,25 @@ func (b *Buffer) flush(ctx context.Context) {
 
 	if err != nil {
 		b.logger.Error("trace: flush failed", "error", err, "batch_size", len(batch))
-		// Put events back for retry, but respect the capacity limit.
-		// Append at end (not prepend) so the buffer stays in arrival order.
-		// Events are ordered by sequence_num when written to Postgres, so
-		// position in the buffer doesn't affect correctness.
-		b.mu.Lock()
-		if len(b.events)+len(batch) <= maxBufferCapacity {
-			b.events = append(b.events, batch...)
-		} else {
-			b.droppedEvents.Add(int64(len(batch)))
-			b.logger.Error("trace: dropping events, buffer at capacity after flush failure", "dropped", len(batch))
-		}
-		b.mu.Unlock()
-		return
+		return false, err
 	}
+
+	// Remove only the flushed prefix. New events appended while COPY was in
+	// progress remain queued for the next flush.
+	b.mu.Lock()
+	if len(b.events) >= len(batch) {
+		b.events = b.events[len(batch):]
+	} else {
+		// Defensive guard: should not happen because writers only append.
+		b.events = nil
+	}
+	b.mu.Unlock()
 
 	b.logger.Info("trace: batch flushed",
 		"batch_size", count,
 		"flush_duration_ms", duration.Milliseconds(),
 	)
+	return true, nil
 }
 
 // Drain signals the background flush loop to stop, waits for it to complete
@@ -195,12 +258,17 @@ func (b *Buffer) flush(ctx context.Context) {
 // respects the caller's deadline. Drain is idempotent; subsequent calls are no-ops.
 func (b *Buffer) Drain(ctx context.Context) {
 	b.drainOnce.Do(func() {
+		b.draining.Store(true)
 		// Send the drain context to flushLoop via channel (race-free).
 		// Must be sent before cancelLoop so flushLoop can receive it on ctx.Done().
+		// Use a short timeout to avoid blocking if the channel is unexpectedly full.
+		sendCtx, sendCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		select {
 		case b.drainCh <- ctx:
-		default:
+		case <-sendCtx.Done():
+			b.logger.Warn("trace: drain context channel busy, flush will use fallback timeout")
 		}
+		sendCancel()
 		if b.cancelLoop != nil {
 			b.cancelLoop() // Signal flushLoop to exit; it does a final flush before closing b.done.
 		}
@@ -226,7 +294,7 @@ func (b *Buffer) registerMetrics() {
 	)
 
 	_, _ = meter.Int64ObservableGauge("akashi.buffer.dropped_total",
-		metric.WithDescription("Total events dropped due to buffer capacity exhaustion"),
+		metric.WithDescription("Total events rejected at ingress due to capacity or shutdown draining"),
 		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
 			o.Observe(b.DroppedEvents())
 			return nil
@@ -246,8 +314,8 @@ func (b *Buffer) Capacity() int {
 	return maxBufferCapacity
 }
 
-// DroppedEvents returns the total number of events dropped due to buffer capacity
-// exhaustion after a flush failure. A non-zero value indicates data loss.
+// DroppedEvents returns the total number of events rejected at ingress
+// (buffer capacity reached or drain in progress).
 func (b *Buffer) DroppedEvents() int64 {
 	return b.droppedEvents.Load()
 }

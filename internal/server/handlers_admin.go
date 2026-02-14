@@ -81,6 +81,19 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		h.writeInternalError(w, r, "failed to create agent", err)
 		return
 	}
+	if err := h.recordMutationAudit(
+		r,
+		orgID,
+		"create_agent",
+		"agent",
+		agent.AgentID,
+		nil,
+		agent,
+		nil,
+	); err != nil {
+		h.writeInternalError(w, r, "failed to record mutation audit", err)
+		return
+	}
 
 	writeJSON(w, r, http.StatusCreated, agent)
 }
@@ -191,6 +204,19 @@ func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 		h.writeInternalError(w, r, "failed to create grant", err)
 		return
 	}
+	if err := h.recordMutationAudit(
+		r,
+		orgID,
+		"create_grant",
+		"access_grant",
+		grant.ID.String(),
+		nil,
+		grant,
+		nil,
+	); err != nil {
+		h.writeInternalError(w, r, "failed to record mutation audit", err)
+		return
+	}
 
 	// Invalidate the grantee's cached access set so the new grant takes effect immediately.
 	if h.grantCache != nil {
@@ -232,6 +258,19 @@ func (h *Handlers) HandleDeleteGrant(w http.ResponseWriter, r *http.Request) {
 		h.writeInternalError(w, r, "failed to delete grant", err)
 		return
 	}
+	if err := h.recordMutationAudit(
+		r,
+		orgID,
+		"delete_grant",
+		"access_grant",
+		grant.ID.String(),
+		grant,
+		nil,
+		nil,
+	); err != nil {
+		h.writeInternalError(w, r, "failed to record mutation audit", err)
+		return
+	}
 
 	// Invalidate the grantee's cached access set so the revocation takes effect immediately.
 	if h.grantCache != nil {
@@ -244,6 +283,12 @@ func (h *Handlers) HandleDeleteGrant(w http.ResponseWriter, r *http.Request) {
 // HandleDeleteAgent handles DELETE /v1/agents/{agent_id} (admin-only).
 // Deletes all data associated with the agent (GDPR right to erasure).
 func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
+	if !h.enableDestructiveDelete {
+		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden,
+			"destructive delete is disabled; set AKASHI_ENABLE_DESTRUCTIVE_DELETE=true to enable")
+		return
+	}
+
 	orgID := OrgIDFromContext(r.Context())
 	agentID := r.PathValue("agent_id")
 	if err := model.ValidateAgentID(agentID); err != nil {
@@ -265,6 +310,19 @@ func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.writeInternalError(w, r, "failed to delete agent data", err)
+		return
+	}
+	if err := h.recordMutationAudit(
+		r,
+		orgID,
+		"delete_agent",
+		"agent",
+		agentID,
+		map[string]any{"agent_id": agentID},
+		map[string]any{"deleted": result},
+		nil,
+	); err != nil {
+		h.writeInternalError(w, r, "failed to record mutation audit", err)
 		return
 	}
 
@@ -311,6 +369,16 @@ func (h *Handlers) HandleUpdateAgentTags(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	beforeAgent, err := h.db.GetAgentByAgentID(r.Context(), orgID, agentID)
+	if err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "agent not found")
+			return
+		}
+		h.writeInternalError(w, r, "failed to get existing agent", err)
+		return
+	}
+
 	agent, err := h.db.UpdateAgentTags(r.Context(), orgID, agentID, deduped)
 	if err != nil {
 		if isNotFoundError(err) {
@@ -318,6 +386,19 @@ func (h *Handlers) HandleUpdateAgentTags(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		h.writeInternalError(w, r, "failed to update agent tags", err)
+		return
+	}
+	if err := h.recordMutationAudit(
+		r,
+		orgID,
+		"update_agent_tags",
+		"agent",
+		agentID,
+		map[string]any{"tags": beforeAgent.Tags},
+		map[string]any{"tags": agent.Tags},
+		nil,
+	); err != nil {
+		h.writeInternalError(w, r, "failed to record mutation audit", err)
 		return
 	}
 
