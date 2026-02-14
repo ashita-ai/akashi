@@ -385,3 +385,89 @@ func TestScoreForDecision_CrossAgent(t *testing.T) {
 	}
 	assert.True(t, found, "expected a cross-agent conflict between dA and dB")
 }
+
+func TestBackfillScoring(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "backfill-scorer-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+
+	// Create two decisions with identical topic but divergent outcomes.
+	topicEmb := makeEmbedding(20, 1.0)
+	outcomeA := makeEmbedding(21, 1.0)
+	outcomeB := makeEmbedding(22, 1.0)
+
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use PostgreSQL for everything",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeA,
+	})
+	require.NoError(t, err)
+
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use MongoDB for everything",
+		Confidence: 0.7, Embedding: &topicEmb, OutcomeEmbedding: &outcomeB,
+	})
+	require.NoError(t, err)
+
+	scorer := NewScorer(testDB, logger, 0.1)
+
+	// BackfillScoring should process both decisions and produce a conflict.
+	processed, err := scorer.BackfillScoring(ctx, 100)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, processed, 2, "should process at least the 2 decisions we created")
+
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 1000, 0)
+	require.NoError(t, err)
+
+	// There should be at least one conflict between our two decisions.
+	var found bool
+	for _, c := range conflicts {
+		if (c.OutcomeA == "use PostgreSQL for everything" && c.OutcomeB == "use MongoDB for everything") ||
+			(c.OutcomeA == "use MongoDB for everything" && c.OutcomeB == "use PostgreSQL for everything") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "backfill should produce a conflict between PostgreSQL and MongoDB decisions")
+}
+
+func TestBackfillScoring_EmptyDB(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	scorer := NewScorer(testDB, logger, 0.5)
+
+	// Should handle gracefully when there are decisions but none with
+	// significance above the high threshold.
+	processed, err := scorer.BackfillScoring(ctx, 100)
+	require.NoError(t, err)
+	// Will process whatever exists in the test DB; just verify no error.
+	_ = processed
+}
+
+func TestBackfillScoring_ContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	cancel() // Cancel immediately.
+
+	scorer := NewScorer(testDB, logger, 0.1)
+	processed, err := scorer.BackfillScoring(ctx, 100)
+
+	// Either processes 0 or returns context.Canceled.
+	if err != nil {
+		assert.ErrorIs(t, err, context.Canceled)
+	}
+	_ = processed
+}

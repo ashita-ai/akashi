@@ -2483,3 +2483,76 @@ func TestBackfillOutcomeEmbedding_NoOpForMissing(t *testing.T) {
 	err := testDB.BackfillOutcomeEmbedding(ctx, uuid.New(), uuid.Nil, embedding)
 	require.NoError(t, err)
 }
+
+func TestFindEmbeddedDecisionIDs(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "embedded-ids-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	emb := pgvector.NewVector(make([]float32, 1024))
+	outcomeEmb := pgvector.NewVector(make([]float32, 1024))
+
+	// Decision with both embeddings — should appear.
+	dBoth, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID:            run.ID,
+		AgentID:          agentID,
+		DecisionType:     "test",
+		Outcome:          "has both embeddings",
+		Confidence:       0.8,
+		Embedding:        &emb,
+		OutcomeEmbedding: &outcomeEmb,
+		Metadata:         map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Decision with only embedding — should NOT appear.
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID:        run.ID,
+		AgentID:      agentID,
+		DecisionType: "test",
+		Outcome:      "has only embedding",
+		Confidence:   0.8,
+		Embedding:    &emb,
+		Metadata:     map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Decision with no embeddings — should NOT appear.
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID:        run.ID,
+		AgentID:      agentID,
+		DecisionType: "test",
+		Outcome:      "has no embeddings",
+		Confidence:   0.8,
+		Metadata:     map[string]any{},
+	})
+	require.NoError(t, err)
+
+	refs, err := testDB.FindEmbeddedDecisionIDs(ctx, 1000)
+	require.NoError(t, err)
+
+	var foundBoth bool
+	for _, r := range refs {
+		if r.ID == dBoth.ID {
+			foundBoth = true
+			assert.Equal(t, dBoth.OrgID, r.OrgID)
+		}
+	}
+	assert.True(t, foundBoth, "decision with both embeddings should appear in results")
+}
+
+func TestFindEmbeddedDecisionIDs_DefaultLimit(t *testing.T) {
+	ctx := context.Background()
+
+	// Passing 0 or negative limit should default to 1000 and not error.
+	refs, err := testDB.FindEmbeddedDecisionIDs(ctx, 0)
+	require.NoError(t, err)
+	assert.NotNil(t, refs) // May be empty or populated from other tests; either is fine.
+
+	refs, err = testDB.FindEmbeddedDecisionIDs(ctx, -1)
+	require.NoError(t, err)
+	assert.NotNil(t, refs)
+}

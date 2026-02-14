@@ -164,6 +164,14 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	} else if n > 0 {
 		logger.Info("outcome embedding backfill complete", "count", n)
 	}
+	// Backfill conflict scoring for decisions that gained embeddings from the
+	// backfills above. ScoreForDecision only runs on new traces, so previously
+	// unscored decisions need an explicit pass.
+	if n, err := conflictScorer.BackfillScoring(ctx, 500); err != nil {
+		logger.Warn("conflict scoring backfill failed", "error", err)
+	} else if n > 0 {
+		logger.Info("conflict scoring backfill complete", "decisions_scored", n)
+	}
 
 	// Create event buffer.
 	buf := trace.NewBuffer(db, logger, cfg.EventBufferSize, cfg.EventFlushTimeout)

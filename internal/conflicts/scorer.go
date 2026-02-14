@@ -98,6 +98,35 @@ func (s *Scorer) ScoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 	}
 }
 
+// BackfillScoring runs conflict scoring for all decisions that have both
+// embeddings. Unlike ScoreForDecision (which runs for a single new decision),
+// this iterates all existing decisions so previously backfilled embeddings
+// produce scored_conflicts rows. Safe to call multiple times — InsertScoredConflict
+// uses ON CONFLICT DO UPDATE, so re-scoring a pair refreshes the values.
+//
+// Returns the number of decisions processed.
+func (s *Scorer) BackfillScoring(ctx context.Context, batchSize int) (int, error) {
+	refs, err := s.db.FindEmbeddedDecisionIDs(ctx, batchSize)
+	if err != nil {
+		return 0, err
+	}
+	if len(refs) == 0 {
+		return 0, nil
+	}
+
+	var processed int
+	for _, ref := range refs {
+		select {
+		case <-ctx.Done():
+			return processed, ctx.Err()
+		default:
+		}
+		s.ScoreForDecision(ctx, ref.ID, ref.OrgID)
+		processed++
+	}
+	return processed, nil
+}
+
 func cosineSimilarity(a, b []float32) float64 {
 	if len(a) != len(b) || len(a) == 0 {
 		return 0
