@@ -965,6 +965,41 @@ func (db *DB) FindSimilarDecisionsByEmbedding(ctx context.Context, orgID uuid.UU
 	return list, rows.Err()
 }
 
+// DecisionRef is a lightweight reference to a decision for batch operations.
+type DecisionRef struct {
+	ID    uuid.UUID
+	OrgID uuid.UUID
+}
+
+// FindEmbeddedDecisionIDs returns IDs of all current decisions that have both
+// embedding and outcome_embedding populated. Used by conflict scoring backfill.
+func (db *DB) FindEmbeddedDecisionIDs(ctx context.Context, limit int) ([]DecisionRef, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	rows, err := db.pool.Query(ctx,
+		`SELECT id, org_id FROM decisions
+		 WHERE valid_to IS NULL
+		   AND embedding IS NOT NULL
+		   AND outcome_embedding IS NOT NULL
+		 ORDER BY valid_from ASC
+		 LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("storage: find embedded decision IDs: %w", err)
+	}
+	defer rows.Close()
+
+	var refs []DecisionRef
+	for rows.Next() {
+		var r DecisionRef
+		if err := rows.Scan(&r.ID, &r.OrgID); err != nil {
+			return nil, fmt.Errorf("storage: scan embedded decision ref: %w", err)
+		}
+		refs = append(refs, r)
+	}
+	return refs, rows.Err()
+}
+
 // GetDecisionForScoring returns a decision with embedding and outcome_embedding for conflict scoring.
 func (db *DB) GetDecisionForScoring(ctx context.Context, id, orgID uuid.UUID) (model.Decision, error) {
 	var d model.Decision
