@@ -13,10 +13,11 @@ import (
 // Value: map[string]bool (set of accessible agent_ids) + expiry time.
 // A nil map value means unrestricted (admin).
 type GrantCache struct {
-	mu      sync.RWMutex
-	entries map[string]cachedEntry
-	ttl     time.Duration
-	done    chan struct{}
+	mu        sync.RWMutex
+	entries   map[string]cachedEntry
+	ttl       time.Duration
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 type cachedEntry struct {
@@ -82,7 +83,9 @@ func (c *GrantCache) Invalidate(key string) {
 
 // Close stops the background eviction goroutine.
 func (c *GrantCache) Close() {
-	close(c.done)
+	c.closeOnce.Do(func() {
+		close(c.done)
+	})
 }
 
 // evictLoop removes expired entries every minute.

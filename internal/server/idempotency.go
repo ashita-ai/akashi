@@ -106,9 +106,10 @@ func (h *Handlers) completeIdempotentWrite(
 		return nil
 	}
 
-	// Finish idempotency in a short bounded background context to avoid tying
+	// Finish idempotency in a bounded background context to avoid tying
 	// correctness to request cancellation at the edge of a timeout.
-	writeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// Use a generous timeout because failed finalization can cause replay gaps.
+	writeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	var lastErr error
@@ -134,6 +135,24 @@ func (h *Handlers) completeIdempotentWrite(
 	}
 
 	return fmt.Errorf("failed to complete idempotency record after retries: %w", lastErr)
+}
+
+// completeIdempotentWriteBestEffort finalizes an idempotency key without failing
+// the already-committed mutation response path.
+func (h *Handlers) completeIdempotentWriteBestEffort(
+	r *http.Request,
+	orgID uuid.UUID,
+	idem *idempotencyHandle,
+	statusCode int,
+	data any,
+) {
+	if err := h.completeIdempotentWrite(r, orgID, idem, statusCode, data); err != nil {
+		h.logger.Error("failed to finalize idempotency record after committed mutation",
+			"error", err,
+			"org_id", orgID,
+			"request_id", RequestIDFromContext(r.Context()),
+		)
+	}
 }
 
 func (h *Handlers) clearIdempotentWrite(r *http.Request, orgID uuid.UUID, idem *idempotencyHandle) {

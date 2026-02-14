@@ -3,6 +3,7 @@ package trace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -20,6 +21,13 @@ import (
 // maxBufferCapacity is the hard upper limit on buffered events to prevent OOM.
 // When this limit is reached, Append applies backpressure by returning an error.
 const maxBufferCapacity = 100_000
+
+var (
+	// ErrBufferDraining indicates the server is shutting down and no new events are accepted.
+	ErrBufferDraining = errors.New("trace: buffer is draining")
+	// ErrBufferAtCapacity indicates the in-memory buffer hit its hard cap.
+	ErrBufferAtCapacity = errors.New("trace: buffer at capacity")
+)
 
 // Buffer accumulates events in memory and flushes to the database
 // using COPY when either the buffer size or flush timeout is reached.
@@ -79,7 +87,7 @@ func (b *Buffer) Start(ctx context.Context) {
 func (b *Buffer) Append(ctx context.Context, runID uuid.UUID, agentID string, orgID uuid.UUID, inputs []model.EventInput) ([]model.AgentEvent, error) {
 	if b.draining.Load() {
 		b.droppedEvents.Add(int64(len(inputs)))
-		return nil, fmt.Errorf("trace: buffer is draining, rejecting %d new events", len(inputs))
+		return nil, fmt.Errorf("%w: rejecting %d new events", ErrBufferDraining, len(inputs))
 	}
 
 	b.mu.Lock()
@@ -87,7 +95,7 @@ func (b *Buffer) Append(ctx context.Context, runID uuid.UUID, agentID string, or
 
 	if len(b.events)+len(inputs) > maxBufferCapacity {
 		b.droppedEvents.Add(int64(len(inputs)))
-		return nil, fmt.Errorf("trace: buffer at capacity (%d events), try again later", len(b.events))
+		return nil, fmt.Errorf("%w (%d events), try again later", ErrBufferAtCapacity, len(b.events))
 	}
 
 	seqNums, err := b.db.ReserveSequenceNums(ctx, len(inputs))

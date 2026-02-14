@@ -40,6 +40,8 @@ See [ADR-007](../adrs/ADR-007-dual-postgres-connections.md) for why two connecti
 
 Key files must have `0600` permissions. See [ADR-005](../adrs/ADR-005-auth-rbac.md) for the auth architecture.
 
+For `Authorization: ApiKey <agent_id>:<api_key>`, send `X-Akashi-Org-ID` when the same `agent_id` exists in multiple organizations. Ambiguous API key auth requests are rejected.
+
 ## Embeddings
 
 | Variable | Default | Description |
@@ -102,7 +104,7 @@ The OSS distribution uses an in-memory token bucket. Enterprise deployments can 
 | `AKASHI_INTEGRITY_PROOF_INTERVAL` | `5m` | How often Merkle tree proofs are built for new decisions |
 | `AKASHI_ENABLE_DESTRUCTIVE_DELETE` | `false` | Enables irreversible `DELETE /v1/agents/{agent_id}`. Keep `false` in production unless explicitly needed for GDPR workflows |
 | `AKASHI_SHUTDOWN_HTTP_TIMEOUT` | `10s` | HTTP shutdown grace timeout (`0` = wait indefinitely) |
-| `AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT` | `0` | Event buffer drain timeout (`0` = wait indefinitely) |
+| `AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT` | `0` | Reserved. Akashi always waits indefinitely for event buffer drain to avoid data loss. |
 | `AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT` | `0` | Outbox drain timeout (`0` = wait indefinitely) |
 
 ## Write Idempotency

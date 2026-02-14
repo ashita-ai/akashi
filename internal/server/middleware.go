@@ -321,7 +321,7 @@ func authMiddleware(jwtMgr *auth.JWTManager, db *storage.DB, next http.Handler) 
 
 		case strings.EqualFold(scheme, "ApiKey"):
 			var err error
-			claims, err = verifyAPIKey(r.Context(), db, credential)
+			claims, err = verifyAPIKey(r.Context(), db, credential, r.Header.Get("X-Akashi-Org-ID"))
 			if err != nil {
 				writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "invalid api key")
 				return
@@ -342,7 +342,7 @@ func authMiddleware(jwtMgr *auth.JWTManager, db *storage.DB, next http.Handler) 
 // Performs the same agent lookup + Argon2id verification as POST /auth/token.
 // Returns synthesized claims on success; the claims are equivalent to what a JWT
 // would contain but skip token issuance entirely.
-func verifyAPIKey(ctx context.Context, db *storage.DB, credential string) (*auth.Claims, error) {
+func verifyAPIKey(ctx context.Context, db *storage.DB, credential, orgHeader string) (*auth.Claims, error) {
 	// Parse "agent_id:api_key" — agent_ids cannot contain colons (validated on creation).
 	colonIdx := strings.IndexByte(credential, ':')
 	if colonIdx < 1 || colonIdx == len(credential)-1 {
@@ -357,9 +357,31 @@ func verifyAPIKey(ctx context.Context, db *storage.DB, credential string) (*auth
 		auth.DummyVerify()
 		return nil, fmt.Errorf("invalid credentials")
 	}
+	if len(agents) == 0 {
+		auth.DummyVerify()
+		return nil, fmt.Errorf("invalid credentials")
+	}
+
+	var requestedOrg *uuid.UUID
+	if strings.TrimSpace(orgHeader) != "" {
+		orgID, parseErr := uuid.Parse(strings.TrimSpace(orgHeader))
+		if parseErr != nil {
+			auth.DummyVerify()
+			return nil, fmt.Errorf("invalid org header")
+		}
+		requestedOrg = &orgID
+	} else if len(agents) > 1 {
+		// Avoid accidental cross-org auth context selection when a shared
+		// agent_id exists across organizations.
+		auth.DummyVerify()
+		return nil, fmt.Errorf("org header required for ambiguous agent_id")
+	}
 
 	verified := false
 	for _, a := range agents {
+		if requestedOrg != nil && a.OrgID != *requestedOrg {
+			continue
+		}
 		if a.APIKeyHash == nil {
 			continue
 		}
@@ -564,7 +586,7 @@ func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 		w.Header().Set("Vary", "Origin")
 		if origin != "" && (allowAll || originSet[origin]) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID, Idempotency-Key, X-Akashi-Session")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID, Idempotency-Key, X-Akashi-Session, X-Akashi-Org-ID")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, PATCH, OPTIONS")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 		}

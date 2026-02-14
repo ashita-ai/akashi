@@ -273,7 +273,13 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}
 	httpCancel()
 
-	bufCtx, bufCancel := contextWithOptionalTimeout(context.Background(), cfg.ShutdownBufferDrainTimeout)
+	// Durability-first shutdown: always wait for event buffer drain to finish.
+	// A partial drain can lose in-memory events that were already accepted.
+	if cfg.ShutdownBufferDrainTimeout > 0 {
+		slog.Warn("ignoring AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT for durability; waiting indefinitely for buffer drain",
+			"configured_timeout", cfg.ShutdownBufferDrainTimeout)
+	}
+	bufCtx, bufCancel := contextWithOptionalTimeout(context.Background(), 0)
 	buf.Drain(bufCtx)
 	bufCancel()
 

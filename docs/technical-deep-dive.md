@@ -164,13 +164,17 @@ PostgreSQL                    Akashi Server                   Clients
 
 #### 4. Authorization Model
 
-Three-tier RBAC with fine-grained access grants:
+Five-tier RBAC with fine-grained access grants:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                      RBAC Roles                              │
 ├─────────────┬───────────────────────────────────────────────┤
-│   admin     │ Full access to everything                      │
+│ platform_admin │ Cross-org platform operations               │
+├─────────────┼───────────────────────────────────────────────┤
+│ org_owner   │ Full access within one organization            │
+├─────────────┼───────────────────────────────────────────────┤
+│   admin     │ Org admin privileges                           │
 ├─────────────┼───────────────────────────────────────────────┤
 │   agent     │ Own data + explicitly granted access           │
 ├─────────────┼───────────────────────────────────────────────┤

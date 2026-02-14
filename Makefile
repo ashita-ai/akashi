@@ -1,6 +1,7 @@
 .PHONY: all build build-ui build-with-ui test lint fmt vet clean docker-up docker-down ci security tidy \
        dev-ui migrate-apply migrate-lint migrate-hash migrate-diff migrate-status migrate-validate \
-       check-doc-consistency
+       check-doc-consistency verify-restore reconcile-qdrant reconcile-qdrant-repair \
+       archive-events-dry-run archive-events verify-exit-criteria
 
 BINARY := bin/akashi
 GO := go
@@ -93,3 +94,21 @@ migrate-status: ## Show migration status
 
 migrate-validate: ## Validate migration file integrity (checksums + SQL)
 	$(ATLAS) migrate validate --dir file://migrations
+
+verify-restore: ## Run post-restore DB verification checks (requires DATABASE_URL)
+	bash scripts/verify_restore.sh
+
+reconcile-qdrant: ## Detect Postgres vs Qdrant drift (requires DATABASE_URL, QDRANT_URL)
+	python3 scripts/reconcile_qdrant.py
+
+reconcile-qdrant-repair: ## Enqueue missing Postgres decisions into outbox for Qdrant repair
+	python3 scripts/reconcile_qdrant.py --repair
+
+archive-events-dry-run: ## Archive candidate agent_events window without purging
+	DRY_RUN=true ENABLE_PURGE=false bash scripts/archive_agent_events.sh
+
+archive-events: ## Archive and purge one retention window (requires explicit flags)
+	DRY_RUN=false ENABLE_PURGE=true bash scripts/archive_agent_events.sh
+
+verify-exit-criteria: ## Evaluate durability exit criteria (JSON output; non-zero on failure)
+	python3 scripts/verify_exit_criteria.py

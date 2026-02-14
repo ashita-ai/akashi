@@ -242,15 +242,20 @@ func (w *OutboxWorker) cleanupDeadLetters(ctx context.Context) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO search_outbox_dead_letters (
+		`WITH candidates AS (
+		    SELECT id, decision_id, org_id, operation, attempts, last_error, created_at, locked_until
+		    FROM search_outbox
+		    WHERE attempts >= $1
+		      AND (locked_until IS NULL OR locked_until < now())
+		      AND created_at < now() - interval '7 days'
+		    FOR UPDATE SKIP LOCKED
+		)
+		INSERT INTO search_outbox_dead_letters (
 		    outbox_id, decision_id, org_id, operation, attempts, last_error, created_at, locked_until
 		)
-		 SELECT id, decision_id, org_id, operation, attempts, last_error, created_at, locked_until
-		 FROM search_outbox
-		 WHERE attempts >= $1
-		   AND (locked_until IS NULL OR locked_until < now())
-		   AND created_at < now() - interval '7 days'
-		 ON CONFLICT (outbox_id) DO NOTHING`,
+		SELECT id, decision_id, org_id, operation, attempts, last_error, created_at, locked_until
+		FROM candidates
+		ON CONFLICT (outbox_id) DO NOTHING`,
 		maxOutboxAttempts,
 	); err != nil {
 		w.logger.Error("search outbox: archive dead-letters failed", "error", err)

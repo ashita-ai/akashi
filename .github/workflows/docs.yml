@@ -30,7 +30,7 @@ jobs:
       - name: Generate project structure
         run: |
           GENERATED_DATE=$(date -u +%Y-%m-%d)
-          cat > PROJECT_STRUCTURE.md << EOF
+          cat > docs/project-structure.md << EOF
           # Project Structure
 
           Generated: ${GENERATED_DATE}
@@ -38,24 +38,24 @@ jobs:
           \`\`\`
           EOF
           find . -type f -name '*.go' | grep -v '_test.go' | grep -v vendor | sort | while read f; do
-            echo "$f" >> PROJECT_STRUCTURE.md
+            echo "$f" >> docs/project-structure.md
           done
-          echo '```' >> PROJECT_STRUCTURE.md
+          echo '```' >> docs/project-structure.md
 
       - name: Count tests
         run: |
-          echo "" >> PROJECT_STRUCTURE.md
-          echo "## Test Summary" >> PROJECT_STRUCTURE.md
-          echo "" >> PROJECT_STRUCTURE.md
-          echo "| Package | Tests |" >> PROJECT_STRUCTURE.md
-          echo "|---------|-------|" >> PROJECT_STRUCTURE.md
+          echo "" >> docs/project-structure.md
+          echo "## Test Summary" >> docs/project-structure.md
+          echo "" >> docs/project-structure.md
+          echo "| Package | Tests |" >> docs/project-structure.md
+          echo "|---------|-------|" >> docs/project-structure.md
           go test -list '.*' ./... 2>/dev/null | grep -E '^(ok|---|\?|Test)' | \
-            awk '/^ok/ {pkg=$2} /^Test/ {tests[pkg]++} END {for(p in tests) print "| "p" | "tests[p]" |"}' >> PROJECT_STRUCTURE.md || true
+            awk '/^ok/ {pkg=$2} /^Test/ {tests[pkg]++} END {for(p in tests) print "| "p" | "tests[p]" |"}' >> docs/project-structure.md || true
 
       - name: Check for changes
         id: changes
         run: |
-          git add PROJECT_STRUCTURE.md
+          git add docs/project-structure.md
           if git diff --staged --quiet; then
             echo "changed=false" >> $GITHUB_OUTPUT
           else
@@ -73,4 +73,4 @@ jobs:
           git checkout -b "$BRANCH"
           git commit -m "docs: update project structure"
           git push -u origin "$BRANCH"
-          gh pr create --title "docs: update project structure" --body "Automated update of PROJECT_STRUCTURE.md" --base main
+          gh pr create --title "docs: update project structure" --body "Automated update of docs/project-structure.md" --base main
