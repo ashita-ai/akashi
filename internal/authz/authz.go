@@ -26,6 +26,9 @@ import (
 //   - grant: allowed if an explicit access grant exists
 //   - reader: requires tag overlap or explicit access grant
 func CanAccessAgent(ctx context.Context, db *storage.DB, claims *auth.Claims, targetAgentID string) (bool, error) {
+	if claims == nil {
+		return false, nil
+	}
 	if model.RoleAtLeast(claims.Role, model.RoleAdmin) {
 		return true, nil
 	}
@@ -86,6 +89,9 @@ func tagsOverlap(a, b []string) bool {
 //
 // If cache is non-nil, results are cached by org_id:subject for the cache's TTL.
 func LoadGrantedSet(ctx context.Context, db *storage.DB, claims *auth.Claims, cache *GrantCache) (map[string]bool, error) {
+	if claims == nil {
+		return map[string]bool{}, nil
+	}
 	if model.RoleAtLeast(claims.Role, model.RoleAdmin) {
 		return nil, nil // nil means unrestricted
 	}

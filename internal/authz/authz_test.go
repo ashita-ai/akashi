@@ -19,6 +19,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/authz"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/storage"
+	"github.com/ashita-ai/akashi/migrations"
 )
 
 var testDB *storage.DB
@@ -68,7 +69,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	if err := testDB.RunMigrations(ctx, os.DirFS("../../migrations")); err != nil {
+	if err := testDB.RunMigrations(ctx, migrations.FS); err != nil {
 		fmt.Fprintf(os.Stderr, "migrations failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -266,9 +267,9 @@ func TestFilterConflicts_RequiresBothAgents(t *testing.T) {
 	claims := makeClaims(agent.AgentID, agent.ID, model.RoleAgent)
 
 	conflicts := []model.DecisionConflict{
-		{AgentA: agent.AgentID, AgentB: agent.AgentID},
-		{AgentA: agent.AgentID, AgentB: "unknown"},
-		{AgentA: "unknown", AgentB: agent.AgentID},
+		{ConflictKind: model.ConflictKindCrossAgent, AgentA: agent.AgentID, AgentB: agent.AgentID},
+		{ConflictKind: model.ConflictKindCrossAgent, AgentA: agent.AgentID, AgentB: "unknown"},
+		{ConflictKind: model.ConflictKindCrossAgent, AgentA: "unknown", AgentB: agent.AgentID},
 	}
 
 	filtered, err := authz.FilterConflicts(context.Background(), testDB, claims, conflicts, nil)

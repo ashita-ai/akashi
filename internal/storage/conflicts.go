@@ -1,21 +1,20 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/ashita-ai/akashi/internal/model"
 )
 
-// RefreshConflicts refreshes the decision_conflicts materialized view.
+// RefreshConflicts is a no-op. Semantic conflicts are populated event-driven
+// by the conflict scorer when new decisions are traced. Kept for interface compatibility.
 func (db *DB) RefreshConflicts(ctx context.Context) error {
-	_, err := db.pool.Exec(ctx, `REFRESH MATERIALIZED VIEW CONCURRENTLY decision_conflicts`)
-	if err != nil {
-		return fmt.Errorf("storage: refresh conflicts: %w", err)
-	}
 	return nil
 }
 
@@ -34,29 +33,35 @@ func (db *DB) RefreshAgentState(ctx context.Context) error {
 type ConflictFilters struct {
 	DecisionType *string
 	AgentID      *string
+	ConflictKind *string // "cross_agent" or "self_contradiction"
 }
 
 // conflictWhere appends WHERE conditions for the common filter set.
 // It returns the query suffix and the args slice (starting from argOffset).
+// decision_type uses case-insensitive match to align with view normalization.
 func conflictWhere(filters ConflictFilters, argOffset int) (string, []any) {
 	var clause string
 	var args []any
 	if filters.DecisionType != nil {
-		clause += fmt.Sprintf(" AND dc.decision_type = $%d", argOffset)
+		clause += fmt.Sprintf(" AND (LOWER(TRIM(sc.decision_type_a)) = LOWER(TRIM($%d)) OR LOWER(TRIM(sc.decision_type_b)) = LOWER(TRIM($%d)))", argOffset, argOffset)
 		args = append(args, *filters.DecisionType)
 		argOffset++
 	}
 	if filters.AgentID != nil {
-		clause += fmt.Sprintf(" AND (dc.agent_a = $%d OR dc.agent_b = $%d)", argOffset, argOffset)
+		clause += fmt.Sprintf(" AND (sc.agent_a = $%d OR sc.agent_b = $%d)", argOffset, argOffset)
 		args = append(args, *filters.AgentID)
-		argOffset++ //nolint:ineffassign // keep argOffset consistent for future filter additions
+		argOffset++
+	}
+	if filters.ConflictKind != nil {
+		clause += fmt.Sprintf(" AND sc.conflict_kind = $%d", argOffset)
+		args = append(args, *filters.ConflictKind)
 	}
 	return clause, args
 }
 
 // CountConflicts returns the total number of conflicts for an org.
 func (db *DB) CountConflicts(ctx context.Context, orgID uuid.UUID, filters ConflictFilters) (int, error) {
-	query := `SELECT COUNT(*) FROM decision_conflicts dc WHERE dc.org_id = $1`
+	query := `SELECT COUNT(*) FROM scored_conflicts sc WHERE sc.org_id = $1`
 	args := []any{orgID}
 
 	suffix, extra := conflictWhere(filters, 2)
@@ -70,8 +75,8 @@ func (db *DB) CountConflicts(ctx context.Context, orgID uuid.UUID, filters Confl
 	return count, nil
 }
 
-// ListConflicts retrieves detected conflicts within an org.
-// Joins the decisions table to include reasoning for both sides.
+// ListConflicts retrieves detected conflicts within an org from scored_conflicts.
+// Joins decisions for reasoning, confidence, run_id, and valid_from.
 func (db *DB) ListConflicts(ctx context.Context, orgID uuid.UUID, filters ConflictFilters, limit, offset int) ([]model.DecisionConflict, error) {
 	if limit <= 0 {
 		limit = 50
@@ -83,16 +88,16 @@ func (db *DB) ListConflicts(ctx context.Context, orgID uuid.UUID, filters Confli
 		offset = 0
 	}
 
-	query := `SELECT dc.decision_a_id, dc.decision_b_id, dc.org_id,
-		 dc.agent_a, dc.agent_b, dc.run_a, dc.run_b,
-		 dc.decision_type, dc.outcome_a, dc.outcome_b,
-		 dc.confidence_a, dc.confidence_b,
-		 da.reasoning, db.reasoning,
-		 dc.decided_at_a, dc.decided_at_b, dc.detected_at
-		 FROM decision_conflicts dc
-		 LEFT JOIN decisions da ON da.id = dc.decision_a_id
-		 LEFT JOIN decisions db ON db.id = dc.decision_b_id
-		 WHERE dc.org_id = $1`
+	query := `SELECT sc.conflict_kind, sc.decision_a_id, sc.decision_b_id, sc.org_id,
+		 sc.agent_a, sc.agent_b,
+		 sc.decision_type_a, sc.decision_type_b, sc.outcome_a, sc.outcome_b,
+		 sc.topic_similarity, sc.outcome_divergence, sc.significance, sc.scoring_method,
+		 sc.detected_at,
+		 da.run_id, db.run_id, da.confidence, db.confidence, da.reasoning, db.reasoning, da.valid_from, db.valid_from
+		 FROM scored_conflicts sc
+		 LEFT JOIN decisions da ON da.id = sc.decision_a_id
+		 LEFT JOIN decisions db ON db.id = sc.decision_b_id
+		 WHERE sc.org_id = $1`
 
 	args := []any{orgID}
 
@@ -100,7 +105,7 @@ func (db *DB) ListConflicts(ctx context.Context, orgID uuid.UUID, filters Confli
 	query += suffix
 	args = append(args, extra...)
 
-	query += fmt.Sprintf(" ORDER BY dc.detected_at DESC LIMIT %d OFFSET %d", limit, offset)
+	query += fmt.Sprintf(" ORDER BY sc.detected_at DESC LIMIT %d OFFSET %d", limit, offset)
 
 	rows, err := db.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -111,58 +116,127 @@ func (db *DB) ListConflicts(ctx context.Context, orgID uuid.UUID, filters Confli
 	var conflicts []model.DecisionConflict
 	for rows.Next() {
 		var c model.DecisionConflict
+		var runA, runB uuid.UUID
+		var confA, confB float32
+		var reasonA, reasonB *string
+		var validA, validB time.Time
 		if err := rows.Scan(
-			&c.DecisionAID, &c.DecisionBID, &c.OrgID, &c.AgentA, &c.AgentB, &c.RunA, &c.RunB,
-			&c.DecisionType, &c.OutcomeA, &c.OutcomeB, &c.ConfidenceA, &c.ConfidenceB,
-			&c.ReasoningA, &c.ReasoningB,
-			&c.DecidedAtA, &c.DecidedAtB, &c.DetectedAt,
+			&c.ConflictKind, &c.DecisionAID, &c.DecisionBID, &c.OrgID, &c.AgentA, &c.AgentB,
+			&c.DecisionTypeA, &c.DecisionTypeB, &c.OutcomeA, &c.OutcomeB,
+			&c.TopicSimilarity, &c.OutcomeDivergence, &c.Significance, &c.ScoringMethod,
+			&c.DetectedAt,
+			&runA, &runB, &confA, &confB, &reasonA, &reasonB, &validA, &validB,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan conflict: %w", err)
 		}
+		c.RunA, c.RunB = runA, runB
+		c.ConfidenceA, c.ConfidenceB = confA, confB
+		c.ReasoningA, c.ReasoningB = reasonA, reasonB
+		c.DecidedAtA, c.DecidedAtB = validA, validB
+		c.DecisionType = c.DecisionTypeA
 		conflicts = append(conflicts, c)
 	}
 	return conflicts, rows.Err()
 }
 
-// NewConflictsSince returns conflicts detected after the given time, ordered by
-// detected_at ascending. Used by the conflict refresh loop to detect new conflicts
-// and send pg_notify events. The limit parameter caps the number of rows returned;
-// if limit <= 0, it defaults to 1000.
-func (db *DB) NewConflictsSince(ctx context.Context, since time.Time, limit int) ([]model.DecisionConflict, error) {
+func scanConflictRows(rows pgx.Rows) ([]model.DecisionConflict, error) {
+	var conflicts []model.DecisionConflict
+	for rows.Next() {
+		var c model.DecisionConflict
+		var runA, runB uuid.UUID
+		var confA, confB float32
+		var reasonA, reasonB *string
+		var validA, validB time.Time
+		if err := rows.Scan(
+			&c.ConflictKind, &c.DecisionAID, &c.DecisionBID, &c.OrgID, &c.AgentA, &c.AgentB,
+			&c.DecisionTypeA, &c.DecisionTypeB, &c.OutcomeA, &c.OutcomeB,
+			&c.TopicSimilarity, &c.OutcomeDivergence, &c.Significance, &c.ScoringMethod,
+			&c.DetectedAt,
+			&runA, &runB, &confA, &confB, &reasonA, &reasonB, &validA, &validB,
+		); err != nil {
+			return nil, fmt.Errorf("storage: scan conflict: %w", err)
+		}
+		c.RunA, c.RunB = runA, runB
+		c.ConfidenceA, c.ConfidenceB = confA, confB
+		c.ReasoningA, c.ReasoningB = reasonA, reasonB
+		c.DecidedAtA, c.DecidedAtB = validA, validB
+		c.DecisionType = c.DecisionTypeA
+		conflicts = append(conflicts, c)
+	}
+	return conflicts, rows.Err()
+}
+
+// NewConflictsSinceByOrg returns conflicts detected after the given time for one
+// organization from scored_conflicts.
+func (db *DB) NewConflictsSinceByOrg(ctx context.Context, orgID uuid.UUID, since time.Time, limit int) ([]model.DecisionConflict, error) {
 	if limit <= 0 {
 		limit = 1000
 	}
 	rows, err := db.pool.Query(ctx,
-		`SELECT dc.decision_a_id, dc.decision_b_id, dc.org_id,
-		 dc.agent_a, dc.agent_b, dc.run_a, dc.run_b,
-		 dc.decision_type, dc.outcome_a, dc.outcome_b,
-		 dc.confidence_a, dc.confidence_b,
-		 da.reasoning, db.reasoning,
-		 dc.decided_at_a, dc.decided_at_b, dc.detected_at
-		 FROM decision_conflicts dc
-		 LEFT JOIN decisions da ON da.id = dc.decision_a_id
-		 LEFT JOIN decisions db ON db.id = dc.decision_b_id
-		 WHERE dc.detected_at > $1
-		 ORDER BY dc.detected_at ASC
-		 LIMIT $2`, since, limit,
+		`SELECT sc.conflict_kind, sc.decision_a_id, sc.decision_b_id, sc.org_id,
+		 sc.agent_a, sc.agent_b,
+		 sc.decision_type_a, sc.decision_type_b, sc.outcome_a, sc.outcome_b,
+		 sc.topic_similarity, sc.outcome_divergence, sc.significance, sc.scoring_method,
+		 sc.detected_at,
+		 da.run_id, db.run_id, da.confidence, db.confidence, da.reasoning, db.reasoning, da.valid_from, db.valid_from
+		 FROM scored_conflicts sc
+		 LEFT JOIN decisions da ON da.id = sc.decision_a_id
+		 LEFT JOIN decisions db ON db.id = sc.decision_b_id
+		 WHERE sc.org_id = $1 AND sc.detected_at > $2
+		 ORDER BY sc.detected_at ASC
+		 LIMIT $3`, orgID, since, limit,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("storage: new conflicts since: %w", err)
+		return nil, fmt.Errorf("storage: new conflicts since by org: %w", err)
 	}
 	defer rows.Close()
 
-	var conflicts []model.DecisionConflict
-	for rows.Next() {
-		var c model.DecisionConflict
-		if err := rows.Scan(
-			&c.DecisionAID, &c.DecisionBID, &c.OrgID, &c.AgentA, &c.AgentB, &c.RunA, &c.RunB,
-			&c.DecisionType, &c.OutcomeA, &c.OutcomeB, &c.ConfidenceA, &c.ConfidenceB,
-			&c.ReasoningA, &c.ReasoningB,
-			&c.DecidedAtA, &c.DecidedAtB, &c.DetectedAt,
-		); err != nil {
-			return nil, fmt.Errorf("storage: scan new conflict: %w", err)
-		}
-		conflicts = append(conflicts, c)
+	return scanConflictRows(rows)
+}
+
+// InsertScoredConflict inserts a semantic conflict into scored_conflicts.
+// Ensures decision_a_id < decision_b_id for consistent ordering.
+func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict) error {
+	da, dbID := c.DecisionAID, c.DecisionBID
+	agentA, agentB := c.AgentA, c.AgentB
+	typeA, typeB := c.DecisionTypeA, c.DecisionTypeB
+	outcomeA, outcomeB := c.OutcomeA, c.OutcomeB
+	if bytes.Compare(da[:], dbID[:]) > 0 {
+		da, dbID = dbID, da
+		agentA, agentB = agentB, agentA
+		typeA, typeB = typeB, typeA
+		outcomeA, outcomeB = outcomeB, outcomeA
 	}
-	return conflicts, rows.Err()
+	topicSim := 0.0
+	if c.TopicSimilarity != nil {
+		topicSim = *c.TopicSimilarity
+	}
+	outcomeDiv := 0.0
+	if c.OutcomeDivergence != nil {
+		outcomeDiv = *c.OutcomeDivergence
+	}
+	sig := 0.0
+	if c.Significance != nil {
+		sig = *c.Significance
+	}
+	method := c.ScoringMethod
+	if method == "" {
+		method = "embedding"
+	}
+	_, err := db.pool.Exec(ctx,
+		`INSERT INTO scored_conflicts (decision_a_id, decision_b_id, org_id, conflict_kind,
+		 agent_a, agent_b, decision_type_a, decision_type_b, outcome_a, outcome_b,
+		 topic_similarity, outcome_divergence, significance, scoring_method)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		 ON CONFLICT (decision_a_id, decision_b_id) DO UPDATE SET
+		 topic_similarity = EXCLUDED.topic_similarity,
+		 outcome_divergence = EXCLUDED.outcome_divergence,
+		 significance = EXCLUDED.significance,
+		 scoring_method = EXCLUDED.scoring_method,
+		 detected_at = now()`,
+		da, dbID, c.OrgID, string(c.ConflictKind),
+		agentA, agentB, typeA, typeB, outcomeA, outcomeB,
+		topicSim, outcomeDiv, sig, method,
+	)
+	return err
 }

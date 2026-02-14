@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "description": "Doc/config consistency rules for environment variables.",
+  "source": {
+    "type": "config_go_env",
+    "path": "internal/config/config.go"
+  },
+  "targets": [
+    {
+      "name": "configuration_doc",
+      "path": "docs/configuration.md",
+      "rule": "must_include_all_source_vars",
+      "allow_extra": true
+    },
+    {
+      "name": "runbook_doc",
+      "path": "docs/runbook.md",
+      "rule": "must_include_vars",
+      "required_vars": [
+        "DATABASE_URL",
+        "NOTIFY_URL",
+        "AKASHI_PORT",
+        "AKASHI_READ_TIMEOUT",
+        "AKASHI_WRITE_TIMEOUT",
+        "AKASHI_LOG_LEVEL",
+        "AKASHI_MAX_REQUEST_BODY_BYTES",
+        "AKASHI_JWT_PRIVATE_KEY",
+        "AKASHI_JWT_PUBLIC_KEY",
+        "AKASHI_JWT_EXPIRATION",
+        "AKASHI_ADMIN_API_KEY",
+        "AKASHI_EMBEDDING_PROVIDER",
+        "OPENAI_API_KEY",
+        "AKASHI_EMBEDDING_MODEL",
+        "AKASHI_EMBEDDING_DIMENSIONS",
+        "OLLAMA_URL",
+        "OLLAMA_MODEL",
+        "QDRANT_URL",
+        "QDRANT_API_KEY",
+        "QDRANT_COLLECTION",
+        "AKASHI_OUTBOX_POLL_INTERVAL",
+        "AKASHI_OUTBOX_BATCH_SIZE",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_INSECURE",
+        "OTEL_SERVICE_NAME",
+        "AKASHI_EVENT_BUFFER_SIZE",
+        "AKASHI_EVENT_FLUSH_TIMEOUT",
+        "AKASHI_CONFLICT_REFRESH_INTERVAL",
+        "AKASHI_INTEGRITY_PROOF_INTERVAL",
+        "AKASHI_SHUTDOWN_HTTP_TIMEOUT",
+        "AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT",
+        "AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT",
+        "AKASHI_IDEMPOTENCY_IN_PROGRESS_TTL",
+        "AKASHI_IDEMPOTENCY_CLEANUP_INTERVAL",
+        "AKASHI_IDEMPOTENCY_COMPLETED_TTL",
+        "AKASHI_IDEMPOTENCY_ABANDONED_TTL"
+      ],
+      "allow_extra": true
+    }
+  ],
+  "env_example": {
+    "path": ".env.example",
+    "required_vars": [
+      "DATABASE_URL",
+      "NOTIFY_URL",
+      "AKASHI_ADMIN_API_KEY",
+      "AKASHI_EMBEDDING_PROVIDER",
+      "OPENAI_API_KEY",
+      "AKASHI_EMBEDDING_MODEL",
+      "OLLAMA_URL",
+      "OLLAMA_MODEL",
+      "AKASHI_LOG_LEVEL",
+      "AKASHI_IDEMPOTENCY_IN_PROGRESS_TTL",
+      "AKASHI_IDEMPOTENCY_CLEANUP_INTERVAL",
+      "AKASHI_IDEMPOTENCY_COMPLETED_TTL",
+      "AKASHI_IDEMPOTENCY_ABANDONED_TTL"
+    ]
+  }
+}

@@ -50,11 +50,11 @@ func (db *DB) CreateDecision(ctx context.Context, d model.Decision) (model.Decis
 
 	_, err = tx.Exec(ctx,
 		`INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome, confidence,
-		 reasoning, embedding, metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+		 reasoning, embedding, outcome_embedding, metadata, quality_score, precedent_ref, supersedes_id, content_hash,
 		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
 		d.ID, d.RunID, d.AgentID, d.OrgID, d.DecisionType, d.Outcome, d.Confidence,
-		d.Reasoning, d.Embedding, d.Metadata, d.QualityScore, d.PrecedentRef,
+		d.Reasoning, d.Embedding, d.OutcomeEmbedding, d.Metadata, d.QualityScore, d.PrecedentRef,
 		d.SupersedesID, d.ContentHash,
 		d.ValidFrom, d.ValidTo, d.TransactionTime, d.CreatedAt,
 		d.SessionID, d.AgentContext,
@@ -170,11 +170,11 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 
 	_, err = tx.Exec(ctx,
 		`INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome, confidence,
-		 reasoning, embedding, metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+		 reasoning, embedding, outcome_embedding, metadata, quality_score, precedent_ref, supersedes_id, content_hash,
 		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
 		revised.ID, revised.RunID, revised.AgentID, revised.OrgID, revised.DecisionType, revised.Outcome,
-		revised.Confidence, revised.Reasoning, revised.Embedding, revised.Metadata,
+		revised.Confidence, revised.Reasoning, revised.Embedding, revised.OutcomeEmbedding, revised.Metadata,
 		revised.QualityScore, revised.PrecedentRef, revised.SupersedesID, revised.ContentHash,
 		revised.ValidFrom, revised.ValidTo, revised.TransactionTime, revised.CreatedAt,
 		revised.SessionID, revised.AgentContext,
@@ -361,9 +361,11 @@ func (db *DB) SearchDecisionsByText(ctx context.Context, orgID uuid.UUID, query 
 	}
 
 	// Primary: PostgreSQL full-text search with ts_rank.
+	// On FTS failure (e.g. websearch_to_tsquery parse error from malformed query),
+	// fall back to ILIKE instead of returning 500.
 	results, err := db.searchByFTS(ctx, orgID, query, filters, limit)
 	if err != nil {
-		return nil, err
+		return db.searchByILIKE(ctx, orgID, query, filters, limit)
 	}
 	if len(results) > 0 {
 		return results, nil
@@ -372,6 +374,23 @@ func (db *DB) SearchDecisionsByText(ctx context.Context, orgID uuid.UUID, query 
 	// Fallback: OR-based ILIKE for cases FTS misses (typos, partial words,
 	// all stop words, non-English terms).
 	return db.searchByILIKE(ctx, orgID, query, filters, limit)
+}
+
+// HasDecisionsWithNullSearchVector returns true if any active decision has
+// search_vector IS NULL (e.g. from a dropped trigger or incomplete backfill).
+// Used for monitoring; FTS excludes such rows from results.
+func (db *DB) HasDecisionsWithNullSearchVector(ctx context.Context) (bool, error) {
+	var exists bool
+	err := db.pool.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM decisions
+			WHERE search_vector IS NULL AND valid_to IS NULL
+		)`,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("storage: check null search_vector: %w", err)
+	}
+	return exists, nil
 }
 
 // searchByFTS uses PostgreSQL websearch_to_tsquery for full-text search with
@@ -863,4 +882,106 @@ func (db *DB) BackfillEmbedding(ctx context.Context, id, orgID uuid.UUID, emb pg
 	}
 
 	return tx.Commit(ctx)
+}
+
+// FindDecisionsMissingOutcomeEmbedding returns active decisions that have
+// embedding but no outcome_embedding (for backfilling Option B).
+func (db *DB) FindDecisionsMissingOutcomeEmbedding(ctx context.Context, limit int) ([]UnembeddedDecision, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := db.pool.Query(ctx,
+		`SELECT id, org_id, decision_type, outcome, reasoning
+		 FROM decisions
+		 WHERE embedding IS NOT NULL AND outcome_embedding IS NULL AND valid_to IS NULL
+		 ORDER BY valid_from ASC
+		 LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("storage: find decisions missing outcome embedding: %w", err)
+	}
+	defer rows.Close()
+
+	var results []UnembeddedDecision
+	for rows.Next() {
+		var d UnembeddedDecision
+		if err := rows.Scan(&d.ID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Reasoning); err != nil {
+			return nil, fmt.Errorf("storage: scan decision: %w", err)
+		}
+		results = append(results, d)
+	}
+	return results, rows.Err()
+}
+
+// BackfillOutcomeEmbedding updates a decision's outcome_embedding. Unlike
+// BackfillEmbedding, this does not queue an outbox entry — outcome_embedding
+// is used only for semantic conflict detection, not for Qdrant vector search.
+func (db *DB) BackfillOutcomeEmbedding(ctx context.Context, id, orgID uuid.UUID, emb pgvector.Vector) error {
+	tag, err := db.pool.Exec(ctx,
+		`UPDATE decisions SET outcome_embedding = $1 WHERE id = $2 AND org_id = $3 AND valid_to IS NULL`,
+		emb, id, orgID)
+	if err != nil {
+		return fmt.Errorf("storage: update outcome embedding: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil // Decision was revised or deleted — skip silently.
+	}
+	return nil
+}
+
+// FindSimilarDecisionsByEmbedding returns decisions in the same org with similar
+// full embeddings (for conflict candidate discovery). Excludes the given decision ID.
+func (db *DB) FindSimilarDecisionsByEmbedding(ctx context.Context, orgID uuid.UUID, embedding pgvector.Vector, excludeID uuid.UUID, limit int) ([]model.Decision, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := db.pool.Query(ctx,
+		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
+		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context,
+		 embedding, outcome_embedding
+		 FROM decisions
+		 WHERE org_id = $1 AND id != $2 AND embedding IS NOT NULL AND outcome_embedding IS NOT NULL AND valid_to IS NULL
+		 ORDER BY embedding <=> $3
+		 LIMIT $4`, orgID, excludeID, embedding, limit)
+	if err != nil {
+		return nil, fmt.Errorf("storage: find similar decisions: %w", err)
+	}
+	defer rows.Close()
+
+	var list []model.Decision
+	for rows.Next() {
+		var d model.Decision
+		if err := rows.Scan(
+			&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence, &d.Reasoning,
+			&d.Metadata, &d.QualityScore, &d.PrecedentRef, &d.SupersedesID, &d.ContentHash,
+			&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
+			&d.SessionID, &d.AgentContext,
+			&d.Embedding, &d.OutcomeEmbedding,
+		); err != nil {
+			return nil, fmt.Errorf("storage: scan similar decision: %w", err)
+		}
+		list = append(list, d)
+	}
+	return list, rows.Err()
+}
+
+// GetDecisionForScoring returns a decision with embedding and outcome_embedding for conflict scoring.
+func (db *DB) GetDecisionForScoring(ctx context.Context, id, orgID uuid.UUID) (model.Decision, error) {
+	var d model.Decision
+	err := db.pool.QueryRow(ctx,
+		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
+		 valid_from, embedding, outcome_embedding
+		 FROM decisions WHERE id = $1 AND org_id = $2 AND valid_to IS NULL`,
+		id, orgID,
+	).Scan(
+		&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence, &d.Reasoning,
+		&d.ValidFrom, &d.Embedding, &d.OutcomeEmbedding,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.Decision{}, fmt.Errorf("storage: decision %s: %w", id, ErrNotFound)
+		}
+		return model.Decision{}, fmt.Errorf("storage: get decision for scoring: %w", err)
+	}
+	return d, nil
 }

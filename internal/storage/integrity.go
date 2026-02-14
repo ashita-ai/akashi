@@ -60,6 +60,14 @@ func (db *DB) CreateIntegrityProof(ctx context.Context, p IntegrityProof) error 
 
 // GetDecisionHashesForBatch returns content_hash values for decisions in an org
 // created between since (exclusive) and until (inclusive), ordered lexicographically.
+//
+// Uses created_at (insertion time), not valid_from, so the Merkle chain reflects
+// physical write order. This ensures deterministic batching regardless of
+// bi-temporal valid_from/valid_to values.
+//
+// Includes superseded decisions (valid_to IS NOT NULL) intentionally: the integrity
+// proof attests to the full write history, not just active rows. Revisions are
+// physical writes that should be included in the chain for tamper detection.
 func (db *DB) GetDecisionHashesForBatch(ctx context.Context, orgID uuid.UUID, since, until time.Time) ([]string, error) {
 	rows, err := db.pool.Query(ctx,
 		`SELECT content_hash FROM decisions

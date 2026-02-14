@@ -87,7 +87,7 @@ HTTP Request
 └───────┬────────┘
         ▼
 ┌────────────────┐
-│ HandleTrace    │──▶ handlers_decisions.go:11
+│ HandleTrace    │──▶ handlers_decisions.go:17
 └───────┬────────┘
         ▼
 ┌────────────────┐    ┌──────────────────┐
@@ -105,7 +105,7 @@ HTTP Request
 High-throughput event ingestion uses an in-memory buffer with `COPY` protocol:
 
 ```
-POST /v1/runs/{id}/events
+POST /v1/runs/{run_id}/events
          │
          ▼
 ┌─────────────────────┐
@@ -725,12 +725,12 @@ func filterDecisionsByAccess(ctx, db, claims, decisions) ([]Decision, error) {
 |-------|---------|
 | `agents` | Agent identities with roles |
 | `agent_events` | Immutable event log |
-| `runs` | Agent execution sessions |
+| `agent_runs` | Agent execution sessions |
 | `decisions` | First-class decisions with bi-temporal columns |
 | `alternatives` | Options considered for each decision |
 | `evidence` | Supporting data for decisions |
 | `access_grants` | Fine-grained access permissions |
-| `decision_conflicts` | Materialized view of conflicting decisions |
+| `scored_conflicts` | Semantic conflict pairs (event-driven, see docs/decisions.md) |
 
 ### API Endpoints
 
@@ -738,7 +738,7 @@ func filterDecisionsByAccess(ctx, db, claims, decisions) ([]Decision, error) {
 |----------|---------|---------|
 | `POST /auth/token` | - | Exchange API key for JWT |
 | `POST /v1/runs` | admin, agent | Start agent run |
-| `POST /v1/runs/{id}/events` | admin, agent | Append events |
+| `POST /v1/runs/{run_id}/events` | admin, agent | Append events |
 | `POST /v1/trace` | admin, agent | Record decision (convenience) |
 | `POST /v1/query` | all | Structured decision query |
 | `POST /v1/search` | all | Semantic similarity search |
@@ -751,7 +751,7 @@ func filterDecisionsByAccess(ctx, db, claims, decisions) ([]Decision, error) {
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `DATABASE_URL` | - | PgBouncer connection string |
-| `AKASHI_NOTIFY_URL` | - | Direct Postgres (LISTEN/NOTIFY) |
+| `NOTIFY_URL` | - | Direct Postgres (LISTEN/NOTIFY) |
 | `AKASHI_EMBEDDING_PROVIDER` | auto | ollama/openai/noop/auto |
 | `OLLAMA_URL` | http://localhost:11434 | Ollama server |
 | `OPENAI_API_KEY` | - | OpenAI API key |

@@ -4,8 +4,8 @@
 -- multi-dimensional identity: who (agent_id), what session (session_id),
 -- with what tool/model/task (agent_context JSONB).
 
-ALTER TABLE decisions ADD COLUMN session_id UUID;
-ALTER TABLE decisions ADD COLUMN agent_context JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS session_id UUID;
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS agent_context JSONB NOT NULL DEFAULT '{}';
 
 -- Session-scoped queries: "show me all decisions from this session."
 CREATE INDEX idx_decisions_session ON decisions (session_id, valid_from DESC)

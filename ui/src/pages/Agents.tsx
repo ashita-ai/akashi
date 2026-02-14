@@ -67,6 +67,7 @@ export default function Agents() {
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [selectedRole, setSelectedRole] = useState<AgentRole>("agent");
 
   const { data: agents, isPending } = useQuery({
     queryKey: ["agents"],
@@ -79,6 +80,7 @@ export default function Agents() {
       queryClient.invalidateQueries({ queryKey: ["agents"] });
       setCreateOpen(false);
       setFormError(null);
+      setSelectedRole("agent");
     },
     onError: (err) => {
       setFormError(err instanceof ApiError ? err.message : "Failed to create agent");
@@ -104,7 +106,7 @@ export default function Agents() {
     const req: CreateAgentRequest = {
       agent_id: form.get("agent_id") as string,
       name: form.get("name") as string,
-      role: (form.get("role") as AgentRole) || "agent",
+      role: selectedRole,
       api_key: form.get("api_key") as string,
       ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
     };
@@ -142,7 +144,7 @@ export default function Agents() {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="role">Role</Label>
-                  <Select name="role" defaultValue="agent">
+                  <Select value={selectedRole} onValueChange={(value) => setSelectedRole(value as AgentRole)}>
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
@@ -152,6 +154,7 @@ export default function Agents() {
                       <SelectItem value="admin">Admin</SelectItem>
                     </SelectContent>
                   </Select>
+                  <input type="hidden" name="role" value={selectedRole} />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="api_key">API Key</Label>

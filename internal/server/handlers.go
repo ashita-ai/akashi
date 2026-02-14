@@ -21,51 +21,57 @@ import (
 
 // Handlers holds HTTP handler dependencies.
 type Handlers struct {
-	db                  *storage.DB
-	jwtMgr              *auth.JWTManager
-	decisionSvc         *decisions.Service
-	buffer              *trace.Buffer
-	broker              *Broker
-	searcher            search.Searcher
-	grantCache          *authz.GrantCache
-	logger              *slog.Logger
-	startedAt           time.Time
-	version             string
-	maxRequestBodyBytes int64
-	openapiSpec         []byte
+	db                       *storage.DB
+	jwtMgr                   *auth.JWTManager
+	decisionSvc              *decisions.Service
+	buffer                   *trace.Buffer
+	broker                   *Broker
+	searcher                 search.Searcher
+	grantCache               *authz.GrantCache
+	logger                   *slog.Logger
+	startedAt                time.Time
+	version                  string
+	maxRequestBodyBytes      int64
+	openapiSpec              []byte
+	idempotencyInProgressTTL time.Duration
+	enableDestructiveDelete  bool
 }
 
 // HandlersDeps holds all dependencies for constructing Handlers.
 // Optional (nil-safe): Broker, Searcher, GrantCache, OpenAPISpec.
 type HandlersDeps struct {
-	DB                  *storage.DB
-	JWTMgr              *auth.JWTManager
-	DecisionSvc         *decisions.Service
-	Buffer              *trace.Buffer
-	Broker              *Broker
-	Searcher            search.Searcher
-	GrantCache          *authz.GrantCache
-	Logger              *slog.Logger
-	Version             string
-	MaxRequestBodyBytes int64
-	OpenAPISpec         []byte
+	DB                       *storage.DB
+	JWTMgr                   *auth.JWTManager
+	DecisionSvc              *decisions.Service
+	Buffer                   *trace.Buffer
+	Broker                   *Broker
+	Searcher                 search.Searcher
+	GrantCache               *authz.GrantCache
+	Logger                   *slog.Logger
+	Version                  string
+	MaxRequestBodyBytes      int64
+	OpenAPISpec              []byte
+	IdempotencyInProgressTTL time.Duration
+	EnableDestructiveDelete  bool
 }
 
 // NewHandlers creates a new Handlers with all dependencies.
 func NewHandlers(d HandlersDeps) *Handlers {
 	return &Handlers{
-		db:                  d.DB,
-		jwtMgr:              d.JWTMgr,
-		decisionSvc:         d.DecisionSvc,
-		buffer:              d.Buffer,
-		broker:              d.Broker,
-		searcher:            d.Searcher,
-		grantCache:          d.GrantCache,
-		logger:              d.Logger,
-		startedAt:           time.Now(),
-		version:             d.Version,
-		maxRequestBodyBytes: d.MaxRequestBodyBytes,
-		openapiSpec:         d.OpenAPISpec,
+		db:                       d.DB,
+		jwtMgr:                   d.JWTMgr,
+		decisionSvc:              d.DecisionSvc,
+		buffer:                   d.Buffer,
+		broker:                   d.Broker,
+		searcher:                 d.Searcher,
+		grantCache:               d.GrantCache,
+		logger:                   d.Logger,
+		startedAt:                time.Now(),
+		version:                  d.Version,
+		maxRequestBodyBytes:      d.MaxRequestBodyBytes,
+		openapiSpec:              d.OpenAPISpec,
+		idempotencyInProgressTTL: d.IdempotencyInProgressTTL,
+		enableDestructiveDelete:  d.EnableDestructiveDelete,
 	}
 }
 
@@ -244,7 +250,14 @@ func (h *Handlers) HandleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 // SeedAdmin creates the initial admin agent if the agents table is empty.
 func (h *Handlers) SeedAdmin(ctx context.Context, adminAPIKey string) error {
 	if adminAPIKey == "" {
-		h.logger.Info("no admin API key configured, skipping admin seed")
+		totalAgents, err := h.db.CountAgentsGlobal(ctx)
+		if err != nil {
+			return fmt.Errorf("seed admin: count global agents: %w", err)
+		}
+		if totalAgents == 0 {
+			return fmt.Errorf("seed admin: AKASHI_ADMIN_API_KEY is empty and no agents exist; set AKASHI_ADMIN_API_KEY to bootstrap initial admin access")
+		}
+		h.logger.Info("no admin API key configured, skipping admin seed", "existing_agents", totalAgents)
 		return nil
 	}
 
@@ -287,9 +300,10 @@ func (h *Handlers) SeedAdmin(ctx context.Context, adminAPIKey string) error {
 
 // HandleConfig returns feature flags for the current deployment so the UI
 // can adapt to optional capabilities. No auth required.
+// search_enabled is true only when semantic search works (Qdrant + real embedder).
 func (h *Handlers) HandleConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, map[string]bool{
-		"search_enabled": h.searcher != nil,
+		"search_enabled": h.decisionSvc.SemanticSearchAvailable(),
 	})
 }
 
