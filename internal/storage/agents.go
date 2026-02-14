@@ -160,6 +160,16 @@ func (db *DB) CountAgents(ctx context.Context, orgID uuid.UUID) (int, error) {
 	return count, nil
 }
 
+// CountAgentsGlobal returns the total number of agents across all organizations.
+func (db *DB) CountAgentsGlobal(ctx context.Context) (int, error) {
+	var count int
+	err := db.pool.QueryRow(ctx, `SELECT COUNT(*) FROM agents`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("storage: count agents global: %w", err)
+	}
+	return count, nil
+}
+
 // ListAgentIDsBySharedTags returns agent_ids within the org that share at least
 // one tag with the provided set (array-overlap). The GIN index on tags makes
 // this efficient even for large agent populations.

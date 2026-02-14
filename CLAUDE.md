@@ -30,7 +30,7 @@ If you still believe the behavior should change, update the tests in the same co
 
 ## Migrations
 
-- Migration files live in `migrations/` as sequential SQL files (001, 002, ..., 021).
+- Migration files live in `migrations/` as sequential SQL files (001, 022, 023, ...).
 - Atlas manages checksums in `migrations/atlas.sum`. Any time a migration file is added or modified, rehash: `atlas migrate hash --dir file://migrations`
 - Always validate before committing: `atlas migrate validate --dir file://migrations`
 

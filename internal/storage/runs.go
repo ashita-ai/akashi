@@ -76,7 +76,23 @@ func (db *DB) CompleteRun(ctx context.Context, orgID, id uuid.UUID, status model
 		return fmt.Errorf("storage: complete run: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("storage: run %s (or already completed): %w", id, ErrNotFound)
+		var existingStatus string
+		err := db.pool.QueryRow(ctx,
+			`SELECT status FROM agent_runs WHERE id = $1 AND org_id = $2`,
+			id, orgID,
+		).Scan(&existingStatus)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("storage: run %s: %w", id, ErrNotFound)
+			}
+			return fmt.Errorf("storage: complete run status lookup: %w", err)
+		}
+
+		// Idempotent success for retries when the run is already finalized.
+		if existingStatus == string(model.RunStatusCompleted) || existingStatus == string(model.RunStatusFailed) {
+			return nil
+		}
+		return fmt.Errorf("storage: run %s complete transition rejected from status %q", id, existingStatus)
 	}
 	return nil
 }

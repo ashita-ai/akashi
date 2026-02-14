@@ -49,8 +49,11 @@ export interface Evidence {
   created_at: string;
 }
 
+export type ConflictKind = "cross_agent" | "self_contradiction";
+
 /** A detected conflict between two decisions. */
 export interface DecisionConflict {
+  conflict_kind: ConflictKind;
   decision_a_id: string;
   decision_b_id: string;
   org_id: string;
@@ -59,6 +62,8 @@ export interface DecisionConflict {
   run_a: string;
   run_b: string;
   decision_type: string;
+  decision_type_a?: string;
+  decision_type_b?: string;
   outcome_a: string;
   outcome_b: string;
   confidence_a: number;
@@ -68,6 +73,10 @@ export interface DecisionConflict {
   decided_at_a: string;
   decided_at_b: string;
   detected_at: string;
+  topic_similarity?: number;
+  outcome_divergence?: number;
+  significance?: number;
+  scoring_method?: string;
 }
 
 /** An agent run (a unit of work that can contain decisions and events). */
@@ -123,12 +132,15 @@ export interface Grant {
   created_at: string;
 }
 
-/** Health check response (not envelope-wrapped). */
+/** Health check payload returned in the standard API envelope. */
 export interface HealthResponse {
   status: string;
   version: string;
   postgres: string;
   qdrant?: string;
+  buffer_depth: number;
+  buffer_status: "ok" | "high" | "critical";
+  sse_broker?: string;
   uptime_seconds: number;
 }
 

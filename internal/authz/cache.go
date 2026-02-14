@@ -13,10 +13,11 @@ import (
 // Value: map[string]bool (set of accessible agent_ids) + expiry time.
 // A nil map value means unrestricted (admin).
 type GrantCache struct {
-	mu      sync.RWMutex
-	entries map[string]cachedEntry
-	ttl     time.Duration
-	done    chan struct{}
+	mu        sync.RWMutex
+	entries   map[string]cachedEntry
+	ttl       time.Duration
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 type cachedEntry struct {
@@ -46,7 +47,7 @@ func (c *GrantCache) Get(key string) (map[string]bool, bool) {
 	if !ok || time.Now().After(entry.expiresAt) {
 		return nil, false
 	}
-	return entry.granted, true
+	return cloneGrantedSet(entry.granted), true
 }
 
 // Set stores a granted set with the configured TTL.
@@ -55,9 +56,20 @@ func (c *GrantCache) Set(key string, granted map[string]bool) {
 	defer c.mu.Unlock()
 
 	c.entries[key] = cachedEntry{
-		granted:   granted,
+		granted:   cloneGrantedSet(granted),
 		expiresAt: time.Now().Add(c.ttl),
 	}
+}
+
+func cloneGrantedSet(src map[string]bool) map[string]bool {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]bool, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 // Invalidate removes a specific cache entry. Call this when a grant is created
@@ -71,7 +83,9 @@ func (c *GrantCache) Invalidate(key string) {
 
 // Close stops the background eviction goroutine.
 func (c *GrantCache) Close() {
-	close(c.done)
+	c.closeOnce.Do(func() {
+		close(c.done)
+	})
 }
 
 // evictLoop removes expired entries every minute.

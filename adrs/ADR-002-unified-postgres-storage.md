@@ -16,7 +16,7 @@ Since the original ADR (2026-02-03), multi-tenancy and the OSS/cloud split intro
 
 **pgvector ships out of the box.** The OSS, single-tenant deployment uses pgvector with HNSW indexes for all vector search. This covers the common case: a team running 1-50 agents with up to hundreds of thousands of decisions. No additional infrastructure required.
 
-**Qdrant is an optional, derived acceleration layer.** For multi-tenant cloud deployments where filtered vector search across millions of rows exceeds pgvector's practical limits, Qdrant provides a shared collection with org_id payload filtering. Qdrant is eventually consistent with Postgres via an outbox worker pattern. If Qdrant is unavailable, queries fall back to text search (ILIKE keyword matching) transparently.
+**Qdrant is an optional, derived acceleration layer.** For multi-tenant cloud deployments where filtered vector search across millions of rows exceeds pgvector's practical limits, Qdrant provides a shared collection with org_id payload filtering. Qdrant is eventually consistent with Postgres via an outbox worker pattern. If Qdrant is unavailable, queries fall back to PostgreSQL full-text search (tsvector/tsquery) with ILIKE matching as a secondary fallback for edge cases.
 
 The storage architecture:
 
@@ -58,7 +58,7 @@ All vector search goes through the `Searcher` interface in `internal/search/sear
 
 - `QdrantIndex` (`internal/search/qdrant.go`) — queries Qdrant Cloud. Configured at startup when Qdrant credentials are present.
 
-When Qdrant is not configured or is unhealthy, the service layer (`internal/service/decisions/service.go:Search()`) falls back to text search via `SearchDecisionsByText` in `internal/storage/decisions.go`, which uses ILIKE keyword matching. Application code calls the service layer and is unaware of which path serves results.
+When Qdrant is not configured or is unhealthy, the service layer (`internal/service/decisions/service.go:Search()`) falls back to text search via `SearchDecisionsByText` in `internal/storage/decisions.go`, which uses PostgreSQL full-text search (tsvector/tsquery with websearch_to_tsquery) and ILIKE as a secondary fallback for stop-word-only queries and partial matches. Application code calls the service layer and is unaware of which path serves results.
 
 ### Qdrant sync
 
@@ -66,7 +66,7 @@ A search outbox table in Postgres captures decision mutations. A background work
 
 ### Fallback behavior
 
-If Qdrant returns an error, is unreachable, or is not configured, the service layer falls back to text search (ILIKE keyword matching in `internal/storage/decisions.go:SearchDecisionsByText`). This is transparent to the caller. Fallback events are logged as warnings for monitoring.
+If Qdrant returns an error, is unreachable, or is not configured, the service layer falls back to PostgreSQL full-text search (tsvector/tsquery in `internal/storage/decisions.go:SearchDecisionsByText`) with ILIKE as a secondary fallback. This is transparent to the caller. Fallback events are logged as warnings for monitoring.
 
 ## Migration triggers for further specialization
 

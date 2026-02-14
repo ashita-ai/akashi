@@ -59,7 +59,9 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 
 	// Session from header.
 	var sessionID *uuid.UUID
+	sessionHeader := ""
 	if sh := r.Header.Get("X-Akashi-Session"); sh != "" {
+		sessionHeader = sh
 		if sid, parseErr := uuid.Parse(sh); parseErr == nil {
 			sessionID = &sid
 		}
@@ -88,6 +90,20 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	idemPayload := struct {
+		Request       model.TraceRequest `json:"request"`
+		SessionHeader string             `json:"session_header,omitempty"`
+		UserAgent     string             `json:"user_agent,omitempty"`
+	}{
+		Request:       req,
+		SessionHeader: sessionHeader,
+		UserAgent:     r.Header.Get("User-Agent"),
+	}
+	idem, proceed := h.beginIdempotentWrite(w, r, orgID, req.AgentID, "POST:/v1/trace", idemPayload)
+	if !proceed {
+		return
+	}
+
 	result, err := h.decisionSvc.Trace(r.Context(), orgID, decisions.TraceInput{
 		AgentID:      req.AgentID,
 		TraceID:      req.TraceID,
@@ -98,15 +114,36 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		AgentContext: agentContext,
 	})
 	if err != nil {
+		h.clearIdempotentWrite(r, orgID, idem)
 		h.writeInternalError(w, r, "failed to create trace", err)
 		return
 	}
 
-	writeJSON(w, r, http.StatusCreated, map[string]any{
+	resp := map[string]any{
 		"run_id":      result.RunID,
 		"decision_id": result.DecisionID,
 		"event_count": result.EventCount,
-	})
+	}
+	if err := h.recordMutationAudit(
+		r,
+		orgID,
+		"trace_decision",
+		"decision",
+		result.DecisionID.String(),
+		nil,
+		resp,
+		map[string]any{"agent_id": req.AgentID, "run_id": result.RunID.String()},
+	); err != nil {
+		// The trace write already committed; keep the client response replayable.
+		h.logger.Error("failed to record mutation audit after committed trace_decision",
+			"error", err,
+			"decision_id", result.DecisionID,
+			"run_id", result.RunID,
+			"org_id", orgID,
+			"request_id", RequestIDFromContext(r.Context()))
+	}
+	h.completeIdempotentWriteBestEffort(r, orgID, idem, http.StatusCreated, resp)
+	writeJSON(w, r, http.StatusCreated, resp)
 }
 
 // HandleQuery handles POST /v1/query.
@@ -118,6 +155,17 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
 		return
+	}
+	if req.Limit <= 0 {
+		req.Limit = 50
+	} else if req.Limit > maxQueryLimit {
+		req.Limit = maxQueryLimit
+	}
+	if req.Offset < 0 {
+		req.Offset = 0
+	}
+	if req.Offset > maxQueryOffset {
+		req.Offset = maxQueryOffset
 	}
 
 	decisions, total, err := h.decisionSvc.Query(r.Context(), orgID, req)
@@ -162,7 +210,7 @@ func (h *Handlers) HandleTemporalQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decisions, err := h.db.QueryDecisionsTemporal(r.Context(), orgID, req)
+	decisions, err := h.decisionSvc.QueryTemporal(r.Context(), orgID, req)
 	if err != nil {
 		h.writeInternalError(w, r, "temporal query failed", err)
 		return
@@ -358,6 +406,9 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 	if aid := r.URL.Query().Get("agent_id"); aid != "" {
 		filters.AgentID = &aid
 	}
+	if ck := r.URL.Query().Get("conflict_kind"); ck != "" {
+		filters.ConflictKind = &ck
+	}
 	limit := queryLimit(r, 25)
 	offset := queryOffset(r)
 
@@ -508,10 +559,22 @@ func (h *Handlers) HandleSessionView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Compute summary.
+	// Compute summary: use min/max of valid_from to avoid ordering edge cases
+	// (multiple decisions can share the same valid_from in revision chains).
 	startedAt := decs[0].ValidFrom
-	endedAt := decs[len(decs)-1].ValidFrom
+	endedAt := decs[0].ValidFrom
+	for _, d := range decs[1:] {
+		if d.ValidFrom.Before(startedAt) {
+			startedAt = d.ValidFrom
+		}
+		if d.ValidFrom.After(endedAt) {
+			endedAt = d.ValidFrom
+		}
+	}
 	duration := endedAt.Sub(startedAt).Seconds()
+	if duration < 0 {
+		duration = 0
+	}
 
 	decisionTypes := map[string]int{}
 	var totalConf float64

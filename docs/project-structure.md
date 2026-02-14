@@ -1,10 +1,17 @@
 # Project Structure
 
+## Operations Docs
+
+- `docs/runbook.md` - primary operator runbook
+- `docs/operations/data-lifecycle.md` - retention, archival, reconciliation, and exit-criteria procedures
+
 ```
 ./api/embed.go
 ./cmd/akashi/main.go
+./migrations/embed.go
 ./internal/auth/auth.go
 ./internal/auth/hash.go
+./internal/conflicts/scorer.go
 ./internal/authz/authz.go
 ./internal/config/config.go
 ./internal/ctxutil/ctxutil.go
@@ -12,6 +19,8 @@
 ./internal/mcp/mcp.go
 ./internal/mcp/prompts.go
 ./internal/mcp/resources.go
+./internal/mcp/tracker.go
+./internal/mcp/tracker_test.go
 ./internal/mcp/tools.go
 ./internal/model/agent.go
 ./internal/model/api.go
@@ -70,6 +79,7 @@
 | Package | Tests |
 |---------|-------|
 | github.com/ashita-ai/akashi/internal/auth | 5 |
+| github.com/ashita-ai/akashi/internal/conflicts | 3 |
 | github.com/ashita-ai/akashi/internal/config | 10 |
 | github.com/ashita-ai/akashi/internal/integrity | 12 |
 | github.com/ashita-ai/akashi/internal/mcp | 1 |

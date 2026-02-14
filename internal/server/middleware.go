@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"strconv"
@@ -320,7 +321,7 @@ func authMiddleware(jwtMgr *auth.JWTManager, db *storage.DB, next http.Handler) 
 
 		case strings.EqualFold(scheme, "ApiKey"):
 			var err error
-			claims, err = verifyAPIKey(r.Context(), db, credential)
+			claims, err = verifyAPIKey(r.Context(), db, credential, r.Header.Get("X-Akashi-Org-ID"))
 			if err != nil {
 				writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "invalid api key")
 				return
@@ -341,7 +342,7 @@ func authMiddleware(jwtMgr *auth.JWTManager, db *storage.DB, next http.Handler) 
 // Performs the same agent lookup + Argon2id verification as POST /auth/token.
 // Returns synthesized claims on success; the claims are equivalent to what a JWT
 // would contain but skip token issuance entirely.
-func verifyAPIKey(ctx context.Context, db *storage.DB, credential string) (*auth.Claims, error) {
+func verifyAPIKey(ctx context.Context, db *storage.DB, credential, orgHeader string) (*auth.Claims, error) {
 	// Parse "agent_id:api_key" — agent_ids cannot contain colons (validated on creation).
 	colonIdx := strings.IndexByte(credential, ':')
 	if colonIdx < 1 || colonIdx == len(credential)-1 {
@@ -356,9 +357,31 @@ func verifyAPIKey(ctx context.Context, db *storage.DB, credential string) (*auth
 		auth.DummyVerify()
 		return nil, fmt.Errorf("invalid credentials")
 	}
+	if len(agents) == 0 {
+		auth.DummyVerify()
+		return nil, fmt.Errorf("invalid credentials")
+	}
+
+	var requestedOrg *uuid.UUID
+	if strings.TrimSpace(orgHeader) != "" {
+		orgID, parseErr := uuid.Parse(strings.TrimSpace(orgHeader))
+		if parseErr != nil {
+			auth.DummyVerify()
+			return nil, fmt.Errorf("invalid org header")
+		}
+		requestedOrg = &orgID
+	} else if len(agents) > 1 {
+		// Avoid accidental cross-org auth context selection when a shared
+		// agent_id exists across organizations.
+		auth.DummyVerify()
+		return nil, fmt.Errorf("org header required for ambiguous agent_id")
+	}
 
 	verified := false
 	for _, a := range agents {
+		if requestedOrg != nil && a.OrgID != *requestedOrg {
+			continue
+		}
 		if a.APIKeyHash == nil {
 			continue
 		}
@@ -470,17 +493,40 @@ func recoveryMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
 	})
 }
 
+// clientIP returns the client IP for rate limiting. When trustProxy is true and
+// X-Forwarded-For is present, uses the leftmost (original client) IP. Otherwise
+// uses r.RemoteAddr. Only enable trustProxy when behind a trusted reverse proxy.
+func clientIP(r *http.Request, trustProxy bool) string {
+	if trustProxy {
+		if ff := r.Header.Get("X-Forwarded-For"); ff != "" {
+			// X-Forwarded-For: client, proxy1, proxy2 — leftmost is the original client.
+			if idx := strings.Index(ff, ","); idx > 0 {
+				return strings.TrimSpace(ff[:idx])
+			}
+			return strings.TrimSpace(ff)
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	if host == "" {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 // rateLimitMiddleware enforces per-key rate limiting on authenticated requests.
 // Unauthenticated paths pass through (auth middleware limits which paths skip auth).
 // Platform admins bypass rate limiting as a safety valve.
 // On limiter error, the request is permitted (fail-open).
-func rateLimitMiddleware(limiter ratelimit.Limiter, logger *slog.Logger, next http.Handler) http.Handler {
+func rateLimitMiddleware(limiter ratelimit.Limiter, logger *slog.Logger, trustProxy bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		claims := ctxutil.ClaimsFromContext(r.Context())
 		if claims == nil {
 			// Unauthenticated path — apply IP-based rate limiting to protect
 			// endpoints like /auth/token from brute-force attacks.
-			key := "ip:" + r.RemoteAddr
+			key := "ip:" + clientIP(r, trustProxy)
 			allowed, err := limiter.Allow(r.Context(), key)
 			if err == nil && !allowed {
 				w.Header().Set("Retry-After", "1")
@@ -540,7 +586,7 @@ func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 		w.Header().Set("Vary", "Origin")
 		if origin != "" && (allowAll || originSet[origin]) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID, Idempotency-Key, X-Akashi-Session, X-Akashi-Org-ID")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, PATCH, OPTIONS")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 		}

@@ -65,25 +65,40 @@ type Evidence struct {
 	CreatedAt      time.Time      `json:"created_at"`
 }
 
+// ConflictKind indicates whether a conflict is between agents or self-contradiction.
+type ConflictKind string
+
+const (
+	ConflictKindCrossAgent       ConflictKind = "cross_agent"
+	ConflictKindSelfContradiction ConflictKind = "self_contradiction"
+)
+
 // DecisionConflict represents a detected conflict between two decisions.
 type DecisionConflict struct {
-	DecisionAID  uuid.UUID `json:"decision_a_id"`
-	DecisionBID  uuid.UUID `json:"decision_b_id"`
-	OrgID        uuid.UUID `json:"org_id"`
-	AgentA       string    `json:"agent_a"`
-	AgentB       string    `json:"agent_b"`
-	RunA         uuid.UUID `json:"run_a"`
-	RunB         uuid.UUID `json:"run_b"`
-	DecisionType string    `json:"decision_type"`
-	OutcomeA     string    `json:"outcome_a"`
-	OutcomeB     string    `json:"outcome_b"`
-	ConfidenceA  float32   `json:"confidence_a"`
-	ConfidenceB  float32   `json:"confidence_b"`
-	ReasoningA   *string   `json:"reasoning_a,omitempty"`
-	ReasoningB   *string   `json:"reasoning_b,omitempty"`
-	DecidedAtA   time.Time `json:"decided_at_a"`
-	DecidedAtB   time.Time `json:"decided_at_b"`
-	DetectedAt   time.Time `json:"detected_at"`
+	ConflictKind      ConflictKind `json:"conflict_kind"`
+	DecisionAID       uuid.UUID    `json:"decision_a_id"`
+	DecisionBID       uuid.UUID    `json:"decision_b_id"`
+	OrgID             uuid.UUID    `json:"org_id"`
+	AgentA            string       `json:"agent_a"`
+	AgentB            string       `json:"agent_b"`
+	RunA              uuid.UUID    `json:"run_a"`
+	RunB              uuid.UUID    `json:"run_b"`
+	DecisionType      string       `json:"decision_type"`
+	DecisionTypeA     string       `json:"decision_type_a"`
+	DecisionTypeB     string       `json:"decision_type_b"`
+	OutcomeA          string       `json:"outcome_a"`
+	OutcomeB          string       `json:"outcome_b"`
+	ConfidenceA       float32      `json:"confidence_a"`
+	ConfidenceB       float32      `json:"confidence_b"`
+	ReasoningA        *string      `json:"reasoning_a,omitempty"`
+	ReasoningB        *string      `json:"reasoning_b,omitempty"`
+	DecidedAtA        time.Time    `json:"decided_at_a"`
+	DecidedAtB        time.Time    `json:"decided_at_b"`
+	DetectedAt        time.Time    `json:"detected_at"`
+	TopicSimilarity   *float64     `json:"topic_similarity,omitempty"`
+	OutcomeDivergence *float64     `json:"outcome_divergence,omitempty"`
+	Significance      *float64     `json:"significance,omitempty"`
+	ScoringMethod     string       `json:"scoring_method,omitempty"`
 }
 
 // --- Request types ---
@@ -405,8 +420,9 @@ type RevisionsResponse struct {
 
 // ConflictOptions are optional filters for the ListConflicts method.
 type ConflictOptions struct {
-	DecisionType string
-	AgentID      string
-	Limit        int
-	Offset       int
+	DecisionType  string
+	AgentID       string
+	ConflictKind  string // "cross_agent" or "self_contradiction"
+	Limit         int
+	Offset        int
 }

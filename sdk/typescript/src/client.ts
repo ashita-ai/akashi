@@ -90,8 +90,9 @@ function buildQueryBody(
 function buildSearchBody(
   query: string,
   limit: number,
+  semantic: boolean,
 ): Record<string, unknown> {
-  return { query, limit };
+  return { query, limit, semantic };
 }
 
 function buildRecentParams(
@@ -348,10 +349,14 @@ export class AkashiClient {
   }
 
   /** Search decision history by semantic similarity. */
-  async search(query: string, limit?: number): Promise<SearchResponse> {
+  async search(
+    query: string,
+    limit?: number,
+    semantic = false,
+  ): Promise<SearchResponse> {
     return this.post<SearchResponse>(
       "/v1/search",
-      buildSearchBody(query, limit ?? 5),
+      buildSearchBody(query, limit ?? 5, semantic),
     );
   }
 
@@ -464,12 +469,18 @@ export class AkashiClient {
   /** List detected decision conflicts. */
   async listConflicts(options?: {
     decisionType?: string;
+    agentId?: string;
+    conflictKind?: "cross_agent" | "self_contradiction";
     limit?: number;
     offset?: number;
   }): Promise<DecisionConflict[]> {
     const params = new URLSearchParams();
     if (options?.decisionType)
       params.set("decision_type", options.decisionType);
+    if (options?.agentId)
+      params.set("agent_id", options.agentId);
+    if (options?.conflictKind)
+      params.set("conflict_kind", options.conflictKind);
     if (options?.limit !== undefined)
       params.set("limit", String(options.limit));
     if (options?.offset !== undefined)
@@ -535,10 +546,6 @@ export class AkashiClient {
       headers: { "User-Agent": USER_AGENT },
       signal: AbortSignal.timeout(this.timeoutMs),
     });
-    // Health endpoint returns JSON directly, not wrapped in {data: ...}.
-    if (resp.status >= 400) {
-      await handleResponse<T>(resp); // will throw
-    }
-    return (await resp.json()) as T;
+    return handleResponse<T>(resp);
   }
 }

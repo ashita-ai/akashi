@@ -153,7 +153,7 @@ flowchart TD
     AUTH --> TRACE["Trace Buffer<br/>in-memory batch + COPY flush"]
     AUTH --> QUERY["Query Engine<br/>SQL filters + bi-temporal"]
     AUTH --> SEARCH["Semantic Search<br/>Qdrant / pgvector fallback"]
-    AUTH --> CONFLICT["Conflict Detection<br/>materialized view"]
+    AUTH --> CONFLICT["Conflict Detection<br/>semantic scoring"]
 
     TRACE --> PG
     QUERY --> PG

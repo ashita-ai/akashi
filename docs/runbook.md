@@ -2,6 +2,9 @@
 
 Production operations guide for the Akashi decision trace server.
 
+For lifecycle-specific retention, archival, and reconciliation procedures, see:
+`docs/operations/data-lifecycle.md`.
+
 ---
 
 ## 1. Health Checks
@@ -18,23 +21,34 @@ No authentication required.
 
 ```json
 {
-  "status": "healthy",
-  "version": "1.0.0",
-  "postgres": "connected",
-  "qdrant": "connected",
-  "uptime_seconds": 86400
+  "data": {
+    "status": "healthy",
+    "version": "1.0.0",
+    "postgres": "connected",
+    "qdrant": "connected",
+    "buffer_depth": 0,
+    "buffer_status": "ok",
+    "sse_broker": "running",
+    "uptime_seconds": 86400
+  },
+  "meta": {
+    "request_id": "9a4c58db-8d9f-4cad-9ec8-c9476e4af9a6",
+    "timestamp": "2026-02-14T04:21:00Z"
+  }
 }
 ```
 
-| Field      | Healthy Value   | Unhealthy Value   |
-|------------|-----------------|-------------------|
-| `status`   | `"healthy"`     | `"unhealthy"`     |
-| `postgres` | `"connected"`   | `"disconnected"`  |
-| `qdrant`   | `"connected"`   | `"disconnected"`  |
+| Field (under `data`) | Healthy Value   | Unhealthy Value   |
+|----------------------|-----------------|-------------------|
+| `status`             | `"healthy"`     | `"unhealthy"`     |
+| `postgres`           | `"connected"`   | `"disconnected"`  |
+| `qdrant`             | `"connected"`   | `"disconnected"`  |
+| `buffer_status`      | `"ok"`          | `"high"`/`"critical"` |
 
 HTTP status is **200** when healthy, **503** when unhealthy. The endpoint returns 503 if and only if PostgreSQL is unreachable. Qdrant being down does NOT cause a 503 -- the system degrades to text search.
 
 The `qdrant` field is omitted entirely when Qdrant is not configured (no `QDRANT_URL`).
+The `sse_broker` field is omitted when SSE/NOTIFY is disabled.
 
 ### Kubernetes / Load Balancer Configuration
 
@@ -73,7 +87,7 @@ Metrics are exported via OTLP/HTTP to the endpoint specified by `OTEL_EXPORTER_O
 | `http.server.request_count`    | Counter   | 1    | `http.method`, `http.route`, `http.status_code`, `akashi.agent_id` |
 | `http.server.duration`         | Histogram | ms   | `http.method`, `http.route`, `http.status_code`, `akashi.agent_id` |
 | `akashi.buffer.depth`          | Gauge     | 1    | _(none)_ |
-| `akashi.buffer.dropped`        | Gauge     | 1    | _(none)_ |
+| `akashi.buffer.dropped_total`  | Gauge     | 1    | _(none; ingress rejections due to capacity or shutdown drain)_ |
 | `akashi.embedding.duration`    | Histogram | ms   | _(none)_ |
 | `akashi.search.duration`       | Histogram | ms   | _(none)_ |
 | `akashi.outbox.depth`          | Gauge     | 1    | _(none, via pg_class.reltuples estimate)_ |
@@ -91,7 +105,7 @@ Trace spans include `http.method`, `http.url`, `http.request_id`, `http.status_c
 | Health endpoint down                  | `GET /health` returns non-200                                              | 3 consecutive failures      | Critical |
 | Outbox lag (stuck entries)            | `SELECT count(*) FROM search_outbox WHERE attempts > 0`                    | > 100 entries for 10 min   | Warning  |
 | Outbox dead letters                   | `SELECT count(*) FROM search_outbox WHERE attempts >= 10`                  | > 0                         | Critical |
-| Event buffer dropped events           | Log line `"trace: dropping events"` (structured field `dropped`)           | Any occurrence              | Critical |
+| Event ingestion rejected              | `akashi.buffer.dropped_total` increasing OR log line `"trace: buffer at capacity"` | Any occurrence              | Critical |
 | PostgreSQL pool exhaustion            | pgxpool metrics or connection wait time                                    | > 80% utilization           | Warning  |
 | Qdrant health                         | `/health` response `qdrant: "disconnected"`                                | Sustained > 5 min           | Warning  |
 | Rate limit 429s                       | `rate(http.server.request_count{http.status_code="429"})`                  | > 10/s sustained            | Warning  |
@@ -103,11 +117,12 @@ Akashi logs JSON to stdout. Key log messages to monitor:
 | Log Message (substring)                        | Meaning                                              |
 |-------------------------------------------------|------------------------------------------------------|
 | `"trace: flush failed"`                         | Event buffer failed to write to PostgreSQL            |
-| `"trace: dropping events"`                      | Events lost due to buffer overflow after flush fail   |
+| `"trace: buffer at capacity"`                   | Event ingestion backpressure engaged (request rejected) |
+| `"trace: buffer is draining"`                   | Node is shutting down; new event ingestion rejected      |
 | `"search outbox: dead-letter entry"`            | Outbox entry exceeded 10 retry attempts               |
 | `"search outbox: qdrant upsert"` + `error`      | Qdrant write failure (entries will retry)             |
 | `"storage: notify reconnect attempt failed"`    | LISTEN/NOTIFY connection dropped, attempting recovery |
-| `"conflict refresh failed"`                     | Materialized view refresh failed                      |
+| `"conflict refresh failed"`                     | (Obsolete: conflicts are event-driven; RefreshConflicts is now a no-op) |
 | `"rate limiter error, permitting request"`      | Limiter malfunction; request allowed (fail-open)      |
 | `"rate limit exceeded"`                         | Agent hit rate limit; request rejected with 429       |
 
@@ -168,7 +183,28 @@ Akashi logs JSON to stdout. Key log messages to monitor:
 1. Check if PostgreSQL is accepting writes -- the buffer cannot flush if the database is down.
 2. Check for log line `"trace: flush failed"` to identify the underlying cause.
 3. If the load is legitimate, increase `AKASHI_EVENT_BUFFER_SIZE` (up to 100,000) and restart.
-4. If flush failures persist, events will be dropped (log: `"trace: dropping events"`). This indicates data loss.
+4. Requests rejected at capacity increment `akashi.buffer.dropped_total`; clients must retry to avoid event loss.
+
+---
+
+### Idempotency Key Conflicts (409)
+
+**Symptoms**: `POST /v1/trace`, `POST /v1/runs`, or `POST /v1/runs/{run_id}/events` returns `409 CONFLICT` with a message about idempotency key mismatch or request already in progress.
+
+**Impact**:
+- No duplicate write is committed.
+- A conflicting request is rejected until key/payload consistency is restored.
+
+**Common causes**:
+- Same `Idempotency-Key` reused for a different payload
+- Client retries while original request is still processing
+- Very long-running request exceeded in-progress reclaim window
+
+**Remediation**:
+1. Verify retries use the same payload bytes for the same key.
+2. For "already in progress", use exponential backoff and retry.
+3. If using long-running writes, increase `AKASHI_IDEMPOTENCY_IN_PROGRESS_TTL`.
+4. Ensure key generation is unique per logical write operation.
 
 ---
 
@@ -201,7 +237,7 @@ Akashi logs JSON to stdout. Key log messages to monitor:
    ```
 4. The outbox worker will pick them up on the next poll cycle.
 
-**Automatic cleanup**: Dead-letter entries older than 7 days are automatically deleted by the outbox worker (checked hourly).
+**Automatic cleanup**: Dead-letter entries older than 7 days are archived to `search_outbox_dead_letters`, then removed from `search_outbox` (checked hourly).
 
 ### Rate Limiting (429s)
 
@@ -223,6 +259,8 @@ AKASHI_RATE_LIMIT_ENABLED=false
 ```
 
 Platform admins are exempt from rate limiting. If a specific agent needs higher limits, either raise the global limit or promote the agent to platform_admin.
+
+When Akashi runs behind a load balancer, set `AKASHI_TRUST_PROXY=true` so IP-based rate limits use the client IP from `X-Forwarded-For` instead of the proxy's address. Only enable when behind a trusted reverse proxy.
 
 ### Embedding Failures
 
@@ -292,21 +330,38 @@ atlas migrate validate --dir file://migrations
 atlas migrate hash --dir file://migrations
 ```
 
-**On startup** (development only): the server attempts to apply migrations from the embedded `migrations/` directory. In production, run migrations explicitly before deploying a new version.
+**On startup**: by default, the server applies migrations from the embedded `migrations` package (built into the binary). Migration failure is fatal — the server will not start.
+
+If you run Atlas externally in production, set:
+
+```sh
+AKASHI_SKIP_EMBEDDED_MIGRATIONS=true
+```
+
+This avoids startup migration races and keeps migration ownership with Atlas.
 
 ### Backup
 
 Standard `pg_dump` works. Key tables by priority:
 
-| Table             | Notes                                                       |
-|-------------------|-------------------------------------------------------------|
-| `organizations`   | Tenant configuration. Small. Always back up.                |
-| `agents`          | Auth identities. Small. Always back up.                     |
-| `decisions`       | Core decision data with embeddings. Can be large.           |
-| `runs`            | Trace run metadata. Moderate size.                          |
-| `agent_events`    | Append-only event log. Potentially very large. Consider partial or time-bounded backup. |
-| `search_outbox`   | Transient sync queue. Only back up if investigating issues. |
-| `access_grants`   | RBAC grants. Small. Always back up.                         |
+| Table                        | Notes                                                       |
+|------------------------------|-------------------------------------------------------------|
+| `organizations`              | Tenant configuration. Small. Always back up.                |
+| `agents`                     | Auth identities. Small. Always back up.                     |
+| `agent_runs`                 | Trace run metadata. Moderate size.                          |
+| `agent_events`               | Append-only event log. Potentially very large. Consider partial or time-bounded backup. |
+| `decisions`                  | Core decision data with embeddings. Can be large.           |
+| `alternatives`               | Decision options. Required for complete decision reconstruction. |
+| `evidence`                   | Decision evidence and citations.                            |
+| `access_grants`              | RBAC grants. Small. Always back up.                         |
+| `scored_conflicts`           | Conflict graph data used by conflict APIs.                  |
+| `integrity_proofs`           | Merkle batch proofs for tamper/audit verification.          |
+| `idempotency_keys`           | Replay safety records for write APIs.                       |
+| `schema_migrations`          | Migration version tracking.                                 |
+| `search_outbox`              | Pending sync queue for Qdrant.                              |
+| `search_outbox_dead_letters` | Archived failed outbox entries (paper trail).               |
+| `deletion_audit_log`         | Archived deleted records for destructive admin operations.   |
+| `mutation_audit_log`         | Append-only ledger for API mutation paper trail.            |
 
 ```sh
 # Full backup
@@ -314,8 +369,49 @@ pg_dump "$DATABASE_URL" -Fc -f akashi-backup-$(date +%Y%m%d).dump
 
 # Data-only backup of core tables (skip events)
 pg_dump "$DATABASE_URL" -Fc --table=organizations --table=agents \
-  --table=decisions --table=runs --table=access_grants \
+  --table=decisions --table=agent_runs --table=access_grants \
   -f akashi-core-$(date +%Y%m%d).dump
+```
+
+### Restore (Durability-Critical Procedure)
+
+1. Stop all Akashi instances so no new writes arrive during restore.
+2. Restore PostgreSQL from a known-good dump:
+   ```sh
+   pg_restore --clean --if-exists --no-owner --no-privileges \
+     -d "$DATABASE_URL" akashi-backup-YYYYMMDD.dump
+   ```
+3. Start Akashi and verify health:
+   ```sh
+   curl -sf http://localhost:8080/health | jq .data
+   ```
+4. Run post-restore checks:
+   ```sql
+   SELECT count(*) FROM decisions WHERE valid_to IS NULL;
+   SELECT count(*) FROM agent_runs;
+   SELECT count(*) FROM agent_events;
+   SELECT count(*) FROM search_outbox WHERE attempts < 10;
+   ```
+5. If Qdrant index state is stale or missing, repopulate outbox from current decisions, then allow worker replay:
+   ```sql
+   INSERT INTO search_outbox (decision_id, org_id, operation)
+   SELECT id, org_id, 'upsert'
+   FROM decisions
+   WHERE valid_to IS NULL AND embedding IS NOT NULL
+   ON CONFLICT (decision_id, operation) DO UPDATE
+      SET created_at = now(), attempts = 0, locked_until = NULL;
+   ```
+
+PostgreSQL is the source of truth. `search_outbox` is transient and cannot by itself reconstruct all historical sync intent after restore.
+
+Automated verification helper:
+
+```sh
+# Verify restore invariants and table integrity checks
+DATABASE_URL=postgres://... make verify-restore
+
+# Optionally repopulate outbox from current decisions during drill recovery
+DATABASE_URL=postgres://... REBUILD_OUTBOX=true make verify-restore
 ```
 
 ### Outbox Health Check
@@ -336,6 +432,83 @@ WHERE last_error IS NOT NULL
 ORDER BY created_at DESC
 LIMIT 10;
 ```
+
+### Postgres/Qdrant Reconciliation
+
+Use reconciliation to detect and repair drift between PostgreSQL source-of-truth decisions and Qdrant indexed points.
+
+```sh
+# Detect drift (exit non-zero if mismatch exists)
+DATABASE_URL=postgres://... QDRANT_URL=https://...:6333 make reconcile-qdrant
+
+# Repair missing Qdrant points by queueing outbox upserts
+DATABASE_URL=postgres://... QDRANT_URL=https://...:6333 make reconcile-qdrant-repair
+```
+
+`reconcile-qdrant-repair` only queues missing entries into `search_outbox`; it does not delete extra Qdrant points automatically.
+
+### Exit Criteria Verification
+
+Use a single verifier to evaluate durability/consistency gates with structured JSON output:
+
+```sh
+DATABASE_URL=postgres://... make verify-exit-criteria
+```
+
+Optional thresholds:
+
+- `MAX_DEAD_LETTERS` (default `0`)
+- `MAX_OUTBOX_OLDEST_SECONDS` (default `1800`)
+- `STRICT_RETENTION_CHECK` (default `false`)
+- `RETAIN_DAYS` (default `90`, only used when strict retention is enabled)
+
+When `QDRANT_URL` is set, the verifier also checks Postgres/Qdrant drift by running reconciliation in read-only mode.
+
+### Branch Protection Policy
+
+For protected branches (for example `main`), configure GitHub branch protection to require this status check before merge:
+
+- `Verify Exit Criteria`
+
+Recommended minimum required checks:
+
+- `CI`
+- `Build with UI`
+- `Verify Exit Criteria`
+
+### GDPR / Right-to-Erasure (Delete Agent Data)
+
+Use the admin-only endpoint:
+
+```http
+DELETE /v1/agents/{agent_id}
+Authorization: Bearer <admin-jwt>
+X-Akashi-Org-Id: <org-uuid>
+```
+
+This performs a transactional delete of the agent and related records (runs, events, decisions, access grants), and clears supersedes links that point at deleted decisions.
+The endpoint is disabled by default; set `AKASHI_ENABLE_DESTRUCTIVE_DELETE=true` to allow execution.
+
+### Event Retention and Archival (TimescaleDB)
+
+`agent_events` is a Timescale hypertable and can grow quickly. Use archive-before-purge to preserve paper trail while controlling storage.
+
+```sh
+# Preview one archival window (safe default, no purge)
+DATABASE_URL=postgres://... make archive-events-dry-run
+
+# Archive then purge one window (explicit destructive mode)
+DATABASE_URL=postgres://... DRY_RUN=false ENABLE_PURGE=true make archive-events
+```
+
+Optional knobs:
+
+- `RETAIN_DAYS` (default `90`) - keep recent events in primary hypertable
+- `BATCH_DAYS` (default `1`) - process one bounded time window per run to reduce lock pressure
+
+Archive destination:
+
+- `agent_events_archive` holds immutable historical rows moved out of the hot hypertable.
 
 ### Connection Pool Monitoring
 
@@ -391,15 +564,15 @@ All configuration is via environment variables. No config files.
 | `AKASHI_PORT`                   | `8080`                   | HTTP listen port                         |
 | `AKASHI_READ_TIMEOUT`           | `30s`                    | HTTP read timeout (Go duration)          |
 | `AKASHI_WRITE_TIMEOUT`          | `30s`                    | HTTP write timeout (Go duration)         |
-| `AKASHI_LOG_LEVEL`              | `info`                   | Log level (`debug` or `info`)            |
+| `AKASHI_LOG_LEVEL`              | `info`                   | Log level (`debug`, `info`, `warn`, `error`) |
 | `AKASHI_MAX_REQUEST_BODY_BYTES` | `1048576` (1 MB)         | Max request body size in bytes           |
 
 ### Database
 
 | Variable        | Default (development)                                          | Description                                   |
 |-----------------|----------------------------------------------------------------|-----------------------------------------------|
-| `DATABASE_URL`  | `postgres://akashi:akashi@localhost:6432/akashi?sslmode=verify-full` | PgBouncer / pooled connection URL (queries)   |
-| `NOTIFY_URL`    | `postgres://akashi:akashi@localhost:5432/akashi?sslmode=verify-full` | Direct PostgreSQL URL (LISTEN/NOTIFY, SSE)    |
+| `DATABASE_URL`  | `postgres://akashi:akashi@localhost:6432/akashi?sslmode=disable` | PgBouncer / pooled connection URL (queries)   |
+| `NOTIFY_URL`    | `postgres://akashi:akashi@localhost:5432/akashi?sslmode=disable` | Direct PostgreSQL URL (LISTEN/NOTIFY, SSE)    |
 
 ### Authentication
 
@@ -447,7 +620,15 @@ Provider auto-detection order: Ollama (if reachable) > OpenAI (if key set) > noo
 |-------------------------------------|----------|-----------------------------------------------------|
 | `AKASHI_EVENT_BUFFER_SIZE`          | `1000`   | Flush threshold (events). Hard cap: 100,000.        |
 | `AKASHI_EVENT_FLUSH_TIMEOUT`        | `100ms`  | Max time between flushes (Go duration)              |
-| `AKASHI_CONFLICT_REFRESH_INTERVAL`  | `30s`    | How often to refresh the conflicts materialized view |
+| `AKASHI_CONFLICT_REFRESH_INTERVAL`  | `30s`    | How often the broker polls for new conflicts (SSE). Conflicts are populated on trace. |
+| `AKASHI_INTEGRITY_PROOF_INTERVAL`   | `5m`     | How often Merkle integrity proofs are generated      |
+| `AKASHI_SHUTDOWN_HTTP_TIMEOUT`      | `10s`    | Grace period for HTTP server shutdown (`0` = wait forever) |
+| `AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT` | `0`   | Reserved. Buffer drain is always indefinite to prevent event loss. |
+| `AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT` | `0`   | Outbox drain timeout (`0` = wait forever)            |
+| `AKASHI_IDEMPOTENCY_IN_PROGRESS_TTL` | `5m`  | In-progress idempotency key reclaim window            |
+| `AKASHI_IDEMPOTENCY_CLEANUP_INTERVAL` | `1h` | How often old idempotency keys are cleaned up         |
+| `AKASHI_IDEMPOTENCY_COMPLETED_TTL` | `168h` (7d) | Retention for completed idempotency records      |
+| `AKASHI_IDEMPOTENCY_ABANDONED_TTL` | `24h` | Retention for abandoned in-progress idempotency records |
 
 ---
 
@@ -456,26 +637,26 @@ Provider auto-detection order: Ollama (if reachable) > OpenAI (if key set) > noo
 On `SIGTERM` or `SIGINT`, the server shuts down in this order:
 
 ```
-1. Outbox worker stops         -- cancels poll loop, drains remaining batch (10s timeout)
-2. Event buffer drains          -- final flush to PostgreSQL (10s timeout)
-3. HTTP server drains           -- completes in-flight requests (15s total shutdown budget)
+1. HTTP server drains           -- stops accepting new requests, completes in-flight (`AKASHI_SHUTDOWN_HTTP_TIMEOUT`)
+2. Event buffer drains          -- final flush to PostgreSQL (always indefinite, durability-first)
+3. Outbox worker drains         -- syncs remaining entries to Qdrant (`AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT`)
 4. Database pools close         -- PgBouncer pool + NOTIFY connection
 5. OTEL flushes                 -- final trace/metric export
 ```
 
-The overall shutdown context has a **15-second** timeout. Each subsystem has its own internal timeout within that budget.
+There is no single shared shutdown timeout. Each phase has its own timeout, and setting a timeout to `0` waits indefinitely.
 
 ### Warnings
 
 - **DO NOT** send `kill -9` during shutdown. If the event buffer is mid-flush, events in memory will be lost.
-- If the buffer drain times out (log: `"trace: drain timed out waiting for flush loop"`), events in the buffer at that moment are lost.
+- Buffer drain is durability-critical and runs without a timeout. Do not force-stop the process while draining.
 - The outbox worker drain timeout (log: `"search outbox: drain timed out"`) means some outbox entries were not synced to Qdrant. They remain in PostgreSQL and will sync on next startup.
 
 ### Pre-Deployment Checklist
 
 1. Ensure load balancer has stopped sending traffic (remove from target group or mark unhealthy).
 2. Send `SIGTERM`.
-3. Wait for exit (up to 15 seconds).
+3. Wait for exit (can be indefinite when drain timeouts are set to `0`).
 4. Verify clean shutdown: log line `"akashi stopped"` with exit code 0.
 
 ---
@@ -484,7 +665,7 @@ The overall shutdown context has a **15-second** timeout. Each subsystem has its
 
 ```sh
 # Is the server running?
-curl -sf http://localhost:8080/health | jq .
+curl -sf http://localhost:8080/health | jq .data.status
 
 # Outbox sync status
 psql "$DATABASE_URL" -c "

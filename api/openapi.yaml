@@ -285,11 +285,12 @@ paths:
       tags: [Runs]
       summary: Append events to a run
       description: |
-        Append one or more events to an existing run. Events are buffered
-        and batch-inserted via PostgreSQL COPY for throughput.
+        Append one or more events to an existing run.
+        Supports idempotent retries via `Idempotency-Key`.
         Requires `agent` role or higher.
       parameters:
         - $ref: "#/components/parameters/RunIDPath"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
       requestBody:
         required: true
         content:
@@ -297,8 +298,8 @@ paths:
             schema:
               $ref: "#/components/schemas/AppendEventsRequest"
       responses:
-        "202":
-          description: Events accepted for processing; durable after next flush.
+        "200":
+          description: Events persisted.
           content:
             application/json:
               schema:
@@ -347,7 +348,10 @@ paths:
         Convenience endpoint that creates a run, records a decision with
         alternatives and evidence, appends lifecycle events, and completes
         the run — all in a single transaction.
+        Supports idempotent retries via `Idempotency-Key`.
         Requires `agent` role or higher.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
       requestBody:
         required: true
         content:
@@ -663,9 +667,10 @@ paths:
       tags: [Query]
       summary: List detected decision conflicts
       description: |
-        List conflicts between decisions of the same type made by different
-        agents. Conflicts are detected by a background materialized view
-        refresh. Requires `reader` role or higher.
+        List conflicts between decisions. Includes cross-agent conflicts (different
+        agents, same type, different outcomes, within 1 hour) and self-contradictions
+        (same agent, same type, different outcomes, within 7 days). Types and outcomes
+        are normalized (case-insensitive) for matching. Requires `reader` role or higher.
       parameters:
         - name: decision_type
           in: query
@@ -675,6 +680,12 @@ paths:
           in: query
           schema:
             type: string
+        - name: conflict_kind
+          in: query
+          schema:
+            type: string
+            enum: [cross_agent, self_contradiction]
+          description: Filter by conflict type.
         - name: limit
           in: query
           schema:
@@ -998,6 +1009,16 @@ components:
       schema:
         type: string
       description: The string identifier of the agent.
+
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+      description: |
+        Optional idempotency key for retry-safe writes.
+        Reusing the same key with a different payload returns `409 CONFLICT`.
 
   responses:
     BadRequest:
@@ -1519,6 +1540,7 @@ components:
     DecisionConflict:
       type: object
       required:
+        - conflict_kind
         - decision_a_id
         - decision_b_id
         - org_id
@@ -1535,6 +1557,10 @@ components:
         - decided_at_b
         - detected_at
       properties:
+        conflict_kind:
+          type: string
+          enum: [cross_agent, self_contradiction]
+          description: Whether the conflict is between different agents or the same agent contradicting themselves.
         decision_a_id:
           type: string
           format: uuid
@@ -1579,6 +1605,28 @@ components:
         detected_at:
           type: string
           format: date-time
+        decision_type_a:
+          type: string
+          description: Decision type for decision A (semantic conflicts may have different types).
+        decision_type_b:
+          type: string
+          description: Decision type for decision B.
+        topic_similarity:
+          type: number
+          format: float
+          description: Cosine similarity of full decision embeddings; how "about the same topic" they are.
+        outcome_divergence:
+          type: number
+          format: float
+          description: 1 minus outcome similarity; how much the outcomes differ.
+        significance:
+          type: number
+          format: float
+          description: topic_similarity × outcome_divergence; higher = stronger conflict.
+        scoring_method:
+          type: string
+          enum: [embedding, text]
+          description: How the conflict was scored (embedding = semantic, text = fallback).
 
     # ── Trace schemas ────────────────────────────────────────────────
     TraceRequest:

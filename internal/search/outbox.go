@@ -92,10 +92,14 @@ func (w *OutboxWorker) Drain(ctx context.Context) {
 	w.drainOnce.Do(func() {
 		// Send the drain context to pollLoop via channel (race-free).
 		// Must be sent before cancelLoop so pollLoop can receive it on ctx.Done().
+		// Use a short timeout to avoid blocking if the channel is unexpectedly full.
+		sendCtx, sendCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		select {
 		case w.drainCh <- ctx:
-		default:
+		case <-sendCtx.Done():
+			w.logger.Warn("search outbox: drain context channel busy, final poll will use fallback timeout")
 		}
+		sendCancel()
 		if w.cancelLoop != nil {
 			w.cancelLoop()
 		}
@@ -142,6 +146,15 @@ func (w *OutboxWorker) pollLoop(ctx context.Context) {
 const maxOutboxAttempts = 10
 
 func (w *OutboxWorker) processBatch(ctx context.Context) {
+	if w.pool == nil {
+		w.logger.Warn("search outbox: skipping batch, pool is nil")
+		return
+	}
+	if w.index == nil {
+		w.logger.Warn("search outbox: skipping batch, index is nil")
+		return
+	}
+
 	tx, err := w.pool.Begin(ctx)
 	if err != nil {
 		w.logger.Error("search outbox: begin tx", "error", err)
@@ -221,77 +234,136 @@ func (w *OutboxWorker) processBatch(ctx context.Context) {
 }
 
 func (w *OutboxWorker) cleanupDeadLetters(ctx context.Context) {
-	tag, err := w.pool.Exec(ctx,
-		`DELETE FROM search_outbox
-		 WHERE attempts >= $1
-		   AND created_at < now() - interval '7 days'`,
+	tx, err := w.pool.Begin(ctx)
+	if err != nil {
+		w.logger.Error("search outbox: begin dead-letter cleanup tx failed", "error", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx,
+		`WITH candidates AS (
+		    SELECT id, decision_id, org_id, operation, attempts, last_error, created_at, locked_until
+		    FROM search_outbox
+		    WHERE attempts >= $1
+		      AND (locked_until IS NULL OR locked_until < now())
+		      AND created_at < now() - interval '7 days'
+		    FOR UPDATE SKIP LOCKED
+		)
+		INSERT INTO search_outbox_dead_letters (
+		    outbox_id, decision_id, org_id, operation, attempts, last_error, created_at, locked_until
+		)
+		SELECT id, decision_id, org_id, operation, attempts, last_error, created_at, locked_until
+		FROM candidates
+		ON CONFLICT (outbox_id) DO NOTHING`,
+		maxOutboxAttempts,
+	); err != nil {
+		w.logger.Error("search outbox: archive dead-letters failed", "error", err)
+		return
+	}
+
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM search_outbox s
+		 WHERE s.attempts >= $1
+		   AND (s.locked_until IS NULL OR s.locked_until < now())
+		   AND s.created_at < now() - interval '7 days'
+		   AND EXISTS (
+		     SELECT 1
+		     FROM search_outbox_dead_letters d
+		     WHERE d.outbox_id = s.id
+		   )`,
 		maxOutboxAttempts,
 	)
 	if err != nil {
-		w.logger.Error("search outbox: cleanup dead-letters failed", "error", err)
+		w.logger.Error("search outbox: delete archived dead-letters failed", "error", err)
 		return
 	}
+
+	if err := tx.Commit(ctx); err != nil {
+		w.logger.Error("search outbox: commit dead-letter cleanup failed", "error", err)
+		return
+	}
+
 	if tag.RowsAffected() > 0 {
-		w.logger.Info("search outbox: cleaned dead-letter entries", "deleted", tag.RowsAffected())
+		w.logger.Info("search outbox: archived and cleaned dead-letter entries", "deleted", tag.RowsAffected())
 	}
 }
 
 func (w *OutboxWorker) processUpserts(ctx context.Context, entries []outboxEntry) {
 	// Fetch decision data from Postgres.
 	decisionIDs := make([]uuid.UUID, len(entries))
+	orgIDs := make([]uuid.UUID, len(entries))
 	for i, e := range entries {
 		decisionIDs[i] = e.DecisionID
+		orgIDs[i] = e.OrgID
 	}
 
-	decisions, err := w.fetchDecisionsForIndex(ctx, decisionIDs)
+	decisions, err := w.fetchDecisionsForIndex(ctx, decisionIDs, orgIDs)
 	if err != nil {
 		w.logger.Error("search outbox: fetch decisions", "error", err, "count", len(decisionIDs))
 		w.failEntries(ctx, entries, err.Error())
 		return
 	}
 
-	if len(decisions) == 0 {
-		// All decisions deleted or have no embeddings — remove outbox entries.
-		w.succeedEntries(ctx, entries)
-		return
-	}
+	readyEntries, readyDecisions, pendingEntries := partitionUpsertEntries(entries, decisions)
 
-	// Build Qdrant points from fetched decisions.
-	points := make([]Point, 0, len(decisions))
-	for _, d := range decisions {
-		p := Point{
-			ID:           d.ID,
-			OrgID:        d.OrgID,
-			AgentID:      d.AgentID,
-			DecisionType: d.DecisionType,
-			Confidence:   d.Confidence,
-			QualityScore: d.QualityScore,
-			ValidFrom:    d.ValidFrom,
-			Embedding:    d.Embedding,
-			SessionID:    d.SessionID,
+	if len(readyEntries) > 0 {
+		// Build Qdrant points from fetched decisions.
+		points := make([]Point, 0, len(readyDecisions))
+		for _, d := range readyDecisions {
+			p := Point{
+				ID:           d.ID,
+				OrgID:        d.OrgID,
+				AgentID:      d.AgentID,
+				DecisionType: d.DecisionType,
+				Confidence:   d.Confidence,
+				QualityScore: d.QualityScore,
+				ValidFrom:    d.ValidFrom,
+				Embedding:    d.Embedding,
+				SessionID:    d.SessionID,
+			}
+			if d.AgentContext != nil {
+				if v, ok := d.AgentContext["tool"].(string); ok {
+					p.Tool = v
+				}
+				if v, ok := d.AgentContext["model"].(string); ok {
+					p.Model = v
+				}
+				if v, ok := d.AgentContext["repo"].(string); ok {
+					p.Repo = v
+				}
+			}
+			points = append(points, p)
 		}
-		if d.AgentContext != nil {
-			if v, ok := d.AgentContext["tool"].(string); ok {
-				p.Tool = v
-			}
-			if v, ok := d.AgentContext["model"].(string); ok {
-				p.Model = v
-			}
-			if v, ok := d.AgentContext["repo"].(string); ok {
-				p.Repo = v
+
+		if err := w.index.Upsert(ctx, points); err != nil {
+			w.logger.Error("search outbox: qdrant upsert", "error", err, "count", len(points))
+			w.failEntries(ctx, readyEntries, err.Error())
+		} else {
+			w.succeedEntries(ctx, readyEntries)
+			w.logger.Info("search outbox: upserted", "count", len(points))
+		}
+	}
+
+	if len(pendingEntries) > 0 {
+		// Entries with no current embedding (or whose decision row is not visible yet).
+		// Defer with incrementing attempts so we eventually dead-letter if backfill never runs.
+		// 30-minute backoff gives backfill time; after 10 cycles we surface for ops investigation.
+		var toDefer, toFail []outboxEntry
+		for _, e := range pendingEntries {
+			if e.Attempts >= maxOutboxAttempts-1 {
+				toFail = append(toFail, e)
+			} else {
+				toDefer = append(toDefer, e)
 			}
 		}
-		points = append(points, p)
+		if len(toFail) > 0 {
+			w.failEntries(ctx, toFail, "decision not ready after max defer cycles (missing embedding or not found)")
+		}
+		if len(toDefer) > 0 {
+			w.deferPendingEntries(ctx, toDefer, "decision not ready for indexing (missing embedding or not found)")
+		}
 	}
-
-	if err := w.index.Upsert(ctx, points); err != nil {
-		w.logger.Error("search outbox: qdrant upsert", "error", err, "count", len(points))
-		w.failEntries(ctx, entries, err.Error())
-		return
-	}
-
-	w.succeedEntries(ctx, entries)
-	w.logger.Info("search outbox: upserted", "count", len(points))
 }
 
 func (w *OutboxWorker) processDeletes(ctx context.Context, entries []outboxEntry) {
@@ -319,6 +391,26 @@ func (w *OutboxWorker) succeedEntries(ctx context.Context, entries []outboxEntry
 		`DELETE FROM search_outbox WHERE id = ANY($1)`, ids,
 	); err != nil {
 		w.logger.Error("search outbox: delete completed entries", "error", err)
+	}
+}
+
+// deferPendingEntries defers entries, incrementing attempts and using a 30-minute
+// backoff. Entries that exceed maxOutboxAttempts are routed to failEntries instead.
+// This prevents infinite defer loops when backfill never runs (e.g. noop embedder).
+func (w *OutboxWorker) deferPendingEntries(ctx context.Context, entries []outboxEntry, errMsg string) {
+	ids := make([]int64, len(entries))
+	for i, e := range entries {
+		ids[i] = e.ID
+	}
+	if _, err := w.pool.Exec(ctx,
+		`UPDATE search_outbox
+		 SET attempts = attempts + 1,
+		     last_error = $1,
+		     locked_until = now() + interval '30 minutes'
+		 WHERE id = ANY($2)`,
+		errMsg, ids,
+	); err != nil {
+		w.logger.Error("search outbox: defer pending entries", "error", err)
 	}
 }
 
@@ -354,13 +446,19 @@ func (w *OutboxWorker) failEntries(ctx context.Context, entries []outboxEntry, e
 	}
 }
 
-func (w *OutboxWorker) fetchDecisionsForIndex(ctx context.Context, ids []uuid.UUID) ([]DecisionForIndex, error) {
+func (w *OutboxWorker) fetchDecisionsForIndex(ctx context.Context, ids, orgIDs []uuid.UUID) ([]DecisionForIndex, error) {
+	if len(ids) == 0 || len(orgIDs) == 0 || len(ids) != len(orgIDs) {
+		return nil, nil
+	}
+
 	rows, err := w.pool.Query(ctx,
-		`SELECT id, org_id, agent_id, decision_type, confidence, quality_score, valid_from, embedding,
-		        session_id, agent_context
-		 FROM decisions
-		 WHERE id = ANY($1) AND valid_to IS NULL AND embedding IS NOT NULL`,
-		ids,
+		`SELECT d.id, d.org_id, d.agent_id, d.decision_type, d.confidence, d.quality_score, d.valid_from, d.embedding,
+		        d.session_id, d.agent_context
+		 FROM decisions d
+		 JOIN unnest($1::uuid[], $2::uuid[]) AS pair(did, oid)
+		   ON d.id = pair.did AND d.org_id = pair.oid
+		 WHERE d.valid_to IS NULL AND d.embedding IS NOT NULL`,
+		ids, orgIDs,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("search outbox: query decisions: %w", err)
@@ -422,4 +520,30 @@ func scanOutboxEntries(rows pgx.Rows) ([]outboxEntry, error) {
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
+}
+
+// partitionUpsertEntries splits outbox entries by whether the backing decision row
+// is ready for indexing. Returns:
+//   - readyEntries: outbox rows that have a matching decision with embedding
+//   - readyDecisions: decisions in the same order as readyEntries
+//   - pendingEntries: outbox rows with no matching decision (yet)
+func partitionUpsertEntries(entries []outboxEntry, decisions []DecisionForIndex) ([]outboxEntry, []DecisionForIndex, []outboxEntry) {
+	byID := make(map[uuid.UUID]DecisionForIndex, len(decisions))
+	for _, d := range decisions {
+		byID[d.ID] = d
+	}
+
+	readyEntries := make([]outboxEntry, 0, len(entries))
+	readyDecisions := make([]DecisionForIndex, 0, len(entries))
+	pendingEntries := make([]outboxEntry, 0)
+	for _, e := range entries {
+		d, ok := byID[e.DecisionID]
+		if !ok {
+			pendingEntries = append(pendingEntries, e)
+			continue
+		}
+		readyEntries = append(readyEntries, e)
+		readyDecisions = append(readyDecisions, d)
+	}
+	return readyEntries, readyDecisions, pendingEntries
 }

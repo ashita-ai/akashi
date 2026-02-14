@@ -1,6 +1,6 @@
 -- 001_initial.sql
 -- Akashi decision trace layer: complete initial schema.
--- PostgreSQL 17+ with pgvector, TimescaleDB, and pg_trgm extensions.
+-- PostgreSQL 18+ with pgvector, TimescaleDB, and pg_trgm extensions.
 
 -- ============================================================================
 -- Extensions
