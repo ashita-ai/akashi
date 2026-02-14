@@ -456,6 +456,120 @@ func TestBackfillScoring_EmptyDB(t *testing.T) {
 	_ = processed
 }
 
+func TestScoreForDecision_SkipsRevisionChain(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "rev-excl-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	run := createRun(t, agentID, orgID)
+
+	// Create decision A with embeddings (stays active — valid_to IS NULL).
+	topicEmb := makeEmbedding(30, 1.0)
+	outcomeEmbA := makeEmbedding(31, 1.0)
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "code_review", Outcome: "ReScore is bounded correctly",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+	})
+	require.NoError(t, err)
+
+	// Create decision B with supersedes_id pointing to A, but via CreateDecision
+	// (not ReviseDecision) so A remains active. This simulates a trace API call
+	// where an agent declares it supersedes a prior decision without invalidating it.
+	outcomeEmbB := makeEmbedding(32, 1.0) // orthogonal to A — would normally trigger conflict
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "code_review", Outcome: "ReScore can exceed 1.0",
+		Confidence: 0.9, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+		SupersedesID: &dA.ID,
+	})
+	require.NoError(t, err)
+
+	scorer := NewScorer(testDB, logger, 0.1)
+	scorer.ScoreForDecision(ctx, dB.ID, orgID)
+
+	// Verify NO conflict was inserted between A and B despite divergent outcomes.
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 1000, 0)
+	require.NoError(t, err)
+
+	for _, c := range conflicts {
+		aMatch := c.DecisionAID == dA.ID || c.DecisionBID == dA.ID
+		bMatch := c.DecisionAID == dB.ID || c.DecisionBID == dB.ID
+		if aMatch && bMatch {
+			t.Fatalf("revision chain pair should NOT produce a conflict, but got: sig=%v method=%s",
+				c.Significance, c.ScoringMethod)
+		}
+	}
+}
+
+func TestScoreForDecision_RevisionChainTransitive(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "rev-trans-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	run := createRun(t, agentID, orgID)
+
+	// A -> B -> C revision chain via CreateDecision (all remain active).
+	topicEmb := makeEmbedding(40, 1.0)
+	outcomeA := makeEmbedding(41, 1.0)
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use REST API",
+		Confidence: 0.7, Embedding: &topicEmb, OutcomeEmbedding: &outcomeA,
+	})
+	require.NoError(t, err)
+
+	outcomeB := makeEmbedding(42, 1.0)
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use GraphQL API",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeB,
+		SupersedesID: &dA.ID,
+	})
+	require.NoError(t, err)
+
+	outcomeC := makeEmbedding(43, 1.0)
+	dC, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use gRPC API",
+		Confidence: 0.9, Embedding: &topicEmb, OutcomeEmbedding: &outcomeC,
+		SupersedesID: &dB.ID,
+	})
+	require.NoError(t, err)
+
+	scorer := NewScorer(testDB, logger, 0.1)
+
+	// Score for C — should NOT conflict with A or B (transitive chain).
+	scorer.ScoreForDecision(ctx, dC.ID, orgID)
+
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 1000, 0)
+	require.NoError(t, err)
+
+	for _, c := range conflicts {
+		cMatch := c.DecisionAID == dC.ID || c.DecisionBID == dC.ID
+		aMatch := c.DecisionAID == dA.ID || c.DecisionBID == dA.ID
+		bMatch := c.DecisionAID == dB.ID || c.DecisionBID == dB.ID
+		if cMatch && (aMatch || bMatch) {
+			t.Fatalf("transitive revision chain members should NOT produce a conflict: A=%s B=%s C=%s conflict=%s<->%s",
+				dA.ID, dB.ID, dC.ID, c.DecisionAID, c.DecisionBID)
+		}
+	}
+}
+
 func TestBackfillScoring_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))

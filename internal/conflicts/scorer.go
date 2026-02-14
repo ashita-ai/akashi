@@ -67,9 +67,24 @@ func (s *Scorer) ScoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		return
 	}
 
+	// Build a set of revision chain IDs to exclude. Intentional revisions
+	// (via supersedes_id) are corrections, not conflicts.
+	revisionChain := make(map[uuid.UUID]bool)
+	if chainIDs, err := s.db.GetRevisionChainIDs(ctx, decisionID, orgID); err == nil {
+		for _, id := range chainIDs {
+			revisionChain[id] = true
+		}
+	}
+
 	inserted := 0
 	for _, cand := range candidates {
 		if cand.OutcomeEmbedding == nil {
+			continue
+		}
+
+		// Skip decisions in the same revision chain — intentional
+		// replacements should not be flagged as conflicts.
+		if revisionChain[cand.ID] {
 			continue
 		}
 

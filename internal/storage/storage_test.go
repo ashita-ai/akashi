@@ -970,6 +970,82 @@ func TestGetDecisionRevisions_NotFound(t *testing.T) {
 	assert.Empty(t, revisions, "nonexistent decision should return empty revision chain")
 }
 
+func TestGetRevisionChainIDs_TransitiveChain(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "chainids-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	// A -> B -> C revision chain.
+	a, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, DecisionType: "chain_test",
+		Outcome: "version_a", Confidence: 0.5, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	b, err := testDB.ReviseDecision(ctx, a.ID, model.Decision{
+		RunID: run.ID, AgentID: agentID, DecisionType: "chain_test",
+		Outcome: "version_b", Confidence: 0.7, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	c, err := testDB.ReviseDecision(ctx, b.ID, model.Decision{
+		RunID: run.ID, AgentID: agentID, DecisionType: "chain_test",
+		Outcome: "version_c", Confidence: 0.9, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// From A: should return B and C (forward chain).
+	idsFromA, err := testDB.GetRevisionChainIDs(ctx, a.ID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Len(t, idsFromA, 2, "A's chain should include B and C")
+	assert.Contains(t, idsFromA, b.ID)
+	assert.Contains(t, idsFromA, c.ID)
+
+	// From C: should return A and B (backward chain).
+	idsFromC, err := testDB.GetRevisionChainIDs(ctx, c.ID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Len(t, idsFromC, 2, "C's chain should include A and B")
+	assert.Contains(t, idsFromC, a.ID)
+	assert.Contains(t, idsFromC, b.ID)
+
+	// From B: should return A and C (both directions).
+	idsFromB, err := testDB.GetRevisionChainIDs(ctx, b.ID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Len(t, idsFromB, 2, "B's chain should include A and C")
+	assert.Contains(t, idsFromB, a.ID)
+	assert.Contains(t, idsFromB, c.ID)
+}
+
+func TestGetRevisionChainIDs_NoChain(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "nochainids-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	d, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, DecisionType: "standalone",
+		Outcome: "no revisions", Confidence: 0.8, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	ids, err := testDB.GetRevisionChainIDs(ctx, d.ID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Empty(t, ids, "standalone decision should have empty revision chain")
+}
+
+func TestGetRevisionChainIDs_NonexistentDecision(t *testing.T) {
+	ctx := context.Background()
+
+	ids, err := testDB.GetRevisionChainIDs(ctx, uuid.New(), uuid.Nil)
+	require.NoError(t, err)
+	assert.Empty(t, ids, "nonexistent decision should return empty chain")
+}
+
 func TestListConflicts_Filters(t *testing.T) {
 	ctx := context.Background()
 	suffix := uuid.New().String()[:8]

@@ -801,6 +801,55 @@ func (db *DB) GetDecisionRevisions(ctx context.Context, orgID, id uuid.UUID) ([]
 	return decisions, nil
 }
 
+// GetRevisionChainIDs returns the IDs of all decisions in the same revision
+// chain as the given decision. Walks both forward (decisions that supersede
+// this one) and backward (decisions this one supersedes), capped at 100 hops
+// in each direction. The result excludes the input ID itself.
+//
+// This is a lightweight alternative to GetDecisionRevisions for cases where
+// only membership testing is needed (e.g., conflict scorer exclusion).
+func (db *DB) GetRevisionChainIDs(ctx context.Context, id, orgID uuid.UUID) ([]uuid.UUID, error) {
+	query := `
+	WITH RECURSIVE
+	forward_chain AS (
+		SELECT id, supersedes_id, 0 AS depth FROM decisions WHERE id = $1 AND org_id = $2
+		UNION ALL
+		SELECT d.id, d.supersedes_id, fc.depth + 1
+		FROM decisions d
+		INNER JOIN forward_chain fc ON d.supersedes_id = fc.id
+		WHERE d.org_id = $2 AND fc.depth < 100
+	),
+	backward_chain AS (
+		SELECT id, supersedes_id, 0 AS depth FROM decisions WHERE id = $1 AND org_id = $2
+		UNION ALL
+		SELECT d.id, d.supersedes_id, bc.depth + 1
+		FROM decisions d
+		INNER JOIN backward_chain bc ON bc.supersedes_id = d.id
+		WHERE d.org_id = $2 AND bc.depth < 100
+	)
+	SELECT DISTINCT id FROM (
+		SELECT id FROM forward_chain WHERE id != $1
+		UNION
+		SELECT id FROM backward_chain WHERE id != $1
+	) chain_ids`
+
+	rows, err := db.pool.Query(ctx, query, id, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: get revision chain IDs: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var chainID uuid.UUID
+		if err := rows.Scan(&chainID); err != nil {
+			return nil, fmt.Errorf("storage: scan revision chain ID: %w", err)
+		}
+		ids = append(ids, chainID)
+	}
+	return ids, rows.Err()
+}
+
 // sortDecisionsByValidFrom sorts a slice of decisions by valid_from ascending.
 func sortDecisionsByValidFrom(decisions []model.Decision) {
 	sort.Slice(decisions, func(i, j int) bool {
