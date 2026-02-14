@@ -118,6 +118,7 @@ def _agent_json(agent_id: str = "coder") -> dict:
         "role": "agent",
         "metadata": {},
         "created_at": NOW,
+        "updated_at": NOW,
     }
 
 

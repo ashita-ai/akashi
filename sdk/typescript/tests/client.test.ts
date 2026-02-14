@@ -733,8 +733,10 @@ describe("AkashiClient", () => {
         org_id: "org-1",
         name: "New Agent",
         role: "agent",
+        tags: [],
         metadata: { team: "backend" },
         created_at: "2024-01-01T00:00:00Z",
+        updated_at: "2024-01-01T00:00:00Z",
       };
       mockFetch.mockResolvedValueOnce(mockResponse(200, { data: agent }));
 
@@ -767,8 +769,10 @@ describe("AkashiClient", () => {
         org_id: "org-1",
         name: "Minimal",
         role: "reader",
+        tags: [],
         metadata: {},
         created_at: "2024-01-01T00:00:00Z",
+        updated_at: "2024-01-01T00:00:00Z",
       };
       mockFetch.mockResolvedValueOnce(mockResponse(200, { data: agent }));
 
@@ -798,8 +802,10 @@ describe("AkashiClient", () => {
           org_id: "org-1",
           name: "Agent A",
           role: "admin",
+          tags: [],
           metadata: {},
           created_at: "2024-01-01T00:00:00Z",
+          updated_at: "2024-01-01T00:00:00Z",
         },
         {
           id: "uuid-2",
@@ -807,8 +813,10 @@ describe("AkashiClient", () => {
           org_id: "org-1",
           name: "Agent B",
           role: "reader",
+          tags: [],
           metadata: {},
           created_at: "2024-01-02T00:00:00Z",
+          updated_at: "2024-01-02T00:00:00Z",
         },
       ];
       mockFetch.mockResolvedValueOnce(mockResponse(200, { data: agents }));
@@ -970,13 +978,14 @@ describe("AkashiClient", () => {
     it("creates a grant with all fields", async () => {
       const grant: Grant = {
         id: "grant-1",
-        grantor_agent_id: "test-agent",
-        grantee_agent_id: "reader-agent",
+        org_id: "org-1",
+        grantor_id: "test-agent",
+        grantee_id: "reader-agent",
         resource_type: "decision",
         resource_id: "dec-1",
         permission: "read",
+        granted_at: "2024-01-01T00:00:00Z",
         expires_at: "2025-01-01T00:00:00Z",
-        created_at: "2024-01-01T00:00:00Z",
       };
       mockFetch.mockResolvedValueOnce(mockResponse(200, { data: grant }));
 
@@ -1005,11 +1014,12 @@ describe("AkashiClient", () => {
     it("creates a grant without optional fields", async () => {
       const grant: Grant = {
         id: "grant-2",
-        grantor_agent_id: "test-agent",
-        grantee_agent_id: "other",
+        org_id: "org-1",
+        grantor_id: "test-agent",
+        grantee_id: "other",
         resource_type: "run",
         permission: "write",
-        created_at: "2024-01-01T00:00:00Z",
+        granted_at: "2024-01-01T00:00:00Z",
       };
       mockFetch.mockResolvedValueOnce(mockResponse(200, { data: grant }));
 

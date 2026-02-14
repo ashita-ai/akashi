@@ -118,18 +118,20 @@ export interface Agent {
   tags: string[];
   metadata: Record<string, unknown>;
   created_at: string;
+  updated_at: string;
 }
 
 /** An access grant between agents. */
 export interface Grant {
   id: string;
-  grantor_agent_id: string;
-  grantee_agent_id: string;
+  org_id: string;
+  grantor_id: string;
+  grantee_id: string;
   resource_type: string;
   resource_id?: string;
   permission: string;
+  granted_at: string;
   expires_at?: string;
-  created_at: string;
 }
 
 /** Health check payload returned in the standard API envelope. */
