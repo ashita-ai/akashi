@@ -1,5 +1,6 @@
 .PHONY: all build build-ui build-with-ui test lint fmt vet clean docker-up docker-down ci security tidy \
-       dev-ui migrate-apply migrate-lint migrate-hash migrate-diff migrate-status migrate-validate
+       dev-ui migrate-apply migrate-lint migrate-hash migrate-diff migrate-status migrate-validate \
+       check-doc-consistency
 
 BINARY := bin/akashi
 GO := go
@@ -10,8 +11,11 @@ LDFLAGS := -ldflags "-X main.version=$(VERSION)"
 all: fmt lint vet test build
 
 # Run the full CI pipeline locally (mirrors .github/workflows/ci.yml)
-ci: tidy build lint vet security test migrate-validate
+ci: tidy check-doc-consistency build lint vet security test migrate-validate
 	@echo "CI passed"
+
+check-doc-consistency:
+	python3 scripts/check_doc_config_consistency.py
 
 build:
 	$(GO) build $(LDFLAGS) -o $(BINARY) ./cmd/akashi

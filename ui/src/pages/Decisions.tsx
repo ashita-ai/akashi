@@ -34,7 +34,7 @@ export default function Decisions() {
     queryFn: () =>
       queryDecisions({
         filters: {
-          ...(agentFilter ? { agent_ids: [agentFilter] } : {}),
+          ...(agentFilter ? { agent_id: [agentFilter] } : {}),
           ...(typeFilter ? { decision_type: typeFilter } : {}),
         },
         include: ["alternatives"],

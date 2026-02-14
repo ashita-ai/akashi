@@ -138,6 +138,7 @@ export async function deleteAgent(agentId: string): Promise<void> {
 export async function listConflicts(params?: {
   decision_type?: string;
   agent_id?: string;
+  conflict_kind?: "cross_agent" | "self_contradiction";
   limit?: number;
   offset?: number;
 }): Promise<ConflictsList> {
@@ -147,6 +148,7 @@ export async function listConflicts(params?: {
   if (params?.decision_type)
     searchParams.set("decision_type", params.decision_type);
   if (params?.agent_id) searchParams.set("agent_id", params.agent_id);
+  if (params?.conflict_kind) searchParams.set("conflict_kind", params.conflict_kind);
   const qs = searchParams.toString();
   return request<ConflictsList>(`/v1/conflicts${qs ? `?${qs}` : ""}`);
 }

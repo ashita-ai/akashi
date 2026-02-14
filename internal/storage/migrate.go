@@ -8,11 +8,27 @@ import (
 	"strings"
 )
 
+const migrationAdvisoryLockKey int64 = 9021001
+
 // RunMigrations executes unapplied SQL migration files from the provided filesystem in order.
 // It tracks applied migrations in a schema_migrations table to ensure each file runs at most once.
 // This is a simple forward-only migration runner for development and testing.
 // Production should use Atlas for proper migration management.
 func (db *DB) RunMigrations(ctx context.Context, migrationsFS fs.FS) error {
+	// Ensure only one process runs migrations at a time.
+	var gotLock bool
+	if err := db.pool.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, migrationAdvisoryLockKey).Scan(&gotLock); err != nil {
+		return fmt.Errorf("storage: acquire migration advisory lock: %w", err)
+	}
+	if !gotLock {
+		return fmt.Errorf("storage: migrations already running in another process")
+	}
+	defer func() {
+		if _, err := db.pool.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrationAdvisoryLockKey); err != nil {
+			db.logger.Warn("migration advisory unlock failed", "error", err)
+		}
+	}()
+
 	// Ensure the tracking table exists. This is idempotent.
 	if _, err := db.pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -56,14 +72,59 @@ func (db *DB) RunMigrations(ctx context.Context, migrationsFS fs.FS) error {
 
 		db.logger.Info("running migration", "file", name)
 
-		// Execute and record the migration within a single transaction so a
-		// failure between execution and recording can't leave an applied-but-
-		// unrecorded migration.
-		if err := db.runMigrationTx(ctx, name, string(content)); err != nil {
-			return err
+		sql := string(content)
+		if isTxModeNone(sql) {
+			// Migrations with "-- atlas:txmode none" contain statements like
+			// CREATE INDEX CONCURRENTLY that cannot run inside a transaction.
+			// Execute them directly, then record separately.
+			if err := db.runMigrationNoTx(ctx, name, sql); err != nil {
+				return err
+			}
+		} else {
+			// Execute and record the migration within a single transaction so a
+			// failure between execution and recording can't leave an applied-but-
+			// unrecorded migration.
+			if err := db.runMigrationTx(ctx, name, sql); err != nil {
+				return err
+			}
 		}
 	}
 
+	return nil
+}
+
+// isTxModeNone detects the Atlas "-- atlas:txmode none" directive in a migration.
+// Migrations with this directive contain statements (e.g. CREATE INDEX CONCURRENTLY)
+// that PostgreSQL forbids inside a transaction block.
+func isTxModeNone(sql string) bool {
+	for _, line := range strings.Split(sql, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "-- atlas:txmode none" {
+			return true
+		}
+		// Stop scanning after the comment header ends to avoid false positives
+		// in SQL content. A non-comment, non-empty line means we're past the header.
+		if trimmed != "" && !strings.HasPrefix(trimmed, "--") {
+			break
+		}
+	}
+	return false
+}
+
+// runMigrationNoTx executes a migration outside a transaction (for statements
+// like CREATE INDEX CONCURRENTLY) and then records it in schema_migrations.
+// If the migration executes but recording fails, re-running will attempt the
+// migration again; the SQL should be idempotent (IF NOT EXISTS / IF EXISTS).
+func (db *DB) runMigrationNoTx(ctx context.Context, name, sql string) error {
+	if _, err := db.pool.Exec(ctx, sql); err != nil {
+		return fmt.Errorf("storage: execute migration %s (no-tx): %w", name, err)
+	}
+
+	if _, err := db.pool.Exec(ctx,
+		`INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`, name,
+	); err != nil {
+		return fmt.Errorf("storage: record migration %s (no-tx): %w", name, err)
+	}
 	return nil
 }
 

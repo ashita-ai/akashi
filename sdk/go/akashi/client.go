@@ -333,6 +333,9 @@ func (c *Client) ListConflicts(ctx context.Context, opts *ConflictOptions) (*Con
 		if opts.AgentID != "" {
 			params.Set("agent_id", opts.AgentID)
 		}
+		if opts.ConflictKind != "" {
+			params.Set("conflict_kind", opts.ConflictKind)
+		}
 		if opts.Limit > 0 {
 			params.Set("limit", strconv.Itoa(opts.Limit))
 		}

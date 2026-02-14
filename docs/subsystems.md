@@ -1,6 +1,6 @@
 # Subsystem Reference
 
-Internals of three key subsystems: embedding, rate limiting, and the Qdrant search pipeline. For configuration variables, see [configuration.md](configuration.md). For operational procedures, see [runbook.md](runbook.md).
+Internals of embedding, rate limiting, Qdrant search, and conflict detection. For the decision model and conflict logic, see [decisions.md](decisions.md). For configuration, see [configuration.md](configuration.md). For operational procedures, see [runbook.md](runbook.md).
 
 ---
 
@@ -66,15 +66,18 @@ The backfill runs once per startup and logs progress:
 
 ### What Gets Embedded
 
-The embedding text is constructed from decision fields (`internal/service/decisions/service.go`):
+Two embeddings are computed per decision (Option B for conflict detection):
 
-```
-Type: {decision_type}
-Outcome: {outcome}
-Reasoning: {reasoning}
-```
+| Embedding | Input | Stored As |
+|-----------|-------|-----------|
+| Full | `{decision_type}: {outcome} {reasoning}` | `decisions.embedding` |
+| Outcome-only | `{outcome}` | `decisions.outcome_embedding` |
 
-This is the input passed to `Embed()`. Alternatives and evidence are not included in the embedding text.
+The full embedding powers semantic search and conflict **topic similarity**. The outcome-only embedding powers conflict **outcome divergence**. Alternatives and evidence are not included. See [decisions.md](decisions.md).
+
+### Outcome Embedding Backfill
+
+On startup, after the main embedding backfill, the server also backfills `outcome_embedding` for decisions that have `embedding` but not `outcome_embedding`. This handles decisions created before migration 027.
 
 ### Failure Behavior
 
@@ -203,3 +206,22 @@ If the drain context expires before the final batch completes, the log emits `"s
 ### Fallback: No Qdrant
 
 When `QDRANT_URL` is empty, the outbox worker is not started and `POST /v1/search` falls back to PostgreSQL full-text search (`tsvector` with GIN index) plus ILIKE matching. Semantic similarity is unavailable; results are ranked by text relevance only.
+
+---
+
+## Semantic Conflict Detection
+
+Conflicts are detected by **semantic similarity**, not by exact `decision_type` matching. See [decisions.md](decisions.md).
+
+### Flow
+
+1. On each trace, after commit, an async goroutine calls `conflicts.Scorer.ScoreForDecision`.
+2. Load the new decision's `embedding` and `outcome_embedding`.
+3. pgvector KNN: find top 50 similar decisions (same org) by full embedding.
+4. For each candidate with `outcome_embedding`: compute `topic_similarity` and `outcome_divergence`, then `significance = topic_similarity × outcome_divergence`.
+5. If significance ≥ `AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD`, insert into `scored_conflicts`.
+6. pg_notify on `akashi_conflicts` for SSE subscribers.
+
+### decision_type
+
+`decision_type` is **not** used in detection. It is an optional filter when querying conflicts (`GET /v1/conflicts?decision_type=architecture`).

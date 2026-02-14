@@ -182,7 +182,7 @@ Event-sourced with bi-temporal modeling. Core tables:
 | `evidence` | Evidence links with provenance and embeddings |
 | `agents` | Registered agents with roles and API key hashes |
 | `access_grants` | Fine-grained cross-agent visibility |
-| `decision_conflicts` | Materialized view of conflicting decisions |
+| `scored_conflicts` | Semantic conflict pairs (event-driven, see docs/decisions.md) |
 
 **Bi-temporal columns** on mutable tables:
 - `valid_from` / `valid_to`: business time (when the decision was valid)

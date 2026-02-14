@@ -244,6 +244,12 @@ func (h *Handlers) HandleDeleteGrant(w http.ResponseWriter, r *http.Request) {
 // HandleDeleteAgent handles DELETE /v1/agents/{agent_id} (admin-only).
 // Deletes all data associated with the agent (GDPR right to erasure).
 func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
+	if !h.enableDestructiveDelete {
+		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden,
+			"destructive delete is disabled; set AKASHI_ENABLE_DESTRUCTIVE_DELETE=true to enable")
+		return
+	}
+
 	orgID := OrgIDFromContext(r.Context())
 	agentID := r.PathValue("agent_id")
 	if err := model.ValidateAgentID(agentID); err != nil {

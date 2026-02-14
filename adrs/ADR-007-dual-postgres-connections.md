@@ -47,7 +47,7 @@ The direct connection is optional. If `NOTIFY_URL` is empty, the SSE broker is d
 Two channels are registered:
 
 - `akashi_decisions` -- fired after a decision is created or revised.
-- `akashi_conflicts` -- fired when the conflict materialized view detects a new conflict.
+- `akashi_conflicts` -- fired when the semantic conflict scorer inserts a new conflict.
 
 Notification payloads are JSON containing at minimum an `org_id` field, which the SSE broker uses for tenant-scoped fan-out. Events with unparseable or missing `org_id` are dropped rather than broadcast, preventing cross-tenant data leakage.
 

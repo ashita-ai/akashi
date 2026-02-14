@@ -78,7 +78,7 @@ describe("AkashiClient", () => {
         .mockResolvedValueOnce(mockResponse(200, TOKEN_RESPONSE))
         .mockResolvedValueOnce(
           mockResponse(200, {
-            data: { has_precedent: false, precedents: [] },
+            data: { has_precedent: false, decisions: [] },
           }),
         );
 
@@ -99,10 +99,10 @@ describe("AkashiClient", () => {
       mockFetch
         .mockResolvedValueOnce(mockResponse(200, TOKEN_RESPONSE))
         .mockResolvedValueOnce(
-          mockResponse(200, { data: { has_precedent: false, precedents: [] } }),
+          mockResponse(200, { data: { has_precedent: false, decisions: [] } }),
         )
         .mockResolvedValueOnce(
-          mockResponse(200, { data: { has_precedent: true, precedents: [] } }),
+          mockResponse(200, { data: { has_precedent: true, decisions: [] } }),
         );
 
       await client.check("first");
@@ -123,15 +123,7 @@ describe("AkashiClient", () => {
     it("returns precedent check result", async () => {
       const expected: CheckResponse = {
         has_precedent: true,
-        precedents: [
-          {
-            decision_id: "dec-123",
-            decision_type: "model_selection",
-            outcome: "gpt-4o",
-            confidence: 0.9,
-            similarity: 0.85,
-          },
-        ],
+        decisions: [],
       };
       mockFetch.mockResolvedValueOnce(mockResponse(200, { data: expected }));
 
@@ -152,7 +144,7 @@ describe("AkashiClient", () => {
 
     it("includes optional parameters in request body", async () => {
       mockFetch.mockResolvedValueOnce(
-        mockResponse(200, { data: { has_precedent: false, precedents: [] } }),
+        mockResponse(200, { data: { has_precedent: false, decisions: [] } }),
       );
 
       await client.check("arch", "storage", { agentId: "other", limit: 10 });
@@ -349,7 +341,7 @@ describe("AkashiClient", () => {
         mockResponse(200, { data: { results } }),
       );
 
-      const response = await client.search("which model for text tasks", 10);
+      const response = await client.search("which model for text tasks", 10, true);
 
       expect(response.results).toEqual(results);
 
@@ -357,6 +349,7 @@ describe("AkashiClient", () => {
       const body = JSON.parse(lastCall[1].body);
       expect(body.query).toBe("which model for text tasks");
       expect(body.limit).toBe(10);
+      expect(body.semantic).toBe(true);
     });
 
     it("sends correct wire format for search body", async () => {
@@ -373,6 +366,7 @@ describe("AkashiClient", () => {
       expect(body).toEqual({
         query: "find decisions about storage",
         limit: 5,
+        semantic: false,
       });
     });
   });
@@ -960,8 +954,10 @@ describe("AkashiClient", () => {
     it("lists conflicts without options", async () => {
       const conflicts: DecisionConflict[] = [
         {
+          conflict_kind: "cross_agent",
           decision_a_id: "dec-1",
           decision_b_id: "dec-2",
+          org_id: "00000000-0000-0000-0000-000000000000",
           agent_a: "planner",
           agent_b: "coder",
           run_a: "run-1",
@@ -1016,10 +1012,12 @@ describe("AkashiClient", () => {
         version: "0.1.0",
         postgres: "connected",
         qdrant: "connected",
+        buffer_depth: 0,
+        buffer_status: "ok",
         uptime_seconds: 3600,
       };
       // No token mock — health does not require auth.
-      mockFetch.mockResolvedValueOnce(mockResponse(200, healthResp));
+      mockFetch.mockResolvedValueOnce(mockResponse(200, { data: healthResp }));
 
       const result = await client.health();
 
@@ -1038,9 +1036,11 @@ describe("AkashiClient", () => {
         status: "healthy",
         version: "0.1.0",
         postgres: "connected",
+        buffer_depth: 12,
+        buffer_status: "high",
         uptime_seconds: 120,
       };
-      mockFetch.mockResolvedValueOnce(mockResponse(200, healthResp));
+      mockFetch.mockResolvedValueOnce(mockResponse(200, { data: healthResp }));
 
       const result = await client.health();
 
@@ -1173,7 +1173,7 @@ describe("withAkashi middleware", () => {
       .mockResolvedValueOnce(mockResponse(200, TOKEN_RESPONSE))
       .mockResolvedValueOnce(
         mockResponse(200, {
-          data: { has_precedent: false, precedents: [] },
+          data: { has_precedent: false, decisions: [] },
         }),
       )
       .mockResolvedValueOnce(
@@ -1189,8 +1189,8 @@ describe("withAkashi middleware", () => {
     const result = await withAkashi(
       client,
       "model_selection",
-      async (precedents: CheckResponse) => {
-        expect(precedents.has_precedent).toBe(false);
+      async (checkResult: CheckResponse) => {
+        expect(checkResult.has_precedent).toBe(false);
         return {
           value: "gpt-4o",
           toTrace: (): TraceRequest => ({
@@ -1217,7 +1217,7 @@ describe("withAkashi middleware", () => {
     mockFetch
       .mockResolvedValueOnce(mockResponse(200, TOKEN_RESPONSE))
       .mockResolvedValueOnce(
-        mockResponse(200, { data: { has_precedent: false, precedents: [] } }),
+        mockResponse(200, { data: { has_precedent: false, decisions: [] } }),
       );
 
     const client = new AkashiClient({

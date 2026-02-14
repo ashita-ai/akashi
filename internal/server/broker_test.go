@@ -3,6 +3,7 @@ package server
 import (
 	"log/slog"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -207,4 +208,113 @@ func TestBrokerSlowSubscriber(t *testing.T) {
 
 	broker.Unsubscribe(slow)
 	broker.Unsubscribe(fast)
+}
+
+func TestBrokerClose(t *testing.T) {
+	orgID := uuid.New()
+	broker := &Broker{
+		subscribers: make(map[chan []byte]subscriber),
+		logger:      testLogger(),
+	}
+
+	ch := broker.Subscribe(orgID)
+
+	// Verify the channel is open by confirming we can send to it without panic.
+	event := formatSSE("test", `{"id":"close-test"}`)
+	broker.broadcastToOrg(event, orgID)
+
+	select {
+	case got := <-ch:
+		if string(got) != string(event) {
+			t.Errorf("got %q, want %q", got, event)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out waiting for event before close")
+	}
+
+	// Unsubscribe closes the channel.
+	broker.Unsubscribe(ch)
+
+	// Reading from a closed channel returns the zero value immediately.
+	// Verify the channel is closed by attempting a non-blocking receive.
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("expected channel to be closed after Unsubscribe, but received a value")
+		}
+		// ok == false means the channel is closed. This is the expected path.
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("channel was not closed after Unsubscribe")
+	}
+
+	// Verify the subscriber was removed from the map.
+	broker.mu.RLock()
+	_, exists := broker.subscribers[ch]
+	broker.mu.RUnlock()
+	if exists {
+		t.Fatal("subscriber should be removed from map after Unsubscribe")
+	}
+}
+
+func TestBrokerConcurrentSubscribe(t *testing.T) {
+	orgID := uuid.New()
+	broker := &Broker{
+		subscribers: make(map[chan []byte]subscriber),
+		logger:      testLogger(),
+	}
+
+	const numGoroutines = 50
+	channels := make([]chan []byte, numGoroutines)
+
+	// Subscribe from multiple goroutines concurrently.
+	var wg sync.WaitGroup
+	for i := range numGoroutines {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			channels[idx] = broker.Subscribe(orgID)
+		}(i)
+	}
+	wg.Wait()
+
+	// Verify all subscriptions were registered.
+	broker.mu.RLock()
+	count := len(broker.subscribers)
+	broker.mu.RUnlock()
+	if count != numGoroutines {
+		t.Fatalf("expected %d subscribers, got %d", numGoroutines, count)
+	}
+
+	// Broadcast an event and verify all subscribers receive it.
+	event := formatSSE("test", `{"concurrent":"true"}`)
+	broker.broadcastToOrg(event, orgID)
+
+	for i, ch := range channels {
+		select {
+		case got := <-ch:
+			if string(got) != string(event) {
+				t.Errorf("channel %d: got %q, want %q", i, got, event)
+			}
+		case <-time.After(500 * time.Millisecond):
+			t.Fatalf("channel %d: timed out waiting for event", i)
+		}
+	}
+
+	// Unsubscribe all concurrently.
+	for i := range numGoroutines {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			broker.Unsubscribe(channels[idx])
+		}(i)
+	}
+	wg.Wait()
+
+	// Verify all subscribers were removed.
+	broker.mu.RLock()
+	remaining := len(broker.subscribers)
+	broker.mu.RUnlock()
+	if remaining != 0 {
+		t.Fatalf("expected 0 subscribers after cleanup, got %d", remaining)
+	}
 }

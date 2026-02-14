@@ -17,7 +17,7 @@ import (
 func (db *DB) EnsureDefaultOrg(ctx context.Context) error {
 	_, err := db.pool.Exec(ctx,
 		`INSERT INTO organizations (id, name, slug, plan, created_at, updated_at)
-		 VALUES ($1, 'Default', 'default', 'enterprise', NOW(), NOW())
+		 VALUES ($1, 'Default', 'default', 'oss', NOW(), NOW())
 		 ON CONFLICT (id) DO NOTHING`,
 		uuid.Nil,
 	)

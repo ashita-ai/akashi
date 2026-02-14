@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
@@ -39,13 +40,23 @@ func (h *Handlers) HandleCreateRun(w http.ResponseWriter, r *http.Request) {
 		span.SetAttributes(attribute.String("akashi.trace_id", *req.TraceID))
 	}
 
+	idem, proceed := h.beginIdempotentWrite(w, r, orgID, req.AgentID, "POST:/v1/runs", req)
+	if !proceed {
+		return
+	}
+
 	req.OrgID = orgID
 	run, err := h.db.CreateRun(r.Context(), req)
 	if err != nil {
+		h.clearIdempotentWrite(r, orgID, idem)
 		h.writeInternalError(w, r, "failed to create run", err)
 		return
 	}
 
+	if err := h.completeIdempotentWrite(r, orgID, idem, http.StatusCreated, run); err != nil {
+		h.writeInternalError(w, r, "failed to finalize idempotency record", err)
+		return
+	}
 	writeJSON(w, r, http.StatusCreated, run)
 }
 
@@ -82,9 +93,28 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	idem, proceed := h.beginIdempotentWrite(w, r, orgID, run.AgentID, appendEventsEndpoint(runID), req)
+	if !proceed {
+		return
+	}
+
 	events, err := h.buffer.Append(r.Context(), runID, run.AgentID, run.OrgID, req.Events)
 	if err != nil {
-		h.writeInternalError(w, r, "failed to buffer events", err)
+		h.clearIdempotentWrite(r, orgID, idem)
+		msg := err.Error()
+		switch {
+		case strings.Contains(msg, "buffer at capacity"):
+			writeError(w, r, http.StatusServiceUnavailable, model.ErrCodeConflict, "event buffer is full, retry shortly")
+		case strings.Contains(msg, "buffer is draining"):
+			writeError(w, r, http.StatusServiceUnavailable, model.ErrCodeConflict, "server is shutting down, retry on another instance")
+		default:
+			h.writeInternalError(w, r, "failed to buffer events", err)
+		}
+		return
+	}
+	if err := h.buffer.FlushNow(r.Context()); err != nil {
+		h.clearIdempotentWrite(r, orgID, idem)
+		h.writeInternalError(w, r, "failed to persist buffered events", err)
 		return
 	}
 
@@ -93,12 +123,17 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 		eventIDs[i] = e.ID
 	}
 
-	writeJSON(w, r, http.StatusAccepted, map[string]any{
+	resp := map[string]any{
 		"accepted":  len(events),
 		"event_ids": eventIDs,
-		"status":    "buffered",
-		"message":   "events accepted for processing; durable after next flush",
-	})
+		"status":    "persisted",
+		"message":   "events durably persisted",
+	}
+	if err := h.completeIdempotentWrite(r, orgID, idem, http.StatusOK, resp); err != nil {
+		h.writeInternalError(w, r, "failed to finalize idempotency record", err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, resp)
 }
 
 // HandleCompleteRun handles POST /v1/runs/{run_id}/complete.

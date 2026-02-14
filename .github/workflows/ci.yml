@@ -29,6 +29,9 @@ jobs:
           go mod tidy
           git diff --exit-code go.mod go.sum
 
+      - name: Check doc/config consistency
+        run: python3 scripts/check_doc_config_consistency.py
+
       - name: Install Atlas
         uses: ariga/setup-atlas@cf119a6512b9133214e3a98bd4f731bfc413e9cb
         with:
@@ -94,7 +97,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.22'
+          go-version-file: go.mod
           cache: true
 
       - name: Run Go SDK tests
