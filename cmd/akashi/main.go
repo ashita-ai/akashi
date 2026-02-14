@@ -164,6 +164,13 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	} else if n > 0 {
 		logger.Info("outcome embedding backfill complete", "count", n)
 	}
+	// Backfill claim-level embeddings for fine-grained conflict detection.
+	// Must run before conflict scoring so the scorer can use claim data.
+	if n, err := decisionSvc.BackfillClaims(ctx, 500); err != nil {
+		logger.Warn("claims backfill failed", "error", err)
+	} else if n > 0 {
+		logger.Info("claims backfill complete", "count", n)
+	}
 	// Backfill conflict scoring for decisions that gained embeddings from the
 	// backfills above. ScoreForDecision only runs on new traces, so previously
 	// unscored decisions need an explicit pass.
