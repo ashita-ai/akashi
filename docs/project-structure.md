@@ -1,5 +1,10 @@
 # Project Structure
 
+## Operations Docs
+
+- `docs/runbook.md` - primary operator runbook
+- `docs/operations/data-lifecycle.md` - retention, archival, reconciliation, and exit-criteria procedures
+
 ```
 ./api/embed.go
 ./cmd/akashi/main.go

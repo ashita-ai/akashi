@@ -1,4 +1,4 @@
-h1:cmU6DsCu0rv7w+1anW+CMPu0Y4NvVEO9d4ZTz96qAr4=
+h1:3AuZtJw0NXEukIwJnfkd++aSE+RiNhBeo2dDaHkXbAg=
 001_initial.sql h1:uhyGXto+QacAaGYb9ZTGjsBs5chlKi8O0eHz9aCQsrY=
 022_full_text_search.sql h1:9iwtA8MgCzAxDV9YkUBn0CLT9ePSmj3GcPoMGg8TXf0=
 023_fix_outbox_index.sql h1:OtMEFBcMRWej02+ghnBXlPr6BVq+LoA62Id9XUWfDNI=
@@ -9,3 +9,5 @@ h1:cmU6DsCu0rv7w+1anW+CMPu0Y4NvVEO9d4ZTz96qAr4=
 028_idempotency_keys.sql h1:x3LjfnLawtWD1xQRvRg8v21mGcX2g7EvuJACTQKU9RE=
 029_durability_audit_tables.sql h1:iInRgqI55+Tnf1Oluy1yZQmq5KYRoIbpN5mvgwcNbiw=
 030_agent_events_guardrails.sql h1:7ngFS3hyOOFh9NB5Z0LtxM6+Vbvql0aSNUbY9nSgnbU=
+031_mutation_audit_log.sql h1:xQcnW5N9n304Uwg/HQDzXI9nnlzCHZnFh5wfht7ng6U=
+032_agent_events_archive.sql h1:ny+CHkn/oWSsfwbylux81fFnCiTmknI9vI6dR18aBl8=

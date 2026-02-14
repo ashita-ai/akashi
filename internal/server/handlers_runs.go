@@ -1,14 +1,15 @@
 package server
 
 import (
+	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ashita-ai/akashi/internal/model"
+	tracesvc "github.com/ashita-ai/akashi/internal/service/trace"
 )
 
 // HandleCreateRun handles POST /v1/runs.
@@ -52,11 +53,26 @@ func (h *Handlers) HandleCreateRun(w http.ResponseWriter, r *http.Request) {
 		h.writeInternalError(w, r, "failed to create run", err)
 		return
 	}
-
-	if err := h.completeIdempotentWrite(r, orgID, idem, http.StatusCreated, run); err != nil {
-		h.writeInternalError(w, r, "failed to finalize idempotency record", err)
-		return
+	if err := h.recordMutationAudit(
+		r,
+		orgID,
+		"create_run",
+		"agent_run",
+		run.ID.String(),
+		nil,
+		run,
+		map[string]any{"agent_id": run.AgentID},
+	); err != nil {
+		// The mutation has already committed. Never clear idempotency here:
+		// retries with the same key would create duplicate runs.
+		h.logger.Error("failed to record mutation audit after committed create_run",
+			"error", err,
+			"run_id", run.ID,
+			"org_id", orgID,
+			"request_id", RequestIDFromContext(r.Context()))
 	}
+
+	h.completeIdempotentWriteBestEffort(r, orgID, idem, http.StatusCreated, run)
 	writeJSON(w, r, http.StatusCreated, run)
 }
 
@@ -101,11 +117,10 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 	events, err := h.buffer.Append(r.Context(), runID, run.AgentID, run.OrgID, req.Events)
 	if err != nil {
 		h.clearIdempotentWrite(r, orgID, idem)
-		msg := err.Error()
 		switch {
-		case strings.Contains(msg, "buffer at capacity"):
+		case errors.Is(err, tracesvc.ErrBufferAtCapacity):
 			writeError(w, r, http.StatusServiceUnavailable, model.ErrCodeConflict, "event buffer is full, retry shortly")
-		case strings.Contains(msg, "buffer is draining"):
+		case errors.Is(err, tracesvc.ErrBufferDraining):
 			writeError(w, r, http.StatusServiceUnavailable, model.ErrCodeConflict, "server is shutting down, retry on another instance")
 		default:
 			h.writeInternalError(w, r, "failed to buffer events", err)
@@ -129,10 +144,24 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 		"status":    "persisted",
 		"message":   "events durably persisted",
 	}
-	if err := h.completeIdempotentWrite(r, orgID, idem, http.StatusOK, resp); err != nil {
-		h.writeInternalError(w, r, "failed to finalize idempotency record", err)
-		return
+	if err := h.recordMutationAudit(
+		r,
+		orgID,
+		"append_events",
+		"agent_run",
+		runID.String(),
+		nil,
+		resp,
+		map[string]any{"agent_id": run.AgentID, "event_count": len(events)},
+	); err != nil {
+		// Events are already durable at this point; keep the response idempotent.
+		h.logger.Error("failed to record mutation audit after committed append_events",
+			"error", err,
+			"run_id", runID,
+			"org_id", orgID,
+			"request_id", RequestIDFromContext(r.Context()))
 	}
+	h.completeIdempotentWriteBestEffort(r, orgID, idem, http.StatusOK, resp)
 	writeJSON(w, r, http.StatusOK, resp)
 }
 
@@ -181,8 +210,41 @@ func (h *Handlers) HandleCompleteRun(w http.ResponseWriter, r *http.Request) {
 	updated, err := h.db.GetRun(r.Context(), orgID, runID)
 	if err != nil {
 		h.logger.Warn("complete run: read-back failed", "error", err, "run_id", runID)
-		writeJSON(w, r, http.StatusOK, map[string]any{"run_id": runID, "status": string(status)})
+		fallbackResp := map[string]any{"run_id": runID, "status": string(status)}
+		if auditErr := h.recordMutationAudit(
+			r,
+			orgID,
+			"complete_run",
+			"agent_run",
+			runID.String(),
+			nil,
+			fallbackResp,
+			map[string]any{"agent_id": run.AgentID},
+		); auditErr != nil {
+			h.logger.Error("failed to record mutation audit after committed complete_run",
+				"error", auditErr,
+				"run_id", runID,
+				"org_id", orgID,
+				"request_id", RequestIDFromContext(r.Context()))
+		}
+		writeJSON(w, r, http.StatusOK, fallbackResp)
 		return
+	}
+	if err := h.recordMutationAudit(
+		r,
+		orgID,
+		"complete_run",
+		"agent_run",
+		runID.String(),
+		nil,
+		updated,
+		map[string]any{"agent_id": run.AgentID},
+	); err != nil {
+		h.logger.Error("failed to record mutation audit after committed complete_run",
+			"error", err,
+			"run_id", runID,
+			"org_id", orgID,
+			"request_id", RequestIDFromContext(r.Context()))
 	}
 	writeJSON(w, r, http.StatusOK, updated)
 }

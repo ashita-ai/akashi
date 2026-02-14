@@ -2,6 +2,9 @@
 
 Production operations guide for the Akashi decision trace server.
 
+For lifecycle-specific retention, archival, and reconciliation procedures, see:
+`docs/operations/data-lifecycle.md`.
+
 ---
 
 ## 1. Health Checks
@@ -358,6 +361,7 @@ Standard `pg_dump` works. Key tables by priority:
 | `search_outbox`              | Pending sync queue for Qdrant.                              |
 | `search_outbox_dead_letters` | Archived failed outbox entries (paper trail).               |
 | `deletion_audit_log`         | Archived deleted records for destructive admin operations.   |
+| `mutation_audit_log`         | Append-only ledger for API mutation paper trail.            |
 
 ```sh
 # Full backup
@@ -400,6 +404,16 @@ pg_dump "$DATABASE_URL" -Fc --table=organizations --table=agents \
 
 PostgreSQL is the source of truth. `search_outbox` is transient and cannot by itself reconstruct all historical sync intent after restore.
 
+Automated verification helper:
+
+```sh
+# Verify restore invariants and table integrity checks
+DATABASE_URL=postgres://... make verify-restore
+
+# Optionally repopulate outbox from current decisions during drill recovery
+DATABASE_URL=postgres://... REBUILD_OUTBOX=true make verify-restore
+```
+
 ### Outbox Health Check
 
 ```sql
@@ -419,6 +433,49 @@ ORDER BY created_at DESC
 LIMIT 10;
 ```
 
+### Postgres/Qdrant Reconciliation
+
+Use reconciliation to detect and repair drift between PostgreSQL source-of-truth decisions and Qdrant indexed points.
+
+```sh
+# Detect drift (exit non-zero if mismatch exists)
+DATABASE_URL=postgres://... QDRANT_URL=https://...:6333 make reconcile-qdrant
+
+# Repair missing Qdrant points by queueing outbox upserts
+DATABASE_URL=postgres://... QDRANT_URL=https://...:6333 make reconcile-qdrant-repair
+```
+
+`reconcile-qdrant-repair` only queues missing entries into `search_outbox`; it does not delete extra Qdrant points automatically.
+
+### Exit Criteria Verification
+
+Use a single verifier to evaluate durability/consistency gates with structured JSON output:
+
+```sh
+DATABASE_URL=postgres://... make verify-exit-criteria
+```
+
+Optional thresholds:
+
+- `MAX_DEAD_LETTERS` (default `0`)
+- `MAX_OUTBOX_OLDEST_SECONDS` (default `1800`)
+- `STRICT_RETENTION_CHECK` (default `false`)
+- `RETAIN_DAYS` (default `90`, only used when strict retention is enabled)
+
+When `QDRANT_URL` is set, the verifier also checks Postgres/Qdrant drift by running reconciliation in read-only mode.
+
+### Branch Protection Policy
+
+For protected branches (for example `main`), configure GitHub branch protection to require this status check before merge:
+
+- `Verify Exit Criteria`
+
+Recommended minimum required checks:
+
+- `CI`
+- `Build with UI`
+- `Verify Exit Criteria`
+
 ### GDPR / Right-to-Erasure (Delete Agent Data)
 
 Use the admin-only endpoint:
@@ -431,6 +488,27 @@ X-Akashi-Org-Id: <org-uuid>
 
 This performs a transactional delete of the agent and related records (runs, events, decisions, access grants), and clears supersedes links that point at deleted decisions.
 The endpoint is disabled by default; set `AKASHI_ENABLE_DESTRUCTIVE_DELETE=true` to allow execution.
+
+### Event Retention and Archival (TimescaleDB)
+
+`agent_events` is a Timescale hypertable and can grow quickly. Use archive-before-purge to preserve paper trail while controlling storage.
+
+```sh
+# Preview one archival window (safe default, no purge)
+DATABASE_URL=postgres://... make archive-events-dry-run
+
+# Archive then purge one window (explicit destructive mode)
+DATABASE_URL=postgres://... DRY_RUN=false ENABLE_PURGE=true make archive-events
+```
+
+Optional knobs:
+
+- `RETAIN_DAYS` (default `90`) - keep recent events in primary hypertable
+- `BATCH_DAYS` (default `1`) - process one bounded time window per run to reduce lock pressure
+
+Archive destination:
+
+- `agent_events_archive` holds immutable historical rows moved out of the hot hypertable.
 
 ### Connection Pool Monitoring
 
@@ -545,7 +623,7 @@ Provider auto-detection order: Ollama (if reachable) > OpenAI (if key set) > noo
 | `AKASHI_CONFLICT_REFRESH_INTERVAL`  | `30s`    | How often the broker polls for new conflicts (SSE). Conflicts are populated on trace. |
 | `AKASHI_INTEGRITY_PROOF_INTERVAL`   | `5m`     | How often Merkle integrity proofs are generated      |
 | `AKASHI_SHUTDOWN_HTTP_TIMEOUT`      | `10s`    | Grace period for HTTP server shutdown (`0` = wait forever) |
-| `AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT` | `0`   | Buffer drain timeout (`0` = wait forever, durability-first) |
+| `AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT` | `0`   | Reserved. Buffer drain is always indefinite to prevent event loss. |
 | `AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT` | `0`   | Outbox drain timeout (`0` = wait forever)            |
 | `AKASHI_IDEMPOTENCY_IN_PROGRESS_TTL` | `5m`  | In-progress idempotency key reclaim window            |
 | `AKASHI_IDEMPOTENCY_CLEANUP_INTERVAL` | `1h` | How often old idempotency keys are cleaned up         |
@@ -560,7 +638,7 @@ On `SIGTERM` or `SIGINT`, the server shuts down in this order:
 
 ```
 1. HTTP server drains           -- stops accepting new requests, completes in-flight (`AKASHI_SHUTDOWN_HTTP_TIMEOUT`)
-2. Event buffer drains          -- final flush to PostgreSQL (`AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT`)
+2. Event buffer drains          -- final flush to PostgreSQL (always indefinite, durability-first)
 3. Outbox worker drains         -- syncs remaining entries to Qdrant (`AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT`)
 4. Database pools close         -- PgBouncer pool + NOTIFY connection
 5. OTEL flushes                 -- final trace/metric export
@@ -571,7 +649,7 @@ There is no single shared shutdown timeout. Each phase has its own timeout, and 
 ### Warnings
 
 - **DO NOT** send `kill -9` during shutdown. If the event buffer is mid-flush, events in memory will be lost.
-- If buffer drain has a non-zero timeout and it expires (log: `"trace: drain timed out waiting for flush loop"`), buffered events may be lost.
+- Buffer drain is durability-critical and runs without a timeout. Do not force-stop the process while draining.
 - The outbox worker drain timeout (log: `"search outbox: drain timed out"`) means some outbox entries were not synced to Qdrant. They remain in PostgreSQL and will sync on next startup.
 
 ### Pre-Deployment Checklist
