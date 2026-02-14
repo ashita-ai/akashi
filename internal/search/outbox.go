@@ -143,6 +143,8 @@ func (w *OutboxWorker) pollLoop(ctx context.Context) {
 	}
 }
 
+// maxOutboxAttempts must match the partial index predicate in migration 023
+// (WHERE attempts < 10). Changing this value requires a new migration.
 const maxOutboxAttempts = 10
 
 func (w *OutboxWorker) processBatch(ctx context.Context) {
