@@ -494,6 +494,100 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, conflict)
 }
 
+// HandleResolveConflict handles POST /v1/conflicts/{id}/resolve.
+// Creates a resolution decision trace and links it to the conflict.
+func (h *Handlers) HandleResolveConflict(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
+
+	idStr := r.PathValue("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid conflict id")
+		return
+	}
+
+	var req struct {
+		Outcome      string  `json:"outcome"`
+		Reasoning    *string `json:"reasoning,omitempty"`
+		DecisionType string  `json:"decision_type,omitempty"`
+	}
+	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+		return
+	}
+	if req.Outcome == "" {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "outcome is required")
+		return
+	}
+	if req.DecisionType == "" {
+		req.DecisionType = "conflict_resolution"
+	}
+
+	// Verify the conflict exists and belongs to this org.
+	conflict, err := h.db.GetConflict(r.Context(), id, orgID)
+	if err != nil || conflict == nil {
+		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
+		return
+	}
+
+	resolverAgent := claims.AgentID
+	if resolverAgent == "" {
+		resolverAgent = claims.Subject
+	}
+
+	// Ensure the resolver agent exists (auto-create if admin+).
+	if err := h.decisionSvc.ResolveOrCreateAgent(r.Context(), orgID, resolverAgent, claims.Role); err != nil {
+		if errors.Is(err, decisions.ErrAgentNotFound) {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+			return
+		}
+		h.writeInternalError(w, r, "failed to resolve agent", err)
+		return
+	}
+
+	// Create a resolution decision trace.
+	result, err := h.decisionSvc.Trace(r.Context(), orgID, decisions.TraceInput{
+		AgentID: resolverAgent,
+		Decision: model.TraceDecision{
+			DecisionType: req.DecisionType,
+			Outcome:      req.Outcome,
+			Confidence:   1.0, // Resolution decisions are definitive.
+			Reasoning:    req.Reasoning,
+		},
+		AuditMeta: h.buildAuditMeta(r, orgID),
+	})
+	if err != nil {
+		h.writeInternalError(w, r, "failed to create resolution decision", err)
+		return
+	}
+
+	// Link the resolution decision to the conflict.
+	note := "Resolved by decision " + result.DecisionID.String()
+	if err := h.db.ResolveConflictWithDecision(r.Context(), id, orgID, result.DecisionID, resolverAgent, &note); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
+			return
+		}
+		h.writeInternalError(w, r, "failed to resolve conflict", err)
+		return
+	}
+
+	// Return the updated conflict.
+	updated, err := h.db.GetConflict(r.Context(), id, orgID)
+	if err != nil || updated == nil {
+		// Resolution succeeded but re-fetch failed — return decision info.
+		writeJSON(w, r, http.StatusOK, map[string]any{
+			"conflict_id": id,
+			"decision_id": result.DecisionID,
+			"status":      "resolved",
+		})
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, updated)
+}
+
 // HandleDecisionRevisions handles GET /v1/decisions/{id}/revisions.
 // Returns the full revision chain for a decision (all versions, ordered by valid_from).
 func (h *Handlers) HandleDecisionRevisions(w http.ResponseWriter, r *http.Request) {

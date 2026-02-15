@@ -134,6 +134,7 @@ const conflictSelectBase = `SELECT sc.id, sc.conflict_kind, sc.decision_a_id, sc
 		 sc.explanation, sc.detected_at,
 		 sc.category, sc.severity, sc.status,
 		 sc.resolved_by, sc.resolved_at, sc.resolution_note,
+		 sc.relationship, sc.confidence_weight, sc.temporal_decay, sc.resolution_decision_id,
 		 da.run_id, db.run_id, da.confidence, db.confidence, da.reasoning, db.reasoning, da.valid_from, db.valid_from
 		 FROM scored_conflicts sc
 		 LEFT JOIN decisions da ON da.id = sc.decision_a_id
@@ -154,6 +155,7 @@ func scanConflictRows(rows pgx.Rows) ([]model.DecisionConflict, error) {
 			&c.Explanation, &c.DetectedAt,
 			&c.Category, &c.Severity, &c.Status,
 			&c.ResolvedBy, &c.ResolvedAt, &c.ResolutionNote,
+			&c.Relationship, &c.ConfidenceWeight, &c.TemporalDecay, &c.ResolutionDecisionID,
 			&runA, &runB, &confA, &confB, &reasonA, &reasonB, &validA, &validB,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan conflict: %w", err)
@@ -230,6 +232,35 @@ func (db *DB) UpdateConflictStatus(ctx context.Context, id, orgID uuid.UUID, sta
 	return nil
 }
 
+// ResolveConflictWithDecision links a conflict resolution to the decision that resolved it.
+func (db *DB) ResolveConflictWithDecision(ctx context.Context, id, orgID, resolutionDecisionID uuid.UUID, resolvedBy string, resolutionNote *string) error {
+	tag, err := db.pool.Exec(ctx,
+		`UPDATE scored_conflicts SET status = 'resolved', resolved_by = $1, resolved_at = now(),
+		 resolution_note = $2, resolution_decision_id = $3
+		 WHERE id = $4 AND org_id = $5`,
+		resolvedBy, resolutionNote, resolutionDecisionID, id, orgID)
+	if err != nil {
+		return fmt.Errorf("storage: resolve conflict with decision: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("storage: conflict not found")
+	}
+	return nil
+}
+
+// GetConflictsByDecision returns all conflicts involving a specific decision.
+func (db *DB) GetConflictsByDecision(ctx context.Context, orgID, decisionID uuid.UUID) ([]model.DecisionConflict, error) {
+	rows, err := db.pool.Query(ctx,
+		conflictSelectBase+` WHERE sc.org_id = $1 AND (sc.decision_a_id = $2 OR sc.decision_b_id = $2)
+		 ORDER BY sc.detected_at DESC`, orgID, decisionID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: get conflicts by decision: %w", err)
+	}
+	defer rows.Close()
+
+	return scanConflictRows(rows)
+}
+
 // InsertScoredConflict inserts a semantic conflict into scored_conflicts.
 // Ensures decision_a_id < decision_b_id for consistent ordering.
 func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict) error {
@@ -263,8 +294,8 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 		`INSERT INTO scored_conflicts (decision_a_id, decision_b_id, org_id, conflict_kind,
 		 agent_a, agent_b, decision_type_a, decision_type_b, outcome_a, outcome_b,
 		 topic_similarity, outcome_divergence, significance, scoring_method, explanation,
-		 category, severity)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+		 category, severity, relationship, confidence_weight, temporal_decay)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 		 ON CONFLICT (decision_a_id, decision_b_id) DO UPDATE SET
 		 topic_similarity = EXCLUDED.topic_similarity,
 		 outcome_divergence = EXCLUDED.outcome_divergence,
@@ -273,11 +304,14 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 		 explanation = EXCLUDED.explanation,
 		 category = EXCLUDED.category,
 		 severity = EXCLUDED.severity,
+		 relationship = EXCLUDED.relationship,
+		 confidence_weight = EXCLUDED.confidence_weight,
+		 temporal_decay = EXCLUDED.temporal_decay,
 		 detected_at = now()`,
 		da, dbID, c.OrgID, string(c.ConflictKind),
 		agentA, agentB, typeA, typeB, outcomeA, outcomeB,
 		topicSim, outcomeDiv, sig, method, c.Explanation,
-		c.Category, c.Severity,
+		c.Category, c.Severity, c.Relationship, c.ConfidenceWeight, c.TemporalDecay,
 	)
 	return err
 }
