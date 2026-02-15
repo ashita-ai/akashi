@@ -127,7 +127,7 @@ func (db *DB) ListConflicts(ctx context.Context, orgID uuid.UUID, filters Confli
 }
 
 // conflictSelectBase is the common SELECT+JOIN clause for all conflict queries.
-const conflictSelectBase = `SELECT sc.conflict_kind, sc.decision_a_id, sc.decision_b_id, sc.org_id,
+const conflictSelectBase = `SELECT sc.id, sc.conflict_kind, sc.decision_a_id, sc.decision_b_id, sc.org_id,
 		 sc.agent_a, sc.agent_b,
 		 sc.decision_type_a, sc.decision_type_b, sc.outcome_a, sc.outcome_b,
 		 sc.topic_similarity, sc.outcome_divergence, sc.significance, sc.scoring_method,
@@ -148,7 +148,7 @@ func scanConflictRows(rows pgx.Rows) ([]model.DecisionConflict, error) {
 		var reasonA, reasonB *string
 		var validA, validB time.Time
 		if err := rows.Scan(
-			&c.ConflictKind, &c.DecisionAID, &c.DecisionBID, &c.OrgID, &c.AgentA, &c.AgentB,
+			&c.ID, &c.ConflictKind, &c.DecisionAID, &c.DecisionBID, &c.OrgID, &c.AgentA, &c.AgentB,
 			&c.DecisionTypeA, &c.DecisionTypeB, &c.OutcomeA, &c.OutcomeB,
 			&c.TopicSimilarity, &c.OutcomeDivergence, &c.Significance, &c.ScoringMethod,
 			&c.Explanation, &c.DetectedAt,

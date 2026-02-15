@@ -100,6 +100,7 @@ const (
 
 // DecisionConflict represents a detected conflict between two decisions.
 type DecisionConflict struct {
+	ID                uuid.UUID    `json:"id"`
 	ConflictKind      ConflictKind `json:"conflict_kind"` // cross_agent or self_contradiction
 	DecisionAID       uuid.UUID    `json:"decision_a_id"`
 	DecisionBID       uuid.UUID    `json:"decision_b_id"`
