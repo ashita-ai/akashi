@@ -59,8 +59,9 @@ type Config struct {
 	TrustProxy       bool    // When true, use X-Forwarded-For for rate limit keys (default: false).
 
 	// Conflict LLM validation.
-	ConflictLLMModel        string // Text generation model for conflict validation (e.g. "qwen2.5:3b" for Ollama).
-	ConflictBackfillWorkers int    // Parallel workers for conflict scoring backfill (default: 4).
+	ConflictLLMModel        string  // Text generation model for conflict validation (e.g. "qwen2.5:3b" for Ollama).
+	ConflictBackfillWorkers int     // Parallel workers for conflict scoring backfill (default: 4).
+	ConflictDecayLambda     float64 // Temporal decay rate for conflict significance (default: 0.01, 0 disables).
 
 	// Event WAL (write-ahead log) for crash-durable event buffering.
 	WALDir            string        // Directory for WAL files. Empty = disabled (existing behavior).
@@ -133,6 +134,7 @@ func Load() (Config, error) {
 	// Float fields.
 	cfg.RateLimitRPS, errs = collectFloat64(errs, "AKASHI_RATE_LIMIT_RPS", 100.0)
 	cfg.ConflictSignificanceThreshold, errs = collectFloat64(errs, "AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD", 0.30)
+	cfg.ConflictDecayLambda, errs = collectFloat64(errs, "AKASHI_CONFLICT_DECAY_LAMBDA", 0.01)
 
 	// Boolean fields.
 	cfg.RateLimitEnabled, errs = collectBool(errs, "AKASHI_RATE_LIMIT_ENABLED", true)

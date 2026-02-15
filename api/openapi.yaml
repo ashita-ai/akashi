@@ -717,10 +717,10 @@ paths:
       tags: [Query]
       summary: List detected decision conflicts
       description: |
-        List conflicts between decisions. Includes cross-agent conflicts (different
-        agents, same type, different outcomes, within 1 hour) and self-contradictions
-        (same agent, same type, different outcomes, within 7 days). Types and outcomes
-        are normalized (case-insensitive) for matching. Requires `reader` role or higher.
+        List conflicts between decisions, detected via embedding similarity and
+        optional LLM validation. Supports filtering by conflict kind, status,
+        severity, category, agent, and decision type.
+        Requires `reader` role or higher.
       parameters:
         - name: decision_type
           in: query
@@ -736,6 +736,24 @@ paths:
             type: string
             enum: [cross_agent, self_contradiction]
           description: Filter by conflict type.
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [open, acknowledged, resolved, wont_fix]
+          description: Filter by lifecycle status.
+        - name: severity
+          in: query
+          schema:
+            type: string
+            enum: [critical, high, medium, low]
+          description: Filter by severity.
+        - name: category
+          in: query
+          schema:
+            type: string
+            enum: [factual, assessment, strategic, temporal]
+          description: Filter by category.
         - name: limit
           in: query
           schema:
@@ -756,6 +774,77 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/APIResponse_ConflictsResponse"
+
+  /v1/conflicts/{id}:
+    patch:
+      operationId: patchConflict
+      tags: [Query]
+      summary: Update conflict lifecycle status
+      description: |
+        Transition a conflict to a new lifecycle state (acknowledged, resolved,
+        wont_fix). Resolution requires `agent` role or higher.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The conflict ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConflictStatusUpdate"
+      responses:
+        "200":
+          description: Updated conflict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionConflict"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/conflicts/{id}/resolve:
+    post:
+      operationId: resolveConflict
+      tags: [Query]
+      summary: Resolve a conflict by creating a resolution decision
+      description: |
+        Creates a new decision trace that serves as the authoritative resolution
+        of the conflict, then links it to the conflict record. This provides a
+        full audit trail: the original conflicting decisions, and the explicit
+        resolution with its reasoning.
+        Requires `agent` role or higher.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The conflict ID to resolve.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveConflictRequest"
+      responses:
+        "200":
+          description: Conflict resolved. Returns the updated conflict with linked resolution decision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionConflict"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /v1/check:
     post:
@@ -1633,7 +1722,11 @@ components:
         - decided_at_a
         - decided_at_b
         - detected_at
+        - status
       properties:
+        id:
+          type: string
+          format: uuid
         conflict_kind:
           type: string
           enum: [cross_agent, self_contradiction]
@@ -1699,11 +1792,76 @@ components:
         significance:
           type: number
           format: float
-          description: topic_similarity × outcome_divergence; higher = stronger conflict.
+          description: topic_similarity × outcome_divergence × confidence_weight × temporal_decay.
         scoring_method:
           type: string
-          enum: [embedding, text]
-          description: How the conflict was scored (embedding = semantic, text = fallback).
+          enum: [embedding, text, claim, llm, llm_v2]
+          description: How the conflict was detected (embedding = cosine similarity, claim = claim-level, llm_v2 = LLM-validated).
+        explanation:
+          type: string
+          description: LLM-generated explanation of the conflict relationship.
+        relationship:
+          type: string
+          enum: [contradiction, supersession, complementary, refinement, unrelated]
+          description: LLM-classified relationship between the two decisions.
+        category:
+          type: string
+          enum: [factual, assessment, strategic, temporal]
+          description: Category of the conflict.
+        severity:
+          type: string
+          enum: [critical, high, medium, low]
+          description: Severity of the conflict.
+        status:
+          type: string
+          enum: [open, acknowledged, resolved, wont_fix]
+          description: Lifecycle status of the conflict.
+        resolved_by:
+          type: string
+          description: Agent ID that resolved the conflict.
+        resolved_at:
+          type: string
+          format: date-time
+        resolution_note:
+          type: string
+          description: Explanation of how/why the conflict was resolved.
+        resolution_decision_id:
+          type: string
+          format: uuid
+          description: ID of the decision that resolved this conflict (from POST /v1/conflicts/{id}/resolve).
+        confidence_weight:
+          type: number
+          format: float
+          description: sqrt(confidence_a × confidence_b) scaling factor applied to significance.
+        temporal_decay:
+          type: number
+          format: float
+          description: exp(-lambda × days_between) scaling factor applied to significance.
+
+    ConflictStatusUpdate:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [acknowledged, resolved, wont_fix]
+        resolution_note:
+          type: string
+
+    ResolveConflictRequest:
+      type: object
+      required: [outcome]
+      properties:
+        outcome:
+          type: string
+          description: The resolution outcome — what was decided to resolve the conflict.
+        reasoning:
+          type: string
+          description: Why this resolution was chosen.
+        decision_type:
+          type: string
+          default: conflict_resolution
+          description: Decision type for the resolution trace (defaults to "conflict_resolution").
 
     # ── Trace schemas ────────────────────────────────────────────────
     TraceRequest:

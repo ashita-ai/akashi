@@ -86,6 +86,67 @@ func TestSplitNumberedItems_NoNumbers(t *testing.T) {
 	assert.Equal(t, []string{input}, parts)
 }
 
+func TestSplitClaims_MarkdownList(t *testing.T) {
+	input := "Key findings:\n- The outbox has no deadletter mechanism\n- Merkle proof has a timing leak\n- ReScore has no unit tests"
+	claims := SplitClaims(input)
+	assert.Contains(t, claims, "The outbox has no deadletter mechanism")
+	assert.Contains(t, claims, "Merkle proof has a timing leak")
+	assert.Contains(t, claims, "ReScore has no unit tests")
+}
+
+func TestSplitClaims_MarkdownListAsterisk(t *testing.T) {
+	input := "Issues found:\n* Buffer flush retry can reorder events\n* Reconnect holds mutex during sleep"
+	claims := SplitClaims(input)
+	assert.Contains(t, claims, "Buffer flush retry can reorder events")
+	assert.Contains(t, claims, "Reconnect holds mutex during sleep")
+}
+
+func TestSplitClaims_NoMarkdownList(t *testing.T) {
+	// Text without list markers should pass through unchanged.
+	input := "The system is working correctly with no issues. All integration tests pass successfully."
+	claims := SplitClaims(input)
+	assert.Equal(t, []string{
+		"The system is working correctly with no issues.",
+		"All integration tests pass successfully.",
+	}, claims)
+}
+
+func TestSplitClaims_Semicolons(t *testing.T) {
+	input := "Three issues identified: outbox has no deadletter mechanism; Merkle proof has a timing vulnerability; buffer retry ordering is non-deterministic"
+	claims := SplitClaims(input)
+	assert.Len(t, claims, 3)
+	// First part includes the preamble because the colon is not a sentence boundary.
+	assert.Contains(t, claims, "Three issues identified: outbox has no deadletter mechanism")
+	assert.Contains(t, claims, "Merkle proof has a timing vulnerability")
+	assert.Contains(t, claims, "buffer retry ordering is non-deterministic")
+}
+
+func TestSplitClaims_SemicolonsTooShort(t *testing.T) {
+	// Short parts after semicolons should not cause a split.
+	input := "The score is 6/10; OK; and it works fine."
+	claims := SplitClaims(input)
+	// "OK" is too short, so semicolons should not split.
+	assert.Len(t, claims, 1)
+	assert.Equal(t, "The score is 6/10; OK; and it works fine.", claims[0])
+}
+
+func TestSplitMarkdownLists_MixedContent(t *testing.T) {
+	input := "Summary of review.\n- First issue found in storage layer\n- Second issue in auth middleware\nOverall the system works."
+	parts := splitMarkdownLists(input)
+	assert.Equal(t, []string{
+		"Summary of review.",
+		"First issue found in storage layer",
+		"Second issue in auth middleware",
+		"Overall the system works.",
+	}, parts)
+}
+
+func TestSplitSemicolons_NoSemicolons(t *testing.T) {
+	input := "A plain sentence without semicolons."
+	parts := splitSemicolons(input)
+	assert.Equal(t, []string{input}, parts)
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && containsSubstring(s, substr)
 }

@@ -1,4 +1,4 @@
-h1:Z26i/qIgNWg2PylDF+cuYZiqv0966iosqZvyRTdBVO4=
+h1:ULqhoeUaR9BLZvy+WUT+oYr64RYhWcKOUzAJSSBIMcA=
 001_initial.sql h1:uhyGXto+QacAaGYb9ZTGjsBs5chlKi8O0eHz9aCQsrY=
 022_full_text_search.sql h1:9iwtA8MgCzAxDV9YkUBn0CLT9ePSmj3GcPoMGg8TXf0=
 023_fix_outbox_index.sql h1:OtMEFBcMRWej02+ghnBXlPr6BVq+LoA62Id9XUWfDNI=
@@ -17,3 +17,4 @@ h1:Z26i/qIgNWg2PylDF+cuYZiqv0966iosqZvyRTdBVO4=
 036_decision_immutability.sql h1:FTCqfDW/KAJgTd0H8qo4U3ISEHWHQf0rkCU0sO94j3w=
 037_conflict_scored_at.sql h1:AKuaInJ2GnIxTWa7kK4YnuMXVoKrvf+MNFHvpAykKpM=
 038_agent_last_seen.sql h1:p4oWGoEMlwaFLqkWSJrOxZDyJ+UcCFC2AKo/EEeXasc=
+038_conflict_precision.sql h1:WUyfUGpvvfMtn0E4RpE+v8iLKaVD/eN9i3QrM9ztFRg=
