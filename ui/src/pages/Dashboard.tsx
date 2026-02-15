@@ -1,11 +1,23 @@
 import { useQuery } from "@tanstack/react-query";
-import { getRecentDecisions, listAgents, listConflicts } from "@/lib/api";
+import { getRecentDecisions, listAgents, listConflicts, getTraceHealth } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatRelativeTime } from "@/lib/utils";
-import { FileText, Users, AlertTriangle } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  FileText,
+  HeartPulse,
+  Users,
+} from "lucide-react";
 import { Link } from "react-router";
+
+const healthStatusConfig: Record<string, { label: string; color: string }> = {
+  healthy: { label: "Healthy", color: "text-emerald-500" },
+  degraded: { label: "Degraded", color: "text-amber-500" },
+  unhealthy: { label: "Unhealthy", color: "text-red-500" },
+};
 
 export default function Dashboard() {
   const recent = useQuery({
@@ -20,13 +32,20 @@ export default function Dashboard() {
     queryKey: ["dashboard", "conflicts"],
     queryFn: () => listConflicts({ limit: 1 }),
   });
+  const traceHealth = useQuery({
+    queryKey: ["dashboard", "trace-health"],
+    queryFn: getTraceHealth,
+    staleTime: 30_000,
+  });
+
+  const healthConfig = healthStatusConfig[traceHealth.data?.status ?? ""] ?? { label: "Unknown", color: "text-muted-foreground" };
 
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
 
       {/* Metric cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Decisions</CardTitle>
@@ -40,7 +59,11 @@ export default function Dashboard() {
                 {(recent.data?.total ?? 0).toLocaleString()}
               </div>
             )}
-            <p className="text-xs text-muted-foreground">total</p>
+            {traceHealth.data && (
+              <p className="text-xs text-muted-foreground">
+                {traceHealth.data.decisions_24h} in last 24h
+              </p>
+            )}
           </CardContent>
         </Card>
 
@@ -57,26 +80,90 @@ export default function Dashboard() {
                 {agents.data?.length ?? 0}
               </div>
             )}
+            {traceHealth.data && traceHealth.data.active_agents > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {traceHealth.data.active_agents} active recently
+              </p>
+            )}
           </CardContent>
         </Card>
 
+        <Link to="/conflicts">
+          <Card className="transition-colors hover:border-primary/50">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Open Conflicts</CardTitle>
+              <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              {conflicts.isPending ? (
+                <Skeleton className="h-8 w-12" />
+              ) : (
+                <div className="text-2xl font-bold">
+                  {conflicts.data?.total ?? 0}
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">detected</p>
+            </CardContent>
+          </Card>
+        </Link>
+
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Conflicts</CardTitle>
-            <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-sm font-medium">Trace Health</CardTitle>
+            <HeartPulse className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            {conflicts.isPending ? (
-              <Skeleton className="h-8 w-12" />
+            {traceHealth.isPending ? (
+              <Skeleton className="h-8 w-20" />
+            ) : traceHealth.error ? (
+              <p className="text-sm text-muted-foreground">Unavailable</p>
             ) : (
-              <div className="text-2xl font-bold">
-                {conflicts.data?.total ?? 0}
-              </div>
+              <>
+                <div className={`text-2xl font-bold ${healthConfig.color}`}>
+                  {healthConfig.label}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  avg confidence: {((traceHealth.data?.avg_confidence ?? 0) * 100).toFixed(0)}%
+                </p>
+              </>
             )}
-            <p className="text-xs text-muted-foreground">detected</p>
           </CardContent>
         </Card>
       </div>
+
+      {/* Trace health gaps */}
+      {traceHealth.data?.gaps && traceHealth.data.gaps.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-sm font-medium">
+              <Activity className="h-4 w-4 text-amber-500" />
+              Trace Gaps
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              {traceHealth.data.gaps.map((gap) => (
+                <div
+                  key={gap.agent_id}
+                  className="flex items-center justify-between rounded-md border p-3 text-sm"
+                >
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className="font-mono text-xs">
+                      {gap.agent_id}
+                    </Badge>
+                    <span className="text-muted-foreground">
+                      last seen {formatRelativeTime(gap.last_seen)}
+                    </span>
+                  </div>
+                  <Badge variant="warning" className="text-xs">
+                    {gap.gap_hours.toFixed(0)}h gap
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Recent activity */}
       <Card>
