@@ -95,6 +95,7 @@ The OSS distribution uses an in-memory token bucket. Enterprise deployments can 
 | `AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD` | `0.30` | Min significance (topic_sim × outcome_div) to store a conflict |
 | `AKASHI_CONFLICT_REFRESH_INTERVAL` | `30s` | Interval for broker to poll new conflicts (SSE push). Conflicts are populated event-driven on trace. |
 | `AKASHI_CONFLICT_LLM_MODEL` | _(empty)_ | LLM model for conflict validation. Set to an Ollama model name (e.g. `qwen2.5:3b`) to use local validation, or leave empty to auto-detect (OpenAI if `OPENAI_API_KEY` is set, otherwise noop). |
+| `AKASHI_CONFLICT_BACKFILL_WORKERS` | `4` | Number of parallel workers for conflict backfill scoring on startup. Each worker makes one LLM validation call at a time. |
 
 ## Tuning
 
