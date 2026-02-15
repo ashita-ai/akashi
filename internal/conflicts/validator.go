@@ -11,19 +11,27 @@ import (
 	"time"
 )
 
+// ValidationResult holds the structured output from an LLM validation call.
+type ValidationResult struct {
+	Confirmed   bool
+	Explanation string
+	Category    string // factual, assessment, strategic, temporal (empty if not confirmed)
+	Severity    string // critical, high, medium, low (empty if not confirmed)
+}
+
 // Validator confirms whether a candidate conflict is a genuine contradiction.
 // The embedding scorer finds candidates (cheap, fast); the validator confirms
 // them (precise, slower). This two-stage design keeps false positives low
 // without requiring an LLM call for every decision pair.
 type Validator interface {
-	Validate(ctx context.Context, outcomeA, outcomeB, typeA, typeB string) (confirmed bool, explanation string, err error)
+	Validate(ctx context.Context, outcomeA, outcomeB, typeA, typeB string) (ValidationResult, error)
 }
 
 // validationPrompt is the structured prompt sent to the LLM. It asks for a
-// deterministic yes/no verdict and a one-sentence explanation. The prompt is
-// designed to minimize false positives — it explicitly lists what is NOT a
-// contradiction to guide the model away from the common failure mode of
-// flagging "different topics" as conflicts.
+// deterministic yes/no verdict, a category, severity, and a one-sentence
+// explanation. The prompt is designed to minimize false positives — it
+// explicitly lists what is NOT a contradiction to guide the model away from
+// the common failure mode of flagging "different topics" as conflicts.
 const validationPrompt = `You are a contradiction detector for an AI decision audit system.
 
 Decision A (%s): %s
@@ -37,38 +45,71 @@ NOT contradictions:
 - Decisions about entirely unrelated topics
 - One decision being more detailed than another on the same topic
 
-Respond with exactly two lines:
+Respond with exactly four lines:
 VERDICT: yes or no
-EXPLANATION: one sentence explaining why`
+CATEGORY: factual, assessment, strategic, or temporal
+SEVERITY: critical, high, medium, or low
+EXPLANATION: one sentence explaining why
 
-// ParseValidatorResponse extracts the verdict and explanation from an LLM response.
-// Returns (confirmed, explanation, error). If parsing fails, returns (false, "", err)
-// to enforce fail-safe behavior: ambiguous responses are treated as rejections.
-func ParseValidatorResponse(response string) (bool, string, error) {
+Categories:
+- factual: incompatible claims about observable state (e.g. "tests pass" vs "tests fail")
+- assessment: opposing evaluations of the same system (e.g. "secure" vs "has vulnerabilities")
+- strategic: incompatible positions on direction (e.g. "use BUSL" vs "use proprietary license")
+- temporal: stale decision contradicted by newer information
+
+Severity:
+- critical: safety, security, data integrity, or correctness
+- high: architecture, API contracts, or behavioral specifications
+- medium: implementation approach, performance, or design choices
+- low: style, preferences, or minor quality metrics
+
+If VERDICT is no, still provide your best guess for CATEGORY and SEVERITY.`
+
+// validCategories and validSeverities define the allowed values for classification.
+var validCategories = map[string]bool{"factual": true, "assessment": true, "strategic": true, "temporal": true}
+var validSeverities = map[string]bool{"critical": true, "high": true, "medium": true, "low": true}
+
+// ParseValidatorResponse extracts the verdict, category, severity, and
+// explanation from an LLM response. If parsing fails, returns an error to
+// enforce fail-safe behavior: ambiguous responses are treated as rejections.
+func ParseValidatorResponse(response string) (ValidationResult, error) {
 	lines := strings.Split(strings.TrimSpace(response), "\n")
 
-	var verdict, explanation string
+	var verdict, explanation, category, severity string
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		lower := strings.ToLower(trimmed)
-		if strings.HasPrefix(lower, "verdict:") {
+		switch {
+		case strings.HasPrefix(lower, "verdict:"):
 			verdict = strings.TrimSpace(trimmed[len("verdict:"):])
-		} else if strings.HasPrefix(lower, "explanation:") {
+		case strings.HasPrefix(lower, "explanation:"):
 			explanation = strings.TrimSpace(trimmed[len("explanation:"):])
+		case strings.HasPrefix(lower, "category:"):
+			category = strings.ToLower(strings.TrimSpace(trimmed[len("category:"):]))
+		case strings.HasPrefix(lower, "severity:"):
+			severity = strings.ToLower(strings.TrimSpace(trimmed[len("severity:"):]))
 		}
 	}
 
 	if verdict == "" {
-		return false, "", fmt.Errorf("validator: no VERDICT line found in response")
+		return ValidationResult{}, fmt.Errorf("validator: no VERDICT line found in response")
+	}
+
+	// Normalize category and severity — ignore invalid values rather than failing.
+	if !validCategories[category] {
+		category = ""
+	}
+	if !validSeverities[severity] {
+		severity = ""
 	}
 
 	switch strings.ToLower(strings.TrimSpace(verdict)) {
 	case "yes":
-		return true, explanation, nil
+		return ValidationResult{Confirmed: true, Explanation: explanation, Category: category, Severity: severity}, nil
 	case "no":
-		return false, explanation, nil
+		return ValidationResult{Confirmed: false, Explanation: explanation, Category: category, Severity: severity}, nil
 	default:
-		return false, "", fmt.Errorf("validator: unrecognized verdict %q (expected yes/no)", verdict)
+		return ValidationResult{}, fmt.Errorf("validator: unrecognized verdict %q (expected yes/no)", verdict)
 	}
 }
 
@@ -77,8 +118,8 @@ func ParseValidatorResponse(response string) (bool, string, error) {
 // validation. Users who want precision must configure an LLM model.
 type NoopValidator struct{}
 
-func (NoopValidator) Validate(_ context.Context, _, _, _, _ string) (bool, string, error) {
-	return true, "", nil
+func (NoopValidator) Validate(_ context.Context, _, _, _, _ string) (ValidationResult, error) {
+	return ValidationResult{Confirmed: true}, nil
 }
 
 // perCallTimeout is the maximum time for a single LLM validation call.
@@ -126,7 +167,7 @@ type ollamaChatResponse struct {
 	} `json:"message"`
 }
 
-func (v *OllamaValidator) Validate(ctx context.Context, outcomeA, outcomeB, typeA, typeB string) (bool, string, error) {
+func (v *OllamaValidator) Validate(ctx context.Context, outcomeA, outcomeB, typeA, typeB string) (ValidationResult, error) {
 	callCtx, cancel := context.WithTimeout(ctx, perCallTimeout)
 	defer cancel()
 
@@ -140,29 +181,29 @@ func (v *OllamaValidator) Validate(ctx context.Context, outcomeA, outcomeB, type
 		Stream: false,
 	})
 	if err != nil {
-		return false, "", fmt.Errorf("ollama validator: marshal: %w", err)
+		return ValidationResult{}, fmt.Errorf("ollama validator: marshal: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, v.baseURL+"/api/chat", bytes.NewReader(body))
 	if err != nil {
-		return false, "", fmt.Errorf("ollama validator: create request: %w", err)
+		return ValidationResult{}, fmt.Errorf("ollama validator: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := v.httpClient.Do(req)
 	if err != nil {
-		return false, "", fmt.Errorf("ollama validator: request failed: %w", err)
+		return ValidationResult{}, fmt.Errorf("ollama validator: request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return false, "", fmt.Errorf("ollama validator: status %d: %s", resp.StatusCode, string(respBody))
+		return ValidationResult{}, fmt.Errorf("ollama validator: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var result ollamaChatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return false, "", fmt.Errorf("ollama validator: decode response: %w", err)
+		return ValidationResult{}, fmt.Errorf("ollama validator: decode response: %w", err)
 	}
 
 	return ParseValidatorResponse(result.Message.Content)
@@ -208,7 +249,7 @@ type openAIChatResponse struct {
 	} `json:"choices"`
 }
 
-func (v *OpenAIValidator) Validate(ctx context.Context, outcomeA, outcomeB, typeA, typeB string) (bool, string, error) {
+func (v *OpenAIValidator) Validate(ctx context.Context, outcomeA, outcomeB, typeA, typeB string) (ValidationResult, error) {
 	callCtx, cancel := context.WithTimeout(ctx, perCallTimeout)
 	defer cancel()
 
@@ -221,34 +262,34 @@ func (v *OpenAIValidator) Validate(ctx context.Context, outcomeA, outcomeB, type
 		},
 	})
 	if err != nil {
-		return false, "", fmt.Errorf("openai validator: marshal: %w", err)
+		return ValidationResult{}, fmt.Errorf("openai validator: marshal: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, "https://api.openai.com/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return false, "", fmt.Errorf("openai validator: create request: %w", err)
+		return ValidationResult{}, fmt.Errorf("openai validator: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+v.apiKey)
 
 	resp, err := v.httpClient.Do(req)
 	if err != nil {
-		return false, "", fmt.Errorf("openai validator: request failed: %w", err)
+		return ValidationResult{}, fmt.Errorf("openai validator: request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return false, "", fmt.Errorf("openai validator: status %d: %s", resp.StatusCode, string(respBody))
+		return ValidationResult{}, fmt.Errorf("openai validator: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var result openAIChatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return false, "", fmt.Errorf("openai validator: decode response: %w", err)
+		return ValidationResult{}, fmt.Errorf("openai validator: decode response: %w", err)
 	}
 
 	if len(result.Choices) == 0 {
-		return false, "", fmt.Errorf("openai validator: no choices in response")
+		return ValidationResult{}, fmt.Errorf("openai validator: no choices in response")
 	}
 
 	return ParseValidatorResponse(result.Choices[0].Message.Content)

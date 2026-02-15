@@ -125,4 +125,18 @@ type DecisionConflict struct {
 	Significance      *float64     `json:"significance,omitempty"`
 	ScoringMethod     string       `json:"scoring_method,omitempty"`
 	Explanation       *string      `json:"explanation,omitempty"`
+
+	// Lifecycle fields (ADR-015).
+	Category       *string    `json:"category,omitempty"` // factual, assessment, strategic, temporal
+	Severity       *string    `json:"severity,omitempty"` // critical, high, medium, low
+	Status         string     `json:"status"`             // open, acknowledged, resolved, wont_fix
+	ResolvedBy     *string    `json:"resolved_by,omitempty"`
+	ResolvedAt     *time.Time `json:"resolved_at,omitempty"`
+	ResolutionNote *string    `json:"resolution_note,omitempty"`
+}
+
+// ConflictResolution is the request body for PATCH /v1/conflicts/{id}.
+type ConflictResolution struct {
+	Status         string  `json:"status"` // acknowledged, resolved, wont_fix
+	ResolutionNote *string `json:"resolution_note,omitempty"`
 }

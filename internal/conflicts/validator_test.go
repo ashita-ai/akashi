@@ -23,53 +23,63 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestParseValidatorResponse_Yes(t *testing.T) {
-	confirmed, explanation, err := ParseValidatorResponse("VERDICT: yes\nEXPLANATION: Both decisions address caching strategy but reach incompatible conclusions.")
+	result, err := ParseValidatorResponse("VERDICT: yes\nCATEGORY: assessment\nSEVERITY: high\nEXPLANATION: Both decisions address caching strategy but reach incompatible conclusions.")
 	require.NoError(t, err)
-	assert.True(t, confirmed)
-	assert.Equal(t, "Both decisions address caching strategy but reach incompatible conclusions.", explanation)
+	assert.True(t, result.Confirmed)
+	assert.Equal(t, "Both decisions address caching strategy but reach incompatible conclusions.", result.Explanation)
+	assert.Equal(t, "assessment", result.Category)
+	assert.Equal(t, "high", result.Severity)
 }
 
 func TestParseValidatorResponse_No(t *testing.T) {
-	confirmed, explanation, err := ParseValidatorResponse("VERDICT: no\nEXPLANATION: These are about different topics.")
+	result, err := ParseValidatorResponse("VERDICT: no\nCATEGORY: factual\nSEVERITY: low\nEXPLANATION: These are about different topics.")
 	require.NoError(t, err)
-	assert.False(t, confirmed)
-	assert.Equal(t, "These are about different topics.", explanation)
+	assert.False(t, result.Confirmed)
+	assert.Equal(t, "These are about different topics.", result.Explanation)
+	assert.Equal(t, "factual", result.Category)
+	assert.Equal(t, "low", result.Severity)
 }
 
 func TestParseValidatorResponse_CaseInsensitive(t *testing.T) {
-	confirmed, _, err := ParseValidatorResponse("verdict: Yes\nexplanation: contradictory")
+	result, err := ParseValidatorResponse("verdict: Yes\ncategory: Strategic\nseverity: Medium\nexplanation: contradictory")
 	require.NoError(t, err)
-	assert.True(t, confirmed)
+	assert.True(t, result.Confirmed)
+	assert.Equal(t, "strategic", result.Category)
+	assert.Equal(t, "medium", result.Severity)
 
-	confirmed, _, err = ParseValidatorResponse("Verdict: NO\nExplanation: different topics")
+	result, err = ParseValidatorResponse("Verdict: NO\nCategory: temporal\nSeverity: Critical\nExplanation: different topics")
 	require.NoError(t, err)
-	assert.False(t, confirmed)
+	assert.False(t, result.Confirmed)
+	assert.Equal(t, "temporal", result.Category)
+	assert.Equal(t, "critical", result.Severity)
 }
 
 func TestParseValidatorResponse_ExtraWhitespace(t *testing.T) {
-	confirmed, explanation, err := ParseValidatorResponse("  VERDICT:   yes  \n  EXPLANATION:   They conflict.  \n")
+	result, err := ParseValidatorResponse("  VERDICT:   yes  \n  CATEGORY:   factual  \n  SEVERITY:   high  \n  EXPLANATION:   They conflict.  \n")
 	require.NoError(t, err)
-	assert.True(t, confirmed)
-	assert.Equal(t, "They conflict.", explanation)
+	assert.True(t, result.Confirmed)
+	assert.Equal(t, "They conflict.", result.Explanation)
+	assert.Equal(t, "factual", result.Category)
+	assert.Equal(t, "high", result.Severity)
 }
 
 func TestParseValidatorResponse_NoVerdictLine(t *testing.T) {
-	_, _, err := ParseValidatorResponse("This is just some text without a verdict.")
+	_, err := ParseValidatorResponse("This is just some text without a verdict.")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no VERDICT line found")
 }
 
 func TestParseValidatorResponse_UnrecognizedVerdict(t *testing.T) {
-	_, _, err := ParseValidatorResponse("VERDICT: maybe\nEXPLANATION: unclear")
+	_, err := ParseValidatorResponse("VERDICT: maybe\nEXPLANATION: unclear")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unrecognized verdict")
 }
 
 func TestParseValidatorResponse_NoExplanation(t *testing.T) {
-	confirmed, explanation, err := ParseValidatorResponse("VERDICT: yes")
+	result, err := ParseValidatorResponse("VERDICT: yes")
 	require.NoError(t, err)
-	assert.True(t, confirmed)
-	assert.Empty(t, explanation)
+	assert.True(t, result.Confirmed)
+	assert.Empty(t, result.Explanation)
 }
 
 func TestParseValidatorResponse_MultilineExtraPadding(t *testing.T) {
@@ -78,14 +88,63 @@ func TestParseValidatorResponse_MultilineExtraPadding(t *testing.T) {
 Here is my analysis:
 
 VERDICT: no
+CATEGORY: assessment
+SEVERITY: low
 EXPLANATION: Decision A is about database choice while Decision B is about deployment region.
 
 Hope this helps!
 `
-	confirmed, explanation, err := ParseValidatorResponse(response)
+	result, err := ParseValidatorResponse(response)
 	require.NoError(t, err)
-	assert.False(t, confirmed)
-	assert.Equal(t, "Decision A is about database choice while Decision B is about deployment region.", explanation)
+	assert.False(t, result.Confirmed)
+	assert.Equal(t, "Decision A is about database choice while Decision B is about deployment region.", result.Explanation)
+	assert.Equal(t, "assessment", result.Category)
+	assert.Equal(t, "low", result.Severity)
+}
+
+func TestParseValidatorResponse_InvalidCategory(t *testing.T) {
+	// Invalid category values should be silently ignored (empty string).
+	result, err := ParseValidatorResponse("VERDICT: yes\nCATEGORY: philosophical\nSEVERITY: high\nEXPLANATION: conflict")
+	require.NoError(t, err)
+	assert.True(t, result.Confirmed)
+	assert.Empty(t, result.Category, "invalid category should be ignored")
+	assert.Equal(t, "high", result.Severity)
+}
+
+func TestParseValidatorResponse_InvalidSeverity(t *testing.T) {
+	// Invalid severity values should be silently ignored.
+	result, err := ParseValidatorResponse("VERDICT: yes\nCATEGORY: factual\nSEVERITY: extreme\nEXPLANATION: conflict")
+	require.NoError(t, err)
+	assert.True(t, result.Confirmed)
+	assert.Equal(t, "factual", result.Category)
+	assert.Empty(t, result.Severity, "invalid severity should be ignored")
+}
+
+func TestParseValidatorResponse_MissingCategoryAndSeverity(t *testing.T) {
+	// Backwards compatibility: old-style 2-line responses (VERDICT + EXPLANATION)
+	// should still parse, just with empty category and severity.
+	result, err := ParseValidatorResponse("VERDICT: yes\nEXPLANATION: they conflict")
+	require.NoError(t, err)
+	assert.True(t, result.Confirmed)
+	assert.Equal(t, "they conflict", result.Explanation)
+	assert.Empty(t, result.Category)
+	assert.Empty(t, result.Severity)
+}
+
+func TestParseValidatorResponse_AllCategories(t *testing.T) {
+	for _, cat := range []string{"factual", "assessment", "strategic", "temporal"} {
+		result, err := ParseValidatorResponse(fmt.Sprintf("VERDICT: yes\nCATEGORY: %s\nSEVERITY: low\nEXPLANATION: test", cat))
+		require.NoError(t, err, "category=%s", cat)
+		assert.Equal(t, cat, result.Category, "category=%s", cat)
+	}
+}
+
+func TestParseValidatorResponse_AllSeverities(t *testing.T) {
+	for _, sev := range []string{"critical", "high", "medium", "low"} {
+		result, err := ParseValidatorResponse(fmt.Sprintf("VERDICT: yes\nCATEGORY: factual\nSEVERITY: %s\nEXPLANATION: test", sev))
+		require.NoError(t, err, "severity=%s", sev)
+		assert.Equal(t, sev, result.Severity, "severity=%s", sev)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -94,10 +153,12 @@ Hope this helps!
 
 func TestNoopValidator(t *testing.T) {
 	v := NoopValidator{}
-	confirmed, explanation, err := v.Validate(context.Background(), "chose Redis", "chose Memcached", "architecture", "architecture")
+	result, err := v.Validate(context.Background(), "chose Redis", "chose Memcached", "architecture", "architecture")
 	require.NoError(t, err)
-	assert.True(t, confirmed, "NoopValidator always confirms")
-	assert.Empty(t, explanation)
+	assert.True(t, result.Confirmed, "NoopValidator always confirms")
+	assert.Empty(t, result.Explanation)
+	assert.Empty(t, result.Category)
+	assert.Empty(t, result.Severity)
 }
 
 // ---------------------------------------------------------------------------
@@ -121,17 +182,19 @@ func TestOllamaValidator_Confirms(t *testing.T) {
 			Message: struct {
 				Content string `json:"content"`
 			}{
-				Content: "VERDICT: yes\nEXPLANATION: Both decisions address caching strategy but chose incompatible technologies.",
+				Content: "VERDICT: yes\nCATEGORY: strategic\nSEVERITY: high\nEXPLANATION: Both decisions address caching strategy but chose incompatible technologies.",
 			},
 		})
 	}))
 	defer srv.Close()
 
 	v := NewOllamaValidator(srv.URL, "test-model")
-	confirmed, explanation, err := v.Validate(context.Background(), "chose Redis for caching", "chose Memcached for caching", "architecture", "architecture")
+	result, err := v.Validate(context.Background(), "chose Redis for caching", "chose Memcached for caching", "architecture", "architecture")
 	require.NoError(t, err)
-	assert.True(t, confirmed)
-	assert.Contains(t, explanation, "caching")
+	assert.True(t, result.Confirmed)
+	assert.Contains(t, result.Explanation, "caching")
+	assert.Equal(t, "strategic", result.Category)
+	assert.Equal(t, "high", result.Severity)
 }
 
 func TestOllamaValidator_Rejects(t *testing.T) {
@@ -141,17 +204,17 @@ func TestOllamaValidator_Rejects(t *testing.T) {
 			Message: struct {
 				Content string `json:"content"`
 			}{
-				Content: "VERDICT: no\nEXPLANATION: Decision A is about database choice while Decision B is about deployment region.",
+				Content: "VERDICT: no\nCATEGORY: assessment\nSEVERITY: low\nEXPLANATION: Decision A is about database choice while Decision B is about deployment region.",
 			},
 		})
 	}))
 	defer srv.Close()
 
 	v := NewOllamaValidator(srv.URL, "test-model")
-	confirmed, explanation, err := v.Validate(context.Background(), "use PostgreSQL", "deploy to eu-west-1", "architecture", "deployment")
+	result, err := v.Validate(context.Background(), "use PostgreSQL", "deploy to eu-west-1", "architecture", "deployment")
 	require.NoError(t, err)
-	assert.False(t, confirmed)
-	assert.Contains(t, explanation, "database choice")
+	assert.False(t, result.Confirmed)
+	assert.Contains(t, result.Explanation, "database choice")
 }
 
 func TestOllamaValidator_MalformedResponse(t *testing.T) {
@@ -168,9 +231,8 @@ func TestOllamaValidator_MalformedResponse(t *testing.T) {
 	defer srv.Close()
 
 	v := NewOllamaValidator(srv.URL, "test-model")
-	confirmed, _, err := v.Validate(context.Background(), "outcome A", "outcome B", "type", "type")
+	_, err := v.Validate(context.Background(), "outcome A", "outcome B", "type", "type")
 	assert.Error(t, err)
-	assert.False(t, confirmed, "malformed response should fail-safe to rejection")
 }
 
 func TestOllamaValidator_Timeout(t *testing.T) {
@@ -184,9 +246,8 @@ func TestOllamaValidator_Timeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	confirmed, _, err := v.Validate(ctx, "outcome A", "outcome B", "type", "type")
+	_, err := v.Validate(ctx, "outcome A", "outcome B", "type", "type")
 	assert.Error(t, err)
-	assert.False(t, confirmed, "timeout should fail-safe to rejection")
 }
 
 func TestOllamaValidator_ServerError(t *testing.T) {
@@ -197,9 +258,8 @@ func TestOllamaValidator_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	v := NewOllamaValidator(srv.URL, "test-model")
-	confirmed, _, err := v.Validate(context.Background(), "outcome A", "outcome B", "type", "type")
+	_, err := v.Validate(context.Background(), "outcome A", "outcome B", "type", "type")
 	assert.Error(t, err)
-	assert.False(t, confirmed)
 	assert.Contains(t, err.Error(), "status 500")
 }
 
@@ -222,7 +282,7 @@ func TestOpenAIValidator_Confirms(t *testing.T) {
 				{Message: struct {
 					Content string `json:"content"`
 				}{
-					Content: "VERDICT: yes\nEXPLANATION: Both decisions address API protocol choice but reach incompatible conclusions.",
+					Content: "VERDICT: yes\nCATEGORY: factual\nSEVERITY: critical\nEXPLANATION: Both decisions address API protocol choice but reach incompatible conclusions.",
 				}},
 			},
 		})
@@ -280,15 +340,14 @@ func TestOpenAIValidator_DefaultModel(t *testing.T) {
 
 // mockValidator is a test double that returns preconfigured results.
 type mockValidator struct {
-	confirmed   bool
-	explanation string
-	err         error
-	callCount   int
+	result    ValidationResult
+	err       error
+	callCount int
 }
 
-func (m *mockValidator) Validate(_ context.Context, _, _, _, _ string) (bool, string, error) {
+func (m *mockValidator) Validate(_ context.Context, _, _, _, _ string) (ValidationResult, error) {
 	m.callCount++
-	return m.confirmed, m.explanation, m.err
+	return m.result, m.err
 }
 
 func TestScoreForDecision_LLMConfirms(t *testing.T) {
@@ -324,7 +383,12 @@ func TestScoreForDecision_LLMConfirms(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	validator := &mockValidator{confirmed: true, explanation: "Both address caching but chose incompatible technologies."}
+	validator := &mockValidator{result: ValidationResult{
+		Confirmed:   true,
+		Explanation: "Both address caching but chose incompatible technologies.",
+		Category:    "strategic",
+		Severity:    "high",
+	}}
 	scorer := NewScorer(testDB, logger, 0.1, validator)
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
@@ -342,6 +406,11 @@ func TestScoreForDecision_LLMConfirms(t *testing.T) {
 			assert.Equal(t, "llm", c.ScoringMethod, "LLM-validated conflicts should have method='llm'")
 			require.NotNil(t, c.Explanation, "LLM-confirmed conflicts should have an explanation")
 			assert.Contains(t, *c.Explanation, "caching")
+			require.NotNil(t, c.Category, "LLM-confirmed conflicts should have a category")
+			assert.Equal(t, "strategic", *c.Category)
+			require.NotNil(t, c.Severity, "LLM-confirmed conflicts should have a severity")
+			assert.Equal(t, "high", *c.Severity)
+			assert.Equal(t, "open", c.Status, "new conflicts should be open")
 			break
 		}
 	}
@@ -381,7 +450,10 @@ func TestScoreForDecision_LLMRejects(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	validator := &mockValidator{confirmed: false, explanation: "Different topics — tests vs licensing."}
+	validator := &mockValidator{result: ValidationResult{
+		Confirmed:   false,
+		Explanation: "Different topics — tests vs licensing.",
+	}}
 	scorer := NewScorer(testDB, logger, 0.1, validator)
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 

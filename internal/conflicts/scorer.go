@@ -128,21 +128,28 @@ func (s *Scorer) ScoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		// LLM validation gate: confirm the candidate is a genuine contradiction.
 		// NoopValidator always confirms (preserving current embedding-only behavior).
 		var explanation *string
+		var category, severity *string
 		if _, isNoop := s.validator.(NoopValidator); !isNoop {
-			confirmed, expl, err := s.validator.Validate(ctx, bestOutcomeA, bestOutcomeB, d.DecisionType, cand.DecisionType)
+			result, err := s.validator.Validate(ctx, bestOutcomeA, bestOutcomeB, d.DecisionType, cand.DecisionType)
 			if err != nil {
 				s.logger.Warn("conflict scorer: LLM validation failed, skipping candidate",
 					"error", err, "decision_a", decisionID, "decision_b", cand.ID)
 				continue // fail-safe: don't insert unvalidated conflicts
 			}
-			if !confirmed {
+			if !result.Confirmed {
 				s.logger.Debug("conflict scorer: LLM rejected candidate",
-					"decision_a", decisionID, "decision_b", cand.ID, "explanation", expl)
+					"decision_a", decisionID, "decision_b", cand.ID, "explanation", result.Explanation)
 				continue
 			}
 			bestMethod = "llm"
-			if expl != "" {
-				explanation = &expl
+			if result.Explanation != "" {
+				explanation = &result.Explanation
+			}
+			if result.Category != "" {
+				category = &result.Category
+			}
+			if result.Severity != "" {
+				severity = &result.Severity
 			}
 		}
 
@@ -166,6 +173,9 @@ func (s *Scorer) ScoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			Significance:      ptr(bestSig),
 			ScoringMethod:     bestMethod,
 			Explanation:       explanation,
+			Category:          category,
+			Severity:          severity,
+			Status:            "open",
 		}
 		if err := s.db.InsertScoredConflict(ctx, c); err != nil {
 			s.logger.Warn("conflict scorer: insert failed", "decision_a", decisionID, "decision_b", cand.ID, "error", err)
