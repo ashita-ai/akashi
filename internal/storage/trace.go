@@ -167,14 +167,14 @@ func (db *DB) CreateTraceTx(ctx context.Context, params CreateTraceParams) (mode
 	}
 
 	// 4b. Queue search index update (inside same tx — if decision commits, outbox commits).
-	if d.Embedding != nil {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO search_outbox (decision_id, org_id, operation)
-			 VALUES ($1, $2, 'upsert')
-			 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
-			d.ID, params.OrgID); err != nil {
-			return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: queue search outbox in trace tx: %w", err)
-		}
+	// Always queue regardless of embedding status — the outbox worker defers entries
+	// whose decisions lack embeddings until a backfill provides one (issue #60).
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO search_outbox (decision_id, org_id, operation)
+		 VALUES ($1, $2, 'upsert')
+		 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
+		d.ID, params.OrgID); err != nil {
+		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: queue search outbox in trace tx: %w", err)
 	}
 
 	// 5. Complete run.
