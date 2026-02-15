@@ -2632,3 +2632,256 @@ func TestFindEmbeddedDecisionIDs_DefaultLimit(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, refs)
 }
+
+// ---------------------------------------------------------------------------
+// Tests: Claims storage (InsertClaims, FindClaimsByDecision,
+//        FindDecisionIDsMissingClaims, HasClaimsForDecision)
+// ---------------------------------------------------------------------------
+
+func TestInsertClaims_AndFindByDecision(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "claims-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	emb := pgvector.NewVector(make([]float32, 1024))
+	d, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID:        run.ID,
+		AgentID:      agentID,
+		DecisionType: "claim_test",
+		Outcome:      "multi-claim outcome",
+		Confidence:   0.8,
+		Embedding:    &emb,
+	})
+	require.NoError(t, err)
+
+	// Insert 3 claims with different embeddings.
+	claimEmbs := make([]pgvector.Vector, 3)
+	for i := range claimEmbs {
+		v := make([]float32, 1024)
+		v[i] = 1.0
+		claimEmbs[i] = pgvector.NewVector(v)
+	}
+
+	claims := []storage.Claim{
+		{DecisionID: d.ID, OrgID: d.OrgID, ClaimIdx: 0, ClaimText: "First claim about architecture.", Embedding: &claimEmbs[0]},
+		{DecisionID: d.ID, OrgID: d.OrgID, ClaimIdx: 1, ClaimText: "Second claim about security.", Embedding: &claimEmbs[1]},
+		{DecisionID: d.ID, OrgID: d.OrgID, ClaimIdx: 2, ClaimText: "Third claim about performance.", Embedding: &claimEmbs[2]},
+	}
+	err = testDB.InsertClaims(ctx, claims)
+	require.NoError(t, err)
+
+	// Read them back.
+	got, err := testDB.FindClaimsByDecision(ctx, d.ID)
+	require.NoError(t, err)
+	require.Len(t, got, 3)
+
+	// Verify ordering by claim_idx.
+	for i, c := range got {
+		assert.Equal(t, i, c.ClaimIdx, "claims should be ordered by claim_idx")
+		assert.Equal(t, d.ID, c.DecisionID)
+		assert.Equal(t, d.OrgID, c.OrgID)
+		assert.NotEqual(t, uuid.Nil, c.ID, "claim should have a generated UUID")
+		assert.NotNil(t, c.Embedding, "claim embedding should be stored")
+	}
+
+	// Verify claim texts.
+	assert.Equal(t, "First claim about architecture.", got[0].ClaimText)
+	assert.Equal(t, "Second claim about security.", got[1].ClaimText)
+	assert.Equal(t, "Third claim about performance.", got[2].ClaimText)
+}
+
+func TestInsertClaims_EmptySlice(t *testing.T) {
+	ctx := context.Background()
+
+	// Empty slice should be a no-op.
+	err := testDB.InsertClaims(ctx, nil)
+	require.NoError(t, err)
+
+	err = testDB.InsertClaims(ctx, []storage.Claim{})
+	require.NoError(t, err)
+}
+
+func TestInsertClaims_NilEmbedding(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "claims-nil-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	d, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID:        run.ID,
+		AgentID:      agentID,
+		DecisionType: "claim_nil_emb",
+		Outcome:      "claim without embedding",
+		Confidence:   0.7,
+	})
+	require.NoError(t, err)
+
+	// Insert a claim with nil embedding (allowed by schema — embedding is nullable).
+	err = testDB.InsertClaims(ctx, []storage.Claim{
+		{DecisionID: d.ID, OrgID: d.OrgID, ClaimIdx: 0, ClaimText: "Claim with no embedding vector.", Embedding: nil},
+	})
+	require.NoError(t, err)
+
+	got, err := testDB.FindClaimsByDecision(ctx, d.ID)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Nil(t, got[0].Embedding, "nil embedding should be preserved")
+	assert.Equal(t, "Claim with no embedding vector.", got[0].ClaimText)
+}
+
+func TestFindClaimsByDecision_NoClaims(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "claims-empty-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	d, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID:        run.ID,
+		AgentID:      agentID,
+		DecisionType: "no_claims",
+		Outcome:      "decision without any claims",
+		Confidence:   0.5,
+	})
+	require.NoError(t, err)
+
+	got, err := testDB.FindClaimsByDecision(ctx, d.ID)
+	require.NoError(t, err)
+	assert.Empty(t, got, "decision with no claims should return empty slice")
+}
+
+func TestFindClaimsByDecision_NonexistentDecision(t *testing.T) {
+	ctx := context.Background()
+
+	got, err := testDB.FindClaimsByDecision(ctx, uuid.New())
+	require.NoError(t, err)
+	assert.Empty(t, got, "nonexistent decision should return empty claims")
+}
+
+func TestHasClaimsForDecision(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "hasclaims-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	// Decision A: will have claims.
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, DecisionType: "has_claims",
+		Outcome: "will have claims", Confidence: 0.8,
+	})
+	require.NoError(t, err)
+
+	// Decision B: will NOT have claims.
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, DecisionType: "has_claims",
+		Outcome: "will not have claims", Confidence: 0.7,
+	})
+	require.NoError(t, err)
+
+	// Before inserting, both should return false.
+	has, err := testDB.HasClaimsForDecision(ctx, dA.ID)
+	require.NoError(t, err)
+	assert.False(t, has, "no claims yet for decision A")
+
+	has, err = testDB.HasClaimsForDecision(ctx, dB.ID)
+	require.NoError(t, err)
+	assert.False(t, has, "no claims for decision B")
+
+	// Insert claims for A.
+	err = testDB.InsertClaims(ctx, []storage.Claim{
+		{DecisionID: dA.ID, OrgID: dA.OrgID, ClaimIdx: 0, ClaimText: "A claim for decision A."},
+	})
+	require.NoError(t, err)
+
+	// A should now return true; B should still be false.
+	has, err = testDB.HasClaimsForDecision(ctx, dA.ID)
+	require.NoError(t, err)
+	assert.True(t, has, "decision A should have claims after insert")
+
+	has, err = testDB.HasClaimsForDecision(ctx, dB.ID)
+	require.NoError(t, err)
+	assert.False(t, has, "decision B should still have no claims")
+}
+
+func TestHasClaimsForDecision_NonexistentDecision(t *testing.T) {
+	ctx := context.Background()
+
+	has, err := testDB.HasClaimsForDecision(ctx, uuid.New())
+	require.NoError(t, err)
+	assert.False(t, has, "nonexistent decision should return false")
+}
+
+func TestFindDecisionIDsMissingClaims(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "missclaims-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	emb := pgvector.NewVector(make([]float32, 1024))
+
+	// Decision with embedding but no claims — should appear.
+	dMissing, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, DecisionType: "missing_claims",
+		Outcome: "needs claims generated", Confidence: 0.8,
+		Embedding: &emb,
+	})
+	require.NoError(t, err)
+
+	// Decision with embedding AND claims — should NOT appear.
+	dHas, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, DecisionType: "has_claims_already",
+		Outcome: "already has claims", Confidence: 0.9,
+		Embedding: &emb,
+	})
+	require.NoError(t, err)
+
+	err = testDB.InsertClaims(ctx, []storage.Claim{
+		{DecisionID: dHas.ID, OrgID: dHas.OrgID, ClaimIdx: 0, ClaimText: "Existing claim."},
+	})
+	require.NoError(t, err)
+
+	// Decision without embedding — should NOT appear (no embedding to compare).
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, DecisionType: "no_embedding",
+		Outcome: "no embedding at all", Confidence: 0.5,
+	})
+	require.NoError(t, err)
+
+	refs, err := testDB.FindDecisionIDsMissingClaims(ctx, 1000)
+	require.NoError(t, err)
+
+	foundMissing := false
+	for _, r := range refs {
+		if r.ID == dMissing.ID {
+			foundMissing = true
+			assert.Equal(t, dMissing.OrgID, r.OrgID)
+		}
+		// The decision with claims should never appear.
+		assert.NotEqual(t, dHas.ID, r.ID,
+			"decision with existing claims should not appear in missing list")
+	}
+	assert.True(t, foundMissing, "decision with embedding but no claims should appear")
+}
+
+func TestFindDecisionIDsMissingClaims_DefaultLimit(t *testing.T) {
+	ctx := context.Background()
+
+	// Zero or negative limit should default to 500 and not error.
+	refs, err := testDB.FindDecisionIDsMissingClaims(ctx, 0)
+	require.NoError(t, err)
+	_ = refs // may or may not be empty; just verify no error
+
+	refs, err = testDB.FindDecisionIDsMissingClaims(ctx, -1)
+	require.NoError(t, err)
+	_ = refs
+}
