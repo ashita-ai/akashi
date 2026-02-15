@@ -56,6 +56,9 @@ decision_type="architecture" to see if anyone already decided on caching.`),
 				mcplib.Max(100),
 				mcplib.DefaultNumber(5),
 			),
+			mcplib.WithString("format",
+				mcplib.Description(`Response format: "concise" (default) returns summary + action_needed + compact decisions. "full" returns complete decision objects.`),
+			),
 		),
 		s.handleCheck,
 	)
@@ -164,6 +167,9 @@ FILTER EXAMPLES:
 				mcplib.Max(100),
 				mcplib.DefaultNumber(10),
 			),
+			mcplib.WithString("format",
+				mcplib.Description(`Response format: "concise" (default) returns compact decisions. "full" returns complete decision objects.`),
+			),
 		),
 		s.handleQuery,
 	)
@@ -199,6 +205,9 @@ EXAMPLE QUERIES:
 				mcplib.Description("Minimum confidence threshold for results (0.0-1.0)"),
 				mcplib.Min(0),
 				mcplib.Max(1),
+			),
+			mcplib.WithString("format",
+				mcplib.Description(`Response format: "concise" (default) returns compact results. "full" returns complete decision objects.`),
 			),
 		),
 		s.handleSearch,
@@ -238,6 +247,9 @@ filters for agent_id and decision_type.`),
 				mcplib.Min(1),
 				mcplib.Max(100),
 				mcplib.DefaultNumber(10),
+			),
+			mcplib.WithString("format",
+				mcplib.Description(`Response format: "concise" (default) returns compact decisions. "full" returns complete decision objects.`),
 			),
 		),
 		s.handleRecent,
@@ -296,6 +308,9 @@ Only open/acknowledged conflicts are shown by default.`),
 				mcplib.Max(100),
 				mcplib.DefaultNumber(10),
 			),
+			mcplib.WithString("format",
+				mcplib.Description(`Response format: "concise" (default) returns compact conflicts. "full" returns complete conflict objects.`),
+			),
 		),
 		s.handleConflicts,
 	)
@@ -338,7 +353,36 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 		resp.HasPrecedent = len(resp.Decisions) > 0
 	}
 
-	resultData, _ := json.MarshalIndent(resp, "", "  ")
+	format := request.GetString("format", "concise")
+	if format == "full" {
+		resultData, _ := json.MarshalIndent(resp, "", "  ")
+		return &mcplib.CallToolResult{
+			Content: []mcplib.Content{
+				mcplib.TextContent{Type: "text", Text: string(resultData)},
+			},
+		}, nil
+	}
+
+	// Concise format: summary + action_needed + compact representations.
+	compactDecs := make([]map[string]any, len(resp.Decisions))
+	for i, d := range resp.Decisions {
+		compactDecs[i] = compactDecision(d)
+	}
+	compactConfs := make([]map[string]any, len(resp.Conflicts))
+	for i, c := range resp.Conflicts {
+		compactConfs[i] = compactConflict(c)
+	}
+
+	result := map[string]any{
+		"has_precedent":  resp.HasPrecedent,
+		"summary":        generateCheckSummary(resp.Decisions, resp.Conflicts),
+		"action_needed":  actionNeeded(resp.Conflicts),
+		"relevant_count": len(resp.Decisions),
+		"decisions":      compactDecs,
+		"conflicts":      compactConfs,
+	}
+
+	resultData, _ := json.MarshalIndent(result, "", "  ")
 	return &mcplib.CallToolResult{
 		Content: []mcplib.Content{
 			mcplib.TextContent{Type: "text", Text: string(resultData)},
@@ -550,11 +594,19 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 		}
 	}
 
-	resultData, _ := json.MarshalIndent(map[string]any{
-		"decisions": decs,
-		"total":     total,
-	}, "", "  ")
+	format := request.GetString("format", "concise")
+	var payload any
+	if format == "full" {
+		payload = map[string]any{"decisions": decs, "total": total}
+	} else {
+		compact := make([]map[string]any, len(decs))
+		for i, d := range decs {
+			compact[i] = compactDecision(d)
+		}
+		payload = map[string]any{"decisions": compact, "total": total}
+	}
 
+	resultData, _ := json.MarshalIndent(payload, "", "  ")
 	return &mcplib.CallToolResult{
 		Content: []mcplib.Content{
 			mcplib.TextContent{Type: "text", Text: string(resultData)},
@@ -590,11 +642,19 @@ func (s *Server) handleSearch(ctx context.Context, request mcplib.CallToolReques
 		}
 	}
 
-	resultData, _ := json.MarshalIndent(map[string]any{
-		"results": results,
-		"total":   len(results),
-	}, "", "  ")
+	format := request.GetString("format", "concise")
+	var payload any
+	if format == "full" {
+		payload = map[string]any{"results": results, "total": len(results)}
+	} else {
+		compact := make([]map[string]any, len(results))
+		for i, r := range results {
+			compact[i] = compactSearchResult(r)
+		}
+		payload = map[string]any{"results": compact, "total": len(results)}
+	}
 
+	resultData, _ := json.MarshalIndent(payload, "", "  ")
 	return &mcplib.CallToolResult{
 		Content: []mcplib.Content{
 			mcplib.TextContent{Type: "text", Text: string(resultData)},
@@ -639,11 +699,19 @@ func (s *Server) handleRecent(ctx context.Context, request mcplib.CallToolReques
 		}
 	}
 
-	resultData, _ := json.MarshalIndent(map[string]any{
-		"decisions": decs,
-		"total":     len(decs),
-	}, "", "  ")
+	format := request.GetString("format", "concise")
+	var payload any
+	if format == "full" {
+		payload = map[string]any{"decisions": decs, "total": len(decs)}
+	} else {
+		compact := make([]map[string]any, len(decs))
+		for i, d := range decs {
+			compact[i] = compactDecision(d)
+		}
+		payload = map[string]any{"decisions": compact, "total": len(decs)}
+	}
 
+	resultData, _ := json.MarshalIndent(payload, "", "  ")
 	return &mcplib.CallToolResult{
 		Content: []mcplib.Content{
 			mcplib.TextContent{Type: "text", Text: string(resultData)},
@@ -701,11 +769,19 @@ func (s *Server) handleConflicts(ctx context.Context, request mcplib.CallToolReq
 		conflicts = []model.DecisionConflict{}
 	}
 
-	resultData, _ := json.MarshalIndent(map[string]any{
-		"conflicts": conflicts,
-		"total":     len(conflicts),
-	}, "", "  ")
+	format := request.GetString("format", "concise")
+	var payload any
+	if format == "full" {
+		payload = map[string]any{"conflicts": conflicts, "total": len(conflicts)}
+	} else {
+		compact := make([]map[string]any, len(conflicts))
+		for i, c := range conflicts {
+			compact[i] = compactConflict(c)
+		}
+		payload = map[string]any{"conflicts": compact, "total": len(conflicts)}
+	}
 
+	resultData, _ := json.MarshalIndent(payload, "", "  ")
 	return &mcplib.CallToolResult{
 		Content: []mcplib.Content{
 			mcplib.TextContent{Type: "text", Text: string(resultData)},
