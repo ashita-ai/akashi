@@ -631,6 +631,56 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /v1/decisions/{id}/conflicts:
+    get:
+      operationId: getDecisionConflicts
+      tags: [Conflicts]
+      summary: Get conflicts involving a decision
+      description: |
+        Returns all detected conflicts where this decision appears as
+        either side (A or B). Useful for understanding whether a specific
+        decision contradicts or supersedes other decisions.
+        Requires `reader` role or higher.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The decision ID to find conflicts for.
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [open, acknowledged, resolved, wont_fix]
+          description: Filter by conflict status.
+      responses:
+        "200":
+          description: Conflicts involving this decision.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      decision_id:
+                        type: string
+                        format: uuid
+                      conflicts:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/DecisionConflict"
+                      total:
+                        type: integer
+                  meta:
+                    $ref: "#/components/schemas/ResponseMeta"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
   /v1/verify/{id}:
     get:
       operationId: verifyDecision

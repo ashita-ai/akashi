@@ -124,6 +124,9 @@ func New(cfg ServerConfig) *Server {
 	// Decision revision history (reader+).
 	mux.Handle("GET /v1/decisions/{id}/revisions", readRole(http.HandlerFunc(h.HandleDecisionRevisions)))
 
+	// Decision conflicts (reader+).
+	mux.Handle("GET /v1/decisions/{id}/conflicts", readRole(http.HandlerFunc(h.HandleDecisionConflicts)))
+
 	// Session view (reader+).
 	mux.Handle("GET /v1/sessions/{session_id}", readRole(http.HandlerFunc(h.HandleSessionView)))
 

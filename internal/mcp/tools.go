@@ -13,6 +13,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/ctxutil"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
+	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 func (s *Server) registerTools() {
@@ -239,6 +240,45 @@ filters for agent_id and decision_type.`),
 			),
 		),
 		s.handleRecent,
+	)
+
+	// akashi_conflicts — list and filter conflicts.
+	s.mcpServer.AddTool(
+		mcplib.NewTool("akashi_conflicts",
+			mcplib.WithDescription(`List detected conflicts between decisions.
+
+WHEN TO USE: When you want to see what contradictions or disagreements
+exist in the decision trail. Useful for understanding where agents
+disagree and what needs resolution.
+
+Returns conflicts filtered by type, agent, status, severity, or category.
+Only open/acknowledged conflicts are shown by default.`),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithIdempotentHintAnnotation(true),
+			mcplib.WithOpenWorldHintAnnotation(false),
+			mcplib.WithString("decision_type",
+				mcplib.Description("Filter by decision type"),
+			),
+			mcplib.WithString("agent_id",
+				mcplib.Description("Filter by agent involved in the conflict"),
+			),
+			mcplib.WithString("status",
+				mcplib.Description("Filter by status: open, acknowledged, resolved, wont_fix. Defaults to showing open+acknowledged."),
+			),
+			mcplib.WithString("severity",
+				mcplib.Description("Filter by severity: critical, high, medium, low"),
+			),
+			mcplib.WithString("category",
+				mcplib.Description("Filter by category: factual, assessment, strategic, temporal"),
+			),
+			mcplib.WithNumber("limit",
+				mcplib.Description("Maximum results to return"),
+				mcplib.Min(1),
+				mcplib.Max(100),
+				mcplib.DefaultNumber(10),
+			),
+		),
+		s.handleConflicts,
 	)
 }
 
@@ -583,6 +623,68 @@ func (s *Server) handleRecent(ctx context.Context, request mcplib.CallToolReques
 	resultData, _ := json.MarshalIndent(map[string]any{
 		"decisions": decs,
 		"total":     len(decs),
+	}, "", "  ")
+
+	return &mcplib.CallToolResult{
+		Content: []mcplib.Content{
+			mcplib.TextContent{Type: "text", Text: string(resultData)},
+		},
+	}, nil
+}
+
+func (s *Server) handleConflicts(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	orgID := ctxutil.OrgIDFromContext(ctx)
+	claims := ctxutil.ClaimsFromContext(ctx)
+	limit := request.GetInt("limit", 10)
+
+	filters := storage.ConflictFilters{}
+	if dt := request.GetString("decision_type", ""); dt != "" {
+		filters.DecisionType = &dt
+	}
+	if aid := request.GetString("agent_id", ""); aid != "" {
+		filters.AgentID = &aid
+	}
+	if st := request.GetString("status", ""); st != "" {
+		filters.Status = &st
+	}
+	if sev := request.GetString("severity", ""); sev != "" {
+		filters.Severity = &sev
+	}
+	if cat := request.GetString("category", ""); cat != "" {
+		filters.Category = &cat
+	}
+
+	conflicts, err := s.db.ListConflicts(ctx, orgID, filters, limit, 0)
+	if err != nil {
+		return errorResult(fmt.Sprintf("list conflicts failed: %v", err)), nil
+	}
+
+	// Apply access filtering.
+	if claims != nil {
+		conflicts, err = authz.FilterConflicts(ctx, s.db, claims, conflicts, s.grantCache)
+		if err != nil {
+			return errorResult(fmt.Sprintf("authorization check failed: %v", err)), nil
+		}
+	}
+
+	// Default to open+acknowledged if no status filter was provided.
+	if request.GetString("status", "") == "" {
+		var actionable []model.DecisionConflict
+		for _, c := range conflicts {
+			if c.Status == "open" || c.Status == "acknowledged" {
+				actionable = append(actionable, c)
+			}
+		}
+		conflicts = actionable
+	}
+
+	if conflicts == nil {
+		conflicts = []model.DecisionConflict{}
+	}
+
+	resultData, _ := json.MarshalIndent(map[string]any{
+		"conflicts": conflicts,
+		"total":     len(conflicts),
 	}, "", "  ")
 
 	return &mcplib.CallToolResult{

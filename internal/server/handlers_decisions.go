@@ -648,3 +648,44 @@ func (h *Handlers) HandleSessionView(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 }
+
+// HandleDecisionConflicts handles GET /v1/decisions/{id}/conflicts.
+// Returns all conflicts involving a specific decision (as A or B side).
+func (h *Handlers) HandleDecisionConflicts(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
+
+	idStr := r.PathValue("id")
+	decisionID, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "INVALID_INPUT", "invalid decision ID")
+		return
+	}
+
+	filters := storage.ConflictFilters{DecisionID: &decisionID}
+	if st := r.URL.Query().Get("status"); st != "" {
+		filters.Status = &st
+	}
+
+	conflicts, err := h.db.ListConflicts(r.Context(), orgID, filters, 100, 0)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to list decision conflicts", err)
+		return
+	}
+
+	conflicts, err = filterConflictsByAccess(r.Context(), h.db, claims, conflicts, h.grantCache)
+	if err != nil {
+		h.writeInternalError(w, r, "authorization check failed", err)
+		return
+	}
+
+	if conflicts == nil {
+		conflicts = []model.DecisionConflict{}
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"decision_id": decisionID,
+		"conflicts":   conflicts,
+		"total":       len(conflicts),
+	})
+}
