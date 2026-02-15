@@ -149,6 +149,7 @@ export interface AgentEvent {
 export type ConflictKind = "cross_agent" | "self_contradiction";
 
 export interface DecisionConflict {
+  id: string;
   conflict_kind: ConflictKind;
   decision_a_id: string;
   decision_b_id: string;
@@ -167,6 +168,13 @@ export interface DecisionConflict {
   decided_at_a: string;
   decided_at_b: string;
   detected_at: string;
+  explanation: string | null;
+  category: ConflictCategory | null;
+  severity: ConflictSeverity | null;
+  status: ConflictStatus;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  resolution_note: string | null;
 }
 
 // Search
@@ -219,6 +227,56 @@ export interface AgentsList {
 export interface SearchResponse {
   results: SearchResult[];
   total: number;
+}
+
+// Conflict lifecycle
+export type ConflictStatus = "open" | "acknowledged" | "resolved" | "wont_fix";
+export type ConflictCategory = "factual" | "assessment" | "strategic" | "temporal";
+export type ConflictSeverity = "critical" | "high" | "medium" | "low";
+
+// Agent stats
+export interface AgentStats {
+  agent_id: string;
+  decision_count: number;
+  avg_confidence: number;
+  first_decision_at: string | null;
+  last_decision_at: string | null;
+  low_quality_count: number;
+  type_breakdown: Record<string, number>;
+}
+
+// Trace health
+export interface TraceHealth {
+  status: string;
+  total_decisions: number;
+  decisions_24h: number;
+  avg_confidence: number;
+  low_quality_pct: number;
+  conflict_rate: number;
+  active_agents: number;
+  gaps: TraceGap[];
+}
+
+export interface TraceGap {
+  agent_id: string;
+  last_seen: string;
+  gap_hours: number;
+}
+
+// Session view
+export interface SessionView {
+  session_id: string;
+  decisions: Decision[];
+  decision_count: number;
+  summary: SessionSummary;
+}
+
+export interface SessionSummary {
+  started_at: string;
+  ended_at: string;
+  duration_secs: number;
+  decision_types: Record<string, number>;
+  avg_confidence: number;
 }
 
 // Health

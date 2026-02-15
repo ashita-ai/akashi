@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { listAgents, createAgent, deleteAgent, ApiError } from "@/lib/api";
+import { listAgentsWithStats, createAgent, deleteAgent, ApiError } from "@/lib/api";
+import type { AgentWithStats } from "@/lib/api";
 import type { AgentRole, CreateAgentRequest } from "@/types/api";
 import {
   Table,
@@ -31,7 +32,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatDate } from "@/lib/utils";
+import { formatDate, formatRelativeTime } from "@/lib/utils";
 import { Plus, Trash2 } from "lucide-react";
 
 const roleColors: Record<AgentRole, "default" | "secondary" | "destructive" | "success" | "warning" | "outline"> = {
@@ -70,8 +71,8 @@ export default function Agents() {
   const [selectedRole, setSelectedRole] = useState<AgentRole>("agent");
 
   const { data: agents, isPending } = useQuery({
-    queryKey: ["agents"],
-    queryFn: listAgents,
+    queryKey: ["agents", "with-stats"],
+    queryFn: listAgentsWithStats,
   });
 
   const createMutation = useMutation({
@@ -219,7 +220,9 @@ export default function Agents() {
               <TableHead>Name</TableHead>
               <TableHead>Role</TableHead>
               <TableHead>Details</TableHead>
+              <TableHead>Decisions</TableHead>
               <TableHead>Created</TableHead>
+              <TableHead>Last Active</TableHead>
               <TableHead className="w-12" />
             </TableRow>
           </TableHeader>
@@ -238,8 +241,16 @@ export default function Agents() {
                 <TableCell>
                   <AgentDetails metadata={agent.metadata} />
                 </TableCell>
+                <TableCell className="text-sm text-muted-foreground tabular-nums">
+                  {(agent as AgentWithStats).decision_count ?? 0}
+                </TableCell>
+                <TableCell className="text-sm text-muted-foreground" title={formatDate(agent.created_at)}>
+                  {formatRelativeTime(agent.created_at)}
+                </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
-                  {formatDate(agent.created_at)}
+                  {(agent as AgentWithStats).last_decision_at
+                    ? formatRelativeTime((agent as AgentWithStats).last_decision_at!)
+                    : "\u2014"}
                 </TableCell>
                 <TableCell>
                   {agent.agent_id !== "admin" && (

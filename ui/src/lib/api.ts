@@ -5,12 +5,16 @@ import type {
   AuthTokenResponse,
   Agent,
   AgentsList,
+  AgentStats,
   CreateAgentRequest,
   Decision,
+  DecisionConflict,
   PaginatedDecisions,
   QueryRequest,
   ConflictsList,
   SearchResponse,
+  SessionView,
+  TraceHealth,
   AgentRun,
 } from "@/types/api";
 
@@ -113,10 +117,40 @@ export async function getRun(runId: string): Promise<AgentRun> {
 }
 
 // Agents
+export interface AgentWithStats extends Agent {
+  decision_count?: number;
+  last_decision_at?: string | null;
+}
+
 export async function listAgents(): Promise<Agent[]> {
   const result = await request<AgentsList>("/v1/agents");
   // The API may return the agents array directly or wrapped
   return Array.isArray(result) ? result : (result.agents ?? []);
+}
+
+export async function listAgentsWithStats(): Promise<AgentWithStats[]> {
+  const result = await request<{ agents: AgentWithStats[] }>(
+    "/v1/agents?include=stats",
+  );
+  return Array.isArray(result) ? result : (result.agents ?? []);
+}
+
+export async function getAgent(agentId: string): Promise<Agent> {
+  return request<Agent>(`/v1/agents/${agentId}`);
+}
+
+export async function updateAgent(
+  agentId: string,
+  updates: { name?: string; metadata?: Record<string, unknown> },
+): Promise<Agent> {
+  return request<Agent>(`/v1/agents/${agentId}`, {
+    method: "PATCH",
+    body: JSON.stringify(updates),
+  });
+}
+
+export async function getAgentStats(agentId: string): Promise<AgentStats> {
+  return request<AgentStats>(`/v1/agents/${agentId}/stats`);
 }
 
 export async function createAgent(
@@ -183,6 +217,53 @@ export async function getAgentHistory(
   if (params?.to) searchParams.set("to", params.to);
   const qs = searchParams.toString();
   return request(`/v1/agents/${agentId}/history${qs ? `?${qs}` : ""}`);
+}
+
+// Single decision
+export async function getDecision(id: string): Promise<Decision> {
+  return request<Decision>(`/v1/decisions/${id}`);
+}
+
+// Revisions
+export async function getDecisionRevisions(
+  id: string,
+): Promise<{ decision_id: string; revisions: Decision[]; count: number }> {
+  return request(`/v1/decisions/${id}/revisions`);
+}
+
+// Decision integrity verification
+export async function verifyDecisionIntegrity(
+  id: string,
+): Promise<{ decision_id: string; status: string; valid?: boolean; content_hash?: string; message?: string }> {
+  return request(`/v1/verify/${id}`);
+}
+
+// Decision conflicts
+export async function getDecisionConflicts(
+  id: string,
+): Promise<{ conflicts: DecisionConflict[]; total: number }> {
+  return request(`/v1/decisions/${id}/conflicts`);
+}
+
+// Patch conflict status
+export async function patchConflict(
+  id: string,
+  body: { status: string; resolution_note?: string },
+): Promise<DecisionConflict> {
+  return request<DecisionConflict>(`/v1/conflicts/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+// Trace health
+export async function getTraceHealth(): Promise<TraceHealth> {
+  return request<TraceHealth>("/v1/trace-health");
+}
+
+// Session view
+export async function getSession(sessionId: string): Promise<SessionView> {
+  return request<SessionView>(`/v1/sessions/${sessionId}`);
 }
 
 export { ApiError };
