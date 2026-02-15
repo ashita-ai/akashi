@@ -17,6 +17,7 @@ var ErrAgentNotFound = fmt.Errorf("storage: agent: %w", ErrNotFound)
 type DeleteAgentResult struct {
 	Evidence     int64 `json:"evidence"`
 	Alternatives int64 `json:"alternatives"`
+	Claims       int64 `json:"claims"`
 	Decisions    int64 `json:"decisions"`
 	Events       int64 `json:"events"`
 	Runs         int64 `json:"runs"`
@@ -156,6 +157,29 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 	if err != nil {
 		return DeleteAgentResult{}, fmt.Errorf("storage: delete scored conflicts: %w", err)
 	}
+
+	// 4b. Delete decision_claims (contains PII — claim_text from agent reasoning).
+	_, err = tx.Exec(ctx,
+		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		 SELECT $1, $2, 'decision_claims', c.id::text, to_jsonb(c)
+		 FROM decision_claims c
+		 WHERE c.decision_id IN (
+		     SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2
+		 )`,
+		orgID, agentID,
+	)
+	if err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: archive claims for delete: %w", err)
+	}
+
+	tag, err = tx.Exec(ctx,
+		`DELETE FROM decision_claims WHERE decision_id IN (
+			SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2
+		)`, orgID, agentID)
+	if err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: delete claims: %w", err)
+	}
+	result.Claims = tag.RowsAffected()
 
 	// 5. Delete decisions.
 	_, err = tx.Exec(ctx,
