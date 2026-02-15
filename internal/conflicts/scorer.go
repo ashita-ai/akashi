@@ -24,13 +24,15 @@ type Scorer struct {
 	threshold       float64
 	validator       Validator
 	backfillWorkers int
+	decayLambda     float64 // Temporal decay rate. 0 disables decay.
 }
 
 // NewScorer creates a conflict scorer. If validator is nil, a NoopValidator is
 // used (current behavior: embedding-scored candidates are inserted without LLM
 // confirmation). backfillWorkers controls how many decisions are scored
-// concurrently during BackfillScoring (default: 4).
-func NewScorer(db *storage.DB, logger *slog.Logger, significanceThreshold float64, validator Validator, backfillWorkers int) *Scorer {
+// concurrently during BackfillScoring (default: 4). decayLambda controls the
+// temporal decay rate for significance (default: 0.01, 0 disables).
+func NewScorer(db *storage.DB, logger *slog.Logger, significanceThreshold float64, validator Validator, backfillWorkers int, decayLambda float64) *Scorer {
 	if significanceThreshold <= 0 {
 		significanceThreshold = 0.30
 	}
@@ -46,6 +48,7 @@ func NewScorer(db *storage.DB, logger *slog.Logger, significanceThreshold float6
 		threshold:       significanceThreshold,
 		validator:       validator,
 		backfillWorkers: backfillWorkers,
+		decayLambda:     decayLambda,
 	}
 }
 
@@ -174,14 +177,26 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			}
 		}
 
+		// Confidence weighting: low-confidence decisions get lower significance.
+		confWeight := math.Sqrt(float64(d.Confidence) * float64(cand.Confidence))
+		bestSig *= confWeight
+
+		// Temporal decay: older decision pairs get lower significance.
+		var decay = 1.0
+		if s.decayLambda > 0 {
+			daysBetween := math.Abs(d.ValidFrom.Sub(cand.ValidFrom).Hours() / 24)
+			decay = math.Exp(-s.decayLambda * daysBetween)
+			bestSig *= decay
+		}
+
 		if bestSig < s.threshold {
 			continue
 		}
 
-		// LLM validation gate: confirm the candidate is a genuine contradiction.
-		// NoopValidator always confirms (preserving current embedding-only behavior).
+		// LLM validation gate: classify the relationship between candidates.
+		// NoopValidator always returns "contradiction" (preserving current behavior).
 		var explanation *string
-		var category, severity *string
+		var category, severity, relationship *string
 		if _, isNoop := s.validator.(NoopValidator); !isNoop {
 			// Skip LLM call if this pair was already evaluated during backfill.
 			if cache != nil && cache.checkAndMark(decisionID, cand.ID) {
@@ -190,18 +205,29 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				continue
 			}
 
-			result, err := s.validator.Validate(ctx, bestOutcomeA, bestOutcomeB, d.DecisionType, cand.DecisionType)
+			result, err := s.validator.Validate(ctx, ValidateInput{
+				OutcomeA: bestOutcomeA,
+				OutcomeB: bestOutcomeB,
+				TypeA:    d.DecisionType,
+				TypeB:    cand.DecisionType,
+				AgentA:   d.AgentID,
+				AgentB:   cand.AgentID,
+				CreatedA: d.ValidFrom,
+				CreatedB: cand.ValidFrom,
+			})
 			if err != nil {
 				s.logger.Warn("conflict scorer: LLM validation failed, skipping candidate",
 					"error", err, "decision_a", decisionID, "decision_b", cand.ID)
 				continue // fail-safe: don't insert unvalidated conflicts
 			}
-			if !result.Confirmed {
-				s.logger.Debug("conflict scorer: LLM rejected candidate",
-					"decision_a", decisionID, "decision_b", cand.ID, "explanation", result.Explanation)
+			if !result.IsConflict() {
+				s.logger.Debug("conflict scorer: LLM classified as non-conflict",
+					"decision_a", decisionID, "decision_b", cand.ID,
+					"relationship", result.Relationship, "explanation", result.Explanation)
 				continue
 			}
-			bestMethod = "llm"
+			bestMethod = "llm_v2"
+			relationship = &result.Relationship
 			if result.Explanation != "" {
 				explanation = &result.Explanation
 			}
@@ -235,6 +261,9 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			Explanation:       explanation,
 			Category:          category,
 			Severity:          severity,
+			Relationship:      relationship,
+			ConfidenceWeight:  ptr(confWeight),
+			TemporalDecay:     ptr(decay),
 			Status:            "open",
 		}
 		if err := s.db.InsertScoredConflict(ctx, c); err != nil {
@@ -353,11 +382,12 @@ func (s *Scorer) HasLLMValidator() bool {
 	return !isNoop
 }
 
-// ClearUnvalidatedConflicts deletes all scored_conflicts that were not LLM-validated.
-// Called during backfill when LLM validation is active — old unvalidated conflicts
-// are stale and will be re-scored through the LLM. Returns the number of rows deleted.
+// ClearUnvalidatedConflicts deletes all scored_conflicts that were not validated
+// by the current LLM classifier (llm_v2). Old 'llm' (binary verdict) and
+// non-LLM conflicts are stale and will be re-scored through the new classifier.
+// Returns the number of rows deleted.
 func (s *Scorer) ClearUnvalidatedConflicts(ctx context.Context) (int, error) {
-	tag, err := s.db.Pool().Exec(ctx, `DELETE FROM scored_conflicts WHERE scoring_method != 'llm'`)
+	tag, err := s.db.Pool().Exec(ctx, `DELETE FROM scored_conflicts WHERE scoring_method NOT IN ('llm_v2')`)
 	if err != nil {
 		return 0, fmt.Errorf("conflicts: clear unvalidated: %w", err)
 	}
