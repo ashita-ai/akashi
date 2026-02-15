@@ -139,6 +139,8 @@ type EvidenceCoverageStats struct {
 	WithEvidence         int
 	WithoutEvidenceCount int
 	CoveragePercent      float64
+	TotalRecords         int     // total evidence rows
+	AvgPerDecision       float64 // average evidence records per decision
 }
 
 // GetEvidenceCoverageStats returns how many current decisions have at least one evidence record.
@@ -146,17 +148,19 @@ func (db *DB) GetEvidenceCoverageStats(ctx context.Context, orgID uuid.UUID) (Ev
 	var s EvidenceCoverageStats
 	err := db.pool.QueryRow(ctx, `
 		SELECT count(DISTINCT d.id) AS total,
-		       count(DISTINCT e.decision_id) AS with_evidence
+		       count(DISTINCT e.decision_id) AS with_evidence,
+		       count(e.id) AS total_records
 		FROM decisions d
 		LEFT JOIN evidence e ON d.id = e.decision_id AND e.org_id = d.org_id
 		WHERE d.org_id = $1 AND d.valid_to IS NULL`, orgID).Scan(
-		&s.TotalDecisions, &s.WithEvidence)
+		&s.TotalDecisions, &s.WithEvidence, &s.TotalRecords)
 	if err != nil {
 		return s, fmt.Errorf("storage: evidence coverage stats: %w", err)
 	}
 	s.WithoutEvidenceCount = s.TotalDecisions - s.WithEvidence
 	if s.TotalDecisions > 0 {
 		s.CoveragePercent = float64(s.WithEvidence) / float64(s.TotalDecisions) * 100
+		s.AvgPerDecision = float64(s.TotalRecords) / float64(s.TotalDecisions)
 	}
 	return s, nil
 }

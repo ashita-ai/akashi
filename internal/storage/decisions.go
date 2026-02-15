@@ -1091,11 +1091,12 @@ func (db *DB) CountUnvalidatedConflicts(ctx context.Context) (int, error) {
 
 // DecisionQualityStats holds aggregate quality metrics for an org's decisions.
 type DecisionQualityStats struct {
-	Total         int
-	AvgQuality    float64
-	BelowHalf     int // quality_score < 0.5
-	BelowThird    int // quality_score < 0.33
-	WithReasoning int // reasoning IS NOT NULL AND reasoning != ''
+	Total            int
+	AvgQuality       float64
+	BelowHalf        int // quality_score < 0.5
+	BelowThird       int // quality_score < 0.33
+	WithReasoning    int // reasoning IS NOT NULL AND reasoning != ''
+	WithAlternatives int // decisions that have at least one alternative
 }
 
 // GetDecisionQualityStats returns aggregate quality metrics for current decisions in an org.
@@ -1106,10 +1107,13 @@ func (db *DB) GetDecisionQualityStats(ctx context.Context, orgID uuid.UUID) (Dec
 		       COALESCE(avg(quality_score), 0),
 		       count(*) FILTER (WHERE quality_score < 0.5),
 		       count(*) FILTER (WHERE quality_score < 0.33),
-		       count(*) FILTER (WHERE reasoning IS NOT NULL AND reasoning != '')
+		       count(*) FILTER (WHERE reasoning IS NOT NULL AND reasoning != ''),
+		       count(*) FILTER (WHERE EXISTS (
+		           SELECT 1 FROM alternatives a WHERE a.decision_id = decisions.id
+		       ))
 		FROM decisions
 		WHERE org_id = $1 AND valid_to IS NULL`, orgID).Scan(
-		&s.Total, &s.AvgQuality, &s.BelowHalf, &s.BelowThird, &s.WithReasoning)
+		&s.Total, &s.AvgQuality, &s.BelowHalf, &s.BelowThird, &s.WithReasoning, &s.WithAlternatives)
 	if err != nil {
 		return s, fmt.Errorf("storage: decision quality stats: %w", err)
 	}
