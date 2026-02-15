@@ -9,6 +9,10 @@ import {
 import { createElement } from "react";
 import { login as apiLogin, setTokenProvider } from "@/lib/api";
 
+const STORAGE_KEY_TOKEN = "akashi_token";
+const STORAGE_KEY_AGENT = "akashi_agent_id";
+const STORAGE_KEY_EXPIRES = "akashi_expires_at";
+
 interface AuthState {
   token: string | null;
   agentId: string | null;
@@ -33,12 +37,47 @@ export function useAuth(): AuthContextValue {
   return ctx;
 }
 
+function loadPersistedAuth(): AuthState {
+  try {
+    const token = localStorage.getItem(STORAGE_KEY_TOKEN);
+    const agentId = localStorage.getItem(STORAGE_KEY_AGENT);
+    const expiresRaw = localStorage.getItem(STORAGE_KEY_EXPIRES);
+    if (!token || !agentId || !expiresRaw) {
+      return { token: null, agentId: null, expiresAt: null };
+    }
+    const expiresAt = new Date(expiresRaw);
+    if (expiresAt.getTime() <= Date.now()) {
+      clearPersistedAuth();
+      return { token: null, agentId: null, expiresAt: null };
+    }
+    return { token, agentId, expiresAt };
+  } catch {
+    return { token: null, agentId: null, expiresAt: null };
+  }
+}
+
+function persistAuth(token: string, agentId: string, expiresAt: Date): void {
+  try {
+    localStorage.setItem(STORAGE_KEY_TOKEN, token);
+    localStorage.setItem(STORAGE_KEY_AGENT, agentId);
+    localStorage.setItem(STORAGE_KEY_EXPIRES, expiresAt.toISOString());
+  } catch {
+    // localStorage may be unavailable (private browsing, quota exceeded).
+  }
+}
+
+function clearPersistedAuth(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY_TOKEN);
+    localStorage.removeItem(STORAGE_KEY_AGENT);
+    localStorage.removeItem(STORAGE_KEY_EXPIRES);
+  } catch {
+    // Ignore.
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<AuthState>({
-    token: null,
-    agentId: null,
-    expiresAt: null,
-  });
+  const [state, setState] = useState<AuthState>(loadPersistedAuth);
 
   // Register the token provider for the API client.
   useEffect(() => {
@@ -50,10 +89,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!state.expiresAt) return;
     const ms = state.expiresAt.getTime() - Date.now();
     if (ms <= 0) {
+      clearPersistedAuth();
       setState({ token: null, agentId: null, expiresAt: null });
       return;
     }
     const timer = setTimeout(() => {
+      clearPersistedAuth();
       setState({ token: null, agentId: null, expiresAt: null });
     }, ms);
     return () => clearTimeout(timer);
@@ -61,14 +102,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (agentId: string, apiKey: string) => {
     const result = await apiLogin(agentId, apiKey);
-    setState({
-      token: result.token,
-      agentId,
-      expiresAt: new Date(result.expires_at),
-    });
+    const expiresAt = new Date(result.expires_at);
+    persistAuth(result.token, agentId, expiresAt);
+    setState({ token: result.token, agentId, expiresAt });
   }, []);
 
   const logout = useCallback(() => {
+    clearPersistedAuth();
     setState({ token: null, agentId: null, expiresAt: null });
   }, []);
 
