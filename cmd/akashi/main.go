@@ -149,7 +149,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	conflictValidator := newConflictValidator(cfg, logger)
 
 	// Create conflict scorer for semantic conflict detection (Option B).
-	conflictScorer := conflicts.NewScorer(db, logger, cfg.ConflictSignificanceThreshold, conflictValidator)
+	conflictScorer := conflicts.NewScorer(db, logger, cfg.ConflictSignificanceThreshold, conflictValidator, cfg.ConflictBackfillWorkers)
 
 	// Create decision service (shared by HTTP and MCP handlers).
 	decisionSvc := decisions.New(db, embedder, searcher, logger, conflictScorer)
@@ -174,14 +174,24 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	} else if n > 0 {
 		logger.Info("claims backfill complete", "count", n)
 	}
-	// When LLM validation is active, clear old unvalidated conflicts before
-	// backfill. They were inserted without LLM confirmation and are likely
-	// false positives. The backfill will re-score all decisions through the LLM.
+	// When LLM validation is active and old unvalidated conflicts exist (from a
+	// previous non-LLM run), clear them and reset conflict_scored_at so the
+	// backfill re-scores all decisions through the LLM. On subsequent restarts,
+	// CountUnvalidatedConflicts returns 0, skipping this entirely.
 	if conflictScorer.HasLLMValidator() {
-		if cleared, err := conflictScorer.ClearUnvalidatedConflicts(ctx); err != nil {
-			logger.Warn("failed to clear unvalidated conflicts", "error", err)
-		} else if cleared > 0 {
-			logger.Info("cleared unvalidated conflicts before LLM backfill", "deleted", cleared)
+		if count, err := db.CountUnvalidatedConflicts(ctx); err != nil {
+			logger.Warn("failed to count unvalidated conflicts", "error", err)
+		} else if count > 0 {
+			if cleared, err := conflictScorer.ClearUnvalidatedConflicts(ctx); err != nil {
+				logger.Warn("failed to clear unvalidated conflicts", "error", err)
+			} else {
+				logger.Info("cleared unvalidated conflicts before LLM backfill", "deleted", cleared)
+			}
+			if reset, err := db.ResetConflictScoredAt(ctx); err != nil {
+				logger.Warn("failed to reset conflict scored_at for LLM re-scoring", "error", err)
+			} else if reset > 0 {
+				logger.Info("reset conflict scored marks for LLM re-scoring", "reset", reset)
+			}
 		}
 	}
 	// Backfill conflict scoring for decisions that gained embeddings from the
