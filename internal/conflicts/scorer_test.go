@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"testing"
 	"time"
@@ -584,4 +585,365 @@ func TestBackfillScoring_ContextCancellation(t *testing.T) {
 		assert.ErrorIs(t, err, context.Canceled)
 	}
 	_ = processed
+}
+
+// ---------------------------------------------------------------------------
+// Claim-level scoring tests
+// ---------------------------------------------------------------------------
+
+// makeClaimVector creates a unit-length vector in a 2D subspace of R^1024.
+// posA and posB identify the two dimensions used. cosSim controls the angle
+// relative to the "reference" vector at (posA=1, posB=0). Returns a pair:
+// the reference vector and a rotated vector with the desired cosine similarity.
+func makeClaimVectorPair(posA, posB int, cosSim float64) (pgvector.Vector, pgvector.Vector) {
+	ref := make([]float32, 1024)
+	ref[posA%1024] = 1.0
+
+	rotated := make([]float32, 1024)
+	rotated[posA%1024] = float32(cosSim)
+	rotated[posB%1024] = float32(math.Sqrt(1 - cosSim*cosSim))
+
+	return pgvector.NewVector(ref), pgvector.NewVector(rotated)
+}
+
+func TestBestClaimConflict_AboveFloors(t *testing.T) {
+	ctx := context.Background()
+	orgID := uuid.Nil
+	suffix := uuid.New().String()[:8]
+	agentID := "claim-above-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	run := createRun(t, agentID, orgID)
+
+	// Create two decisions (only need IDs for claim lookup).
+	topicEmb := makeEmbedding(200, 1.0)
+	outcomeA := makeEmbedding(201, 1.0)
+	outcomeB := makeEmbedding(202, 1.0)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "chose Redis",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "chose Memcached",
+		Confidence: 0.7, Embedding: &topicEmb, OutcomeEmbedding: &outcomeB,
+	})
+	require.NoError(t, err)
+
+	// Insert claims with cosine similarity = 0.70 → div = 0.30.
+	// Both floors satisfied: sim(0.70) >= 0.60 and div(0.30) >= 0.15.
+	claimRefA, claimRotB := makeClaimVectorPair(300, 301, 0.70)
+
+	err = testDB.InsertClaims(ctx, []storage.Claim{
+		{DecisionID: dA.ID, OrgID: orgID, ClaimIdx: 0, ClaimText: "Redis has pub/sub support.", Embedding: &claimRefA},
+	})
+	require.NoError(t, err)
+
+	err = testDB.InsertClaims(ctx, []storage.Claim{
+		{DecisionID: dB.ID, OrgID: orgID, ClaimIdx: 0, ClaimText: "Memcached is simpler and faster.", Embedding: &claimRotB},
+	})
+	require.NoError(t, err)
+
+	scorer := NewScorer(testDB, slog.Default(), 0.1)
+	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
+
+	assert.Greater(t, sig, 0.0, "significance should be positive when both floors are satisfied")
+	assert.InDelta(t, 0.30, div, 0.02, "divergence should be ~0.30 for cos sim 0.70")
+	assert.Equal(t, "Redis has pub/sub support.", claimA)
+	assert.Equal(t, "Memcached is simpler and faster.", claimB)
+}
+
+func TestBestClaimConflict_BelowSimFloor(t *testing.T) {
+	ctx := context.Background()
+	orgID := uuid.Nil
+	suffix := uuid.New().String()[:8]
+	agentID := "claim-lowsim-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	run := createRun(t, agentID, orgID)
+	topicEmb := makeEmbedding(210, 1.0)
+	outcomeA := makeEmbedding(211, 1.0)
+	outcomeB := makeEmbedding(212, 1.0)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "unrelated A",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "unrelated B",
+		Confidence: 0.7, Embedding: &topicEmb, OutcomeEmbedding: &outcomeB,
+	})
+	require.NoError(t, err)
+
+	// Cosine similarity = 0.50 → below claimTopicSimFloor (0.60).
+	// These claims are about different things and should not constitute a conflict.
+	claimRefA, claimRotB := makeClaimVectorPair(310, 311, 0.50)
+
+	err = testDB.InsertClaims(ctx, []storage.Claim{
+		{DecisionID: dA.ID, OrgID: orgID, ClaimIdx: 0, ClaimText: "Claim about database design.", Embedding: &claimRefA},
+	})
+	require.NoError(t, err)
+
+	err = testDB.InsertClaims(ctx, []storage.Claim{
+		{DecisionID: dB.ID, OrgID: orgID, ClaimIdx: 0, ClaimText: "Claim about UI framework.", Embedding: &claimRotB},
+	})
+	require.NoError(t, err)
+
+	scorer := NewScorer(testDB, slog.Default(), 0.1)
+	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
+
+	assert.Equal(t, 0.0, sig, "significance should be 0 when claim sim is below floor")
+	assert.Equal(t, 0.0, div, "divergence should be 0 when no qualifying pairs exist")
+	assert.Empty(t, claimA)
+	assert.Empty(t, claimB)
+}
+
+func TestBestClaimConflict_BelowDivFloor(t *testing.T) {
+	ctx := context.Background()
+	orgID := uuid.Nil
+	suffix := uuid.New().String()[:8]
+	agentID := "claim-lowdiv-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	run := createRun(t, agentID, orgID)
+	topicEmb := makeEmbedding(220, 1.0)
+	outcomeA := makeEmbedding(221, 1.0)
+	outcomeB := makeEmbedding(222, 1.0)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "nearly identical A",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "nearly identical B",
+		Confidence: 0.7, Embedding: &topicEmb, OutcomeEmbedding: &outcomeB,
+	})
+	require.NoError(t, err)
+
+	// Cosine similarity = 0.90 → div = 0.10 → below claimDivFloor (0.15).
+	// Claims are about the same thing AND effectively agree — not a conflict.
+	claimRefA, claimRotB := makeClaimVectorPair(320, 321, 0.90)
+
+	err = testDB.InsertClaims(ctx, []storage.Claim{
+		{DecisionID: dA.ID, OrgID: orgID, ClaimIdx: 0, ClaimText: "PostgreSQL handles ACID transactions.", Embedding: &claimRefA},
+	})
+	require.NoError(t, err)
+
+	err = testDB.InsertClaims(ctx, []storage.Claim{
+		{DecisionID: dB.ID, OrgID: orgID, ClaimIdx: 0, ClaimText: "PostgreSQL supports ACID compliance.", Embedding: &claimRotB},
+	})
+	require.NoError(t, err)
+
+	scorer := NewScorer(testDB, slog.Default(), 0.1)
+	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
+
+	assert.Equal(t, 0.0, sig, "significance should be 0 when claims effectively agree (div < floor)")
+	assert.Equal(t, 0.0, div)
+	assert.Empty(t, claimA)
+	assert.Empty(t, claimB)
+}
+
+func TestBestClaimConflict_NoClaims(t *testing.T) {
+	ctx := context.Background()
+	orgID := uuid.Nil
+	suffix := uuid.New().String()[:8]
+	agentID := "claim-none-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	run := createRun(t, agentID, orgID)
+	topicEmb := makeEmbedding(230, 1.0)
+	outcomeA := makeEmbedding(231, 1.0)
+	outcomeB := makeEmbedding(232, 1.0)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "no claims A",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "no claims B",
+		Confidence: 0.7, Embedding: &topicEmb, OutcomeEmbedding: &outcomeB,
+	})
+	require.NoError(t, err)
+
+	// No claims inserted for either decision.
+	scorer := NewScorer(testDB, slog.Default(), 0.1)
+	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
+
+	assert.Equal(t, 0.0, sig, "no claims means no claim-level conflict")
+	assert.Equal(t, 0.0, div)
+	assert.Empty(t, claimA)
+	assert.Empty(t, claimB)
+}
+
+func TestBestClaimConflict_MultiplePairs_ReturnsBest(t *testing.T) {
+	ctx := context.Background()
+	orgID := uuid.Nil
+	suffix := uuid.New().String()[:8]
+	agentID := "claim-multi-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	run := createRun(t, agentID, orgID)
+	topicEmb := makeEmbedding(240, 1.0)
+	outcomeA := makeEmbedding(241, 1.0)
+	outcomeB := makeEmbedding(242, 1.0)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "code_review", Outcome: "multi-claim review A",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "code_review", Outcome: "multi-claim review B",
+		Confidence: 0.7, Embedding: &topicEmb, OutcomeEmbedding: &outcomeB,
+	})
+	require.NoError(t, err)
+
+	// Claim pair 1: cos = 0.65 → div = 0.35 (moderate conflict)
+	claimRef1, claimRot1 := makeClaimVectorPair(400, 401, 0.65)
+	// Claim pair 2: cos = 0.70 → div = 0.30 (weaker conflict)
+	claimRef2, claimRot2 := makeClaimVectorPair(402, 403, 0.70)
+
+	err = testDB.InsertClaims(ctx, []storage.Claim{
+		{DecisionID: dA.ID, OrgID: orgID, ClaimIdx: 0, ClaimText: "ReScore can exceed 1.0.", Embedding: &claimRef1},
+		{DecisionID: dA.ID, OrgID: orgID, ClaimIdx: 1, ClaimText: "Buffer flush is safe.", Embedding: &claimRef2},
+	})
+	require.NoError(t, err)
+
+	err = testDB.InsertClaims(ctx, []storage.Claim{
+		{DecisionID: dB.ID, OrgID: orgID, ClaimIdx: 0, ClaimText: "ReScore is bounded within [0,1].", Embedding: &claimRot1},
+		{DecisionID: dB.ID, OrgID: orgID, ClaimIdx: 1, ClaimText: "Buffer flush is mostly safe.", Embedding: &claimRot2},
+	})
+	require.NoError(t, err)
+
+	scorer := NewScorer(testDB, slog.Default(), 0.1)
+	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
+
+	assert.Greater(t, sig, 0.0, "should find a claim-level conflict")
+	// The pair with higher divergence (0.35) should be selected as best.
+	assert.InDelta(t, 0.35, div, 0.02, "best pair should have div ~0.35")
+	assert.Equal(t, "ReScore can exceed 1.0.", claimA)
+	assert.Equal(t, "ReScore is bounded within [0,1].", claimB)
+}
+
+func TestScoreForDecision_ClaimMethodWinsOverEmbedding(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+	suffix := uuid.New().String()[:8]
+	agentID := "claim-wins-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+
+	// High topic similarity (identical topic embeddings).
+	topicEmb := makeEmbedding(250, 1.0)
+
+	// VERY similar full-outcome embeddings (low outcome divergence for pass 1).
+	// This makes the embedding-level significance low.
+	outcomeA := make([]float32, 1024)
+	outcomeA[251] = 1.0
+	outcomeA[252] = 0.1
+	outcomeB := make([]float32, 1024)
+	outcomeB[251] = 1.0
+	outcomeB[252] = 0.15
+	outcomeEmbA := pgvector.NewVector(outcomeA)
+	outcomeEmbB := pgvector.NewVector(outcomeB)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "code_review",
+		Outcome:      "Multi-topic review with a specific ReScore finding. Overall looks good.",
+		Confidence:   0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "code_review",
+		Outcome:      "Multi-topic review with opposite ReScore finding. Overall looks good.",
+		Confidence:   0.7, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+	})
+	require.NoError(t, err)
+
+	// Insert claims with a strong specific disagreement (cos = 0.65 → div = 0.35).
+	claimRef, claimRot := makeClaimVectorPair(500, 501, 0.65)
+
+	err = testDB.InsertClaims(ctx, []storage.Claim{
+		{DecisionID: dA.ID, OrgID: orgID, ClaimIdx: 0, ClaimText: "ReScore formula can exceed 1.0 bounds.", Embedding: &claimRef},
+	})
+	require.NoError(t, err)
+
+	err = testDB.InsertClaims(ctx, []storage.Claim{
+		{DecisionID: dB.ID, OrgID: orgID, ClaimIdx: 0, ClaimText: "ReScore is correctly bounded within [0,1].", Embedding: &claimRot},
+	})
+	require.NoError(t, err)
+
+	scorer := NewScorer(testDB, logger, 0.1)
+	scorer.ScoreForDecision(ctx, dB.ID, orgID)
+
+	// Find the conflict between our two decisions.
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 1000, 0)
+	require.NoError(t, err)
+
+	var found bool
+	for _, c := range conflicts {
+		aMatch := c.DecisionAID == dA.ID || c.DecisionBID == dA.ID
+		bMatch := c.DecisionAID == dB.ID || c.DecisionBID == dB.ID
+		if aMatch && bMatch {
+			found = true
+			assert.Equal(t, "claim", c.ScoringMethod,
+				"claim method should win when it produces higher significance than embedding")
+			// Verify the outcomes are the claim texts, not the full outcomes.
+			assert.Contains(t, c.OutcomeA, "ReScore",
+				"claim-level conflict should use claim text as outcome")
+			assert.Contains(t, c.OutcomeB, "ReScore",
+				"claim-level conflict should use claim text as outcome")
+			break
+		}
+	}
+	assert.True(t, found, "expected a claim-level conflict between dA and dB")
 }

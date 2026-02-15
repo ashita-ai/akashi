@@ -412,35 +412,37 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 	limit := queryLimit(r, 25)
 	offset := queryOffset(r)
 
+	total, err := h.db.CountConflicts(r.Context(), orgID, filters)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to count conflicts", err)
+		return
+	}
+
 	conflicts, err := h.db.ListConflicts(r.Context(), orgID, filters, limit, offset)
 	if err != nil {
 		h.writeInternalError(w, r, "failed to list conflicts", err)
 		return
 	}
 
-	preFilterCount := len(conflicts)
 	conflicts, err = filterConflictsByAccess(r.Context(), h.db, claims, conflicts, h.grantCache)
 	if err != nil {
 		h.writeInternalError(w, r, "authorization check failed", err)
 		return
 	}
 
-	resp := map[string]any{
+	// Ensure JSON array, not null.
+	if conflicts == nil {
+		conflicts = []model.DecisionConflict{}
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]any{
 		"conflicts": conflicts,
+		"total":     total,
 		"count":     len(conflicts),
 		"limit":     limit,
 		"offset":    offset,
-	}
-	// The storage layer doesn't return a separate COUNT(*); len(conflicts) is the
-	// current page size, not the total. Only emit has_more (based on whether the
-	// page was full). When access filtering removes items, the true total is
-	// unknowable without scanning all pages, so we omit it entirely.
-	if len(conflicts) < preFilterCount {
-		resp["has_more"] = preFilterCount == limit
-	} else {
-		resp["has_more"] = len(conflicts) == limit
-	}
-	writeJSON(w, r, http.StatusOK, resp)
+		"has_more":  offset+len(conflicts) < total,
+	})
 }
 
 // HandleDecisionRevisions handles GET /v1/decisions/{id}/revisions.
