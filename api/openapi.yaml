@@ -2648,7 +2648,7 @@ components:
 
     CompletenessMetrics:
       type: object
-      required: [total_decisions, avg_quality, below_half, below_third, with_reasoning, reasoning_pct]
+      required: [total_decisions, avg_quality, below_half, below_third, with_reasoning, reasoning_pct, with_alternatives, alternatives_pct]
       properties:
         total_decisions:
           type: integer
@@ -2670,14 +2670,28 @@ components:
           type: number
           format: double
           description: Percentage of decisions with reasoning (0–100).
+        with_alternatives:
+          type: integer
+          description: Count of decisions that have at least one recorded alternative.
+        alternatives_pct:
+          type: number
+          format: double
+          description: Percentage of decisions with alternatives (0–100).
 
     EvidenceMetrics:
       type: object
-      required: [total_decisions, with_evidence, without_evidence, coverage_pct]
+      required: [total_decisions, total_records, avg_per_decision, with_evidence, without_evidence, coverage_pct]
       properties:
         total_decisions:
           type: integer
           description: Total number of active decisions.
+        total_records:
+          type: integer
+          description: Total number of evidence records across all decisions.
+        avg_per_decision:
+          type: number
+          format: double
+          description: Average number of evidence records per decision.
         with_evidence:
           type: integer
           description: Count of decisions that have at least one evidence record.
@@ -2691,7 +2705,7 @@ components:
 
     TraceHealthConflictMetrics:
       type: object
-      required: [total, open, resolved, resolved_pct]
+      required: [total, open, acknowledged, resolved, wont_fix, resolved_pct]
       properties:
         total:
           type: integer
@@ -2699,9 +2713,15 @@ components:
         open:
           type: integer
           description: Number of unresolved conflicts.
+        acknowledged:
+          type: integer
+          description: Number of acknowledged but not yet resolved conflicts.
         resolved:
           type: integer
           description: Number of resolved conflicts.
+        wont_fix:
+          type: integer
+          description: Number of conflicts closed as won't fix.
         resolved_pct:
           type: number
           format: double
