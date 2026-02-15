@@ -149,7 +149,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	conflictValidator := newConflictValidator(cfg, logger)
 
 	// Create conflict scorer for semantic conflict detection (Option B).
-	conflictScorer := conflicts.NewScorer(db, logger, cfg.ConflictSignificanceThreshold, conflictValidator, cfg.ConflictBackfillWorkers)
+	conflictScorer := conflicts.NewScorer(db, logger, cfg.ConflictSignificanceThreshold, conflictValidator, cfg.ConflictBackfillWorkers, cfg.ConflictDecayLambda)
 
 	// Create decision service (shared by HTTP and MCP handlers).
 	decisionSvc := decisions.New(db, embedder, searcher, logger, conflictScorer)

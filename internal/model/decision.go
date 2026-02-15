@@ -134,6 +134,12 @@ type DecisionConflict struct {
 	ResolvedBy     *string    `json:"resolved_by,omitempty"`
 	ResolvedAt     *time.Time `json:"resolved_at,omitempty"`
 	ResolutionNote *string    `json:"resolution_note,omitempty"`
+
+	// Precision fields (migration 038).
+	Relationship         *string    `json:"relationship,omitempty"`           // contradiction, supersession, complementary, refinement, unrelated
+	ConfidenceWeight     *float64   `json:"confidence_weight,omitempty"`      // sqrt(confA * confB) scaling factor
+	TemporalDecay        *float64   `json:"temporal_decay,omitempty"`         // exp(-lambda * daysBetween) scaling factor
+	ResolutionDecisionID *uuid.UUID `json:"resolution_decision_id,omitempty"` // decision that resolved this conflict
 }
 
 // ConflictResolution is the request body for PATCH /v1/conflicts/{id}.

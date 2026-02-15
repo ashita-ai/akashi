@@ -11,77 +11,140 @@ import (
 	"time"
 )
 
-// ValidationResult holds the structured output from an LLM validation call.
-type ValidationResult struct {
-	Confirmed   bool
-	Explanation string
-	Category    string // factual, assessment, strategic, temporal (empty if not confirmed)
-	Severity    string // critical, high, medium, low (empty if not confirmed)
+// ValidateInput holds all context needed for relationship classification.
+type ValidateInput struct {
+	OutcomeA string
+	OutcomeB string
+	TypeA    string
+	TypeB    string
+	AgentA   string
+	AgentB   string
+	CreatedA time.Time
+	CreatedB time.Time
 }
 
-// Validator confirms whether a candidate conflict is a genuine contradiction.
-// The embedding scorer finds candidates (cheap, fast); the validator confirms
+// ValidationResult holds the structured output from an LLM validation call.
+type ValidationResult struct {
+	Relationship string // contradiction, supersession, complementary, refinement, unrelated
+	Explanation  string
+	Category     string // factual, assessment, strategic, temporal
+	Severity     string // critical, high, medium, low
+}
+
+// IsConflict returns true if the relationship represents an actionable conflict.
+func (r ValidationResult) IsConflict() bool {
+	return r.Relationship == "contradiction" || r.Relationship == "supersession"
+}
+
+// Validator classifies the relationship between two decision outcomes.
+// The embedding scorer finds candidates (cheap, fast); the validator classifies
 // them (precise, slower). This two-stage design keeps false positives low
 // without requiring an LLM call for every decision pair.
 type Validator interface {
-	Validate(ctx context.Context, outcomeA, outcomeB, typeA, typeB string) (ValidationResult, error)
+	Validate(ctx context.Context, input ValidateInput) (ValidationResult, error)
 }
 
 // validationPrompt is the structured prompt sent to the LLM. It asks for a
-// deterministic yes/no verdict, a category, severity, and a one-sentence
-// explanation. The prompt is designed to minimize false positives — it
-// explicitly lists what is NOT a contradiction to guide the model away from
-// the common failure mode of flagging "different topics" as conflicts.
-const validationPrompt = `You are a contradiction detector for an AI decision audit system.
+// 5-way relationship classification, a category, severity, and a one-sentence
+// explanation. The prompt includes temporal and agent context to improve
+// precision for assessment-type decisions.
+const validationPrompt = `You are a relationship classifier for an AI decision audit system.
 
-Decision A (%s): %s
-Decision B (%s): %s
+Decision A (%s, by agent "%s", recorded %s):
+%s
 
-A GENUINE CONTRADICTION means both decisions address the SAME specific question and reach INCOMPATIBLE conclusions that cannot both be true.
+Decision B (%s, by agent "%s", recorded %s):
+%s
 
-NOT contradictions:
-- Different findings about different aspects of the same project
-- Complementary observations from different review sessions
-- Decisions about entirely unrelated topics
-- One decision being more detailed than another on the same topic
+Context: These decisions were recorded %s apart by %s.
 
-Respond with exactly four lines:
-VERDICT: yes or no
+Classify the RELATIONSHIP between these two decisions:
+
+- CONTRADICTION: Incompatible positions on the same specific question. Cannot both be true.
+- SUPERSESSION: One decision explicitly replaces or reverses the other.
+- COMPLEMENTARY: Different findings about different aspects. Both can be true simultaneously.
+- REFINEMENT: One decision deepens or builds on the other.
+- UNRELATED: Different topics despite surface similarity.
+
+IMPORTANT for assessments and code reviews:
+- A summary assessment ("security is strong") and a detailed review ("found vulnerability X") are NOT contradictions. Detailed reviews always find issues that summaries don't mention.
+- Two reviews finding different issues in the same codebase are complementary, not contradictory.
+- For assessments to contradict, they must make OPPOSITE claims about the SAME specific finding.
+
+RELATIONSHIP: one of [contradiction, supersession, complementary, refinement, unrelated]
 CATEGORY: factual, assessment, strategic, or temporal
 SEVERITY: critical, high, medium, or low
-EXPLANATION: one sentence explaining why
-
-Categories:
-- factual: incompatible claims about observable state (e.g. "tests pass" vs "tests fail")
-- assessment: opposing evaluations of the same system (e.g. "secure" vs "has vulnerabilities")
-- strategic: incompatible positions on direction (e.g. "use BUSL" vs "use proprietary license")
-- temporal: stale decision contradicted by newer information
-
-Severity:
-- critical: safety, security, data integrity, or correctness
-- high: architecture, API contracts, or behavioral specifications
-- medium: implementation approach, performance, or design choices
-- low: style, preferences, or minor quality metrics
-
-If VERDICT is no, still provide your best guess for CATEGORY and SEVERITY.`
+EXPLANATION: one sentence`
 
 // validCategories and validSeverities define the allowed values for classification.
 var validCategories = map[string]bool{"factual": true, "assessment": true, "strategic": true, "temporal": true}
 var validSeverities = map[string]bool{"critical": true, "high": true, "medium": true, "low": true}
 
-// ParseValidatorResponse extracts the verdict, category, severity, and
+// validRelationships defines the allowed values for relationship classification.
+var validRelationships = map[string]bool{
+	"contradiction": true,
+	"supersession":  true,
+	"complementary": true,
+	"refinement":    true,
+	"unrelated":     true,
+}
+
+// formatPrompt builds the validation prompt with temporal and agent context.
+func formatPrompt(input ValidateInput) string {
+	timeDelta := input.CreatedB.Sub(input.CreatedA).Abs()
+	deltaStr := formatDuration(timeDelta)
+
+	agentContext := "the same agent"
+	if input.AgentA != input.AgentB {
+		agentContext = "different agents"
+	}
+
+	return fmt.Sprintf(validationPrompt,
+		input.TypeA, input.AgentA, input.CreatedA.Format(time.RFC3339),
+		input.OutcomeA,
+		input.TypeB, input.AgentB, input.CreatedB.Format(time.RFC3339),
+		input.OutcomeB,
+		deltaStr, agentContext,
+	)
+}
+
+// formatDuration produces a human-readable duration string.
+func formatDuration(d time.Duration) string {
+	hours := d.Hours()
+	switch {
+	case hours < 1:
+		return fmt.Sprintf("%.0f minutes", d.Minutes())
+	case hours < 24:
+		return fmt.Sprintf("%.1f hours", hours)
+	default:
+		return fmt.Sprintf("%.1f days", hours/24)
+	}
+}
+
+// ParseValidatorResponse extracts the relationship, category, severity, and
 // explanation from an LLM response. If parsing fails, returns an error to
 // enforce fail-safe behavior: ambiguous responses are treated as rejections.
 func ParseValidatorResponse(response string) (ValidationResult, error) {
 	lines := strings.Split(strings.TrimSpace(response), "\n")
 
-	var verdict, explanation, category, severity string
+	var relationship, explanation, category, severity string
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		lower := strings.ToLower(trimmed)
 		switch {
+		case strings.HasPrefix(lower, "relationship:"):
+			relationship = strings.ToLower(strings.TrimSpace(trimmed[len("relationship:"):]))
 		case strings.HasPrefix(lower, "verdict:"):
-			verdict = strings.TrimSpace(trimmed[len("verdict:"):])
+			// Backward compatibility: map old-style yes/no to relationship.
+			verdict := strings.ToLower(strings.TrimSpace(trimmed[len("verdict:"):]))
+			if relationship == "" {
+				switch verdict {
+				case "yes":
+					relationship = "contradiction"
+				case "no":
+					relationship = "unrelated"
+				}
+			}
 		case strings.HasPrefix(lower, "explanation:"):
 			explanation = strings.TrimSpace(trimmed[len("explanation:"):])
 		case strings.HasPrefix(lower, "category:"):
@@ -91,8 +154,15 @@ func ParseValidatorResponse(response string) (ValidationResult, error) {
 		}
 	}
 
-	if verdict == "" {
-		return ValidationResult{}, fmt.Errorf("validator: no VERDICT line found in response")
+	if relationship == "" {
+		return ValidationResult{}, fmt.Errorf("validator: no RELATIONSHIP or VERDICT line found in response")
+	}
+
+	// Normalize: strip any brackets or extra text (e.g. "[contradiction]" → "contradiction").
+	relationship = strings.Trim(relationship, "[] ")
+
+	if !validRelationships[relationship] {
+		return ValidationResult{}, fmt.Errorf("validator: unrecognized relationship %q", relationship)
 	}
 
 	// Normalize category and severity — ignore invalid values rather than failing.
@@ -103,23 +173,22 @@ func ParseValidatorResponse(response string) (ValidationResult, error) {
 		severity = ""
 	}
 
-	switch strings.ToLower(strings.TrimSpace(verdict)) {
-	case "yes":
-		return ValidationResult{Confirmed: true, Explanation: explanation, Category: category, Severity: severity}, nil
-	case "no":
-		return ValidationResult{Confirmed: false, Explanation: explanation, Category: category, Severity: severity}, nil
-	default:
-		return ValidationResult{}, fmt.Errorf("validator: unrecognized verdict %q (expected yes/no)", verdict)
-	}
+	return ValidationResult{
+		Relationship: relationship,
+		Explanation:  explanation,
+		Category:     category,
+		Severity:     severity,
+	}, nil
 }
 
-// NoopValidator always confirms candidates. This preserves the current behavior
-// when no LLM is configured: embedding-scored candidates are inserted without
-// validation. Users who want precision must configure an LLM model.
+// NoopValidator always returns a contradiction result. This preserves the
+// current behavior when no LLM is configured: embedding-scored candidates
+// are inserted without validation. Users who want precision must configure
+// an LLM model.
 type NoopValidator struct{}
 
-func (NoopValidator) Validate(_ context.Context, _, _, _, _ string) (ValidationResult, error) {
-	return ValidationResult{Confirmed: true}, nil
+func (NoopValidator) Validate(_ context.Context, _ ValidateInput) (ValidationResult, error) {
+	return ValidationResult{Relationship: "contradiction"}, nil
 }
 
 // perCallTimeout is the maximum time for a single LLM validation call.
@@ -167,11 +236,11 @@ type ollamaChatResponse struct {
 	} `json:"message"`
 }
 
-func (v *OllamaValidator) Validate(ctx context.Context, outcomeA, outcomeB, typeA, typeB string) (ValidationResult, error) {
+func (v *OllamaValidator) Validate(ctx context.Context, input ValidateInput) (ValidationResult, error) {
 	callCtx, cancel := context.WithTimeout(ctx, perCallTimeout)
 	defer cancel()
 
-	prompt := fmt.Sprintf(validationPrompt, typeA, outcomeA, typeB, outcomeB)
+	prompt := formatPrompt(input)
 
 	body, err := json.Marshal(ollamaChatRequest{
 		Model: v.model,
@@ -249,11 +318,11 @@ type openAIChatResponse struct {
 	} `json:"choices"`
 }
 
-func (v *OpenAIValidator) Validate(ctx context.Context, outcomeA, outcomeB, typeA, typeB string) (ValidationResult, error) {
+func (v *OpenAIValidator) Validate(ctx context.Context, input ValidateInput) (ValidationResult, error) {
 	callCtx, cancel := context.WithTimeout(ctx, perCallTimeout)
 	defer cancel()
 
-	prompt := fmt.Sprintf(validationPrompt, typeA, outcomeA, typeB, outcomeB)
+	prompt := formatPrompt(input)
 
 	body, err := json.Marshal(openAIChatRequest{
 		Model: v.model,
