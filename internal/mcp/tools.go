@@ -84,7 +84,11 @@ WHAT TO INCLUDE:
 
 EXAMPLE: After choosing a caching strategy, record decision_type="architecture",
 outcome="chose Redis with 5min TTL for session cache", confidence=0.85,
-reasoning="Redis handles our expected QPS, TTL prevents stale reads"`),
+reasoning="Redis handles our expected QPS, TTL prevents stale reads"
+
+TRACE AFTER: completing a review, choosing an approach, creating issues/PRs,
+finishing a task with choices, making security or access judgments.
+SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithIdempotentHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
