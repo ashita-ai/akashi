@@ -334,6 +334,17 @@ func authMiddleware(jwtMgr *auth.JWTManager, db *storage.DB, next http.Handler) 
 		}
 
 		ctx := ctxutil.WithClaims(r.Context(), claims)
+
+		// Update last_seen asynchronously. This is a best-effort fire-and-forget
+		// operation — the request is not blocked on the UPDATE completing.
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := db.TouchLastSeen(bgCtx, claims.OrgID, claims.AgentID); err != nil {
+				slog.Warn("failed to update agent last_seen", "agent_id", claims.AgentID, "error", err)
+			}
+		}()
+
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
