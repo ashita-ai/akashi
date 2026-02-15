@@ -39,6 +39,15 @@ TOOLS:
 - akashi_search: semantic similarity search across decisions
 - akashi_recent: see recent decisions for context
 
+CHECK BEFORE: choosing architecture/technology, starting a review or audit,
+making trade-offs, filing issues/PRs, changing existing behavior.
+
+TRACE AFTER: completing a review, choosing an approach, creating issues/PRs,
+finishing a task that involved choices, making security or access judgments.
+
+SKIP: pure execution (formatting, typo fixes), reading/exploring code,
+asking the user a question (no decision yet).
+
 Be honest about confidence. Reference precedents when they influence you.`
 
 // Server wraps the MCP server with Akashi's service layer.
