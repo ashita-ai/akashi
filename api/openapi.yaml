@@ -160,7 +160,32 @@ paths:
       summary: List all agents
       description: |
         List all agents in the caller's organization.
-        Requires `admin` role or higher.
+        Requires `admin` role or higher. Use `?include=stats` to
+        enrich each agent with decision_count and last_decision_at.
+      parameters:
+        - name: include
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [stats]
+          description: |
+            Pass `stats` to include decision_count and last_decision_at
+            on each agent in the response.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 200
+          description: Maximum number of agents to return (1-1000).
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+          description: Number of agents to skip.
       responses:
         "200":
           description: List of agents.
@@ -172,6 +197,57 @@ paths:
           $ref: "#/components/responses/Forbidden"
 
   /v1/agents/{agent_id}:
+    get:
+      operationId: getAgent
+      tags: [Agents]
+      summary: Get an agent by ID
+      description: |
+        Retrieve a single agent by its agent_id.
+        Requires `admin` role or higher.
+      parameters:
+        - $ref: "#/components/parameters/AgentIDPath"
+      responses:
+        "200":
+          description: The agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_Agent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateAgent
+      tags: [Agents]
+      summary: Update an agent
+      description: |
+        Partially update an agent's name and/or metadata. Metadata is
+        merge-patched (new keys are added, existing keys are overwritten).
+        Requires `admin` role or higher.
+      parameters:
+        - $ref: "#/components/parameters/AgentIDPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAgentRequest"
+      responses:
+        "200":
+          description: Agent updated. Returns the updated agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_Agent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
     delete:
       operationId: deleteAgent
       tags: [Agents]
@@ -190,6 +266,32 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/APIResponse_DeleteAgentResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/agents/{agent_id}/stats:
+    get:
+      operationId: getAgentStats
+      tags: [Agents]
+      summary: Get agent statistics
+      description: |
+        Returns aggregate decision statistics for a specific agent:
+        total count, average confidence, quality breakdown, and
+        decision type distribution.
+        Requires `admin` role or higher.
+      parameters:
+        - $ref: "#/components/parameters/AgentIDPath"
+      responses:
+        "200":
+          description: Agent statistics.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_AgentStats"
         "400":
           $ref: "#/components/responses/BadRequest"
         "403":
@@ -568,6 +670,37 @@ paths:
                 $ref: "#/components/schemas/APIResponse_AgentHistoryResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+
+  /v1/decisions/{id}:
+    get:
+      operationId: getDecision
+      tags: [Decisions]
+      summary: Get a decision by ID
+      description: |
+        Retrieve a single decision by its UUID, including alternatives
+        and evidence. Requires `reader` role or higher. Access is
+        subject to grant-based filtering.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Decision UUID.
+      responses:
+        "200":
+          description: The decision with alternatives and evidence.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_Decision"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /v1/decisions/recent:
     get:
@@ -1335,6 +1468,20 @@ components:
           type: object
           additionalProperties: true
 
+    UpdateAgentRequest:
+      type: object
+      description: |
+        Partial update of an agent. At least one field must be provided.
+        Metadata is merge-patched (new keys added, existing keys overwritten).
+      properties:
+        name:
+          type: string
+          description: New display name for the agent.
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Metadata keys to merge into the agent's existing metadata.
+
     UpdateAgentTagsRequest:
       type: object
       required: [tags]
@@ -1346,6 +1493,33 @@ components:
           description: |
             New set of tags for the agent. Replaces existing tags entirely.
             Each tag must match `^[a-z][a-z0-9_-]*$`.
+
+    AgentStats:
+      type: object
+      properties:
+        decision_count:
+          type: integer
+          description: Total number of active decisions by this agent.
+        avg_confidence:
+          type: number
+          format: double
+          description: Average confidence across all decisions.
+        first_decision:
+          type: string
+          format: date-time
+          description: Timestamp of the agent's earliest decision.
+        last_decision:
+          type: string
+          format: date-time
+          description: Timestamp of the agent's most recent decision.
+        low_quality_count:
+          type: integer
+          description: Number of decisions with quality_score below 0.5.
+        decision_types:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Decision count breakdown by decision_type.
 
     DeleteAgentResponse:
       type: object
@@ -2242,6 +2416,29 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Agent"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_AgentStats:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          properties:
+            agent_id:
+              type: string
+            stats:
+              $ref: "#/components/schemas/AgentStats"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_Decision:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/Decision"
         meta:
           $ref: "#/components/schemas/ResponseMeta"
 

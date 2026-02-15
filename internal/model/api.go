@@ -127,6 +127,12 @@ type CreateAgentRequest struct {
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
+// UpdateAgentRequest is the request body for PATCH /v1/agents/{agent_id}.
+type UpdateAgentRequest struct {
+	Name     *string        `json:"name,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
 // UpdateAgentTagsRequest is the request body for PATCH /v1/agents/{agent_id}/tags.
 type UpdateAgentTagsRequest struct {
 	Tags []string `json:"tags"`
