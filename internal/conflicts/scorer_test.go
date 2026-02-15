@@ -149,18 +149,18 @@ func TestCosineSimilarity_BothZeroVectors(t *testing.T) {
 }
 
 func TestNewScorer_DefaultThreshold(t *testing.T) {
-	scorer := NewScorer(nil, slog.Default(), 0)
+	scorer := NewScorer(nil, slog.Default(), 0, nil)
 	assert.Equal(t, 0.30, scorer.threshold)
 
-	scorer = NewScorer(nil, slog.Default(), -0.5)
+	scorer = NewScorer(nil, slog.Default(), -0.5, nil)
 	assert.Equal(t, 0.30, scorer.threshold)
 
-	scorer = NewScorer(nil, slog.Default(), 0.5)
+	scorer = NewScorer(nil, slog.Default(), 0.5, nil)
 	assert.Equal(t, 0.5, scorer.threshold)
 }
 
 func TestNewScorer_NotNil(t *testing.T) {
-	scorer := NewScorer(testDB, slog.Default(), 0.4)
+	scorer := NewScorer(testDB, slog.Default(), 0.4, nil)
 	require.NotNil(t, scorer)
 	assert.Equal(t, 0.4, scorer.threshold)
 	assert.NotNil(t, scorer.db)
@@ -256,7 +256,7 @@ func TestScoreForDecision(t *testing.T) {
 	require.NoError(t, err)
 
 	// Use a low threshold so the conflict is detected.
-	scorer := NewScorer(testDB, logger, 0.1)
+	scorer := NewScorer(testDB, logger, 0.1, nil)
 
 	// Score for decisionB — it should find decisionA as a conflict.
 	scorer.ScoreForDecision(ctx, decisionB.ID, orgID)
@@ -318,7 +318,7 @@ func TestScoreForDecision_NoEmbeddings(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1)
+	scorer := NewScorer(testDB, logger, 0.1, nil)
 
 	// Should return early without error (decision lacks embeddings).
 	scorer.ScoreForDecision(ctx, d.ID, orgID)
@@ -367,7 +367,7 @@ func TestScoreForDecision_CrossAgent(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1)
+	scorer := NewScorer(testDB, logger, 0.1, nil)
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
 	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 100, 0)
@@ -421,7 +421,7 @@ func TestBackfillScoring(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1)
+	scorer := NewScorer(testDB, logger, 0.1, nil)
 
 	// BackfillScoring should process both decisions and produce a conflict.
 	processed, err := scorer.BackfillScoring(ctx, 100)
@@ -447,7 +447,7 @@ func TestBackfillScoring_EmptyDB(t *testing.T) {
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	scorer := NewScorer(testDB, logger, 0.5)
+	scorer := NewScorer(testDB, logger, 0.5, nil)
 
 	// Should handle gracefully when there are decisions but none with
 	// significance above the high threshold.
@@ -493,7 +493,7 @@ func TestScoreForDecision_SkipsRevisionChain(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1)
+	scorer := NewScorer(testDB, logger, 0.1, nil)
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
 	// Verify NO conflict was inserted between A and B despite divergent outcomes.
@@ -552,7 +552,7 @@ func TestScoreForDecision_RevisionChainTransitive(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1)
+	scorer := NewScorer(testDB, logger, 0.1, nil)
 
 	// Score for C — should NOT conflict with A or B (transitive chain).
 	scorer.ScoreForDecision(ctx, dC.ID, orgID)
@@ -577,7 +577,7 @@ func TestBackfillScoring_ContextCancellation(t *testing.T) {
 
 	cancel() // Cancel immediately.
 
-	scorer := NewScorer(testDB, logger, 0.1)
+	scorer := NewScorer(testDB, logger, 0.1, nil)
 	processed, err := scorer.BackfillScoring(ctx, 100)
 
 	// Either processes 0 or returns context.Canceled.
@@ -652,7 +652,7 @@ func TestBestClaimConflict_AboveFloors(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, slog.Default(), 0.1)
+	scorer := NewScorer(testDB, slog.Default(), 0.1, nil)
 	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
 
 	assert.Greater(t, sig, 0.0, "significance should be positive when both floors are satisfied")
@@ -705,7 +705,7 @@ func TestBestClaimConflict_BelowSimFloor(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, slog.Default(), 0.1)
+	scorer := NewScorer(testDB, slog.Default(), 0.1, nil)
 	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
 
 	assert.Equal(t, 0.0, sig, "significance should be 0 when claim sim is below floor")
@@ -758,7 +758,7 @@ func TestBestClaimConflict_BelowDivFloor(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, slog.Default(), 0.1)
+	scorer := NewScorer(testDB, slog.Default(), 0.1, nil)
 	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
 
 	assert.Equal(t, 0.0, sig, "significance should be 0 when claims effectively agree (div < floor)")
@@ -798,7 +798,7 @@ func TestBestClaimConflict_NoClaims(t *testing.T) {
 	require.NoError(t, err)
 
 	// No claims inserted for either decision.
-	scorer := NewScorer(testDB, slog.Default(), 0.1)
+	scorer := NewScorer(testDB, slog.Default(), 0.1, nil)
 	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
 
 	assert.Equal(t, 0.0, sig, "no claims means no claim-level conflict")
@@ -854,7 +854,7 @@ func TestBestClaimConflict_MultiplePairs_ReturnsBest(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, slog.Default(), 0.1)
+	scorer := NewScorer(testDB, slog.Default(), 0.1, nil)
 	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
 
 	assert.Greater(t, sig, 0.0, "should find a claim-level conflict")
@@ -922,7 +922,7 @@ func TestScoreForDecision_ClaimMethodWinsOverEmbedding(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1)
+	scorer := NewScorer(testDB, logger, 0.1, nil)
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
 	// Find the conflict between our two decisions.

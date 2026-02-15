@@ -3,6 +3,7 @@ package conflicts
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math"
 
@@ -17,14 +18,20 @@ type Scorer struct {
 	db        *storage.DB
 	logger    *slog.Logger
 	threshold float64
+	validator Validator
 }
 
-// NewScorer creates a conflict scorer.
-func NewScorer(db *storage.DB, logger *slog.Logger, significanceThreshold float64) *Scorer {
+// NewScorer creates a conflict scorer. If validator is nil, a NoopValidator is
+// used (current behavior: embedding-scored candidates are inserted without LLM
+// confirmation).
+func NewScorer(db *storage.DB, logger *slog.Logger, significanceThreshold float64, validator Validator) *Scorer {
 	if significanceThreshold <= 0 {
 		significanceThreshold = 0.30
 	}
-	return &Scorer{db: db, logger: logger, threshold: significanceThreshold}
+	if validator == nil {
+		validator = NoopValidator{}
+	}
+	return &Scorer{db: db, logger: logger, threshold: significanceThreshold, validator: validator}
 }
 
 // claimTopicSimFloor is the minimum cosine similarity for two claims to be
@@ -118,6 +125,34 @@ func (s *Scorer) ScoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			continue
 		}
 
+		// LLM validation gate: confirm the candidate is a genuine contradiction.
+		// NoopValidator always confirms (preserving current embedding-only behavior).
+		var explanation *string
+		var category, severity *string
+		if _, isNoop := s.validator.(NoopValidator); !isNoop {
+			result, err := s.validator.Validate(ctx, bestOutcomeA, bestOutcomeB, d.DecisionType, cand.DecisionType)
+			if err != nil {
+				s.logger.Warn("conflict scorer: LLM validation failed, skipping candidate",
+					"error", err, "decision_a", decisionID, "decision_b", cand.ID)
+				continue // fail-safe: don't insert unvalidated conflicts
+			}
+			if !result.Confirmed {
+				s.logger.Debug("conflict scorer: LLM rejected candidate",
+					"decision_a", decisionID, "decision_b", cand.ID, "explanation", result.Explanation)
+				continue
+			}
+			bestMethod = "llm"
+			if result.Explanation != "" {
+				explanation = &result.Explanation
+			}
+			if result.Category != "" {
+				category = &result.Category
+			}
+			if result.Severity != "" {
+				severity = &result.Severity
+			}
+		}
+
 		kind := model.ConflictKindCrossAgent
 		if d.AgentID == cand.AgentID {
 			kind = model.ConflictKindSelfContradiction
@@ -137,6 +172,10 @@ func (s *Scorer) ScoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			OutcomeDivergence: ptr(bestDiv),
 			Significance:      ptr(bestSig),
 			ScoringMethod:     bestMethod,
+			Explanation:       explanation,
+			Category:          category,
+			Severity:          severity,
+			Status:            "open",
 		}
 		if err := s.db.InsertScoredConflict(ctx, c); err != nil {
 			s.logger.Warn("conflict scorer: insert failed", "decision_a", decisionID, "decision_b", cand.ID, "error", err)
@@ -226,6 +265,23 @@ func (s *Scorer) BackfillScoring(ctx context.Context, batchSize int) (int, error
 		processed++
 	}
 	return processed, nil
+}
+
+// HasLLMValidator returns true if the scorer has a non-noop validator configured.
+func (s *Scorer) HasLLMValidator() bool {
+	_, isNoop := s.validator.(NoopValidator)
+	return !isNoop
+}
+
+// ClearUnvalidatedConflicts deletes all scored_conflicts that were not LLM-validated.
+// Called during backfill when LLM validation is active — old unvalidated conflicts
+// are stale and will be re-scored through the LLM. Returns the number of rows deleted.
+func (s *Scorer) ClearUnvalidatedConflicts(ctx context.Context) (int, error) {
+	tag, err := s.db.Pool().Exec(ctx, `DELETE FROM scored_conflicts WHERE scoring_method != 'llm'`)
+	if err != nil {
+		return 0, fmt.Errorf("conflicts: clear unvalidated: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 func cosineSimilarity(a, b []float32) float64 {

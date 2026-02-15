@@ -58,6 +58,9 @@ type Config struct {
 	RateLimitBurst   int     // Token bucket capacity per key (default: 200).
 	TrustProxy       bool    // When true, use X-Forwarded-For for rate limit keys (default: false).
 
+	// Conflict LLM validation.
+	ConflictLLMModel string // Text generation model for conflict validation (e.g. "qwen2.5:3b" for Ollama).
+
 	// Operational settings.
 	LogLevel                      string
 	SkipEmbeddedMigrations        bool // Skip startup embedded migrations; for external migration orchestration.
@@ -98,6 +101,7 @@ func Load() (Config, error) {
 		QdrantURL:          envStr("QDRANT_URL", ""),
 		QdrantAPIKey:       envStr("QDRANT_API_KEY", ""),
 		QdrantCollection:   envStr("QDRANT_COLLECTION", "akashi_decisions"),
+		ConflictLLMModel:   envStr("AKASHI_CONFLICT_LLM_MODEL", ""),
 		LogLevel:           envStr("AKASHI_LOG_LEVEL", "info"),
 		CORSAllowedOrigins: envStrSlice("AKASHI_CORS_ALLOWED_ORIGINS", nil),
 	}
