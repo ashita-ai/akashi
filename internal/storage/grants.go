@@ -34,6 +34,44 @@ func (db *DB) CreateGrant(ctx context.Context, grant model.AccessGrant) (model.A
 	return grant, nil
 }
 
+// CreateGrantWithAudit inserts a new access grant and a mutation audit entry
+// atomically within a single transaction.
+func (db *DB) CreateGrantWithAudit(ctx context.Context, grant model.AccessGrant, audit MutationAuditEntry) (model.AccessGrant, error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return model.AccessGrant{}, fmt.Errorf("storage: begin create grant tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if grant.ID == uuid.Nil {
+		grant.ID = uuid.New()
+	}
+	if grant.GrantedAt.IsZero() {
+		grant.GrantedAt = time.Now().UTC()
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO access_grants (id, org_id, grantor_id, grantee_id, resource_type, resource_id,
+		 permission, granted_at, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		grant.ID, grant.OrgID, grant.GrantorID, grant.GranteeID, grant.ResourceType,
+		grant.ResourceID, grant.Permission, grant.GrantedAt, grant.ExpiresAt,
+	); err != nil {
+		return model.AccessGrant{}, fmt.Errorf("storage: create grant: %w", err)
+	}
+
+	audit.ResourceID = grant.ID.String()
+	audit.AfterData = grant
+	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+		return model.AccessGrant{}, fmt.Errorf("storage: audit in create grant tx: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return model.AccessGrant{}, fmt.Errorf("storage: commit create grant tx: %w", err)
+	}
+	return grant, nil
+}
+
 // DeleteGrant removes an access grant by ID, scoped to an org for tenant isolation.
 func (db *DB) DeleteGrant(ctx context.Context, orgID, id uuid.UUID) error {
 	tag, err := db.pool.Exec(ctx,
@@ -46,6 +84,33 @@ func (db *DB) DeleteGrant(ctx context.Context, orgID, id uuid.UUID) error {
 		return fmt.Errorf("storage: grant %s: %w", id, ErrNotFound)
 	}
 	return nil
+}
+
+// DeleteGrantWithAudit removes an access grant and inserts a mutation audit entry
+// atomically within a single transaction.
+func (db *DB) DeleteGrantWithAudit(ctx context.Context, orgID, id uuid.UUID, audit MutationAuditEntry) error {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("storage: begin delete grant tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM access_grants WHERE id = $1 AND org_id = $2`, id, orgID,
+	)
+	if err != nil {
+		return fmt.Errorf("storage: delete grant: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("storage: grant %s: %w", id, ErrNotFound)
+	}
+
+	audit.ResourceID = id.String()
+	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+		return fmt.Errorf("storage: audit in delete grant tx: %w", err)
+	}
+
+	return tx.Commit(ctx)
 }
 
 // GetGrant retrieves a grant by ID, scoped to an org for defense-in-depth

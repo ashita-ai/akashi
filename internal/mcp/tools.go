@@ -370,10 +370,28 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		}
 	}
 
+	// Build audit metadata so the trace includes an atomic audit record.
+	// This closes issue #63: MCP traces previously had no audit trail.
+	callerActorID := agentID
+	callerActorRole := "agent"
+	if claims != nil {
+		callerActorID = claims.AgentID
+		callerActorRole = string(claims.Role)
+	}
+	auditMeta := &ctxutil.AuditMeta{
+		RequestID:    uuid.New().String(),
+		OrgID:        orgID,
+		ActorAgentID: callerActorID,
+		ActorRole:    callerActorRole,
+		HTTPMethod:   "MCP",
+		Endpoint:     "akashi_trace",
+	}
+
 	result, err := s.decisionSvc.Trace(ctx, orgID, decisions.TraceInput{
 		AgentID:      agentID,
 		SessionID:    sessionID,
 		AgentContext: agentContext,
+		AuditMeta:    auditMeta,
 		Decision: model.TraceDecision{
 			DecisionType: decisionType,
 			Outcome:      outcome,

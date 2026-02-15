@@ -41,6 +41,51 @@ func (db *DB) CreateAgent(ctx context.Context, agent model.Agent) (model.Agent, 
 	return agent, nil
 }
 
+// CreateAgentWithAudit inserts a new agent and a mutation audit entry
+// atomically within a single transaction.
+func (db *DB) CreateAgentWithAudit(ctx context.Context, agent model.Agent, audit MutationAuditEntry) (model.Agent, error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return model.Agent{}, fmt.Errorf("storage: begin create agent tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if agent.ID == uuid.Nil {
+		agent.ID = uuid.New()
+	}
+	now := time.Now().UTC()
+	if agent.CreatedAt.IsZero() {
+		agent.CreatedAt = now
+	}
+	agent.UpdatedAt = now
+	if agent.Metadata == nil {
+		agent.Metadata = map[string]any{}
+	}
+	if agent.Tags == nil {
+		agent.Tags = []string{}
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO agents (id, agent_id, org_id, name, role, api_key_hash, tags, metadata, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		agent.ID, agent.AgentID, agent.OrgID, agent.Name, string(agent.Role),
+		agent.APIKeyHash, agent.Tags, agent.Metadata, agent.CreatedAt, agent.UpdatedAt,
+	); err != nil {
+		return model.Agent{}, fmt.Errorf("storage: create agent: %w", err)
+	}
+
+	audit.ResourceID = agent.AgentID
+	audit.AfterData = agent
+	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+		return model.Agent{}, fmt.Errorf("storage: audit in create agent tx: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return model.Agent{}, fmt.Errorf("storage: commit create agent tx: %w", err)
+	}
+	return agent, nil
+}
+
 // GetAgentsByAgentIDGlobal returns all agents with the given agent_id across all orgs.
 // Used ONLY for authentication (token issuance) where org_id isn't known yet.
 // Returns all matches so the caller can verify credentials against each one,
@@ -215,6 +260,47 @@ func (db *DB) UpdateAgentTags(ctx context.Context, orgID uuid.UUID, agentID stri
 			return model.Agent{}, fmt.Errorf("storage: agent %s: %w", agentID, ErrNotFound)
 		}
 		return model.Agent{}, fmt.Errorf("storage: update agent tags: %w", err)
+	}
+	return a, nil
+}
+
+// UpdateAgentTagsWithAudit replaces tags and inserts a mutation audit entry
+// atomically within a single transaction.
+func (db *DB) UpdateAgentTagsWithAudit(ctx context.Context, orgID uuid.UUID, agentID string, tags []string, audit MutationAuditEntry) (model.Agent, error) {
+	if tags == nil {
+		tags = []string{}
+	}
+
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return model.Agent{}, fmt.Errorf("storage: begin update tags tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var a model.Agent
+	err = tx.QueryRow(ctx,
+		`UPDATE agents SET tags = $1, updated_at = now()
+		 WHERE org_id = $2 AND agent_id = $3
+		 RETURNING id, agent_id, org_id, name, role, api_key_hash, tags, metadata, created_at, updated_at`,
+		tags, orgID, agentID,
+	).Scan(
+		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash,
+		&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.Agent{}, fmt.Errorf("storage: agent %s: %w", agentID, ErrNotFound)
+		}
+		return model.Agent{}, fmt.Errorf("storage: update agent tags: %w", err)
+	}
+
+	audit.ResourceID = agentID
+	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+		return model.Agent{}, fmt.Errorf("storage: audit in update tags tx: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return model.Agent{}, fmt.Errorf("storage: commit update tags tx: %w", err)
 	}
 	return a, nil
 }

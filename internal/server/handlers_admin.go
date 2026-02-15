@@ -64,7 +64,8 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	agent, err := h.db.CreateAgent(r.Context(), model.Agent{
+	audit := h.buildAuditEntry(r, orgID, "create_agent", "agent", "", nil, nil, nil)
+	agent, err := h.db.CreateAgentWithAudit(r.Context(), model.Agent{
 		AgentID:    req.AgentID,
 		OrgID:      orgID,
 		Name:       req.Name,
@@ -72,26 +73,13 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		APIKeyHash: &hash,
 		Tags:       req.Tags,
 		Metadata:   req.Metadata,
-	})
+	}, audit)
 	if err != nil {
 		if isDuplicateKeyError(err) {
 			writeError(w, r, http.StatusConflict, model.ErrCodeConflict, "agent_id already exists")
 			return
 		}
 		h.writeInternalError(w, r, "failed to create agent", err)
-		return
-	}
-	if err := h.recordMutationAudit(
-		r,
-		orgID,
-		"create_agent",
-		"agent",
-		agent.AgentID,
-		nil,
-		agent,
-		nil,
-	); err != nil {
-		h.writeInternalError(w, r, "failed to record mutation audit", err)
 		return
 	}
 
@@ -187,7 +175,8 @@ func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 		expiresAt = &t
 	}
 
-	grant, err := h.db.CreateGrant(r.Context(), model.AccessGrant{
+	audit := h.buildAuditEntry(r, orgID, "create_grant", "access_grant", "", nil, nil, nil)
+	grant, err := h.db.CreateGrantWithAudit(r.Context(), model.AccessGrant{
 		OrgID:        orgID,
 		GrantorID:    grantor.ID,
 		GranteeID:    grantee.ID,
@@ -195,26 +184,13 @@ func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 		ResourceID:   req.ResourceID,
 		Permission:   req.Permission,
 		ExpiresAt:    expiresAt,
-	})
+	}, audit)
 	if err != nil {
 		if isDuplicateKeyError(err) {
 			writeError(w, r, http.StatusConflict, model.ErrCodeConflict, "grant already exists")
 			return
 		}
 		h.writeInternalError(w, r, "failed to create grant", err)
-		return
-	}
-	if err := h.recordMutationAudit(
-		r,
-		orgID,
-		"create_grant",
-		"access_grant",
-		grant.ID.String(),
-		nil,
-		grant,
-		nil,
-	); err != nil {
-		h.writeInternalError(w, r, "failed to record mutation audit", err)
 		return
 	}
 
@@ -254,21 +230,9 @@ func (h *Handlers) HandleDeleteGrant(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.db.DeleteGrant(r.Context(), orgID, grantID); err != nil {
+	audit := h.buildAuditEntry(r, orgID, "delete_grant", "access_grant", grant.ID.String(), grant, nil, nil)
+	if err := h.db.DeleteGrantWithAudit(r.Context(), orgID, grantID, audit); err != nil {
 		h.writeInternalError(w, r, "failed to delete grant", err)
-		return
-	}
-	if err := h.recordMutationAudit(
-		r,
-		orgID,
-		"delete_grant",
-		"access_grant",
-		grant.ID.String(),
-		grant,
-		nil,
-		nil,
-	); err != nil {
-		h.writeInternalError(w, r, "failed to record mutation audit", err)
 		return
 	}
 
@@ -303,26 +267,15 @@ func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.db.DeleteAgentData(r.Context(), orgID, agentID)
+	audit := h.buildAuditEntry(r, orgID, "delete_agent", "agent", agentID,
+		map[string]any{"agent_id": agentID}, nil, nil)
+	result, err := h.db.DeleteAgentData(r.Context(), orgID, agentID, &audit)
 	if err != nil {
 		if errors.Is(err, storage.ErrAgentNotFound) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "agent not found")
 			return
 		}
 		h.writeInternalError(w, r, "failed to delete agent data", err)
-		return
-	}
-	if err := h.recordMutationAudit(
-		r,
-		orgID,
-		"delete_agent",
-		"agent",
-		agentID,
-		map[string]any{"agent_id": agentID},
-		map[string]any{"deleted": result},
-		nil,
-	); err != nil {
-		h.writeInternalError(w, r, "failed to record mutation audit", err)
 		return
 	}
 
@@ -379,26 +332,15 @@ func (h *Handlers) HandleUpdateAgentTags(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	agent, err := h.db.UpdateAgentTags(r.Context(), orgID, agentID, deduped)
+	audit := h.buildAuditEntry(r, orgID, "update_agent_tags", "agent", agentID,
+		map[string]any{"tags": beforeAgent.Tags}, nil, nil)
+	agent, err := h.db.UpdateAgentTagsWithAudit(r.Context(), orgID, agentID, deduped, audit)
 	if err != nil {
 		if isNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "agent not found")
 			return
 		}
 		h.writeInternalError(w, r, "failed to update agent tags", err)
-		return
-	}
-	if err := h.recordMutationAudit(
-		r,
-		orgID,
-		"update_agent_tags",
-		"agent",
-		agentID,
-		map[string]any{"tags": beforeAgent.Tags},
-		map[string]any{"tags": agent.Tags},
-		nil,
-	); err != nil {
-		h.writeInternalError(w, r, "failed to record mutation audit", err)
 		return
 	}
 

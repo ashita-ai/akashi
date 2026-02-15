@@ -727,7 +727,7 @@ func TestDeleteAgentDataClearsExternalSupersedesRefs(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, decB.SupersedesID)
 
-	_, err = testDB.DeleteAgentData(ctx, agentA.OrgID, agentA.AgentID)
+	_, err = testDB.DeleteAgentData(ctx, agentA.OrgID, agentA.AgentID, nil)
 	require.NoError(t, err)
 
 	gotB, err := testDB.GetDecision(ctx, agentB.OrgID, decB.ID, storage.GetDecisionOpts{})

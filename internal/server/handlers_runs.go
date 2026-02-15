@@ -47,29 +47,13 @@ func (h *Handlers) HandleCreateRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.OrgID = orgID
-	run, err := h.db.CreateRun(r.Context(), req)
+	audit := h.buildAuditEntry(r, orgID, "create_run", "agent_run", "", nil, nil,
+		map[string]any{"agent_id": req.AgentID})
+	run, err := h.db.CreateRunWithAudit(r.Context(), req, audit)
 	if err != nil {
 		h.clearIdempotentWrite(r, orgID, idem)
 		h.writeInternalError(w, r, "failed to create run", err)
 		return
-	}
-	if err := h.recordMutationAudit(
-		r,
-		orgID,
-		"create_run",
-		"agent_run",
-		run.ID.String(),
-		nil,
-		run,
-		map[string]any{"agent_id": run.AgentID},
-	); err != nil {
-		// The mutation has already committed. Never clear idempotency here:
-		// retries with the same key would create duplicate runs.
-		h.logger.Error("failed to record mutation audit after committed create_run",
-			"error", err,
-			"run_id", run.ID,
-			"org_id", orgID,
-			"request_id", RequestIDFromContext(r.Context()))
 	}
 
 	h.completeIdempotentWriteBestEffort(r, orgID, idem, http.StatusCreated, run)
@@ -144,7 +128,7 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 		"status":    "persisted",
 		"message":   "events durably persisted",
 	}
-	if err := h.recordMutationAudit(
+	if err := h.recordMutationAuditBestEffort(
 		r,
 		orgID,
 		"append_events",
@@ -202,7 +186,9 @@ func (h *Handlers) HandleCompleteRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.db.CompleteRun(r.Context(), orgID, runID, status, req.Metadata); err != nil {
+	audit := h.buildAuditEntry(r, orgID, "complete_run", "agent_run", "",
+		nil, nil, map[string]any{"agent_id": run.AgentID})
+	if err := h.db.CompleteRunWithAudit(r.Context(), orgID, runID, status, req.Metadata, audit); err != nil {
 		h.writeInternalError(w, r, "failed to complete run", err)
 		return
 	}
@@ -210,41 +196,8 @@ func (h *Handlers) HandleCompleteRun(w http.ResponseWriter, r *http.Request) {
 	updated, err := h.db.GetRun(r.Context(), orgID, runID)
 	if err != nil {
 		h.logger.Warn("complete run: read-back failed", "error", err, "run_id", runID)
-		fallbackResp := map[string]any{"run_id": runID, "status": string(status)}
-		if auditErr := h.recordMutationAudit(
-			r,
-			orgID,
-			"complete_run",
-			"agent_run",
-			runID.String(),
-			nil,
-			fallbackResp,
-			map[string]any{"agent_id": run.AgentID},
-		); auditErr != nil {
-			h.logger.Error("failed to record mutation audit after committed complete_run",
-				"error", auditErr,
-				"run_id", runID,
-				"org_id", orgID,
-				"request_id", RequestIDFromContext(r.Context()))
-		}
-		writeJSON(w, r, http.StatusOK, fallbackResp)
+		writeJSON(w, r, http.StatusOK, map[string]any{"run_id": runID, "status": string(status)})
 		return
-	}
-	if err := h.recordMutationAudit(
-		r,
-		orgID,
-		"complete_run",
-		"agent_run",
-		runID.String(),
-		nil,
-		updated,
-		map[string]any{"agent_id": run.AgentID},
-	); err != nil {
-		h.logger.Error("failed to record mutation audit after committed complete_run",
-			"error", err,
-			"run_id", runID,
-			"org_id", orgID,
-			"request_id", RequestIDFromContext(r.Context()))
 	}
 	writeJSON(w, r, http.StatusOK, updated)
 }

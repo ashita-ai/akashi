@@ -112,6 +112,7 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		PrecedentRef: req.PrecedentRef,
 		SessionID:    sessionID,
 		AgentContext: agentContext,
+		AuditMeta:    h.buildAuditMeta(r, orgID),
 	})
 	if err != nil {
 		h.clearIdempotentWrite(r, orgID, idem)
@@ -123,24 +124,6 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		"run_id":      result.RunID,
 		"decision_id": result.DecisionID,
 		"event_count": result.EventCount,
-	}
-	if err := h.recordMutationAudit(
-		r,
-		orgID,
-		"trace_decision",
-		"decision",
-		result.DecisionID.String(),
-		nil,
-		resp,
-		map[string]any{"agent_id": req.AgentID, "run_id": result.RunID.String()},
-	); err != nil {
-		// The trace write already committed; keep the client response replayable.
-		h.logger.Error("failed to record mutation audit after committed trace_decision",
-			"error", err,
-			"decision_id", result.DecisionID,
-			"run_id", result.RunID,
-			"org_id", orgID,
-			"request_id", RequestIDFromContext(r.Context()))
 	}
 	h.completeIdempotentWriteBestEffort(r, orgID, idem, http.StatusCreated, resp)
 	writeJSON(w, r, http.StatusCreated, resp)
