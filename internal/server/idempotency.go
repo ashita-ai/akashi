@@ -138,6 +138,11 @@ func (h *Handlers) completeIdempotentWrite(
 
 // completeIdempotentWriteBestEffort finalizes an idempotency key without failing
 // the already-committed mutation response path.
+//
+// If finalization fails after retries, the key is cleared so that future retries
+// start fresh instead of receiving 409 for the duration of the abandoned TTL.
+// The trade-off is that a retry will re-execute the mutation (potential duplicate),
+// which is preferable to a 24h window of stuck 409 responses (#73).
 func (h *Handlers) completeIdempotentWriteBestEffort(
 	r *http.Request,
 	orgID uuid.UUID,
@@ -146,11 +151,25 @@ func (h *Handlers) completeIdempotentWriteBestEffort(
 	data any,
 ) {
 	if err := h.completeIdempotentWrite(r, orgID, idem, statusCode, data); err != nil {
-		h.logger.Error("failed to finalize idempotency record after committed mutation",
+		h.logger.Error("failed to finalize idempotency record after committed mutation — clearing key to unblock retries",
 			"error", err,
 			"org_id", orgID,
+			"endpoint", idem.endpoint,
+			"agent_id", idem.agentID,
 			"request_id", RequestIDFromContext(r.Context()),
 		)
+		// Use a background context because the request context may already be
+		// cancelled (the mutation succeeded but the response write or finalize
+		// timed out). A stuck in_progress key is worse than a cleared one.
+		clearCtx, clearCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if clearErr := h.db.ClearInProgressIdempotency(clearCtx, orgID, idem.agentID, idem.endpoint, idem.key); clearErr != nil {
+			h.logger.Error("failed to clear stuck idempotency key — key will remain in_progress until cleanup job runs",
+				"error", clearErr,
+				"endpoint", idem.endpoint,
+				"agent_id", idem.agentID,
+			)
+		}
+		clearCancel()
 	}
 }
 

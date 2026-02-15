@@ -113,19 +113,37 @@ func isTxModeNone(sql string) bool {
 
 // runMigrationNoTx executes a migration outside a transaction (for statements
 // like CREATE INDEX CONCURRENTLY) and then records it in schema_migrations.
-// If the migration executes but recording fails, re-running will attempt the
-// migration again; the SQL should be idempotent (IF NOT EXISTS / IF EXISTS).
+//
+// IMPORTANT: txmode-none migrations MUST be fully idempotent (IF NOT EXISTS /
+// IF EXISTS) because there is an unavoidable window between execution and
+// recording where a crash would leave the migration applied but unrecorded.
+// On restart, the migration runner will re-execute it (#62).
+//
+// The recording step retries up to 3 times to reduce the probability of this
+// window, but it cannot be eliminated without a transaction (which is
+// incompatible with statements like CREATE INDEX CONCURRENTLY).
 func (db *DB) runMigrationNoTx(ctx context.Context, name, sql string) error {
 	if _, err := db.pool.Exec(ctx, sql); err != nil {
 		return fmt.Errorf("storage: execute migration %s (no-tx): %w", name, err)
 	}
 
-	if _, err := db.pool.Exec(ctx,
-		`INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`, name,
-	); err != nil {
-		return fmt.Errorf("storage: record migration %s (no-tx): %w", name, err)
+	// Retry the recording INSERT to minimize the applied-but-unrecorded window.
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if _, err := db.pool.Exec(ctx,
+			`INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`, name,
+		); err != nil {
+			lastErr = err
+			db.logger.Warn("migration recording attempt failed",
+				"file", name, "attempt", attempt, "error", err)
+			continue
+		}
+		return nil
 	}
-	return nil
+	// If all retries fail, log at error level so operators notice.
+	// The migration SQL already executed — next restart will re-run it,
+	// which is safe only if the migration is idempotent.
+	return fmt.Errorf("storage: record migration %s (no-tx) after 3 attempts: %w", name, lastErr)
 }
 
 // runMigrationTx executes a migration and records it in schema_migrations within

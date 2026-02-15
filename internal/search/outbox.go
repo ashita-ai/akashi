@@ -262,6 +262,14 @@ func (w *OutboxWorker) processBatchCount(ctx context.Context) int {
 	return len(entries)
 }
 
+// cleanupDeadLetters archives exhausted outbox entries (attempts >= max, older
+// than 7 days) into search_outbox_dead_letters and removes them from the main
+// outbox table.
+//
+// Concurrency safety: FOR UPDATE SKIP LOCKED in the archive CTE ensures that
+// concurrent OutboxWorker instances operating on different entries never
+// conflict. The DELETE targets only the rows archived by this transaction
+// (via RETURNING ids) to avoid cross-transaction contention (#75).
 func (w *OutboxWorker) cleanupDeadLetters(ctx context.Context) {
 	tx, err := w.pool.Begin(ctx)
 	if err != nil {
@@ -270,7 +278,8 @@ func (w *OutboxWorker) cleanupDeadLetters(ctx context.Context) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := tx.Exec(ctx,
+	// Archive candidates and capture their IDs in one statement.
+	rows, err := tx.Query(ctx,
 		`WITH candidates AS (
 		    SELECT id, decision_id, org_id, operation, attempts, last_error, created_at, locked_until
 		    FROM search_outbox
@@ -278,30 +287,47 @@ func (w *OutboxWorker) cleanupDeadLetters(ctx context.Context) {
 		      AND (locked_until IS NULL OR locked_until < now())
 		      AND created_at < now() - interval '7 days'
 		    FOR UPDATE SKIP LOCKED
+		),
+		archived AS (
+		    INSERT INTO search_outbox_dead_letters (
+		        outbox_id, decision_id, org_id, operation, attempts, last_error, created_at, locked_until
+		    )
+		    SELECT id, decision_id, org_id, operation, attempts, last_error, created_at, locked_until
+		    FROM candidates
+		    ON CONFLICT (outbox_id) DO NOTHING
+		    RETURNING outbox_id
 		)
-		INSERT INTO search_outbox_dead_letters (
-		    outbox_id, decision_id, org_id, operation, attempts, last_error, created_at, locked_until
-		)
-		SELECT id, decision_id, org_id, operation, attempts, last_error, created_at, locked_until
-		FROM candidates
-		ON CONFLICT (outbox_id) DO NOTHING`,
+		SELECT outbox_id FROM archived`,
 		maxOutboxAttempts,
-	); err != nil {
+	)
+	if err != nil {
 		w.logger.Error("search outbox: archive dead-letters failed", "error", err)
 		return
 	}
 
+	var archivedIDs []int64
+	for rows.Next() {
+		var id int64
+		if scanErr := rows.Scan(&id); scanErr != nil {
+			w.logger.Error("search outbox: scan archived id", "error", scanErr)
+			rows.Close()
+			return
+		}
+		archivedIDs = append(archivedIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		w.logger.Error("search outbox: rows error after archive scan", "error", err)
+		return
+	}
+
+	if len(archivedIDs) == 0 {
+		return
+	}
+
+	// Delete only the rows we just archived — no re-query of the WHERE clause.
 	tag, err := tx.Exec(ctx,
-		`DELETE FROM search_outbox s
-		 WHERE s.attempts >= $1
-		   AND (s.locked_until IS NULL OR s.locked_until < now())
-		   AND s.created_at < now() - interval '7 days'
-		   AND EXISTS (
-		     SELECT 1
-		     FROM search_outbox_dead_letters d
-		     WHERE d.outbox_id = s.id
-		   )`,
-		maxOutboxAttempts,
+		`DELETE FROM search_outbox WHERE id = ANY($1)`,
+		archivedIDs,
 	)
 	if err != nil {
 		w.logger.Error("search outbox: delete archived dead-letters failed", "error", err)

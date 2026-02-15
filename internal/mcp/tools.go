@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	mcplib "github.com/mark3labs/mcp-go/mcp"
@@ -556,8 +557,16 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 
 	if idemOwned {
 		if compErr := s.db.CompleteIdempotency(ctx, orgID, agentID, "MCP:akashi_trace", idemKey, 200, json.RawMessage(resultData)); compErr != nil {
-			s.logger.Error("failed to finalize MCP trace idempotency record",
+			s.logger.Error("failed to finalize MCP trace idempotency record — clearing key to unblock retries",
 				"error", compErr, "idempotency_key", idemKey, "agent_id", agentID)
+			// Clear the stuck key so retries don't get ErrIdempotencyInProgress
+			// for the duration of the abandoned TTL (#73).
+			clearCtx, clearCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if clearErr := s.db.ClearInProgressIdempotency(clearCtx, orgID, agentID, "MCP:akashi_trace", idemKey); clearErr != nil {
+				s.logger.Error("failed to clear stuck MCP idempotency key",
+					"error", clearErr, "idempotency_key", idemKey)
+			}
+			clearCancel()
 		}
 	}
 
