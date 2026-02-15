@@ -124,4 +124,5 @@ type DecisionConflict struct {
 	OutcomeDivergence *float64     `json:"outcome_divergence,omitempty"`
 	Significance      *float64     `json:"significance,omitempty"`
 	ScoringMethod     string       `json:"scoring_method,omitempty"`
+	Explanation       *string      `json:"explanation,omitempty"`
 }

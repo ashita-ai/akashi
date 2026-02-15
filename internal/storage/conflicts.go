@@ -92,7 +92,7 @@ func (db *DB) ListConflicts(ctx context.Context, orgID uuid.UUID, filters Confli
 		 sc.agent_a, sc.agent_b,
 		 sc.decision_type_a, sc.decision_type_b, sc.outcome_a, sc.outcome_b,
 		 sc.topic_similarity, sc.outcome_divergence, sc.significance, sc.scoring_method,
-		 sc.detected_at,
+		 sc.explanation, sc.detected_at,
 		 da.run_id, db.run_id, da.confidence, db.confidence, da.reasoning, db.reasoning, da.valid_from, db.valid_from
 		 FROM scored_conflicts sc
 		 LEFT JOIN decisions da ON da.id = sc.decision_a_id
@@ -124,7 +124,7 @@ func (db *DB) ListConflicts(ctx context.Context, orgID uuid.UUID, filters Confli
 			&c.ConflictKind, &c.DecisionAID, &c.DecisionBID, &c.OrgID, &c.AgentA, &c.AgentB,
 			&c.DecisionTypeA, &c.DecisionTypeB, &c.OutcomeA, &c.OutcomeB,
 			&c.TopicSimilarity, &c.OutcomeDivergence, &c.Significance, &c.ScoringMethod,
-			&c.DetectedAt,
+			&c.Explanation, &c.DetectedAt,
 			&runA, &runB, &confA, &confB, &reasonA, &reasonB, &validA, &validB,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan conflict: %w", err)
@@ -151,7 +151,7 @@ func scanConflictRows(rows pgx.Rows) ([]model.DecisionConflict, error) {
 			&c.ConflictKind, &c.DecisionAID, &c.DecisionBID, &c.OrgID, &c.AgentA, &c.AgentB,
 			&c.DecisionTypeA, &c.DecisionTypeB, &c.OutcomeA, &c.OutcomeB,
 			&c.TopicSimilarity, &c.OutcomeDivergence, &c.Significance, &c.ScoringMethod,
-			&c.DetectedAt,
+			&c.Explanation, &c.DetectedAt,
 			&runA, &runB, &confA, &confB, &reasonA, &reasonB, &validA, &validB,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan conflict: %w", err)
@@ -177,7 +177,7 @@ func (db *DB) NewConflictsSinceByOrg(ctx context.Context, orgID uuid.UUID, since
 		 sc.agent_a, sc.agent_b,
 		 sc.decision_type_a, sc.decision_type_b, sc.outcome_a, sc.outcome_b,
 		 sc.topic_similarity, sc.outcome_divergence, sc.significance, sc.scoring_method,
-		 sc.detected_at,
+		 sc.explanation, sc.detected_at,
 		 da.run_id, db.run_id, da.confidence, db.confidence, da.reasoning, db.reasoning, da.valid_from, db.valid_from
 		 FROM scored_conflicts sc
 		 LEFT JOIN decisions da ON da.id = sc.decision_a_id
@@ -226,17 +226,18 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 	_, err := db.pool.Exec(ctx,
 		`INSERT INTO scored_conflicts (decision_a_id, decision_b_id, org_id, conflict_kind,
 		 agent_a, agent_b, decision_type_a, decision_type_b, outcome_a, outcome_b,
-		 topic_similarity, outcome_divergence, significance, scoring_method)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		 topic_similarity, outcome_divergence, significance, scoring_method, explanation)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		 ON CONFLICT (decision_a_id, decision_b_id) DO UPDATE SET
 		 topic_similarity = EXCLUDED.topic_similarity,
 		 outcome_divergence = EXCLUDED.outcome_divergence,
 		 significance = EXCLUDED.significance,
 		 scoring_method = EXCLUDED.scoring_method,
+		 explanation = EXCLUDED.explanation,
 		 detected_at = now()`,
 		da, dbID, c.OrgID, string(c.ConflictKind),
 		agentA, agentB, typeA, typeB, outcomeA, outcomeB,
-		topicSim, outcomeDiv, sig, method,
+		topicSim, outcomeDiv, sig, method, c.Explanation,
 	)
 	return err
 }
