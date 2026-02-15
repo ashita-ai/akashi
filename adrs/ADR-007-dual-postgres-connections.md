@@ -65,7 +65,7 @@ Reconnect uses exponential backoff with jitter:
 
 If all 5 attempts fail, the error propagates to the SSE broker, which logs a warning and retries on the next notification wait cycle. The broker does not crash the process; SSE subscribers simply stop receiving updates until the connection recovers.
 
-The reconnect logic holds `notifyMu` for the duration of the retry sequence. This serializes reconnect attempts and prevents the broker from reading a half-initialized connection.
+The reconnect logic holds `notifyMu` during connection establishment and channel re-subscription, but releases it during backoff sleeps so that `WaitForNotification` callers aren't blocked for the full retry duration. This balances serialization of reconnect attempts against availability of the notification path.
 
 ### Sending notifications
 
