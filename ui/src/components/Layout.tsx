@@ -9,6 +9,7 @@ import {
   Users,
   AlertTriangle,
   Search,
+  Download,
   LogOut,
   Menu,
   X,
@@ -41,6 +42,7 @@ const navItems = [
   { to: "/agents", label: "Agents", icon: Users },
   { to: "/conflicts", label: "Conflicts", icon: AlertTriangle },
   { to: "/search", label: "Search", icon: Search },
+  { to: "/export", label: "Export", icon: Download },
 ];
 
 export default function Layout() {

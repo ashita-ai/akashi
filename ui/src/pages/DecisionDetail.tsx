@@ -1,6 +1,7 @@
 import { useParams, Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
-import { getRun } from "@/lib/api";
+import { getRun, getDecisionRevisions, getDecisionConflicts, verifyDecisionIntegrity } from "@/lib/api";
+import type { Decision, DecisionConflict } from "@/types/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -12,14 +13,216 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { formatDate } from "@/lib/utils";
-import { ArrowLeft, CheckCircle2, XCircle, Clock } from "lucide-react";
+import { formatDate, formatRelativeTime } from "@/lib/utils";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  CheckCircle2,
+  Clock,
+  GitBranch,
+  Hash,
+  Shield,
+  ShieldCheck,
+  ShieldX,
+  XCircle,
+} from "lucide-react";
 
 const statusIcon = {
   running: <Clock className="h-4 w-4 text-amber-500" />,
   completed: <CheckCircle2 className="h-4 w-4 text-emerald-500" />,
   failed: <XCircle className="h-4 w-4 text-destructive" />,
 };
+
+function IntegrityBadge({ decisionId }: { decisionId: string }) {
+  const { data, isPending } = useQuery({
+    queryKey: ["integrity", decisionId],
+    queryFn: () => verifyDecisionIntegrity(decisionId),
+    staleTime: 60_000,
+  });
+
+  if (isPending) return <Skeleton className="h-5 w-20 inline-block" />;
+  if (!data) return null;
+
+  if (data.status === "verified") {
+    return (
+      <Badge variant="success" className="text-xs gap-1">
+        <ShieldCheck className="h-3 w-3" />
+        Verified
+      </Badge>
+    );
+  }
+  if (data.status === "tampered") {
+    return (
+      <Badge variant="destructive" className="text-xs gap-1">
+        <ShieldX className="h-3 w-3" />
+        Tampered
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="outline" className="text-xs gap-1">
+      <Shield className="h-3 w-3" />
+      No hash
+    </Badge>
+  );
+}
+
+function RevisionChain({ decisionId }: { decisionId: string }) {
+  const { data, isPending } = useQuery({
+    queryKey: ["revisions", decisionId],
+    queryFn: () => getDecisionRevisions(decisionId),
+    staleTime: 30_000,
+  });
+
+  if (isPending) return <Skeleton className="h-24 w-full" />;
+  if (!data || data.count <= 1) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-sm font-medium">
+          <GitBranch className="h-4 w-4" />
+          Revision History ({data.count} versions)
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="relative space-y-3 pl-6 before:absolute before:left-[11px] before:top-2 before:h-[calc(100%-16px)] before:w-px before:bg-border">
+          {data.revisions.map((rev: Decision, idx: number) => (
+            <div key={rev.id} className="relative">
+              <div className="absolute -left-6 top-1 h-2.5 w-2.5 rounded-full border-2 border-background bg-primary" />
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <Badge variant={idx === 0 ? "default" : "outline"} className="text-xs">
+                    {idx === 0 ? "Current" : `v${data.count - idx}`}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">
+                    {formatDate(rev.valid_from)}
+                  </span>
+                  <Badge variant="secondary" className="text-xs">
+                    {(rev.confidence * 100).toFixed(0)}%
+                  </Badge>
+                </div>
+                <p className="text-sm">{rev.outcome}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function DecisionConflicts({ decisionId }: { decisionId: string }) {
+  const { data, isPending } = useQuery({
+    queryKey: ["decision-conflicts", decisionId],
+    queryFn: () => getDecisionConflicts(decisionId),
+    staleTime: 30_000,
+  });
+
+  if (isPending) return <Skeleton className="h-24 w-full" />;
+  if (!data || data.total === 0) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-sm font-medium">
+          <AlertTriangle className="h-4 w-4 text-amber-500" />
+          Related Conflicts ({data.total})
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-3">
+          {data.conflicts.map((c: DecisionConflict) => (
+            <div
+              key={c.id ?? `${c.decision_a_id}-${c.decision_b_id}`}
+              className="rounded-md border p-3 text-sm"
+            >
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="font-mono text-xs">
+                    {c.agent_a}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">vs</span>
+                  <Badge variant="outline" className="font-mono text-xs">
+                    {c.agent_b}
+                  </Badge>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge
+                    variant={
+                      c.status === "open"
+                        ? "warning"
+                        : c.status === "resolved"
+                          ? "success"
+                          : "secondary"
+                    }
+                    className="text-xs"
+                  >
+                    {c.status}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">
+                    {formatRelativeTime(c.detected_at)}
+                  </span>
+                </div>
+              </div>
+              {c.explanation && (
+                <p className="text-xs text-muted-foreground italic mt-1">
+                  {c.explanation}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function SessionContext({ decision }: { decision: Decision }) {
+  const ctx = decision.metadata as Record<string, unknown> | null;
+  if (!ctx) return null;
+
+  // Extract agent_context fields (session_id, tool, model, repo)
+  const agentContext = ctx.agent_context as Record<string, unknown> | undefined;
+  const sessionId = (ctx.session_id ?? agentContext?.session_id) as string | undefined;
+  const tool = agentContext?.tool as string | undefined;
+  const model = agentContext?.model as string | undefined;
+  const repo = agentContext?.repo as string | undefined;
+
+  if (!sessionId && !tool && !model && !repo) return null;
+
+  return (
+    <div className="space-y-2">
+      <h4 className="text-xs font-medium text-muted-foreground mb-1">Session Context</h4>
+      <div className="flex flex-wrap gap-2">
+        {sessionId && (
+          <Link
+            to={`/sessions/${sessionId}`}
+            className="inline-flex items-center gap-1 text-xs bg-muted rounded px-2 py-1 hover:bg-accent transition-colors"
+          >
+            <Hash className="h-3 w-3" />
+            {sessionId.slice(0, 8)}...
+          </Link>
+        )}
+        {tool && (
+          <Badge variant="outline" className="text-xs">
+            {tool}
+          </Badge>
+        )}
+        {model && (
+          <Badge variant="outline" className="text-xs">
+            {model}
+          </Badge>
+        )}
+        {repo && (
+          <Badge variant="outline" className="text-xs font-mono">
+            {repo}
+          </Badge>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function DecisionDetail() {
   const { runId } = useParams<{ runId: string }>();
@@ -157,9 +360,12 @@ export default function DecisionDetail() {
                   <CardTitle className="text-sm font-medium">
                     Decision: {decision.decision_type}
                   </CardTitle>
-                  <Badge variant="secondary">
-                    {(decision.confidence * 100).toFixed(0)}% confidence
-                  </Badge>
+                  <div className="flex items-center gap-2">
+                    <IntegrityBadge decisionId={decision.id} />
+                    <Badge variant="secondary">
+                      {(decision.confidence * 100).toFixed(0)}% confidence
+                    </Badge>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -180,6 +386,9 @@ export default function DecisionDetail() {
                     </p>
                   </div>
                 )}
+
+                {/* Session context */}
+                <SessionContext decision={decision} />
 
                 {/* Alternatives */}
                 {decision.alternatives && decision.alternatives.length > 0 && (
@@ -258,6 +467,12 @@ export default function DecisionDetail() {
                     </div>
                   </div>
                 )}
+
+                {/* Revision chain */}
+                <RevisionChain decisionId={decision.id} />
+
+                {/* Related conflicts */}
+                <DecisionConflicts decisionId={decision.id} />
               </CardContent>
             </Card>
           ))}
