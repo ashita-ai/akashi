@@ -170,3 +170,7 @@ func (h *Handlers) clearIdempotentWrite(r *http.Request, orgID uuid.UUID, idem *
 func appendEventsEndpoint(runID uuid.UUID) string {
 	return fmt.Sprintf("POST:/v1/runs/%s/events", runID)
 }
+
+func completeRunEndpoint(runID uuid.UUID) string {
+	return fmt.Sprintf("POST:/v1/runs/%s/complete", runID)
+}

@@ -2,7 +2,10 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -117,6 +120,9 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 			),
 			mcplib.WithString("task",
 				mcplib.Description(`What you're working on (e.g. "codebase review", "implement rate limiting"). Groups related decisions.`),
+			),
+			mcplib.WithString("idempotency_key",
+				mcplib.Description("Optional key for retry safety. Same key + same payload replays the original response. Same key + different payload returns an error. Use a UUID or deterministic identifier per logical operation."),
 			),
 		),
 		s.handleTrace,
@@ -477,6 +483,35 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		}
 	}
 
+	// Idempotency: if the caller provided an idempotency_key, check/reserve it
+	// before executing the trace. Reuses the same storage primitives as HTTP.
+	idemKey := request.GetString("idempotency_key", "")
+	var idemOwned bool // true when this request owns the in-progress reservation
+	if idemKey != "" {
+		payloadHash, hashErr := mcpTraceHash(agentID, decisionType, outcome, confidence, reasoning)
+		if hashErr != nil {
+			return errorResult(fmt.Sprintf("failed to hash trace payload: %v", hashErr)), nil
+		}
+		lookup, beginErr := s.db.BeginIdempotency(ctx, orgID, agentID, "MCP:akashi_trace", idemKey, payloadHash)
+		switch {
+		case beginErr == nil && lookup.Completed:
+			// Replay the stored response.
+			return &mcplib.CallToolResult{
+				Content: []mcplib.Content{
+					mcplib.TextContent{Type: "text", Text: string(lookup.ResponseData)},
+				},
+			}, nil
+		case beginErr == nil:
+			idemOwned = true
+		case errors.Is(beginErr, storage.ErrIdempotencyPayloadMismatch):
+			return errorResult("idempotency key reused with different payload"), nil
+		case errors.Is(beginErr, storage.ErrIdempotencyInProgress):
+			return errorResult("request with this idempotency key is already in progress"), nil
+		default:
+			return errorResult(fmt.Sprintf("idempotency lookup failed: %v", beginErr)), nil
+		}
+	}
+
 	// Build audit metadata so the trace includes an atomic audit record.
 	// This closes issue #63: MCP traces previously had no audit trail.
 	callerActorID := agentID
@@ -507,6 +542,9 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		},
 	})
 	if err != nil {
+		if idemOwned {
+			_ = s.db.ClearInProgressIdempotency(ctx, orgID, agentID, "MCP:akashi_trace", idemKey)
+		}
 		return errorResult(fmt.Sprintf("failed to record decision: %v", err)), nil
 	}
 
@@ -515,6 +553,13 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		"decision_id": result.DecisionID,
 		"status":      "recorded",
 	})
+
+	if idemOwned {
+		if compErr := s.db.CompleteIdempotency(ctx, orgID, agentID, "MCP:akashi_trace", idemKey, 200, json.RawMessage(resultData)); compErr != nil {
+			s.logger.Error("failed to finalize MCP trace idempotency record",
+				"error", compErr, "idempotency_key", idemKey, "agent_id", agentID)
+		}
+	}
 
 	contents := []mcplib.Content{
 		mcplib.TextContent{Type: "text", Text: string(resultData)},
@@ -537,6 +582,23 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	}
 
 	return &mcplib.CallToolResult{Content: contents}, nil
+}
+
+// mcpTraceHash computes a deterministic SHA-256 hash of the trace parameters
+// used for idempotency payload comparison.
+func mcpTraceHash(agentID, decisionType, outcome string, confidence float32, reasoning string) (string, error) {
+	b, err := json.Marshal(map[string]any{
+		"agent_id":      agentID,
+		"decision_type": decisionType,
+		"outcome":       outcome,
+		"confidence":    confidence,
+		"reasoning":     reasoning,
+	})
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
