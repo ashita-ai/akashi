@@ -6,8 +6,9 @@ import (
 )
 
 // SplitClaims breaks an outcome text into individual claims suitable for
-// sentence-level embedding. It splits on sentence boundaries and numbered
-// items, then filters out claims that are too short to be meaningful.
+// sentence-level embedding. It splits on sentence boundaries, numbered items,
+// markdown lists, and semicolons, then filters out claims that are too short
+// to be meaningful.
 //
 // The minimum useful claim length is 20 characters — shorter fragments
 // (e.g. "Ratings:", "Three findings:") lack enough semantic content for
@@ -17,13 +18,25 @@ func SplitClaims(outcome string) []string {
 		return nil
 	}
 
-	// First pass: split on sentence-ending punctuation followed by whitespace.
-	raw := splitSentences(outcome)
+	// First pass: split on markdown list items (- or *) at line boundaries.
+	raw := splitMarkdownLists(outcome)
 
-	// Second pass: split sentences that contain numbered lists like "(1) ... (2) ...".
-	var expanded []string
+	// Second pass: split on sentence-ending punctuation followed by whitespace.
+	var sentences []string
 	for _, s := range raw {
-		expanded = append(expanded, splitNumberedItems(s)...)
+		sentences = append(sentences, splitSentences(s)...)
+	}
+
+	// Third pass: split sentences that contain numbered lists like "(1) ... (2) ...".
+	var numbered []string
+	for _, s := range sentences {
+		numbered = append(numbered, splitNumberedItems(s)...)
+	}
+
+	// Fourth pass: split on semicolons when the resulting parts are substantial.
+	var expanded []string
+	for _, s := range numbered {
+		expanded = append(expanded, splitSemicolons(s)...)
 	}
 
 	// Filter: drop fragments too short for meaningful embedding.
@@ -123,6 +136,77 @@ func splitNumberedItems(s string) []string {
 	}
 	if len(parts) <= 1 {
 		return []string{s}
+	}
+	return parts
+}
+
+// splitMarkdownLists splits text on markdown-style list items (- or *) that
+// appear at the start of a line. Non-list text before the first item is
+// preserved as a separate element.
+func splitMarkdownLists(text string) []string {
+	lines := strings.Split(text, "\n")
+	hasList := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if (strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ")) && len(trimmed) > 2 {
+			hasList = true
+			break
+		}
+	}
+	if !hasList {
+		return []string{text}
+	}
+
+	var parts []string
+	var current strings.Builder
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if (strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ")) && len(trimmed) > 2 {
+			// Flush any accumulated non-list text.
+			if before := strings.TrimSpace(current.String()); before != "" {
+				parts = append(parts, before)
+			}
+			current.Reset()
+			// Strip the list marker.
+			parts = append(parts, strings.TrimSpace(trimmed[2:]))
+		} else {
+			if current.Len() > 0 {
+				current.WriteRune(' ')
+			}
+			current.WriteString(trimmed)
+		}
+	}
+	if remainder := strings.TrimSpace(current.String()); remainder != "" {
+		parts = append(parts, remainder)
+	}
+	return parts
+}
+
+// splitSemicolons splits a text on semicolons when both resulting parts
+// are at least 20 characters long. This handles enumerated lists like
+// "issue A; issue B; issue C" without splitting on incidental semicolons
+// in short text.
+func splitSemicolons(text string) []string {
+	if !strings.Contains(text, ";") {
+		return []string{text}
+	}
+	raw := strings.Split(text, ";")
+	// Only split if all parts are substantial (>= 20 chars after trimming).
+	allSubstantial := true
+	for _, part := range raw {
+		if len(strings.TrimSpace(part)) < 20 {
+			allSubstantial = false
+			break
+		}
+	}
+	if !allSubstantial {
+		return []string{text}
+	}
+	var parts []string
+	for _, part := range raw {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
 	}
 	return parts
 }
