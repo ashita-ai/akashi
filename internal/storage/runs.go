@@ -42,6 +42,53 @@ func (db *DB) CreateRun(ctx context.Context, req model.CreateRunRequest) (model.
 	return run, nil
 }
 
+// CreateRunWithAudit creates a run and inserts a mutation audit entry
+// atomically within a single transaction. If either INSERT fails, both
+// are rolled back — mutations never persist without their audit record.
+func (db *DB) CreateRunWithAudit(ctx context.Context, req model.CreateRunRequest, audit MutationAuditEntry) (model.AgentRun, error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return model.AgentRun{}, fmt.Errorf("storage: begin create run tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	now := time.Now().UTC()
+	run := model.AgentRun{
+		ID:          uuid.New(),
+		AgentID:     req.AgentID,
+		OrgID:       req.OrgID,
+		TraceID:     req.TraceID,
+		ParentRunID: req.ParentRunID,
+		Status:      model.RunStatusRunning,
+		StartedAt:   now,
+		Metadata:    req.Metadata,
+		CreatedAt:   now,
+	}
+	if run.Metadata == nil {
+		run.Metadata = map[string]any{}
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO agent_runs (id, agent_id, org_id, trace_id, parent_run_id, status, started_at, metadata, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		run.ID, run.AgentID, run.OrgID, run.TraceID, run.ParentRunID,
+		string(run.Status), run.StartedAt, run.Metadata, run.CreatedAt,
+	); err != nil {
+		return model.AgentRun{}, fmt.Errorf("storage: create run: %w", err)
+	}
+
+	audit.ResourceID = run.ID.String()
+	audit.AfterData = run
+	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+		return model.AgentRun{}, fmt.Errorf("storage: audit in create run tx: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return model.AgentRun{}, fmt.Errorf("storage: commit create run tx: %w", err)
+	}
+	return run, nil
+}
+
 // GetRun retrieves a run by ID, scoped to the given org.
 func (db *DB) GetRun(ctx context.Context, orgID, id uuid.UUID) (model.AgentRun, error) {
 	var run model.AgentRun
@@ -95,6 +142,54 @@ func (db *DB) CompleteRun(ctx context.Context, orgID, id uuid.UUID, status model
 		return fmt.Errorf("storage: run %s complete transition rejected from status %q", id, existingStatus)
 	}
 	return nil
+}
+
+// CompleteRunWithAudit marks a run as completed/failed and inserts a mutation
+// audit entry atomically within a single transaction.
+func (db *DB) CompleteRunWithAudit(ctx context.Context, orgID, id uuid.UUID, status model.RunStatus, metadata map[string]any, audit MutationAuditEntry) error {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("storage: begin complete run tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	now := time.Now().UTC()
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	tag, err := tx.Exec(ctx,
+		`UPDATE agent_runs SET status = $1, completed_at = $2, metadata = metadata || $3
+		 WHERE id = $4 AND org_id = $5 AND status = 'running'`,
+		string(status), now, metadata, id, orgID,
+	)
+	if err != nil {
+		return fmt.Errorf("storage: complete run: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		var existingStatus string
+		err := tx.QueryRow(ctx,
+			`SELECT status FROM agent_runs WHERE id = $1 AND org_id = $2`,
+			id, orgID,
+		).Scan(&existingStatus)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("storage: run %s: %w", id, ErrNotFound)
+			}
+			return fmt.Errorf("storage: complete run status lookup: %w", err)
+		}
+		if existingStatus == string(model.RunStatusCompleted) || existingStatus == string(model.RunStatusFailed) {
+			// Idempotent — already finalized. Still commit to release tx.
+			return tx.Commit(ctx)
+		}
+		return fmt.Errorf("storage: run %s complete transition rejected from status %q", id, existingStatus)
+	}
+
+	audit.ResourceID = id.String()
+	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+		return fmt.Errorf("storage: audit in complete run tx: %w", err)
+	}
+
+	return tx.Commit(ctx)
 }
 
 // ListRunsByAgent returns runs for a given agent_id within an org, ordered by started_at DESC.

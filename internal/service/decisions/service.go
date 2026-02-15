@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ashita-ai/akashi/internal/conflicts"
+	"github.com/ashita-ai/akashi/internal/ctxutil"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
@@ -79,6 +80,11 @@ type TraceInput struct {
 	PrecedentRef *uuid.UUID
 	SessionID    *uuid.UUID     // MCP session or X-Akashi-Session header.
 	AgentContext map[string]any // Merged server-extracted + client-supplied context.
+
+	// AuditMeta, when non-nil, causes the trace to include a mutation audit
+	// record inside the same transaction. This closes the gap where mutations
+	// could commit without an audit trail.
+	AuditMeta *ctxutil.AuditMeta
 }
 
 // TraceResult is the outcome of recording a decision.
@@ -161,7 +167,25 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 		}
 	}
 
-	// 5. Execute transactional write (run + decision + alts + evidence + complete).
+	// 5. Build optional audit entry for atomic insertion.
+	var auditEntry *storage.MutationAuditEntry
+	if input.AuditMeta != nil {
+		auditEntry = &storage.MutationAuditEntry{
+			RequestID:    input.AuditMeta.RequestID,
+			OrgID:        input.AuditMeta.OrgID,
+			ActorAgentID: input.AuditMeta.ActorAgentID,
+			ActorRole:    input.AuditMeta.ActorRole,
+			HTTPMethod:   input.AuditMeta.HTTPMethod,
+			Endpoint:     input.AuditMeta.Endpoint,
+			Operation:    "trace_decision",
+			ResourceType: "decision",
+			// ResourceID and AfterData are populated by CreateTraceTx after
+			// the decision ID is generated.
+			Metadata: map[string]any{"agent_id": input.AgentID},
+		}
+	}
+
+	// 6. Execute transactional write (run + decision + alts + evidence + complete + audit).
 	// Wrapped in WithRetry to handle Postgres serialization failures (40001) and
 	// deadlocks (40P01) that can occur when concurrent traces race on indexes.
 	var run model.AgentRun
@@ -187,6 +211,7 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 			Evidence:     evs,
 			SessionID:    input.SessionID,
 			AgentContext: input.AgentContext,
+			AuditEntry:   auditEntry,
 		})
 		return txErr
 	})
