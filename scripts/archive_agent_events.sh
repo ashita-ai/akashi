@@ -27,6 +27,10 @@ BATCH_DAYS="${BATCH_DAYS:-1}"
 DRY_RUN="${DRY_RUN:-true}"
 ENABLE_PURGE="${ENABLE_PURGE:-false}"
 
+# Validate numeric inputs to prevent SQL injection (issue #59).
+[[ "${RETAIN_DAYS}" =~ ^[0-9]+$ ]] || { echo "error: RETAIN_DAYS must be a positive integer, got '${RETAIN_DAYS}'" >&2; exit 2; }
+[[ "${BATCH_DAYS}" =~ ^[0-9]+$ ]] || { echo "error: BATCH_DAYS must be a positive integer, got '${BATCH_DAYS}'" >&2; exit 2; }
+
 if [[ "${ENABLE_PURGE}" == "true" && "${DRY_RUN}" != "false" ]]; then
   echo "error: ENABLE_PURGE=true requires DRY_RUN=false" >&2
   exit 2

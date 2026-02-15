@@ -419,9 +419,11 @@ paths:
       description: |
         Mark a run as completed or failed. Updates the run status and
         records the completion time.
+        Supports idempotent retries via `Idempotency-Key`.
         Requires `agent` role or higher.
       parameters:
         - $ref: "#/components/parameters/RunIDPath"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
       requestBody:
         required: true
         content:
