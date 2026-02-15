@@ -735,6 +735,55 @@ func TestDeleteAgentDataClearsExternalSupersedesRefs(t *testing.T) {
 	assert.Nil(t, gotB.SupersedesID)
 }
 
+func TestDeleteAgentDataDeletesClaims(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "delete-claims-" + suffix
+
+	agent, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID,
+		Name:    "Delete Claims Agent",
+		Role:    model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	dec, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID:        run.ID,
+		AgentID:      agentID,
+		OrgID:        agent.OrgID,
+		DecisionType: "gdpr-test",
+		Outcome:      "test outcome with claims",
+		Confidence:   0.8,
+	})
+	require.NoError(t, err)
+
+	// Insert claims for this decision.
+	err = testDB.InsertClaims(ctx, []storage.Claim{
+		{DecisionID: dec.ID, OrgID: dec.OrgID, ClaimIdx: 0, ClaimText: "PII claim one."},
+		{DecisionID: dec.ID, OrgID: dec.OrgID, ClaimIdx: 1, ClaimText: "PII claim two."},
+	})
+	require.NoError(t, err)
+
+	// Verify claims exist.
+	claims, err := testDB.FindClaimsByDecision(ctx, dec.ID)
+	require.NoError(t, err)
+	require.Len(t, claims, 2)
+
+	// Delete agent data (GDPR erasure).
+	result, err := testDB.DeleteAgentData(ctx, agent.OrgID, agentID, nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), result.Claims, "should report 2 claims deleted")
+	assert.Equal(t, int64(1), result.Decisions, "should report 1 decision deleted")
+
+	// Verify claims are gone.
+	claimsAfter, err := testDB.FindClaimsByDecision(ctx, dec.ID)
+	require.NoError(t, err)
+	assert.Empty(t, claimsAfter, "claims must be deleted for GDPR compliance")
+}
+
 // ---------------------------------------------------------------------------
 // Tests 1-15: Extended storage coverage
 // ---------------------------------------------------------------------------
