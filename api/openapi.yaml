@@ -733,6 +733,26 @@ paths:
         "400":
           $ref: "#/components/responses/BadRequest"
 
+  /v1/trace-health:
+    get:
+      operationId: getTraceHealth
+      tags: [Query]
+      summary: Get trace health metrics
+      description: |
+        Returns aggregate health metrics for the organization's decision trace
+        data, including decision quality, evidence coverage, and conflict
+        resolution rates. Identifies gaps and returns an overall status.
+        Requires `admin` role or higher.
+      responses:
+        "200":
+          description: Trace health metrics.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TraceHealthMetrics"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
   # ── Search ─────────────────────────────────────────────────────────
   /v1/search:
     post:
@@ -2191,3 +2211,84 @@ components:
           $ref: "#/components/schemas/VerifyResponse"
         meta:
           $ref: "#/components/schemas/ResponseMeta"
+
+    TraceHealthMetrics:
+      type: object
+      required: [status, completeness, evidence, gaps]
+      properties:
+        status:
+          type: string
+          enum: [healthy, needs_attention, insufficient_data]
+          description: Overall health status of the organization's decision traces.
+        completeness:
+          $ref: "#/components/schemas/CompletenessMetrics"
+        evidence:
+          $ref: "#/components/schemas/EvidenceMetrics"
+        conflicts:
+          $ref: "#/components/schemas/TraceHealthConflictMetrics"
+        gaps:
+          type: array
+          items:
+            type: string
+          description: Up to 3 actionable improvement suggestions, ordered by severity.
+
+    CompletenessMetrics:
+      type: object
+      required: [total_decisions, avg_quality, below_half, below_third, with_reasoning, reasoning_pct]
+      properties:
+        total_decisions:
+          type: integer
+          description: Total number of active decisions.
+        avg_quality:
+          type: number
+          format: double
+          description: Average quality score across all decisions (0.0–1.0).
+        below_half:
+          type: integer
+          description: Count of decisions with quality_score < 0.5.
+        below_third:
+          type: integer
+          description: Count of decisions with quality_score < 0.33.
+        with_reasoning:
+          type: integer
+          description: Count of decisions that include reasoning text.
+        reasoning_pct:
+          type: number
+          format: double
+          description: Percentage of decisions with reasoning (0–100).
+
+    EvidenceMetrics:
+      type: object
+      required: [total_decisions, with_evidence, without_evidence, coverage_pct]
+      properties:
+        total_decisions:
+          type: integer
+          description: Total number of active decisions.
+        with_evidence:
+          type: integer
+          description: Count of decisions that have at least one evidence record.
+        without_evidence:
+          type: integer
+          description: Count of decisions without any evidence records.
+        coverage_pct:
+          type: number
+          format: double
+          description: Percentage of decisions with evidence (0–100).
+
+    TraceHealthConflictMetrics:
+      type: object
+      required: [total, open, resolved, resolved_pct]
+      properties:
+        total:
+          type: integer
+          description: Total number of detected conflicts.
+        open:
+          type: integer
+          description: Number of unresolved conflicts.
+        resolved:
+          type: integer
+          description: Number of resolved conflicts.
+        resolved_pct:
+          type: number
+          format: double
+          description: Percentage of conflicts that have been resolved (0–100).

@@ -127,6 +127,9 @@ func New(cfg ServerConfig) *Server {
 	// Session view (reader+).
 	mux.Handle("GET /v1/sessions/{session_id}", readRole(http.HandlerFunc(h.HandleSessionView)))
 
+	// Trace health (admin-only).
+	mux.Handle("GET /v1/trace-health", adminOnly(http.HandlerFunc(h.HandleTraceHealth)))
+
 	// Integrity verification (reader+).
 	mux.Handle("GET /v1/verify/{id}", readRole(http.HandlerFunc(h.HandleVerifyDecision)))
 

@@ -10,6 +10,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
+	"github.com/ashita-ai/akashi/internal/service/tracehealth"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
@@ -574,6 +575,21 @@ func (h *Handlers) HandleVerifyDecision(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, r, http.StatusOK, resp)
+}
+
+// HandleTraceHealth handles GET /v1/trace-health.
+// Returns aggregate health metrics for the caller's organization.
+func (h *Handlers) HandleTraceHealth(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+
+	svc := tracehealth.New(h.db)
+	metrics, err := svc.Compute(r.Context(), orgID)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to compute trace health", err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, metrics)
 }
 
 // HandleSessionView handles GET /v1/sessions/{session_id}.
