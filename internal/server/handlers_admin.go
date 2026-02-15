@@ -87,6 +87,7 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleListAgents handles GET /v1/agents (admin-only).
+// Supports ?include=stats to enrich each agent with decision_count and last_decision_at.
 func (h *Handlers) HandleListAgents(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 	limit := queryLimit(r, 200)
@@ -102,13 +103,39 @@ func (h *Handlers) HandleListAgents(w http.ResponseWriter, r *http.Request) {
 		h.writeInternalError(w, r, "failed to count agents", err)
 		return
 	}
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"agents":   agents,
+
+	resp := map[string]any{
 		"total":    total,
 		"limit":    limit,
 		"offset":   offset,
 		"has_more": offset+len(agents) < total,
-	})
+	}
+
+	if r.URL.Query().Get("include") == "stats" {
+		statsMap, err := h.db.GetAgentListStats(r.Context(), orgID)
+		if err != nil {
+			h.writeInternalError(w, r, "failed to get agent stats", err)
+			return
+		}
+		type agentWithStats struct {
+			model.Agent
+			DecisionCount  int        `json:"decision_count"`
+			LastDecisionAt *time.Time `json:"last_decision_at,omitempty"`
+		}
+		enriched := make([]agentWithStats, len(agents))
+		for i, a := range agents {
+			enriched[i] = agentWithStats{Agent: a}
+			if s, ok := statsMap[a.AgentID]; ok {
+				enriched[i].DecisionCount = s.DecisionCount
+				enriched[i].LastDecisionAt = s.LastDecisionAt
+			}
+		}
+		resp["agents"] = enriched
+	} else {
+		resp["agents"] = agents
+	}
+
+	writeJSON(w, r, http.StatusOK, resp)
 }
 
 // HandleCreateGrant handles POST /v1/grants.
@@ -242,6 +269,110 @@ func (h *Handlers) HandleDeleteGrant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// HandleGetAgent handles GET /v1/agents/{agent_id} (admin-only).
+func (h *Handlers) HandleGetAgent(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+	agentID := r.PathValue("agent_id")
+	if err := model.ValidateAgentID(agentID); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
+
+	agent, err := h.db.GetAgentByAgentID(r.Context(), orgID, agentID)
+	if err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "agent not found")
+			return
+		}
+		h.writeInternalError(w, r, "failed to get agent", err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, agent)
+}
+
+// HandleUpdateAgent handles PATCH /v1/agents/{agent_id} (admin-only).
+// Performs a partial update of agent name and/or metadata (merge patch for metadata).
+func (h *Handlers) HandleUpdateAgent(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+	agentID := r.PathValue("agent_id")
+	if err := model.ValidateAgentID(agentID); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
+
+	var req model.UpdateAgentRequest
+	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+		return
+	}
+
+	if req.Name == nil && req.Metadata == nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "at least one of name or metadata is required")
+		return
+	}
+
+	if req.Name != nil && *req.Name == "" {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "name must not be empty")
+		return
+	}
+
+	beforeAgent, err := h.db.GetAgentByAgentID(r.Context(), orgID, agentID)
+	if err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "agent not found")
+			return
+		}
+		h.writeInternalError(w, r, "failed to get existing agent", err)
+		return
+	}
+
+	audit := h.buildAuditEntry(r, orgID, "update_agent", "agent", agentID, beforeAgent, nil, nil)
+	agent, err := h.db.UpdateAgentWithAudit(r.Context(), orgID, agentID, req.Name, req.Metadata, audit)
+	if err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "agent not found")
+			return
+		}
+		h.writeInternalError(w, r, "failed to update agent", err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, agent)
+}
+
+// HandleAgentStats handles GET /v1/agents/{agent_id}/stats (admin-only).
+// Returns aggregate decision statistics for a specific agent.
+func (h *Handlers) HandleAgentStats(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+	agentID := r.PathValue("agent_id")
+	if err := model.ValidateAgentID(agentID); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
+
+	// Verify the agent exists.
+	if _, err := h.db.GetAgentByAgentID(r.Context(), orgID, agentID); err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "agent not found")
+			return
+		}
+		h.writeInternalError(w, r, "failed to get agent", err)
+		return
+	}
+
+	stats, err := h.db.GetAgentStats(r.Context(), orgID, agentID)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to get agent stats", err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"agent_id": agentID,
+		"stats":    stats,
+	})
 }
 
 // HandleDeleteAgent handles DELETE /v1/agents/{agent_id} (admin-only).

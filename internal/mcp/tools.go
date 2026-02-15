@@ -13,6 +13,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/ctxutil"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
+	"github.com/ashita-ai/akashi/internal/service/tracehealth"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
@@ -240,6 +241,24 @@ filters for agent_id and decision_type.`),
 			),
 		),
 		s.handleRecent,
+	)
+
+	// akashi_stats — aggregate statistics about the decision trail.
+	s.mcpServer.AddTool(
+		mcplib.NewTool("akashi_stats",
+			mcplib.WithDescription(`Get aggregate statistics about the decision audit trail.
+
+WHEN TO USE: To understand the overall health and usage of the decision
+trail at a glance. Returns trace health metrics, agent count, conflict
+summary, and decision quality statistics.
+
+Useful at the start of a session for situational awareness, or when
+reporting on the state of decision tracking.`),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithIdempotentHintAnnotation(true),
+			mcplib.WithOpenWorldHintAnnotation(false),
+		),
+		s.handleStats,
 	)
 
 	// akashi_conflicts — list and filter conflicts.
@@ -685,6 +704,32 @@ func (s *Server) handleConflicts(ctx context.Context, request mcplib.CallToolReq
 	resultData, _ := json.MarshalIndent(map[string]any{
 		"conflicts": conflicts,
 		"total":     len(conflicts),
+	}, "", "  ")
+
+	return &mcplib.CallToolResult{
+		Content: []mcplib.Content{
+			mcplib.TextContent{Type: "text", Text: string(resultData)},
+		},
+	}, nil
+}
+
+func (s *Server) handleStats(ctx context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	orgID := ctxutil.OrgIDFromContext(ctx)
+
+	svc := tracehealth.New(s.db)
+	metrics, err := svc.Compute(ctx, orgID)
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to compute trace health: %v", err)), nil
+	}
+
+	agentCount, err := s.db.CountAgents(ctx, orgID)
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to count agents: %v", err)), nil
+	}
+
+	resultData, _ := json.MarshalIndent(map[string]any{
+		"trace_health": metrics,
+		"agents":       agentCount,
 	}, "", "  ")
 
 	return &mcplib.CallToolResult{

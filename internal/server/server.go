@@ -94,6 +94,9 @@ func New(cfg ServerConfig) *Server {
 	adminOnly := requireRole(model.RoleAdmin)
 	mux.Handle("POST /v1/agents", adminOnly(http.HandlerFunc(h.HandleCreateAgent)))
 	mux.Handle("GET /v1/agents", adminOnly(http.HandlerFunc(h.HandleListAgents)))
+	mux.Handle("GET /v1/agents/{agent_id}", adminOnly(http.HandlerFunc(h.HandleGetAgent)))
+	mux.Handle("PATCH /v1/agents/{agent_id}", adminOnly(http.HandlerFunc(h.HandleUpdateAgent)))
+	mux.Handle("GET /v1/agents/{agent_id}/stats", adminOnly(http.HandlerFunc(h.HandleAgentStats)))
 	mux.Handle("PATCH /v1/agents/{agent_id}/tags", adminOnly(http.HandlerFunc(h.HandleUpdateAgentTags)))
 	mux.Handle("DELETE /v1/agents/{agent_id}", adminOnly(http.HandlerFunc(h.HandleDeleteAgent)))
 	mux.Handle("GET /v1/export/decisions", adminOnly(http.HandlerFunc(h.HandleExportDecisions)))
@@ -107,6 +110,7 @@ func New(cfg ServerConfig) *Server {
 
 	// Query endpoints (reader+).
 	readRole := requireRole(model.RoleReader)
+	mux.Handle("GET /v1/decisions/{id}", readRole(http.HandlerFunc(h.HandleGetDecision)))
 	mux.Handle("POST /v1/query", readRole(http.HandlerFunc(h.HandleQuery)))
 	mux.Handle("POST /v1/query/temporal", readRole(http.HandlerFunc(h.HandleTemporalQuery)))
 	mux.Handle("GET /v1/runs/{run_id}", readRole(http.HandlerFunc(h.HandleGetRun)))

@@ -239,6 +239,155 @@ func (db *DB) ListAgentIDsBySharedTags(ctx context.Context, orgID uuid.UUID, tag
 	return ids, rows.Err()
 }
 
+// UpdateAgent performs a partial update of an agent's name and/or metadata.
+// Only non-nil fields are applied (COALESCE pattern). Returns the updated agent.
+func (db *DB) UpdateAgent(ctx context.Context, orgID uuid.UUID, agentID string, name *string, metadata map[string]any) (model.Agent, error) {
+	var a model.Agent
+	err := db.pool.QueryRow(ctx,
+		`UPDATE agents
+		 SET name = COALESCE($1, name),
+		     metadata = CASE WHEN $2::jsonb IS NOT NULL THEN metadata || $2::jsonb ELSE metadata END,
+		     updated_at = now()
+		 WHERE org_id = $3 AND agent_id = $4
+		 RETURNING id, agent_id, org_id, name, role, api_key_hash, tags, metadata, created_at, updated_at`,
+		name, metadata, orgID, agentID,
+	).Scan(
+		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash,
+		&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.Agent{}, fmt.Errorf("storage: agent %s: %w", agentID, ErrNotFound)
+		}
+		return model.Agent{}, fmt.Errorf("storage: update agent: %w", err)
+	}
+	return a, nil
+}
+
+// UpdateAgentWithAudit performs a partial update and inserts a mutation audit
+// entry atomically within a single transaction.
+func (db *DB) UpdateAgentWithAudit(ctx context.Context, orgID uuid.UUID, agentID string, name *string, metadata map[string]any, audit MutationAuditEntry) (model.Agent, error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return model.Agent{}, fmt.Errorf("storage: begin update agent tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var a model.Agent
+	err = tx.QueryRow(ctx,
+		`UPDATE agents
+		 SET name = COALESCE($1, name),
+		     metadata = CASE WHEN $2::jsonb IS NOT NULL THEN metadata || $2::jsonb ELSE metadata END,
+		     updated_at = now()
+		 WHERE org_id = $3 AND agent_id = $4
+		 RETURNING id, agent_id, org_id, name, role, api_key_hash, tags, metadata, created_at, updated_at`,
+		name, metadata, orgID, agentID,
+	).Scan(
+		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash,
+		&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.Agent{}, fmt.Errorf("storage: agent %s: %w", agentID, ErrNotFound)
+		}
+		return model.Agent{}, fmt.Errorf("storage: update agent: %w", err)
+	}
+
+	audit.ResourceID = agentID
+	audit.AfterData = a
+	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+		return model.Agent{}, fmt.Errorf("storage: audit in update agent tx: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return model.Agent{}, fmt.Errorf("storage: commit update agent tx: %w", err)
+	}
+	return a, nil
+}
+
+// AgentStats holds aggregate statistics for a single agent.
+type AgentStats struct {
+	DecisionCount int            `json:"decision_count"`
+	AvgConfidence float64        `json:"avg_confidence"`
+	FirstDecision *time.Time     `json:"first_decision,omitempty"`
+	LastDecision  *time.Time     `json:"last_decision,omitempty"`
+	LowQuality    int            `json:"low_quality_count"` // quality_score < 0.5
+	TypeBreakdown map[string]int `json:"decision_types"`
+}
+
+// GetAgentStats returns aggregate decision statistics for a specific agent.
+func (db *DB) GetAgentStats(ctx context.Context, orgID uuid.UUID, agentID string) (AgentStats, error) {
+	var s AgentStats
+	err := db.pool.QueryRow(ctx, `
+		SELECT count(*), COALESCE(avg(confidence), 0),
+		       min(created_at), max(created_at),
+		       count(*) FILTER (WHERE quality_score < 0.5)
+		FROM decisions
+		WHERE org_id = $1 AND agent_id = $2 AND valid_to IS NULL`,
+		orgID, agentID,
+	).Scan(&s.DecisionCount, &s.AvgConfidence, &s.FirstDecision, &s.LastDecision, &s.LowQuality)
+	if err != nil {
+		return s, fmt.Errorf("storage: agent stats: %w", err)
+	}
+
+	// Decision type breakdown.
+	rows, err := db.pool.Query(ctx, `
+		SELECT decision_type, count(*)
+		FROM decisions
+		WHERE org_id = $1 AND agent_id = $2 AND valid_to IS NULL
+		GROUP BY decision_type
+		ORDER BY count(*) DESC`,
+		orgID, agentID,
+	)
+	if err != nil {
+		return s, fmt.Errorf("storage: agent stats type breakdown: %w", err)
+	}
+	defer rows.Close()
+
+	s.TypeBreakdown = make(map[string]int)
+	for rows.Next() {
+		var dt string
+		var c int
+		if err := rows.Scan(&dt, &c); err != nil {
+			return s, fmt.Errorf("storage: scan agent stats type: %w", err)
+		}
+		s.TypeBreakdown[dt] = c
+	}
+	return s, rows.Err()
+}
+
+// AgentListStat holds per-agent decision counts for list enrichment.
+type AgentListStat struct {
+	DecisionCount  int        `json:"decision_count"`
+	LastDecisionAt *time.Time `json:"last_decision_at,omitempty"`
+}
+
+// GetAgentListStats returns decision count and last decision time per agent in an org.
+func (db *DB) GetAgentListStats(ctx context.Context, orgID uuid.UUID) (map[string]AgentListStat, error) {
+	rows, err := db.pool.Query(ctx, `
+		SELECT agent_id, count(*), max(created_at)
+		FROM decisions
+		WHERE org_id = $1 AND valid_to IS NULL
+		GROUP BY agent_id`,
+		orgID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("storage: agent list stats: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]AgentListStat)
+	for rows.Next() {
+		var agentID string
+		var s AgentListStat
+		if err := rows.Scan(&agentID, &s.DecisionCount, &s.LastDecisionAt); err != nil {
+			return nil, fmt.Errorf("storage: scan agent list stat: %w", err)
+		}
+		result[agentID] = s
+	}
+	return result, rows.Err()
+}
+
 // UpdateAgentTags replaces the tags array for an agent. Admin-only operation.
 func (db *DB) UpdateAgentTags(ctx context.Context, orgID uuid.UUID, agentID string, tags []string) (model.Agent, error) {
 	if tags == nil {

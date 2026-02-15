@@ -130,6 +130,45 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusCreated, resp)
 }
 
+// HandleGetDecision handles GET /v1/decisions/{id} (reader+).
+// Returns a single decision by UUID with alternatives and evidence.
+func (h *Handlers) HandleGetDecision(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
+
+	idStr := r.PathValue("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid decision ID")
+		return
+	}
+
+	d, err := h.db.GetDecision(r.Context(), orgID, id, storage.GetDecisionOpts{
+		IncludeAlts:     true,
+		IncludeEvidence: true,
+	})
+	if err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "decision not found")
+			return
+		}
+		h.writeInternalError(w, r, "failed to get decision", err)
+		return
+	}
+
+	ok, err := canAccessAgent(r.Context(), h.db, claims, d.AgentID)
+	if err != nil {
+		h.writeInternalError(w, r, "authorization check failed", err)
+		return
+	}
+	if !ok {
+		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "no access to this decision")
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, d)
+}
+
 // HandleQuery handles POST /v1/query.
 func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
@@ -257,6 +296,7 @@ func (h *Handlers) HandleAgentHistory(w http.ResponseWriter, r *http.Request) {
 		"total":     total,
 		"limit":     limit,
 		"offset":    offset,
+		"has_more":  offset+len(decisions) < total,
 	})
 }
 
