@@ -30,11 +30,15 @@ type IdempotencyLookup struct {
 // If this call returns (lookup, nil) with lookup.Completed=true, callers should replay
 // the stored response instead of executing the operation again.
 // If it returns ErrIdempotencyInProgress, another request is actively processing this key.
+//
+// Stale in-progress keys are NOT taken over — they block retries until the
+// background CleanupIdempotencyKeys job removes them. This prevents duplicate
+// mutations when the original request committed its work but crashed before
+// calling CompleteIdempotency (see issue #57).
 func (db *DB) BeginIdempotency(
 	ctx context.Context,
 	orgID uuid.UUID,
 	agentID, endpoint, key, requestHash string,
-	staleInProgressAfter time.Duration,
 ) (IdempotencyLookup, error) {
 	tag, err := db.pool.Exec(ctx,
 		`INSERT INTO idempotency_keys (org_id, agent_id, endpoint, idempotency_key, request_hash, status)
@@ -77,22 +81,6 @@ func (db *DB) BeginIdempotency(
 			StatusCode:   code,
 			ResponseData: responseData,
 		}, nil
-	}
-	if staleInProgressAfter > 0 {
-		tag, updateErr := db.pool.Exec(ctx,
-			`UPDATE idempotency_keys
-			 SET updated_at = now()
-			 WHERE org_id = $1 AND agent_id = $2 AND endpoint = $3 AND idempotency_key = $4
-			   AND status = 'in_progress'
-			   AND updated_at < now() - ($5 * interval '1 microsecond')`,
-			orgID, agentID, endpoint, key, staleInProgressAfter.Microseconds(),
-		)
-		if updateErr != nil {
-			return IdempotencyLookup{}, fmt.Errorf("storage: takeover idempotency: %w", updateErr)
-		}
-		if tag.RowsAffected() == 1 {
-			return IdempotencyLookup{}, nil // caller took over stale in-progress key
-		}
 	}
 	return IdempotencyLookup{}, ErrIdempotencyInProgress
 }

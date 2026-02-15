@@ -264,7 +264,6 @@ func TestLoad_AllEnvVarsHonored(t *testing.T) {
 	t.Setenv("AKASHI_SHUTDOWN_HTTP_TIMEOUT", "15s")
 	t.Setenv("AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT", "0")
 	t.Setenv("AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT", "20s")
-	t.Setenv("AKASHI_IDEMPOTENCY_IN_PROGRESS_TTL", "6m")
 	t.Setenv("AKASHI_IDEMPOTENCY_CLEANUP_INTERVAL", "2h")
 	t.Setenv("AKASHI_IDEMPOTENCY_COMPLETED_TTL", "72h")
 	t.Setenv("AKASHI_IDEMPOTENCY_ABANDONED_TTL", "36h")
@@ -324,9 +323,6 @@ func TestLoad_AllEnvVarsHonored(t *testing.T) {
 	}
 	if cfg.ShutdownOutboxDrainTimeout != 20*time.Second {
 		t.Fatalf("expected ShutdownOutboxDrainTimeout 20s, got %s", cfg.ShutdownOutboxDrainTimeout)
-	}
-	if cfg.IdempotencyInProgressTTL != 6*time.Minute {
-		t.Fatalf("expected IdempotencyInProgressTTL 6m, got %s", cfg.IdempotencyInProgressTTL)
 	}
 	if cfg.IdempotencyCleanupInterval != 2*time.Hour {
 		t.Fatalf("expected IdempotencyCleanupInterval 2h, got %s", cfg.IdempotencyCleanupInterval)

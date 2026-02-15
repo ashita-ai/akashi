@@ -82,7 +82,6 @@ type Config struct {
 	ShutdownHTTPTimeout           time.Duration // 0 disables timeout (wait indefinitely).
 	ShutdownBufferDrainTimeout    time.Duration // 0 disables timeout (wait indefinitely).
 	ShutdownOutboxDrainTimeout    time.Duration // 0 disables timeout (wait indefinitely).
-	IdempotencyInProgressTTL      time.Duration // Reclaim in-progress idempotency keys older than this.
 	IdempotencyCleanupInterval    time.Duration // Background cleanup cadence for idempotency keys.
 	IdempotencyCompletedTTL       time.Duration // Retention for completed idempotency records.
 	IdempotencyAbandonedTTL       time.Duration // Hard TTL for abandoned in-progress idempotency records.
@@ -155,7 +154,6 @@ func Load() (Config, error) {
 	cfg.ShutdownHTTPTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_HTTP_TIMEOUT", 10*time.Second)
 	cfg.ShutdownBufferDrainTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT", 0)
 	cfg.ShutdownOutboxDrainTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT", 0)
-	cfg.IdempotencyInProgressTTL, errs = collectDuration(errs, "AKASHI_IDEMPOTENCY_IN_PROGRESS_TTL", 5*time.Minute)
 	cfg.IdempotencyCleanupInterval, errs = collectDuration(errs, "AKASHI_IDEMPOTENCY_CLEANUP_INTERVAL", time.Hour)
 	cfg.IdempotencyCompletedTTL, errs = collectDuration(errs, "AKASHI_IDEMPOTENCY_COMPLETED_TTL", 7*24*time.Hour)
 	cfg.IdempotencyAbandonedTTL, errs = collectDuration(errs, "AKASHI_IDEMPOTENCY_ABANDONED_TTL", 24*time.Hour)
@@ -234,9 +232,6 @@ func (c Config) Validate() error {
 	}
 	if c.ShutdownOutboxDrainTimeout < 0 {
 		errs = append(errs, errors.New("config: AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT must be >= 0"))
-	}
-	if c.IdempotencyInProgressTTL <= 0 {
-		errs = append(errs, errors.New("config: AKASHI_IDEMPOTENCY_IN_PROGRESS_TTL must be positive"))
 	}
 	if c.IdempotencyCleanupInterval <= 0 {
 		errs = append(errs, errors.New("config: AKASHI_IDEMPOTENCY_CLEANUP_INTERVAL must be positive"))

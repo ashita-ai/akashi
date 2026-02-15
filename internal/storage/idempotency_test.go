@@ -19,38 +19,39 @@ func TestIdempotency_ReplayAndMismatch(t *testing.T) {
 	endpoint := "POST:/v1/trace"
 	key := "idem-" + uuid.NewString()
 
-	lookup, err := testDB.BeginIdempotency(ctx, orgID, agentID, endpoint, key, "hash-a", 5*time.Minute)
+	lookup, err := testDB.BeginIdempotency(ctx, orgID, agentID, endpoint, key, "hash-a")
 	require.NoError(t, err)
 	assert.False(t, lookup.Completed)
 
 	err = testDB.CompleteIdempotency(ctx, orgID, agentID, endpoint, key, 201, map[string]any{"decision_id": "d1"})
 	require.NoError(t, err)
 
-	replay, err := testDB.BeginIdempotency(ctx, orgID, agentID, endpoint, key, "hash-a", 5*time.Minute)
+	replay, err := testDB.BeginIdempotency(ctx, orgID, agentID, endpoint, key, "hash-a")
 	require.NoError(t, err)
 	assert.True(t, replay.Completed)
 	assert.Equal(t, 201, replay.StatusCode)
 	require.NotEmpty(t, replay.ResponseData)
 
-	_, err = testDB.BeginIdempotency(ctx, orgID, agentID, endpoint, key, "hash-b", 5*time.Minute)
+	_, err = testDB.BeginIdempotency(ctx, orgID, agentID, endpoint, key, "hash-b")
 	require.ErrorIs(t, err, storage.ErrIdempotencyPayloadMismatch)
 }
 
-func TestIdempotency_StaleInProgressCanBeReclaimed(t *testing.T) {
+func TestIdempotency_StaleInProgressBlocksRetry(t *testing.T) {
 	ctx := context.Background()
 	orgID := uuid.Nil
 	agentID := "idem-agent-" + uuid.NewString()[:8]
 	endpoint := "POST:/v1/runs/" + uuid.NewString() + "/events"
 	key := "idem-" + uuid.NewString()
 
-	_, err := testDB.BeginIdempotency(ctx, orgID, agentID, endpoint, key, "hash-a", 5*time.Minute)
+	_, err := testDB.BeginIdempotency(ctx, orgID, agentID, endpoint, key, "hash-a")
 	require.NoError(t, err)
 
-	// Fresh in-progress request should not be reclaimable yet.
-	_, err = testDB.BeginIdempotency(ctx, orgID, agentID, endpoint, key, "hash-a", time.Hour)
+	// In-progress key blocks retry regardless of staleness (no takeover).
+	_, err = testDB.BeginIdempotency(ctx, orgID, agentID, endpoint, key, "hash-a")
 	require.ErrorIs(t, err, storage.ErrIdempotencyInProgress)
 
-	// Force staleness and reclaim.
+	// Even after the key is artificially aged, it still blocks — the cleanup
+	// job must remove it before the retry can proceed.
 	_, err = testDB.Pool().Exec(ctx,
 		`UPDATE idempotency_keys SET updated_at = now() - interval '20 minutes'
 		 WHERE org_id = $1 AND agent_id = $2 AND endpoint = $3 AND idempotency_key = $4`,
@@ -58,9 +59,8 @@ func TestIdempotency_StaleInProgressCanBeReclaimed(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	reclaimed, err := testDB.BeginIdempotency(ctx, orgID, agentID, endpoint, key, "hash-a", 5*time.Minute)
-	require.NoError(t, err)
-	assert.False(t, reclaimed.Completed)
+	_, err = testDB.BeginIdempotency(ctx, orgID, agentID, endpoint, key, "hash-a")
+	require.ErrorIs(t, err, storage.ErrIdempotencyInProgress, "stale in-progress keys must not be taken over")
 }
 
 func TestIdempotency_Cleanup(t *testing.T) {
