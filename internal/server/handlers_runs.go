@@ -201,9 +201,15 @@ func (h *Handlers) HandleCompleteRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	idem, proceed := h.beginIdempotentWrite(w, r, orgID, run.AgentID, completeRunEndpoint(runID), req)
+	if !proceed {
+		return
+	}
+
 	audit := h.buildAuditEntry(r, orgID, "complete_run", "agent_run", "",
 		nil, nil, map[string]any{"agent_id": run.AgentID})
 	if err := h.db.CompleteRunWithAudit(r.Context(), orgID, runID, status, req.Metadata, audit); err != nil {
+		h.clearIdempotentWrite(r, orgID, idem)
 		h.writeInternalError(w, r, "failed to complete run", err)
 		return
 	}
@@ -211,9 +217,12 @@ func (h *Handlers) HandleCompleteRun(w http.ResponseWriter, r *http.Request) {
 	updated, err := h.db.GetRun(r.Context(), orgID, runID)
 	if err != nil {
 		h.logger.Warn("complete run: read-back failed", "error", err, "run_id", runID)
-		writeJSON(w, r, http.StatusOK, map[string]any{"run_id": runID, "status": string(status)})
+		resp := map[string]any{"run_id": runID, "status": string(status)}
+		h.completeIdempotentWriteBestEffort(r, orgID, idem, http.StatusOK, resp)
+		writeJSON(w, r, http.StatusOK, resp)
 		return
 	}
+	h.completeIdempotentWriteBestEffort(r, orgID, idem, http.StatusOK, updated)
 	writeJSON(w, r, http.StatusOK, updated)
 }
 
