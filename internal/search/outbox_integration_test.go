@@ -466,8 +466,11 @@ func TestFetchDecisionsForIndex_NoEmbedding(t *testing.T) {
 
 	decisions, err := w.fetchDecisionsForIndex(ctx, []uuid.UUID{decID}, []uuid.UUID{orgID})
 	require.NoError(t, err)
-	// Decision without embedding should not be returned (WHERE d.embedding IS NOT NULL).
-	assert.Empty(t, decisions, "decision without embedding should be excluded")
+	// Decision without embedding IS returned by fetchDecisionsForIndex (#60).
+	// partitionUpsertEntries will defer it until a backfill provides an embedding.
+	require.Len(t, decisions, 1, "decision without embedding should be fetched")
+	assert.Equal(t, decID, decisions[0].ID)
+	assert.Nil(t, decisions[0].Embedding, "embedding should be nil")
 }
 
 func TestFetchDecisionsForIndex_EmptyInput(t *testing.T) {
@@ -741,8 +744,17 @@ func TestFetchDecisionsForIndex_MixedEmbeddings(t *testing.T) {
 		[]uuid.UUID{orgID, orgID},
 	)
 	require.NoError(t, err)
-	require.Len(t, decisions, 1, "only the decision with embedding should be returned")
-	assert.Equal(t, decWithEmb, decisions[0].ID)
+	// Both decisions are returned (#60). partitionUpsertEntries separates
+	// ready (has embedding) from deferred (nil embedding).
+	require.Len(t, decisions, 2, "both decisions should be fetched")
+
+	// Verify the one with embedding has it, and the one without has nil.
+	byID := make(map[uuid.UUID]DecisionForIndex, 2)
+	for _, d := range decisions {
+		byID[d.ID] = d
+	}
+	assert.NotNil(t, byID[decWithEmb].Embedding, "decision with embedding should have it")
+	assert.Nil(t, byID[decNoEmb].Embedding, "decision without embedding should have nil")
 }
 
 func TestOutboxWorker_FullCycle(t *testing.T) {

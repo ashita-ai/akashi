@@ -95,7 +95,7 @@ func TestBufferDoubleStartIsNoop(t *testing.T) {
 	cancel()
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer drainCancel()
-	buf.Drain(drainCtx)
+	require.NoError(t, buf.Drain(drainCtx))
 }
 
 func TestBuffer_AppendAndFlush(t *testing.T) {
@@ -131,7 +131,7 @@ func TestBuffer_AppendAndFlush(t *testing.T) {
 	// Clean shutdown.
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer drainCancel()
-	buf.Drain(drainCtx)
+	require.NoError(t, buf.Drain(drainCtx))
 }
 
 func TestBuffer_FlushOnBatchSize(t *testing.T) {
@@ -156,7 +156,7 @@ func TestBuffer_FlushOnBatchSize(t *testing.T) {
 
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer drainCancel()
-	buf.Drain(drainCtx)
+	require.NoError(t, buf.Drain(drainCtx))
 }
 
 func TestBuffer_FlushOnInterval(t *testing.T) {
@@ -181,7 +181,7 @@ func TestBuffer_FlushOnInterval(t *testing.T) {
 
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer drainCancel()
-	buf.Drain(drainCtx)
+	require.NoError(t, buf.Drain(drainCtx))
 }
 
 func TestBuffer_DrainFlushesPending(t *testing.T) {
@@ -202,7 +202,7 @@ func TestBuffer_DrainFlushesPending(t *testing.T) {
 	// Drain should perform a final flush before returning.
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer drainCancel()
-	buf.Drain(drainCtx)
+	require.NoError(t, buf.Drain(drainCtx))
 
 	// After Drain returns, events must be in the database.
 	got, err := testDB.GetEventsByRun(context.Background(), run.OrgID, run.ID, 0)
@@ -233,7 +233,9 @@ func TestBuffer_DrainTimeout(t *testing.T) {
 	drainCancel() // cancel immediately
 
 	start := time.Now()
-	buf.Drain(drainCtx)
+	// Error expected: drain context is already cancelled, so events may not
+	// have been flushed by the time Drain returns.
+	_ = buf.Drain(drainCtx)
 	elapsed := time.Since(start)
 
 	// Drain should return nearly instantly (the context is already done).
@@ -257,7 +259,7 @@ func TestBuffer_AppendAfterDrain(t *testing.T) {
 	// Drain the buffer immediately (no events to flush).
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer drainCancel()
-	buf.Drain(drainCtx)
+	require.NoError(t, buf.Drain(drainCtx))
 
 	// Append after drain must be rejected so we don't acknowledge events that
 	// cannot be flushed anymore.
@@ -323,7 +325,7 @@ func TestBuffer_ConcurrentAppend(t *testing.T) {
 	// Drain to flush everything.
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer drainCancel()
-	buf.Drain(drainCtx)
+	require.NoError(t, buf.Drain(drainCtx))
 
 	// Verify all events reached the database.
 	got, err := testDB.GetEventsByRun(context.Background(), run.OrgID, run.ID, 0)

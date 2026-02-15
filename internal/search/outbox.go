@@ -125,14 +125,15 @@ func (w *OutboxWorker) pollLoop(ctx context.Context) {
 			case drainCtx = <-w.drainCh:
 			default:
 			}
-			if drainCtx != nil {
-				w.processBatch(drainCtx)
-			} else {
+			if drainCtx == nil {
 				// Fallback for direct cancellation without Drain (e.g., tests).
-				fallbackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				w.processBatch(fallbackCtx)
-				cancel()
+				var cancel context.CancelFunc
+				drainCtx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
 			}
+			// Loop until no more pending entries or deadline exceeded (#67).
+			// A single processBatch only handles batchSize rows; there may be more.
+			w.drainOutbox(drainCtx)
 			w.once.Do(func() { close(w.done) })
 			return
 		case <-ticker.C:
@@ -143,24 +144,48 @@ func (w *OutboxWorker) pollLoop(ctx context.Context) {
 	}
 }
 
+// drainOutbox processes batches in a loop until the outbox is empty or ctx expires.
+func (w *OutboxWorker) drainOutbox(ctx context.Context) {
+	for {
+		if ctx.Err() != nil {
+			w.logger.Warn("search outbox: drain deadline exceeded, remaining entries will sync on next startup")
+			return
+		}
+		remaining := w.processBatchCount(ctx)
+		if remaining == 0 {
+			return
+		}
+		w.logger.Info("search outbox: drain batch processed", "processed", remaining)
+	}
+}
+
 // maxOutboxAttempts must match the partial index predicate in migration 023
 // (WHERE attempts < 10). Changing this value requires a new migration.
 const maxOutboxAttempts = 10
 
+// processBatch processes a single batch of outbox entries.
+// Used by the ticker-driven poll loop.
 func (w *OutboxWorker) processBatch(ctx context.Context) {
+	w.processBatchCount(ctx)
+}
+
+// processBatchCount processes a single batch and returns the number of entries
+// processed (0 when the outbox is empty or on error). Used by drainOutbox to
+// know when to stop looping.
+func (w *OutboxWorker) processBatchCount(ctx context.Context) int {
 	if w.pool == nil {
 		w.logger.Warn("search outbox: skipping batch, pool is nil")
-		return
+		return 0
 	}
 	if w.index == nil {
 		w.logger.Warn("search outbox: skipping batch, index is nil")
-		return
+		return 0
 	}
 
 	tx, err := w.pool.Begin(ctx)
 	if err != nil {
 		w.logger.Error("search outbox: begin tx", "error", err)
-		return
+		return 0
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -177,16 +202,16 @@ func (w *OutboxWorker) processBatch(ctx context.Context) {
 	)
 	if err != nil {
 		w.logger.Error("search outbox: select pending", "error", err)
-		return
+		return 0
 	}
 
 	entries, err := scanOutboxEntries(rows)
 	if err != nil {
 		w.logger.Error("search outbox: scan entries", "error", err)
-		return
+		return 0
 	}
 	if len(entries) == 0 {
-		return
+		return 0
 	}
 
 	// Lock the entries for 60 seconds (must exceed the 30s batchCtx timeout
@@ -201,12 +226,12 @@ func (w *OutboxWorker) processBatch(ctx context.Context) {
 		entryIDs,
 	); err != nil {
 		w.logger.Error("search outbox: lock entries", "error", err)
-		return
+		return 0
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		w.logger.Error("search outbox: commit lock", "error", err)
-		return
+		return 0
 	}
 
 	// Process upserts and deletes separately.
@@ -233,6 +258,8 @@ func (w *OutboxWorker) processBatch(ctx context.Context) {
 		w.cleanupDeadLetters(ctx)
 		w.lastCleanup = time.Now()
 	}
+
+	return len(entries)
 }
 
 func (w *OutboxWorker) cleanupDeadLetters(ctx context.Context) {
@@ -453,13 +480,16 @@ func (w *OutboxWorker) fetchDecisionsForIndex(ctx context.Context, ids, orgIDs [
 		return nil, nil
 	}
 
+	// Fetch decisions regardless of embedding status so that entries for
+	// not-yet-embedded decisions are deferred rather than treated as missing
+	// rows (issue #60). partitionUpsertEntries splits by embedding presence.
 	rows, err := w.pool.Query(ctx,
 		`SELECT d.id, d.org_id, d.agent_id, d.decision_type, d.confidence, d.quality_score, d.valid_from, d.embedding,
 		        d.session_id, d.agent_context
 		 FROM decisions d
 		 JOIN unnest($1::uuid[], $2::uuid[]) AS pair(did, oid)
 		   ON d.id = pair.did AND d.org_id = pair.oid
-		 WHERE d.valid_to IS NULL AND d.embedding IS NOT NULL`,
+		 WHERE d.valid_to IS NULL`,
 		ids, orgIDs,
 	)
 	if err != nil {
@@ -470,7 +500,7 @@ func (w *OutboxWorker) fetchDecisionsForIndex(ctx context.Context, ids, orgIDs [
 	var results []DecisionForIndex
 	for rows.Next() {
 		var d DecisionForIndex
-		var emb pgvector.Vector
+		var emb *pgvector.Vector
 		if err := rows.Scan(
 			&d.ID, &d.OrgID, &d.AgentID, &d.DecisionType,
 			&d.Confidence, &d.QualityScore, &d.ValidFrom, &emb,
@@ -478,7 +508,9 @@ func (w *OutboxWorker) fetchDecisionsForIndex(ctx context.Context, ids, orgIDs [
 		); err != nil {
 			return nil, fmt.Errorf("search outbox: scan decision: %w", err)
 		}
-		d.Embedding = emb.Slice()
+		if emb != nil {
+			d.Embedding = emb.Slice()
+		}
 		results = append(results, d)
 	}
 	return results, rows.Err()
@@ -540,7 +572,9 @@ func partitionUpsertEntries(entries []outboxEntry, decisions []DecisionForIndex)
 	pendingEntries := make([]outboxEntry, 0)
 	for _, e := range entries {
 		d, ok := byID[e.DecisionID]
-		if !ok {
+		if !ok || d.Embedding == nil {
+			// Decision not found (possibly not yet visible) or lacks an embedding
+			// (noop embedder, transient failure). Defer for later retry.
 			pendingEntries = append(pendingEntries, e)
 			continue
 		}

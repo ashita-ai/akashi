@@ -133,7 +133,7 @@ func TestMain(m *testing.M) {
 
 	testSrv.Close()
 	cancel() // Signal the buffer's flush loop to exit.
-	buf.Drain(context.Background())
+	_ = buf.Drain(context.Background())
 	db.Close(context.Background())
 	_ = testcontainer.Terminate(context.Background())
 	os.Exit(code)
