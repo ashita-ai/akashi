@@ -97,6 +97,18 @@ The OSS distribution uses an in-memory token bucket. Enterprise deployments can 
 | `AKASHI_CONFLICT_LLM_MODEL` | _(empty)_ | LLM model for conflict validation. Set to an Ollama model name (e.g. `qwen2.5:3b`) to use local validation, or leave empty to auto-detect (OpenAI if `OPENAI_API_KEY` is set, otherwise noop). |
 | `AKASHI_CONFLICT_BACKFILL_WORKERS` | `4` | Number of parallel workers for conflict backfill scoring on startup. Each worker makes one LLM validation call at a time. |
 
+## Event WAL (Write-Ahead Log)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AKASHI_WAL_DIR` | _(empty)_ | Directory for WAL segment files. Empty = WAL disabled (existing in-memory-only behavior). Set to a path (e.g. `/var/lib/akashi/wal`) to enable crash-durable event buffering |
+| `AKASHI_WAL_SYNC_MODE` | `batch` | Sync mode: `full` (fsync per write, safest), `batch` (periodic fsync, default), `none` (dev only, data loss on crash) |
+| `AKASHI_WAL_SYNC_INTERVAL` | `10ms` | How often to fsync in `batch` mode. Lower = safer, higher = faster throughput |
+| `AKASHI_WAL_SEGMENT_SIZE` | `67108864` | Max segment file size in bytes before rotation (default 64 MB) |
+| `AKASHI_WAL_SEGMENT_RECORDS` | `100000` | Max records per segment before rotation |
+
+When enabled, every event is written to the WAL before being buffered in memory. On startup, un-flushed events are recovered from the WAL and replayed to Postgres via an idempotent insert path. After a successful COPY flush, the WAL checkpoint advances and old segment files are reclaimed. See the architecture overview in `internal/service/trace/wal.go`.
+
 ## Tuning
 
 | Variable | Default | Description |
