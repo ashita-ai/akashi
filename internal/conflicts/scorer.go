@@ -2,12 +2,16 @@
 package conflicts
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
 	"math"
+	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/storage"
@@ -15,23 +19,34 @@ import (
 
 // Scorer finds and scores semantic conflicts for new decisions.
 type Scorer struct {
-	db        *storage.DB
-	logger    *slog.Logger
-	threshold float64
-	validator Validator
+	db              *storage.DB
+	logger          *slog.Logger
+	threshold       float64
+	validator       Validator
+	backfillWorkers int
 }
 
 // NewScorer creates a conflict scorer. If validator is nil, a NoopValidator is
 // used (current behavior: embedding-scored candidates are inserted without LLM
-// confirmation).
-func NewScorer(db *storage.DB, logger *slog.Logger, significanceThreshold float64, validator Validator) *Scorer {
+// confirmation). backfillWorkers controls how many decisions are scored
+// concurrently during BackfillScoring (default: 4).
+func NewScorer(db *storage.DB, logger *slog.Logger, significanceThreshold float64, validator Validator, backfillWorkers int) *Scorer {
 	if significanceThreshold <= 0 {
 		significanceThreshold = 0.30
 	}
 	if validator == nil {
 		validator = NoopValidator{}
 	}
-	return &Scorer{db: db, logger: logger, threshold: significanceThreshold, validator: validator}
+	if backfillWorkers <= 0 {
+		backfillWorkers = 4
+	}
+	return &Scorer{
+		db:              db,
+		logger:          logger,
+		threshold:       significanceThreshold,
+		validator:       validator,
+		backfillWorkers: backfillWorkers,
+	}
 }
 
 // claimTopicSimFloor is the minimum cosine similarity for two claims to be
@@ -51,10 +66,48 @@ const claimDivFloor = 0.15
 // sufficiently different topics that claim-level analysis adds noise.
 const decisionTopicSimFloor = 0.7
 
+// pairCache tracks decision pairs that have already been evaluated within a
+// single backfill run. This prevents duplicate LLM calls when both sides of
+// a pair are processed concurrently (decision A finds B as candidate, and
+// decision B finds A as candidate — only one LLM call is needed).
+type pairCache struct {
+	mu   sync.Mutex
+	seen map[[2]uuid.UUID]bool
+}
+
+// normalizePair returns a canonical ordering (smaller UUID first) for
+// consistent deduplication.
+func normalizePair(a, b uuid.UUID) [2]uuid.UUID {
+	if bytes.Compare(a[:], b[:]) > 0 {
+		return [2]uuid.UUID{b, a}
+	}
+	return [2]uuid.UUID{a, b}
+}
+
+// checkAndMark returns true if the pair was already seen (skip it).
+// If not seen, marks it and returns false (proceed with LLM call).
+func (p *pairCache) checkAndMark(a, b uuid.UUID) bool {
+	key := normalizePair(a, b)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.seen[key] {
+		return true
+	}
+	p.seen[key] = true
+	return false
+}
+
 // ScoreForDecision finds similar decisions, computes significance using both
 // full-outcome and claim-level comparison, and inserts the strongest conflict
 // above the threshold. Runs asynchronously; non-fatal errors are logged.
 func (s *Scorer) ScoreForDecision(ctx context.Context, decisionID, orgID uuid.UUID) {
+	s.scoreForDecision(ctx, decisionID, orgID, nil)
+}
+
+// scoreForDecision is the internal implementation. The optional pairCache
+// prevents duplicate LLM calls during backfill when multiple goroutines
+// process different decisions that find each other as candidates.
+func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UUID, cache *pairCache) {
 	d, err := s.db.GetDecisionForScoring(ctx, decisionID, orgID)
 	if err != nil {
 		s.logger.Debug("conflict scorer: skip decision", "decision_id", decisionID, "error", err)
@@ -130,6 +183,13 @@ func (s *Scorer) ScoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		var explanation *string
 		var category, severity *string
 		if _, isNoop := s.validator.(NoopValidator); !isNoop {
+			// Skip LLM call if this pair was already evaluated during backfill.
+			if cache != nil && cache.checkAndMark(decisionID, cand.ID) {
+				s.logger.Debug("conflict scorer: pair already evaluated, skipping LLM call",
+					"decision_a", decisionID, "decision_b", cand.ID)
+				continue
+			}
+
 			result, err := s.validator.Validate(ctx, bestOutcomeA, bestOutcomeB, d.DecisionType, cand.DecisionType)
 			if err != nil {
 				s.logger.Warn("conflict scorer: LLM validation failed, skipping candidate",
@@ -189,6 +249,11 @@ func (s *Scorer) ScoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 	if inserted > 0 {
 		s.logger.Info("conflict scorer: scored conflicts", "decision_id", decisionID, "inserted", inserted)
 	}
+
+	// Mark this decision as scored so the next backfill skips it.
+	if err := s.db.MarkDecisionConflictScored(ctx, decisionID); err != nil {
+		s.logger.Warn("conflict scorer: mark scored failed", "decision_id", decisionID, "error", err)
+	}
 }
 
 // bestClaimConflict finds the most significant claim-level conflict between
@@ -238,11 +303,14 @@ func (s *Scorer) bestClaimConflict(ctx context.Context, decisionAID, decisionBID
 	return bestSig, bestDiv, bestClaimA, bestClaimB
 }
 
-// BackfillScoring runs conflict scoring for all decisions that have both
-// embeddings. Unlike ScoreForDecision (which runs for a single new decision),
-// this iterates all existing decisions so previously backfilled embeddings
-// produce scored_conflicts rows. Safe to call multiple times — InsertScoredConflict
-// uses ON CONFLICT DO UPDATE, so re-scoring a pair refreshes the values.
+// BackfillScoring runs conflict scoring for decisions that have embeddings but
+// have not yet been scored for conflicts (conflict_scored_at IS NULL). Uses
+// parallel workers to reduce wall-clock time when LLM validation is active.
+// An in-memory pair cache prevents duplicate LLM calls when both sides of a
+// pair are processed concurrently.
+//
+// Safe to call multiple times — InsertScoredConflict uses ON CONFLICT DO UPDATE,
+// and decisions are marked scored after processing.
 //
 // Returns the number of decisions processed.
 func (s *Scorer) BackfillScoring(ctx context.Context, batchSize int) (int, error) {
@@ -254,17 +322,29 @@ func (s *Scorer) BackfillScoring(ctx context.Context, batchSize int) (int, error
 		return 0, nil
 	}
 
-	var processed int
+	cache := &pairCache{seen: make(map[[2]uuid.UUID]bool)}
+	var processed atomic.Int32
+
+	g, gCtx := errgroup.WithContext(ctx)
+	g.SetLimit(s.backfillWorkers)
+
 	for _, ref := range refs {
-		select {
-		case <-ctx.Done():
-			return processed, ctx.Err()
-		default:
-		}
-		s.ScoreForDecision(ctx, ref.ID, ref.OrgID)
-		processed++
+		g.Go(func() error {
+			select {
+			case <-gCtx.Done():
+				return gCtx.Err()
+			default:
+			}
+			s.scoreForDecision(gCtx, ref.ID, ref.OrgID, cache)
+			processed.Add(1)
+			return nil
+		})
 	}
-	return processed, nil
+
+	if err := g.Wait(); err != nil {
+		return int(processed.Load()), err
+	}
+	return int(processed.Load()), nil
 }
 
 // HasLLMValidator returns true if the scorer has a non-noop validator configured.

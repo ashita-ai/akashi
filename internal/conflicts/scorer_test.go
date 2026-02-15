@@ -149,18 +149,18 @@ func TestCosineSimilarity_BothZeroVectors(t *testing.T) {
 }
 
 func TestNewScorer_DefaultThreshold(t *testing.T) {
-	scorer := NewScorer(nil, slog.Default(), 0, nil)
+	scorer := NewScorer(nil, slog.Default(), 0, nil, 0)
 	assert.Equal(t, 0.30, scorer.threshold)
 
-	scorer = NewScorer(nil, slog.Default(), -0.5, nil)
+	scorer = NewScorer(nil, slog.Default(), -0.5, nil, 0)
 	assert.Equal(t, 0.30, scorer.threshold)
 
-	scorer = NewScorer(nil, slog.Default(), 0.5, nil)
+	scorer = NewScorer(nil, slog.Default(), 0.5, nil, 0)
 	assert.Equal(t, 0.5, scorer.threshold)
 }
 
 func TestNewScorer_NotNil(t *testing.T) {
-	scorer := NewScorer(testDB, slog.Default(), 0.4, nil)
+	scorer := NewScorer(testDB, slog.Default(), 0.4, nil, 0)
 	require.NotNil(t, scorer)
 	assert.Equal(t, 0.4, scorer.threshold)
 	assert.NotNil(t, scorer.db)
@@ -256,7 +256,7 @@ func TestScoreForDecision(t *testing.T) {
 	require.NoError(t, err)
 
 	// Use a low threshold so the conflict is detected.
-	scorer := NewScorer(testDB, logger, 0.1, nil)
+	scorer := NewScorer(testDB, logger, 0.1, nil, 0)
 
 	// Score for decisionB — it should find decisionA as a conflict.
 	scorer.ScoreForDecision(ctx, decisionB.ID, orgID)
@@ -318,7 +318,7 @@ func TestScoreForDecision_NoEmbeddings(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1, nil)
+	scorer := NewScorer(testDB, logger, 0.1, nil, 0)
 
 	// Should return early without error (decision lacks embeddings).
 	scorer.ScoreForDecision(ctx, d.ID, orgID)
@@ -367,7 +367,7 @@ func TestScoreForDecision_CrossAgent(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1, nil)
+	scorer := NewScorer(testDB, logger, 0.1, nil, 0)
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
 	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 100, 0)
@@ -421,7 +421,7 @@ func TestBackfillScoring(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1, nil)
+	scorer := NewScorer(testDB, logger, 0.1, nil, 0)
 
 	// BackfillScoring should process both decisions and produce a conflict.
 	processed, err := scorer.BackfillScoring(ctx, 100)
@@ -447,7 +447,7 @@ func TestBackfillScoring_EmptyDB(t *testing.T) {
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	scorer := NewScorer(testDB, logger, 0.5, nil)
+	scorer := NewScorer(testDB, logger, 0.5, nil, 0)
 
 	// Should handle gracefully when there are decisions but none with
 	// significance above the high threshold.
@@ -493,7 +493,7 @@ func TestScoreForDecision_SkipsRevisionChain(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1, nil)
+	scorer := NewScorer(testDB, logger, 0.1, nil, 0)
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
 	// Verify NO conflict was inserted between A and B despite divergent outcomes.
@@ -552,7 +552,7 @@ func TestScoreForDecision_RevisionChainTransitive(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1, nil)
+	scorer := NewScorer(testDB, logger, 0.1, nil, 0)
 
 	// Score for C — should NOT conflict with A or B (transitive chain).
 	scorer.ScoreForDecision(ctx, dC.ID, orgID)
@@ -577,7 +577,7 @@ func TestBackfillScoring_ContextCancellation(t *testing.T) {
 
 	cancel() // Cancel immediately.
 
-	scorer := NewScorer(testDB, logger, 0.1, nil)
+	scorer := NewScorer(testDB, logger, 0.1, nil, 0)
 	processed, err := scorer.BackfillScoring(ctx, 100)
 
 	// Either processes 0 or returns context.Canceled.
@@ -652,7 +652,7 @@ func TestBestClaimConflict_AboveFloors(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, slog.Default(), 0.1, nil)
+	scorer := NewScorer(testDB, slog.Default(), 0.1, nil, 0)
 	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
 
 	assert.Greater(t, sig, 0.0, "significance should be positive when both floors are satisfied")
@@ -705,7 +705,7 @@ func TestBestClaimConflict_BelowSimFloor(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, slog.Default(), 0.1, nil)
+	scorer := NewScorer(testDB, slog.Default(), 0.1, nil, 0)
 	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
 
 	assert.Equal(t, 0.0, sig, "significance should be 0 when claim sim is below floor")
@@ -758,7 +758,7 @@ func TestBestClaimConflict_BelowDivFloor(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, slog.Default(), 0.1, nil)
+	scorer := NewScorer(testDB, slog.Default(), 0.1, nil, 0)
 	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
 
 	assert.Equal(t, 0.0, sig, "significance should be 0 when claims effectively agree (div < floor)")
@@ -798,7 +798,7 @@ func TestBestClaimConflict_NoClaims(t *testing.T) {
 	require.NoError(t, err)
 
 	// No claims inserted for either decision.
-	scorer := NewScorer(testDB, slog.Default(), 0.1, nil)
+	scorer := NewScorer(testDB, slog.Default(), 0.1, nil, 0)
 	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
 
 	assert.Equal(t, 0.0, sig, "no claims means no claim-level conflict")
@@ -854,7 +854,7 @@ func TestBestClaimConflict_MultiplePairs_ReturnsBest(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, slog.Default(), 0.1, nil)
+	scorer := NewScorer(testDB, slog.Default(), 0.1, nil, 0)
 	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
 
 	assert.Greater(t, sig, 0.0, "should find a claim-level conflict")
@@ -922,7 +922,7 @@ func TestScoreForDecision_ClaimMethodWinsOverEmbedding(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1, nil)
+	scorer := NewScorer(testDB, logger, 0.1, nil, 0)
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
 	// Find the conflict between our two decisions.
@@ -946,4 +946,148 @@ func TestScoreForDecision_ClaimMethodWinsOverEmbedding(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "expected a claim-level conflict between dA and dB")
+}
+
+// ---------------------------------------------------------------------------
+// Pair cache tests
+// ---------------------------------------------------------------------------
+
+func TestNormalizePair_Canonical(t *testing.T) {
+	a := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	b := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+
+	pair1 := normalizePair(a, b)
+	pair2 := normalizePair(b, a)
+	assert.Equal(t, pair1, pair2, "normalizePair should return the same order regardless of input order")
+	assert.Equal(t, a, pair1[0], "smaller UUID should be first")
+	assert.Equal(t, b, pair1[1], "larger UUID should be second")
+}
+
+func TestNormalizePair_Equal(t *testing.T) {
+	a := uuid.MustParse("33333333-3333-3333-3333-333333333333")
+	pair := normalizePair(a, a)
+	assert.Equal(t, a, pair[0])
+	assert.Equal(t, a, pair[1])
+}
+
+func TestPairCache_CheckAndMark(t *testing.T) {
+	cache := &pairCache{seen: make(map[[2]uuid.UUID]bool)}
+	a := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	b := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+
+	// First check: not seen.
+	assert.False(t, cache.checkAndMark(a, b), "first check should return false (not seen)")
+	// Second check: already seen.
+	assert.True(t, cache.checkAndMark(a, b), "second check should return true (already seen)")
+	// Reversed order: still seen (canonical ordering).
+	assert.True(t, cache.checkAndMark(b, a), "reversed order should still be seen")
+}
+
+func TestPairCache_DifferentPairs(t *testing.T) {
+	cache := &pairCache{seen: make(map[[2]uuid.UUID]bool)}
+	a := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	b := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	c := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
+
+	cache.checkAndMark(a, b)
+	// (a, c) is a different pair — should not be seen.
+	assert.False(t, cache.checkAndMark(a, c))
+	// (b, c) is also different.
+	assert.False(t, cache.checkAndMark(b, c))
+}
+
+func TestNewScorer_DefaultWorkers(t *testing.T) {
+	scorer := NewScorer(nil, slog.Default(), 0.3, nil, 0)
+	assert.Equal(t, 4, scorer.backfillWorkers, "0 should default to 4")
+
+	scorer = NewScorer(nil, slog.Default(), 0.3, nil, -1)
+	assert.Equal(t, 4, scorer.backfillWorkers, "-1 should default to 4")
+
+	scorer = NewScorer(nil, slog.Default(), 0.3, nil, 8)
+	assert.Equal(t, 8, scorer.backfillWorkers, "explicit value should be respected")
+}
+
+func TestBackfillScoring_MarksDecisionsScored(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "backfill-mark-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+
+	topicEmb := makeEmbedding(700, 1.0)
+	outcomeA := makeEmbedding(701, 1.0)
+	outcomeB := makeEmbedding(702, 1.0)
+
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use event sourcing",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeA,
+	})
+	require.NoError(t, err)
+
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use CRUD",
+		Confidence: 0.7, Embedding: &topicEmb, OutcomeEmbedding: &outcomeB,
+	})
+	require.NoError(t, err)
+
+	scorer := NewScorer(testDB, logger, 0.1, nil, 2)
+
+	// First backfill should process decisions.
+	n1, err := scorer.BackfillScoring(ctx, 500)
+	require.NoError(t, err)
+	assert.Greater(t, n1, 0, "first backfill should process decisions")
+
+	// Second backfill should find no unscored decisions (all marked).
+	n2, err := scorer.BackfillScoring(ctx, 500)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n2, "second backfill should find no unscored decisions")
+}
+
+func TestBackfillScoring_Parallel(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "backfill-parallel-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	// Create several decisions so parallelism actually exercises multiple goroutines.
+	for i := 0; i < 6; i++ {
+		run := createRun(t, agentID, orgID)
+		topicEmb := makeEmbedding(800+i*3, 1.0)
+		outcomeEmb := makeEmbedding(801+i*3, 1.0)
+		_, err := testDB.CreateDecision(ctx, model.Decision{
+			RunID: run.ID, AgentID: agentID, OrgID: orgID,
+			DecisionType: "architecture",
+			Outcome:      fmt.Sprintf("parallel decision %d", i),
+			Confidence:   0.8,
+			Embedding:    &topicEmb, OutcomeEmbedding: &outcomeEmb,
+		})
+		require.NoError(t, err)
+	}
+
+	// Use 3 workers to exercise parallel paths.
+	scorer := NewScorer(testDB, logger, 0.1, nil, 3)
+	processed, err := scorer.BackfillScoring(ctx, 500)
+	require.NoError(t, err)
+	assert.Greater(t, processed, 0, "parallel backfill should process decisions")
+
+	// Verify all were marked scored (second run returns 0).
+	n2, err := scorer.BackfillScoring(ctx, 500)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n2, "all decisions should be marked scored after parallel backfill")
 }

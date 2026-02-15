@@ -59,7 +59,8 @@ type Config struct {
 	TrustProxy       bool    // When true, use X-Forwarded-For for rate limit keys (default: false).
 
 	// Conflict LLM validation.
-	ConflictLLMModel string // Text generation model for conflict validation (e.g. "qwen2.5:3b" for Ollama).
+	ConflictLLMModel        string // Text generation model for conflict validation (e.g. "qwen2.5:3b" for Ollama).
+	ConflictBackfillWorkers int    // Parallel workers for conflict scoring backfill (default: 4).
 
 	// Operational settings.
 	LogLevel                      string
@@ -112,6 +113,7 @@ func Load() (Config, error) {
 	cfg.OutboxBatchSize, errs = collectInt(errs, "AKASHI_OUTBOX_BATCH_SIZE", 100)
 	cfg.EventBufferSize, errs = collectInt(errs, "AKASHI_EVENT_BUFFER_SIZE", 1000)
 	cfg.RateLimitBurst, errs = collectInt(errs, "AKASHI_RATE_LIMIT_BURST", 200)
+	cfg.ConflictBackfillWorkers, errs = collectInt(errs, "AKASHI_CONFLICT_BACKFILL_WORKERS", 4)
 
 	var maxReqBody int
 	maxReqBody, errs = collectInt(errs, "AKASHI_MAX_REQUEST_BODY_BYTES", 1*1024*1024)
