@@ -1020,8 +1020,10 @@ type DecisionRef struct {
 	OrgID uuid.UUID
 }
 
-// FindEmbeddedDecisionIDs returns IDs of all current decisions that have both
-// embedding and outcome_embedding populated. Used by conflict scoring backfill.
+// FindEmbeddedDecisionIDs returns IDs of current decisions that have both
+// embedding and outcome_embedding populated but have NOT yet been scored for
+// conflicts (conflict_scored_at IS NULL). Used by conflict scoring backfill
+// so that server restarts only score new decisions, not the entire corpus.
 func (db *DB) FindEmbeddedDecisionIDs(ctx context.Context, limit int) ([]DecisionRef, error) {
 	if limit <= 0 {
 		limit = 1000
@@ -1031,6 +1033,7 @@ func (db *DB) FindEmbeddedDecisionIDs(ctx context.Context, limit int) ([]Decisio
 		 WHERE valid_to IS NULL
 		   AND embedding IS NOT NULL
 		   AND outcome_embedding IS NOT NULL
+		   AND conflict_scored_at IS NULL
 		 ORDER BY valid_from ASC
 		 LIMIT $1`, limit)
 	if err != nil {
@@ -1047,6 +1050,43 @@ func (db *DB) FindEmbeddedDecisionIDs(ctx context.Context, limit int) ([]Decisio
 		refs = append(refs, r)
 	}
 	return refs, rows.Err()
+}
+
+// MarkDecisionConflictScored sets conflict_scored_at to now() for a decision.
+// Called after ScoreForDecision completes so the decision won't be re-processed
+// on subsequent backfill runs.
+func (db *DB) MarkDecisionConflictScored(ctx context.Context, id uuid.UUID) error {
+	_, err := db.pool.Exec(ctx,
+		`UPDATE decisions SET conflict_scored_at = now() WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("storage: mark decision conflict scored: %w", err)
+	}
+	return nil
+}
+
+// ResetConflictScoredAt clears conflict_scored_at for all decisions, forcing
+// the next backfill to re-score everything. Used when transitioning from
+// embedding-only to LLM-validated scoring so all pairs get re-evaluated.
+func (db *DB) ResetConflictScoredAt(ctx context.Context) (int64, error) {
+	tag, err := db.pool.Exec(ctx,
+		`UPDATE decisions SET conflict_scored_at = NULL WHERE conflict_scored_at IS NOT NULL`)
+	if err != nil {
+		return 0, fmt.Errorf("storage: reset conflict scored_at: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// CountUnvalidatedConflicts returns the number of scored_conflicts that were
+// NOT scored via LLM. Used to decide whether to clear old conflicts when
+// transitioning to LLM validation.
+func (db *DB) CountUnvalidatedConflicts(ctx context.Context) (int, error) {
+	var count int
+	err := db.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM scored_conflicts WHERE scoring_method != 'llm'`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("storage: count unvalidated conflicts: %w", err)
+	}
+	return count, nil
 }
 
 // GetDecisionForScoring returns a decision with embedding and outcome_embedding for conflict scoring.

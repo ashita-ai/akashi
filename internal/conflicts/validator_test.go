@@ -389,7 +389,7 @@ func TestScoreForDecision_LLMConfirms(t *testing.T) {
 		Category:    "strategic",
 		Severity:    "high",
 	}}
-	scorer := NewScorer(testDB, logger, 0.1, validator)
+	scorer := NewScorer(testDB, logger, 0.1, validator, 0)
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
 	assert.Greater(t, validator.callCount, 0, "validator should have been called")
@@ -454,7 +454,7 @@ func TestScoreForDecision_LLMRejects(t *testing.T) {
 		Confirmed:   false,
 		Explanation: "Different topics — tests vs licensing.",
 	}}
-	scorer := NewScorer(testDB, logger, 0.1, validator)
+	scorer := NewScorer(testDB, logger, 0.1, validator, 0)
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
 	assert.Greater(t, validator.callCount, 0, "validator should have been called")
@@ -505,7 +505,7 @@ func TestScoreForDecision_LLMError(t *testing.T) {
 	require.NoError(t, err)
 
 	validator := &mockValidator{err: fmt.Errorf("ollama unavailable")}
-	scorer := NewScorer(testDB, logger, 0.1, validator)
+	scorer := NewScorer(testDB, logger, 0.1, validator, 0)
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
 	assert.Greater(t, validator.callCount, 0, "validator should have been called")
@@ -524,12 +524,12 @@ func TestScoreForDecision_LLMError(t *testing.T) {
 }
 
 func TestHasLLMValidator(t *testing.T) {
-	scorer := NewScorer(nil, slog.Default(), 0.3, nil)
+	scorer := NewScorer(nil, slog.Default(), 0.3, nil, 0)
 	assert.False(t, scorer.HasLLMValidator(), "nil validator defaults to NoopValidator")
 
-	scorer = NewScorer(nil, slog.Default(), 0.3, NoopValidator{})
+	scorer = NewScorer(nil, slog.Default(), 0.3, NoopValidator{}, 0)
 	assert.False(t, scorer.HasLLMValidator(), "explicit NoopValidator")
 
-	scorer = NewScorer(nil, slog.Default(), 0.3, &mockValidator{})
+	scorer = NewScorer(nil, slog.Default(), 0.3, &mockValidator{}, 0)
 	assert.True(t, scorer.HasLLMValidator(), "mock validator is not noop")
 }
