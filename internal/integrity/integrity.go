@@ -22,20 +22,28 @@ const (
 
 // ComputeContentHash produces a versioned SHA-256 hex digest from the canonical decision fields.
 // New hashes use the v2 format (length-prefixed binary encoding) and carry a "v2:" prefix.
+//
+// validFrom is truncated to microsecond precision before hashing because PostgreSQL
+// stores timestamptz at microsecond resolution. Without truncation, a hash computed
+// with Go's nanosecond-precision time.Now() would never match a hash recomputed from
+// the DB-roundtripped timestamp, causing VerifyContentHash to always report "tampered."
 func ComputeContentHash(id uuid.UUID, decisionType, outcome string, confidence float32, reasoning *string, validFrom time.Time) string {
-	return hashV2Prefix + computeV2Hash(id, decisionType, outcome, confidence, reasoning, validFrom)
+	return hashV2Prefix + computeV2Hash(id, decisionType, outcome, confidence, reasoning, validFrom.Truncate(time.Microsecond))
 }
 
 // VerifyContentHash checks whether a stored hash matches the recomputed hash.
 // It detects the hash version from the prefix and uses the appropriate algorithm:
 //   - "v2:" prefix -> length-prefixed binary encoding (current)
 //   - no prefix   -> pipe-delimited encoding (legacy v1)
+//
+// validFrom is truncated to microsecond precision to match ComputeContentHash behavior.
 func VerifyContentHash(stored string, id uuid.UUID, decisionType, outcome string, confidence float32, reasoning *string, validFrom time.Time) bool {
+	vf := validFrom.Truncate(time.Microsecond)
 	if strings.HasPrefix(stored, hashV2Prefix) {
-		return stored == hashV2Prefix+computeV2Hash(id, decisionType, outcome, confidence, reasoning, validFrom)
+		return stored == hashV2Prefix+computeV2Hash(id, decisionType, outcome, confidence, reasoning, vf)
 	}
 	// Legacy v1 hashes (pipe-delimited, no version prefix).
-	return stored == computeV1Hash(id, decisionType, outcome, confidence, reasoning, validFrom)
+	return stored == computeV1Hash(id, decisionType, outcome, confidence, reasoning, vf)
 }
 
 // computeV1Hash produces the legacy pipe-delimited SHA-256 hex digest.

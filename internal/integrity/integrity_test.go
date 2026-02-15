@@ -198,3 +198,29 @@ func TestHashPair_DomainSeparation(t *testing.T) {
 		t.Fatalf("expected 64-char hex hash, got %d chars", len(withDomain))
 	}
 }
+
+func TestComputeContentHash_MicrosecondTruncation(t *testing.T) {
+	// Regression test: ComputeContentHash must truncate validFrom to microsecond
+	// precision because PostgreSQL stores timestamptz at microsecond resolution.
+	// Without truncation, a hash computed with Go's nanosecond time.Now() would
+	// never match a hash recomputed from the DB-roundtripped timestamp.
+	id := uuid.MustParse("88888888-8888-8888-8888-888888888888")
+	reasoning := "test reasoning"
+
+	// Simulate Go's time.Now() with nanosecond precision (123456789 ns).
+	goTime := time.Date(2026, 2, 15, 4, 51, 29, 123456789, time.UTC)
+	// Simulate the DB-roundtripped value (truncated to microseconds: 123456000 ns).
+	dbTime := time.Date(2026, 2, 15, 4, 51, 29, 123456000, time.UTC)
+
+	hashFromGo := ComputeContentHash(id, "architecture", "microservices", 0.85, &reasoning, goTime)
+	hashFromDB := ComputeContentHash(id, "architecture", "microservices", 0.85, &reasoning, dbTime)
+
+	if hashFromGo != hashFromDB {
+		t.Fatalf("hash computed from Go nanosecond time should equal hash from DB microsecond time:\n  go: %s\n  db: %s", hashFromGo, hashFromDB)
+	}
+
+	// Verify also works across the roundtrip.
+	if !VerifyContentHash(hashFromGo, id, "architecture", "microservices", 0.85, &reasoning, dbTime) {
+		t.Fatal("VerifyContentHash should succeed when stored hash was computed from nanosecond time and verified with DB microsecond time")
+	}
+}
