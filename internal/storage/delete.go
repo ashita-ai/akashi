@@ -27,7 +27,11 @@ type DeleteAgentResult struct {
 // DeleteAgentData removes all data associated with an agent within an org in a single
 // transaction. Deletes respect foreign key ordering: evidence and alternatives
 // first, then decisions, events, runs, grants, and finally the agent row.
-func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID string) (DeleteAgentResult, error) {
+//
+// When audit is non-nil, a mutation audit entry is inserted inside the same
+// transaction before commit. This ensures the destructive delete is atomically
+// recorded in the audit log.
+func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID string, audit *MutationAuditEntry) (DeleteAgentResult, error) {
 	tx, err := db.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return DeleteAgentResult{}, fmt.Errorf("storage: begin delete tx: %w", err)
@@ -260,6 +264,15 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 		return DeleteAgentResult{}, fmt.Errorf("storage: delete agent: %w", err)
 	}
 	result.Agents = tag.RowsAffected()
+
+	// Insert mutation audit inside the same transaction.
+	if audit != nil {
+		audit.ResourceID = agentID
+		audit.AfterData = map[string]any{"deleted": result}
+		if err := InsertMutationAuditTx(ctx, tx, *audit); err != nil {
+			return DeleteAgentResult{}, fmt.Errorf("storage: audit in delete agent tx: %w", err)
+		}
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return DeleteAgentResult{}, fmt.Errorf("storage: commit delete tx: %w", err)

@@ -24,6 +24,12 @@ type CreateTraceParams struct {
 	Evidence     []model.Evidence
 	SessionID    *uuid.UUID
 	AgentContext map[string]any
+
+	// AuditEntry, when non-nil, is inserted into mutation_audit_log inside the
+	// same transaction. ResourceID is populated automatically from the generated
+	// decision ID. This ensures the audit record is atomic with the trace —
+	// if the tx rolls back, the audit entry never persists.
+	AuditEntry *MutationAuditEntry
 }
 
 // CreateTraceTx creates a run, decision, alternatives, evidence, and completes
@@ -180,6 +186,19 @@ func (db *DB) CreateTraceTx(ctx context.Context, params CreateTraceParams) (mode
 	}
 	run.Status = model.RunStatusCompleted
 	run.CompletedAt = &now
+
+	// 6. Insert mutation audit (same tx — atomic with the trace).
+	if params.AuditEntry != nil {
+		params.AuditEntry.ResourceID = d.ID.String()
+		params.AuditEntry.AfterData = map[string]any{
+			"run_id":      run.ID,
+			"decision_id": d.ID,
+			"event_count": len(params.Alternatives) + len(params.Evidence) + 1,
+		}
+		if err := InsertMutationAuditTx(ctx, tx, *params.AuditEntry); err != nil {
+			return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: audit in trace tx: %w", err)
+		}
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: commit trace tx: %w", err)
