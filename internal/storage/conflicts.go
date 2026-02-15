@@ -34,10 +34,11 @@ func (db *DB) RefreshAgentState(ctx context.Context) error {
 type ConflictFilters struct {
 	DecisionType *string
 	AgentID      *string
-	ConflictKind *string // "cross_agent" or "self_contradiction"
-	Status       *string // "open", "acknowledged", "resolved", "wont_fix"
-	Severity     *string // "critical", "high", "medium", "low"
-	Category     *string // "factual", "assessment", "strategic", "temporal"
+	ConflictKind *string    // "cross_agent" or "self_contradiction"
+	Status       *string    // "open", "acknowledged", "resolved", "wont_fix"
+	Severity     *string    // "critical", "high", "medium", "low"
+	Category     *string    // "factual", "assessment", "strategic", "temporal"
+	DecisionID   *uuid.UUID // conflicts involving this decision (A or B side)
 }
 
 // conflictWhere appends WHERE conditions for the common filter set.
@@ -74,6 +75,11 @@ func conflictWhere(filters ConflictFilters, argOffset int) (string, []any) {
 	if filters.Category != nil {
 		clause += fmt.Sprintf(" AND sc.category = $%d", argOffset)
 		args = append(args, *filters.Category)
+		argOffset++
+	}
+	if filters.DecisionID != nil {
+		clause += fmt.Sprintf(" AND (sc.decision_a_id = $%d OR sc.decision_b_id = $%d)", argOffset, argOffset)
+		args = append(args, *filters.DecisionID)
 	}
 	return clause, args
 }

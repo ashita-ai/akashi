@@ -291,8 +291,12 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, decisionType, quer
 		if err != nil {
 			return model.CheckResponse{}, fmt.Errorf("check: search: %w", err)
 		}
+		// Filter out low-relevance results so akashi_check doesn't report
+		// has_precedent=true for semantically distant decisions (#101).
 		for _, sr := range results {
-			decisions = append(decisions, sr.Decision)
+			if sr.SimilarityScore >= 0.3 {
+				decisions = append(decisions, sr.Decision)
+			}
 		}
 	} else {
 		// Structured query path.
