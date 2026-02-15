@@ -145,8 +145,11 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		logger.Info("qdrant: disabled (no QDRANT_URL)")
 	}
 
+	// Create conflict validator (LLM confirmation gate for candidate conflicts).
+	conflictValidator := newConflictValidator(cfg, logger)
+
 	// Create conflict scorer for semantic conflict detection (Option B).
-	conflictScorer := conflicts.NewScorer(db, logger, cfg.ConflictSignificanceThreshold)
+	conflictScorer := conflicts.NewScorer(db, logger, cfg.ConflictSignificanceThreshold, conflictValidator)
 
 	// Create decision service (shared by HTTP and MCP handlers).
 	decisionSvc := decisions.New(db, embedder, searcher, logger, conflictScorer)
@@ -170,6 +173,16 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		logger.Warn("claims backfill failed", "error", err)
 	} else if n > 0 {
 		logger.Info("claims backfill complete", "count", n)
+	}
+	// When LLM validation is active, clear old unvalidated conflicts before
+	// backfill. They were inserted without LLM confirmation and are likely
+	// false positives. The backfill will re-score all decisions through the LLM.
+	if conflictScorer.HasLLMValidator() {
+		if cleared, err := conflictScorer.ClearUnvalidatedConflicts(ctx); err != nil {
+			logger.Warn("failed to clear unvalidated conflicts", "error", err)
+		} else if cleared > 0 {
+			logger.Info("cleared unvalidated conflicts before LLM backfill", "deleted", cleared)
+		}
 	}
 	// Backfill conflict scoring for decisions that gained embeddings from the
 	// backfills above. ScoreForDecision only runs on new traces, so previously
@@ -377,6 +390,22 @@ func newEmbeddingProvider(cfg config.Config, logger *slog.Logger) embedding.Prov
 		logger.Warn("no embedding provider available, using noop (semantic search disabled)")
 		return embedding.NewNoopProvider(dims)
 	}
+}
+
+// newConflictValidator creates a conflict validator based on configuration.
+// Auto-detection: (1) if AKASHI_CONFLICT_LLM_MODEL is set, use Ollama with that model,
+// (2) else if OPENAI_API_KEY is set, use OpenAI gpt-4o-mini, (3) else NoopValidator.
+func newConflictValidator(cfg config.Config, logger *slog.Logger) conflicts.Validator {
+	if cfg.ConflictLLMModel != "" {
+		logger.Info("conflict validator: ollama", "model", cfg.ConflictLLMModel, "url", cfg.OllamaURL)
+		return conflicts.NewOllamaValidator(cfg.OllamaURL, cfg.ConflictLLMModel)
+	}
+	if cfg.OpenAIAPIKey != "" {
+		logger.Info("conflict validator: openai (gpt-4o-mini)")
+		return conflicts.NewOpenAIValidator(cfg.OpenAIAPIKey, "gpt-4o-mini")
+	}
+	logger.Info("conflict validator: noop (no LLM configured, embedding-only conflicts)")
+	return conflicts.NoopValidator{}
 }
 
 // ollamaReachable checks if an Ollama server is responding.

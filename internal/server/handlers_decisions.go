@@ -392,6 +392,16 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 	if ck := r.URL.Query().Get("conflict_kind"); ck != "" {
 		filters.ConflictKind = &ck
 	}
+	if sev := r.URL.Query().Get("severity"); sev != "" {
+		filters.Severity = &sev
+	}
+	if cat := r.URL.Query().Get("category"); cat != "" {
+		filters.Category = &cat
+	}
+	// Default to open conflicts unless explicitly overridden.
+	if st := r.URL.Query().Get("status"); st != "" {
+		filters.Status = &st
+	}
 	limit := queryLimit(r, 25)
 	offset := queryOffset(r)
 
@@ -426,6 +436,62 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 		"offset":    offset,
 		"has_more":  offset+len(conflicts) < total,
 	})
+}
+
+// validConflictStatuses defines the allowed values for conflict status transitions.
+var validConflictStatuses = map[string]bool{
+	"acknowledged": true,
+	"resolved":     true,
+	"wont_fix":     true,
+}
+
+// HandlePatchConflict handles PATCH /v1/conflicts/{id}.
+// Transitions a conflict to a new lifecycle state.
+func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
+
+	idStr := r.PathValue("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid conflict id")
+		return
+	}
+
+	var req model.ConflictResolution
+	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+		return
+	}
+
+	if !validConflictStatuses[req.Status] {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"status must be one of: acknowledged, resolved, wont_fix")
+		return
+	}
+
+	resolvedBy := claims.AgentID
+	if resolvedBy == "" {
+		resolvedBy = claims.Subject
+	}
+
+	if err := h.db.UpdateConflictStatus(r.Context(), id, orgID, req.Status, resolvedBy, req.ResolutionNote); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
+			return
+		}
+		h.writeInternalError(w, r, "failed to update conflict", err)
+		return
+	}
+
+	conflict, err := h.db.GetConflict(r.Context(), id, orgID)
+	if err != nil || conflict == nil {
+		// Update succeeded but re-fetch failed — return 204 rather than error.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, conflict)
 }
 
 // HandleDecisionRevisions handles GET /v1/decisions/{id}/revisions.

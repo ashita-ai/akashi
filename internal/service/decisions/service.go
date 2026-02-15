@@ -313,12 +313,21 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, decisionType, quer
 		decisions = queried
 	}
 
-	// Always check for conflicts.
+	// Only surface open/acknowledged conflicts — resolved and wont_fix are hidden.
 	conflicts, err := s.db.ListConflicts(ctx, orgID, storage.ConflictFilters{DecisionType: &decisionType}, limit, 0)
 	if err != nil {
 		s.logger.Warn("check: list conflicts", "error", err)
 		conflicts = nil
 	}
+	// Filter out resolved/wont_fix so akashi_check only shows actionable conflicts.
+	filtered := conflicts[:0]
+	for _, c := range conflicts {
+		if c.Status == "resolved" || c.Status == "wont_fix" {
+			continue
+		}
+		filtered = append(filtered, c)
+	}
+	conflicts = filtered
 
 	return model.CheckResponse{
 		HasPrecedent: len(decisions) > 0,
