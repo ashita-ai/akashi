@@ -108,6 +108,61 @@ func (db *DB) GetEventsByRun(ctx context.Context, orgID, runID uuid.UUID, limit 
 	return scanEvents(rows)
 }
 
+// InsertEventsIdempotent inserts events with duplicate safety via ON CONFLICT DO NOTHING.
+// Used during WAL recovery when events may have been flushed to Postgres before the
+// checkpoint was updated. Slower than COPY but runs only once per startup during recovery.
+func (db *DB) InsertEventsIdempotent(ctx context.Context, events []model.AgentEvent) (int64, error) {
+	if len(events) == 0 {
+		return 0, nil
+	}
+
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("storage: begin idempotent insert tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// Create unlogged temp table (no WAL overhead for the temp table itself).
+	if _, err := tx.Exec(ctx,
+		`CREATE TEMP TABLE _recovery_events (LIKE agent_events INCLUDING DEFAULTS) ON COMMIT DROP`,
+	); err != nil {
+		return 0, fmt.Errorf("storage: create recovery temp table: %w", err)
+	}
+
+	columns := []string{"id", "run_id", "org_id", "event_type", "sequence_num", "occurred_at", "agent_id", "payload", "created_at"}
+	rows := make([][]any, len(events))
+	for i, e := range events {
+		rows[i] = []any{
+			e.ID,
+			e.RunID,
+			e.OrgID,
+			string(e.EventType),
+			e.SequenceNum,
+			e.OccurredAt,
+			e.AgentID,
+			e.Payload,
+			e.CreatedAt,
+		}
+	}
+
+	// COPY into temp table (fast bulk load).
+	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"_recovery_events"}, columns, pgx.CopyFromRows(rows)); err != nil {
+		return 0, fmt.Errorf("storage: copy into recovery temp table: %w", err)
+	}
+
+	// Move to real table, skipping duplicates.
+	tag, err := tx.Exec(ctx,
+		`INSERT INTO agent_events SELECT * FROM _recovery_events ON CONFLICT (id) DO NOTHING`)
+	if err != nil {
+		return 0, fmt.Errorf("storage: insert from recovery temp table: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("storage: commit idempotent insert: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 func scanEvents(rows pgx.Rows) ([]model.AgentEvent, error) {
 	var events []model.AgentEvent
 	for rows.Next() {

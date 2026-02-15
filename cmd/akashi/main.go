@@ -203,8 +203,25 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		logger.Info("conflict scoring backfill complete", "decisions_scored", n)
 	}
 
+	// Create event WAL (opt-in: disabled when AKASHI_WAL_DIR is empty).
+	var eventWAL *trace.WAL
+	if cfg.WALDir != "" {
+		var walErr error
+		eventWAL, walErr = trace.NewWAL(logger, trace.WALConfig{
+			Dir:            cfg.WALDir,
+			SyncMode:       cfg.WALSyncMode,
+			SyncInterval:   cfg.WALSyncInterval,
+			MaxSegmentSize: int64(cfg.WALSegmentSize),
+			MaxSegmentRecs: cfg.WALSegmentRecords,
+		})
+		if walErr != nil {
+			return fmt.Errorf("event WAL: %w", walErr)
+		}
+		logger.Info("event WAL: enabled", "dir", cfg.WALDir, "sync_mode", cfg.WALSyncMode)
+	}
+
 	// Create event buffer.
-	buf := trace.NewBuffer(db, logger, cfg.EventBufferSize, cfg.EventFlushTimeout)
+	buf := trace.NewBuffer(db, logger, cfg.EventBufferSize, cfg.EventFlushTimeout, eventWAL)
 	buf.Start(ctx)
 
 	// Create grant cache (30s TTL — short enough to pick up new grants quickly,

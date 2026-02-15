@@ -111,23 +111,39 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if err := h.buffer.FlushNow(r.Context()); err != nil {
-		h.clearIdempotentWrite(r, orgID, idem)
-		h.writeInternalError(w, r, "failed to persist buffered events", err)
-		return
-	}
+
+	// After Append succeeds, events are in the buffer and WILL be persisted by
+	// the background flush loop (barring process crash). From this point we must
+	// NEVER clear the idempotency key — doing so allows retries to create
+	// duplicate events. See issue #65.
 
 	eventIDs := make([]uuid.UUID, len(events))
 	for i, e := range events {
 		eventIDs[i] = e.ID
 	}
 
+	statusCode := http.StatusOK
 	resp := map[string]any{
 		"accepted":  len(events),
 		"event_ids": eventIDs,
 		"status":    "persisted",
 		"message":   "events durably persisted",
 	}
+
+	if err := h.buffer.FlushNow(r.Context()); err != nil {
+		// Events are in the buffer and will be flushed by the background loop.
+		// Return 202 to signal they are accepted but not yet confirmed durable.
+		// Do NOT clear the idempotency key — that would allow duplicate writes.
+		h.logger.Warn("flush after append failed, events buffered for background persistence",
+			"error", err,
+			"run_id", runID,
+			"event_count", len(events),
+			"request_id", RequestIDFromContext(r.Context()))
+		statusCode = http.StatusAccepted
+		resp["status"] = "buffered"
+		resp["message"] = "events accepted, will be persisted by background flush"
+	}
+
 	if err := h.recordMutationAuditBestEffort(
 		r,
 		orgID,
@@ -138,15 +154,14 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 		resp,
 		map[string]any{"agent_id": run.AgentID, "event_count": len(events)},
 	); err != nil {
-		// Events are already durable at this point; keep the response idempotent.
 		h.logger.Error("failed to record mutation audit after committed append_events",
 			"error", err,
 			"run_id", runID,
 			"org_id", orgID,
 			"request_id", RequestIDFromContext(r.Context()))
 	}
-	h.completeIdempotentWriteBestEffort(r, orgID, idem, http.StatusOK, resp)
-	writeJSON(w, r, http.StatusOK, resp)
+	h.completeIdempotentWriteBestEffort(r, orgID, idem, statusCode, resp)
+	writeJSON(w, r, statusCode, resp)
 }
 
 // HandleCompleteRun handles POST /v1/runs/{run_id}/complete.

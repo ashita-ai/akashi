@@ -62,6 +62,13 @@ type Config struct {
 	ConflictLLMModel        string // Text generation model for conflict validation (e.g. "qwen2.5:3b" for Ollama).
 	ConflictBackfillWorkers int    // Parallel workers for conflict scoring backfill (default: 4).
 
+	// Event WAL (write-ahead log) for crash-durable event buffering.
+	WALDir            string        // Directory for WAL files. Empty = disabled (existing behavior).
+	WALSyncMode       string        // "full", "batch", "none". Default: "batch".
+	WALSyncInterval   time.Duration // Sync interval for batch mode. Default: 10ms.
+	WALSegmentSize    int           // Max segment size in bytes before rotation. Default: 64 MB.
+	WALSegmentRecords int           // Max records per segment before rotation. Default: 100K.
+
 	// Operational settings.
 	LogLevel                      string
 	SkipEmbeddedMigrations        bool // Skip startup embedded migrations; for external migration orchestration.
@@ -103,6 +110,8 @@ func Load() (Config, error) {
 		QdrantAPIKey:       envStr("QDRANT_API_KEY", ""),
 		QdrantCollection:   envStr("QDRANT_COLLECTION", "akashi_decisions"),
 		ConflictLLMModel:   envStr("AKASHI_CONFLICT_LLM_MODEL", ""),
+		WALDir:             envStr("AKASHI_WAL_DIR", ""),
+		WALSyncMode:        envStr("AKASHI_WAL_SYNC_MODE", "batch"),
 		LogLevel:           envStr("AKASHI_LOG_LEVEL", "info"),
 		CORSAllowedOrigins: envStrSlice("AKASHI_CORS_ALLOWED_ORIGINS", nil),
 	}
@@ -114,6 +123,8 @@ func Load() (Config, error) {
 	cfg.EventBufferSize, errs = collectInt(errs, "AKASHI_EVENT_BUFFER_SIZE", 1000)
 	cfg.RateLimitBurst, errs = collectInt(errs, "AKASHI_RATE_LIMIT_BURST", 200)
 	cfg.ConflictBackfillWorkers, errs = collectInt(errs, "AKASHI_CONFLICT_BACKFILL_WORKERS", 4)
+	cfg.WALSegmentSize, errs = collectInt(errs, "AKASHI_WAL_SEGMENT_SIZE", 64*1024*1024)
+	cfg.WALSegmentRecords, errs = collectInt(errs, "AKASHI_WAL_SEGMENT_RECORDS", 100_000)
 
 	var maxReqBody int
 	maxReqBody, errs = collectInt(errs, "AKASHI_MAX_REQUEST_BODY_BYTES", 1*1024*1024)
@@ -138,6 +149,7 @@ func Load() (Config, error) {
 	cfg.ConflictRefreshInterval, errs = collectDuration(errs, "AKASHI_CONFLICT_REFRESH_INTERVAL", 30*time.Second)
 	cfg.IntegrityProofInterval, errs = collectDuration(errs, "AKASHI_INTEGRITY_PROOF_INTERVAL", 5*time.Minute)
 	cfg.EventFlushTimeout, errs = collectDuration(errs, "AKASHI_EVENT_FLUSH_TIMEOUT", 100*time.Millisecond)
+	cfg.WALSyncInterval, errs = collectDuration(errs, "AKASHI_WAL_SYNC_INTERVAL", 10*time.Millisecond)
 	cfg.ShutdownHTTPTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_HTTP_TIMEOUT", 10*time.Second)
 	cfg.ShutdownBufferDrainTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT", 0)
 	cfg.ShutdownOutboxDrainTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT", 0)

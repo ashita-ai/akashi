@@ -31,11 +31,14 @@ var (
 
 // Buffer accumulates events in memory and flushes to the database
 // using COPY when either the buffer size or flush timeout is reached.
+// When a WAL is configured, events are written to disk before being
+// buffered in memory, providing crash durability.
 type Buffer struct {
 	db           *storage.DB
 	logger       *slog.Logger
 	maxSize      int
 	flushTimeout time.Duration
+	wal          *WAL // nil when WAL is disabled
 
 	mu     sync.Mutex
 	events []model.AgentEvent
@@ -51,13 +54,14 @@ type Buffer struct {
 	drainCh    chan context.Context // carries the drain context to flushLoop for the final flush
 }
 
-// NewBuffer creates a new event buffer.
-func NewBuffer(db *storage.DB, logger *slog.Logger, maxSize int, flushTimeout time.Duration) *Buffer {
+// NewBuffer creates a new event buffer. Pass wal=nil to disable WAL (existing behavior).
+func NewBuffer(db *storage.DB, logger *slog.Logger, maxSize int, flushTimeout time.Duration, wal *WAL) *Buffer {
 	return &Buffer{
 		db:           db,
 		logger:       logger,
 		maxSize:      maxSize,
 		flushTimeout: flushTimeout,
+		wal:          wal,
 		flushCh:      make(chan struct{}, 1),
 		done:         make(chan struct{}),
 		drainCh:      make(chan context.Context, 1),
@@ -65,6 +69,7 @@ func NewBuffer(db *storage.DB, logger *slog.Logger, maxSize int, flushTimeout ti
 }
 
 // Start begins the background flush loop and registers OTEL metrics. Call Drain to stop.
+// When WAL is enabled, recovers un-flushed events before starting the flush loop.
 // It is safe to call only once; subsequent calls are no-ops and log a warning.
 func (b *Buffer) Start(ctx context.Context) {
 	if !b.started.CompareAndSwap(false, true) {
@@ -72,6 +77,34 @@ func (b *Buffer) Start(ctx context.Context) {
 		return
 	}
 	b.registerMetrics()
+
+	// Recover un-flushed events from WAL before accepting new traffic.
+	if b.wal != nil {
+		recovered, err := b.wal.Recover()
+		if err != nil {
+			b.logger.Error("trace: wal recovery failed", "error", err)
+			// Continue without recovered events. They are not lost — the WAL
+			// files are intact and will be retried on next startup.
+		} else if len(recovered) > 0 {
+			// Flush recovered events through the idempotent path to handle
+			// the case where events were already COPYed before the crash.
+			inserted, err := b.db.InsertEventsIdempotent(ctx, recovered)
+			if err != nil {
+				b.logger.Error("trace: wal recovery flush failed, events remain in WAL for next startup",
+					"error", err, "recovered_count", len(recovered))
+			} else {
+				b.logger.Info("trace: recovered events from WAL",
+					"recovered", len(recovered), "new_inserts", inserted,
+					"duplicates_skipped", int64(len(recovered))-inserted)
+				// Advance the WAL checkpoint now that events are in Postgres.
+				if err := b.wal.Checkpoint(recovered); err != nil {
+					b.logger.Warn("trace: wal checkpoint after recovery failed (events are safe in postgres)",
+						"error", err)
+				}
+			}
+		}
+	}
+
 	loopCtx, cancel := context.WithCancel(ctx)
 	b.cancelLoop = cancel
 	go b.flushLoop(loopCtx)
@@ -80,6 +113,9 @@ func (b *Buffer) Start(ctx context.Context) {
 // Append adds events to the buffer, assigning server-side sequence numbers.
 // Returns the assigned events with populated IDs and sequence numbers.
 // Returns an error if the buffer is at capacity (backpressure).
+//
+// When WAL is enabled, events are written to the WAL before buffering in memory.
+// This makes events crash-durable at Append time.
 //
 // Holds the lock during ReserveSequenceNums to avoid sequence leaks: if we
 // reserved sequences then failed a post-reserve capacity check (race with
@@ -123,6 +159,13 @@ func (b *Buffer) Append(ctx context.Context, runID uuid.UUID, agentID string, or
 		}
 	}
 
+	// Write to WAL before buffering in memory for crash durability.
+	if b.wal != nil {
+		if err := b.wal.Write(events); err != nil {
+			return nil, fmt.Errorf("trace: wal write: %w", err)
+		}
+	}
+
 	b.events = append(b.events, events...)
 
 	if len(b.events) >= b.maxSize {
@@ -133,6 +176,11 @@ func (b *Buffer) Append(ctx context.Context, runID uuid.UUID, agentID string, or
 	}
 
 	return events, nil
+}
+
+// HasWAL returns true if a write-ahead log is configured.
+func (b *Buffer) HasWAL() bool {
+	return b.wal != nil
 }
 
 func (b *Buffer) flushLoop(ctx context.Context) {
@@ -245,6 +293,15 @@ func (b *Buffer) flushOnce(ctx context.Context) (bool, error) {
 	}
 	b.mu.Unlock()
 
+	// Advance WAL checkpoint after successful COPY.
+	if b.wal != nil {
+		if err := b.wal.Checkpoint(batch); err != nil {
+			// Non-fatal: events are in Postgres. The WAL will replay them on
+			// next startup, and the idempotent recovery path handles duplicates.
+			b.logger.Warn("trace: wal checkpoint failed (events are durable in postgres)", "error", err)
+		}
+	}
+
 	b.logger.Info("trace: batch flushed",
 		"batch_size", count,
 		"flush_duration_ms", duration.Milliseconds(),
@@ -277,6 +334,13 @@ func (b *Buffer) Drain(ctx context.Context) {
 	case <-b.done:
 	case <-ctx.Done():
 		b.logger.Warn("trace: drain timed out waiting for flush loop")
+	}
+
+	// Close WAL after drain completes (final flush may have advanced checkpoint).
+	if b.wal != nil {
+		if err := b.wal.Close(); err != nil {
+			b.logger.Warn("trace: wal close failed", "error", err)
+		}
 	}
 }
 
