@@ -1089,6 +1089,33 @@ func (db *DB) CountUnvalidatedConflicts(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// DecisionQualityStats holds aggregate quality metrics for an org's decisions.
+type DecisionQualityStats struct {
+	Total         int
+	AvgQuality    float64
+	BelowHalf     int // quality_score < 0.5
+	BelowThird    int // quality_score < 0.33
+	WithReasoning int // reasoning IS NOT NULL AND reasoning != ''
+}
+
+// GetDecisionQualityStats returns aggregate quality metrics for current decisions in an org.
+func (db *DB) GetDecisionQualityStats(ctx context.Context, orgID uuid.UUID) (DecisionQualityStats, error) {
+	var s DecisionQualityStats
+	err := db.pool.QueryRow(ctx, `
+		SELECT count(*),
+		       COALESCE(avg(quality_score), 0),
+		       count(*) FILTER (WHERE quality_score < 0.5),
+		       count(*) FILTER (WHERE quality_score < 0.33),
+		       count(*) FILTER (WHERE reasoning IS NOT NULL AND reasoning != '')
+		FROM decisions
+		WHERE org_id = $1 AND valid_to IS NULL`, orgID).Scan(
+		&s.Total, &s.AvgQuality, &s.BelowHalf, &s.BelowThird, &s.WithReasoning)
+	if err != nil {
+		return s, fmt.Errorf("storage: decision quality stats: %w", err)
+	}
+	return s, nil
+}
+
 // GetDecisionForScoring returns a decision with embedding and outcome_embedding for conflict scoring.
 func (db *DB) GetDecisionForScoring(ctx context.Context, id, orgID uuid.UUID) (model.Decision, error) {
 	var d model.Decision

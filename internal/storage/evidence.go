@@ -133,6 +133,34 @@ func (db *DB) GetEvidenceByDecision(ctx context.Context, decisionID uuid.UUID, o
 	return evs, rows.Err()
 }
 
+// EvidenceCoverageStats holds evidence coverage metrics for an org.
+type EvidenceCoverageStats struct {
+	TotalDecisions       int
+	WithEvidence         int
+	WithoutEvidenceCount int
+	CoveragePercent      float64
+}
+
+// GetEvidenceCoverageStats returns how many current decisions have at least one evidence record.
+func (db *DB) GetEvidenceCoverageStats(ctx context.Context, orgID uuid.UUID) (EvidenceCoverageStats, error) {
+	var s EvidenceCoverageStats
+	err := db.pool.QueryRow(ctx, `
+		SELECT count(DISTINCT d.id) AS total,
+		       count(DISTINCT e.decision_id) AS with_evidence
+		FROM decisions d
+		LEFT JOIN evidence e ON d.id = e.decision_id AND e.org_id = d.org_id
+		WHERE d.org_id = $1 AND d.valid_to IS NULL`, orgID).Scan(
+		&s.TotalDecisions, &s.WithEvidence)
+	if err != nil {
+		return s, fmt.Errorf("storage: evidence coverage stats: %w", err)
+	}
+	s.WithoutEvidenceCount = s.TotalDecisions - s.WithEvidence
+	if s.TotalDecisions > 0 {
+		s.CoveragePercent = float64(s.WithEvidence) / float64(s.TotalDecisions) * 100
+	}
+	return s, nil
+}
+
 // SearchEvidenceByEmbedding performs semantic similarity search over evidence within an org.
 func (db *DB) SearchEvidenceByEmbedding(ctx context.Context, orgID uuid.UUID, embedding pgvector.Vector, limit int) ([]model.Evidence, error) {
 	if limit <= 0 {
