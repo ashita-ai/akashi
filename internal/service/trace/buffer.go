@@ -312,8 +312,12 @@ func (b *Buffer) flushOnce(ctx context.Context) (bool, error) {
 // Drain signals the background flush loop to stop, waits for it to complete
 // its final flush, and returns. The ctx parameter controls the maximum time
 // to wait for the goroutine to finish and is passed to the final flush so it
-// respects the caller's deadline. Drain is idempotent; subsequent calls are no-ops.
-func (b *Buffer) Drain(ctx context.Context) {
+// respects the caller's deadline. Drain is idempotent; subsequent calls return
+// the same result.
+//
+// Returns nil if all events were flushed, or an error if the drain context
+// expired with events still in the buffer (potential data loss).
+func (b *Buffer) Drain(ctx context.Context) error {
 	b.drainOnce.Do(func() {
 		b.draining.Store(true)
 		// Send the drain context to flushLoop via channel (race-free).
@@ -333,7 +337,9 @@ func (b *Buffer) Drain(ctx context.Context) {
 	select {
 	case <-b.done:
 	case <-ctx.Done():
-		b.logger.Warn("trace: drain timed out waiting for flush loop")
+		b.logger.Error("trace: drain timed out — unflushed events will be lost",
+			"remaining_events", b.Len(),
+		)
 	}
 
 	// Close WAL after drain completes (final flush may have advanced checkpoint).
@@ -342,6 +348,11 @@ func (b *Buffer) Drain(ctx context.Context) {
 			b.logger.Warn("trace: wal close failed", "error", err)
 		}
 	}
+
+	if remaining := b.Len(); remaining > 0 {
+		return fmt.Errorf("trace: drain incomplete, %d events lost", remaining)
+	}
+	return nil
 }
 
 // registerMetrics registers observable OTEL gauges for buffer health monitoring.

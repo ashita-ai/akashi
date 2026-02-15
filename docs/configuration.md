@@ -119,7 +119,7 @@ When enabled, every event is written to the WAL before being buffered in memory.
 | `AKASHI_INTEGRITY_PROOF_INTERVAL` | `5m` | How often Merkle tree proofs are built for new decisions |
 | `AKASHI_ENABLE_DESTRUCTIVE_DELETE` | `false` | Enables irreversible `DELETE /v1/agents/{agent_id}`. Keep `false` in production unless explicitly needed for GDPR workflows |
 | `AKASHI_SHUTDOWN_HTTP_TIMEOUT` | `10s` | HTTP shutdown grace timeout (`0` = wait indefinitely) |
-| `AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT` | `0` | Reserved. Akashi always waits indefinitely for event buffer drain to avoid data loss. |
+| `AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT` | `0` | Maximum time to flush in-memory events to Postgres during shutdown. `0` = wait indefinitely (default, durability-first). Non-zero values bound the drain but risk losing unflushed events — process exits non-zero if events remain. |
 | `AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT` | `0` | Outbox drain timeout (`0` = wait indefinitely) |
 
 ## Write Idempotency

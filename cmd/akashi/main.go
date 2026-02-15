@@ -327,14 +327,20 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}
 	httpCancel()
 
-	// Durability-first shutdown: always wait for event buffer drain to finish.
-	// A partial drain can lose in-memory events that were already accepted.
-	if cfg.ShutdownBufferDrainTimeout > 0 {
-		slog.Warn("ignoring AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT for durability; waiting indefinitely for buffer drain",
-			"configured_timeout", cfg.ShutdownBufferDrainTimeout)
+	// Buffer drain: flush all in-memory events to Postgres before exit.
+	// Default timeout is 0 (wait indefinitely) for durability-first behavior.
+	// Operators can set AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT for bounded drain
+	// at the risk of losing unflushed events on timeout.
+	bufCtx, bufCancel := contextWithOptionalTimeout(context.Background(), cfg.ShutdownBufferDrainTimeout)
+	if err := buf.Drain(bufCtx); err != nil {
+		slog.Error("event buffer drain incomplete — unflushed events will be lost",
+			"error", err,
+			"remaining_events", buf.Len(),
+			"configured_timeout", cfg.ShutdownBufferDrainTimeout,
+		)
+		bufCancel()
+		return fmt.Errorf("buffer drain failed: %w", err)
 	}
-	bufCtx, bufCancel := contextWithOptionalTimeout(context.Background(), 0)
-	buf.Drain(bufCtx)
 	bufCancel()
 
 	if outboxWorker != nil {
