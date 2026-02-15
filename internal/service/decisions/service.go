@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/ashita-ai/akashi/internal/conflicts"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
@@ -206,8 +207,27 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 		s.logger.Error("trace: notify subscribers", "error", err)
 	}
 
-	// 7. Trigger semantic conflict scoring (async, non-blocking).
-	if s.conflictScorer != nil {
+	// 7. Generate claim-level embeddings for fine-grained conflict detection.
+	// Must complete BEFORE conflict scoring so the scorer can use claims.
+	if decisionEmb != nil {
+		go func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					s.logger.Error("trace: claim generation panicked", "panic", rec, "decision_id", decision.ID)
+				}
+			}()
+			claimCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			if err := s.generateClaims(claimCtx, decision.ID, orgID, input.Decision.Outcome); err != nil {
+				s.logger.Warn("trace: claim generation failed", "decision_id", decision.ID, "error", err)
+			}
+			// 8. Trigger semantic conflict scoring (after claims are stored).
+			if s.conflictScorer != nil {
+				s.conflictScorer.ScoreForDecision(claimCtx, decision.ID, orgID)
+			}
+		}()
+	} else if s.conflictScorer != nil {
+		// No embeddings available — still try conflict scoring (it will use full-outcome only).
 		go func() {
 			defer func() {
 				if rec := recover(); rec != nil {
@@ -533,6 +553,102 @@ func (s *Service) BackfillOutcomeEmbeddings(ctx context.Context, batchSize int) 
 
 	if backfilled > 0 {
 		s.logger.Info("backfill: outcome embeddings", "count", backfilled, "batch", len(decs))
+	}
+	return backfilled, nil
+}
+
+// generateClaims splits an outcome into sentence-level claims, embeds each,
+// and stores them in the decision_claims table. Skips if claims already exist.
+func (s *Service) generateClaims(ctx context.Context, decisionID, orgID uuid.UUID, outcome string) error {
+	// Skip if claims already exist for this decision.
+	exists, err := s.db.HasClaimsForDecision(ctx, decisionID)
+	if err != nil {
+		return fmt.Errorf("claims: check existing: %w", err)
+	}
+	if exists {
+		return nil
+	}
+
+	// Split outcome into claims.
+	claimTexts := conflicts.SplitClaims(outcome)
+	if len(claimTexts) == 0 {
+		return nil
+	}
+
+	// Embed all claims in a single batch call.
+	vecs, err := s.embedder.EmbedBatch(ctx, claimTexts)
+	if err != nil {
+		return fmt.Errorf("claims: embed batch: %w", err)
+	}
+
+	// Build claim records.
+	claims := make([]storage.Claim, 0, len(claimTexts))
+	for i, text := range claimTexts {
+		if i >= len(vecs) {
+			break
+		}
+		if err := s.validateEmbeddingDims(vecs[i]); err != nil {
+			s.logger.Warn("claims: dimension mismatch, skipping claim", "decision_id", decisionID, "claim_idx", i, "error", err)
+			continue
+		}
+		emb := vecs[i]
+		claims = append(claims, storage.Claim{
+			DecisionID: decisionID,
+			OrgID:      orgID,
+			ClaimIdx:   i,
+			ClaimText:  text,
+			Embedding:  &emb,
+		})
+	}
+
+	if len(claims) == 0 {
+		return nil
+	}
+
+	if err := s.db.InsertClaims(ctx, claims); err != nil {
+		return fmt.Errorf("claims: insert: %w", err)
+	}
+	s.logger.Debug("claims: generated", "decision_id", decisionID, "count", len(claims))
+	return nil
+}
+
+// BackfillClaims generates sentence-level claim embeddings for decisions that
+// have embeddings but no claims yet. Returns the number of decisions processed.
+func (s *Service) BackfillClaims(ctx context.Context, batchSize int) (int, error) {
+	if _, err := s.embedder.Embed(ctx, "probe"); errors.Is(err, embedding.ErrNoProvider) {
+		return 0, nil
+	}
+
+	refs, err := s.db.FindDecisionIDsMissingClaims(ctx, batchSize)
+	if err != nil {
+		return 0, fmt.Errorf("backfill claims: find: %w", err)
+	}
+	if len(refs) == 0 {
+		return 0, nil
+	}
+
+	var backfilled int
+	for _, ref := range refs {
+		select {
+		case <-ctx.Done():
+			return backfilled, ctx.Err()
+		default:
+		}
+		// Fetch the decision outcome.
+		d, err := s.db.GetDecisionForScoring(ctx, ref.ID, ref.OrgID)
+		if err != nil {
+			s.logger.Warn("backfill claims: get decision failed", "decision_id", ref.ID, "error", err)
+			continue
+		}
+		if err := s.generateClaims(ctx, ref.ID, ref.OrgID, d.Outcome); err != nil {
+			s.logger.Warn("backfill claims: generate failed", "decision_id", ref.ID, "error", err)
+			continue
+		}
+		backfilled++
+	}
+
+	if backfilled > 0 {
+		s.logger.Info("backfill: claims generated", "count", backfilled, "batch", len(refs))
 	}
 	return backfilled, nil
 }
