@@ -78,7 +78,7 @@ func TestBufferDoubleStartIsNoop(t *testing.T) {
 	// Buffer.Start() must be idempotent -- a second call logs a warning and returns
 	// without spawning a second flush goroutine or panicking on double close(b.done).
 	logger := testLogger()
-	buf := NewBuffer(nil, logger, 100, 50*time.Millisecond)
+	buf := NewBuffer(nil, logger, 100, 50*time.Millisecond, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -101,7 +101,7 @@ func TestBufferDoubleStartIsNoop(t *testing.T) {
 func TestBuffer_AppendAndFlush(t *testing.T) {
 	run := createTestRun(t)
 
-	buf := NewBuffer(testDB, testLogger(), 1000, 100*time.Millisecond)
+	buf := NewBuffer(testDB, testLogger(), 1000, 100*time.Millisecond, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	buf.Start(ctx)
@@ -139,7 +139,7 @@ func TestBuffer_FlushOnBatchSize(t *testing.T) {
 
 	// Set maxSize=5 so a batch of 5 events triggers an immediate flush signal,
 	// and set a long flush timeout so the timer cannot fire first.
-	buf := NewBuffer(testDB, testLogger(), 5, 10*time.Second)
+	buf := NewBuffer(testDB, testLogger(), 5, 10*time.Second, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	buf.Start(ctx)
@@ -164,7 +164,7 @@ func TestBuffer_FlushOnInterval(t *testing.T) {
 
 	// Set a large maxSize so the batch-size trigger never fires, and a short
 	// flushTimeout so the timer fires quickly.
-	buf := NewBuffer(testDB, testLogger(), 1000, 100*time.Millisecond)
+	buf := NewBuffer(testDB, testLogger(), 1000, 100*time.Millisecond, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	buf.Start(ctx)
@@ -188,7 +188,7 @@ func TestBuffer_DrainFlushesPending(t *testing.T) {
 	run := createTestRun(t)
 
 	// Use a very long flush timeout so only Drain causes the flush.
-	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute)
+	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	buf.Start(ctx)
@@ -217,7 +217,7 @@ func TestBuffer_DrainTimeout(t *testing.T) {
 	// verifying that Drain does not block waiting for <-b.done.
 	run := createTestRun(t)
 
-	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute)
+	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	buf.Start(ctx)
@@ -249,7 +249,7 @@ func TestBuffer_DrainTimeout(t *testing.T) {
 func TestBuffer_AppendAfterDrain(t *testing.T) {
 	run := createTestRun(t)
 
-	buf := NewBuffer(testDB, testLogger(), 1000, 100*time.Millisecond)
+	buf := NewBuffer(testDB, testLogger(), 1000, 100*time.Millisecond, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	buf.Start(ctx)
@@ -284,7 +284,7 @@ func TestBuffer_ConcurrentAppend(t *testing.T) {
 
 	// Use a long flush timeout so events accumulate. We drain at the end to
 	// flush them all at once, verifying concurrency safety end-to-end.
-	buf := NewBuffer(testDB, testLogger(), totalExpected+1, 10*time.Minute)
+	buf := NewBuffer(testDB, testLogger(), totalExpected+1, 10*time.Minute, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	buf.Start(ctx)

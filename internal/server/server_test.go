@@ -98,7 +98,7 @@ func TestMain(m *testing.M) {
 	jwtMgr, _ := auth.NewJWTManager("", "", 24*time.Hour)
 	embedder := embedding.NewNoopProvider(1024)
 	decisionSvc := decisions.New(db, embedder, nil, logger, nil)
-	buf := trace.NewBuffer(db, logger, 1000, 50*time.Millisecond)
+	buf := trace.NewBuffer(db, logger, 1000, 50*time.Millisecond, nil)
 	buf.Start(ctx)
 
 	mcpSrv := mcp.New(db, decisionSvc, nil, logger, "test")
