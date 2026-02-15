@@ -2885,3 +2885,114 @@ func TestFindDecisionIDsMissingClaims_DefaultLimit(t *testing.T) {
 	require.NoError(t, err)
 	_ = refs
 }
+
+// --- Decision immutability trigger tests (migration 036) ---
+
+func TestDecisionImmutability_BlocksCoreFieldUpdate(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a decision via trace.
+	orgID := uuid.MustParse("00000000-0000-0000-0000-000000000000")
+	reasoning := "original reasoning"
+	_, d, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "immut-test-agent",
+		OrgID:   orgID,
+		Decision: model.Decision{
+			DecisionType: "architecture",
+			Outcome:      "original outcome",
+			Confidence:   0.8,
+			Reasoning:    &reasoning,
+		},
+	})
+	require.NoError(t, err)
+
+	// Each immutable column should be rejected.
+	immutableUpdates := []struct {
+		column string
+		sql    string
+		args   []any
+	}{
+		{"outcome", `UPDATE decisions SET outcome = 'tampered' WHERE id = $1`, []any{d.ID}},
+		{"reasoning", `UPDATE decisions SET reasoning = 'tampered' WHERE id = $1`, []any{d.ID}},
+		{"confidence", `UPDATE decisions SET confidence = 0.01 WHERE id = $1`, []any{d.ID}},
+		{"decision_type", `UPDATE decisions SET decision_type = 'tampered' WHERE id = $1`, []any{d.ID}},
+		{"agent_id", `UPDATE decisions SET agent_id = 'evil' WHERE id = $1`, []any{d.ID}},
+		{"run_id", `UPDATE decisions SET run_id = $1 WHERE id = $2`, []any{uuid.New(), d.ID}},
+		{"org_id", `UPDATE decisions SET org_id = $1 WHERE id = $2`, []any{uuid.New(), d.ID}},
+		{"content_hash", `UPDATE decisions SET content_hash = 'tampered' WHERE id = $1`, []any{d.ID}},
+		{"valid_from", `UPDATE decisions SET valid_from = now() + interval '1 hour' WHERE id = $1`, []any{d.ID}},
+		{"created_at", `UPDATE decisions SET created_at = now() + interval '1 hour' WHERE id = $1`, []any{d.ID}},
+		{"transaction_time", `UPDATE decisions SET transaction_time = now() + interval '1 hour' WHERE id = $1`, []any{d.ID}},
+	}
+
+	for _, tc := range immutableUpdates {
+		t.Run("blocked_"+tc.column, func(t *testing.T) {
+			_, err := testDB.Pool().Exec(ctx, tc.sql, tc.args...)
+			require.Error(t, err, "UPDATE to %s should be rejected by immutability trigger", tc.column)
+			assert.Contains(t, err.Error(), "immutable")
+		})
+	}
+}
+
+func TestDecisionImmutability_AllowsMutableFieldUpdates(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a decision.
+	orgID := uuid.MustParse("00000000-0000-0000-0000-000000000000")
+	_, d, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "immut-mutable-test",
+		OrgID:   orgID,
+		Decision: model.Decision{
+			DecisionType: "test",
+			Outcome:      "mutable test outcome",
+			Confidence:   0.5,
+		},
+	})
+	require.NoError(t, err)
+
+	// These updates should all succeed (mutable columns).
+	mutableUpdates := []struct {
+		column string
+		sql    string
+		args   []any
+	}{
+		{"valid_to", `UPDATE decisions SET valid_to = now() WHERE id = $1`, []any{d.ID}},
+		{"embedding", `UPDATE decisions SET embedding = $1 WHERE id = $2`, []any{pgvector.NewVector(make([]float32, 1024)), d.ID}},
+		{"outcome_embedding", `UPDATE decisions SET outcome_embedding = $1 WHERE id = $2`, []any{pgvector.NewVector(make([]float32, 1024)), d.ID}},
+		{"precedent_ref", `UPDATE decisions SET precedent_ref = NULL WHERE id = $1`, []any{d.ID}},
+		{"supersedes_id", `UPDATE decisions SET supersedes_id = NULL WHERE id = $1`, []any{d.ID}},
+		{"quality_score", `UPDATE decisions SET quality_score = 0.99 WHERE id = $1`, []any{d.ID}},
+		{"metadata", `UPDATE decisions SET metadata = '{"test": true}' WHERE id = $1`, []any{d.ID}},
+		{"session_id", `UPDATE decisions SET session_id = $1 WHERE id = $2`, []any{uuid.New(), d.ID}},
+		{"agent_context", `UPDATE decisions SET agent_context = '{"enriched": true}' WHERE id = $1`, []any{d.ID}},
+	}
+
+	for _, tc := range mutableUpdates {
+		t.Run("allowed_"+tc.column, func(t *testing.T) {
+			_, err := testDB.Pool().Exec(ctx, tc.sql, tc.args...)
+			require.NoError(t, err, "UPDATE to %s should be allowed", tc.column)
+		})
+	}
+}
+
+func TestDecisionImmutability_AllowsNoopUpdate(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a decision.
+	orgID := uuid.MustParse("00000000-0000-0000-0000-000000000000")
+	_, d, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "immut-noop-test",
+		OrgID:   orgID,
+		Decision: model.Decision{
+			DecisionType: "test",
+			Outcome:      "noop test",
+			Confidence:   0.5,
+		},
+	})
+	require.NoError(t, err)
+
+	// Setting an immutable column to its current value should succeed (no actual change).
+	_, err = testDB.Pool().Exec(ctx,
+		`UPDATE decisions SET outcome = outcome WHERE id = $1`, d.ID)
+	require.NoError(t, err, "no-op update to immutable column should be allowed")
+}
