@@ -203,7 +203,7 @@ Akashi logs JSON to stdout. Key log messages to monitor:
 **Remediation**:
 1. Verify retries use the same payload bytes for the same key.
 2. For "already in progress", use exponential backoff and retry.
-3. If using long-running writes, increase `AKASHI_IDEMPOTENCY_IN_PROGRESS_TTL`.
+3. Stale in-progress keys are cleared by the background cleanup job (`AKASHI_IDEMPOTENCY_ABANDONED_TTL`).
 4. Ensure key generation is unique per logical write operation.
 
 ---
@@ -625,7 +625,6 @@ Provider auto-detection order: Ollama (if reachable) > OpenAI (if key set) > noo
 | `AKASHI_SHUTDOWN_HTTP_TIMEOUT`      | `10s`    | Grace period for HTTP server shutdown (`0` = wait forever) |
 | `AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT` | `0`   | Reserved. Buffer drain is always indefinite to prevent event loss. |
 | `AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT` | `0`   | Outbox drain timeout (`0` = wait forever)            |
-| `AKASHI_IDEMPOTENCY_IN_PROGRESS_TTL` | `5m`  | In-progress idempotency key reclaim window            |
 | `AKASHI_IDEMPOTENCY_CLEANUP_INTERVAL` | `1h` | How often old idempotency keys are cleaned up         |
 | `AKASHI_IDEMPOTENCY_COMPLETED_TTL` | `168h` (7d) | Retention for completed idempotency records      |
 | `AKASHI_IDEMPOTENCY_ABANDONED_TTL` | `24h` | Retention for abandoned in-progress idempotency records |

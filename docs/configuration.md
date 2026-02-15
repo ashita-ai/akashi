@@ -155,7 +155,6 @@ Operational idempotency settings:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AKASHI_IDEMPOTENCY_IN_PROGRESS_TTL` | `5m` | In-progress key becomes reclaimable after this duration |
 | `AKASHI_IDEMPOTENCY_CLEANUP_INTERVAL` | `1h` | Background cleanup cadence for idempotency records |
 | `AKASHI_IDEMPOTENCY_COMPLETED_TTL` | `168h` (7d) | Retention for completed idempotency records |
 | `AKASHI_IDEMPOTENCY_ABANDONED_TTL` | `24h` | Retention for abandoned in-progress idempotency records |
