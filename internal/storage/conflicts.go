@@ -100,6 +100,33 @@ func (db *DB) CountConflicts(ctx context.Context, orgID uuid.UUID, filters Confl
 	return count, nil
 }
 
+// ConflictStatusCounts holds the number of conflicts in each resolution status.
+type ConflictStatusCounts struct {
+	Total        int
+	Open         int
+	Acknowledged int
+	Resolved     int
+	WontFix      int
+}
+
+// GetConflictStatusCounts returns the number of conflicts per resolution status for an org.
+func (db *DB) GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID) (ConflictStatusCounts, error) {
+	var c ConflictStatusCounts
+	err := db.pool.QueryRow(ctx, `
+		SELECT count(*),
+		       count(*) FILTER (WHERE status = 'open'),
+		       count(*) FILTER (WHERE status = 'acknowledged'),
+		       count(*) FILTER (WHERE status = 'resolved'),
+		       count(*) FILTER (WHERE status = 'wont_fix')
+		FROM scored_conflicts
+		WHERE org_id = $1`, orgID).Scan(
+		&c.Total, &c.Open, &c.Acknowledged, &c.Resolved, &c.WontFix)
+	if err != nil {
+		return c, fmt.Errorf("storage: conflict status counts: %w", err)
+	}
+	return c, nil
+}
+
 // ListConflicts retrieves detected conflicts within an org from scored_conflicts.
 // Joins decisions for reasoning, confidence, run_id, and valid_from.
 func (db *DB) ListConflicts(ctx context.Context, orgID uuid.UUID, filters ConflictFilters, limit, offset int) ([]model.DecisionConflict, error) {

@@ -24,17 +24,21 @@ type Metrics struct {
 
 // CompletenessMetrics tracks decision quality and reasoning coverage.
 type CompletenessMetrics struct {
-	TotalDecisions int     `json:"total_decisions"`
-	AvgQuality     float64 `json:"avg_quality"`
-	BelowHalf      int     `json:"below_half"`  // quality_score < 0.5
-	BelowThird     int     `json:"below_third"` // quality_score < 0.33
-	WithReasoning  int     `json:"with_reasoning"`
-	ReasoningPct   float64 `json:"reasoning_pct"`
+	TotalDecisions   int     `json:"total_decisions"`
+	AvgQuality       float64 `json:"avg_quality"`
+	BelowHalf        int     `json:"below_half"`  // quality_score < 0.5
+	BelowThird       int     `json:"below_third"` // quality_score < 0.33
+	WithReasoning    int     `json:"with_reasoning"`
+	ReasoningPct     float64 `json:"reasoning_pct"`
+	WithAlternatives int     `json:"with_alternatives"`
+	AlternativesPct  float64 `json:"alternatives_pct"`
 }
 
 // EvidenceMetrics tracks evidence coverage across decisions.
 type EvidenceMetrics struct {
 	TotalDecisions  int     `json:"total_decisions"`
+	TotalRecords    int     `json:"total_records"`
+	AvgPerDecision  float64 `json:"avg_per_decision"`
 	WithEvidence    int     `json:"with_evidence"`
 	WithoutEvidence int     `json:"without_evidence"`
 	CoveragePct     float64 `json:"coverage_pct"`
@@ -42,10 +46,12 @@ type EvidenceMetrics struct {
 
 // ConflictMetrics tracks conflict detection and resolution rates.
 type ConflictMetrics struct {
-	Total       int     `json:"total"`
-	Open        int     `json:"open"`
-	Resolved    int     `json:"resolved"`
-	ResolvedPct float64 `json:"resolved_pct"`
+	Total        int     `json:"total"`
+	Open         int     `json:"open"`
+	Acknowledged int     `json:"acknowledged"`
+	Resolved     int     `json:"resolved"`
+	WontFix      int     `json:"wont_fix"`
+	ResolvedPct  float64 `json:"resolved_pct"`
 }
 
 // Service computes trace health metrics.
@@ -79,21 +85,14 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID) (*Metrics, error
 		return nil, fmt.Errorf("tracehealth: evidence stats: %w", err)
 	}
 
-	totalConflicts, err := s.db.CountConflicts(ctx, orgID, storage.ConflictFilters{})
+	cc, err := s.db.GetConflictStatusCounts(ctx, orgID)
 	if err != nil {
-		return nil, fmt.Errorf("tracehealth: total conflicts: %w", err)
+		return nil, fmt.Errorf("tracehealth: conflict status counts: %w", err)
 	}
 
-	openStatus := "open"
-	openConflicts, err := s.db.CountConflicts(ctx, orgID, storage.ConflictFilters{Status: &openStatus})
-	if err != nil {
-		return nil, fmt.Errorf("tracehealth: open conflicts: %w", err)
-	}
-
-	resolvedCount := totalConflicts - openConflicts
 	var resolvedPct float64
-	if totalConflicts > 0 {
-		resolvedPct = float64(resolvedCount) / float64(totalConflicts) * 100
+	if cc.Total > 0 {
+		resolvedPct = float64(cc.Resolved) / float64(cc.Total) * 100
 	}
 
 	var reasoningPct float64
@@ -101,17 +100,26 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID) (*Metrics, error
 		reasoningPct = float64(qs.WithReasoning) / float64(qs.Total) * 100
 	}
 
+	var alternativesPct float64
+	if qs.Total > 0 {
+		alternativesPct = float64(qs.WithAlternatives) / float64(qs.Total) * 100
+	}
+
 	m := &Metrics{
 		Completeness: &CompletenessMetrics{
-			TotalDecisions: qs.Total,
-			AvgQuality:     qs.AvgQuality,
-			BelowHalf:      qs.BelowHalf,
-			BelowThird:     qs.BelowThird,
-			WithReasoning:  qs.WithReasoning,
-			ReasoningPct:   reasoningPct,
+			TotalDecisions:   qs.Total,
+			AvgQuality:       qs.AvgQuality,
+			BelowHalf:        qs.BelowHalf,
+			BelowThird:       qs.BelowThird,
+			WithReasoning:    qs.WithReasoning,
+			ReasoningPct:     reasoningPct,
+			WithAlternatives: qs.WithAlternatives,
+			AlternativesPct:  alternativesPct,
 		},
 		Evidence: &EvidenceMetrics{
 			TotalDecisions:  es.TotalDecisions,
+			TotalRecords:    es.TotalRecords,
+			AvgPerDecision:  es.AvgPerDecision,
 			WithEvidence:    es.WithEvidence,
 			WithoutEvidence: es.WithoutEvidenceCount,
 			CoveragePct:     es.CoveragePercent,
@@ -119,20 +127,22 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID) (*Metrics, error
 		Gaps: []string{},
 	}
 
-	if totalConflicts > 0 {
+	if cc.Total > 0 {
 		m.Conflicts = &ConflictMetrics{
-			Total:       totalConflicts,
-			Open:        openConflicts,
-			Resolved:    resolvedCount,
-			ResolvedPct: resolvedPct,
+			Total:        cc.Total,
+			Open:         cc.Open,
+			Acknowledged: cc.Acknowledged,
+			Resolved:     cc.Resolved,
+			WontFix:      cc.WontFix,
+			ResolvedPct:  resolvedPct,
 		}
 	}
 
 	// Gap detection: rule-based, max 3 gaps, ordered by severity.
-	m.Gaps = computeGaps(qs, es, totalConflicts, openConflicts)
+	m.Gaps = computeGaps(qs, es, cc.Total, cc.Open)
 
 	// Overall status.
-	m.Status = computeStatus(qs, es, openConflicts)
+	m.Status = computeStatus(qs, es, cc.Open)
 
 	return m, nil
 }
