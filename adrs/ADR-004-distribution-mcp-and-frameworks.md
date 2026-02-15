@@ -69,7 +69,7 @@ The MCP server runs in the same binary as the HTTP API and shares the `decisions
 
 ## Consequences
 
-- Framework integrations (LangChain, CrewAI, AutoGen) are the next development priority. Each is a separate package in the SDK's language ecosystem (Python packages for LangChain/CrewAI, TypeScript package for Vercel AI SDK).
+- Framework integrations (LangChain, CrewAI, AutoGen) are planned but not yet built. Each will be a separate package in the SDK's language ecosystem (Python packages for LangChain/CrewAI, TypeScript package for Vercel AI SDK). Priority is gated by agent DX improvements (spec 33) and MCP tool ergonomics shipping first.
 - Framework integrations import and depend on the corresponding SDK. They do not duplicate HTTP client logic.
 - The MCP server continues to be co-hosted and uses the service layer directly. It does not depend on any SDK.
 - SDKs must maintain backward compatibility, since framework integrations and direct users both depend on them. Breaking SDK changes require a major version bump and coordinated framework integration updates.
