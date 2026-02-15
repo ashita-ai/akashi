@@ -51,15 +51,14 @@ type ServerConfig struct {
 	RateLimiter ratelimit.Limiter
 
 	// HTTP server settings.
-	Port                     int
-	ReadTimeout              time.Duration
-	WriteTimeout             time.Duration
-	Version                  string
-	MaxRequestBodyBytes      int64
-	CORSAllowedOrigins       []string // Allowed origins for CORS; ["*"] permits all.
-	TrustProxy               bool     // When true, use X-Forwarded-For for rate limit client IP.
-	IdempotencyInProgressTTL time.Duration
-	EnableDestructiveDelete  bool
+	Port                    int
+	ReadTimeout             time.Duration
+	WriteTimeout            time.Duration
+	Version                 string
+	MaxRequestBodyBytes     int64
+	CORSAllowedOrigins      []string // Allowed origins for CORS; ["*"] permits all.
+	TrustProxy              bool     // When true, use X-Forwarded-For for rate limit client IP.
+	EnableDestructiveDelete bool
 
 	// Optional embedded assets.
 	UIFS        fs.FS  // Embedded UI filesystem (SPA).
@@ -69,19 +68,18 @@ type ServerConfig struct {
 // New creates a new HTTP server with all routes configured.
 func New(cfg ServerConfig) *Server {
 	h := NewHandlers(HandlersDeps{
-		DB:                       cfg.DB,
-		JWTMgr:                   cfg.JWTMgr,
-		DecisionSvc:              cfg.DecisionSvc,
-		Buffer:                   cfg.Buffer,
-		Broker:                   cfg.Broker,
-		Searcher:                 cfg.Searcher,
-		GrantCache:               cfg.GrantCache,
-		Logger:                   cfg.Logger,
-		Version:                  cfg.Version,
-		MaxRequestBodyBytes:      cfg.MaxRequestBodyBytes,
-		OpenAPISpec:              cfg.OpenAPISpec,
-		IdempotencyInProgressTTL: cfg.IdempotencyInProgressTTL,
-		EnableDestructiveDelete:  cfg.EnableDestructiveDelete,
+		DB:                      cfg.DB,
+		JWTMgr:                  cfg.JWTMgr,
+		DecisionSvc:             cfg.DecisionSvc,
+		Buffer:                  cfg.Buffer,
+		Broker:                  cfg.Broker,
+		Searcher:                cfg.Searcher,
+		GrantCache:              cfg.GrantCache,
+		Logger:                  cfg.Logger,
+		Version:                 cfg.Version,
+		MaxRequestBodyBytes:     cfg.MaxRequestBodyBytes,
+		OpenAPISpec:             cfg.OpenAPISpec,
+		EnableDestructiveDelete: cfg.EnableDestructiveDelete,
 	})
 
 	mux := http.NewServeMux()

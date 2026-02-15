@@ -21,57 +21,54 @@ import (
 
 // Handlers holds HTTP handler dependencies.
 type Handlers struct {
-	db                       *storage.DB
-	jwtMgr                   *auth.JWTManager
-	decisionSvc              *decisions.Service
-	buffer                   *trace.Buffer
-	broker                   *Broker
-	searcher                 search.Searcher
-	grantCache               *authz.GrantCache
-	logger                   *slog.Logger
-	startedAt                time.Time
-	version                  string
-	maxRequestBodyBytes      int64
-	openapiSpec              []byte
-	idempotencyInProgressTTL time.Duration
-	enableDestructiveDelete  bool
+	db                      *storage.DB
+	jwtMgr                  *auth.JWTManager
+	decisionSvc             *decisions.Service
+	buffer                  *trace.Buffer
+	broker                  *Broker
+	searcher                search.Searcher
+	grantCache              *authz.GrantCache
+	logger                  *slog.Logger
+	startedAt               time.Time
+	version                 string
+	maxRequestBodyBytes     int64
+	openapiSpec             []byte
+	enableDestructiveDelete bool
 }
 
 // HandlersDeps holds all dependencies for constructing Handlers.
 // Optional (nil-safe): Broker, Searcher, GrantCache, OpenAPISpec.
 type HandlersDeps struct {
-	DB                       *storage.DB
-	JWTMgr                   *auth.JWTManager
-	DecisionSvc              *decisions.Service
-	Buffer                   *trace.Buffer
-	Broker                   *Broker
-	Searcher                 search.Searcher
-	GrantCache               *authz.GrantCache
-	Logger                   *slog.Logger
-	Version                  string
-	MaxRequestBodyBytes      int64
-	OpenAPISpec              []byte
-	IdempotencyInProgressTTL time.Duration
-	EnableDestructiveDelete  bool
+	DB                      *storage.DB
+	JWTMgr                  *auth.JWTManager
+	DecisionSvc             *decisions.Service
+	Buffer                  *trace.Buffer
+	Broker                  *Broker
+	Searcher                search.Searcher
+	GrantCache              *authz.GrantCache
+	Logger                  *slog.Logger
+	Version                 string
+	MaxRequestBodyBytes     int64
+	OpenAPISpec             []byte
+	EnableDestructiveDelete bool
 }
 
 // NewHandlers creates a new Handlers with all dependencies.
 func NewHandlers(d HandlersDeps) *Handlers {
 	return &Handlers{
-		db:                       d.DB,
-		jwtMgr:                   d.JWTMgr,
-		decisionSvc:              d.DecisionSvc,
-		buffer:                   d.Buffer,
-		broker:                   d.Broker,
-		searcher:                 d.Searcher,
-		grantCache:               d.GrantCache,
-		logger:                   d.Logger,
-		startedAt:                time.Now(),
-		version:                  d.Version,
-		maxRequestBodyBytes:      d.MaxRequestBodyBytes,
-		openapiSpec:              d.OpenAPISpec,
-		idempotencyInProgressTTL: d.IdempotencyInProgressTTL,
-		enableDestructiveDelete:  d.EnableDestructiveDelete,
+		db:                      d.DB,
+		jwtMgr:                  d.JWTMgr,
+		decisionSvc:             d.DecisionSvc,
+		buffer:                  d.Buffer,
+		broker:                  d.Broker,
+		searcher:                d.Searcher,
+		grantCache:              d.GrantCache,
+		logger:                  d.Logger,
+		startedAt:               time.Now(),
+		version:                 d.Version,
+		maxRequestBodyBytes:     d.MaxRequestBodyBytes,
+		openapiSpec:             d.OpenAPISpec,
+		enableDestructiveDelete: d.EnableDestructiveDelete,
 	}
 }
 

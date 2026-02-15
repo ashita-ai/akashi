@@ -63,7 +63,6 @@ func (h *Handlers) beginIdempotentWrite(
 		endpoint,
 		key,
 		hash,
-		h.idempotencyInProgressTTL,
 	)
 	switch {
 	case err == nil:
