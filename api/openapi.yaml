@@ -1224,6 +1224,13 @@ components:
         updated_at:
           type: string
           format: date-time
+        last_seen:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Timestamp of the agent's most recent authenticated API request.
+            Null if the agent has never made an authenticated request.
 
     CreateAgentRequest:
       type: object
