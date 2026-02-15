@@ -30,6 +30,7 @@ type Agent struct {
 	Metadata   map[string]any `json:"metadata"`
 	CreatedAt  time.Time      `json:"created_at"`
 	UpdatedAt  time.Time      `json:"updated_at"`
+	LastSeen   *time.Time     `json:"last_seen"`
 }
 
 // AccessGrant represents a fine-grained access grant between agents.
