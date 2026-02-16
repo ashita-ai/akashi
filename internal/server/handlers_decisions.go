@@ -516,7 +516,12 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 		resolvedBy = claims.Subject
 	}
 
-	if err := h.db.UpdateConflictStatus(r.Context(), id, orgID, req.Status, resolvedBy, req.ResolutionNote); err != nil {
+	audit := h.buildAuditEntry(r, orgID,
+		"conflict_status_changed", "conflict", id.String(),
+		nil, nil,
+		map[string]any{"new_status": req.Status, "resolved_by": resolvedBy},
+	)
+	if _, err := h.db.UpdateConflictStatusWithAudit(r.Context(), id, orgID, req.Status, resolvedBy, req.ResolutionNote, audit); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
 			return
@@ -605,7 +610,12 @@ func (h *Handlers) HandleResolveConflict(w http.ResponseWriter, r *http.Request)
 
 	// Link the resolution decision to the conflict.
 	note := "Resolved by decision " + result.DecisionID.String()
-	if err := h.db.ResolveConflictWithDecision(r.Context(), id, orgID, result.DecisionID, resolverAgent, &note); err != nil {
+	resolveAudit := h.buildAuditEntry(r, orgID,
+		"conflict_resolved_with_decision", "conflict", id.String(),
+		nil, nil,
+		map[string]any{"resolution_decision_id": result.DecisionID.String(), "resolved_by": resolverAgent},
+	)
+	if err := h.db.ResolveConflictWithDecisionAndAudit(r.Context(), id, orgID, result.DecisionID, resolverAgent, &note, resolveAudit); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
 			return

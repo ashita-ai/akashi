@@ -768,7 +768,7 @@ func TestDeleteAgentDataDeletesClaims(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify claims exist.
-	claims, err := testDB.FindClaimsByDecision(ctx, dec.ID)
+	claims, err := testDB.FindClaimsByDecision(ctx, dec.ID, dec.OrgID)
 	require.NoError(t, err)
 	require.Len(t, claims, 2)
 
@@ -779,7 +779,7 @@ func TestDeleteAgentDataDeletesClaims(t *testing.T) {
 	assert.Equal(t, int64(1), result.Decisions, "should report 1 decision deleted")
 
 	// Verify claims are gone.
-	claimsAfter, err := testDB.FindClaimsByDecision(ctx, dec.ID)
+	claimsAfter, err := testDB.FindClaimsByDecision(ctx, dec.ID, dec.OrgID)
 	require.NoError(t, err)
 	assert.Empty(t, claimsAfter, "claims must be deleted for GDPR compliance")
 }
@@ -2723,7 +2723,7 @@ func TestInsertClaims_AndFindByDecision(t *testing.T) {
 	require.NoError(t, err)
 
 	// Read them back.
-	got, err := testDB.FindClaimsByDecision(ctx, d.ID)
+	got, err := testDB.FindClaimsByDecision(ctx, d.ID, d.OrgID)
 	require.NoError(t, err)
 	require.Len(t, got, 3)
 
@@ -2776,7 +2776,7 @@ func TestInsertClaims_NilEmbedding(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	got, err := testDB.FindClaimsByDecision(ctx, d.ID)
+	got, err := testDB.FindClaimsByDecision(ctx, d.ID, d.OrgID)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Nil(t, got[0].Embedding, "nil embedding should be preserved")
@@ -2800,7 +2800,7 @@ func TestFindClaimsByDecision_NoClaims(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	got, err := testDB.FindClaimsByDecision(ctx, d.ID)
+	got, err := testDB.FindClaimsByDecision(ctx, d.ID, d.OrgID)
 	require.NoError(t, err)
 	assert.Empty(t, got, "decision with no claims should return empty slice")
 }
@@ -2808,7 +2808,7 @@ func TestFindClaimsByDecision_NoClaims(t *testing.T) {
 func TestFindClaimsByDecision_NonexistentDecision(t *testing.T) {
 	ctx := context.Background()
 
-	got, err := testDB.FindClaimsByDecision(ctx, uuid.New())
+	got, err := testDB.FindClaimsByDecision(ctx, uuid.New(), uuid.New())
 	require.NoError(t, err)
 	assert.Empty(t, got, "nonexistent decision should return empty claims")
 }
@@ -2836,11 +2836,11 @@ func TestHasClaimsForDecision(t *testing.T) {
 	require.NoError(t, err)
 
 	// Before inserting, both should return false.
-	has, err := testDB.HasClaimsForDecision(ctx, dA.ID)
+	has, err := testDB.HasClaimsForDecision(ctx, dA.ID, dA.OrgID)
 	require.NoError(t, err)
 	assert.False(t, has, "no claims yet for decision A")
 
-	has, err = testDB.HasClaimsForDecision(ctx, dB.ID)
+	has, err = testDB.HasClaimsForDecision(ctx, dB.ID, dB.OrgID)
 	require.NoError(t, err)
 	assert.False(t, has, "no claims for decision B")
 
@@ -2851,11 +2851,11 @@ func TestHasClaimsForDecision(t *testing.T) {
 	require.NoError(t, err)
 
 	// A should now return true; B should still be false.
-	has, err = testDB.HasClaimsForDecision(ctx, dA.ID)
+	has, err = testDB.HasClaimsForDecision(ctx, dA.ID, dA.OrgID)
 	require.NoError(t, err)
 	assert.True(t, has, "decision A should have claims after insert")
 
-	has, err = testDB.HasClaimsForDecision(ctx, dB.ID)
+	has, err = testDB.HasClaimsForDecision(ctx, dB.ID, dB.OrgID)
 	require.NoError(t, err)
 	assert.False(t, has, "decision B should still have no claims")
 }
@@ -2863,7 +2863,7 @@ func TestHasClaimsForDecision(t *testing.T) {
 func TestHasClaimsForDecision_NonexistentDecision(t *testing.T) {
 	ctx := context.Background()
 
-	has, err := testDB.HasClaimsForDecision(ctx, uuid.New())
+	has, err := testDB.HasClaimsForDecision(ctx, uuid.New(), uuid.New())
 	require.NoError(t, err)
 	assert.False(t, has, "nonexistent decision should return false")
 }

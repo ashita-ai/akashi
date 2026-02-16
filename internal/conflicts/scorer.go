@@ -167,7 +167,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 
 		// --- Pass 2: claim-level scoring for high topic-similarity pairs ---
 		if topicSim >= decisionTopicSimFloor {
-			claimSig, claimDiv, claimA, claimB := s.bestClaimConflict(ctx, d.ID, cand.ID, topicSim)
+			claimSig, claimDiv, claimA, claimB := s.bestClaimConflict(ctx, d.ID, cand.ID, orgID, topicSim)
 			if claimSig > bestSig {
 				bestSig = claimSig
 				bestDiv = claimDiv
@@ -280,7 +280,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 	}
 
 	// Mark this decision as scored so the next backfill skips it.
-	if err := s.db.MarkDecisionConflictScored(ctx, decisionID); err != nil {
+	if err := s.db.MarkDecisionConflictScored(ctx, decisionID, orgID); err != nil {
 		s.logger.Warn("conflict scorer: mark scored failed", "decision_id", decisionID, "error", err)
 	}
 }
@@ -288,12 +288,12 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 // bestClaimConflict finds the most significant claim-level conflict between
 // two decisions. Returns (significance, divergence, claimTextA, claimTextB).
 // If no claim pairs qualify, returns (0, 0, "", "").
-func (s *Scorer) bestClaimConflict(ctx context.Context, decisionAID, decisionBID uuid.UUID, topicSim float64) (float64, float64, string, string) {
-	claimsA, err := s.db.FindClaimsByDecision(ctx, decisionAID)
+func (s *Scorer) bestClaimConflict(ctx context.Context, decisionAID, decisionBID, orgID uuid.UUID, topicSim float64) (float64, float64, string, string) {
+	claimsA, err := s.db.FindClaimsByDecision(ctx, decisionAID, orgID)
 	if err != nil || len(claimsA) == 0 {
 		return 0, 0, "", ""
 	}
-	claimsB, err := s.db.FindClaimsByDecision(ctx, decisionBID)
+	claimsB, err := s.db.FindClaimsByDecision(ctx, decisionBID, orgID)
 	if err != nil || len(claimsB) == 0 {
 		return 0, 0, "", ""
 	}
@@ -386,6 +386,8 @@ func (s *Scorer) HasLLMValidator() bool {
 // by the current LLM classifier (llm_v2). Old 'llm' (binary verdict) and
 // non-LLM conflicts are stale and will be re-scored through the new classifier.
 // Returns the number of rows deleted.
+// SECURITY: Intentionally global — one-time startup migration that clears stale
+// conflicts across all orgs when transitioning to LLM validation.
 func (s *Scorer) ClearUnvalidatedConflicts(ctx context.Context) (int, error) {
 	tag, err := s.db.Pool().Exec(ctx, `DELETE FROM scored_conflicts WHERE scoring_method NOT IN ('llm_v2')`)
 	if err != nil {

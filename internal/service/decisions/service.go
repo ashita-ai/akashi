@@ -599,7 +599,7 @@ func (s *Service) BackfillOutcomeEmbeddings(ctx context.Context, batchSize int) 
 // and stores them in the decision_claims table. Skips if claims already exist.
 func (s *Service) generateClaims(ctx context.Context, decisionID, orgID uuid.UUID, outcome string) error {
 	// Skip if claims already exist for this decision.
-	exists, err := s.db.HasClaimsForDecision(ctx, decisionID)
+	exists, err := s.db.HasClaimsForDecision(ctx, decisionID, orgID)
 	if err != nil {
 		return fmt.Errorf("claims: check existing: %w", err)
 	}

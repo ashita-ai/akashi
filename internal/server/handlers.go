@@ -121,6 +121,20 @@ func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Audit: record successful token issuance. Best-effort — failure to
+	// audit must not block the token response.
+	if auditErr := h.recordMutationAuditBestEffort(r, matched.OrgID,
+		"token_issued", "auth_token", matched.AgentID, nil, nil,
+		map[string]any{
+			"ip":         r.RemoteAddr,
+			"user_agent": r.UserAgent(),
+			"token_exp":  expiresAt,
+		},
+	); auditErr != nil {
+		slog.Error("failed to audit token issuance",
+			"agent_id", matched.AgentID, "org_id", matched.OrgID, "error", auditErr)
+	}
+
 	writeJSON(w, r, http.StatusOK, model.AuthTokenResponse{
 		Token:     token,
 		ExpiresAt: expiresAt,

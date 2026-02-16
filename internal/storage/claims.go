@@ -43,12 +43,12 @@ func (db *DB) InsertClaims(ctx context.Context, claims []Claim) error {
 }
 
 // FindClaimsByDecision returns all claims for a decision, ordered by claim_idx.
-func (db *DB) FindClaimsByDecision(ctx context.Context, decisionID uuid.UUID) ([]Claim, error) {
+func (db *DB) FindClaimsByDecision(ctx context.Context, decisionID, orgID uuid.UUID) ([]Claim, error) {
 	rows, err := db.pool.Query(ctx,
 		`SELECT id, decision_id, org_id, claim_idx, claim_text, embedding
 		 FROM decision_claims
-		 WHERE decision_id = $1
-		 ORDER BY claim_idx`, decisionID)
+		 WHERE decision_id = $1 AND org_id = $2
+		 ORDER BY claim_idx`, decisionID, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("storage: find claims: %w", err)
 	}
@@ -67,6 +67,8 @@ func (db *DB) FindClaimsByDecision(ctx context.Context, decisionID uuid.UUID) ([
 
 // FindDecisionIDsMissingClaims returns IDs of decisions that have embeddings
 // but no claims yet. Used by the claims backfill.
+// SECURITY: Intentionally global — background backfill across all orgs. Each
+// returned row includes OrgID for downstream scoping (generateClaims).
 func (db *DB) FindDecisionIDsMissingClaims(ctx context.Context, limit int) ([]DecisionRef, error) {
 	if limit <= 0 {
 		limit = 500
@@ -97,11 +99,11 @@ func (db *DB) FindDecisionIDsMissingClaims(ctx context.Context, limit int) ([]De
 }
 
 // HasClaimsForDecision checks whether a decision already has claims stored.
-func (db *DB) HasClaimsForDecision(ctx context.Context, decisionID uuid.UUID) (bool, error) {
+func (db *DB) HasClaimsForDecision(ctx context.Context, decisionID, orgID uuid.UUID) (bool, error) {
 	var exists bool
 	err := db.pool.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM decision_claims WHERE decision_id = $1)`,
-		decisionID).Scan(&exists)
+		`SELECT EXISTS(SELECT 1 FROM decision_claims WHERE decision_id = $1 AND org_id = $2)`,
+		decisionID, orgID).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("storage: check claims exist: %w", err)
 	}
