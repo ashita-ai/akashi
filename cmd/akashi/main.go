@@ -174,11 +174,29 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	} else if n > 0 {
 		logger.Info("claims backfill complete", "count", n)
 	}
+	// Force rescore: when the operator explicitly requests it (e.g. after improving
+	// the LLM prompt or claim extraction), clear ALL conflicts and re-evaluate from
+	// scratch. This is a one-shot startup flag, not a persistent setting.
+	if cfg.ForceConflictRescore && conflictScorer.HasLLMValidator() {
+		logger.Info("force conflict rescore requested — clearing all conflicts")
+		if cleared, err := conflictScorer.ClearAllConflicts(ctx); err != nil {
+			logger.Warn("failed to clear all conflicts for rescore", "error", err)
+		} else {
+			logger.Info("cleared all conflicts for rescore", "deleted", cleared)
+		}
+		if reset, err := db.ResetConflictScoredAt(ctx); err != nil {
+			logger.Warn("failed to reset conflict scored_at for rescore", "error", err)
+		} else if reset > 0 {
+			logger.Info("reset conflict scored marks for rescore", "reset", reset)
+		}
+	} else if cfg.ForceConflictRescore {
+		logger.Warn("AKASHI_FORCE_CONFLICT_RESCORE=true but no LLM validator configured — skipping rescore")
+	}
 	// When LLM validation is active and old unvalidated conflicts exist (from a
 	// previous non-LLM run), clear them and reset conflict_scored_at so the
 	// backfill re-scores all decisions through the LLM. On subsequent restarts,
 	// CountUnvalidatedConflicts returns 0, skipping this entirely.
-	if conflictScorer.HasLLMValidator() {
+	if conflictScorer.HasLLMValidator() && !cfg.ForceConflictRescore {
 		if count, err := db.CountUnvalidatedConflicts(ctx); err != nil {
 			logger.Warn("failed to count unvalidated conflicts", "error", err)
 		} else if count > 0 {

@@ -272,6 +272,174 @@ func TestFormatPrompt_DifferentAgents(t *testing.T) {
 	assert.Contains(t, prompt, "2.0 days")
 }
 
+func TestFormatPrompt_DifferentProjects(t *testing.T) {
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA: "chose Redis",
+		OutcomeB: "chose Memcached",
+		TypeA:    "architecture",
+		TypeB:    "architecture",
+		AgentA:   "planner",
+		AgentB:   "coder",
+		CreatedA: now,
+		CreatedB: now.Add(time.Hour),
+		RepoA:    "ashita-ai/akashi",
+		RepoB:    "ashita-ai/engram",
+	})
+	assert.Contains(t, prompt, "DIFFERENT PROJECTS")
+	assert.Contains(t, prompt, "ashita-ai/akashi")
+	assert.Contains(t, prompt, "ashita-ai/engram")
+	assert.Contains(t, prompt, "almost always UNRELATED")
+}
+
+func TestFormatPrompt_SameProject(t *testing.T) {
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA: "chose Redis",
+		OutcomeB: "chose Memcached",
+		TypeA:    "architecture",
+		TypeB:    "architecture",
+		AgentA:   "planner",
+		AgentB:   "coder",
+		CreatedA: now,
+		CreatedB: now.Add(time.Hour),
+		RepoA:    "ashita-ai/akashi",
+		RepoB:    "ashita-ai/akashi",
+	})
+	assert.Contains(t, prompt, "Same project: ashita-ai/akashi")
+	assert.NotContains(t, prompt, "DIFFERENT PROJECTS")
+}
+
+func TestFormatPrompt_SameSession(t *testing.T) {
+	now := time.Now()
+	sessionID := uuid.New().String()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA:   "chose Redis",
+		OutcomeB:   "chose Memcached",
+		TypeA:      "architecture",
+		TypeB:      "architecture",
+		AgentA:     "planner",
+		AgentB:     "planner",
+		CreatedA:   now,
+		CreatedB:   now.Add(5 * time.Minute),
+		SessionIDA: sessionID,
+		SessionIDB: sessionID,
+	})
+	assert.Contains(t, prompt, "SAME SESSION")
+	assert.Contains(t, prompt, "REFINEMENT or COMPLEMENTARY")
+}
+
+func TestFormatPrompt_DifferentSessions(t *testing.T) {
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA:   "chose Redis",
+		OutcomeB:   "chose Memcached",
+		TypeA:      "architecture",
+		TypeB:      "architecture",
+		AgentA:     "planner",
+		AgentB:     "planner",
+		CreatedA:   now,
+		CreatedB:   now.Add(time.Hour),
+		SessionIDA: uuid.New().String(),
+		SessionIDB: uuid.New().String(),
+	})
+	assert.NotContains(t, prompt, "SAME SESSION")
+}
+
+func TestFormatPrompt_ClaimWithFullContext(t *testing.T) {
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA:     "ReScore can exceed 1.0",
+		OutcomeB:     "ReScore is bounded within [0,1]",
+		TypeA:        "code_review",
+		TypeB:        "code_review",
+		AgentA:       "reviewer",
+		AgentB:       "reviewer",
+		CreatedA:     now,
+		CreatedB:     now.Add(time.Hour),
+		FullOutcomeA: "Deep review of 14 files. ReScore can exceed 1.0 when similarity is high.",
+		FullOutcomeB: "Code review: ReScore is bounded within [0,1]. All tests pass.",
+	})
+	assert.Contains(t, prompt, "Full decision context")
+	assert.Contains(t, prompt, "Deep review of 14 files")
+}
+
+func TestFormatPrompt_ReasoningIncluded(t *testing.T) {
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA:   "chose Redis for caching",
+		OutcomeB:   "chose Memcached for caching",
+		TypeA:      "architecture",
+		TypeB:      "architecture",
+		AgentA:     "planner",
+		AgentB:     "coder",
+		CreatedA:   now,
+		CreatedB:   now.Add(time.Hour),
+		ReasoningA: "Redis supports pub/sub which we need for real-time features.",
+		ReasoningB: "Memcached is simpler and faster for pure key-value caching.",
+	})
+	assert.Contains(t, prompt, "Reasoning")
+	assert.Contains(t, prompt, "pub/sub")
+	assert.Contains(t, prompt, "simpler and faster")
+}
+
+func TestFormatPrompt_TaskContext(t *testing.T) {
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA: "chose Redis",
+		OutcomeB: "chose Memcached",
+		TypeA:    "architecture",
+		TypeB:    "architecture",
+		AgentA:   "planner",
+		AgentB:   "coder",
+		CreatedA: now,
+		CreatedB: now.Add(time.Hour),
+		TaskA:    "implement caching layer",
+		TaskB:    "optimize API response times",
+	})
+	assert.Contains(t, prompt, "Task A: implement caching layer")
+	assert.Contains(t, prompt, "Task B: optimize API response times")
+}
+
+func TestFormatPrompt_EmptyEnrichmentFields(t *testing.T) {
+	// Backward compatibility: all new enrichment fields empty, prompt still works.
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA: "chose Redis",
+		OutcomeB: "chose Memcached",
+		TypeA:    "architecture",
+		TypeB:    "architecture",
+		AgentA:   "planner",
+		AgentB:   "coder",
+		CreatedA: now,
+		CreatedB: now.Add(time.Hour),
+	})
+	assert.Contains(t, prompt, "chose Redis")
+	assert.Contains(t, prompt, "chose Memcached")
+	assert.Contains(t, prompt, "RELATIONSHIP")
+	// Should NOT contain enrichment signals when fields are empty.
+	assert.NotContains(t, prompt, "DIFFERENT PROJECTS")
+	assert.NotContains(t, prompt, "Same project")
+	assert.NotContains(t, prompt, "SAME SESSION")
+	assert.NotContains(t, prompt, "Full decision context")
+	assert.NotContains(t, prompt, "Reasoning")
+	assert.NotContains(t, prompt, "Task A")
+	assert.NotContains(t, prompt, "Task B")
+}
+
+func TestTruncateRunes(t *testing.T) {
+	// Below limit: unchanged.
+	assert.Equal(t, "hello", truncateRunes("hello", 10))
+	// At limit: unchanged.
+	assert.Equal(t, "hello", truncateRunes("hello", 5))
+	// Above limit: truncated with "...".
+	assert.Equal(t, "hel...", truncateRunes("hello world", 3))
+	// Multi-byte characters.
+	assert.Equal(t, "こん...", truncateRunes("こんにちは", 2))
+	// Empty string.
+	assert.Equal(t, "", truncateRunes("", 10))
+}
+
 func TestFormatDuration(t *testing.T) {
 	assert.Contains(t, formatDuration(30*time.Minute), "minutes")
 	assert.Contains(t, formatDuration(5*time.Hour), "hours")

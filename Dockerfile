@@ -34,6 +34,7 @@ WORKDIR /
 
 COPY --from=builder /akashi /usr/local/bin/akashi
 COPY migrations /migrations
+RUN mkdir -p /data/wal && chown -R akashi:akashi /data
 
 USER akashi
 
