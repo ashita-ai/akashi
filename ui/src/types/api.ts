@@ -279,6 +279,35 @@ export interface SessionSummary {
   avg_confidence: number;
 }
 
+// Grant
+export interface Grant {
+  id: string;
+  org_id: string;
+  grantor_id: string;
+  grantee_id: string;
+  resource_type: string;
+  resource_id: string | null;
+  permission: string;
+  granted_at: string;
+  expires_at: string | null;
+}
+
+export interface GrantsList {
+  grants: Grant[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+export interface CreateGrantRequest {
+  grantee_agent_id: string;
+  resource_type: string;
+  resource_id?: string;
+  permission: string;
+  expires_at?: string;
+}
+
 // Health
 export interface HealthResponse {
   status: string;

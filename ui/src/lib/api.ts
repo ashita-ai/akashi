@@ -7,8 +7,11 @@ import type {
   AgentsList,
   AgentStats,
   CreateAgentRequest,
+  CreateGrantRequest,
   Decision,
   DecisionConflict,
+  Grant,
+  GrantsList,
   PaginatedDecisions,
   QueryRequest,
   ConflictsList,
@@ -264,6 +267,33 @@ export async function getTraceHealth(): Promise<TraceHealth> {
 // Session view
 export async function getSession(sessionId: string): Promise<SessionView> {
   return request<SessionView>(`/v1/sessions/${sessionId}`);
+}
+
+// Grants
+export async function listGrants(params?: {
+  limit?: number;
+  offset?: number;
+}): Promise<GrantsList> {
+  const searchParams = new URLSearchParams();
+  if (params?.limit) searchParams.set("limit", String(params.limit));
+  if (params?.offset) searchParams.set("offset", String(params.offset));
+  const qs = searchParams.toString();
+  return request<GrantsList>(`/v1/grants${qs ? `?${qs}` : ""}`);
+}
+
+export async function createGrant(
+  req: CreateGrantRequest,
+): Promise<Grant> {
+  return request<Grant>("/v1/grants", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+export async function deleteGrant(grantId: string): Promise<void> {
+  await request<unknown>(`/v1/grants/${grantId}`, {
+    method: "DELETE",
+  });
 }
 
 export { ApiError };

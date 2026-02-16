@@ -185,6 +185,44 @@ func (db *DB) ListGrantedAgentIDs(ctx context.Context, orgID uuid.UUID, granteeI
 	return granted, rows.Err()
 }
 
+// ListGrants returns all grants within an org, ordered by granted_at descending.
+// Includes both active and expired grants so admins have full visibility.
+func (db *DB) ListGrants(ctx context.Context, orgID uuid.UUID, limit, offset int) ([]model.AccessGrant, int, error) {
+	var total int
+	err := db.pool.QueryRow(ctx,
+		`SELECT count(*) FROM access_grants WHERE org_id = $1`, orgID,
+	).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("storage: count grants: %w", err)
+	}
+
+	rows, err := db.pool.Query(ctx,
+		`SELECT id, org_id, grantor_id, grantee_id, resource_type, resource_id,
+		 permission, granted_at, expires_at
+		 FROM access_grants
+		 WHERE org_id = $1
+		 ORDER BY granted_at DESC
+		 LIMIT $2 OFFSET $3`, orgID, limit, offset,
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("storage: list grants: %w", err)
+	}
+	defer rows.Close()
+
+	var grants []model.AccessGrant
+	for rows.Next() {
+		var g model.AccessGrant
+		if err := rows.Scan(
+			&g.ID, &g.OrgID, &g.GrantorID, &g.GranteeID, &g.ResourceType, &g.ResourceID,
+			&g.Permission, &g.GrantedAt, &g.ExpiresAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("storage: scan grant: %w", err)
+		}
+		grants = append(grants, g)
+	}
+	return grants, total, rows.Err()
+}
+
 // ListGrantsByGrantee returns all active grants for a grantee within an org.
 func (db *DB) ListGrantsByGrantee(ctx context.Context, orgID uuid.UUID, granteeID uuid.UUID) ([]model.AccessGrant, error) {
 	rows, err := db.pool.Query(ctx,
