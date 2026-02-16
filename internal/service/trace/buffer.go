@@ -203,7 +203,9 @@ func (b *Buffer) flushLoop(ctx context.Context) {
 				}
 			} else {
 				// Fallback for direct cancellation without Drain (e.g., tests).
-				fallbackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				// 30s matches the outbox drain timeout — long enough to flush a
+				// full buffer batch even under transient DB pressure.
+				fallbackCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				if err := b.flushUntilEmpty(fallbackCtx); err != nil {
 					b.logger.Warn("trace: fallback final flush incomplete", "error", err, "remaining_events", b.Len())
 				}
