@@ -100,15 +100,20 @@ The OSS distribution uses an in-memory token bucket. Enterprise deployments can 
 
 ## Event WAL (Write-Ahead Log)
 
+The WAL is **enabled by default** to ensure crash durability for buffered events. Without it, a process crash between flush intervals loses all in-memory events.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AKASHI_WAL_DIR` | _(empty)_ | Directory for WAL segment files. Empty = WAL disabled (existing in-memory-only behavior). Set to a path (e.g. `/var/lib/akashi/wal`) to enable crash-durable event buffering |
+| `AKASHI_WAL_DIR` | `./data/wal` | Directory for WAL segment files. Created automatically on startup if it doesn't exist. Override to place WAL on a faster disk (e.g. `/var/lib/akashi/wal`) |
+| `AKASHI_WAL_DISABLE` | `false` | Set to `true` to explicitly disable WAL (dev/testing only). Events will be buffered in memory only and lost on crash |
 | `AKASHI_WAL_SYNC_MODE` | `batch` | Sync mode: `full` (fsync per write, safest), `batch` (periodic fsync, default), `none` (dev only, data loss on crash) |
 | `AKASHI_WAL_SYNC_INTERVAL` | `10ms` | How often to fsync in `batch` mode. Lower = safer, higher = faster throughput |
 | `AKASHI_WAL_SEGMENT_SIZE` | `67108864` | Max segment file size in bytes before rotation (default 64 MB) |
 | `AKASHI_WAL_SEGMENT_RECORDS` | `100000` | Max records per segment before rotation |
 
 When enabled, every event is written to the WAL before being buffered in memory. On startup, un-flushed events are recovered from the WAL and replayed to Postgres via an idempotent insert path. After a successful COPY flush, the WAL checkpoint advances and old segment files are reclaimed. See the architecture overview in `internal/service/trace/wal.go`.
+
+Existing deployments that set `AKASHI_WAL_DIR` explicitly will continue to work unchanged. Deployments that relied on WAL being disabled by default should set `AKASHI_WAL_DISABLE=true` if they want to preserve the old behavior.
 
 ## Tuning
 

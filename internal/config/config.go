@@ -64,7 +64,8 @@ type Config struct {
 	ConflictDecayLambda     float64 // Temporal decay rate for conflict significance (default: 0.01, 0 disables).
 
 	// Event WAL (write-ahead log) for crash-durable event buffering.
-	WALDir            string        // Directory for WAL files. Empty = disabled (existing behavior).
+	WALDir            string        // Directory for WAL files. Default: "./data/wal". Set AKASHI_WAL_DISABLE=true to disable.
+	WALDisable        bool          // Explicitly disable WAL (for dev/testing). Default: false.
 	WALSyncMode       string        // "full", "batch", "none". Default: "batch".
 	WALSyncInterval   time.Duration // Sync interval for batch mode. Default: 10ms.
 	WALSegmentSize    int           // Max segment size in bytes before rotation. Default: 64 MB.
@@ -110,7 +111,7 @@ func Load() (Config, error) {
 		QdrantAPIKey:       envStr("QDRANT_API_KEY", ""),
 		QdrantCollection:   envStr("QDRANT_COLLECTION", "akashi_decisions"),
 		ConflictLLMModel:   envStr("AKASHI_CONFLICT_LLM_MODEL", ""),
-		WALDir:             envStr("AKASHI_WAL_DIR", ""),
+		WALDir:             envStr("AKASHI_WAL_DIR", "./data/wal"),
 		WALSyncMode:        envStr("AKASHI_WAL_SYNC_MODE", "batch"),
 		LogLevel:           envStr("AKASHI_LOG_LEVEL", "info"),
 		CORSAllowedOrigins: envStrSlice("AKASHI_CORS_ALLOWED_ORIGINS", nil),
@@ -141,6 +142,7 @@ func Load() (Config, error) {
 	cfg.OTELInsecure, errs = collectBool(errs, "OTEL_EXPORTER_OTLP_INSECURE", false)
 	cfg.SkipEmbeddedMigrations, errs = collectBool(errs, "AKASHI_SKIP_EMBEDDED_MIGRATIONS", false)
 	cfg.EnableDestructiveDelete, errs = collectBool(errs, "AKASHI_ENABLE_DESTRUCTIVE_DELETE", false)
+	cfg.WALDisable, errs = collectBool(errs, "AKASHI_WAL_DISABLE", false)
 
 	// Duration fields.
 	cfg.ReadTimeout, errs = collectDuration(errs, "AKASHI_READ_TIMEOUT", 30*time.Second)
@@ -164,6 +166,11 @@ func Load() (Config, error) {
 			msgs[i] = e.Error()
 		}
 		return Config{}, fmt.Errorf("config: invalid environment variables:\n  %s", strings.Join(msgs, "\n  "))
+	}
+
+	// WAL disable overrides any configured WAL directory.
+	if cfg.WALDisable {
+		cfg.WALDir = ""
 	}
 
 	if err := cfg.Validate(); err != nil {
