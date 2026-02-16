@@ -241,33 +241,63 @@ func (db *DB) GetConflict(ctx context.Context, id, orgID uuid.UUID) (*model.Deci
 	return &conflicts[0], nil
 }
 
-// UpdateConflictStatus transitions a conflict to a new lifecycle state.
-func (db *DB) UpdateConflictStatus(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string) error {
+// UpdateConflictStatusWithAudit transitions a conflict to a new lifecycle
+// state and inserts a mutation audit entry, atomically in a single transaction.
+func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, audit MutationAuditEntry) (oldStatus string, err error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("storage: begin conflict status tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Read old status for audit before_data.
+	if scanErr := tx.QueryRow(ctx,
+		`SELECT status FROM scored_conflicts WHERE id = $1 AND org_id = $2 FOR UPDATE`,
+		id, orgID).Scan(&oldStatus); scanErr != nil {
+		return "", fmt.Errorf("storage: conflict not found")
+	}
+
 	var tag pgconn.CommandTag
-	var err error
 	switch status {
 	case "resolved", "wont_fix":
-		tag, err = db.pool.Exec(ctx,
+		tag, err = tx.Exec(ctx,
 			`UPDATE scored_conflicts SET status = $1, resolved_by = $2, resolved_at = now(), resolution_note = $3
 			 WHERE id = $4 AND org_id = $5`,
 			status, resolvedBy, resolutionNote, id, orgID)
 	default:
-		tag, err = db.pool.Exec(ctx,
+		tag, err = tx.Exec(ctx,
 			`UPDATE scored_conflicts SET status = $1 WHERE id = $2 AND org_id = $3`,
 			status, id, orgID)
 	}
 	if err != nil {
-		return fmt.Errorf("storage: update conflict status: %w", err)
+		return "", fmt.Errorf("storage: update conflict status: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("storage: conflict not found")
+		return "", fmt.Errorf("storage: conflict not found")
 	}
-	return nil
+
+	audit.BeforeData = map[string]any{"status": oldStatus}
+	audit.AfterData = map[string]any{"status": status, "resolved_by": resolvedBy}
+	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+		return "", fmt.Errorf("storage: audit in conflict status tx: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("storage: commit conflict status tx: %w", err)
+	}
+	return oldStatus, nil
 }
 
-// ResolveConflictWithDecision links a conflict resolution to the decision that resolved it.
-func (db *DB) ResolveConflictWithDecision(ctx context.Context, id, orgID, resolutionDecisionID uuid.UUID, resolvedBy string, resolutionNote *string) error {
-	tag, err := db.pool.Exec(ctx,
+// ResolveConflictWithDecisionAndAudit links a conflict resolution to the
+// decision that resolved it and inserts a mutation audit entry, atomically.
+func (db *DB) ResolveConflictWithDecisionAndAudit(ctx context.Context, id, orgID, resolutionDecisionID uuid.UUID, resolvedBy string, resolutionNote *string, audit MutationAuditEntry) error {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("storage: begin resolve conflict tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx,
 		`UPDATE scored_conflicts SET status = 'resolved', resolved_by = $1, resolved_at = now(),
 		 resolution_note = $2, resolution_decision_id = $3
 		 WHERE id = $4 AND org_id = $5`,
@@ -277,6 +307,14 @@ func (db *DB) ResolveConflictWithDecision(ctx context.Context, id, orgID, resolu
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("storage: conflict not found")
+	}
+
+	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+		return fmt.Errorf("storage: audit in resolve conflict tx: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("storage: commit resolve conflict tx: %w", err)
 	}
 	return nil
 }
