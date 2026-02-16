@@ -62,6 +62,7 @@ type Config struct {
 	ConflictLLMModel        string  // Text generation model for conflict validation (e.g. "qwen2.5:3b" for Ollama).
 	ConflictBackfillWorkers int     // Parallel workers for conflict scoring backfill (default: 4).
 	ConflictDecayLambda     float64 // Temporal decay rate for conflict significance (default: 0.01, 0 disables).
+	ForceConflictRescore    bool    // When true (and LLM validator configured), clear all conflicts and re-score at startup.
 
 	// Event WAL (write-ahead log) for crash-durable event buffering.
 	WALDir            string        // Directory for WAL files. Default: "./data/wal". Set AKASHI_WAL_DISABLE=true to disable.
@@ -143,6 +144,7 @@ func Load() (Config, error) {
 	cfg.SkipEmbeddedMigrations, errs = collectBool(errs, "AKASHI_SKIP_EMBEDDED_MIGRATIONS", false)
 	cfg.EnableDestructiveDelete, errs = collectBool(errs, "AKASHI_ENABLE_DESTRUCTIVE_DELETE", false)
 	cfg.WALDisable, errs = collectBool(errs, "AKASHI_WAL_DISABLE", false)
+	cfg.ForceConflictRescore, errs = collectBool(errs, "AKASHI_FORCE_CONFLICT_RESCORE", false)
 
 	// Duration fields.
 	cfg.ReadTimeout, errs = collectDuration(errs, "AKASHI_READ_TIMEOUT", 30*time.Second)
