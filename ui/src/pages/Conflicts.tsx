@@ -2,7 +2,7 @@ import { Link, useSearchParams } from "react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { listConflicts, patchConflict, ApiError } from "@/lib/api";
 import type { DecisionConflict, ConflictStatus } from "@/types/api";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,8 +28,10 @@ import {
   ArrowRight,
   Check,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Eye,
   Swords,
   XCircle,
@@ -128,6 +130,23 @@ function ConflictSide({
   );
 }
 
+function agentLabel(conflict: DecisionConflict): string {
+  if (conflict.conflict_kind === "self_contradiction") {
+    return conflict.agent_a;
+  }
+  return `${conflict.agent_a} vs ${conflict.agent_b}`;
+}
+
+function timeDelta(a: string, b: string): string {
+  const ms = Math.abs(new Date(b).getTime() - new Date(a).getTime());
+  const mins = Math.round(ms / 60_000);
+  if (mins < 60) return `${mins}m apart`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h apart`;
+  const days = Math.round(hours / 24);
+  return `${days}d apart`;
+}
+
 function ConflictCard({
   conflict,
   onResolve,
@@ -135,41 +154,26 @@ function ConflictCard({
   conflict: DecisionConflict;
   onResolve: (conflict: DecisionConflict) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
+
   return (
     <Card>
       <CardHeader className="pb-3">
+        {/* Row 1: badges + date + resolve */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <AlertTriangle className="h-4 w-4 text-amber-500" />
-              <span className="font-mono">{conflict.decision_type}</span>
-            </CardTitle>
             <StatusBadge status={conflict.status} />
             <SeverityBadge severity={conflict.severity} />
             <CategoryBadge category={conflict.category} />
+            <Badge variant="outline" className="font-mono text-xs">
+              {conflict.decision_type}
+            </Badge>
           </div>
-          <span className="text-xs text-muted-foreground">
-            Detected {formatDate(conflict.detected_at)}
-          </span>
-        </div>
-        <div className="flex items-center justify-between mt-1">
-          <p className="text-xs text-muted-foreground">
-            {conflict.conflict_kind === "self_contradiction" ? (
-              <>
-                <span className="font-medium text-foreground">{conflict.agent_a}</span>
-                {" contradicted themselves on the same decision type within 7 days"}
-              </>
-            ) : (
-              <>
-                <span className="font-medium text-foreground">{conflict.agent_a}</span>
-                {" and "}
-                <span className="font-medium text-foreground">{conflict.agent_b}</span>
-                {" reached different conclusions on the same decision type within an hour"}
-              </>
-            )}
-          </p>
-          {conflict.status === "open" && (
-            <div className="flex gap-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">
+              {formatDate(conflict.detected_at)}
+            </span>
+            {(conflict.status === "open" || conflict.status === "acknowledged") && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -179,14 +183,36 @@ function ConflictCard({
                 <Eye className="h-3 w-3 mr-1" />
                 Resolve
               </Button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
-        {conflict.explanation && (
-          <p className="text-xs text-muted-foreground mt-2 italic border-l-2 border-muted pl-2">
+
+        {/* Row 2: explanation — the primary content */}
+        {conflict.explanation ? (
+          <p className="text-sm leading-relaxed mt-2">
             {conflict.explanation}
           </p>
+        ) : (
+          <p className="text-sm text-muted-foreground mt-2">
+            {conflict.conflict_kind === "self_contradiction"
+              ? `${conflict.agent_a} made contradictory ${conflict.decision_type} decisions.`
+              : `${conflict.agent_a} and ${conflict.agent_b} disagree on ${conflict.decision_type}.`}
+          </p>
         )}
+
+        {/* Row 3: agents + time context */}
+        <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1">
+            <Swords className="h-3 w-3" />
+            <span className="font-medium text-foreground">{agentLabel(conflict)}</span>
+          </span>
+          <span>{timeDelta(conflict.decided_at_a, conflict.decided_at_b)}</span>
+          {conflict.conflict_kind === "self_contradiction" && (
+            <Badge variant="outline" className="text-[10px] px-1.5 py-0">self</Badge>
+          )}
+        </div>
+
+        {/* Resolution note */}
         {conflict.resolution_note && (
           <p className="text-xs mt-2 border-l-2 border-emerald-500 pl-2">
             <span className="text-muted-foreground">Resolution:</span>{" "}
@@ -197,31 +223,49 @@ function ConflictCard({
           </p>
         )}
       </CardHeader>
-      <CardContent>
-        <div className="grid gap-3 sm:grid-cols-[1fr,auto,1fr]">
-          <ConflictSide
-            agent={conflict.agent_a}
-            outcome={conflict.outcome_a}
-            confidence={conflict.confidence_a}
-            reasoning={conflict.reasoning_a}
-            decidedAt={conflict.decided_at_a}
-            runId={conflict.run_a}
-          />
-          <div className="hidden sm:flex items-center justify-center">
-            <Swords className="h-5 w-5 text-muted-foreground/40" />
+
+      {/* Collapsible detail: the two decision sides */}
+      <CardContent className="pt-0">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="w-full justify-between text-xs text-muted-foreground h-8"
+          onClick={() => setExpanded(!expanded)}
+        >
+          <span>
+            {expanded ? "Hide" : "Show"} both decisions
+          </span>
+          {expanded
+            ? <ChevronUp className="h-3.5 w-3.5" />
+            : <ChevronDown className="h-3.5 w-3.5" />
+          }
+        </Button>
+        {expanded && (
+          <div className="grid gap-3 sm:grid-cols-[1fr,auto,1fr] mt-3">
+            <ConflictSide
+              agent={conflict.agent_a}
+              outcome={conflict.outcome_a}
+              confidence={conflict.confidence_a}
+              reasoning={conflict.reasoning_a}
+              decidedAt={conflict.decided_at_a}
+              runId={conflict.run_a}
+            />
+            <div className="hidden sm:flex items-center justify-center">
+              <Swords className="h-5 w-5 text-muted-foreground/40" />
+            </div>
+            <div className="sm:hidden flex items-center justify-center py-1">
+              <span className="text-xs font-medium text-muted-foreground">vs</span>
+            </div>
+            <ConflictSide
+              agent={conflict.agent_b}
+              outcome={conflict.outcome_b}
+              confidence={conflict.confidence_b}
+              reasoning={conflict.reasoning_b}
+              decidedAt={conflict.decided_at_b}
+              runId={conflict.run_b}
+            />
           </div>
-          <div className="sm:hidden flex items-center justify-center py-1">
-            <span className="text-xs font-medium text-muted-foreground">vs</span>
-          </div>
-          <ConflictSide
-            agent={conflict.agent_b}
-            outcome={conflict.outcome_b}
-            confidence={conflict.confidence_b}
-            reasoning={conflict.reasoning_b}
-            decidedAt={conflict.decided_at_b}
-            runId={conflict.run_b}
-          />
-        </div>
+        )}
       </CardContent>
     </Card>
   );
