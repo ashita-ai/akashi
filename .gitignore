@@ -60,3 +60,6 @@ __pycache__/
 # Tool state
 .claude-flow/
 .swarm/
+
+# Claude Code local settings (user-specific, not committed)
+.claude/settings.local.json
