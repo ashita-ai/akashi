@@ -271,6 +271,30 @@ func (h *Handlers) HandleDeleteGrant(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// HandleListGrants handles GET /v1/grants (admin-only).
+func (h *Handlers) HandleListGrants(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+	limit := queryLimit(r, 50)
+	offset := queryOffset(r)
+
+	grants, total, err := h.db.ListGrants(r.Context(), orgID, limit, offset)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to list grants", err)
+		return
+	}
+	if grants == nil {
+		grants = []model.AccessGrant{}
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"grants":   grants,
+		"total":    total,
+		"limit":    limit,
+		"offset":   offset,
+		"has_more": offset+len(grants) < total,
+	})
+}
+
 // HandleGetAgent handles GET /v1/agents/{agent_id} (admin-only).
 func (h *Handlers) HandleGetAgent(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())

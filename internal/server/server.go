@@ -141,7 +141,8 @@ func New(cfg ServerConfig) *Server {
 	// Subscription endpoint (reader+).
 	mux.Handle("GET /v1/subscribe", readRole(http.HandlerFunc(h.HandleSubscribe)))
 
-	// Access control (agent+ can grant access to own traces).
+	// Access control (admin for list, agent+ can grant access to own traces).
+	mux.Handle("GET /v1/grants", adminOnly(http.HandlerFunc(h.HandleListGrants)))
 	mux.Handle("POST /v1/grants", writeRole(http.HandlerFunc(h.HandleCreateGrant)))
 	mux.Handle("DELETE /v1/grants/{grant_id}", writeRole(http.HandlerFunc(h.HandleDeleteGrant)))
 

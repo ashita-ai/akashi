@@ -10,6 +10,7 @@ import Conflicts from "@/pages/Conflicts";
 import SearchPage from "@/pages/SearchPage";
 import ExportPage from "@/pages/ExportPage";
 import SessionTimeline from "@/pages/SessionTimeline";
+import GrantsPage from "@/pages/GrantsPage";
 import { type ReactNode } from "react";
 
 function AuthGuard({ children }: { children: ReactNode }) {
@@ -51,6 +52,7 @@ export const router = createBrowserRouter([
       { path: "conflicts", element: <Conflicts /> },
       { path: "search", element: <SearchPage /> },
       { path: "export", element: <ExportPage /> },
+      { path: "grants", element: <GrantsPage /> },
       { path: "sessions/:sessionId", element: <SessionTimeline /> },
     ],
   },
