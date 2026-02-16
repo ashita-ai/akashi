@@ -22,11 +22,7 @@ func compactDecision(d model.Decision) map[string]any {
 		"created_at":    d.CreatedAt,
 	}
 	if d.Reasoning != nil && *d.Reasoning != "" {
-		r := *d.Reasoning
-		if len(r) > maxCompactReasoning {
-			r = r[:maxCompactReasoning] + "..."
-		}
-		m["reasoning"] = r
+		m["reasoning"] = truncate(*d.Reasoning, maxCompactReasoning)
 	}
 	if d.SessionID != nil {
 		m["session_id"] = d.SessionID
@@ -142,8 +138,9 @@ func actionNeeded(conflicts []model.DecisionConflict) bool {
 }
 
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return string(runes[:maxLen]) + "..."
 }

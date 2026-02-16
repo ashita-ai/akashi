@@ -230,8 +230,8 @@ func TestNoopValidator(t *testing.T) {
 	assert.Equal(t, "contradiction", result.Relationship, "NoopValidator always returns contradiction")
 	assert.True(t, result.IsConflict())
 	assert.Empty(t, result.Explanation)
-	assert.Empty(t, result.Category)
-	assert.Empty(t, result.Severity)
+	assert.Equal(t, "unknown", result.Category, "NoopValidator defaults to unknown category")
+	assert.Equal(t, "medium", result.Severity, "NoopValidator defaults to medium severity")
 }
 
 // ---------------------------------------------------------------------------
