@@ -122,6 +122,54 @@ func TestLoadSucceedsWithDefaults(t *testing.T) {
 	if cfg.EnableDestructiveDelete {
 		t.Fatal("expected destructive delete to be disabled by default")
 	}
+	// WAL should be enabled by default.
+	if cfg.WALDir != "./data/wal" {
+		t.Fatalf("expected default WALDir %q, got %q", "./data/wal", cfg.WALDir)
+	}
+	if cfg.WALDisable {
+		t.Fatal("expected WALDisable to be false by default")
+	}
+}
+
+func TestLoad_WALDisableOverridesDir(t *testing.T) {
+	t.Setenv("AKASHI_WAL_DISABLE", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected Load() to succeed, got: %v", err)
+	}
+	if cfg.WALDir != "" {
+		t.Fatalf("expected WALDir to be empty when AKASHI_WAL_DISABLE=true, got %q", cfg.WALDir)
+	}
+	if !cfg.WALDisable {
+		t.Fatal("expected WALDisable to be true")
+	}
+}
+
+func TestLoad_ExplicitWALDir(t *testing.T) {
+	t.Setenv("AKASHI_WAL_DIR", "/custom/wal/path")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected Load() to succeed, got: %v", err)
+	}
+	if cfg.WALDir != "/custom/wal/path" {
+		t.Fatalf("expected WALDir %q, got %q", "/custom/wal/path", cfg.WALDir)
+	}
+}
+
+func TestLoad_WALDisableOverridesExplicitDir(t *testing.T) {
+	// AKASHI_WAL_DISABLE=true should override even an explicit AKASHI_WAL_DIR.
+	t.Setenv("AKASHI_WAL_DIR", "/custom/wal/path")
+	t.Setenv("AKASHI_WAL_DISABLE", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected Load() to succeed, got: %v", err)
+	}
+	if cfg.WALDir != "" {
+		t.Fatalf("expected WALDir to be empty when AKASHI_WAL_DISABLE=true, got %q", cfg.WALDir)
+	}
 }
 
 func contains(s, substr string) bool {
