@@ -178,6 +178,16 @@ func TestTruncate(t *testing.T) {
 	assert.Equal(t, "hello", truncate("hello", 10))
 	assert.Equal(t, "hel...", truncate("hello world", 3))
 	assert.Equal(t, "", truncate("", 5))
+
+	// UTF-8 safety: CJK characters are multi-byte but should truncate at rune boundaries.
+	assert.Equal(t, "日本語...", truncate("日本語テスト", 3))
+	assert.Equal(t, "日本語テスト", truncate("日本語テスト", 10)) // under limit, returned as-is
+
+	// Emoji: each emoji is a single rune (may be multi-byte).
+	assert.Equal(t, "🎉🎊...", truncate("🎉🎊🎈🎁", 2))
+
+	// Mixed ASCII and multi-byte.
+	assert.Equal(t, "ab日...", truncate("ab日本語", 3))
 }
 
 func ptrFloat64(f float64) *float64 { return &f }

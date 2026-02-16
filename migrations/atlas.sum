@@ -1,4 +1,4 @@
-h1:PjWhy7Ni1qHxxNXtDmYGdlz3fZYje87diSl1adSxD+M=
+h1:qW3AgIcMKKOjhexIgqR15CkaGOw4ALZkgDVDXboKhqE=
 001_initial.sql h1:uhyGXto+QacAaGYb9ZTGjsBs5chlKi8O0eHz9aCQsrY=
 022_full_text_search.sql h1:9iwtA8MgCzAxDV9YkUBn0CLT9ePSmj3GcPoMGg8TXf0=
 023_fix_outbox_index.sql h1:OtMEFBcMRWej02+ghnBXlPr6BVq+LoA62Id9XUWfDNI=
@@ -18,6 +18,6 @@ h1:PjWhy7Ni1qHxxNXtDmYGdlz3fZYje87diSl1adSxD+M=
 037_conflict_scored_at.sql h1:AKuaInJ2GnIxTWa7kK4YnuMXVoKrvf+MNFHvpAykKpM=
 038_conflict_precision.sql h1:Z78MrYF3Ud4Y7Yhrt5VxoJ7ygPqqOJLe67Qc2HGUMq8=
 039_agent_last_seen.sql h1:pVJJsK9ByaYUaf/JJPYEmoHXSgPSxmi4b6jG/xfCYLo=
-040_decision_claims_fk.sql h1:ZIQJlrOCL990XlPoe1APhg8MXJRvE2TVPSGuPSnXO6Q=
-041_archive_hypertable.sql h1:32cIpkv7IGm3mogQjj/6S0ZlT1jlVKucl8zncnlnsCs=
-042_audit_immutability_and_precision.sql h1:74/SEuaNu02LgqrppRFFPaXy4WAJzh6MGd9mXohnras=
+040_decision_claims_fk.sql h1:croGT4BMyqS3TLtYWNffX/um6T0ojrAoOjlqWGC9k2w=
+041_archive_hypertable.sql h1:Pnw2tNZqlOa8z4qGbT9ZT0KRxCuvCGt/7AEM54h0cZE=
+042_audit_immutability_and_precision.sql h1:FHDU1AoMRCCAQsMFNL4JObtAx2AaCoJy0gmnDTn6Mdc=

@@ -319,19 +319,6 @@ func (db *DB) ResolveConflictWithDecisionAndAudit(ctx context.Context, id, orgID
 	return nil
 }
 
-// GetConflictsByDecision returns all conflicts involving a specific decision.
-func (db *DB) GetConflictsByDecision(ctx context.Context, orgID, decisionID uuid.UUID) ([]model.DecisionConflict, error) {
-	rows, err := db.pool.Query(ctx,
-		conflictSelectBase+` WHERE sc.org_id = $1 AND (sc.decision_a_id = $2 OR sc.decision_b_id = $2)
-		 ORDER BY sc.detected_at DESC`, orgID, decisionID)
-	if err != nil {
-		return nil, fmt.Errorf("storage: get conflicts by decision: %w", err)
-	}
-	defer rows.Close()
-
-	return scanConflictRows(rows)
-}
-
 // InsertScoredConflict inserts a semantic conflict into scored_conflicts.
 // Ensures decision_a_id < decision_b_id for consistent ordering.
 func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict) error {
