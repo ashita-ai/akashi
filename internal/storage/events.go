@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -60,12 +61,17 @@ func (db *DB) InsertEvents(ctx context.Context, events []model.AgentEvent) (int6
 		}
 	}
 
+	// Dedicated 30s COPY timeout prevents a hung Postgres from blocking the
+	// buffer flush indefinitely. Matches the COPY timeout used for alternatives
+	// and evidence in CreateTraceTx.
+	copyCtx, copyCancel := context.WithTimeout(ctx, 30*time.Second)
 	copyCount, err := db.pool.CopyFrom(
-		ctx,
+		copyCtx,
 		pgx.Identifier{"agent_events"},
 		columns,
 		pgx.CopyFromRows(rows),
 	)
+	copyCancel()
 	if err != nil {
 		return 0, fmt.Errorf("storage: copy events: %w", err)
 	}
