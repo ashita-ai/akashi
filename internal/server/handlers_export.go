@@ -67,7 +67,20 @@ func (h *Handlers) HandleExportDecisions(w http.ResponseWriter, r *http.Request)
 		if err != nil {
 			h.logger.Error("export failed", "error", err)
 			if cursor == nil {
+				// Headers not yet sent — we can still return a proper error response.
 				writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "export failed")
+			} else {
+				// Headers already sent — write an error sentinel as the last NDJSON line
+				// so consumers can detect the truncation instead of silently accepting
+				// a partial export as complete.
+				_ = encoder.Encode(map[string]any{
+					"__error":  true,
+					"message":  "export terminated due to internal error",
+					"exported": cursor != nil,
+				})
+				if flusher != nil {
+					flusher.Flush()
+				}
 			}
 			return
 		}
