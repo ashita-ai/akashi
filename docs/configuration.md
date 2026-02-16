@@ -97,6 +97,7 @@ The OSS distribution uses an in-memory token bucket. Enterprise deployments can 
 | `AKASHI_CONFLICT_LLM_MODEL` | _(empty)_ | LLM model for conflict validation. Set to an Ollama model name (e.g. `qwen2.5:3b`) to use local validation, or leave empty to auto-detect (OpenAI if `OPENAI_API_KEY` is set, otherwise noop). |
 | `AKASHI_CONFLICT_BACKFILL_WORKERS` | `4` | Number of parallel workers for conflict backfill scoring on startup. Each worker makes one LLM validation call at a time. |
 | `AKASHI_CONFLICT_DECAY_LAMBDA` | `0.01` | Temporal decay rate for conflict significance. Higher values penalize older decision pairs more aggressively. Set to `0` to disable temporal decay. |
+| `AKASHI_FORCE_CONFLICT_RESCORE` | `false` | When `true` (and an LLM validator is configured), clear all existing conflicts and re-score from scratch at startup. Use after improving the LLM prompt or claim extraction logic. One-shot flag — disable after the rescore completes. |
 
 ## Event WAL (Write-Ahead Log)
 

@@ -1053,6 +1053,50 @@ func TestBackfillScoring_MarksDecisionsScored(t *testing.T) {
 	assert.Equal(t, 0, n2, "second backfill should find no unscored decisions")
 }
 
+// ---------------------------------------------------------------------------
+// Helper function tests
+// ---------------------------------------------------------------------------
+
+func TestAgentContextString(t *testing.T) {
+	// nil map.
+	assert.Equal(t, "", agentContextString(nil, "repo"))
+
+	// Missing key.
+	m := map[string]any{"tool": "claude-code"}
+	assert.Equal(t, "", agentContextString(m, "repo"))
+
+	// Wrong type (not a string).
+	m2 := map[string]any{"repo": 42}
+	assert.Equal(t, "", agentContextString(m2, "repo"))
+
+	// Valid string value.
+	m3 := map[string]any{"repo": "ashita-ai/akashi", "tool": "claude-code"}
+	assert.Equal(t, "ashita-ai/akashi", agentContextString(m3, "repo"))
+	assert.Equal(t, "claude-code", agentContextString(m3, "tool"))
+}
+
+func TestUuidString(t *testing.T) {
+	// nil pointer.
+	assert.Equal(t, "", uuidString(nil))
+
+	// Valid UUID.
+	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	assert.Equal(t, "11111111-1111-1111-1111-111111111111", uuidString(&id))
+}
+
+func TestDerefString(t *testing.T) {
+	// nil pointer.
+	assert.Equal(t, "", derefString(nil))
+
+	// Valid pointer.
+	s := "hello"
+	assert.Equal(t, "hello", derefString(&s))
+
+	// Empty string pointer.
+	empty := ""
+	assert.Equal(t, "", derefString(&empty))
+}
+
 func TestBackfillScoring_Parallel(t *testing.T) {
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))

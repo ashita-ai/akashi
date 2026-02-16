@@ -19,8 +19,10 @@ func TestSplitClaims_SimpleSentences(t *testing.T) {
 func TestSplitClaims_NumberedItems(t *testing.T) {
 	input := "Three critical findings: (1) search outbox worker has no deadletter mechanism, (2) Merkle proof verification timing leak, (3) ReScore is correctly bounded within [0,1] but has no unit tests."
 	claims := SplitClaims(input)
-	assert.Contains(t, claims, "(1) search outbox worker has no deadletter mechanism,")
-	assert.Contains(t, claims, "(2) Merkle proof verification timing leak,")
+	// The colon-split pass separates items at ", " boundaries, stripping commas.
+	// The numbered-items pass then extracts "(N)" prefixed fragments.
+	assert.Contains(t, claims, "(1) search outbox worker has no deadletter mechanism")
+	assert.Contains(t, claims, "(2) Merkle proof verification timing leak")
 	assert.Contains(t, claims, "(3) ReScore is correctly bounded within [0,1] but has no unit tests.")
 }
 
@@ -144,6 +146,137 @@ func TestSplitMarkdownLists_MixedContent(t *testing.T) {
 func TestSplitSemicolons_NoSemicolons(t *testing.T) {
 	input := "A plain sentence without semicolons."
 	parts := splitSemicolons(input)
+	assert.Equal(t, []string{input}, parts)
+}
+
+func TestSplitClaims_NumberedMarkdownList(t *testing.T) {
+	input := "Key decisions:\n1. Chose PostgreSQL for primary storage\n2. Selected Redis for caching layer\n3. Adopted gRPC for service communication"
+	claims := SplitClaims(input)
+	assert.Contains(t, claims, "Chose PostgreSQL for primary storage")
+	assert.Contains(t, claims, "Selected Redis for caching layer")
+	assert.Contains(t, claims, "Adopted gRPC for service communication")
+}
+
+func TestSplitClaims_ColonIntroducedList(t *testing.T) {
+	input := "Three architecture decisions: chose PostgreSQL for the database engine, selected Redis for the distributed cache layer, adopted gRPC for service communication protocol"
+	claims := SplitClaims(input)
+	// First item includes preamble context.
+	assert.GreaterOrEqual(t, len(claims), 3, "should split into at least 3 claims")
+	found := false
+	for _, c := range claims {
+		if containsSubstring(c, "Redis for the distributed cache") {
+			found = true
+		}
+	}
+	assert.True(t, found, "should include the Redis claim")
+}
+
+func TestSplitClaims_ColonListTooShort(t *testing.T) {
+	// Items after colon are too short — should NOT split.
+	input := "Key findings: Redis OK, Postgres good, gRPC fine"
+	claims := SplitClaims(input)
+	// "Redis OK" is < 20 chars, so colon split should not trigger.
+	// The entire string should pass through as one claim.
+	assert.Len(t, claims, 1)
+	assert.Equal(t, input, claims[0])
+}
+
+func TestDeduplicateClaims(t *testing.T) {
+	// "Redis" is a substring of "Redis has pub/sub support" — shorter should be dropped.
+	claims := deduplicateClaims([]string{
+		"Redis has pub/sub support for real-time features.",
+		"Memcached is simpler and faster for caching.",
+		"Redis has pub/sub support for real-time features. Additionally it handles complex data types.",
+	})
+	// The first claim is a substring of the third; it should be removed.
+	assert.Len(t, claims, 2)
+	assert.Contains(t, claims, "Memcached is simpler and faster for caching.")
+	assert.Contains(t, claims, "Redis has pub/sub support for real-time features. Additionally it handles complex data types.")
+}
+
+func TestDeduplicateClaims_NoDuplicates(t *testing.T) {
+	claims := deduplicateClaims([]string{
+		"Claim A about architecture decisions.",
+		"Claim B about database choices.",
+	})
+	assert.Len(t, claims, 2)
+}
+
+func TestDeduplicateClaims_SingleClaim(t *testing.T) {
+	claims := deduplicateClaims([]string{"Only one claim here."})
+	assert.Len(t, claims, 1)
+}
+
+func TestDeduplicateClaims_Empty(t *testing.T) {
+	assert.Nil(t, deduplicateClaims(nil))
+	assert.Empty(t, deduplicateClaims([]string{}))
+}
+
+func TestIsBoilerplate(t *testing.T) {
+	assert.True(t, isBoilerplate("All tests pass."))
+	assert.True(t, isBoilerplate("LGTM"))
+	assert.True(t, isBoilerplate("lgtm!"))
+	assert.True(t, isBoilerplate("Looks good to me"))
+	assert.True(t, isBoilerplate("CI passes"))
+	assert.True(t, isBoilerplate("Build succeeds."))
+	assert.True(t, isBoilerplate("No issues found"))
+	assert.True(t, isBoilerplate("Ship it!"))
+	assert.True(t, isBoilerplate("Approved."))
+	assert.True(t, isBoilerplate("Tests are green"))
+	assert.True(t, isBoilerplate("All checks pass"))
+
+	// Non-boilerplate.
+	assert.False(t, isBoilerplate("The outbox has no deadletter mechanism"))
+	assert.False(t, isBoilerplate("ReScore formula can exceed 1.0 bounds"))
+	assert.False(t, isBoilerplate("chose PostgreSQL for primary storage"))
+}
+
+func TestSplitClaims_BoilerplateFiltered(t *testing.T) {
+	input := "All tests pass. The outbox has no deadletter mechanism. Lgtm. No issues found."
+	claims := SplitClaims(input)
+	// "All tests pass.", "Lgtm.", and "No issues found." are boilerplate.
+	assert.Len(t, claims, 1)
+	assert.Equal(t, "The outbox has no deadletter mechanism.", claims[0])
+}
+
+func TestIsListItem(t *testing.T) {
+	assert.True(t, isListItem("- First item"))
+	assert.True(t, isListItem("* Second item"))
+	assert.True(t, isListItem("1. Third item"))
+	assert.True(t, isListItem("42. Forty-second item"))
+	assert.False(t, isListItem("Just a sentence"))
+	assert.False(t, isListItem("- "))    // marker only, no content
+	assert.False(t, isListItem("1.foo")) // no space after dot
+}
+
+func TestStripListMarker(t *testing.T) {
+	assert.Equal(t, "First item", stripListMarker("- First item"))
+	assert.Equal(t, "Second item", stripListMarker("* Second item"))
+	assert.Equal(t, "Third item", stripListMarker("1. Third item"))
+	assert.Equal(t, "Forty-second item", stripListMarker("42. Forty-second item"))
+	assert.Equal(t, "no marker", stripListMarker("no marker"))
+}
+
+func TestSplitColonLists(t *testing.T) {
+	// Substantial items: all >= 20 chars.
+	input := "Architecture decisions: chose PostgreSQL for storage engine, selected Redis for distributed caching"
+	parts := splitColonLists(input)
+	assert.Len(t, parts, 2)
+	assert.Contains(t, parts[0], "Architecture decisions:")
+	assert.Contains(t, parts[0], "PostgreSQL")
+	assert.Equal(t, "selected Redis for distributed caching", parts[1])
+}
+
+func TestSplitColonLists_NoColon(t *testing.T) {
+	input := "No colon in this text at all"
+	parts := splitColonLists(input)
+	assert.Equal(t, []string{input}, parts)
+}
+
+func TestSplitColonLists_SingleItemAfterColon(t *testing.T) {
+	input := "Summary: chose PostgreSQL for the primary database engine"
+	parts := splitColonLists(input)
+	// Only one item after colon — should not split.
 	assert.Equal(t, []string{input}, parts)
 }
 

@@ -21,6 +21,18 @@ type ValidateInput struct {
 	AgentB   string
 	CreatedA time.Time
 	CreatedB time.Time
+
+	// Enrichment fields — may be empty when context is unavailable.
+	ReasoningA   string // Decision reasoning.
+	ReasoningB   string
+	RepoA        string // From agent_context["repo"].
+	RepoB        string
+	TaskA        string // From agent_context["task"].
+	TaskB        string
+	SessionIDA   string // UUID string.
+	SessionIDB   string
+	FullOutcomeA string // Full outcome when OutcomeA is a claim fragment.
+	FullOutcomeB string
 }
 
 // ValidationResult holds the structured output from an LLM validation call.
@@ -44,38 +56,6 @@ type Validator interface {
 	Validate(ctx context.Context, input ValidateInput) (ValidationResult, error)
 }
 
-// validationPrompt is the structured prompt sent to the LLM. It asks for a
-// 5-way relationship classification, a category, severity, and a one-sentence
-// explanation. The prompt includes temporal and agent context to improve
-// precision for assessment-type decisions.
-const validationPrompt = `You are a relationship classifier for an AI decision audit system.
-
-Decision A (%s, by agent "%s", recorded %s):
-%s
-
-Decision B (%s, by agent "%s", recorded %s):
-%s
-
-Context: These decisions were recorded %s apart by %s.
-
-Classify the RELATIONSHIP between these two decisions:
-
-- CONTRADICTION: Incompatible positions on the same specific question. Cannot both be true.
-- SUPERSESSION: One decision explicitly replaces or reverses the other.
-- COMPLEMENTARY: Different findings about different aspects. Both can be true simultaneously.
-- REFINEMENT: One decision deepens or builds on the other.
-- UNRELATED: Different topics despite surface similarity.
-
-IMPORTANT for assessments and code reviews:
-- A summary assessment ("security is strong") and a detailed review ("found vulnerability X") are NOT contradictions. Detailed reviews always find issues that summaries don't mention.
-- Two reviews finding different issues in the same codebase are complementary, not contradictory.
-- For assessments to contradict, they must make OPPOSITE claims about the SAME specific finding.
-
-RELATIONSHIP: one of [contradiction, supersession, complementary, refinement, unrelated]
-CATEGORY: factual, assessment, strategic, or temporal
-SEVERITY: critical, high, medium, or low
-EXPLANATION: one sentence`
-
 // validCategories and validSeverities define the allowed values for classification.
 var validCategories = map[string]bool{"factual": true, "assessment": true, "strategic": true, "temporal": true}
 var validSeverities = map[string]bool{"critical": true, "high": true, "medium": true, "low": true}
@@ -89,7 +69,9 @@ var validRelationships = map[string]bool{
 	"unrelated":     true,
 }
 
-// formatPrompt builds the validation prompt with temporal and agent context.
+// formatPrompt builds the validation prompt with temporal, agent, project, and
+// session context. The prompt is constructed dynamically to include only the
+// context signals that are available, avoiding noise from empty fields.
 func formatPrompt(input ValidateInput) string {
 	timeDelta := input.CreatedB.Sub(input.CreatedA).Abs()
 	deltaStr := formatDuration(timeDelta)
@@ -99,13 +81,85 @@ func formatPrompt(input ValidateInput) string {
 		agentContext = "different agents"
 	}
 
-	return fmt.Sprintf(validationPrompt,
-		input.TypeA, input.AgentA, input.CreatedA.Format(time.RFC3339),
-		input.OutcomeA,
-		input.TypeB, input.AgentB, input.CreatedB.Format(time.RFC3339),
-		input.OutcomeB,
-		deltaStr, agentContext,
-	)
+	var b strings.Builder
+	b.WriteString("You are a relationship classifier for an AI decision audit system.\n\n")
+
+	// --- Decision A ---
+	fmt.Fprintf(&b, "Decision A (%s, by agent %q, recorded %s):\n%s\n",
+		input.TypeA, input.AgentA, input.CreatedA.Format(time.RFC3339), input.OutcomeA)
+	if input.FullOutcomeA != "" && input.FullOutcomeA != input.OutcomeA {
+		fmt.Fprintf(&b, "[Full decision context: %s]\n", truncateRunes(input.FullOutcomeA, 500))
+	}
+	if input.ReasoningA != "" {
+		fmt.Fprintf(&b, "[Reasoning: %s]\n", truncateRunes(input.ReasoningA, 300))
+	}
+
+	// --- Decision B ---
+	fmt.Fprintf(&b, "\nDecision B (%s, by agent %q, recorded %s):\n%s\n",
+		input.TypeB, input.AgentB, input.CreatedB.Format(time.RFC3339), input.OutcomeB)
+	if input.FullOutcomeB != "" && input.FullOutcomeB != input.OutcomeB {
+		fmt.Fprintf(&b, "[Full decision context: %s]\n", truncateRunes(input.FullOutcomeB, 500))
+	}
+	if input.ReasoningB != "" {
+		fmt.Fprintf(&b, "[Reasoning: %s]\n", truncateRunes(input.ReasoningB, 300))
+	}
+
+	// --- Temporal and agent context ---
+	fmt.Fprintf(&b, "\nContext: These decisions were recorded %s apart by %s.\n", deltaStr, agentContext)
+
+	// --- Project context (#168: cross-project confusion) ---
+	if input.RepoA != "" && input.RepoB != "" {
+		if input.RepoA != input.RepoB {
+			fmt.Fprintf(&b, "DIFFERENT PROJECTS: Decision A is about %q, Decision B is about %q. Decisions about different codebases are almost always UNRELATED.\n",
+				input.RepoA, input.RepoB)
+		} else {
+			fmt.Fprintf(&b, "Same project: %s\n", input.RepoA)
+		}
+	}
+	if input.TaskA != "" {
+		fmt.Fprintf(&b, "Task A: %s\n", truncateRunes(input.TaskA, 100))
+	}
+	if input.TaskB != "" {
+		fmt.Fprintf(&b, "Task B: %s\n", truncateRunes(input.TaskB, 100))
+	}
+
+	// --- Session context (#170: temporal refinement) ---
+	if input.SessionIDA != "" && input.SessionIDB != "" && input.SessionIDA == input.SessionIDB {
+		b.WriteString("SAME SESSION: Both decisions were recorded in the same work session. Sequential decisions are typically REFINEMENT or COMPLEMENTARY, not contradictions.\n")
+	}
+
+	// --- Classification instructions ---
+	b.WriteString(`
+Classify the RELATIONSHIP between these two decisions:
+
+- CONTRADICTION: Incompatible positions on the same specific question. Cannot both be true.
+- SUPERSESSION: One decision explicitly replaces or reverses the other.
+- COMPLEMENTARY: Different findings about different aspects. Both can be true simultaneously.
+- REFINEMENT: One decision deepens or builds on the other.
+- UNRELATED: Different topics despite surface similarity.
+
+IMPORTANT for assessments and code reviews:
+- A review that reports finding bugs does NOT contradict those bug reports — it discovered them.
+- A summary assessment ("security is strong") and a detailed review ("found vulnerability X") are NOT contradictions. Detailed reviews always find issues that summaries don't mention.
+- Two reviews finding different issues in the same codebase are complementary, not contradictory.
+- For assessments to contradict, they must make OPPOSITE claims about the SAME specific finding.
+
+RELATIONSHIP: one of [contradiction, supersession, complementary, refinement, unrelated]
+CATEGORY: factual, assessment, strategic, or temporal
+SEVERITY: critical, high, medium, or low
+EXPLANATION: one sentence`)
+
+	return b.String()
+}
+
+// truncateRunes truncates a string to maxLen runes, appending "..." if truncated.
+// Rune-safe to avoid splitting multi-byte characters.
+func truncateRunes(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen]) + "..."
 }
 
 // formatDuration produces a human-readable duration string.

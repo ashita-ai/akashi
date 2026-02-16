@@ -1151,17 +1151,19 @@ func (db *DB) GetDecisionQualityStats(ctx context.Context, orgID uuid.UUID) (Dec
 	return s, nil
 }
 
-// GetDecisionForScoring returns a decision with embedding and outcome_embedding for conflict scoring.
+// GetDecisionForScoring returns a decision with embedding, outcome_embedding,
+// session_id, and agent_context for conflict scoring. The additional fields
+// provide project, task, and session context to the LLM validator.
 func (db *DB) GetDecisionForScoring(ctx context.Context, id, orgID uuid.UUID) (model.Decision, error) {
 	var d model.Decision
 	err := db.pool.QueryRow(ctx,
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 valid_from, embedding, outcome_embedding
+		 valid_from, embedding, outcome_embedding, session_id, agent_context
 		 FROM decisions WHERE id = $1 AND org_id = $2 AND valid_to IS NULL`,
 		id, orgID,
 	).Scan(
 		&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence, &d.Reasoning,
-		&d.ValidFrom, &d.Embedding, &d.OutcomeEmbedding,
+		&d.ValidFrom, &d.Embedding, &d.OutcomeEmbedding, &d.SessionID, &d.AgentContext,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

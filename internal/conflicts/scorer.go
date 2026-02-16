@@ -17,6 +17,31 @@ import (
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
+// agentContextString extracts a string value from the agent_context JSONB map.
+// Returns "" if the map is nil, the key is missing, or the value is not a string.
+func agentContextString(ctx map[string]any, key string) string {
+	if ctx == nil {
+		return ""
+	}
+	v, ok := ctx[key]
+	if !ok {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return s
+}
+
+// uuidString returns the string representation of a UUID pointer, or "" if nil.
+func uuidString(id *uuid.UUID) string {
+	if id == nil {
+		return ""
+	}
+	return id.String()
+}
+
 // Scorer finds and scores semantic conflicts for new decisions.
 type Scorer struct {
 	db              *storage.DB
@@ -206,14 +231,24 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			}
 
 			result, err := s.validator.Validate(ctx, ValidateInput{
-				OutcomeA: bestOutcomeA,
-				OutcomeB: bestOutcomeB,
-				TypeA:    d.DecisionType,
-				TypeB:    cand.DecisionType,
-				AgentA:   d.AgentID,
-				AgentB:   cand.AgentID,
-				CreatedA: d.ValidFrom,
-				CreatedB: cand.ValidFrom,
+				OutcomeA:     bestOutcomeA,
+				OutcomeB:     bestOutcomeB,
+				TypeA:        d.DecisionType,
+				TypeB:        cand.DecisionType,
+				AgentA:       d.AgentID,
+				AgentB:       cand.AgentID,
+				CreatedA:     d.ValidFrom,
+				CreatedB:     cand.ValidFrom,
+				ReasoningA:   derefString(d.Reasoning),
+				ReasoningB:   derefString(cand.Reasoning),
+				RepoA:        agentContextString(d.AgentContext, "repo"),
+				RepoB:        agentContextString(cand.AgentContext, "repo"),
+				TaskA:        agentContextString(d.AgentContext, "task"),
+				TaskB:        agentContextString(cand.AgentContext, "task"),
+				SessionIDA:   uuidString(d.SessionID),
+				SessionIDB:   uuidString(cand.SessionID),
+				FullOutcomeA: d.Outcome,
+				FullOutcomeB: cand.Outcome,
 			})
 			if err != nil {
 				s.logger.Warn("conflict scorer: LLM validation failed, skipping candidate",
@@ -243,6 +278,9 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		if d.AgentID == cand.AgentID {
 			kind = model.ConflictKindSelfContradiction
 		}
+		// Always store full outcomes on the conflict record, even when the
+		// claim method won (claim fragments are used as OutcomeA/B in the
+		// ValidateInput for LLM comparison only).
 		c := model.DecisionConflict{
 			ConflictKind:      kind,
 			DecisionAID:       decisionID,
@@ -252,8 +290,8 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			AgentB:            cand.AgentID,
 			DecisionTypeA:     d.DecisionType,
 			DecisionTypeB:     cand.DecisionType,
-			OutcomeA:          bestOutcomeA,
-			OutcomeB:          bestOutcomeB,
+			OutcomeA:          d.Outcome,
+			OutcomeB:          cand.Outcome,
 			TopicSimilarity:   ptr(topicSim),
 			OutcomeDivergence: ptr(bestDiv),
 			Significance:      ptr(bestSig),
@@ -411,6 +449,26 @@ func cosineSimilarity(a, b []float32) float64 {
 		return 0
 	}
 	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+// ClearAllConflicts deletes all scored_conflicts regardless of scoring method.
+// Used after prompt improvements to force re-evaluation of all decision pairs.
+// Returns the number of rows deleted.
+// SECURITY: Intentionally global — one-time startup operation that clears
+// conflicts across all orgs when the conflict prompt is improved.
+func (s *Scorer) ClearAllConflicts(ctx context.Context) (int, error) {
+	tag, err := s.db.Pool().Exec(ctx, `DELETE FROM scored_conflicts`)
+	if err != nil {
+		return 0, fmt.Errorf("conflicts: clear all: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func ptr[T any](v T) *T { return &v }
