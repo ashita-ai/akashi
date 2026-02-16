@@ -379,6 +379,8 @@ func (db *DB) SearchDecisionsByText(ctx context.Context, orgID uuid.UUID, query 
 // HasDecisionsWithNullSearchVector returns true if any active decision has
 // search_vector IS NULL (e.g. from a dropped trigger or incomplete backfill).
 // Used for monitoring; FTS excludes such rows from results.
+// SECURITY: Intentionally global — system health monitoring check, not
+// user-facing. Result is a boolean logged by the maintenance goroutine.
 func (db *DB) HasDecisionsWithNullSearchVector(ctx context.Context) (bool, error) {
 	var exists bool
 	err := db.pool.QueryRow(ctx,
@@ -877,6 +879,8 @@ type UnembeddedDecision struct {
 
 // FindUnembeddedDecisions returns active decisions that have no embedding vector,
 // ordered oldest-first so the backfill processes them chronologically.
+// SECURITY: Intentionally global — background backfill across all orgs. Each
+// returned row includes OrgID for downstream scoping (BackfillEmbedding).
 func (db *DB) FindUnembeddedDecisions(ctx context.Context, limit int) ([]UnembeddedDecision, error) {
 	if limit <= 0 {
 		limit = 100
@@ -935,6 +939,8 @@ func (db *DB) BackfillEmbedding(ctx context.Context, id, orgID uuid.UUID, emb pg
 
 // FindDecisionsMissingOutcomeEmbedding returns active decisions that have
 // embedding but no outcome_embedding (for backfilling Option B).
+// SECURITY: Intentionally global — background backfill across all orgs. Each
+// returned row includes OrgID for downstream scoping (BackfillOutcomeEmbedding).
 func (db *DB) FindDecisionsMissingOutcomeEmbedding(ctx context.Context, limit int) ([]UnembeddedDecision, error) {
 	if limit <= 0 {
 		limit = 100
@@ -1024,6 +1030,8 @@ type DecisionRef struct {
 // embedding and outcome_embedding populated but have NOT yet been scored for
 // conflicts (conflict_scored_at IS NULL). Used by conflict scoring backfill
 // so that server restarts only score new decisions, not the entire corpus.
+// SECURITY: Intentionally global — background backfill across all orgs. Each
+// returned row includes OrgID for downstream scoping (ScoreForDecision).
 func (db *DB) FindEmbeddedDecisionIDs(ctx context.Context, limit int) ([]DecisionRef, error) {
 	if limit <= 0 {
 		limit = 1000
@@ -1055,9 +1063,9 @@ func (db *DB) FindEmbeddedDecisionIDs(ctx context.Context, limit int) ([]Decisio
 // MarkDecisionConflictScored sets conflict_scored_at to now() for a decision.
 // Called after ScoreForDecision completes so the decision won't be re-processed
 // on subsequent backfill runs.
-func (db *DB) MarkDecisionConflictScored(ctx context.Context, id uuid.UUID) error {
+func (db *DB) MarkDecisionConflictScored(ctx context.Context, id, orgID uuid.UUID) error {
 	_, err := db.pool.Exec(ctx,
-		`UPDATE decisions SET conflict_scored_at = now() WHERE id = $1`, id)
+		`UPDATE decisions SET conflict_scored_at = now() WHERE id = $1 AND org_id = $2`, id, orgID)
 	if err != nil {
 		return fmt.Errorf("storage: mark decision conflict scored: %w", err)
 	}
@@ -1067,6 +1075,10 @@ func (db *DB) MarkDecisionConflictScored(ctx context.Context, id uuid.UUID) erro
 // ResetConflictScoredAt clears conflict_scored_at for all decisions, forcing
 // the next backfill to re-score everything. Used when transitioning from
 // embedding-only to LLM-validated scoring so all pairs get re-evaluated.
+// SECURITY: Intentionally global — this is a one-time migration operation on
+// startup that transitions ALL orgs from embedding-only to LLM-validated
+// scoring. Scoping per-org would require iterating ListOrganizationIDs and
+// yield the same result since the condition is server-wide (HasLLMValidator).
 func (db *DB) ResetConflictScoredAt(ctx context.Context) (int64, error) {
 	tag, err := db.pool.Exec(ctx,
 		`UPDATE decisions SET conflict_scored_at = NULL WHERE conflict_scored_at IS NOT NULL`)
@@ -1079,6 +1091,9 @@ func (db *DB) ResetConflictScoredAt(ctx context.Context) (int64, error) {
 // CountUnvalidatedConflicts returns the number of scored_conflicts that were
 // NOT scored via LLM. Used to decide whether to clear old conflicts when
 // transitioning to LLM validation.
+// SECURITY: Intentionally global — startup check that determines whether the
+// LLM migration path should fire. A non-zero count anywhere triggers the
+// migration for all orgs.
 func (db *DB) CountUnvalidatedConflicts(ctx context.Context) (int, error) {
 	var count int
 	err := db.pool.QueryRow(ctx,

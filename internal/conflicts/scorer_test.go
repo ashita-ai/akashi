@@ -653,7 +653,7 @@ func TestBestClaimConflict_AboveFloors(t *testing.T) {
 	require.NoError(t, err)
 
 	scorer := NewScorer(testDB, slog.Default(), 0.1, nil, 0, 0)
-	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
+	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, orgID, 0.90)
 
 	assert.Greater(t, sig, 0.0, "significance should be positive when both floors are satisfied")
 	assert.InDelta(t, 0.30, div, 0.02, "divergence should be ~0.30 for cos sim 0.70")
@@ -706,7 +706,7 @@ func TestBestClaimConflict_BelowSimFloor(t *testing.T) {
 	require.NoError(t, err)
 
 	scorer := NewScorer(testDB, slog.Default(), 0.1, nil, 0, 0)
-	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
+	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, orgID, 0.90)
 
 	assert.Equal(t, 0.0, sig, "significance should be 0 when claim sim is below floor")
 	assert.Equal(t, 0.0, div, "divergence should be 0 when no qualifying pairs exist")
@@ -759,7 +759,7 @@ func TestBestClaimConflict_BelowDivFloor(t *testing.T) {
 	require.NoError(t, err)
 
 	scorer := NewScorer(testDB, slog.Default(), 0.1, nil, 0, 0)
-	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
+	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, orgID, 0.90)
 
 	assert.Equal(t, 0.0, sig, "significance should be 0 when claims effectively agree (div < floor)")
 	assert.Equal(t, 0.0, div)
@@ -799,7 +799,7 @@ func TestBestClaimConflict_NoClaims(t *testing.T) {
 
 	// No claims inserted for either decision.
 	scorer := NewScorer(testDB, slog.Default(), 0.1, nil, 0, 0)
-	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
+	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, orgID, 0.90)
 
 	assert.Equal(t, 0.0, sig, "no claims means no claim-level conflict")
 	assert.Equal(t, 0.0, div)
@@ -855,7 +855,7 @@ func TestBestClaimConflict_MultiplePairs_ReturnsBest(t *testing.T) {
 	require.NoError(t, err)
 
 	scorer := NewScorer(testDB, slog.Default(), 0.1, nil, 0, 0)
-	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, 0.90)
+	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, orgID, 0.90)
 
 	assert.Greater(t, sig, 0.0, "should find a claim-level conflict")
 	// The pair with higher divergence (0.35) should be selected as best.
