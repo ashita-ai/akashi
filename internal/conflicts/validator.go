@@ -188,7 +188,11 @@ func ParseValidatorResponse(response string) (ValidationResult, error) {
 type NoopValidator struct{}
 
 func (NoopValidator) Validate(_ context.Context, _ ValidateInput) (ValidationResult, error) {
-	return ValidationResult{Relationship: "contradiction"}, nil
+	return ValidationResult{
+		Relationship: "contradiction",
+		Category:     "unknown",
+		Severity:     "medium",
+	}, nil
 }
 
 // perCallTimeout is the maximum time for a single LLM validation call.
