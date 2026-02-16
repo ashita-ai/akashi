@@ -203,7 +203,7 @@ func TestResolveOrCreateAgent_Existing(t *testing.T) {
 	agentID := "existing-" + uuid.New().String()[:8]
 	createAgent(t, agentID)
 
-	err := testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin)
+	err := testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
 	assert.NoError(t, err, "existing agent should resolve without error")
 }
 
@@ -211,7 +211,7 @@ func TestResolveOrCreateAgent_AutoRegisterAsAdmin(t *testing.T) {
 	ctx := context.Background()
 	agentID := "auto-reg-" + uuid.New().String()[:8]
 
-	err := testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin)
+	err := testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
 	require.NoError(t, err, "admin should auto-register new agents")
 
 	// Verify it was actually created.
@@ -223,7 +223,7 @@ func TestResolveOrCreateAgent_DeniedAsNonAdmin(t *testing.T) {
 	ctx := context.Background()
 	agentID := "no-auto-" + uuid.New().String()[:8]
 
-	err := testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAgent)
+	err := testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAgent, nil)
 	assert.ErrorIs(t, err, decisions.ErrAgentNotFound, "non-admin should not auto-register")
 }
 

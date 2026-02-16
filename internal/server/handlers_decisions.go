@@ -49,7 +49,8 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 
 	// Verify the agent exists within the caller's org, auto-registering if the
 	// caller is admin+ and the agent is new (reduces friction for first-time traces).
-	if err := h.decisionSvc.ResolveOrCreateAgent(r.Context(), orgID, req.AgentID, claims.Role); err != nil {
+	autoRegAudit := h.buildAuditEntry(r, orgID, "", "agent", req.AgentID, nil, nil, nil)
+	if err := h.decisionSvc.ResolveOrCreateAgent(r.Context(), orgID, req.AgentID, claims.Role, &autoRegAudit); err != nil {
 		if errors.Is(err, decisions.ErrAgentNotFound) {
 			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
 			return
@@ -583,7 +584,8 @@ func (h *Handlers) HandleResolveConflict(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Ensure the resolver agent exists (auto-create if admin+).
-	if err := h.decisionSvc.ResolveOrCreateAgent(r.Context(), orgID, resolverAgent, claims.Role); err != nil {
+	autoRegAudit := h.buildAuditEntry(r, orgID, "", "agent", resolverAgent, nil, nil, nil)
+	if err := h.decisionSvc.ResolveOrCreateAgent(r.Context(), orgID, resolverAgent, claims.Role, &autoRegAudit); err != nil {
 		if errors.Is(err, decisions.ErrAgentNotFound) {
 			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
 			return
@@ -592,8 +594,16 @@ func (h *Handlers) HandleResolveConflict(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Create a resolution decision trace.
-	result, err := h.decisionSvc.Trace(r.Context(), orgID, decisions.TraceInput{
+	// Create a resolution decision trace AND resolve the conflict atomically.
+	// A single transaction prevents the failure mode where a resolution decision
+	// exists but the conflict remains unresolved.
+	note := "Resolved by decision trace"
+	conflictAudit := h.buildAuditEntry(r, orgID,
+		"conflict_resolved_with_decision", "conflict", id.String(),
+		nil, nil,
+		map[string]any{"resolved_by": resolverAgent},
+	)
+	result, err := h.decisionSvc.ResolveConflictWithTrace(r.Context(), orgID, decisions.TraceInput{
 		AgentID: resolverAgent,
 		Decision: model.TraceDecision{
 			DecisionType: req.DecisionType,
@@ -602,21 +612,14 @@ func (h *Handlers) HandleResolveConflict(w http.ResponseWriter, r *http.Request)
 			Reasoning:    req.Reasoning,
 		},
 		AuditMeta: h.buildAuditMeta(r, orgID),
+	}, storage.ResolveConflictInTraceParams{
+		ConflictID: id,
+		ResolvedBy: resolverAgent,
+		ResNote:    &note,
+		Audit:      conflictAudit,
 	})
 	if err != nil {
-		h.writeInternalError(w, r, "failed to create resolution decision", err)
-		return
-	}
-
-	// Link the resolution decision to the conflict.
-	note := "Resolved by decision " + result.DecisionID.String()
-	resolveAudit := h.buildAuditEntry(r, orgID,
-		"conflict_resolved_with_decision", "conflict", id.String(),
-		nil, nil,
-		map[string]any{"resolution_decision_id": result.DecisionID.String(), "resolved_by": resolverAgent},
-	)
-	if err := h.db.ResolveConflictWithDecisionAndAudit(r.Context(), id, orgID, result.DecisionID, resolverAgent, &note, resolveAudit); err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if strings.Contains(err.Error(), "conflict not found") {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
 			return
 		}

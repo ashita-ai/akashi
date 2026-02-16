@@ -110,7 +110,7 @@ func mustTrace(t *testing.T, agentID, decisionType, outcome string, confidence f
 	ctx := adminCtx()
 
 	// Ensure agent exists.
-	_ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin)
+	_ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
 
 	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
 		"agent_id":      agentID,
@@ -136,7 +136,7 @@ func mustTrace(t *testing.T, agentID, decisionType, outcome string, confidence f
 func TestHandleTrace(t *testing.T) {
 	ctx := adminCtx()
 	agentID := "trace-basic-" + uuid.New().String()[:8]
-	_ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin)
+	_ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
 
 	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
 		"agent_id":      agentID,
@@ -244,7 +244,7 @@ func TestHandleTrace_DefaultsAgentIDFromClaims(t *testing.T) {
 func TestHandleTrace_ModelAndTaskContext(t *testing.T) {
 	ctx := adminCtx()
 	agentID := "trace-ctx-" + uuid.New().String()[:8]
-	_ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin)
+	_ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
 
 	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
 		"agent_id":      agentID,
@@ -927,7 +927,7 @@ func TestHandleTrace_Concurrent(t *testing.T) {
 	for i := range n {
 		go func(idx int) {
 			agentID := fmt.Sprintf("concurrent-%d-%s", idx, uuid.New().String()[:8])
-			_ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin)
+			_ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
 
 			result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
 				"agent_id":      agentID,

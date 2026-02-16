@@ -132,8 +132,9 @@ func (db *DB) GetDecision(ctx context.Context, orgID, id uuid.UUID, opts GetDeci
 }
 
 // ReviseDecision invalidates an existing decision by setting valid_to
-// and creates a new decision with the revised data.
-func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised model.Decision) (model.Decision, error) {
+// and creates a new decision with the revised data. When audit is non-nil,
+// a mutation audit entry recording the revision is inserted in the same transaction.
+func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised model.Decision, audit *MutationAuditEntry) (model.Decision, error) {
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
 		return model.Decision{}, fmt.Errorf("storage: begin tx: %w", err)
@@ -198,6 +199,21 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 			 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
 			revised.ID, revised.OrgID); err != nil {
 			return model.Decision{}, fmt.Errorf("storage: queue search outbox upsert in revision: %w", err)
+		}
+	}
+
+	// Insert revision audit entry (same tx — atomic with the revision).
+	if audit != nil {
+		audit.Operation = "decision_revised"
+		audit.ResourceType = "decision"
+		audit.ResourceID = originalID.String()
+		audit.BeforeData = map[string]any{"valid_to": nil}
+		audit.AfterData = map[string]any{
+			"superseded_by": revised.ID.String(),
+			"valid_to":      now,
+		}
+		if err := InsertMutationAuditTx(ctx, tx, *audit); err != nil {
+			return model.Decision{}, fmt.Errorf("storage: audit in revision tx: %w", err)
 		}
 	}
 

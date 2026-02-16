@@ -98,6 +98,63 @@ type TraceResult struct {
 // Embeddings and quality scores are computed first, then all database writes
 // happen atomically within a single transaction. Notification is sent after commit.
 func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) (TraceResult, error) {
+	params, err := s.prepareTrace(ctx, orgID, input)
+	if err != nil {
+		return TraceResult{}, err
+	}
+
+	var run model.AgentRun
+	var decision model.Decision
+	err = storage.WithRetry(ctx, 3, 10*time.Millisecond, func() error {
+		var txErr error
+		run, decision, txErr = s.db.CreateTraceTx(ctx, params)
+		return txErr
+	})
+	if err != nil {
+		return TraceResult{}, fmt.Errorf("trace: %w", err)
+	}
+
+	s.postTraceAsync(ctx, orgID, input, decision)
+	return TraceResult{
+		RunID:      run.ID,
+		DecisionID: decision.ID,
+		EventCount: len(params.Alternatives) + len(params.Evidence) + 1,
+	}, nil
+}
+
+// ResolveConflictWithTrace creates a resolution decision trace AND resolves a
+// conflict in a single atomic transaction. This prevents the failure mode where
+// a resolution decision is created but the conflict remains unresolved due to
+// a crash between two separate transactions.
+func (s *Service) ResolveConflictWithTrace(ctx context.Context, orgID uuid.UUID, input TraceInput, conflictParams storage.ResolveConflictInTraceParams) (TraceResult, error) {
+	params, err := s.prepareTrace(ctx, orgID, input)
+	if err != nil {
+		return TraceResult{}, err
+	}
+
+	var run model.AgentRun
+	var decision model.Decision
+	err = storage.WithRetry(ctx, 3, 10*time.Millisecond, func() error {
+		var txErr error
+		run, decision, txErr = s.db.CreateTraceAndResolveConflictTx(ctx, params, conflictParams)
+		return txErr
+	})
+	if err != nil {
+		return TraceResult{}, fmt.Errorf("trace+resolve: %w", err)
+	}
+
+	s.postTraceAsync(ctx, orgID, input, decision)
+	return TraceResult{
+		RunID:      run.ID,
+		DecisionID: decision.ID,
+		EventCount: len(params.Alternatives) + len(params.Evidence) + 1,
+	}, nil
+}
+
+// prepareTrace handles all pre-transaction work: OTEL span, embeddings, quality
+// scoring, alternatives, evidence, and audit entry construction. Returns the
+// fully-prepared CreateTraceParams ready for a transactional write.
+func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input TraceInput) (storage.CreateTraceParams, error) {
 	// 0a. Set OTEL span attributes for trace correlation.
 	span := trace.SpanFromContext(ctx)
 	span.SetAttributes(
@@ -119,7 +176,7 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 	if err != nil {
 		s.logger.Warn("trace: decision embedding failed, continuing without", "error", err)
 	} else if err := s.validateEmbeddingDims(emb); err != nil {
-		return TraceResult{}, fmt.Errorf("trace: %w (check AKASHI_EMBEDDING_DIMENSIONS config)", err)
+		return storage.CreateTraceParams{}, fmt.Errorf("trace: %w (check AKASHI_EMBEDDING_DIMENSIONS config)", err)
 	} else {
 		s.embeddingDuration.Record(ctx, float64(time.Since(embStart).Milliseconds()))
 		decisionEmb = &emb
@@ -152,7 +209,7 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 			if err != nil {
 				s.logger.Warn("trace: evidence embedding failed", "error", err)
 			} else if err := s.validateEmbeddingDims(vec); err != nil {
-				return TraceResult{}, fmt.Errorf("trace: evidence %w (check AKASHI_EMBEDDING_DIMENSIONS config)", err)
+				return storage.CreateTraceParams{}, fmt.Errorf("trace: evidence %w (check AKASHI_EMBEDDING_DIMENSIONS config)", err)
 			} else {
 				evEmb = &vec
 			}
@@ -179,47 +236,40 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 			Endpoint:     input.AuditMeta.Endpoint,
 			Operation:    "trace_decision",
 			ResourceType: "decision",
-			// ResourceID and AfterData are populated by CreateTraceTx after
+			// ResourceID and AfterData are populated by createTraceInTx after
 			// the decision ID is generated.
 			Metadata: map[string]any{"agent_id": input.AgentID},
 		}
 	}
 
-	// 6. Execute transactional write (run + decision + alts + evidence + complete + audit).
-	// Wrapped in WithRetry to handle Postgres serialization failures (40001) and
-	// deadlocks (40P01) that can occur when concurrent traces race on indexes.
-	var run model.AgentRun
-	var decision model.Decision
-	err = storage.WithRetry(ctx, 3, 10*time.Millisecond, func() error {
-		var txErr error
-		run, decision, txErr = s.db.CreateTraceTx(ctx, storage.CreateTraceParams{
-			AgentID:  input.AgentID,
-			OrgID:    orgID,
-			TraceID:  input.TraceID,
-			Metadata: input.Metadata,
-			Decision: model.Decision{
-				DecisionType:     input.Decision.DecisionType,
-				Outcome:          input.Decision.Outcome,
-				Confidence:       input.Decision.Confidence,
-				Reasoning:        input.Decision.Reasoning,
-				Embedding:        decisionEmb,
-				OutcomeEmbedding: outcomeEmb,
-				QualityScore:     qualityScore,
-				PrecedentRef:     input.PrecedentRef,
-			},
-			Alternatives: alts,
-			Evidence:     evs,
-			SessionID:    input.SessionID,
-			AgentContext: input.AgentContext,
-			AuditEntry:   auditEntry,
-		})
-		return txErr
-	})
-	if err != nil {
-		return TraceResult{}, fmt.Errorf("trace: %w", err)
-	}
+	return storage.CreateTraceParams{
+		AgentID:  input.AgentID,
+		OrgID:    orgID,
+		TraceID:  input.TraceID,
+		Metadata: input.Metadata,
+		Decision: model.Decision{
+			DecisionType:     input.Decision.DecisionType,
+			Outcome:          input.Decision.Outcome,
+			Confidence:       input.Decision.Confidence,
+			Reasoning:        input.Decision.Reasoning,
+			Embedding:        decisionEmb,
+			OutcomeEmbedding: outcomeEmb,
+			QualityScore:     qualityScore,
+			PrecedentRef:     input.PrecedentRef,
+		},
+		Alternatives: alts,
+		Evidence:     evs,
+		SessionID:    input.SessionID,
+		AgentContext: input.AgentContext,
+		AuditEntry:   auditEntry,
+	}, nil
+}
 
-	// 6. Notify subscribers (after commit, non-fatal).
+// postTraceAsync handles post-commit work: subscriber notification and
+// asynchronous claim generation + conflict scoring. All operations are
+// non-fatal — the trace is already committed.
+func (s *Service) postTraceAsync(ctx context.Context, orgID uuid.UUID, input TraceInput, decision model.Decision) {
+	// Notify subscribers (after commit, non-fatal).
 	notifyPayload, err := json.Marshal(map[string]any{
 		"decision_id": decision.ID,
 		"agent_id":    input.AgentID,
@@ -232,9 +282,9 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 		s.logger.Error("trace: notify subscribers", "error", err)
 	}
 
-	// 7. Generate claim-level embeddings for fine-grained conflict detection.
+	// Generate claim-level embeddings for fine-grained conflict detection.
 	// Must complete BEFORE conflict scoring so the scorer can use claims.
-	if decisionEmb != nil {
+	if decision.Embedding != nil {
 		go func() {
 			defer func() {
 				if rec := recover(); rec != nil {
@@ -246,7 +296,6 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 			if err := s.generateClaims(claimCtx, decision.ID, orgID, input.Decision.Outcome); err != nil {
 				s.logger.Warn("trace: claim generation failed", "decision_id", decision.ID, "error", err)
 			}
-			// 8. Trigger semantic conflict scoring (after claims are stored).
 			if s.conflictScorer != nil {
 				s.conflictScorer.ScoreForDecision(claimCtx, decision.ID, orgID)
 			}
@@ -264,13 +313,6 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 			s.conflictScorer.ScoreForDecision(scoreCtx, decision.ID, orgID)
 		}()
 	}
-
-	eventCount := len(alts) + len(evs) + 1 // +1 for the decision itself
-	return TraceResult{
-		RunID:      run.ID,
-		DecisionID: decision.ID,
-		EventCount: eventCount,
-	}, nil
 }
 
 // Check performs a precedent lookup by semantic search or structured query.
@@ -457,10 +499,14 @@ var ErrAgentNotFound = errors.New("agent_id not found in this organization")
 // a trace-only agent (role=agent, no API key). Non-admin callers receive
 // ErrAgentNotFound.
 //
+// When autoRegAudit is non-nil, the auto-registration is recorded in the
+// mutation audit log. Callers with HTTP request context should provide this;
+// background callers may pass nil.
+//
 // This eliminates friction when an admin traces on behalf of a new agent for
 // the first time — the agent is created implicitly rather than requiring a
 // separate POST /v1/agents call.
-func (s *Service) ResolveOrCreateAgent(ctx context.Context, orgID uuid.UUID, agentID string, callerRole model.AgentRole) error {
+func (s *Service) ResolveOrCreateAgent(ctx context.Context, orgID uuid.UUID, agentID string, callerRole model.AgentRole, autoRegAudit *storage.MutationAuditEntry) error {
 	_, err := s.db.GetAgentByAgentID(ctx, orgID, agentID)
 	if err == nil {
 		return nil
@@ -476,13 +522,29 @@ func (s *Service) ResolveOrCreateAgent(ctx context.Context, orgID uuid.UUID, age
 		return ErrAgentNotFound
 	}
 
-	// Admin+ caller: auto-register the agent with default role.
-	_, createErr := s.db.CreateAgent(ctx, model.Agent{
+	agent := model.Agent{
 		AgentID: agentID,
 		OrgID:   orgID,
 		Name:    agentID,
 		Role:    model.RoleAgent,
-	})
+	}
+
+	// Admin+ caller: auto-register the agent with default role.
+	var createErr error
+	if autoRegAudit != nil {
+		autoRegAudit.Operation = "agent_auto_registered"
+		autoRegAudit.ResourceType = "agent"
+		autoRegAudit.ResourceID = agentID
+		autoRegAudit.AfterData = map[string]any{
+			"agent_id": agentID,
+			"org_id":   orgID,
+			"role":     string(model.RoleAgent),
+			"source":   "auto_registration",
+		}
+		_, createErr = s.db.CreateAgentWithAudit(ctx, agent, *autoRegAudit)
+	} else {
+		_, createErr = s.db.CreateAgent(ctx, agent)
+	}
 	if createErr != nil {
 		// A concurrent request may have created the same agent between our
 		// GetAgentByAgentID and CreateAgent calls. That's fine — treat the

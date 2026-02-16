@@ -437,10 +437,18 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	// Verify the agent exists within the org, auto-registering if the caller
 	// is admin+ and the agent is new (reduces friction for first-time traces).
 	callerRole := model.AgentRole("")
+	actorID := ""
 	if claims != nil {
 		callerRole = claims.Role
+		actorID = claims.AgentID
 	}
-	if err := s.decisionSvc.ResolveOrCreateAgent(ctx, orgID, agentID, callerRole); err != nil {
+	autoRegAudit := &storage.MutationAuditEntry{
+		OrgID:        orgID,
+		ActorAgentID: actorID,
+		ActorRole:    string(callerRole),
+		Endpoint:     "mcp/akashi_trace",
+	}
+	if err := s.decisionSvc.ResolveOrCreateAgent(ctx, orgID, agentID, callerRole, autoRegAudit); err != nil {
 		return errorResult(err.Error()), nil
 	}
 

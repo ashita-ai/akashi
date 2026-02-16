@@ -299,7 +299,7 @@ func TestReviseDecision(t *testing.T) {
 		DecisionType: "loan_approval",
 		Outcome:      "deny",
 		Confidence:   0.95,
-	})
+	}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "deny", revised.Outcome)
 
@@ -982,7 +982,7 @@ func TestGetDecisionRevisions_Chain(t *testing.T) {
 		Outcome:      "version_b",
 		Confidence:   0.7,
 		Metadata:     map[string]any{},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	c, err := testDB.ReviseDecision(ctx, b.ID, model.Decision{
@@ -992,7 +992,7 @@ func TestGetDecisionRevisions_Chain(t *testing.T) {
 		Outcome:      "version_c",
 		Confidence:   0.9,
 		Metadata:     map[string]any{},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	// Query the full chain starting from C.
@@ -1037,13 +1037,13 @@ func TestGetRevisionChainIDs_TransitiveChain(t *testing.T) {
 	b, err := testDB.ReviseDecision(ctx, a.ID, model.Decision{
 		RunID: run.ID, AgentID: agentID, DecisionType: "chain_test",
 		Outcome: "version_b", Confidence: 0.7, Metadata: map[string]any{},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	c, err := testDB.ReviseDecision(ctx, b.ID, model.Decision{
 		RunID: run.ID, AgentID: agentID, DecisionType: "chain_test",
 		Outcome: "version_c", Confidence: 0.9, Metadata: map[string]any{},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	// From A: should return B and C (forward chain).
