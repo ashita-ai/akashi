@@ -203,9 +203,12 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		logger.Info("conflict scoring backfill complete", "decisions_scored", n)
 	}
 
-	// Create event WAL (opt-in: disabled when AKASHI_WAL_DIR is empty).
+	// Create event WAL (enabled by default; disable with AKASHI_WAL_DISABLE=true).
 	var eventWAL *trace.WAL
 	if cfg.WALDir != "" {
+		if err := os.MkdirAll(cfg.WALDir, 0o750); err != nil {
+			return fmt.Errorf("event WAL: create directory %s: %w", cfg.WALDir, err)
+		}
 		var walErr error
 		eventWAL, walErr = trace.NewWAL(logger, trace.WALConfig{
 			Dir:            cfg.WALDir,
@@ -217,7 +220,10 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		if walErr != nil {
 			return fmt.Errorf("event WAL: %w", walErr)
 		}
-		logger.Info("event WAL: enabled", "dir", cfg.WALDir, "sync_mode", cfg.WALSyncMode)
+		logger.Info("write-ahead log", "enabled", true, "dir", cfg.WALDir, "sync_mode", cfg.WALSyncMode)
+	} else {
+		logger.Warn("write-ahead log", "enabled", false, "reason", "AKASHI_WAL_DISABLE=true",
+			"risk", "buffered events will be lost on crash")
 	}
 
 	// Create event buffer.
