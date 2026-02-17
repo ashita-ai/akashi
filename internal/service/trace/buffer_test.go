@@ -332,3 +332,154 @@ func TestBuffer_ConcurrentAppend(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, got, totalExpected, "all %d concurrently-appended events should be in the DB after drain", totalExpected)
 }
+
+func TestBuffer_OccurredAtOverride(t *testing.T) {
+	run := createTestRun(t)
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 100*time.Millisecond, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	// Create an event with a custom OccurredAt timestamp (backfill scenario).
+	customTime := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	inputs := []model.EventInput{
+		{
+			EventType:  model.EventToolCallCompleted,
+			Payload:    map[string]any{"backfill": true},
+			OccurredAt: &customTime,
+		},
+		{
+			EventType: model.EventToolCallCompleted,
+			Payload:   map[string]any{"backfill": false},
+			// OccurredAt nil — should use server time.
+		},
+	}
+
+	events, err := buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, inputs)
+	require.NoError(t, err)
+	require.Len(t, events, 2)
+
+	// First event should use the provided OccurredAt.
+	assert.Equal(t, customTime, events[0].OccurredAt,
+		"event with OccurredAt set should use the provided timestamp")
+
+	// Second event should use server time (within the last few seconds).
+	assert.WithinDuration(t, time.Now(), events[1].OccurredAt, 5*time.Second,
+		"event without OccurredAt should use approximately time.Now()")
+
+	// The two events should have different OccurredAt values.
+	assert.NotEqual(t, events[0].OccurredAt, events[1].OccurredAt,
+		"custom and server timestamps should differ")
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer drainCancel()
+	require.NoError(t, buf.Drain(drainCtx))
+
+	// Verify the timestamps persist through flush to DB.
+	got, err := testDB.GetEventsByRun(context.Background(), run.OrgID, run.ID, 0)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+
+	// Find the backfill event by payload.
+	var backfillEvent model.AgentEvent
+	for _, e := range got {
+		if payload, ok := e.Payload["backfill"]; ok && payload == true {
+			backfillEvent = e
+			break
+		}
+	}
+	assert.Equal(t, customTime.UTC(), backfillEvent.OccurredAt.UTC(),
+		"custom OccurredAt should survive the COPY flush to Postgres")
+}
+
+func TestBuffer_FlushNow(t *testing.T) {
+	run := createTestRun(t)
+
+	// Use a very long flush timeout so only FlushNow can trigger the flush.
+	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	_, err := buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(5))
+	require.NoError(t, err)
+	assert.Equal(t, 5, buf.Len(), "events should be in buffer before FlushNow")
+
+	// FlushNow should block until the buffer is empty.
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer flushCancel()
+	require.NoError(t, buf.FlushNow(flushCtx))
+
+	assert.Equal(t, 0, buf.Len(), "buffer should be empty after FlushNow")
+
+	// Verify events are in the database.
+	got, err := testDB.GetEventsByRun(context.Background(), run.OrgID, run.ID, 0)
+	require.NoError(t, err)
+	assert.Len(t, got, 5, "all events should be in DB after FlushNow")
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer drainCancel()
+	require.NoError(t, buf.Drain(drainCtx))
+}
+
+func TestBuffer_DrainIdempotent(t *testing.T) {
+	run := createTestRun(t)
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 100*time.Millisecond, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	_, err := buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(3))
+	require.NoError(t, err)
+
+	// First drain should flush and return nil.
+	drainCtx1, drainCancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel1()
+	require.NoError(t, buf.Drain(drainCtx1))
+
+	// Second drain should not panic and should return nil (no more events).
+	drainCtx2, drainCancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer drainCancel2()
+	require.NoError(t, buf.Drain(drainCtx2))
+
+	// Verify events made it to DB.
+	got, err := testDB.GetEventsByRun(context.Background(), run.OrgID, run.ID, 0)
+	require.NoError(t, err)
+	assert.Len(t, got, 3)
+}
+
+func TestBuffer_AtCapacity(t *testing.T) {
+	run := createTestRun(t)
+
+	// Use a very long flush timeout and large maxSize so nothing flushes.
+	// Fill the buffer to maxBufferCapacity then attempt one more append.
+	buf := NewBuffer(testDB, testLogger(), maxBufferCapacity+1, 10*time.Minute, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	// Fill in batches of 10,000 to reach maxBufferCapacity (100,000).
+	const batchSize = 10_000
+	for i := 0; i < maxBufferCapacity/batchSize; i++ {
+		_, err := buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(batchSize))
+		require.NoError(t, err, "batch %d should succeed", i)
+	}
+	assert.Equal(t, maxBufferCapacity, buf.Len())
+
+	// One more event should be rejected.
+	events, err := buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(1))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrBufferAtCapacity)
+	assert.Nil(t, events)
+	assert.EqualValues(t, 1, buf.DroppedEvents(), "rejected events should be counted")
+
+	// Buffer size unchanged.
+	assert.Equal(t, maxBufferCapacity, buf.Len())
+
+	// Clean shutdown — drain flushes all 100K events.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer drainCancel()
+	require.NoError(t, buf.Drain(drainCtx))
+}
