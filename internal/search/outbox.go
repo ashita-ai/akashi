@@ -378,15 +378,9 @@ func (w *OutboxWorker) processUpserts(ctx context.Context, entries []outboxEntry
 				SessionID:    d.SessionID,
 			}
 			if d.AgentContext != nil {
-				if v, ok := d.AgentContext["tool"].(string); ok {
-					p.Tool = v
-				}
-				if v, ok := d.AgentContext["model"].(string); ok {
-					p.Model = v
-				}
-				if v, ok := d.AgentContext["repo"].(string); ok {
-					p.Repo = v
-				}
+				p.Tool = agentContextString(d.AgentContext, "server", "tool")
+				p.Model = agentContextString(d.AgentContext, "client", "model")
+				p.Repo = agentContextString(d.AgentContext, "server", "repo")
 			}
 			points = append(points, p)
 		}
@@ -580,6 +574,21 @@ func scanOutboxEntries(rows pgx.Rows) ([]outboxEntry, error) {
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
+}
+
+// agentContextString extracts a string value from agent_context, checking the
+// namespaced path first (PR #180: server/client sub-objects) then falling back
+// to the legacy flat path (pre-PR #180 decisions).
+func agentContextString(ctx map[string]any, namespace, key string) string {
+	if ns, ok := ctx[namespace].(map[string]any); ok {
+		if v, ok := ns[key].(string); ok {
+			return v
+		}
+	}
+	if v, ok := ctx[key].(string); ok {
+		return v
+	}
+	return ""
 }
 
 // partitionUpsertEntries splits outbox entries by whether the backing decision row
