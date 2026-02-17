@@ -245,22 +245,42 @@ export interface AgentStats {
   type_breakdown: Record<string, number>;
 }
 
-// Trace health
+// Trace health — mirrors tracehealth.Metrics from Go
 export interface TraceHealth {
   status: string;
-  total_decisions: number;
-  decisions_24h: number;
-  avg_confidence: number;
-  low_quality_pct: number;
-  conflict_rate: number;
-  active_agents: number;
-  gaps: TraceGap[];
+  completeness: TraceHealthCompleteness;
+  evidence: TraceHealthEvidence;
+  conflicts?: TraceHealthConflicts;
+  gaps: string[];
 }
 
-export interface TraceGap {
-  agent_id: string;
-  last_seen: string;
-  gap_hours: number;
+export interface TraceHealthCompleteness {
+  total_decisions: number;
+  avg_quality: number;
+  below_half: number;
+  below_third: number;
+  with_reasoning: number;
+  reasoning_pct: number;
+  with_alternatives: number;
+  alternatives_pct: number;
+}
+
+export interface TraceHealthEvidence {
+  total_decisions: number;
+  total_records: number;
+  avg_per_decision: number;
+  with_evidence: number;
+  without_evidence: number;
+  coverage_pct: number;
+}
+
+export interface TraceHealthConflicts {
+  total: number;
+  open: number;
+  acknowledged: number;
+  resolved: number;
+  wont_fix: number;
+  resolved_pct: number;
 }
 
 // Session view

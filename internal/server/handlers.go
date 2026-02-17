@@ -73,6 +73,7 @@ func NewHandlers(d HandlersDeps) *Handlers {
 }
 
 // HandleAuthToken handles POST /auth/token.
+// Checks managed api_keys table first, falls back to agents.api_key_hash.
 func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 	var req model.AuthTokenRequest
 	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
@@ -80,36 +81,55 @@ func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agents, err := h.db.GetAgentsByAgentIDGlobal(r.Context(), req.AgentID)
-	if err != nil {
-		// Perform a dummy Argon2 hash to make the response time indistinguishable
-		// from a valid agent_id with wrong credentials.
-		auth.DummyVerify()
-		writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "invalid credentials")
-		return
-	}
-
-	// Iterate over all matching agents (agent_ids can collide across orgs)
-	// and verify credentials against each one. Use the first match.
+	// Phase 1: check managed api_keys table.
 	var matched *model.Agent
-	verified := false
-	for i := range agents {
-		a := &agents[i]
-		if a.APIKeyHash == nil {
-			continue
-		}
-		valid, verr := auth.VerifyAPIKey(req.APIKey, *a.APIKeyHash)
-		verified = true
+	var matchedKeyID *uuid.UUID
+	managedKeys, _ := h.db.GetActiveAPIKeysByAgentIDGlobal(r.Context(), req.AgentID)
+	for _, k := range managedKeys {
+		valid, verr := auth.VerifyAPIKey(req.APIKey, k.KeyHash)
 		if verr != nil || !valid {
 			continue
 		}
-		matched = a
+		agent, err := h.db.GetAgentByAgentID(r.Context(), k.OrgID, k.AgentID)
+		if err != nil {
+			continue
+		}
+		matched = &agent
+		kid := k.ID
+		matchedKeyID = &kid
 		break
 	}
-	// If no agent had a hash, do a dummy verify to prevent timing side-channel.
-	if !verified {
-		auth.DummyVerify()
+
+	// Phase 2: fall back to legacy agents.api_key_hash.
+	if matched == nil {
+		agents, err := h.db.GetAgentsByAgentIDGlobal(r.Context(), req.AgentID)
+		if err != nil {
+			if len(managedKeys) == 0 {
+				auth.DummyVerify()
+			}
+			writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "invalid credentials")
+			return
+		}
+
+		verified := len(managedKeys) > 0
+		for i := range agents {
+			a := &agents[i]
+			if a.APIKeyHash == nil {
+				continue
+			}
+			valid, verr := auth.VerifyAPIKey(req.APIKey, *a.APIKeyHash)
+			verified = true
+			if verr != nil || !valid {
+				continue
+			}
+			matched = a
+			break
+		}
+		if !verified {
+			auth.DummyVerify()
+		}
 	}
+
 	if matched == nil {
 		writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "invalid credentials")
 		return
@@ -123,13 +143,16 @@ func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 
 	// Audit: record successful token issuance. Best-effort — failure to
 	// audit must not block the token response.
+	auditMeta := map[string]any{
+		"ip":         r.RemoteAddr,
+		"user_agent": r.UserAgent(),
+		"token_exp":  expiresAt,
+	}
+	if matchedKeyID != nil {
+		auditMeta["api_key_id"] = matchedKeyID.String()
+	}
 	if auditErr := h.recordMutationAuditBestEffort(r, matched.OrgID,
-		"token_issued", "auth_token", matched.AgentID, nil, nil,
-		map[string]any{
-			"ip":         r.RemoteAddr,
-			"user_agent": r.UserAgent(),
-			"token_exp":  expiresAt,
-		},
+		"token_issued", "auth_token", matched.AgentID, nil, nil, auditMeta,
 	); auditErr != nil {
 		slog.Error("failed to audit token issuance",
 			"agent_id", matched.AgentID, "org_id", matched.OrgID, "error", auditErr)

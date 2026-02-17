@@ -335,13 +335,18 @@ func authMiddleware(jwtMgr *auth.JWTManager, db *storage.DB, next http.Handler) 
 
 		ctx := ctxutil.WithClaims(r.Context(), claims)
 
-		// Update last_seen asynchronously. This is a best-effort fire-and-forget
-		// operation — the request is not blocked on the UPDATE completing.
+		// Update last_seen (agent) and last_used_at (key) asynchronously.
+		// Best-effort fire-and-forget — the request is not blocked.
 		go func() {
 			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := db.TouchLastSeen(bgCtx, claims.OrgID, claims.AgentID); err != nil {
 				slog.Warn("failed to update agent last_seen", "agent_id", claims.AgentID, "error", err)
+			}
+			if claims.APIKeyID != nil {
+				if err := db.TouchAPIKeyLastUsed(bgCtx, *claims.APIKeyID); err != nil {
+					slog.Warn("failed to update api key last_used_at", "key_id", claims.APIKeyID, "error", err)
+				}
 			}
 		}()
 
@@ -350,9 +355,8 @@ func authMiddleware(jwtMgr *auth.JWTManager, db *storage.DB, next http.Handler) 
 }
 
 // verifyAPIKey authenticates a request using "ApiKey agent_id:secret" credentials.
-// Performs the same agent lookup + Argon2id verification as POST /auth/token.
-// Returns synthesized claims on success; the claims are equivalent to what a JWT
-// would contain but skip token issuance entirely.
+// Checks the api_keys table first (managed keys), falls back to agents.api_key_hash
+// (legacy keys). Returns synthesized claims on success.
 func verifyAPIKey(ctx context.Context, db *storage.DB, credential, orgHeader string) (*auth.Claims, error) {
 	// Parse "agent_id:api_key" — agent_ids cannot contain colons (validated on creation).
 	colonIdx := strings.IndexByte(credential, ':')
@@ -363,16 +367,6 @@ func verifyAPIKey(ctx context.Context, db *storage.DB, credential, orgHeader str
 	agentID := credential[:colonIdx]
 	apiKey := credential[colonIdx+1:]
 
-	agents, err := db.GetAgentsByAgentIDGlobal(ctx, agentID)
-	if err != nil {
-		auth.DummyVerify()
-		return nil, fmt.Errorf("invalid credentials")
-	}
-	if len(agents) == 0 {
-		auth.DummyVerify()
-		return nil, fmt.Errorf("invalid credentials")
-	}
-
 	var requestedOrg *uuid.UUID
 	if strings.TrimSpace(orgHeader) != "" {
 		orgID, parseErr := uuid.Parse(strings.TrimSpace(orgHeader))
@@ -381,14 +375,49 @@ func verifyAPIKey(ctx context.Context, db *storage.DB, credential, orgHeader str
 			return nil, fmt.Errorf("invalid org header")
 		}
 		requestedOrg = &orgID
-	} else if len(agents) > 1 {
-		// Avoid accidental cross-org auth context selection when a shared
-		// agent_id exists across organizations.
+	}
+
+	// Phase 1: check managed api_keys table.
+	managedKeys, _ := db.GetActiveAPIKeysByAgentIDGlobal(ctx, agentID)
+	for _, k := range managedKeys {
+		if requestedOrg != nil && k.OrgID != *requestedOrg {
+			continue
+		}
+		valid, verr := auth.VerifyAPIKey(apiKey, k.KeyHash)
+		if verr != nil || !valid {
+			continue
+		}
+		// Matched a managed key — look up the agent to get role and UUID.
+		agent, err := db.GetAgentByAgentID(ctx, k.OrgID, k.AgentID)
+		if err != nil {
+			continue
+		}
+		claims := &auth.Claims{
+			AgentID:  agent.AgentID,
+			OrgID:    agent.OrgID,
+			Role:     agent.Role,
+			APIKeyID: &k.ID,
+		}
+		claims.Subject = agent.ID.String()
+		return claims, nil
+	}
+
+	// Phase 2: fall back to legacy agents.api_key_hash.
+	agents, err := db.GetAgentsByAgentIDGlobal(ctx, agentID)
+	if err != nil {
+		// If no managed keys were checked, we need a dummy verify.
+		if len(managedKeys) == 0 {
+			auth.DummyVerify()
+		}
+		return nil, fmt.Errorf("invalid credentials")
+	}
+
+	if requestedOrg == nil && len(agents) > 1 && len(managedKeys) == 0 {
 		auth.DummyVerify()
 		return nil, fmt.Errorf("org header required for ambiguous agent_id")
 	}
 
-	verified := false
+	verified := len(managedKeys) > 0 // managed key checks count as verified
 	for _, a := range agents {
 		if requestedOrg != nil && a.OrgID != *requestedOrg {
 			continue
@@ -401,9 +430,6 @@ func verifyAPIKey(ctx context.Context, db *storage.DB, credential, orgHeader str
 		if verr != nil || !valid {
 			continue
 		}
-		// Matched — synthesize claims equivalent to a JWT.
-		// Subject must be set to the agent's internal UUID so that
-		// authz.LoadGrantedSet can parse it for grant-based access filtering.
 		claims := &auth.Claims{
 			AgentID: a.AgentID,
 			OrgID:   a.OrgID,
@@ -554,7 +580,14 @@ func rateLimitMiddleware(limiter ratelimit.Limiter, logger *slog.Logger, trustPr
 			return
 		}
 
-		key := "org:" + claims.OrgID.String() + ":agent:" + claims.AgentID
+		// Use per-key rate limiting when a managed API key is identified,
+		// otherwise fall back to per-agent limiting.
+		var key string
+		if claims.APIKeyID != nil {
+			key = "org:" + claims.OrgID.String() + ":key:" + claims.APIKeyID.String()
+		} else {
+			key = "org:" + claims.OrgID.String() + ":agent:" + claims.AgentID
+		}
 		allowed, err := limiter.Allow(r.Context(), key)
 		if err != nil {
 			// Fail-open: a broken limiter should not block all traffic.

@@ -99,6 +99,15 @@ func New(cfg ServerConfig) *Server {
 	mux.Handle("DELETE /v1/agents/{agent_id}", adminOnly(http.HandlerFunc(h.HandleDeleteAgent)))
 	mux.Handle("GET /v1/export/decisions", adminOnly(http.HandlerFunc(h.HandleExportDecisions)))
 
+	// API key management (admin-only).
+	mux.Handle("POST /v1/keys", adminOnly(http.HandlerFunc(h.HandleCreateKey)))
+	mux.Handle("GET /v1/keys", adminOnly(http.HandlerFunc(h.HandleListKeys)))
+	mux.Handle("DELETE /v1/keys/{id}", adminOnly(http.HandlerFunc(h.HandleRevokeKey)))
+	mux.Handle("POST /v1/keys/{id}/rotate", adminOnly(http.HandlerFunc(h.HandleRotateKey)))
+
+	// Usage metering (admin-only).
+	mux.Handle("GET /v1/usage", adminOnly(http.HandlerFunc(h.HandleGetUsage)))
+
 	// Trace ingestion (agent+).
 	writeRole := requireRole(model.RoleAgent)
 	mux.Handle("POST /v1/runs", writeRole(http.HandlerFunc(h.HandleCreateRun)))
