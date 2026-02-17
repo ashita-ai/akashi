@@ -45,6 +45,9 @@ type Decision struct {
 	SessionID    *uuid.UUID     `json:"session_id,omitempty"`
 	AgentContext map[string]any `json:"agent_context,omitempty"`
 
+	// API key attribution: which managed key authenticated this decision.
+	APIKeyID *uuid.UUID `json:"api_key_id,omitempty"`
+
 	// Joined data (populated by queries, not stored in decisions table).
 	Alternatives []Alternative `json:"alternatives,omitempty"`
 	Evidence     []Evidence    `json:"evidence,omitempty"`

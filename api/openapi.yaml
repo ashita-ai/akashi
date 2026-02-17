@@ -69,6 +69,10 @@ tags:
     description: Fine-grained access grants between agents
   - name: Export
     description: Bulk data export for auditors
+  - name: Keys
+    description: API key management (admin-only)
+  - name: Usage
+    description: Usage metering (admin-only)
   - name: System
     description: Health, SSE, and infrastructure
 
@@ -1157,6 +1161,162 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
 
+  # ── API Keys ──────────────────────────────────────────────────────
+  /v1/keys:
+    post:
+      operationId: createKey
+      tags: [Keys]
+      summary: Mint a new API key
+      description: |
+        Create a managed API key for an agent. The raw key is returned only
+        once in the response — it cannot be retrieved afterward.
+        Requires `admin` role or higher.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateKeyRequest"
+      responses:
+        "201":
+          description: Key created. `raw_key` is shown only once.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateKeyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    get:
+      operationId: listKeys
+      tags: [Keys]
+      summary: List API keys for the organization
+      description: |
+        Returns all API keys (active and revoked) for the caller's
+        organization. Key hashes are never exposed.
+        Requires `admin` role or higher.
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            minimum: 1
+            maximum: 1000
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+      responses:
+        "200":
+          description: List of API keys.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_KeyList"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/keys/{id}:
+    delete:
+      operationId: revokeKey
+      tags: [Keys]
+      summary: Revoke an API key
+      description: |
+        Revokes an API key immediately. The key can no longer be used
+        for authentication. Revocation is permanent.
+        Requires `admin` role or higher.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The UUID of the key to revoke.
+      responses:
+        "200":
+          description: Key revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: revoked
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/keys/{id}/rotate:
+    post:
+      operationId: rotateKey
+      tags: [Keys]
+      summary: Rotate an API key
+      description: |
+        Atomically revokes the old key and mints a new one for the same
+        agent with the same label. The new raw key is returned only once.
+        Requires `admin` role or higher.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The UUID of the key to rotate.
+      responses:
+        "200":
+          description: Key rotated. New `raw_key` is shown only once.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RotateKeyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Usage ────────────────────────────────────────────────────────
+  /v1/usage:
+    get:
+      operationId: getUsage
+      tags: [Usage]
+      summary: Get usage metering for a billing period
+      description: |
+        Returns decision counts aggregated by API key and agent for the
+        specified billing period. The decisions table is the usage ledger —
+        no separate metering table exists.
+        Requires `admin` role or higher.
+      parameters:
+        - name: period
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}$'
+          description: Billing period in YYYY-MM format.
+      responses:
+        "200":
+          description: Usage breakdown for the period.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
   # ── System ─────────────────────────────────────────────────────────
   /config:
     get:
@@ -1805,6 +1965,18 @@ components:
         created_at:
           type: string
           format: date-time
+        session_id:
+          type: string
+          format: uuid
+          description: MCP or HTTP session that produced this decision.
+        agent_context:
+          type: object
+          additionalProperties: true
+          description: Composite agent identity context (tool, model, task, etc.).
+        api_key_id:
+          type: string
+          format: uuid
+          description: Managed API key that authenticated this decision.
         alternatives:
           type: array
           items:
@@ -2038,6 +2210,133 @@ components:
           type: string
           default: conflict_resolution
           description: Decision type for the resolution trace (defaults to "conflict_resolution").
+
+    # ── API Key schemas ─────────────────────────────────────────────
+    APIKey:
+      type: object
+      required: [id, prefix, agent_id, org_id, label, created_by, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        prefix:
+          type: string
+          description: First 8 hex chars of the raw key, for identification.
+        agent_id:
+          type: string
+        org_id:
+          type: string
+          format: uuid
+        label:
+          type: string
+          description: Human-readable label for this key.
+        created_by:
+          type: string
+          description: Agent ID of who minted this key.
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    CreateKeyRequest:
+      type: object
+      required: [agent_id]
+      properties:
+        agent_id:
+          type: string
+          description: The agent this key authenticates as.
+        label:
+          type: string
+          description: Human-readable label (e.g. "Production MCP", "CI Runner").
+        expires_at:
+          type: string
+          format: date-time
+          description: Optional expiration timestamp.
+
+    CreateKeyResponse:
+      type: object
+      required: [id, prefix, agent_id, label, raw_key, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        prefix:
+          type: string
+        agent_id:
+          type: string
+        label:
+          type: string
+        raw_key:
+          type: string
+          description: The full API key. Shown only once — store it securely.
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    RotateKeyResponse:
+      type: object
+      required: [new_key, revoked_key_id]
+      properties:
+        new_key:
+          $ref: "#/components/schemas/CreateKeyResponse"
+        revoked_key_id:
+          type: string
+          format: uuid
+
+    UsageResponse:
+      type: object
+      required: [org_id, period, total_decisions, by_key, by_agent]
+      properties:
+        org_id:
+          type: string
+          format: uuid
+        period:
+          type: string
+          description: Billing period (YYYY-MM).
+        total_decisions:
+          type: integer
+          description: Total decisions in the period.
+        by_key:
+          type: array
+          items:
+            type: object
+            properties:
+              key_id:
+                type: string
+                format: uuid
+                nullable: true
+              prefix:
+                type: string
+              label:
+                type: string
+              agent_id:
+                type: string
+              decisions:
+                type: integer
+        by_agent:
+          type: array
+          items:
+            type: object
+            properties:
+              agent_id:
+                type: string
+              decisions:
+                type: integer
 
     # ── Trace schemas ────────────────────────────────────────────────
     TraceRequest:
@@ -2565,6 +2864,26 @@ components:
       properties:
         data:
           $ref: "#/components/schemas/AccessGrant"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_KeyList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          properties:
+            keys:
+              type: array
+              items:
+                $ref: "#/components/schemas/APIKey"
+            total:
+              type: integer
+            limit:
+              type: integer
+            offset:
+              type: integer
         meta:
           $ref: "#/components/schemas/ResponseMeta"
 
