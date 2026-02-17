@@ -457,9 +457,13 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		reasoningPtr = &reasoning
 	}
 
-	// Extract MCP session ID and client info from context.
+	// Build agent_context with server/client namespace split.
+	// "server" contains values the server extracted or verified (MCP session,
+	// client info, roots, API key prefix). "client" contains self-reported
+	// values from tool parameters (model, task).
 	var sessionID *uuid.UUID
-	agentContext := map[string]any{}
+	serverCtx := map[string]any{}
+	clientCtx := map[string]any{}
 
 	if session := mcpserver.ClientSessionFromContext(ctx); session != nil {
 		if sid, parseErr := uuid.Parse(session.SessionID()); parseErr == nil {
@@ -468,28 +472,55 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		if clientInfoSession, ok := session.(mcpserver.SessionWithClientInfo); ok {
 			info := clientInfoSession.GetClientInfo()
 			if info.Name != "" {
-				agentContext["tool"] = info.Name
+				serverCtx["tool"] = info.Name
 			}
 			if info.Version != "" {
-				agentContext["tool_version"] = info.Version
+				serverCtx["tool_version"] = info.Version
 			}
+		}
+	}
+
+	// Request MCP roots (cached per session, best-effort).
+	if roots := s.requestRoots(ctx); len(roots) > 0 {
+		if uris := rootURIs(roots); len(uris) > 0 {
+			serverCtx["roots"] = uris
+		}
+		if project := inferProjectFromRoots(roots); project != "" {
+			serverCtx["project"] = project
+		}
+	}
+
+	// API key prefix for server-verified attribution.
+	if claims != nil && claims.APIKeyID != nil {
+		key, keyErr := s.db.GetAPIKeyByID(ctx, orgID, *claims.APIKeyID)
+		if keyErr == nil && key.Prefix != "" {
+			serverCtx["api_key_prefix"] = key.Prefix
 		}
 	}
 
 	// Self-reported context from tool parameters.
 	if m := request.GetString("model", ""); m != "" {
-		agentContext["model"] = m
+		clientCtx["model"] = m
 	}
 	if t := request.GetString("task", ""); t != "" {
-		agentContext["task"] = t
+		clientCtx["task"] = t
 	}
 
 	// Operator from JWT claims: use the agent's display name if distinct from agent_id.
 	if claims != nil {
 		agent, agentErr := s.db.GetAgentByAgentID(ctx, orgID, claims.AgentID)
 		if agentErr == nil && agent.Name != "" && agent.Name != agent.AgentID {
-			agentContext["operator"] = agent.Name
+			clientCtx["operator"] = agent.Name
 		}
+	}
+
+	// Assemble namespaced agent_context.
+	agentContext := map[string]any{}
+	if len(serverCtx) > 0 {
+		agentContext["server"] = serverCtx
+	}
+	if len(clientCtx) > 0 {
+		agentContext["client"] = clientCtx
 	}
 
 	// Idempotency: if the caller provided an idempotency_key, check/reserve it

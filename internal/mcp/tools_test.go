@@ -262,13 +262,16 @@ func TestHandleTrace_ModelAndTaskContext(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
 
-	// Verify agent_context was stored with model and task.
+	// Verify agent_context was stored with model and task under "client" namespace.
 	decID, err := uuid.Parse(resp.DecisionID)
 	require.NoError(t, err)
 	dec, err := testDB.GetDecision(ctx, uuid.Nil, decID, storage.GetDecisionOpts{})
 	require.NoError(t, err)
-	assert.Equal(t, "claude-opus-4-6", dec.AgentContext["model"])
-	assert.Equal(t, "codebase review", dec.AgentContext["task"])
+
+	clientCtx, ok := dec.AgentContext["client"].(map[string]any)
+	require.True(t, ok, "agent_context should have 'client' namespace")
+	assert.Equal(t, "claude-opus-4-6", clientCtx["model"])
+	assert.Equal(t, "codebase review", clientCtx["task"])
 }
 
 func TestHandleTrace_CheckNudge(t *testing.T) {
