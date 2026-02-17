@@ -190,10 +190,8 @@ func TestPartitionUpsertEntries_EmptyInputs(t *testing.T) {
 	assert.Empty(t, pendingEntries)
 }
 
-func TestPointConversion(t *testing.T) {
-	// Create a fully-populated DecisionForIndex with SessionID and AgentContext
-	// containing tool, model, and repo keys. Then convert it to a Point using the
-	// same logic as processUpserts and verify all fields are preserved.
+func TestPointConversion_FlatContext(t *testing.T) {
+	// Legacy flat agent_context format (pre-PR #180).
 	decisionID := uuid.New()
 	orgID := uuid.New()
 	sessionID := uuid.New()
@@ -216,31 +214,8 @@ func TestPointConversion(t *testing.T) {
 		},
 	}
 
-	// Replicate the conversion logic from processUpserts (outbox.go lines 264-286).
-	p := Point{
-		ID:           d.ID,
-		OrgID:        d.OrgID,
-		AgentID:      d.AgentID,
-		DecisionType: d.DecisionType,
-		Confidence:   d.Confidence,
-		QualityScore: d.QualityScore,
-		ValidFrom:    d.ValidFrom,
-		Embedding:    d.Embedding,
-		SessionID:    d.SessionID,
-	}
-	if d.AgentContext != nil {
-		if v, ok := d.AgentContext["tool"].(string); ok {
-			p.Tool = v
-		}
-		if v, ok := d.AgentContext["model"].(string); ok {
-			p.Model = v
-		}
-		if v, ok := d.AgentContext["repo"].(string); ok {
-			p.Repo = v
-		}
-	}
+	p := pointFromDecision(d)
 
-	// Verify every field on the resulting Point.
 	assert.Equal(t, decisionID, p.ID)
 	assert.Equal(t, orgID, p.OrgID)
 	assert.Equal(t, "coder", p.AgentID)
@@ -254,6 +229,156 @@ func TestPointConversion(t *testing.T) {
 	assert.Equal(t, "claude-code", p.Tool)
 	assert.Equal(t, "claude-opus-4-6", p.Model)
 	assert.Equal(t, "ashita-ai/akashi", p.Repo)
+}
+
+func TestPointConversion_NamespacedContext(t *testing.T) {
+	// New namespaced agent_context format (PR #180+).
+	d := DecisionForIndex{
+		ID:           uuid.New(),
+		OrgID:        uuid.New(),
+		AgentID:      "admin",
+		DecisionType: "security",
+		Confidence:   0.92,
+		QualityScore: 0.88,
+		ValidFrom:    time.Now(),
+		Embedding:    []float32{0.5, 0.6},
+		AgentContext: map[string]any{
+			"server": map[string]any{
+				"tool":         "claude-code",
+				"tool_version": "1.0.30",
+				"repo":         "ashita-ai/akashi",
+			},
+			"client": map[string]any{
+				"model": "claude-opus-4-6",
+				"task":  "code review",
+			},
+		},
+	}
+
+	p := pointFromDecision(d)
+
+	assert.Equal(t, "claude-code", p.Tool)
+	assert.Equal(t, "claude-opus-4-6", p.Model)
+	assert.Equal(t, "ashita-ai/akashi", p.Repo)
+}
+
+func TestPointConversion_NilContext(t *testing.T) {
+	d := DecisionForIndex{
+		ID:           uuid.New(),
+		OrgID:        uuid.New(),
+		AgentID:      "planner",
+		DecisionType: "architecture",
+		Embedding:    []float32{0.1},
+		AgentContext: nil,
+	}
+
+	p := pointFromDecision(d)
+
+	assert.Empty(t, p.Tool)
+	assert.Empty(t, p.Model)
+	assert.Empty(t, p.Repo)
+}
+
+// pointFromDecision replicates the conversion logic from processUpserts.
+func pointFromDecision(d DecisionForIndex) Point {
+	p := Point{
+		ID:           d.ID,
+		OrgID:        d.OrgID,
+		AgentID:      d.AgentID,
+		DecisionType: d.DecisionType,
+		Confidence:   d.Confidence,
+		QualityScore: d.QualityScore,
+		ValidFrom:    d.ValidFrom,
+		Embedding:    d.Embedding,
+		SessionID:    d.SessionID,
+	}
+	if d.AgentContext != nil {
+		p.Tool = agentContextString(d.AgentContext, "server", "tool")
+		p.Model = agentContextString(d.AgentContext, "client", "model")
+		p.Repo = agentContextString(d.AgentContext, "server", "repo")
+	}
+	return p
+}
+
+func TestAgentContextString(t *testing.T) {
+	tests := []struct {
+		name      string
+		ctx       map[string]any
+		namespace string
+		key       string
+		want      string
+	}{
+		{
+			name:      "namespaced path",
+			ctx:       map[string]any{"server": map[string]any{"tool": "claude-code"}},
+			namespace: "server",
+			key:       "tool",
+			want:      "claude-code",
+		},
+		{
+			name:      "flat fallback",
+			ctx:       map[string]any{"tool": "cursor"},
+			namespace: "server",
+			key:       "tool",
+			want:      "cursor",
+		},
+		{
+			name:      "namespaced takes precedence over flat",
+			ctx:       map[string]any{"server": map[string]any{"tool": "claude-code"}, "tool": "old-flat-value"},
+			namespace: "server",
+			key:       "tool",
+			want:      "claude-code",
+		},
+		{
+			name:      "missing key returns empty",
+			ctx:       map[string]any{"server": map[string]any{"other": "value"}},
+			namespace: "server",
+			key:       "tool",
+			want:      "",
+		},
+		{
+			name:      "missing namespace returns empty",
+			ctx:       map[string]any{"unrelated": "data"},
+			namespace: "server",
+			key:       "tool",
+			want:      "",
+		},
+		{
+			name:      "nil context returns empty",
+			ctx:       nil,
+			namespace: "server",
+			key:       "tool",
+			want:      "",
+		},
+		{
+			name:      "namespace is not a map returns flat fallback",
+			ctx:       map[string]any{"server": "not-a-map", "tool": "fallback"},
+			namespace: "server",
+			key:       "tool",
+			want:      "fallback",
+		},
+		{
+			name:      "client namespace for model",
+			ctx:       map[string]any{"client": map[string]any{"model": "claude-opus-4-6"}},
+			namespace: "client",
+			key:       "model",
+			want:      "claude-opus-4-6",
+		},
+		{
+			name:      "non-string value returns empty",
+			ctx:       map[string]any{"server": map[string]any{"tool": 42}},
+			namespace: "server",
+			key:       "tool",
+			want:      "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := agentContextString(tt.ctx, tt.namespace, tt.key)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func TestNewOutboxWorker(t *testing.T) {
