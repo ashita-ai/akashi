@@ -227,8 +227,7 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 // Only returns active decisions (valid_to IS NULL). Use QueryDecisionsTemporal for
 // point-in-time queries that include superseded decisions.
 func (db *DB) QueryDecisions(ctx context.Context, orgID uuid.UUID, req model.QueryRequest) ([]model.Decision, int, error) {
-	where, args := buildDecisionWhereClause(orgID, req.Filters, 1)
-	where += " AND valid_to IS NULL"
+	where, args := buildDecisionWhereClause(orgID, req.Filters, 1, true)
 
 	// Filter by OTEL trace_id via agent_runs join.
 	if req.TraceID != nil {
@@ -321,7 +320,7 @@ func (db *DB) QueryDecisions(ctx context.Context, orgID uuid.UUID, req model.Que
 
 // QueryDecisionsTemporal executes a bi-temporal point-in-time query.
 func (db *DB) QueryDecisionsTemporal(ctx context.Context, orgID uuid.UUID, req model.TemporalQueryRequest) ([]model.Decision, error) {
-	where, args := buildDecisionWhereClause(orgID, req.Filters, 1)
+	where, args := buildDecisionWhereClause(orgID, req.Filters, 1, false)
 
 	// Add temporal conditions.
 	argIdx := len(args) + 1
@@ -414,8 +413,7 @@ func (db *DB) HasDecisionsWithNullSearchVector(ctx context.Context) (bool, error
 // searchByFTS uses PostgreSQL websearch_to_tsquery for full-text search with
 // stemming, stop word removal, and weighted ranking (outcome > type > reasoning).
 func (db *DB) searchByFTS(ctx context.Context, orgID uuid.UUID, query string, filters model.QueryFilters, limit int) ([]model.SearchResult, error) {
-	where, args := buildDecisionWhereClause(orgID, filters, 1)
-	where += " AND valid_to IS NULL"
+	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
 
 	args = append(args, query)
 	qp := len(args)
@@ -440,8 +438,7 @@ func (db *DB) searchByFTS(ctx context.Context, orgID uuid.UUID, query string, fi
 // searchByILIKE uses OR-any-term ILIKE matching as a fallback when FTS returns nothing.
 // A result matches if any single query term appears in any searchable field.
 func (db *DB) searchByILIKE(ctx context.Context, orgID uuid.UUID, query string, filters model.QueryFilters, limit int) ([]model.SearchResult, error) {
-	where, args := buildDecisionWhereClause(orgID, filters, 1)
-	where += " AND valid_to IS NULL"
+	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
 
 	words := strings.Fields(query)
 	if len(words) > 20 {
@@ -526,8 +523,7 @@ func (db *DB) GetDecisionsByAgent(ctx context.Context, orgID uuid.UUID, agentID 
 		filters.TimeRange = &model.TimeRange{From: from, To: to}
 	}
 
-	where, args := buildDecisionWhereClause(orgID, filters, 1)
-	where += " AND valid_to IS NULL"
+	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
 
 	var total int
 	if err := db.pool.QueryRow(ctx, "SELECT COUNT(*) FROM decisions"+where, args...).Scan(&total); err != nil {
@@ -552,7 +548,7 @@ func (db *DB) GetDecisionsByAgent(ctx context.Context, orgID uuid.UUID, agentID 
 	return decisions, total, err
 }
 
-func buildDecisionWhereClause(orgID uuid.UUID, f model.QueryFilters, startArgIdx int) (string, []any) {
+func buildDecisionWhereClause(orgID uuid.UUID, f model.QueryFilters, startArgIdx int, currentOnly bool) (string, []any) {
 	var conditions []string
 	var args []any
 	idx := startArgIdx
@@ -561,6 +557,10 @@ func buildDecisionWhereClause(orgID uuid.UUID, f model.QueryFilters, startArgIdx
 	conditions = append(conditions, fmt.Sprintf("org_id = $%d", idx))
 	args = append(args, orgID)
 	idx++
+
+	if currentOnly {
+		conditions = append(conditions, "valid_to IS NULL")
+	}
 
 	if len(f.AgentIDs) > 0 {
 		conditions = append(conditions, fmt.Sprintf("agent_id = ANY($%d)", idx))
@@ -604,18 +604,20 @@ func buildDecisionWhereClause(orgID uuid.UUID, f model.QueryFilters, startArgIdx
 		args = append(args, *f.SessionID)
 		idx++
 	}
+	// agent_context filters use COALESCE to support both the new namespaced
+	// format (PR #180: server/client sub-objects) and the legacy flat format.
 	if f.Tool != nil {
-		conditions = append(conditions, fmt.Sprintf("agent_context->>'tool' = $%d", idx))
+		conditions = append(conditions, fmt.Sprintf("COALESCE(agent_context->'server'->>'tool', agent_context->>'tool') = $%d", idx))
 		args = append(args, *f.Tool)
 		idx++
 	}
 	if f.Model != nil {
-		conditions = append(conditions, fmt.Sprintf("agent_context->>'model' = $%d", idx))
+		conditions = append(conditions, fmt.Sprintf("COALESCE(agent_context->'client'->>'model', agent_context->>'model') = $%d", idx))
 		args = append(args, *f.Model)
 		idx++
 	}
 	if f.Repo != nil {
-		conditions = append(conditions, fmt.Sprintf("agent_context->>'repo' = $%d", idx))
+		conditions = append(conditions, fmt.Sprintf("COALESCE(agent_context->'server'->>'repo', agent_context->>'repo') = $%d", idx))
 		args = append(args, *f.Repo)
 		idx++ //nolint:ineffassign // keep idx consistent so future additions don't miscount
 	}
@@ -627,8 +629,7 @@ func buildDecisionWhereClause(orgID uuid.UUID, f model.QueryFilters, startArgIdx
 // (valid_from, id). This avoids the O(offset) scan cost of OFFSET-based pagination,
 // making it suitable for streaming large exports. Pass a nil cursor for the first page.
 func (db *DB) ExportDecisionsCursor(ctx context.Context, orgID uuid.UUID, filters model.QueryFilters, cursor *ExportCursor, limit int) ([]model.Decision, error) {
-	where, args := buildDecisionWhereClause(orgID, filters, 1)
-	where += " AND valid_to IS NULL"
+	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
 
 	if cursor != nil {
 		idx := len(args) + 1
