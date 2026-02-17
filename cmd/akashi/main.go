@@ -315,6 +315,15 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("admin seed: %w", err)
 	}
 
+	// Migrate legacy agent API keys to the decoupled api_keys table.
+	// Idempotent: skips agents that already have entries in api_keys.
+	// Must run after SeedAdmin since it needs agents to exist.
+	if migrated, err := db.MigrateAgentKeysToAPIKeys(ctx); err != nil {
+		logger.Warn("api key migration failed (non-fatal, legacy keys still work)", "error", err)
+	} else if migrated > 0 {
+		logger.Info("migrated legacy agent keys to api_keys table", "count", migrated)
+	}
+
 	// Start conflict refresh loop.
 	go conflictRefreshLoop(ctx, db, logger, cfg.ConflictRefreshInterval)
 
