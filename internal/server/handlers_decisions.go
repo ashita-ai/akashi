@@ -114,6 +114,7 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		PrecedentRef: req.PrecedentRef,
 		SessionID:    sessionID,
 		AgentContext: agentContext,
+		APIKeyID:     claims.APIKeyID,
 		AuditMeta:    h.buildAuditMeta(r, orgID),
 	})
 	if err != nil {
@@ -611,6 +612,7 @@ func (h *Handlers) HandleResolveConflict(w http.ResponseWriter, r *http.Request)
 			Confidence:   1.0, // Resolution decisions are definitive.
 			Reasoning:    req.Reasoning,
 		},
+		APIKeyID:  claims.APIKeyID,
 		AuditMeta: h.buildAuditMeta(r, orgID),
 	}, storage.ResolveConflictInTraceParams{
 		ConflictID: id,

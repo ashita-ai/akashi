@@ -538,10 +538,17 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		Endpoint:     "akashi_trace",
 	}
 
+	// Extract API key ID from claims for per-key attribution.
+	var apiKeyID *uuid.UUID
+	if claims != nil {
+		apiKeyID = claims.APIKeyID
+	}
+
 	result, err := s.decisionSvc.Trace(ctx, orgID, decisions.TraceInput{
 		AgentID:      agentID,
 		SessionID:    sessionID,
 		AgentContext: agentContext,
+		APIKeyID:     apiKeyID,
 		AuditMeta:    auditMeta,
 		Decision: model.TraceDecision{
 			DecisionType: decisionType,

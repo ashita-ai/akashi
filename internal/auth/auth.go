@@ -24,9 +24,10 @@ import (
 // Claims extends jwt.RegisteredClaims with Akashi-specific fields.
 type Claims struct {
 	jwt.RegisteredClaims
-	AgentID string          `json:"agent_id"`
-	OrgID   uuid.UUID       `json:"org_id"`
-	Role    model.AgentRole `json:"role"`
+	AgentID  string          `json:"agent_id"`
+	OrgID    uuid.UUID       `json:"org_id"`
+	Role     model.AgentRole `json:"role"`
+	APIKeyID *uuid.UUID      `json:"api_key_id,omitempty"` // Set when authenticated via a managed API key.
 }
 
 // JWTManager handles JWT creation and validation using Ed25519.

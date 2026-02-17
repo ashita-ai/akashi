@@ -80,6 +80,7 @@ type TraceInput struct {
 	PrecedentRef *uuid.UUID
 	SessionID    *uuid.UUID     // MCP session or X-Akashi-Session header.
 	AgentContext map[string]any // Merged server-extracted + client-supplied context.
+	APIKeyID     *uuid.UUID     // Managed API key that authenticated this request.
 
 	// AuditMeta, when non-nil, causes the trace to include a mutation audit
 	// record inside the same transaction. This closes the gap where mutations
@@ -256,6 +257,7 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 			OutcomeEmbedding: outcomeEmb,
 			QualityScore:     qualityScore,
 			PrecedentRef:     input.PrecedentRef,
+			APIKeyID:         input.APIKeyID,
 		},
 		Alternatives: alts,
 		Evidence:     evs,

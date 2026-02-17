@@ -15,8 +15,8 @@ import { Link } from "react-router";
 
 const healthStatusConfig: Record<string, { label: string; color: string }> = {
   healthy: { label: "Healthy", color: "text-emerald-500" },
-  degraded: { label: "Degraded", color: "text-amber-500" },
-  unhealthy: { label: "Unhealthy", color: "text-red-500" },
+  needs_attention: { label: "Needs Attention", color: "text-amber-500" },
+  insufficient_data: { label: "No Data", color: "text-muted-foreground" },
 };
 
 export default function Dashboard() {
@@ -61,7 +61,7 @@ export default function Dashboard() {
             )}
             {traceHealth.data && (
               <p className="text-xs text-muted-foreground">
-                {traceHealth.data.decisions_24h} in last 24h
+                {traceHealth.data.completeness.total_decisions} total traced
               </p>
             )}
           </CardContent>
@@ -80,9 +80,9 @@ export default function Dashboard() {
                 {agents.data?.length ?? 0}
               </div>
             )}
-            {traceHealth.data && traceHealth.data.active_agents > 0 && (
+            {traceHealth.data?.evidence && (
               <p className="text-xs text-muted-foreground">
-                {traceHealth.data.active_agents} active recently
+                {traceHealth.data.evidence.coverage_pct.toFixed(0)}% with evidence
               </p>
             )}
           </CardContent>
@@ -123,7 +123,7 @@ export default function Dashboard() {
                   {healthConfig.label}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  avg confidence: {((traceHealth.data?.avg_confidence ?? 0) * 100).toFixed(0)}%
+                  avg quality: {((traceHealth.data?.completeness.avg_quality ?? 0) * 100).toFixed(0)}%
                 </p>
               </>
             )}
@@ -141,26 +141,17 @@ export default function Dashboard() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-2">
-              {traceHealth.data.gaps.map((gap) => (
-                <div
-                  key={gap.agent_id}
-                  className="flex items-center justify-between rounded-md border p-3 text-sm"
+            <ul className="space-y-2">
+              {traceHealth.data.gaps.map((gap, i) => (
+                <li
+                  key={i}
+                  className="flex items-center gap-2 rounded-md border p-3 text-sm"
                 >
-                  <div className="flex items-center gap-2">
-                    <Badge variant="outline" className="font-mono text-xs">
-                      {gap.agent_id}
-                    </Badge>
-                    <span className="text-muted-foreground">
-                      last seen {formatRelativeTime(gap.last_seen)}
-                    </span>
-                  </div>
-                  <Badge variant="warning" className="text-xs">
-                    {gap.gap_hours.toFixed(0)}h gap
-                  </Badge>
-                </div>
+                  <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />
+                  <span className="text-muted-foreground">{gap}</span>
+                </li>
               ))}
-            </div>
+            </ul>
           </CardContent>
         </Card>
       )}
