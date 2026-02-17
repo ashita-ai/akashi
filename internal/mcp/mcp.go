@@ -58,6 +58,7 @@ type Server struct {
 	grantCache   *authz.GrantCache  // optional cache for LoadGrantedSet
 	logger       *slog.Logger
 	checkTracker *checkTracker // tracks check-before-trace workflow compliance
+	rootsCache   *rootsCache   // caches MCP roots per session (one request per session)
 }
 
 // New creates and configures a new MCP server with all resources, tools, and prompts.
@@ -68,6 +69,7 @@ func New(db *storage.DB, decisionSvc *decisions.Service, grantCache *authz.Grant
 		grantCache:   grantCache,
 		logger:       logger,
 		checkTracker: newCheckTracker(time.Hour),
+		rootsCache:   newRootsCache(),
 	}
 
 	s.mcpServer = mcpserver.NewMCPServer(
@@ -76,6 +78,7 @@ func New(db *storage.DB, decisionSvc *decisions.Service, grantCache *authz.Grant
 		mcpserver.WithResourceCapabilities(true, true),
 		mcpserver.WithToolCapabilities(true),
 		mcpserver.WithPromptCapabilities(true),
+		mcpserver.WithRoots(),
 		mcpserver.WithInstructions(serverInstructions),
 	)
 

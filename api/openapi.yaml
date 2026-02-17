@@ -1971,8 +1971,50 @@ components:
           description: MCP or HTTP session that produced this decision.
         agent_context:
           type: object
+          description: |
+            Composite agent identity context with server/client namespace split.
+            "server" contains values the server extracted or verified (MCP client info,
+            roots, API key prefix). "client" contains self-reported values from tool
+            parameters or request body (model, task, operator). Older decisions may
+            have a flat structure (pre-namespace) — treat as "client" for compatibility.
+          properties:
+            server:
+              type: object
+              description: Server-extracted or verified context.
+              properties:
+                tool:
+                  type: string
+                  description: MCP client name or SDK User-Agent prefix.
+                tool_version:
+                  type: string
+                  description: MCP client version or SDK version.
+                roots:
+                  type: array
+                  items:
+                    type: string
+                  description: MCP roots URIs (file:// paths from client workspace).
+                project:
+                  type: string
+                  description: Inferred project name from the first MCP root URI.
+                api_key_prefix:
+                  type: string
+                  description: First 8 chars of the managed API key used.
+              additionalProperties: true
+            client:
+              type: object
+              description: Self-reported context from the calling agent.
+              properties:
+                model:
+                  type: string
+                  description: LLM model powering the agent.
+                task:
+                  type: string
+                  description: What the agent was working on.
+                operator:
+                  type: string
+                  description: Human-readable agent display name.
+              additionalProperties: true
           additionalProperties: true
-          description: Composite agent identity context (tool, model, task, etc.).
         api_key_id:
           type: string
           format: uuid

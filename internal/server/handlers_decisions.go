@@ -69,18 +69,31 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Agent context from request body + headers.
-	agentContext := map[string]any{}
+	// Build agent_context with server/client namespace split.
+	// "server" contains server-extracted values (User-Agent, API key prefix).
+	// "client" contains self-reported values from the request body context.
+	serverCtx := map[string]any{}
+	clientCtx := map[string]any{}
+
+	// Client-reported context from request body (backward compat: flat → client).
 	for k, v := range req.Context {
-		agentContext[k] = v
+		clientCtx[k] = v
 	}
 
 	// Tool from User-Agent header (SDKs send "akashi-go/0.1.0" etc).
 	if ua := r.Header.Get("User-Agent"); ua != "" && strings.HasPrefix(ua, "akashi-") {
 		parts := strings.SplitN(ua, "/", 2)
-		agentContext["tool"] = parts[0]
+		serverCtx["tool"] = parts[0]
 		if len(parts) > 1 {
-			agentContext["tool_version"] = parts[1]
+			serverCtx["tool_version"] = parts[1]
+		}
+	}
+
+	// API key prefix for server-verified attribution.
+	if claims.APIKeyID != nil {
+		key, keyErr := h.db.GetAPIKeyByID(r.Context(), orgID, *claims.APIKeyID)
+		if keyErr == nil && key.Prefix != "" {
+			serverCtx["api_key_prefix"] = key.Prefix
 		}
 	}
 
@@ -88,8 +101,17 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	if claims != nil {
 		agent, agentErr := h.db.GetAgentByAgentID(r.Context(), orgID, claims.AgentID)
 		if agentErr == nil && agent.Name != "" && agent.Name != agent.AgentID {
-			agentContext["operator"] = agent.Name
+			clientCtx["operator"] = agent.Name
 		}
+	}
+
+	// Assemble namespaced agent_context.
+	agentContext := map[string]any{}
+	if len(serverCtx) > 0 {
+		agentContext["server"] = serverCtx
+	}
+	if len(clientCtx) > 0 {
+		agentContext["client"] = clientCtx
 	}
 
 	idemPayload := struct {
