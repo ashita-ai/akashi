@@ -15,7 +15,11 @@ import (
 )
 
 // HandleCreateAgent handles POST /v1/agents (admin-only).
+// The api_key field is optional: if omitted, a managed-format key is generated
+// server-side and returned once in the response. If provided, the caller-supplied
+// key is stored. Either way, the credential lives in api_keys (not agents.api_key_hash).
 func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
 
 	var req model.CreateAgentRequest
@@ -24,8 +28,8 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.AgentID == "" || req.Name == "" || req.APIKey == "" {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "agent_id, name, and api_key are required")
+	if req.AgentID == "" || req.Name == "" {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "agent_id and name are required")
 		return
 	}
 	if err := model.ValidateAgentID(req.AgentID); err != nil {
@@ -43,16 +47,9 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 			"invalid role: must be one of platform_admin, org_owner, admin, agent, reader")
 		return
 	}
-	callerRole := ClaimsFromContext(r.Context()).Role
-	if model.RoleRank(callerRole) <= model.RoleRank(req.Role) {
+	if model.RoleRank(claims.Role) <= model.RoleRank(req.Role) {
 		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden,
 			"cannot create agent with role equal to or higher than your own")
-		return
-	}
-
-	hash, err := auth.HashAPIKey(req.APIKey)
-	if err != nil {
-		h.writeInternalError(w, r, "failed to hash api key", err)
 		return
 	}
 
@@ -64,16 +61,55 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	audit := h.buildAuditEntry(r, orgID, "create_agent", "agent", "", nil, nil, nil)
-	agent, err := h.db.CreateAgentWithAudit(r.Context(), model.Agent{
-		AgentID:    req.AgentID,
-		OrgID:      orgID,
-		Name:       req.Name,
-		Role:       req.Role,
-		APIKeyHash: &hash,
-		Tags:       req.Tags,
-		Metadata:   req.Metadata,
-	}, audit)
+	// Determine the raw key value and whether to expose it in the response.
+	// Server-generates a managed-format key when none is supplied by the caller.
+	rawKey := req.APIKey
+	showRawKey := false
+	var prefix string
+	if rawKey == "" {
+		var genErr error
+		rawKey, prefix, genErr = model.GenerateRawKey()
+		if genErr != nil {
+			h.writeInternalError(w, r, "failed to generate api key", genErr)
+			return
+		}
+		showRawKey = true
+	} else {
+		// Best-effort prefix extraction for managed-format keys.
+		if p, _, err := model.ParseRawKey(rawKey); err == nil {
+			prefix = p
+		}
+	}
+
+	hash, err := auth.HashAPIKey(rawKey)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to hash api key", err)
+		return
+	}
+
+	agentAudit := h.buildAuditEntry(r, orgID, "create_agent", "agent", "", nil, nil, nil)
+	keyAudit := h.buildAuditEntry(r, orgID, "create_api_key", "api_key", "", nil, nil, nil)
+
+	agent, apiKey, err := h.db.CreateAgentAndKeyTx(r.Context(),
+		model.Agent{
+			AgentID:  req.AgentID,
+			OrgID:    orgID,
+			Name:     req.Name,
+			Role:     req.Role,
+			Tags:     req.Tags,
+			Metadata: req.Metadata,
+		},
+		model.APIKey{
+			Prefix:    prefix,
+			KeyHash:   hash,
+			AgentID:   req.AgentID,
+			OrgID:     orgID,
+			Label:     "default",
+			CreatedBy: claims.AgentID,
+		},
+		agentAudit,
+		keyAudit,
+	)
 	if err != nil {
 		if isDuplicateKeyError(err) {
 			writeError(w, r, http.StatusConflict, model.ErrCodeConflict, "agent_id already exists")
@@ -83,7 +119,18 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, r, http.StatusCreated, agent)
+	resp := map[string]any{
+		"agent": agent,
+		"api_key": map[string]any{
+			"id":     apiKey.ID,
+			"prefix": apiKey.Prefix,
+		},
+	}
+	if showRawKey {
+		// Raw key is shown exactly once when server-generated.
+		resp["raw_key"] = rawKey
+	}
+	writeJSON(w, r, http.StatusCreated, resp)
 }
 
 // HandleListAgents handles GET /v1/agents (admin-only).

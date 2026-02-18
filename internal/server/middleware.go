@@ -357,6 +357,10 @@ func authMiddleware(jwtMgr *auth.JWTManager, db *storage.DB, next http.Handler) 
 // verifyAPIKey authenticates a request using "ApiKey agent_id:secret" credentials.
 // Checks the api_keys table first (managed keys), falls back to agents.api_key_hash
 // (legacy keys). Returns synthesized claims on success.
+//
+// For managed-format keys (ak_<prefix>_<secret>), uses a prefix index lookup to
+// load at most one key before running Argon2, avoiding O(N·hash) cost on agents
+// with many keys. Non-ak_ keys fall back to the full scan (legacy handling).
 func verifyAPIKey(ctx context.Context, db *storage.DB, credential, orgHeader string) (*auth.Claims, error) {
 	// Parse "agent_id:api_key" — agent_ids cannot contain colons (validated on creation).
 	colonIdx := strings.IndexByte(credential, ':')
@@ -378,7 +382,22 @@ func verifyAPIKey(ctx context.Context, db *storage.DB, credential, orgHeader str
 	}
 
 	// Phase 1: check managed api_keys table.
-	managedKeys, _ := db.GetActiveAPIKeysByAgentIDGlobal(ctx, agentID)
+	// Optimization: for ak_-format keys, use the prefix index (idx_api_keys_prefix_agent)
+	// to load at most one candidate row, then Argon2-verify only that row.
+	// For non-ak_ keys (legacy format), fall back to the full scan.
+	var managedKeys []model.APIKey
+	if prefix, _, parseErr := model.ParseRawKey(apiKey); parseErr == nil {
+		// Managed-format key: prefix pre-filter → at most one Argon2 call.
+		if k, lookupErr := db.GetAPIKeyByPrefixAndAgent(ctx, agentID, prefix); lookupErr == nil {
+			managedKeys = []model.APIKey{k}
+		}
+		// If prefix not found, managedKeys stays empty. No fallback to full scan
+		// for ak_-format keys: if it's not in api_keys, it won't be in agents either.
+	} else {
+		// Non-ak_ format: full scan for legacy keys.
+		managedKeys, _ = db.GetActiveAPIKeysByAgentIDGlobal(ctx, agentID)
+	}
+
 	for _, k := range managedKeys {
 		if requestedOrg != nil && k.OrgID != *requestedOrg {
 			continue

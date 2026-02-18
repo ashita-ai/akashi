@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -257,6 +258,13 @@ func (h *Handlers) HandleTemporalQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reject future timestamps with a 1-minute tolerance for clock skew.
+	// A future as_of produces empty or misleading results with no signal to the caller.
+	if req.AsOf.After(time.Now().Add(time.Minute)) {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "as_of must not be in the future")
+		return
+	}
+
 	decisions, err := h.decisionSvc.QueryTemporal(r.Context(), orgID, req)
 	if err != nil {
 		h.writeInternalError(w, r, "temporal query failed", err)
@@ -482,6 +490,7 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	preFilterCount := len(conflicts)
 	conflicts, err = filterConflictsByAccess(r.Context(), h.db, claims, conflicts, h.grantCache)
 	if err != nil {
 		h.writeInternalError(w, r, "authorization check failed", err)
@@ -493,14 +502,21 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 		conflicts = []model.DecisionConflict{}
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"conflicts": conflicts,
-		"total":     total,
 		"count":     len(conflicts),
 		"limit":     limit,
 		"offset":    offset,
-		"has_more":  offset+len(conflicts) < total,
-	})
+	}
+	if len(conflicts) < preFilterCount {
+		// Access filtering removed conflicts — the DB total counted rows the caller
+		// can't see, so it's unknowable without scanning all pages. Omit total.
+		resp["has_more"] = len(conflicts) == limit
+	} else {
+		resp["total"] = total
+		resp["has_more"] = offset+len(conflicts) < total
+	}
+	writeJSON(w, r, http.StatusOK, resp)
 }
 
 // validConflictStatuses defines the allowed values for conflict status transitions.
@@ -837,7 +853,8 @@ func (h *Handlers) HandleSessionView(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleDecisionConflicts handles GET /v1/decisions/{id}/conflicts.
-// Returns all conflicts involving a specific decision (as A or B side).
+// Returns conflicts involving a specific decision (as A or B side), paginated.
+// Accepts ?limit, ?offset, and ?status query parameters.
 func (h *Handlers) HandleDecisionConflicts(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
@@ -845,21 +862,34 @@ func (h *Handlers) HandleDecisionConflicts(w http.ResponseWriter, r *http.Reques
 	idStr := r.PathValue("id")
 	decisionID, err := uuid.Parse(idStr)
 	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "INVALID_INPUT", "invalid decision ID")
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid decision ID")
 		return
 	}
+
+	limit := queryLimit(r, 50)
+	if limit > 200 {
+		limit = 200
+	}
+	offset := queryOffset(r)
 
 	filters := storage.ConflictFilters{DecisionID: &decisionID}
 	if st := r.URL.Query().Get("status"); st != "" {
 		filters.Status = &st
 	}
 
-	conflicts, err := h.db.ListConflicts(r.Context(), orgID, filters, 100, 0)
+	total, err := h.db.CountConflicts(r.Context(), orgID, filters)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to count decision conflicts", err)
+		return
+	}
+
+	conflicts, err := h.db.ListConflicts(r.Context(), orgID, filters, limit, offset)
 	if err != nil {
 		h.writeInternalError(w, r, "failed to list decision conflicts", err)
 		return
 	}
 
+	preFilterCount := len(conflicts)
 	conflicts, err = filterConflictsByAccess(r.Context(), h.db, claims, conflicts, h.grantCache)
 	if err != nil {
 		h.writeInternalError(w, r, "authorization check failed", err)
@@ -870,9 +900,18 @@ func (h *Handlers) HandleDecisionConflicts(w http.ResponseWriter, r *http.Reques
 		conflicts = []model.DecisionConflict{}
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"decision_id": decisionID,
 		"conflicts":   conflicts,
-		"total":       len(conflicts),
-	})
+		"count":       len(conflicts),
+		"limit":       limit,
+		"offset":      offset,
+	}
+	if len(conflicts) < preFilterCount {
+		resp["has_more"] = len(conflicts) == limit
+	} else {
+		resp["total"] = total
+		resp["has_more"] = offset+len(conflicts) < total
+	}
+	writeJSON(w, r, http.StatusOK, resp)
 }

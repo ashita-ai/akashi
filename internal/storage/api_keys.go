@@ -50,6 +50,64 @@ func (db *DB) CreateAPIKeyWithAudit(ctx context.Context, key model.APIKey, audit
 	return key, nil
 }
 
+// GetAPIKeyByPrefixAndAgent looks up a single active API key by (prefix, agent_id).
+// Used by verifyAPIKey for O(1) pre-filter before Argon2 verification.
+// Returns ErrNotFound if no matching active key exists.
+// Global (no org_id) because this is called during auth before org is known.
+func (db *DB) GetAPIKeyByPrefixAndAgent(ctx context.Context, agentID, prefix string) (model.APIKey, error) {
+	var k model.APIKey
+	err := db.pool.QueryRow(ctx,
+		`SELECT id, prefix, key_hash, agent_id, org_id, label, created_by, created_at, last_used_at, expires_at, revoked_at
+		 FROM api_keys
+		 WHERE agent_id = $1
+		   AND prefix = $2
+		   AND revoked_at IS NULL
+		   AND (expires_at IS NULL OR expires_at > now())
+		 LIMIT 1`,
+		agentID, prefix,
+	).Scan(
+		&k.ID, &k.Prefix, &k.KeyHash, &k.AgentID, &k.OrgID,
+		&k.Label, &k.CreatedBy, &k.CreatedAt, &k.LastUsedAt, &k.ExpiresAt, &k.RevokedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.APIKey{}, ErrNotFound
+		}
+		return model.APIKey{}, fmt.Errorf("storage: get api key by prefix: %w", err)
+	}
+	return k, nil
+}
+
+// GetAPIKeysByIDs retrieves multiple API keys by their UUIDs, scoped to an org.
+// Used for batch metadata lookup in usage reporting to avoid N+1 queries.
+func (db *DB) GetAPIKeysByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID) ([]model.APIKey, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := db.pool.Query(ctx,
+		`SELECT id, prefix, key_hash, agent_id, org_id, label, created_by, created_at, last_used_at, expires_at, revoked_at
+		 FROM api_keys WHERE id = ANY($1) AND org_id = $2`,
+		ids, orgID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("storage: get api keys by ids: %w", err)
+	}
+	defer rows.Close()
+
+	var keys []model.APIKey
+	for rows.Next() {
+		var k model.APIKey
+		if err := rows.Scan(
+			&k.ID, &k.Prefix, &k.KeyHash, &k.AgentID, &k.OrgID,
+			&k.Label, &k.CreatedBy, &k.CreatedAt, &k.LastUsedAt, &k.ExpiresAt, &k.RevokedAt,
+		); err != nil {
+			return nil, fmt.Errorf("storage: scan api key: %w", err)
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
 // GetAPIKeyByID retrieves a single API key by its UUID, scoped to an org.
 func (db *DB) GetAPIKeyByID(ctx context.Context, orgID uuid.UUID, keyID uuid.UUID) (model.APIKey, error) {
 	var k model.APIKey
@@ -328,6 +386,25 @@ func (db *DB) MigrateAgentKeysToAPIKeys(ctx context.Context) (int, error) {
 		)
 		if err != nil {
 			return 0, fmt.Errorf("storage: insert migrated key for agent %s: %w", lk.agentID, err)
+		}
+
+		// Write audit trail for the migrated key so the mutation_audit_log
+		// reflects when and why this key entered the api_keys table.
+		if err := InsertMutationAuditTx(ctx, tx, MutationAuditEntry{
+			RequestID:    "system:startup:key-migration",
+			OrgID:        lk.orgID,
+			ActorAgentID: "system",
+			ActorRole:    "platform_admin",
+			Operation:    "migrate_api_key",
+			ResourceType: "api_key",
+			ResourceID:   keyID.String(),
+			AfterData: map[string]any{
+				"agent_id": lk.agentID,
+				"org_id":   lk.orgID,
+				"source":   "legacy_api_key_hash",
+			},
+		}); err != nil {
+			return 0, fmt.Errorf("storage: audit migrate key for agent %s: %w", lk.agentID, err)
 		}
 
 		// NULL out the legacy hash.

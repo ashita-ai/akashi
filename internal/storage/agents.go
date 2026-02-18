@@ -86,6 +86,82 @@ func (db *DB) CreateAgentWithAudit(ctx context.Context, agent model.Agent, audit
 	return agent, nil
 }
 
+// CreateAgentAndKeyTx inserts a new agent and mints its initial API key
+// atomically within a single transaction. The agent's legacy api_key_hash
+// column is always set to NULL — credentials live in api_keys only.
+// Two audit entries are written: one for the agent and one for the key.
+func (db *DB) CreateAgentAndKeyTx(
+	ctx context.Context,
+	agent model.Agent,
+	key model.APIKey,
+	agentAudit, keyAudit MutationAuditEntry,
+) (model.Agent, model.APIKey, error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return model.Agent{}, model.APIKey{}, fmt.Errorf("storage: begin create agent+key tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if agent.ID == uuid.Nil {
+		agent.ID = uuid.New()
+	}
+	now := time.Now().UTC()
+	if agent.CreatedAt.IsZero() {
+		agent.CreatedAt = now
+	}
+	agent.UpdatedAt = now
+	if agent.Metadata == nil {
+		agent.Metadata = map[string]any{}
+	}
+	if agent.Tags == nil {
+		agent.Tags = []string{}
+	}
+	// Credentials live in api_keys — never write the legacy column for new agents.
+	agent.APIKeyHash = nil
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO agents (id, agent_id, org_id, name, role, api_key_hash, tags, metadata, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		agent.ID, agent.AgentID, agent.OrgID, agent.Name, string(agent.Role),
+		agent.APIKeyHash, agent.Tags, agent.Metadata, agent.CreatedAt, agent.UpdatedAt,
+	); err != nil {
+		return model.Agent{}, model.APIKey{}, fmt.Errorf("storage: create agent: %w", err)
+	}
+
+	agentAudit.ResourceID = agent.AgentID
+	agentAudit.AfterData = agent
+	if err := InsertMutationAuditTx(ctx, tx, agentAudit); err != nil {
+		return model.Agent{}, model.APIKey{}, fmt.Errorf("storage: audit in create agent+key tx: %w", err)
+	}
+
+	if key.ID == uuid.Nil {
+		key.ID = uuid.New()
+	}
+	if key.CreatedAt.IsZero() {
+		key.CreatedAt = now
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO api_keys (id, prefix, key_hash, agent_id, org_id, label, created_by, created_at, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		key.ID, key.Prefix, key.KeyHash, key.AgentID, key.OrgID,
+		key.Label, key.CreatedBy, key.CreatedAt, key.ExpiresAt,
+	); err != nil {
+		return model.Agent{}, model.APIKey{}, fmt.Errorf("storage: create api key in agent+key tx: %w", err)
+	}
+
+	keyAudit.ResourceID = key.ID.String()
+	keyAudit.AfterData = key
+	if err := InsertMutationAuditTx(ctx, tx, keyAudit); err != nil {
+		return model.Agent{}, model.APIKey{}, fmt.Errorf("storage: audit api key in create agent+key tx: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return model.Agent{}, model.APIKey{}, fmt.Errorf("storage: commit create agent+key tx: %w", err)
+	}
+	return agent, key, nil
+}
+
 // GetAgentsByAgentIDGlobal returns all agents with the given agent_id across all orgs.
 // Used ONLY for authentication (token issuance) where org_id isn't known yet.
 // Returns all matches so the caller can verify credentials against each one,
