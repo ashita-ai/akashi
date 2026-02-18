@@ -1,6 +1,7 @@
+import { useState, useEffect, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams, Link } from "react-router";
-import { queryDecisions } from "@/lib/api";
+import { queryDecisions, listAgents } from "@/lib/api";
 import {
   Table,
   TableBody,
@@ -12,12 +13,19 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate, truncate } from "@/lib/utils";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { useState, type FormEvent } from "react";
 
 const PAGE_SIZE = 25;
+const ALL_AGENTS = "__all__";
 
 export default function Decisions() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -26,8 +34,9 @@ export default function Decisions() {
   const agentFilter = searchParams.get("agent") ?? "";
   const typeFilter = searchParams.get("type") ?? "";
 
-  const [agentInput, setAgentInput] = useState(agentFilter);
+  // typeInput is a local draft — committed on form submit
   const [typeInput, setTypeInput] = useState(typeFilter);
+  useEffect(() => { setTypeInput(typeFilter); }, [typeFilter]);
 
   const { data, isPending } = useQuery({
     queryKey: ["decisions", page, agentFilter, typeFilter],
@@ -37,7 +46,6 @@ export default function Decisions() {
           ...(agentFilter ? { agent_id: [agentFilter] } : {}),
           ...(typeFilter ? { decision_type: typeFilter } : {}),
         },
-        include: ["alternatives"],
         order_by: "valid_from",
         order_dir: "desc",
         limit: PAGE_SIZE,
@@ -45,12 +53,32 @@ export default function Decisions() {
       }),
   });
 
-  function applyFilters(e: FormEvent) {
+  const { data: agents } = useQuery({
+    queryKey: ["agents"],
+    queryFn: listAgents,
+    staleTime: 60_000,
+  });
+
+  // Agent selection directly updates the URL (no draft needed)
+  function selectAgent(value: string) {
+    const agent = value === ALL_AGENTS ? "" : value;
+    const params: Record<string, string> = {};
+    if (agent) params.agent = agent;
+    if (typeFilter) params.type = typeFilter;
+    setSearchParams(params);
+  }
+
+  function applyTypeFilter(e: FormEvent) {
     e.preventDefault();
     const params: Record<string, string> = {};
-    if (agentInput) params.agent = agentInput;
+    if (agentFilter) params.agent = agentFilter;
     if (typeInput) params.type = typeInput;
     setSearchParams(params);
+  }
+
+  function clearFilters() {
+    setTypeInput("");
+    setSearchParams({});
   }
 
   function goToPage(p: number) {
@@ -69,17 +97,27 @@ export default function Decisions() {
 
       {/* Filters */}
       <form
-        onSubmit={applyFilters}
+        onSubmit={applyTypeFilter}
         className="flex flex-wrap items-end gap-3"
       >
         <div className="space-y-1">
           <label className="text-xs text-muted-foreground">Agent</label>
-          <Input
-            placeholder="agent-id"
-            value={agentInput}
-            onChange={(e) => setAgentInput(e.target.value)}
-            className="w-40"
-          />
+          <Select
+            value={agentFilter || ALL_AGENTS}
+            onValueChange={selectAgent}
+          >
+            <SelectTrigger className="w-44">
+              <SelectValue placeholder="All agents" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_AGENTS}>All agents</SelectItem>
+              {agents?.map((a) => (
+                <SelectItem key={a.agent_id} value={a.agent_id}>
+                  {a.agent_id}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <div className="space-y-1">
           <label className="text-xs text-muted-foreground">Type</label>
@@ -98,11 +136,7 @@ export default function Decisions() {
             type="button"
             variant="ghost"
             size="sm"
-            onClick={() => {
-              setAgentInput("");
-              setTypeInput("");
-              setSearchParams({});
-            }}
+            onClick={clearFilters}
           >
             Clear
           </Button>
@@ -130,7 +164,7 @@ export default function Decisions() {
                 <TableHead>Type</TableHead>
                 <TableHead>Outcome</TableHead>
                 <TableHead className="text-right">Confidence</TableHead>
-                <TableHead className="text-right">Alternatives</TableHead>
+                <TableHead>Reasoning</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -163,8 +197,10 @@ export default function Decisions() {
                   <TableCell className="text-right font-mono">
                     {(d.confidence * 100).toFixed(0)}%
                   </TableCell>
-                  <TableCell className="text-right">
-                    {d.alternatives?.length ?? 0}
+                  <TableCell className="max-w-[240px] text-xs text-muted-foreground">
+                    {d.reasoning ? truncate(d.reasoning, 80) : (
+                      <span className="opacity-40">{"\u2014"}</span>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
