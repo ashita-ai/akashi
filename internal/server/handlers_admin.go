@@ -23,8 +23,8 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
 	var req model.CreateAgentRequest
-	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
 		return
 	}
 
@@ -191,8 +191,8 @@ func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
 	var req model.CreateGrantRequest
-	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
 		return
 	}
 
@@ -375,8 +375,8 @@ func (h *Handlers) HandleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req model.UpdateAgentRequest
-	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
 		return
 	}
 
@@ -497,8 +497,8 @@ func (h *Handlers) HandleUpdateAgentTags(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req model.UpdateAgentTagsRequest
-	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
 		return
 	}
 

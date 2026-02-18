@@ -18,8 +18,8 @@ func (h *Handlers) HandleCreateKey(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
 	var req model.CreateKeyRequest
-	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
 		return
 	}
 

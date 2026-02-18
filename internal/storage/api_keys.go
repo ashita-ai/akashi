@@ -425,6 +425,13 @@ func (db *DB) MigrateAgentKeysToAPIKeys(ctx context.Context) (int, error) {
 
 // CountDecisionsByAPIKey returns decision counts grouped by api_key_id for
 // usage metering. Keys with NULL api_key_id are grouped under uuid.Nil.
+//
+// AND valid_to IS NULL counts only currently-active decisions created in the period.
+// A decision that is later superseded (valid_to set by a revision) stops counting
+// under its original period; its successor counts under the revision period.
+// This is intentional: billing tracks active decisions, not raw trace events.
+// To count all decisions ever traced in a period regardless of revision status,
+// remove the valid_to IS NULL filter.
 func (db *DB) CountDecisionsByAPIKey(ctx context.Context, orgID uuid.UUID, from, to time.Time) (map[uuid.UUID]int, int, error) {
 	rows, err := db.pool.Query(ctx,
 		`SELECT api_key_id, count(*)

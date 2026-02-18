@@ -76,8 +76,8 @@ func NewHandlers(d HandlersDeps) *Handlers {
 // Checks managed api_keys table first, falls back to agents.api_key_hash.
 func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 	var req model.AuthTokenRequest
-	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
 		return
 	}
 

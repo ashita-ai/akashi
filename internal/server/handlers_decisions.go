@@ -21,8 +21,8 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
 	var req model.TraceRequest
-	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
 		return
 	}
 
@@ -50,8 +50,10 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 
 	// Verify the agent exists within the caller's org, auto-registering if the
 	// caller is admin+ and the agent is new (reduces friction for first-time traces).
+	// The returned agent is reused below for operator enrichment, avoiding a second DB fetch.
 	autoRegAudit := h.buildAuditEntry(r, orgID, "", "agent", req.AgentID, nil, nil, nil)
-	if err := h.decisionSvc.ResolveOrCreateAgent(r.Context(), orgID, req.AgentID, claims.Role, &autoRegAudit); err != nil {
+	resolvedAgent, err := h.decisionSvc.ResolveOrCreateAgent(r.Context(), orgID, req.AgentID, claims.Role, &autoRegAudit)
+	if err != nil {
 		if errors.Is(err, decisions.ErrAgentNotFound) {
 			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
 			return
@@ -99,10 +101,17 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Operator from JWT claims: use the agent's display name if distinct from agent_id.
+	// If the calling agent is the same as the traced agent, reuse the already-fetched
+	// record. Otherwise fetch the caller separately (admin tracing on behalf of another agent).
 	if claims != nil {
-		agent, agentErr := h.db.GetAgentByAgentID(r.Context(), orgID, claims.AgentID)
-		if agentErr == nil && agent.Name != "" && agent.Name != agent.AgentID {
-			clientCtx["operator"] = agent.Name
+		var callerAgent model.Agent
+		if claims.AgentID == req.AgentID {
+			callerAgent = resolvedAgent
+		} else {
+			callerAgent, _ = h.db.GetAgentByAgentID(r.Context(), orgID, claims.AgentID)
+		}
+		if callerAgent.Name != "" && callerAgent.Name != callerAgent.AgentID {
+			clientCtx["operator"] = callerAgent.Name
 		}
 	}
 
@@ -200,8 +209,8 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
 	var req model.QueryRequest
-	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
 		return
 	}
 	if req.Limit <= 0 {
@@ -253,8 +262,8 @@ func (h *Handlers) HandleTemporalQuery(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
 	var req model.TemporalQueryRequest
-	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
 		return
 	}
 
@@ -338,8 +347,8 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
 	var req model.SearchRequest
-	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
 		return
 	}
 
@@ -376,8 +385,8 @@ func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
 	var req model.CheckRequest
-	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
 		return
 	}
 
@@ -540,8 +549,8 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req model.ConflictResolution
-	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
 		return
 	}
 
@@ -598,8 +607,8 @@ func (h *Handlers) HandleResolveConflict(w http.ResponseWriter, r *http.Request)
 		Reasoning    *string `json:"reasoning,omitempty"`
 		DecisionType string  `json:"decision_type,omitempty"`
 	}
-	if err := decodeJSON(r, &req, h.maxRequestBodyBytes); err != nil {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
 		return
 	}
 	if req.Outcome == "" {
@@ -624,7 +633,7 @@ func (h *Handlers) HandleResolveConflict(w http.ResponseWriter, r *http.Request)
 
 	// Ensure the resolver agent exists (auto-create if admin+).
 	autoRegAudit := h.buildAuditEntry(r, orgID, "", "agent", resolverAgent, nil, nil, nil)
-	if err := h.decisionSvc.ResolveOrCreateAgent(r.Context(), orgID, resolverAgent, claims.Role, &autoRegAudit); err != nil {
+	if _, err := h.decisionSvc.ResolveOrCreateAgent(r.Context(), orgID, resolverAgent, claims.Role, &autoRegAudit); err != nil {
 		if errors.Is(err, decisions.ErrAgentNotFound) {
 			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
 			return

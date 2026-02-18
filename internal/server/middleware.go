@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -675,10 +676,33 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// errBodyTooLarge is returned by decodeJSON when the request body exceeds maxBytes.
+// Callers must respond with 413 Request Entity Too Large, not 400 Bad Request.
+var errBodyTooLarge = errors.New("request body too large")
+
 // decodeJSON decodes a JSON request body into the target struct.
-// Applies MaxBytesReader to prevent unbounded request bodies.
-func decodeJSON(r *http.Request, target any, maxBytes int64) error {
-	r.Body = http.MaxBytesReader(nil, r.Body, maxBytes)
-	decoder := json.NewDecoder(r.Body)
-	return decoder.Decode(target)
+// Applies MaxBytesReader to prevent unbounded request bodies. The ResponseWriter
+// is required so that MaxBytesReader can close the connection on over-limit bodies.
+// Returns errBodyTooLarge if the body exceeds maxBytes; returns a JSON parse error
+// for malformed input. Use handleDecodeError to respond correctly in either case.
+func decodeJSON(w http.ResponseWriter, r *http.Request, target any, maxBytes int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	if err := json.NewDecoder(r.Body).Decode(target); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			return errBodyTooLarge
+		}
+		return err
+	}
+	return nil
+}
+
+// handleDecodeError writes the appropriate HTTP error for a decodeJSON failure.
+// Returns 413 for bodies that exceed the size limit, 400 for malformed JSON.
+func handleDecodeError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, errBodyTooLarge) {
+		writeError(w, r, http.StatusRequestEntityTooLarge, model.ErrCodeInvalidInput, "request body too large")
+	} else {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid request body")
+	}
 }
