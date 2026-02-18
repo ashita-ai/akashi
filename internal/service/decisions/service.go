@@ -501,6 +501,10 @@ var ErrAgentNotFound = errors.New("agent_id not found in this organization")
 // a trace-only agent (role=agent, no API key). Non-admin callers receive
 // ErrAgentNotFound.
 //
+// Returns the resolved or newly created agent so callers can avoid a second
+// round-trip to fetch agent metadata (e.g. display name for context enrichment).
+// Returns a zero-value model.Agent on non-fatal races (concurrent auto-creation).
+//
 // When autoRegAudit is non-nil, the auto-registration is recorded in the
 // mutation audit log. Callers with HTTP request context should provide this;
 // background callers may pass nil.
@@ -508,20 +512,20 @@ var ErrAgentNotFound = errors.New("agent_id not found in this organization")
 // This eliminates friction when an admin traces on behalf of a new agent for
 // the first time — the agent is created implicitly rather than requiring a
 // separate POST /v1/agents call.
-func (s *Service) ResolveOrCreateAgent(ctx context.Context, orgID uuid.UUID, agentID string, callerRole model.AgentRole, autoRegAudit *storage.MutationAuditEntry) error {
-	_, err := s.db.GetAgentByAgentID(ctx, orgID, agentID)
+func (s *Service) ResolveOrCreateAgent(ctx context.Context, orgID uuid.UUID, agentID string, callerRole model.AgentRole, autoRegAudit *storage.MutationAuditEntry) (model.Agent, error) {
+	found, err := s.db.GetAgentByAgentID(ctx, orgID, agentID)
 	if err == nil {
-		return nil
+		return found, nil
 	}
 
 	// Only auto-register on not-found errors. Propagate anything else.
 	if !errors.Is(err, storage.ErrNotFound) {
-		return err
+		return model.Agent{}, err
 	}
 
 	// Non-admin callers cannot auto-register agents.
 	if !model.RoleAtLeast(callerRole, model.RoleAdmin) {
-		return ErrAgentNotFound
+		return model.Agent{}, ErrAgentNotFound
 	}
 
 	agent := model.Agent{
@@ -550,15 +554,17 @@ func (s *Service) ResolveOrCreateAgent(ctx context.Context, orgID uuid.UUID, age
 	if createErr != nil {
 		// A concurrent request may have created the same agent between our
 		// GetAgentByAgentID and CreateAgent calls. That's fine — treat the
-		// duplicate key constraint as success.
+		// duplicate key constraint as success. Return zero agent; the caller
+		// will skip any Name-based enrichment, which is acceptable for this
+		// rare race condition.
 		if isDuplicateKey(createErr) {
-			return nil
+			return model.Agent{}, nil
 		}
-		return fmt.Errorf("auto-register agent: %w", createErr)
+		return model.Agent{}, fmt.Errorf("auto-register agent: %w", createErr)
 	}
 
 	s.logger.Info("auto-registered agent on first trace", "agent_id", agentID, "org_id", orgID)
-	return nil
+	return agent, nil
 }
 
 // BackfillEmbeddings generates embeddings for decisions that were stored without

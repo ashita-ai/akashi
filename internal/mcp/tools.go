@@ -448,7 +448,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		ActorRole:    string(callerRole),
 		Endpoint:     "mcp/akashi_trace",
 	}
-	if err := s.decisionSvc.ResolveOrCreateAgent(ctx, orgID, agentID, callerRole, autoRegAudit); err != nil {
+	if _, err := s.decisionSvc.ResolveOrCreateAgent(ctx, orgID, agentID, callerRole, autoRegAudit); err != nil {
 		return errorResult(err.Error()), nil
 	}
 
