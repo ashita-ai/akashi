@@ -85,10 +85,16 @@ WHAT TO INCLUDE:
 - outcome: What you decided, stated as a fact ("chose gpt-4o for summarization")
 - confidence: How certain you are (0.0-1.0). Be honest — 0.6 is fine.
 - reasoning: Your chain of thought. Why this choice over alternatives?
+- evidence: JSON array of supporting facts (optional but improves quality score).
+  Format: [{"source_type":"tool_output","content":"test suite passed with 0 failures"},
+           {"source_type":"document","content":"ADR-007 requires event sourcing","source_uri":"adrs/007.md"}]
+  source_type values: document, api_response, agent_output, user_input, search_result,
+                      tool_output, memory, database_query
 
 EXAMPLE: After choosing a caching strategy, record decision_type="architecture",
 outcome="chose Redis with 5min TTL for session cache", confidence=0.85,
-reasoning="Redis handles our expected QPS, TTL prevents stale reads"
+reasoning="Redis handles our expected QPS, TTL prevents stale reads",
+evidence='[{"source_type":"tool_output","content":"load test showed 8k req/s with Redis, 2k with DB"}]'
 
 TRACE AFTER: completing a review, choosing an approach, creating issues/PRs,
 finishing a task with choices, making security or access judgments.
@@ -124,6 +130,9 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 			),
 			mcplib.WithString("idempotency_key",
 				mcplib.Description("Optional key for retry safety. Same key + same payload replays the original response. Same key + different payload returns an error. Use a UUID or deterministic identifier per logical operation."),
+			),
+			mcplib.WithString("evidence",
+				mcplib.Description(`JSON array of supporting facts. Each item: {"source_type":"<type>","content":"<text>","source_uri":"<optional>","relevance_score":<0-1 optional>}. source_type values: document, api_response, agent_output, user_input, search_result, tool_output, memory, database_query.`),
 			),
 		),
 		s.handleTrace,
@@ -457,6 +466,17 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		reasoningPtr = &reasoning
 	}
 
+	// Parse evidence JSON if provided. Invalid JSON is logged and ignored rather
+	// than failing the trace — a trace without evidence is better than no trace.
+	var evidence []model.TraceEvidence
+	if ev := request.GetString("evidence", ""); ev != "" {
+		if parseErr := json.Unmarshal([]byte(ev), &evidence); parseErr != nil {
+			s.logger.Warn("akashi_trace: ignoring unparseable evidence JSON",
+				"error", parseErr, "agent_id", agentID)
+			evidence = nil
+		}
+	}
+
 	// Build agent_context with server/client namespace split.
 	// "server" contains values the server extracted or verified (MCP session,
 	// client info, roots, API key prefix). "client" contains self-reported
@@ -528,7 +548,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	idemKey := request.GetString("idempotency_key", "")
 	var idemOwned bool // true when this request owns the in-progress reservation
 	if idemKey != "" {
-		payloadHash, hashErr := mcpTraceHash(agentID, decisionType, outcome, confidence, reasoning)
+		payloadHash, hashErr := mcpTraceHash(agentID, decisionType, outcome, confidence, reasoning, evidence)
 		if hashErr != nil {
 			return errorResult(fmt.Sprintf("failed to hash trace payload: %v", hashErr)), nil
 		}
@@ -586,6 +606,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 			Outcome:      outcome,
 			Confidence:   confidence,
 			Reasoning:    reasoningPtr,
+			Evidence:     evidence,
 		},
 	})
 	if err != nil {
@@ -641,13 +662,14 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 
 // mcpTraceHash computes a deterministic SHA-256 hash of the trace parameters
 // used for idempotency payload comparison.
-func mcpTraceHash(agentID, decisionType, outcome string, confidence float32, reasoning string) (string, error) {
+func mcpTraceHash(agentID, decisionType, outcome string, confidence float32, reasoning string, evidence []model.TraceEvidence) (string, error) {
 	b, err := json.Marshal(map[string]any{
 		"agent_id":      agentID,
 		"decision_type": decisionType,
 		"outcome":       outcome,
 		"confidence":    confidence,
 		"reasoning":     reasoning,
+		"evidence":      evidence,
 	})
 	if err != nil {
 		return "", err
