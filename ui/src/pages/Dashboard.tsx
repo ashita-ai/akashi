@@ -5,10 +5,11 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatRelativeTime } from "@/lib/utils";
 import {
-  Activity,
   AlertTriangle,
   FileText,
   HeartPulse,
+  Info,
+  Lightbulb,
   Users,
 } from "lucide-react";
 import { Link } from "react-router";
@@ -131,13 +132,13 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      {/* Trace health gaps */}
+      {/* Coverage tips — informational, not errors */}
       {traceHealth.data?.gaps && traceHealth.data.gaps.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-sm font-medium">
-              <Activity className="h-4 w-4 text-amber-500" />
-              Trace Gaps
+              <Lightbulb className="h-4 w-4 text-muted-foreground" />
+              Coverage Tips
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -145,9 +146,9 @@ export default function Dashboard() {
               {traceHealth.data.gaps.map((gap, i) => (
                 <li
                   key={i}
-                  className="flex items-center gap-2 rounded-md border p-3 text-sm"
+                  className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2 text-sm"
                 >
-                  <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />
+                  <Info className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   <span className="text-muted-foreground">{gap}</span>
                 </li>
               ))}

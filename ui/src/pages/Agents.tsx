@@ -34,6 +34,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate, formatRelativeTime } from "@/lib/utils";
 import { Plus, Trash2 } from "lucide-react";
+import { Link } from "react-router";
 
 const roleColors: Record<AgentRole, "default" | "secondary" | "destructive" | "success" | "warning" | "outline"> = {
   admin: "default",
@@ -228,11 +229,23 @@ export default function Agents() {
           </TableHeader>
           <TableBody>
             {agents.map((agent) => (
-              <TableRow key={agent.id}>
+              <TableRow key={agent.id} className="cursor-pointer">
                 <TableCell className="font-mono text-sm">
-                  {agent.agent_id}
+                  <Link
+                    to={`/decisions?agent=${encodeURIComponent(agent.agent_id)}`}
+                    className="hover:underline"
+                  >
+                    {agent.agent_id}
+                  </Link>
                 </TableCell>
-                <TableCell>{agent.name}</TableCell>
+                <TableCell>
+                  <Link
+                    to={`/decisions?agent=${encodeURIComponent(agent.agent_id)}`}
+                    className="hover:underline"
+                  >
+                    {agent.name}
+                  </Link>
+                </TableCell>
                 <TableCell>
                   <Badge variant={roleColors[agent.role] ?? "secondary"}>
                     {agent.role}
