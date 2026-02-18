@@ -282,10 +282,16 @@ func (NoopValidator) Validate(_ context.Context, _ ValidateInput) (ValidationRes
 	}, nil
 }
 
-// perCallTimeout is the maximum time for a single LLM validation call.
-// Separate from the scorer's overall context timeout so one slow call
-// doesn't block the entire scoring pass.
+// perCallTimeout is the maximum time for a single LLM validation call to an
+// external API (OpenAI). Separate from the scorer's overall context timeout
+// so one slow call doesn't block the entire scoring pass.
 const perCallTimeout = 15 * time.Second
+
+// ollamaPerCallTimeout is higher than perCallTimeout to account for local model
+// cold-start on the warmup call (model must be loaded from disk on first use)
+// and slower CPU/GPU inference. A 3B model on CPU can take 20-60s to produce
+// its first token; subsequent calls with keep_alive=-1 are much faster.
+const ollamaPerCallTimeout = 90 * time.Second
 
 // OllamaValidator validates conflict candidates using a local Ollama chat model.
 // Reuses the existing OLLAMA_URL configuration. The model should be a text
@@ -305,15 +311,49 @@ func NewOllamaValidator(baseURL, model string) *OllamaValidator {
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: perCallTimeout + 5*time.Second, // HTTP timeout slightly beyond per-call context timeout.
+			// HTTP timeout must exceed ollamaPerCallTimeout to avoid a
+			// transport-level close before the context deadline fires.
+			Timeout: ollamaPerCallTimeout + 5*time.Second,
 		},
 	}
 }
 
+// Warmup loads the model into Ollama's memory before the first real validation
+// call. Without this, the first backfill request pays the full cold-start
+// penalty (model load from disk) which can exceed 60s on CPU. Warmup sends a
+// minimal prompt; the response is discarded. It is non-fatal if it fails.
+func (v *OllamaValidator) Warmup(ctx context.Context) error {
+	warmCtx, cancel := context.WithTimeout(ctx, ollamaPerCallTimeout)
+	defer cancel()
+
+	body, _ := json.Marshal(ollamaChatRequest{
+		Model:     v.model,
+		Messages:  []ollamaChatMessage{{Role: "user", Content: "hi"}},
+		Stream:    false,
+		KeepAlive: "72h",
+	})
+	req, err := http.NewRequestWithContext(warmCtx, http.MethodPost, v.baseURL+"/api/chat", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("ollama warmup: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := v.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("ollama warmup: request: %w", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("ollama warmup: status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 type ollamaChatRequest struct {
-	Model    string              `json:"model"`
-	Messages []ollamaChatMessage `json:"messages"`
-	Stream   bool                `json:"stream"`
+	Model     string              `json:"model"`
+	Messages  []ollamaChatMessage `json:"messages"`
+	Stream    bool                `json:"stream"`
+	KeepAlive string              `json:"keep_alive,omitempty"` // "72h" keeps model in RAM for 3 days (effectively permanent for dev sessions).
 }
 
 type ollamaChatMessage struct {
@@ -328,7 +368,7 @@ type ollamaChatResponse struct {
 }
 
 func (v *OllamaValidator) Validate(ctx context.Context, input ValidateInput) (ValidationResult, error) {
-	callCtx, cancel := context.WithTimeout(ctx, perCallTimeout)
+	callCtx, cancel := context.WithTimeout(ctx, ollamaPerCallTimeout)
 	defer cancel()
 
 	prompt := formatPrompt(input)
@@ -338,7 +378,8 @@ func (v *OllamaValidator) Validate(ctx context.Context, input ValidateInput) (Va
 		Messages: []ollamaChatMessage{
 			{Role: "user", Content: prompt},
 		},
-		Stream: false,
+		Stream:    false,
+		KeepAlive: "72h", // Keep model loaded in RAM between calls; avoids cold-start penalty.
 	})
 	if err != nil {
 		return ValidationResult{}, fmt.Errorf("ollama validator: marshal: %w", err)

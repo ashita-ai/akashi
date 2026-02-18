@@ -327,6 +327,18 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	// been scored for conflicts yet. Runs in the background so the HTTP server
 	// is ready immediately — this can take minutes with an LLM validator active.
 	go func() {
+		// Warm up the Ollama model before the backfill starts. Without this the
+		// first backfill request pays the full cold-start cost (model load from
+		// disk), which can exceed the per-call timeout on CPU hardware. keep_alive=-1
+		// in each subsequent request keeps the model in RAM between calls.
+		if v, ok := conflictValidator.(*conflicts.OllamaValidator); ok {
+			logger.Info("conflict backfill: warming up ollama model", "model", cfg.ConflictLLMModel)
+			if err := v.Warmup(ctx); err != nil {
+				logger.Warn("conflict backfill: ollama warmup failed (will proceed anyway)", "error", err)
+			} else {
+				logger.Info("conflict backfill: ollama model ready")
+			}
+		}
 		if n, err := conflictScorer.BackfillScoring(ctx, 500); err != nil {
 			logger.Warn("conflict scoring backfill failed", "error", err)
 		} else if n > 0 {
