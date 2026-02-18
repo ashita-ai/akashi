@@ -246,7 +246,7 @@ func (h *Handlers) HandleGetUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enrich with key metadata.
+	// Enrich with key metadata using a single batch query to avoid N+1 round-trips.
 	type keyUsage struct {
 		KeyID   *uuid.UUID `json:"key_id"`
 		Prefix  string     `json:"prefix"`
@@ -255,9 +255,26 @@ func (h *Handlers) HandleGetUsage(w http.ResponseWriter, r *http.Request) {
 		Count   int        `json:"decisions"`
 	}
 
-	var keyUsages []keyUsage
+	// Collect managed key IDs (skip uuid.Nil = legacy / unattributed).
+	var keyIDs []uuid.UUID
+	for keyID := range byKey {
+		if keyID != uuid.Nil {
+			keyIDs = append(keyIDs, keyID)
+		}
+	}
 
-	// Build a list of key IDs to look up (skip uuid.Nil = legacy).
+	// Batch-fetch key metadata in one round-trip.
+	keysByID := make(map[uuid.UUID]model.APIKey, len(keyIDs))
+	if len(keyIDs) > 0 {
+		fetchedKeys, fetchErr := h.db.GetAPIKeysByIDs(r.Context(), orgID, keyIDs)
+		if fetchErr == nil {
+			for _, k := range fetchedKeys {
+				keysByID[k.ID] = k
+			}
+		}
+	}
+
+	var keyUsages []keyUsage
 	for keyID, count := range byKey {
 		if keyID == uuid.Nil {
 			keyUsages = append(keyUsages, keyUsage{
@@ -269,25 +286,22 @@ func (h *Handlers) HandleGetUsage(w http.ResponseWriter, r *http.Request) {
 			})
 			continue
 		}
-
-		// Look up key metadata. Best-effort — if the key was deleted, show ID only.
-		k, err := h.db.GetAPIKeyByID(r.Context(), orgID, keyID)
-		if err != nil {
-			kid := keyID
+		kid := keyID
+		if k, ok := keysByID[keyID]; ok {
+			keyUsages = append(keyUsages, keyUsage{
+				KeyID:   &kid,
+				Prefix:  k.Prefix,
+				Label:   k.Label,
+				AgentID: k.AgentID,
+				Count:   count,
+			})
+		} else {
+			// Key was deleted — show ID only. Best-effort.
 			keyUsages = append(keyUsages, keyUsage{
 				KeyID: &kid,
 				Count: count,
 			})
-			continue
 		}
-		kid := keyID
-		keyUsages = append(keyUsages, keyUsage{
-			KeyID:   &kid,
-			Prefix:  k.Prefix,
-			Label:   k.Label,
-			AgentID: k.AgentID,
-			Count:   count,
-		})
 	}
 
 	// Aggregate by agent_id.
