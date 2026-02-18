@@ -81,7 +81,7 @@ services:
       # Core settings.
       AKASHI_PORT: "8080"
       AKASHI_ADMIN_API_KEY: ${AKASHI_ADMIN_API_KEY:-admin}
-      AKASHI_LOG_LEVEL: ${AKASHI_LOG_LEVEL:-debug}
+      AKASHI_LOG_LEVEL: ${AKASHI_LOG_LEVEL:-info}
 
       # Qdrant (local, in-stack).
       QDRANT_URL: http://qdrant:6333
@@ -92,6 +92,10 @@ services:
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mxbai-embed-large}
       AKASHI_EMBEDDING_DIMENSIONS: ${AKASHI_EMBEDDING_DIMENSIONS:-1024}
+
+      # Ollama model for conflict validation (LLM gate). When set, takes priority
+      # over OPENAI_API_KEY. Use a chat model (e.g. qwen2.5:3b), not an embedding model.
+      AKASHI_CONFLICT_LLM_MODEL: ${AKASHI_CONFLICT_LLM_MODEL:-qwen2.5:3b}
 
       # OpenAI (alternative to Ollama — set AKASHI_EMBEDDING_PROVIDER=openai).
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

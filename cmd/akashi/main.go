@@ -149,7 +149,15 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	conflictValidator := newConflictValidator(cfg, logger)
 
 	// Create conflict scorer for semantic conflict detection (Option B).
-	conflictScorer := conflicts.NewScorer(db, logger, cfg.ConflictSignificanceThreshold, conflictValidator, cfg.ConflictBackfillWorkers, cfg.ConflictDecayLambda)
+	// Ollama is serial — cap workers at 1 to prevent concurrent calls from all
+	// timing out while queuing. OpenAI handles concurrency natively so it keeps
+	// the configured worker count.
+	backfillWorkers := cfg.ConflictBackfillWorkers
+	if _, isOllama := conflictValidator.(*conflicts.OllamaValidator); isOllama && backfillWorkers > 1 {
+		backfillWorkers = 1
+		logger.Info("conflict backfill: capped workers to 1 (Ollama is serial)")
+	}
+	conflictScorer := conflicts.NewScorer(db, logger, cfg.ConflictSignificanceThreshold, conflictValidator, backfillWorkers, cfg.ConflictDecayLambda)
 
 	// Create decision service (shared by HTTP and MCP handlers).
 	decisionSvc := decisions.New(db, embedder, searcher, logger, conflictScorer)
@@ -212,15 +220,6 @@ func run(ctx context.Context, logger *slog.Logger) error {
 			}
 		}
 	}
-	// Backfill conflict scoring for decisions that gained embeddings from the
-	// backfills above. ScoreForDecision only runs on new traces, so previously
-	// unscored decisions need an explicit pass.
-	if n, err := conflictScorer.BackfillScoring(ctx, 500); err != nil {
-		logger.Warn("conflict scoring backfill failed", "error", err)
-	} else if n > 0 {
-		logger.Info("conflict scoring backfill complete", "decisions_scored", n)
-	}
-
 	// Create event WAL (enabled by default; disable with AKASHI_WAL_DISABLE=true).
 	var eventWAL *trace.WAL
 	if cfg.WALDir != "" {
@@ -323,6 +322,17 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	} else if migrated > 0 {
 		logger.Info("migrated legacy agent keys to api_keys table", "count", migrated)
 	}
+
+	// Backfill conflict scoring for decisions that have embeddings but have not
+	// been scored for conflicts yet. Runs in the background so the HTTP server
+	// is ready immediately — this can take minutes with an LLM validator active.
+	go func() {
+		if n, err := conflictScorer.BackfillScoring(ctx, 500); err != nil {
+			logger.Warn("conflict scoring backfill failed", "error", err)
+		} else if n > 0 {
+			logger.Info("conflict scoring backfill complete", "decisions_scored", n)
+		}
+	}()
 
 	// Start conflict refresh loop.
 	go conflictRefreshLoop(ctx, db, logger, cfg.ConflictRefreshInterval)
