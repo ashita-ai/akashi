@@ -23,16 +23,17 @@ type ValidateInput struct {
 	CreatedB time.Time
 
 	// Enrichment fields — may be empty when context is unavailable.
-	ReasoningA   string // Decision reasoning.
-	ReasoningB   string
-	RepoA        string // From agent_context["repo"].
-	RepoB        string
-	TaskA        string // From agent_context["task"].
-	TaskB        string
-	SessionIDA   string // UUID string.
-	SessionIDB   string
-	FullOutcomeA string // Full outcome when OutcomeA is a claim fragment.
-	FullOutcomeB string
+	ReasoningA      string // decision reasoning
+	ReasoningB      string
+	RepoA           string // from agent_context["repo"]
+	RepoB           string
+	TaskA           string // from agent_context["task"]
+	TaskB           string
+	SessionIDA      string // UUID string
+	SessionIDB      string
+	FullOutcomeA    string // full outcome when OutcomeA is a claim fragment
+	FullOutcomeB    string
+	TopicSimilarity float64 // decision-level embedding similarity (0–1); 0 means unavailable
 }
 
 // ValidationResult holds the structured output from an LLM validation call.
@@ -128,15 +129,29 @@ func formatPrompt(input ValidateInput) string {
 		b.WriteString("SAME SESSION: Both decisions were recorded in the same work session. Sequential decisions are typically REFINEMENT or COMPLEMENTARY, not contradictions.\n")
 	}
 
+	// --- Topic similarity signal ---
+	// When embedding similarity is high and agents differ, flag it explicitly.
+	// Bi-encoders place same-topic decisions close together regardless of stance,
+	// so high similarity here means "same domain" — not "same conclusion".
+	if input.TopicSimilarity >= 0.70 && input.AgentA != input.AgentB {
+		fmt.Fprintf(&b, "HIGH TOPIC OVERLAP: Embeddings show %.0f%% topic similarity, meaning both decisions address the same domain. Check whether the agents take OPPOSITE STANCES on the same specific question.\n",
+			input.TopicSimilarity*100)
+	}
+
 	// --- Classification instructions ---
 	b.WriteString(`
 Classify the RELATIONSHIP between these two decisions:
 
-- CONTRADICTION: Incompatible positions on the same specific question. Cannot both be true.
+- CONTRADICTION: Incompatible positions on the same specific question. Cannot both be true simultaneously. Implementing one would require rejecting the other.
 - SUPERSESSION: One decision explicitly replaces or reverses the other.
 - COMPLEMENTARY: Different findings about different aspects. Both can be true simultaneously.
-- REFINEMENT: One decision deepens or builds on the other.
+- REFINEMENT: One decision deepens or builds on the other without contradicting it.
 - UNRELATED: Different topics despite surface similarity.
+
+IMPORTANT for architecture and planning decisions:
+- Two agents recommending DIFFERENT approaches to the SAME design question ARE contradictions. Example: "use nested structure X" vs "use flat structure Y for the same purpose" = CONTRADICTION.
+- Ask: can both be implemented simultaneously? If yes → COMPLEMENTARY or REFINEMENT. If no → CONTRADICTION.
+- An agent reversing its own prior choice is SUPERSESSION. A different agent disagreeing is CONTRADICTION.
 
 IMPORTANT for assessments and code reviews:
 - A review that reports finding bugs does NOT contradict those bug reports — it discovered them.
@@ -184,13 +199,17 @@ func ParseValidatorResponse(response string) (ValidationResult, error) {
 	var relationship, explanation, category, severity string
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
+		// Strip leading markdown bold/italic markers that some LLMs add.
+		// e.g. "**RELATIONSHIP:** CONTRADICTION" → "RELATIONSHIP:** CONTRADICTION"
+		trimmed = strings.TrimLeft(trimmed, "*_")
 		lower := strings.ToLower(trimmed)
 		switch {
 		case strings.HasPrefix(lower, "relationship:"):
-			relationship = strings.ToLower(strings.TrimSpace(trimmed[len("relationship:"):]))
+			// Trim markdown markers that can appear between ":" and the value.
+			relationship = strings.ToLower(strings.Trim(strings.TrimSpace(trimmed[len("relationship:"):]), "*_ "))
 		case strings.HasPrefix(lower, "verdict:"):
 			// Backward compatibility: map old-style yes/no to relationship.
-			verdict := strings.ToLower(strings.TrimSpace(trimmed[len("verdict:"):]))
+			verdict := strings.ToLower(strings.Trim(strings.TrimSpace(trimmed[len("verdict:"):]), "*_ "))
 			if relationship == "" {
 				switch verdict {
 				case "yes":
@@ -200,11 +219,12 @@ func ParseValidatorResponse(response string) (ValidationResult, error) {
 				}
 			}
 		case strings.HasPrefix(lower, "explanation:"):
-			explanation = strings.TrimSpace(trimmed[len("explanation:"):])
+			// TrimLeft only — preserve any intentional * inside the explanation text.
+			explanation = strings.TrimLeft(strings.TrimSpace(trimmed[len("explanation:"):]), "*_ ")
 		case strings.HasPrefix(lower, "category:"):
-			category = strings.ToLower(strings.TrimSpace(trimmed[len("category:"):]))
+			category = strings.ToLower(strings.Trim(strings.TrimSpace(trimmed[len("category:"):]), "*_ "))
 		case strings.HasPrefix(lower, "severity:"):
-			severity = strings.ToLower(strings.TrimSpace(trimmed[len("severity:"):]))
+			severity = strings.ToLower(strings.Trim(strings.TrimSpace(trimmed[len("severity:"):]), "*_ "))
 		}
 	}
 
@@ -214,6 +234,19 @@ func ParseValidatorResponse(response string) (ValidationResult, error) {
 
 	// Normalize: strip any brackets or extra text (e.g. "[contradiction]" → "contradiction").
 	relationship = strings.Trim(relationship, "[] ")
+
+	// Normalize common LLM truncations to their canonical form.
+	// Some models shorten "refinement" → "refine", "supersession" → "supersede", etc.
+	switch relationship {
+	case "refine":
+		relationship = "refinement"
+	case "supersede":
+		relationship = "supersession"
+	case "contradict":
+		relationship = "contradiction"
+	case "complement":
+		relationship = "complementary"
+	}
 
 	if !validRelationships[relationship] {
 		return ValidationResult{}, fmt.Errorf("validator: unrecognized relationship %q", relationship)

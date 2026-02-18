@@ -164,6 +164,10 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		}
 	}
 
+	// Check once whether an LLM validator is active. Used both for the
+	// directToLLM bypass below and for the validation gate further down.
+	_, isNoop := s.validator.(NoopValidator)
+
 	inserted := 0
 	for _, cand := range candidates {
 		if cand.OutcomeEmbedding == nil {
@@ -214,7 +218,16 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			bestSig *= decay
 		}
 
-		if bestSig < s.threshold {
+		// Cross-agent pairs with high topic similarity bypass the cosine-divergence
+		// significance gate when an LLM validator is active. Bi-encoders cannot
+		// detect stance opposition for same-topic decisions: two agents saying
+		// "X is the right shape" and "X is the wrong shape" embed close together
+		// because they share all the same domain vocabulary. The LLM is the right
+		// classifier for this case; the significance gate would filter it out
+		// before the LLM ever sees it. See: NLI literature on bi-encoder limits.
+		directToLLM := !isNoop && d.AgentID != cand.AgentID && topicSim >= decisionTopicSimFloor
+
+		if bestSig < s.threshold && !directToLLM {
 			continue
 		}
 
@@ -222,7 +235,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		// NoopValidator always returns "contradiction" (preserving current behavior).
 		var explanation *string
 		var category, severity, relationship *string
-		if _, isNoop := s.validator.(NoopValidator); !isNoop {
+		if !isNoop {
 			// Skip LLM call if this pair was already evaluated during backfill.
 			if cache != nil && cache.checkAndMark(decisionID, cand.ID) {
 				s.logger.Debug("conflict scorer: pair already evaluated, skipping LLM call",
@@ -231,24 +244,25 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			}
 
 			result, err := s.validator.Validate(ctx, ValidateInput{
-				OutcomeA:     bestOutcomeA,
-				OutcomeB:     bestOutcomeB,
-				TypeA:        d.DecisionType,
-				TypeB:        cand.DecisionType,
-				AgentA:       d.AgentID,
-				AgentB:       cand.AgentID,
-				CreatedA:     d.ValidFrom,
-				CreatedB:     cand.ValidFrom,
-				ReasoningA:   derefString(d.Reasoning),
-				ReasoningB:   derefString(cand.Reasoning),
-				RepoA:        agentContextString(d.AgentContext, "repo"),
-				RepoB:        agentContextString(cand.AgentContext, "repo"),
-				TaskA:        agentContextString(d.AgentContext, "task"),
-				TaskB:        agentContextString(cand.AgentContext, "task"),
-				SessionIDA:   uuidString(d.SessionID),
-				SessionIDB:   uuidString(cand.SessionID),
-				FullOutcomeA: d.Outcome,
-				FullOutcomeB: cand.Outcome,
+				OutcomeA:        bestOutcomeA,
+				OutcomeB:        bestOutcomeB,
+				TypeA:           d.DecisionType,
+				TypeB:           cand.DecisionType,
+				AgentA:          d.AgentID,
+				AgentB:          cand.AgentID,
+				CreatedA:        d.ValidFrom,
+				CreatedB:        cand.ValidFrom,
+				ReasoningA:      derefString(d.Reasoning),
+				ReasoningB:      derefString(cand.Reasoning),
+				RepoA:           agentContextString(d.AgentContext, "repo"),
+				RepoB:           agentContextString(cand.AgentContext, "repo"),
+				TaskA:           agentContextString(d.AgentContext, "task"),
+				TaskB:           agentContextString(cand.AgentContext, "task"),
+				SessionIDA:      uuidString(d.SessionID),
+				SessionIDB:      uuidString(cand.SessionID),
+				FullOutcomeA:    d.Outcome,
+				FullOutcomeB:    cand.Outcome,
+				TopicSimilarity: topicSim,
 			})
 			if err != nil {
 				s.logger.Warn("conflict scorer: LLM validation failed, skipping candidate",
