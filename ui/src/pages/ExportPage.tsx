@@ -1,10 +1,21 @@
 import { useState, type FormEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth";
+import { listAgents } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Download } from "lucide-react";
+
+const ALL_AGENTS = "__all__";
 
 export default function ExportPage() {
   const { token } = useAuth();
@@ -13,12 +24,18 @@ export default function ExportPage() {
   const [agentId, setAgentId] = useState("");
   const [decisionType, setDecisionType] = useState("");
 
+  const { data: agents } = useQuery({
+    queryKey: ["agents"],
+    queryFn: listAgents,
+    staleTime: 60_000,
+  });
+
   function handleExport(e: FormEvent) {
     e.preventDefault();
     const params = new URLSearchParams();
     if (from) params.set("from", new Date(from).toISOString());
     if (to) params.set("to", new Date(to).toISOString());
-    if (agentId.trim()) params.set("agent_id", agentId.trim());
+    if (agentId) params.set("agent_id", agentId);
     if (decisionType.trim()) params.set("decision_type", decisionType.trim());
 
     const qs = params.toString();
@@ -82,13 +99,23 @@ export default function ExportPage() {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="export-agent">Agent ID</Label>
-                <Input
-                  id="export-agent"
-                  placeholder="All agents"
-                  value={agentId}
-                  onChange={(e) => setAgentId(e.target.value)}
-                />
+                <Label htmlFor="export-agent">Agent</Label>
+                <Select
+                  value={agentId || ALL_AGENTS}
+                  onValueChange={(v) => setAgentId(v === ALL_AGENTS ? "" : v)}
+                >
+                  <SelectTrigger id="export-agent">
+                    <SelectValue placeholder="All agents" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_AGENTS}>All agents</SelectItem>
+                    {agents?.map((a) => (
+                      <SelectItem key={a.agent_id} value={a.agent_id}>
+                        {a.agent_id}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="export-type">Decision type</Label>

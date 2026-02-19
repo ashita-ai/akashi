@@ -1,11 +1,10 @@
 import { Link, useSearchParams } from "react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { listConflicts, patchConflict, ApiError } from "@/lib/api";
+import { listConflicts, patchConflict, listAgents, ApiError } from "@/lib/api";
 import type { DecisionConflict, ConflictStatus } from "@/types/api";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
@@ -36,7 +35,7 @@ import {
   Swords,
   XCircle,
 } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useState } from "react";
 
 function truncate(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
@@ -272,6 +271,7 @@ function ConflictCard({
 }
 
 const PAGE_SIZE = 25;
+const ALL_AGENTS = "__all__";
 
 export default function Conflicts() {
   const queryClient = useQueryClient();
@@ -281,7 +281,12 @@ export default function Conflicts() {
   const agentFilter = searchParams.get("agent") ?? "";
   const statusFilter = searchParams.get("status") ?? "";
 
-  const [agentInput, setAgentInput] = useState(agentFilter);
+  const { data: agentsData } = useQuery({
+    queryKey: ["agents"],
+    queryFn: listAgents,
+    staleTime: 60_000,
+  });
+
   const [resolveTarget, setResolveTarget] = useState<DecisionConflict | null>(null);
   const [resolveStatus, setResolveStatus] = useState<string>("acknowledged");
   const [resolveNote, setResolveNote] = useState("");
@@ -318,10 +323,10 @@ export default function Conflicts() {
     },
   });
 
-  function applyFilter(e: FormEvent) {
-    e.preventDefault();
+  function selectAgent(value: string) {
+    const agent = value === ALL_AGENTS ? "" : value;
     const params: Record<string, string> = {};
-    if (agentInput.trim()) params.agent = agentInput.trim();
+    if (agent) params.agent = agent;
     if (statusFilter) params.status = statusFilter;
     setSearchParams(params);
   }
@@ -367,15 +372,22 @@ export default function Conflicts() {
       </div>
 
       {/* Filters */}
-      <form onSubmit={applyFilter} className="flex flex-wrap items-end gap-3">
+      <div className="flex flex-wrap items-end gap-3">
         <div className="space-y-1">
           <label className="text-xs text-muted-foreground">Agent</label>
-          <Input
-            placeholder="agent-id"
-            value={agentInput}
-            onChange={(e) => setAgentInput(e.target.value)}
-            className="w-48"
-          />
+          <Select value={agentFilter || ALL_AGENTS} onValueChange={selectAgent}>
+            <SelectTrigger className="w-44">
+              <SelectValue placeholder="All agents" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_AGENTS}>All agents</SelectItem>
+              {agentsData?.map((a) => (
+                <SelectItem key={a.agent_id} value={a.agent_id}>
+                  {a.agent_id}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <div className="space-y-1">
           <label className="text-xs text-muted-foreground">Status</label>
@@ -392,23 +404,17 @@ export default function Conflicts() {
             </SelectContent>
           </Select>
         </div>
-        <Button type="submit" size="sm">
-          Filter
-        </Button>
         {(agentFilter || statusFilter) && (
           <Button
-            type="button"
             variant="ghost"
             size="sm"
-            onClick={() => {
-              setAgentInput("");
-              setSearchParams({});
-            }}
+            className="self-end"
+            onClick={() => setSearchParams({})}
           >
             Clear
           </Button>
         )}
-      </form>
+      </div>
 
       {isPending ? (
         <div className="space-y-4">
