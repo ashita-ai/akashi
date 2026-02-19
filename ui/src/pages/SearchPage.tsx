@@ -47,7 +47,13 @@ export default function SearchPage() {
         </Button>
       </form>
 
-      {isPending && (
+      {!submittedQuery && (
+        <p className="text-sm text-muted-foreground py-8 text-center">
+          Enter a query and press Search to find decisions.
+        </p>
+      )}
+
+      {isPending && submittedQuery && (
         <div className="space-y-3">
           {Array.from({ length: 5 }).map((_, i) => (
             <Skeleton key={i} className="h-20 w-full" />
