@@ -7,6 +7,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -198,25 +205,44 @@ export default function GrantsPage() {
               </div>
             )}
             <div className="space-y-2">
-              <Label htmlFor="grantee">Grantee Agent ID</Label>
-              <Input
-                id="grantee"
-                placeholder="e.g. reader-bot"
-                value={granteeAgentId}
-                onChange={(e) => setGranteeAgentId(e.target.value)}
-              />
+              <Label htmlFor="grantee">Grantee Agent</Label>
+              <Select
+                value={granteeAgentId || ""}
+                onValueChange={setGranteeAgentId}
+              >
+                <SelectTrigger id="grantee">
+                  <SelectValue placeholder="Select an agent" />
+                </SelectTrigger>
+                <SelectContent>
+                  {agents.map((a) => (
+                    <SelectItem key={a.agent_id} value={a.agent_id}>
+                      {a.agent_id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
               <Label htmlFor="resource">
-                Resource Agent ID{" "}
+                Resource Agent{" "}
                 <span className="text-muted-foreground">(optional)</span>
               </Label>
-              <Input
-                id="resource"
-                placeholder="All agents (leave blank for wildcard)"
-                value={resourceId}
-                onChange={(e) => setResourceId(e.target.value)}
-              />
+              <Select
+                value={resourceId || "__wildcard__"}
+                onValueChange={(v) => setResourceId(v === "__wildcard__" ? "" : v)}
+              >
+                <SelectTrigger id="resource">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__wildcard__">All agents (wildcard)</SelectItem>
+                  {agents.map((a) => (
+                    <SelectItem key={a.agent_id} value={a.agent_id}>
+                      {a.agent_id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
               <Label htmlFor="expires">
