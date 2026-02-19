@@ -12,6 +12,14 @@ Decision trace layer for multi-agent AI systems ("git blame for AI decisions").
 - **Testing:** `testing` + testify assertions, testcontainers-go for integration tests
 - **Lint:** golangci-lint v2.8.0, Atlas migrate validate
 
+## First-time setup
+
+```sh
+make install-hooks   # installs Claude Code hooks (akashi-trace reminder after git commit)
+```
+
+This registers a `PostToolUse` hook that fires after every `git commit` and reminds you to call `akashi_trace`. Run once per machine; safe to re-run.
+
 ## Commands
 
 **Before every commit (mandatory, CI rejects failures):**

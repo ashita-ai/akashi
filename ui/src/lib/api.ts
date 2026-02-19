@@ -4,6 +4,7 @@ import type {
   AuthTokenRequest,
   AuthTokenResponse,
   Agent,
+  AgentEvent,
   AgentsList,
   AgentStats,
   CreateAgentRequest,
@@ -116,7 +117,14 @@ export async function getRecentDecisions(params?: {
 
 // Runs
 export async function getRun(runId: string): Promise<AgentRun> {
-  return request<AgentRun>(`/v1/runs/${runId}`);
+  const result = await request<{ run: AgentRun; decisions: Decision[] | null; events: AgentEvent[] | null }>(
+    `/v1/runs/${runId}`,
+  );
+  return {
+    ...result.run,
+    decisions: result.decisions ?? undefined,
+    events: result.events ?? undefined,
+  };
 }
 
 // Agents
@@ -251,7 +259,7 @@ export async function getDecisionConflicts(
 // Patch conflict status
 export async function patchConflict(
   id: string,
-  body: { status: string; resolution_note?: string },
+  body: { status: string; resolution_note?: string; winning_decision_id?: string },
 ): Promise<DecisionConflict> {
   return request<DecisionConflict>(`/v1/conflicts/${id}`, {
     method: "PATCH",
