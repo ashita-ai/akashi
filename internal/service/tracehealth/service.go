@@ -15,11 +15,12 @@ import (
 
 // Metrics is the top-level trace health response.
 type Metrics struct {
-	Status       string               `json:"status"` // healthy, needs_attention, insufficient_data
-	Completeness *CompletenessMetrics `json:"completeness"`
-	Evidence     *EvidenceMetrics     `json:"evidence"`
-	Conflicts    *ConflictMetrics     `json:"conflicts,omitempty"`
-	Gaps         []string             `json:"gaps"`
+	Status         string                         `json:"status"` // healthy, needs_attention, insufficient_data
+	Completeness   *CompletenessMetrics           `json:"completeness"`
+	Evidence       *EvidenceMetrics               `json:"evidence"`
+	Conflicts      *ConflictMetrics               `json:"conflicts,omitempty"`
+	OutcomeSignals *storage.OutcomeSignalsSummary `json:"outcome_signals,omitempty"`
+	Gaps           []string                       `json:"gaps"`
 }
 
 // CompletenessMetrics tracks decision quality and reasoning coverage.
@@ -138,8 +139,17 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID) (*Metrics, error
 		}
 	}
 
+	// Outcome signals: temporal, graph, and fate aggregate counts.
+	os, err := s.db.GetOutcomeSignalsSummary(ctx, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("tracehealth: outcome signals: %w", err)
+	}
+	if qs.Total > 0 {
+		m.OutcomeSignals = &os
+	}
+
 	// Gap detection: rule-based, max 3 gaps, ordered by severity.
-	m.Gaps = computeGaps(qs, es, cc.Total, cc.Open)
+	m.Gaps = computeGaps(qs, es, cc.Total, cc.Open, os)
 
 	// Overall status.
 	m.Status = computeStatus(qs, es, cc.Open)
@@ -149,7 +159,7 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID) (*Metrics, error
 
 // computeGaps identifies the most important areas for improvement.
 // Returns at most 3 gaps, ordered by severity.
-func computeGaps(qs storage.DecisionQualityStats, es storage.EvidenceCoverageStats, totalConflicts, openConflicts int) []string {
+func computeGaps(qs storage.DecisionQualityStats, es storage.EvidenceCoverageStats, totalConflicts, openConflicts int, os storage.OutcomeSignalsSummary) []string {
 	var gaps []string
 
 	// Most severe first.
@@ -179,6 +189,24 @@ func computeGaps(qs storage.DecisionQualityStats, es storage.EvidenceCoverageSta
 	if len(gaps) < 3 && qs.BelowHalf > 0 {
 		gaps = append(gaps, fmt.Sprintf(
 			"%d decisions have quality scores below 0.5.", qs.BelowHalf))
+	}
+
+	// Outcome signal gaps (Spec 35).
+	if len(gaps) < 3 && os.DecisionsTotal > 0 {
+		revisedPct := float64(os.RevisedWithin48h) / float64(os.DecisionsTotal) * 100
+		if revisedPct > 10 {
+			gaps = append(gaps, fmt.Sprintf(
+				"%d decisions (%.0f%%) were revised within 48 hours.", os.RevisedWithin48h, revisedPct))
+		}
+	}
+
+	if len(gaps) < 3 && os.DecisionsTotal > 0 {
+		neverCitedPct := float64(os.NeverCited) / float64(os.DecisionsTotal) * 100
+		if neverCitedPct > 70 {
+			gaps = append(gaps, fmt.Sprintf(
+				"%d decisions (%.0f%%) have never been cited as a precedent. Set precedent_ref when tracing to build the attribution graph.",
+				os.NeverCited, neverCitedPct))
+		}
 	}
 
 	if len(gaps) > 3 {

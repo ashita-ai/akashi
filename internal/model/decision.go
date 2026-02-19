@@ -51,6 +51,16 @@ type Decision struct {
 	// Joined data (populated by queries, not stored in decisions table).
 	Alternatives []Alternative `json:"alternatives,omitempty"`
 	Evidence     []Evidence    `json:"evidence,omitempty"`
+
+	// Consensus scoring (Spec 34): computed at query time from embedding similarity cluster.
+	// Returns 0 for decisions without embeddings.
+	AgreementCount int `json:"agreement_count"`
+	ConflictCount  int `json:"conflict_count"`
+
+	// Outcome signals (Spec 35): temporal, graph, and fate signals computed at query time.
+	SupersessionVelocityHours *float64     `json:"supersession_velocity"`
+	PrecedentCitationCount    int          `json:"precedent_citation_count"`
+	ConflictFate              ConflictFate `json:"conflict_fate"`
 }
 
 // Alternative represents an option considered for a decision. Immutable.
@@ -91,6 +101,23 @@ type Evidence struct {
 	Embedding      *pgvector.Vector `json:"-"`
 	Metadata       map[string]any   `json:"metadata"`
 	CreatedAt      time.Time        `json:"created_at"`
+}
+
+// ConflictFate tracks how a decision fared in resolved conflict pairs.
+type ConflictFate struct {
+	Won              int `json:"won"`
+	Lost             int `json:"lost"`
+	ResolvedNoWinner int `json:"resolved_no_winner"`
+}
+
+// OutcomeSignals holds all computed outcome signal fields for a decision.
+// None of these fields are stored — they are computed at query time.
+type OutcomeSignals struct {
+	SupersessionVelocityHours *float64
+	PrecedentCitationCount    int
+	ConflictFate              ConflictFate
+	AgreementCount            int
+	ConflictCount             int
 }
 
 // ConflictKind indicates whether a conflict is between agents or self-contradiction.
@@ -143,6 +170,9 @@ type DecisionConflict struct {
 	ConfidenceWeight     *float64   `json:"confidence_weight,omitempty"`      // sqrt(confA * confB) scaling factor
 	TemporalDecay        *float64   `json:"temporal_decay,omitempty"`         // exp(-lambda * daysBetween) scaling factor
 	ResolutionDecisionID *uuid.UUID `json:"resolution_decision_id,omitempty"` // decision that resolved this conflict
+
+	// Winner (migration 046): which of the two decisions prevailed in resolution.
+	WinningDecisionID *uuid.UUID `json:"winning_decision_id,omitempty"`
 }
 
 // ConflictResolution is the request body for PATCH /v1/conflicts/{id}.
