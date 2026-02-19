@@ -593,7 +593,7 @@ func TestOllamaValidator_Contradiction(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	v := NewOllamaValidator(srv.URL, "test-model")
+	v := NewOllamaValidator(srv.URL, "test-model", 0)
 	result, err := v.Validate(context.Background(), ValidateInput{
 		OutcomeA: "chose Redis for caching",
 		OutcomeB: "chose Memcached for caching",
@@ -625,7 +625,7 @@ func TestOllamaValidator_Complementary(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	v := NewOllamaValidator(srv.URL, "test-model")
+	v := NewOllamaValidator(srv.URL, "test-model", 0)
 	result, err := v.Validate(context.Background(), ValidateInput{
 		OutcomeA: "use PostgreSQL",
 		OutcomeB: "deploy to eu-west-1",
@@ -655,7 +655,7 @@ func TestOllamaValidator_MalformedResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	v := NewOllamaValidator(srv.URL, "test-model")
+	v := NewOllamaValidator(srv.URL, "test-model", 0)
 	_, err := v.Validate(context.Background(), ValidateInput{
 		OutcomeA: "outcome A",
 		OutcomeB: "outcome B",
@@ -676,7 +676,7 @@ func TestOllamaValidator_Timeout(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	v := NewOllamaValidator(srv.URL, "test-model")
+	v := NewOllamaValidator(srv.URL, "test-model", 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
@@ -700,7 +700,7 @@ func TestOllamaValidator_ServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	v := NewOllamaValidator(srv.URL, "test-model")
+	v := NewOllamaValidator(srv.URL, "test-model", 0)
 	_, err := v.Validate(context.Background(), ValidateInput{
 		OutcomeA: "outcome A",
 		OutcomeB: "outcome B",
