@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pgvector/pgvector-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -214,6 +215,47 @@ func TestParseValidatorResponse_RelationshipTakesPrecedence(t *testing.T) {
 	assert.False(t, result.IsConflict())
 }
 
+func TestParseValidatorResponse_MarkdownBold(t *testing.T) {
+	// GPT-4o-mini sometimes returns structured output with markdown bold markers.
+	// ParseValidatorResponse must handle this without failing.
+	response := "**RELATIONSHIP:** CONTRADICTION\n**CATEGORY:** strategic\n**SEVERITY:** high\n**EXPLANATION:** The decisions present incompatible architectural approaches."
+	result, err := ParseValidatorResponse(response)
+	require.NoError(t, err)
+	assert.Equal(t, "contradiction", result.Relationship)
+	assert.Equal(t, "strategic", result.Category)
+	assert.Equal(t, "high", result.Severity)
+	assert.Equal(t, "The decisions present incompatible architectural approaches.", result.Explanation)
+	assert.True(t, result.IsConflict())
+}
+
+func TestParseValidatorResponse_MarkdownBoldUnrelated(t *testing.T) {
+	// Markdown bold format with an unrelated classification (not a conflict).
+	response := "**RELATIONSHIP:** UNRELATED\n**CATEGORY:** assessment\n**SEVERITY:** low\n**EXPLANATION:** Different domains entirely."
+	result, err := ParseValidatorResponse(response)
+	require.NoError(t, err)
+	assert.Equal(t, "unrelated", result.Relationship)
+	assert.False(t, result.IsConflict())
+}
+
+func TestParseValidatorResponse_TruncatedRelationships(t *testing.T) {
+	// Some LLMs shorten canonical relationship names. All truncations should
+	// be normalized to their canonical form rather than failing validation.
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{"RELATIONSHIP: refine\nEXPLANATION: x", "refinement"},
+		{"RELATIONSHIP: supersede\nEXPLANATION: x", "supersession"},
+		{"RELATIONSHIP: contradict\nEXPLANATION: x", "contradiction"},
+		{"RELATIONSHIP: complement\nEXPLANATION: x", "complementary"},
+	}
+	for _, tc := range cases {
+		result, err := ParseValidatorResponse(tc.input)
+		require.NoError(t, err, "input: %q", tc.input)
+		assert.Equal(t, tc.expected, result.Relationship, "input: %q", tc.input)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // NoopValidator tests
 // ---------------------------------------------------------------------------
@@ -399,6 +441,80 @@ func TestFormatPrompt_TaskContext(t *testing.T) {
 	})
 	assert.Contains(t, prompt, "Task A: implement caching layer")
 	assert.Contains(t, prompt, "Task B: optimize API response times")
+}
+
+func TestFormatPrompt_TopicSimilarityHighCrossAgent(t *testing.T) {
+	// When topic similarity is >= 0.70 and agents differ, the prompt should
+	// include a HIGH TOPIC OVERLAP notice to guide the LLM toward checking
+	// for stance opposition rather than dismissing as unrelated.
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA:        "server/client namespace split is the right shape",
+		OutcomeB:        "server/client namespace split is wrong; use flat structure",
+		TypeA:           "architecture",
+		TypeB:           "architecture",
+		AgentA:          "planner",
+		AgentB:          "coder",
+		CreatedA:        now,
+		CreatedB:        now.Add(time.Hour),
+		TopicSimilarity: 0.80,
+	})
+	assert.Contains(t, prompt, "HIGH TOPIC OVERLAP")
+	assert.Contains(t, prompt, "80%")
+	assert.Contains(t, prompt, "OPPOSITE STANCES")
+}
+
+func TestFormatPrompt_TopicSimilarityBelowThreshold(t *testing.T) {
+	// Below 0.70 topic similarity: no HIGH TOPIC OVERLAP notice.
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA:        "chose Redis",
+		OutcomeB:        "deploy to eu-west-1",
+		TypeA:           "architecture",
+		TypeB:           "deployment",
+		AgentA:          "planner",
+		AgentB:          "coder",
+		CreatedA:        now,
+		CreatedB:        now.Add(time.Hour),
+		TopicSimilarity: 0.50,
+	})
+	assert.NotContains(t, prompt, "HIGH TOPIC OVERLAP")
+}
+
+func TestFormatPrompt_TopicSimilarityHighSameAgent(t *testing.T) {
+	// High topic similarity but same agent: no HIGH TOPIC OVERLAP notice.
+	// Same-agent pairs with high similarity are more likely REFINEMENT/SUPERSESSION.
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA:        "use nested structure for agent_context",
+		OutcomeB:        "use flat structure for agent_context",
+		TypeA:           "architecture",
+		TypeB:           "architecture",
+		AgentA:          "planner",
+		AgentB:          "planner",
+		CreatedA:        now,
+		CreatedB:        now.Add(time.Hour),
+		TopicSimilarity: 0.85,
+	})
+	assert.NotContains(t, prompt, "HIGH TOPIC OVERLAP",
+		"same-agent pairs should not get the topic overlap notice")
+}
+
+func TestFormatPrompt_TopicSimilarityZero(t *testing.T) {
+	// Zero (unset) topic similarity: no HIGH TOPIC OVERLAP notice.
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA: "chose Redis",
+		OutcomeB: "chose Memcached",
+		TypeA:    "architecture",
+		TypeB:    "architecture",
+		AgentA:   "planner",
+		AgentB:   "coder",
+		CreatedA: now,
+		CreatedB: now.Add(time.Hour),
+		// TopicSimilarity defaults to 0 — not set
+	})
+	assert.NotContains(t, prompt, "HIGH TOPIC OVERLAP")
 }
 
 func TestFormatPrompt_EmptyEnrichmentFields(t *testing.T) {
@@ -886,6 +1002,168 @@ func TestScoreForDecision_LLMError(t *testing.T) {
 		bMatch := c.DecisionAID == dB.ID || c.DecisionBID == dB.ID
 		if aMatch && bMatch {
 			t.Fatal("LLM error should NOT produce a conflict (fail-safe rejects)")
+		}
+	}
+}
+
+// TestScoreForDecision_DirectToLLM verifies that cross-agent pairs with high
+// topic similarity bypass the significance gate when an LLM validator is active.
+// This is the fix for the bi-encoder stance-blindness problem: same-topic
+// decisions with opposite positions embed close together, so cosine divergence
+// cannot detect the conflict. The LLM must see the pair regardless of sig score.
+func TestScoreForDecision_DirectToLLM(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.Default()
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+
+	agentA := "direct-llm-a-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentA, OrgID: orgID, Name: agentA, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	agentB := "direct-llm-b-" + suffix
+	_, err = testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentB, OrgID: orgID, Name: agentB, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentA, orgID)
+	runB := createRun(t, agentB, orgID)
+
+	// Same topic embedding (cosine sim = 1.0, above decisionTopicSimFloor=0.70).
+	topicEmb := makeEmbedding(900, 1.0)
+
+	// Very similar outcome embeddings (low divergence — significance well below threshold).
+	// This models "use nested structure" vs "use flat structure": same vocabulary,
+	// opposite stance, embedding divergence too low for the gate to pass.
+	outcomeA := make([]float32, 1024)
+	outcomeA[901] = 1.0
+	outcomeA[902] = 0.1
+	outcomeEmbA := pgvector.NewVector(outcomeA)
+
+	outcomeB := make([]float32, 1024)
+	outcomeB[901] = 1.0
+	outcomeB[902] = 0.15
+	outcomeEmbB := pgvector.NewVector(outcomeB)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, OrgID: orgID,
+		DecisionType: "architecture",
+		Outcome:      "server/client namespace split is the right shape for agent_context",
+		Confidence:   0.90,
+		Embedding:    &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, OrgID: orgID,
+		DecisionType: "architecture",
+		Outcome:      "server/client namespace split is wrong; use flat structure with trust_source enum",
+		Confidence:   0.72,
+		Embedding:    &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+	})
+	require.NoError(t, err)
+
+	// High threshold (0.5) that the pair's significance will never reach.
+	// Mock LLM says contradiction. If the bypass works, the validator gets
+	// called and the conflict is inserted despite the high threshold.
+	validator := &mockValidator{result: ValidationResult{
+		Relationship: "contradiction",
+		Explanation:  "Agents recommend opposite structural approaches to the same design question.",
+		Category:     "strategic",
+		Severity:     "high",
+	}}
+	scorer := NewScorer(testDB, logger, 0.5, validator, 0, 0)
+	scorer.ScoreForDecision(ctx, dB.ID, orgID)
+
+	assert.Greater(t, validator.callCount, 0,
+		"LLM validator should be called even when significance is below threshold (directToLLM bypass)")
+
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 1000, 0)
+	require.NoError(t, err)
+
+	var found bool
+	for _, c := range conflicts {
+		aMatch := c.DecisionAID == dA.ID || c.DecisionBID == dA.ID
+		bMatch := c.DecisionAID == dB.ID || c.DecisionBID == dB.ID
+		if aMatch && bMatch {
+			found = true
+			assert.Equal(t, "llm_v2", c.ScoringMethod)
+			assert.Equal(t, model.ConflictKindCrossAgent, c.ConflictKind)
+			require.NotNil(t, c.Relationship)
+			assert.Equal(t, "contradiction", *c.Relationship)
+			break
+		}
+	}
+	assert.True(t, found, "directToLLM bypass should produce a conflict despite low significance")
+}
+
+// TestScoreForDecision_DirectToLLM_NoopSkips verifies that when no LLM validator
+// is configured (Noop), the directToLLM bypass does NOT apply and the significance
+// gate still filters out low-significance cross-agent pairs. Without an LLM
+// classifier, silently inserting unvalidated conflicts would hurt precision.
+func TestScoreForDecision_DirectToLLM_NoopSkips(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.Default()
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+
+	agentA := "no-bypass-a-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentA, OrgID: orgID, Name: agentA, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	agentB := "no-bypass-b-" + suffix
+	_, err = testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentB, OrgID: orgID, Name: agentB, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentA, orgID)
+	runB := createRun(t, agentB, orgID)
+
+	topicEmb := makeEmbedding(950, 1.0)
+
+	// Very similar outcomes (low divergence, same setup as DirectToLLM above).
+	outcomeA := make([]float32, 1024)
+	outcomeA[951] = 1.0
+	outcomeA[952] = 0.1
+	outcomeEmbA := pgvector.NewVector(outcomeA)
+
+	outcomeB := make([]float32, 1024)
+	outcomeB[951] = 1.0
+	outcomeB[952] = 0.15
+	outcomeEmbB := pgvector.NewVector(outcomeB)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use nested structure",
+		Confidence: 0.72, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+	})
+	require.NoError(t, err)
+
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use flat structure",
+		Confidence: 0.90, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+	})
+	require.NoError(t, err)
+
+	// NoopValidator + high threshold = significance gate applies, no bypass.
+	scorer := NewScorer(testDB, logger, 0.5, NoopValidator{}, 0, 0)
+	scorer.ScoreForDecision(ctx, dB.ID, orgID)
+
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 1000, 0)
+	require.NoError(t, err)
+
+	for _, c := range conflicts {
+		if c.DecisionAID == dB.ID || c.DecisionBID == dB.ID {
+			t.Fatal("Noop validator should NOT bypass the significance gate; low-sig pair should be filtered")
 		}
 	}
 }
