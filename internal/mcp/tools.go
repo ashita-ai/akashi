@@ -114,8 +114,7 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 				mcplib.Required(),
 			),
 			mcplib.WithNumber("confidence",
-				mcplib.Description("How certain you are about this decision (0.0 = guessing, 1.0 = certain)"),
-				mcplib.Required(),
+				mcplib.Description("How certain you are about this decision (0.0 = guessing, 1.0 = certain). Defaults to 0.7 if omitted."),
 				mcplib.Min(0),
 				mcplib.Max(1),
 			),
@@ -463,7 +462,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	agentID := request.GetString("agent_id", "")
 	decisionType := request.GetString("decision_type", "")
 	outcome := request.GetString("outcome", "")
-	confidence := float32(request.GetFloat("confidence", 0))
+	confidence := float32(request.GetFloat("confidence", 0.7))
 	reasoning := request.GetString("reasoning", "")
 
 	// Default agent_id to the caller's authenticated identity.
