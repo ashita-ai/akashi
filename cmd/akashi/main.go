@@ -484,8 +484,8 @@ func newEmbeddingProvider(cfg config.Config, logger *slog.Logger) embedding.Prov
 // (2) else if OPENAI_API_KEY is set, use OpenAI gpt-4o-mini, (3) else NoopValidator.
 func newConflictValidator(cfg config.Config, logger *slog.Logger) conflicts.Validator {
 	if cfg.ConflictLLMModel != "" {
-		logger.Info("conflict validator: ollama", "model", cfg.ConflictLLMModel, "url", cfg.OllamaURL)
-		return conflicts.NewOllamaValidator(cfg.OllamaURL, cfg.ConflictLLMModel)
+		logger.Info("conflict validator: ollama", "model", cfg.ConflictLLMModel, "url", cfg.OllamaURL, "num_threads", cfg.ConflictLLMThreads)
+		return conflicts.NewOllamaValidator(cfg.OllamaURL, cfg.ConflictLLMModel, cfg.ConflictLLMThreads)
 	}
 	if cfg.OpenAIAPIKey != "" {
 		logger.Info("conflict validator: openai (gpt-4o-mini)")
