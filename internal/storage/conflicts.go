@@ -168,6 +168,7 @@ const conflictSelectBase = `SELECT sc.id, sc.conflict_kind, sc.decision_a_id, sc
 		 sc.category, sc.severity, sc.status,
 		 sc.resolved_by, sc.resolved_at, sc.resolution_note,
 		 sc.relationship, sc.confidence_weight, sc.temporal_decay, sc.resolution_decision_id,
+		 sc.winning_decision_id,
 		 da.run_id, db.run_id, da.confidence, db.confidence, da.reasoning, db.reasoning, da.valid_from, db.valid_from
 		 FROM scored_conflicts sc
 		 LEFT JOIN decisions da ON da.id = sc.decision_a_id
@@ -189,6 +190,7 @@ func scanConflictRows(rows pgx.Rows) ([]model.DecisionConflict, error) {
 			&c.Category, &c.Severity, &c.Status,
 			&c.ResolvedBy, &c.ResolvedAt, &c.ResolutionNote,
 			&c.Relationship, &c.ConfidenceWeight, &c.TemporalDecay, &c.ResolutionDecisionID,
+			&c.WinningDecisionID,
 			&runA, &runB, &confA, &confB, &reasonA, &reasonB, &validA, &validB,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan conflict: %w", err)
@@ -290,7 +292,9 @@ func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.
 
 // ResolveConflictWithDecisionAndAudit links a conflict resolution to the
 // decision that resolved it and inserts a mutation audit entry, atomically.
-func (db *DB) ResolveConflictWithDecisionAndAudit(ctx context.Context, id, orgID, resolutionDecisionID uuid.UUID, resolvedBy string, resolutionNote *string, audit MutationAuditEntry) error {
+// winningDecisionID is optional; when non-nil it must be one of the two sides
+// (validated by the caller) and is stored on scored_conflicts.winning_decision_id.
+func (db *DB) ResolveConflictWithDecisionAndAudit(ctx context.Context, id, orgID, resolutionDecisionID uuid.UUID, winningDecisionID *uuid.UUID, resolvedBy string, resolutionNote *string, audit MutationAuditEntry) error {
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("storage: begin resolve conflict tx: %w", err)
@@ -299,9 +303,9 @@ func (db *DB) ResolveConflictWithDecisionAndAudit(ctx context.Context, id, orgID
 
 	tag, err := tx.Exec(ctx,
 		`UPDATE scored_conflicts SET status = 'resolved', resolved_by = $1, resolved_at = now(),
-		 resolution_note = $2, resolution_decision_id = $3
-		 WHERE id = $4 AND org_id = $5`,
-		resolvedBy, resolutionNote, resolutionDecisionID, id, orgID)
+		 resolution_note = $2, resolution_decision_id = $3, winning_decision_id = $4
+		 WHERE id = $5 AND org_id = $6`,
+		resolvedBy, resolutionNote, resolutionDecisionID, winningDecisionID, id, orgID)
 	if err != nil {
 		return fmt.Errorf("storage: resolve conflict with decision: %w", err)
 	}

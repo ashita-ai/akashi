@@ -56,10 +56,11 @@ func (db *DB) CreateTraceTx(ctx context.Context, params CreateTraceParams) (mode
 // ResolveConflictInTraceParams holds data needed for the conflict resolution
 // that should be committed atomically with the trace.
 type ResolveConflictInTraceParams struct {
-	ConflictID uuid.UUID
-	ResolvedBy string
-	ResNote    *string
-	Audit      MutationAuditEntry
+	ConflictID        uuid.UUID
+	ResolvedBy        string
+	ResNote           *string
+	Audit             MutationAuditEntry
+	WinningDecisionID *uuid.UUID // optional; must be decision_a_id or decision_b_id if set
 }
 
 // CreateTraceAndResolveConflictTx creates a decision trace AND resolves a
@@ -80,9 +81,10 @@ func (db *DB) CreateTraceAndResolveConflictTx(ctx context.Context, traceParams C
 	// Resolve the conflict within the same transaction.
 	tag, err := tx.Exec(ctx,
 		`UPDATE scored_conflicts SET status = 'resolved', resolved_by = $1, resolved_at = now(),
-		 resolution_note = $2, resolution_decision_id = $3
-		 WHERE id = $4 AND org_id = $5`,
+		 resolution_note = $2, resolution_decision_id = $3, winning_decision_id = $4
+		 WHERE id = $5 AND org_id = $6`,
 		conflictParams.ResolvedBy, conflictParams.ResNote, d.ID,
+		conflictParams.WinningDecisionID,
 		conflictParams.ConflictID, traceParams.OrgID)
 	if err != nil {
 		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: resolve conflict in trace tx: %w", err)
@@ -93,11 +95,15 @@ func (db *DB) CreateTraceAndResolveConflictTx(ctx context.Context, traceParams C
 
 	// Insert conflict resolution audit entry.
 	conflictParams.Audit.ResourceID = conflictParams.ConflictID.String()
-	conflictParams.Audit.AfterData = map[string]any{
+	afterData := map[string]any{
 		"status":                 "resolved",
 		"resolved_by":            conflictParams.ResolvedBy,
 		"resolution_decision_id": d.ID.String(),
 	}
+	if conflictParams.WinningDecisionID != nil {
+		afterData["winning_decision_id"] = conflictParams.WinningDecisionID.String()
+	}
+	conflictParams.Audit.AfterData = afterData
 	if err := InsertMutationAuditTx(ctx, tx, conflictParams.Audit); err != nil {
 		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: audit in trace+resolve tx: %w", err)
 	}

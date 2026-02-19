@@ -373,6 +373,31 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 		resp.HasPrecedent = len(resp.Decisions) > 0
 	}
 
+	// Populate consensus scores and outcome signals for decisions (concise and full formats).
+	if len(resp.Decisions) > 0 {
+		ids := make([]uuid.UUID, len(resp.Decisions))
+		for i := range resp.Decisions {
+			ids[i] = resp.Decisions[i].ID
+		}
+		if consensusMap, cErr := s.db.GetConsensusScoresBatch(ctx, ids, orgID); cErr == nil {
+			for i := range resp.Decisions {
+				if scores, ok := consensusMap[resp.Decisions[i].ID]; ok {
+					resp.Decisions[i].AgreementCount = scores[0]
+					resp.Decisions[i].ConflictCount = scores[1]
+				}
+			}
+		}
+		if signalsMap, sErr := s.db.GetDecisionOutcomeSignalsBatch(ctx, ids, orgID); sErr == nil {
+			for i := range resp.Decisions {
+				if sig, ok := signalsMap[resp.Decisions[i].ID]; ok {
+					resp.Decisions[i].SupersessionVelocityHours = sig.SupersessionVelocityHours
+					resp.Decisions[i].PrecedentCitationCount = sig.PrecedentCitationCount
+					resp.Decisions[i].ConflictFate = sig.ConflictFate
+				}
+			}
+		}
+	}
+
 	format := request.GetString("format", "concise")
 	if format == "full" {
 		resultData, _ := json.MarshalIndent(resp, "", "  ")
@@ -384,13 +409,20 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 	}
 
 	// Concise format: summary + action_needed + compact representations.
+	// Build agreement count lookup for consensus note generation.
+	agreementCounts := make(map[[16]byte]int, len(resp.Decisions))
+	for _, d := range resp.Decisions {
+		agreementCounts[[16]byte(d.ID)] = d.AgreementCount
+	}
+
 	compactDecs := make([]map[string]any, len(resp.Decisions))
 	for i, d := range resp.Decisions {
 		compactDecs[i] = compactDecision(d)
 	}
 	compactConfs := make([]map[string]any, len(resp.Conflicts))
 	for i, c := range resp.Conflicts {
-		compactConfs[i] = compactConflict(c)
+		note := buildConsensusNote(c, agreementCounts)
+		compactConfs[i] = compactConflict(c, note)
 	}
 
 	result := map[string]any{
@@ -400,6 +432,20 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 		"relevant_count": len(resp.Decisions),
 		"decisions":      compactDecs,
 		"conflicts":      compactConfs,
+	}
+
+	// precedent_ref_hint: shown to write-role callers when matching decisions are returned,
+	// nudging them to set precedent_ref when tracing to build the attribution graph.
+	if len(resp.Decisions) > 0 && claims != nil && model.RoleAtLeast(claims.Role, model.RoleAgent) {
+		// Find a decision with low citation count to use as the example.
+		for _, d := range resp.Decisions {
+			if d.PrecedentCitationCount < 5 {
+				result["precedent_ref_hint"] = fmt.Sprintf(
+					"If your current decision builds on any of the above, set precedent_ref: %s in akashi_trace. This builds the attribution graph used by outcome signals.",
+					d.ID)
+				break
+			}
+		}
 	}
 
 	resultData, _ := json.MarshalIndent(result, "", "  ")
@@ -919,7 +965,7 @@ func (s *Server) handleConflicts(ctx context.Context, request mcplib.CallToolReq
 	} else {
 		compact := make([]map[string]any, len(conflicts))
 		for i, c := range conflicts {
-			compact[i] = compactConflict(c)
+			compact[i] = compactConflict(c, "")
 		}
 		payload = map[string]any{"conflicts": compact, "total": len(conflicts)}
 	}
