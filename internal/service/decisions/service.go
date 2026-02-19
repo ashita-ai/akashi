@@ -123,11 +123,11 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 	}, nil
 }
 
-// ResolveConflictWithTrace creates a resolution decision trace AND resolves a
+// AdjudicateConflictWithTrace creates an adjudication decision trace AND resolves a
 // conflict in a single atomic transaction. This prevents the failure mode where
-// a resolution decision is created but the conflict remains unresolved due to
+// an adjudication decision is created but the conflict remains unresolved due to
 // a crash between two separate transactions.
-func (s *Service) ResolveConflictWithTrace(ctx context.Context, orgID uuid.UUID, input TraceInput, conflictParams storage.ResolveConflictInTraceParams) (TraceResult, error) {
+func (s *Service) AdjudicateConflictWithTrace(ctx context.Context, orgID uuid.UUID, input TraceInput, conflictParams storage.AdjudicateConflictInTraceParams) (TraceResult, error) {
 	params, err := s.prepareTrace(ctx, orgID, input)
 	if err != nil {
 		return TraceResult{}, err
@@ -137,11 +137,11 @@ func (s *Service) ResolveConflictWithTrace(ctx context.Context, orgID uuid.UUID,
 	var decision model.Decision
 	err = storage.WithRetry(ctx, 3, 10*time.Millisecond, func() error {
 		var txErr error
-		run, decision, txErr = s.db.CreateTraceAndResolveConflictTx(ctx, params, conflictParams)
+		run, decision, txErr = s.db.CreateTraceAndAdjudicateConflictTx(ctx, params, conflictParams)
 		return txErr
 	})
 	if err != nil {
-		return TraceResult{}, fmt.Errorf("trace+resolve: %w", err)
+		return TraceResult{}, fmt.Errorf("trace+adjudicate: %w", err)
 	}
 
 	s.postTraceAsync(ctx, orgID, input, decision)

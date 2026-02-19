@@ -15,7 +15,10 @@ Akashi is the decision audit trail. Every agent decision gets recorded with its 
 ```bash
 # Start the full stack (Postgres + TimescaleDB + Ollama + Qdrant + Akashi)
 docker compose up -d
-docker exec akashi-ollama ollama pull mxbai-embed-large   # first run only
+
+# Pull the embedding model — required for semantic search and conflict detection.
+# Skip this and those features silently degrade to text search / disabled.
+docker exec akashi-ollama ollama pull mxbai-embed-large   # first run only (~670 MB, one-time)
 
 curl http://localhost:8080/health
 # Open http://localhost:8080 for the audit dashboard
@@ -198,7 +201,11 @@ AKASHI_ADMIN_API_KEY=admin ./bin/akashi
 # Open http://localhost:8080
 ```
 
-Requires a running PostgreSQL instance with pgvector and TimescaleDB extensions. See [Configuration](docs/configuration.md) for all environment variables.
+Requires:
+- PostgreSQL 18 with pgvector and TimescaleDB extensions (connection via `DATABASE_URL` / `NOTIFY_URL`)
+- Ollama with `mxbai-embed-large` pulled, or an OpenAI API key — without an embedding provider, semantic search and conflict detection are disabled (server still starts, falls back to text search)
+
+See [Configuration](docs/configuration.md) for all environment variables. For local dev against the Docker-managed dependencies, start just the backing services (`docker compose up -d postgres qdrant ollama`) and set `DATABASE_URL` / `NOTIFY_URL` to point at the exposed Postgres port.
 
 ## Testing
 

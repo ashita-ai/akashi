@@ -148,10 +148,10 @@ function timeDelta(a: string, b: string): string {
 
 function ConflictCard({
   conflict,
-  onResolve,
+  onAdjudicate,
 }: {
   conflict: DecisionConflict;
-  onResolve: (conflict: DecisionConflict) => void;
+  onAdjudicate: (conflict: DecisionConflict) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -177,10 +177,10 @@ function ConflictCard({
                 variant="ghost"
                 size="sm"
                 className="h-7 text-xs"
-                onClick={() => onResolve(conflict)}
+                onClick={() => onAdjudicate(conflict)}
               >
                 <Eye className="h-3 w-3 mr-1" />
-                Resolve
+                Adjudicate
               </Button>
             )}
           </div>
@@ -287,11 +287,11 @@ export default function Conflicts() {
     staleTime: 60_000,
   });
 
-  const [resolveTarget, setResolveTarget] = useState<DecisionConflict | null>(null);
-  const [resolveStatus, setResolveStatus] = useState<string>("acknowledged");
-  const [resolveNote, setResolveNote] = useState("");
-  const [resolveWinner, setResolveWinner] = useState<string | null>(null);
-  const [resolveError, setResolveError] = useState<string | null>(null);
+  const [adjudicateTarget, setAdjudicateTarget] = useState<DecisionConflict | null>(null);
+  const [adjudicateStatus, setAdjudicateStatus] = useState<string>("acknowledged");
+  const [adjudicateNote, setAdjudicateNote] = useState("");
+  const [adjudicateWinner, setAdjudicateWinner] = useState<string | null>(null);
+  const [adjudicateError, setAdjudicateError] = useState<string | null>(null);
 
   const { data, isPending } = useQuery({
     queryKey: ["conflicts", page, agentFilter, statusFilter],
@@ -310,7 +310,7 @@ export default function Conflicts() {
 
   const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
 
-  const resolveMutation = useMutation({
+  const adjudicateMutation = useMutation({
     mutationFn: (params: { id: string; status: string; resolution_note?: string; winning_decision_id?: string }) =>
       patchConflict(params.id, {
         status: params.status,
@@ -319,13 +319,13 @@ export default function Conflicts() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["conflicts"] });
-      setResolveTarget(null);
-      setResolveNote("");
-      setResolveWinner(null);
-      setResolveError(null);
+      setAdjudicateTarget(null);
+      setAdjudicateNote("");
+      setAdjudicateWinner(null);
+      setAdjudicateError(null);
     },
     onError: (err) => {
-      setResolveError(err instanceof ApiError ? err.message : "Failed to update conflict");
+      setAdjudicateError(err instanceof ApiError ? err.message : "Failed to update conflict");
     },
   });
 
@@ -352,21 +352,21 @@ export default function Conflicts() {
     setSearchParams(params);
   }
 
-  function openResolveDialog(conflict: DecisionConflict) {
-    setResolveTarget(conflict);
-    setResolveStatus("acknowledged");
-    setResolveNote("");
-    setResolveWinner(null);
-    setResolveError(null);
+  function openAdjudicateDialog(conflict: DecisionConflict) {
+    setAdjudicateTarget(conflict);
+    setAdjudicateStatus("acknowledged");
+    setAdjudicateNote("");
+    setAdjudicateWinner(null);
+    setAdjudicateError(null);
   }
 
-  function handleResolve() {
-    if (!resolveTarget) return;
-    resolveMutation.mutate({
-      id: resolveTarget.id,
-      status: resolveStatus,
-      ...(resolveNote.trim() ? { resolution_note: resolveNote.trim() } : {}),
-      ...(resolveStatus === "resolved" && resolveWinner ? { winning_decision_id: resolveWinner } : {}),
+  function handleAdjudicate() {
+    if (!adjudicateTarget) return;
+    adjudicateMutation.mutate({
+      id: adjudicateTarget.id,
+      status: adjudicateStatus,
+      ...(adjudicateNote.trim() ? { resolution_note: adjudicateNote.trim() } : {}),
+      ...(adjudicateStatus === "resolved" && adjudicateWinner ? { winning_decision_id: adjudicateWinner } : {}),
     });
   }
 
@@ -446,7 +446,7 @@ export default function Conflicts() {
               <ConflictCard
                 key={conflict.id ?? `${conflict.decision_a_id}-${conflict.decision_b_id}`}
                 conflict={conflict}
-                onResolve={openResolveDialog}
+                onAdjudicate={openAdjudicateDialog}
               />
             ))}
           </div>
@@ -484,18 +484,18 @@ export default function Conflicts() {
         </>
       )}
 
-      {/* Resolution dialog */}
-      <Dialog open={resolveTarget !== null} onOpenChange={(open) => !open && setResolveTarget(null)}>
+      {/* Adjudication dialog */}
+      <Dialog open={adjudicateTarget !== null} onOpenChange={(open) => !open && setAdjudicateTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Resolve Conflict</DialogTitle>
+            <DialogTitle>Adjudicate Conflict</DialogTitle>
             <DialogDescription>
               Update the status of this conflict between{" "}
-              <strong>{resolveTarget?.agent_a}</strong>
-              {resolveTarget?.agent_a !== resolveTarget?.agent_b && (
-                <> and <strong>{resolveTarget?.agent_b}</strong></>
+              <strong>{adjudicateTarget?.agent_a}</strong>
+              {adjudicateTarget?.agent_a !== adjudicateTarget?.agent_b && (
+                <> and <strong>{adjudicateTarget?.agent_b}</strong></>
               )}
-              {" on "}<strong>{resolveTarget?.decision_type}</strong>.
+              {" on "}<strong>{adjudicateTarget?.decision_type}</strong>.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
@@ -503,87 +503,87 @@ export default function Conflicts() {
               <label className="text-sm font-medium">Action</label>
               <div className="flex gap-2">
                 <Button
-                  variant={resolveStatus === "acknowledged" ? "default" : "outline"}
+                  variant={adjudicateStatus === "acknowledged" ? "default" : "outline"}
                   size="sm"
-                  onClick={() => setResolveStatus("acknowledged")}
+                  onClick={() => setAdjudicateStatus("acknowledged")}
                 >
                   <Eye className="h-3.5 w-3.5 mr-1.5" />
                   Acknowledge
                 </Button>
                 <Button
-                  variant={resolveStatus === "resolved" ? "default" : "outline"}
+                  variant={adjudicateStatus === "resolved" ? "default" : "outline"}
                   size="sm"
-                  onClick={() => setResolveStatus("resolved")}
+                  onClick={() => setAdjudicateStatus("resolved")}
                 >
                   <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />
                   Resolve
                 </Button>
                 <Button
-                  variant={resolveStatus === "wont_fix" ? "default" : "outline"}
+                  variant={adjudicateStatus === "wont_fix" ? "default" : "outline"}
                   size="sm"
-                  onClick={() => setResolveStatus("wont_fix")}
+                  onClick={() => setAdjudicateStatus("wont_fix")}
                 >
                   <XCircle className="h-3.5 w-3.5 mr-1.5" />
                   Won't Fix
                 </Button>
               </div>
             </div>
-            {resolveStatus === "resolved" && resolveTarget && (
+            {adjudicateStatus === "resolved" && adjudicateTarget && (
               <div className="space-y-2">
                 <label className="text-sm font-medium">Winner (optional)</label>
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
                     onClick={() =>
-                      setResolveWinner(
-                        resolveWinner === resolveTarget.decision_a_id
+                      setAdjudicateWinner(
+                        adjudicateWinner === adjudicateTarget.decision_a_id
                           ? null
-                          : resolveTarget.decision_a_id,
+                          : adjudicateTarget.decision_a_id,
                       )
                     }
                     className={`text-left rounded-md border p-3 text-xs transition-colors ${
-                      resolveWinner === resolveTarget.decision_a_id
+                      adjudicateWinner === adjudicateTarget.decision_a_id
                         ? "border-primary bg-primary/5"
                         : "hover:border-primary/50 hover:bg-muted/50"
                     }`}
                   >
                     <div className="flex items-center justify-between mb-1.5">
                       <Badge variant="outline" className="font-mono text-[10px]">
-                        {resolveTarget.agent_a}
+                        {adjudicateTarget.agent_a}
                       </Badge>
-                      {resolveWinner === resolveTarget.decision_a_id && (
+                      {adjudicateWinner === adjudicateTarget.decision_a_id && (
                         <Check className="h-3 w-3 text-primary" />
                       )}
                     </div>
                     <p className="leading-snug text-muted-foreground">
-                      {truncate(resolveTarget.outcome_a, 80)}
+                      {truncate(adjudicateTarget.outcome_a, 80)}
                     </p>
                   </button>
                   <button
                     type="button"
                     onClick={() =>
-                      setResolveWinner(
-                        resolveWinner === resolveTarget.decision_b_id
+                      setAdjudicateWinner(
+                        adjudicateWinner === adjudicateTarget.decision_b_id
                           ? null
-                          : resolveTarget.decision_b_id,
+                          : adjudicateTarget.decision_b_id,
                       )
                     }
                     className={`text-left rounded-md border p-3 text-xs transition-colors ${
-                      resolveWinner === resolveTarget.decision_b_id
+                      adjudicateWinner === adjudicateTarget.decision_b_id
                         ? "border-primary bg-primary/5"
                         : "hover:border-primary/50 hover:bg-muted/50"
                     }`}
                   >
                     <div className="flex items-center justify-between mb-1.5">
                       <Badge variant="outline" className="font-mono text-[10px]">
-                        {resolveTarget.agent_b}
+                        {adjudicateTarget.agent_b}
                       </Badge>
-                      {resolveWinner === resolveTarget.decision_b_id && (
+                      {adjudicateWinner === adjudicateTarget.decision_b_id && (
                         <Check className="h-3 w-3 text-primary" />
                       )}
                     </div>
                     <p className="leading-snug text-muted-foreground">
-                      {truncate(resolveTarget.outcome_b, 80)}
+                      {truncate(adjudicateTarget.outcome_b, 80)}
                     </p>
                   </button>
                 </div>
@@ -593,22 +593,22 @@ export default function Conflicts() {
               <label className="text-sm font-medium">Note (optional)</label>
               <textarea
                 className="w-full rounded-md border bg-background px-3 py-2 text-sm min-h-[80px] resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-                placeholder="Describe why this conflict was resolved this way..."
-                value={resolveNote}
-                onChange={(e) => setResolveNote(e.target.value)}
+                placeholder="Describe why this conflict was adjudicated this way..."
+                value={adjudicateNote}
+                onChange={(e) => setAdjudicateNote(e.target.value)}
               />
             </div>
-            {resolveError && (
-              <p className="text-sm text-destructive">{resolveError}</p>
+            {adjudicateError && (
+              <p className="text-sm text-destructive">{adjudicateError}</p>
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setResolveTarget(null)}>
+            <Button variant="outline" onClick={() => setAdjudicateTarget(null)}>
               Cancel
             </Button>
-            <Button onClick={handleResolve} disabled={resolveMutation.isPending}>
+            <Button onClick={handleAdjudicate} disabled={adjudicateMutation.isPending}>
               <Check className="h-4 w-4 mr-1.5" />
-              {resolveMutation.isPending ? "Saving\u2026" : "Save"}
+              {adjudicateMutation.isPending ? "Saving\u2026" : "Save"}
             </Button>
           </DialogFooter>
         </DialogContent>

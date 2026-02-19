@@ -1106,15 +1106,18 @@ func (db *DB) ResetConflictScoredAt(ctx context.Context) (int64, error) {
 }
 
 // CountUnvalidatedConflicts returns the number of scored_conflicts that were
-// NOT scored via LLM. Used to decide whether to clear old conflicts when
-// transitioning to LLM validation.
+// not scored by the current LLM classifier (llm_v2). This includes embedding-only
+// conflicts and old binary-verdict 'llm' conflicts, both of which are stale.
+// Used to decide whether to clear old conflicts at startup when transitioning
+// to LLM validation. Returns 0 once all conflicts are llm_v2, so subsequent
+// restarts skip the migration entirely.
 // SECURITY: Intentionally global — startup check that determines whether the
 // LLM migration path should fire. A non-zero count anywhere triggers the
 // migration for all orgs.
 func (db *DB) CountUnvalidatedConflicts(ctx context.Context) (int, error) {
 	var count int
 	err := db.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM scored_conflicts WHERE scoring_method != 'llm'`).Scan(&count)
+		`SELECT COUNT(*) FROM scored_conflicts WHERE scoring_method NOT IN ('llm_v2')`).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("storage: count unvalidated conflicts: %w", err)
 	}
@@ -1223,57 +1226,91 @@ func (db *DB) GetConsensusScores(ctx context.Context, decisionID, orgID uuid.UUI
 	return agreementCount, conflictCount, nil
 }
 
-// GetConsensusScoresBatch computes agreement and conflict counts for multiple decisions
-// in a single lateral-join query. Returns a map of decision ID → [agreementCount, conflictCount].
-// Decisions without embeddings are absent from the result map (treat as 0, 0).
+// GetConsensusScoresBatch computes agreement and conflict counts for multiple decisions.
+// Returns a map of decision ID → [agreementCount, conflictCount].
+// Decisions without embeddings have agreement=0; all decisions can have conflict>0.
+//
+// Implemented as two queries to avoid an O(N×50) correlated EXISTS scan:
+//
+//  1. Conflict counts: simple batch join on scored_conflicts — no ANN needed,
+//     O(index scan) regardless of batch size.
+//
+//  2. Agreement counts: LATERAL ANN per decision (unavoidable with pgvector), but
+//     without the nested EXISTS that the original single-query approach required.
 func (db *DB) GetConsensusScoresBatch(ctx context.Context, ids []uuid.UUID, orgID uuid.UUID) (map[uuid.UUID][2]int, error) {
 	if len(ids) == 0 {
 		return map[uuid.UUID][2]int{}, nil
 	}
 
-	rows, err := db.pool.Query(ctx, `
-		SELECT src.id,
-		       COALESCE(SUM(CASE WHEN cls.stance = 'agreement' THEN 1 ELSE 0 END), 0)::int,
-		       COALESCE(SUM(CASE WHEN cls.stance = 'conflict'  THEN 1 ELSE 0 END), 0)::int
+	result := make(map[uuid.UUID][2]int, len(ids))
+
+	// Query 1: conflict counts via direct batch join on scored_conflicts.
+	// Counts every open/acknowledged conflict involving each decision — not limited
+	// to the embedding neighborhood, so no ANN needed and no data is missed.
+	conflictRows, err := db.pool.Query(ctx, `
+		WITH batch AS (SELECT unnest($1::uuid[]) AS id)
+		SELECT b.id, COUNT(*) AS conflict_count
+		FROM batch b
+		JOIN scored_conflicts sc
+		     ON (sc.decision_a_id = b.id OR sc.decision_b_id = b.id)
+		     AND sc.org_id = $2
+		     AND sc.status IN ('open', 'acknowledged')
+		GROUP BY b.id`, ids, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: consensus conflict counts: %w", err)
+	}
+	defer conflictRows.Close()
+	for conflictRows.Next() {
+		var id uuid.UUID
+		var count int
+		if err := conflictRows.Scan(&id, &count); err != nil {
+			return nil, fmt.Errorf("storage: scan conflict count: %w", err)
+		}
+		v := result[id]
+		v[1] = count
+		result[id] = v
+	}
+	if err := conflictRows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: conflict counts rows: %w", err)
+	}
+
+	// Query 2: agreement counts via LATERAL ANN — one ANN search per decision in
+	// the batch (N = page size, typically 20-50). The EXISTS check on scored_conflicts
+	// has been moved to query 1, eliminating the per-neighbor correlated subquery.
+	agreementRows, err := db.pool.Query(ctx, `
+		SELECT src.id, COUNT(neighbors.id) AS agreement_count
 		FROM decisions src
 		CROSS JOIN LATERAL (
-		    SELECT
-		        CASE
-		            WHEN 1 - (src.outcome_embedding <=> d2.outcome_embedding) >= 0.75 THEN 'agreement'
-		            WHEN EXISTS (
-		                SELECT 1 FROM scored_conflicts sc2
-		                WHERE sc2.org_id = src.org_id
-		                  AND sc2.status IN ('open', 'acknowledged')
-		                  AND ((sc2.decision_a_id = src.id AND sc2.decision_b_id = d2.id)
-		                    OR (sc2.decision_b_id = src.id AND sc2.decision_a_id = d2.id))
-		            ) THEN 'conflict'
-		            ELSE 'neutral'
-		        END AS stance
+		    SELECT d2.id
 		    FROM decisions d2
 		    WHERE d2.org_id = src.org_id
 		      AND d2.id != src.id
 		      AND d2.valid_to IS NULL
-		      AND 1 - (src.embedding <=> d2.embedding) >= 0.70
+		      AND 1 - (src.outcome_embedding <=> d2.outcome_embedding) >= 0.75
 		    ORDER BY src.embedding <=> d2.embedding
 		    LIMIT 50
-		) AS cls
+		) AS neighbors
 		WHERE src.id = ANY($1) AND src.org_id = $2 AND src.embedding IS NOT NULL
 		GROUP BY src.id`, ids, orgID)
 	if err != nil {
-		return nil, fmt.Errorf("storage: consensus scores batch: %w", err)
+		return nil, fmt.Errorf("storage: consensus agreement counts: %w", err)
 	}
-	defer rows.Close()
-
-	result := make(map[uuid.UUID][2]int, len(ids))
-	for rows.Next() {
+	defer agreementRows.Close()
+	for agreementRows.Next() {
 		var id uuid.UUID
-		var agreements, conflicts int
-		if err := rows.Scan(&id, &agreements, &conflicts); err != nil {
-			return nil, fmt.Errorf("storage: scan consensus scores batch: %w", err)
+		var count int
+		if err := agreementRows.Scan(&id, &count); err != nil {
+			return nil, fmt.Errorf("storage: scan agreement count: %w", err)
 		}
-		result[id] = [2]int{agreements, conflicts}
+		v := result[id]
+		v[0] = count
+		result[id] = v
 	}
-	return result, rows.Err()
+	if err := agreementRows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: agreement counts rows: %w", err)
+	}
+
+	return result, nil
 }
 
 // GetDecisionOutcomeSignals returns temporal, graph, and fate outcome signals for a single decision.

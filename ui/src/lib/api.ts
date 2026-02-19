@@ -267,6 +267,17 @@ export async function patchConflict(
   });
 }
 
+// Adjudicate conflict — creates a decision trace and links it to the conflict
+export async function adjudicateConflict(
+  id: string,
+  body: { outcome: string; reasoning?: string; decision_type?: string; winning_decision_id?: string },
+): Promise<DecisionConflict> {
+  return request<DecisionConflict>(`/v1/conflicts/${id}/adjudicate`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 // Trace health
 export async function getTraceHealth(): Promise<TraceHealth> {
   return request<TraceHealth>("/v1/trace-health");

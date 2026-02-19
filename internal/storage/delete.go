@@ -22,6 +22,7 @@ type DeleteAgentResult struct {
 	Events       int64 `json:"events"`
 	Runs         int64 `json:"runs"`
 	Grants       int64 `json:"grants"`
+	APIKeys      int64 `json:"api_keys"`
 	Agents       int64 `json:"agents"`
 }
 
@@ -270,6 +271,28 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 		return DeleteAgentResult{}, fmt.Errorf("storage: delete grants: %w", err)
 	}
 	result.Grants = tag.RowsAffected()
+
+	// 9b. Archive and revoke api_keys before the agent DELETE cascades them away.
+	// key_hash is redacted in the archive — credential material must not persist
+	// in audit logs. The ON DELETE CASCADE on fk_api_keys_agent (migration 045)
+	// would silently drop them; we archive first so the deletion is traceable.
+	_, err = tx.Exec(ctx,
+		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		 SELECT $1, $2, 'api_keys', k.id::text,
+		        (to_jsonb(k) - 'key_hash') || '{"key_hash":"[REDACTED]"}'::jsonb
+		 FROM api_keys k
+		 WHERE k.org_id = $1 AND k.agent_id = $2`,
+		orgID, agentID,
+	)
+	if err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: archive api keys for delete: %w", err)
+	}
+
+	tag, err = tx.Exec(ctx, `DELETE FROM api_keys WHERE org_id = $1 AND agent_id = $2`, orgID, agentID)
+	if err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: delete api keys: %w", err)
+	}
+	result.APIKeys = tag.RowsAffected()
 
 	// 10. Delete the agent itself.
 	_, err = tx.Exec(ctx,

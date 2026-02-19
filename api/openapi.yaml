@@ -948,16 +948,16 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
-  /v1/conflicts/{id}/resolve:
+  /v1/conflicts/{id}/adjudicate:
     post:
-      operationId: resolveConflict
+      operationId: adjudicateConflict
       tags: [Query]
-      summary: Resolve a conflict by creating a resolution decision
+      summary: Adjudicate a conflict by creating an adjudication decision
       description: |
-        Creates a new decision trace that serves as the authoritative resolution
+        Creates a new decision trace that serves as the authoritative adjudication
         of the conflict, then links it to the conflict record. This provides a
         full audit trail: the original conflicting decisions, and the explicit
-        resolution with its reasoning.
+        adjudication with its reasoning.
         Requires `agent` role or higher.
       parameters:
         - name: id
@@ -966,16 +966,16 @@ paths:
           schema:
             type: string
             format: uuid
-          description: The conflict ID to resolve.
+          description: The conflict ID to adjudicate.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ResolveConflictRequest"
+              $ref: "#/components/schemas/AdjudicateConflictRequest"
       responses:
         "200":
-          description: Conflict resolved. Returns the updated conflict with linked resolution decision.
+          description: Conflict adjudicated. Returns the updated conflict with linked adjudication decision.
           content:
             application/json:
               schema:
@@ -2238,20 +2238,20 @@ components:
         resolution_note:
           type: string
 
-    ResolveConflictRequest:
+    AdjudicateConflictRequest:
       type: object
       required: [outcome]
       properties:
         outcome:
           type: string
-          description: The resolution outcome — what was decided to resolve the conflict.
+          description: The adjudication outcome — what was decided to adjudicate the conflict.
         reasoning:
           type: string
-          description: Why this resolution was chosen.
+          description: Why this adjudication was chosen.
         decision_type:
           type: string
           default: conflict_resolution
-          description: Decision type for the resolution trace (defaults to "conflict_resolution").
+          description: Decision type for the adjudication trace (defaults to "conflict_resolution").
 
     # ── API Key schemas ─────────────────────────────────────────────
     APIKey:
