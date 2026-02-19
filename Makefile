@@ -1,7 +1,7 @@
 .PHONY: all build build-ui build-with-ui test lint fmt vet clean docker-up docker-down ci security tidy \
        dev-ui migrate-apply migrate-lint migrate-hash migrate-diff migrate-status migrate-validate \
        check-doc-consistency verify-restore reconcile-qdrant reconcile-qdrant-repair \
-       archive-events-dry-run archive-events verify-exit-criteria
+       archive-events-dry-run archive-events verify-exit-criteria install-hooks
 
 BINARY := bin/akashi
 GO := go
@@ -112,3 +112,6 @@ archive-events: ## Archive and purge one retention window (requires explicit fla
 
 verify-exit-criteria: ## Evaluate durability exit criteria (JSON output; non-zero on failure)
 	python3 scripts/verify_exit_criteria.py
+
+install-hooks: ## Install Claude Code hooks (akashi-trace reminder after git commit)
+	@bash scripts/install-claude-hooks.sh

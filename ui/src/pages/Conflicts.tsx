@@ -101,7 +101,7 @@ function ConflictSide({
   return (
     <Link
       to={`/decisions/${runId}`}
-      className="block space-y-2 rounded-md border p-4 transition-colors hover:border-primary/50 hover:bg-muted/50"
+      className="block h-full space-y-2 rounded-md border p-4 transition-colors hover:border-primary/50 hover:bg-muted/50"
     >
       <div className="flex items-center justify-between">
         <Badge variant="outline" className="font-mono text-xs">
@@ -290,6 +290,7 @@ export default function Conflicts() {
   const [resolveTarget, setResolveTarget] = useState<DecisionConflict | null>(null);
   const [resolveStatus, setResolveStatus] = useState<string>("acknowledged");
   const [resolveNote, setResolveNote] = useState("");
+  const [resolveWinner, setResolveWinner] = useState<string | null>(null);
   const [resolveError, setResolveError] = useState<string | null>(null);
 
   const { data, isPending } = useQuery({
@@ -310,12 +311,17 @@ export default function Conflicts() {
   const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
 
   const resolveMutation = useMutation({
-    mutationFn: (params: { id: string; status: string; resolution_note?: string }) =>
-      patchConflict(params.id, { status: params.status, resolution_note: params.resolution_note }),
+    mutationFn: (params: { id: string; status: string; resolution_note?: string; winning_decision_id?: string }) =>
+      patchConflict(params.id, {
+        status: params.status,
+        resolution_note: params.resolution_note,
+        winning_decision_id: params.winning_decision_id,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["conflicts"] });
       setResolveTarget(null);
       setResolveNote("");
+      setResolveWinner(null);
       setResolveError(null);
     },
     onError: (err) => {
@@ -350,6 +356,7 @@ export default function Conflicts() {
     setResolveTarget(conflict);
     setResolveStatus("acknowledged");
     setResolveNote("");
+    setResolveWinner(null);
     setResolveError(null);
   }
 
@@ -359,6 +366,7 @@ export default function Conflicts() {
       id: resolveTarget.id,
       status: resolveStatus,
       ...(resolveNote.trim() ? { resolution_note: resolveNote.trim() } : {}),
+      ...(resolveStatus === "resolved" && resolveWinner ? { winning_decision_id: resolveWinner } : {}),
     });
   }
 
@@ -520,6 +528,67 @@ export default function Conflicts() {
                 </Button>
               </div>
             </div>
+            {resolveStatus === "resolved" && resolveTarget && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Winner (optional)</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setResolveWinner(
+                        resolveWinner === resolveTarget.decision_a_id
+                          ? null
+                          : resolveTarget.decision_a_id,
+                      )
+                    }
+                    className={`text-left rounded-md border p-3 text-xs transition-colors ${
+                      resolveWinner === resolveTarget.decision_a_id
+                        ? "border-primary bg-primary/5"
+                        : "hover:border-primary/50 hover:bg-muted/50"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <Badge variant="outline" className="font-mono text-[10px]">
+                        {resolveTarget.agent_a}
+                      </Badge>
+                      {resolveWinner === resolveTarget.decision_a_id && (
+                        <Check className="h-3 w-3 text-primary" />
+                      )}
+                    </div>
+                    <p className="leading-snug text-muted-foreground">
+                      {truncate(resolveTarget.outcome_a, 80)}
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setResolveWinner(
+                        resolveWinner === resolveTarget.decision_b_id
+                          ? null
+                          : resolveTarget.decision_b_id,
+                      )
+                    }
+                    className={`text-left rounded-md border p-3 text-xs transition-colors ${
+                      resolveWinner === resolveTarget.decision_b_id
+                        ? "border-primary bg-primary/5"
+                        : "hover:border-primary/50 hover:bg-muted/50"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <Badge variant="outline" className="font-mono text-[10px]">
+                        {resolveTarget.agent_b}
+                      </Badge>
+                      {resolveWinner === resolveTarget.decision_b_id && (
+                        <Check className="h-3 w-3 text-primary" />
+                      )}
+                    </div>
+                    <p className="leading-snug text-muted-foreground">
+                      {truncate(resolveTarget.outcome_b, 80)}
+                    </p>
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="space-y-2">
               <label className="text-sm font-medium">Note (optional)</label>
               <textarea
