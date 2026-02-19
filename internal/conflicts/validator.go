@@ -299,23 +299,36 @@ const ollamaPerCallTimeout = 90 * time.Second
 type OllamaValidator struct {
 	baseURL    string
 	model      string
+	numThreads int // 0 = let Ollama decide; >0 = cap inference to this many CPU threads
 	httpClient *http.Client
 }
 
 // NewOllamaValidator creates a validator that calls Ollama's chat API.
-func NewOllamaValidator(baseURL, model string) *OllamaValidator {
+// numThreads caps the CPU threads Ollama uses per inference call (0 = Ollama default).
+// Recommended: floor(runtime.NumCPU()/3) to leave headroom for the server and embeddings.
+func NewOllamaValidator(baseURL, model string, numThreads int) *OllamaValidator {
 	if baseURL == "" {
 		baseURL = "http://localhost:11434"
 	}
 	return &OllamaValidator{
-		baseURL: baseURL,
-		model:   model,
+		baseURL:    baseURL,
+		model:      model,
+		numThreads: numThreads,
 		httpClient: &http.Client{
 			// HTTP timeout must exceed ollamaPerCallTimeout to avoid a
 			// transport-level close before the context deadline fires.
 			Timeout: ollamaPerCallTimeout + 5*time.Second,
 		},
 	}
+}
+
+// ollamaOpts returns the options object for Ollama requests, or nil if no
+// options need to be set (e.g. numThreads == 0 means use Ollama's default).
+func (v *OllamaValidator) ollamaOpts() *ollamaOptions {
+	if v.numThreads > 0 {
+		return &ollamaOptions{NumThread: v.numThreads}
+	}
+	return nil
 }
 
 // Warmup loads the model into Ollama's memory before the first real validation
@@ -331,6 +344,7 @@ func (v *OllamaValidator) Warmup(ctx context.Context) error {
 		Messages:  []ollamaChatMessage{{Role: "user", Content: "hi"}},
 		Stream:    false,
 		KeepAlive: "72h",
+		Options:   v.ollamaOpts(),
 	})
 	req, err := http.NewRequestWithContext(warmCtx, http.MethodPost, v.baseURL+"/api/chat", bytes.NewReader(body))
 	if err != nil {
@@ -354,6 +368,11 @@ type ollamaChatRequest struct {
 	Messages  []ollamaChatMessage `json:"messages"`
 	Stream    bool                `json:"stream"`
 	KeepAlive string              `json:"keep_alive,omitempty"` // "72h" keeps model in RAM for 3 days (effectively permanent for dev sessions).
+	Options   *ollamaOptions      `json:"options,omitempty"`
+}
+
+type ollamaOptions struct {
+	NumThread int `json:"num_thread,omitempty"` // CPU threads to use for inference. 0 = Ollama default (all cores).
 }
 
 type ollamaChatMessage struct {
@@ -380,6 +399,7 @@ func (v *OllamaValidator) Validate(ctx context.Context, input ValidateInput) (Va
 		},
 		Stream:    false,
 		KeepAlive: "72h", // Keep model loaded in RAM between calls; avoids cold-start penalty.
+		Options:   v.ollamaOpts(),
 	})
 	if err != nil {
 		return ValidationResult{}, fmt.Errorf("ollama validator: marshal: %w", err)
