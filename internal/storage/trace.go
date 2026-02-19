@@ -53,9 +53,9 @@ func (db *DB) CreateTraceTx(ctx context.Context, params CreateTraceParams) (mode
 	return run, d, nil
 }
 
-// ResolveConflictInTraceParams holds data needed for the conflict resolution
+// AdjudicateConflictInTraceParams holds data needed for the conflict adjudication
 // that should be committed atomically with the trace.
-type ResolveConflictInTraceParams struct {
+type AdjudicateConflictInTraceParams struct {
 	ConflictID        uuid.UUID
 	ResolvedBy        string
 	ResNote           *string
@@ -63,13 +63,13 @@ type ResolveConflictInTraceParams struct {
 	WinningDecisionID *uuid.UUID // optional; must be decision_a_id or decision_b_id if set
 }
 
-// CreateTraceAndResolveConflictTx creates a decision trace AND resolves a
+// CreateTraceAndAdjudicateConflictTx creates a decision trace AND adjudicates a
 // conflict in a single atomic transaction. This prevents the failure mode where
-// a resolution decision exists but the conflict remains unresolved.
-func (db *DB) CreateTraceAndResolveConflictTx(ctx context.Context, traceParams CreateTraceParams, conflictParams ResolveConflictInTraceParams) (model.AgentRun, model.Decision, error) {
+// an adjudication decision exists but the conflict remains unresolved.
+func (db *DB) CreateTraceAndAdjudicateConflictTx(ctx context.Context, traceParams CreateTraceParams, conflictParams AdjudicateConflictInTraceParams) (model.AgentRun, model.Decision, error) {
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
-		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: begin trace+resolve tx: %w", err)
+		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: begin trace+adjudicate tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -78,7 +78,7 @@ func (db *DB) CreateTraceAndResolveConflictTx(ctx context.Context, traceParams C
 		return model.AgentRun{}, model.Decision{}, err
 	}
 
-	// Resolve the conflict within the same transaction.
+	// Adjudicate the conflict within the same transaction.
 	tag, err := tx.Exec(ctx,
 		`UPDATE scored_conflicts SET status = 'resolved', resolved_by = $1, resolved_at = now(),
 		 resolution_note = $2, resolution_decision_id = $3, winning_decision_id = $4
@@ -87,13 +87,13 @@ func (db *DB) CreateTraceAndResolveConflictTx(ctx context.Context, traceParams C
 		conflictParams.WinningDecisionID,
 		conflictParams.ConflictID, traceParams.OrgID)
 	if err != nil {
-		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: resolve conflict in trace tx: %w", err)
+		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: adjudicate conflict in trace tx: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: conflict not found")
 	}
 
-	// Insert conflict resolution audit entry.
+	// Insert conflict adjudication audit entry.
 	conflictParams.Audit.ResourceID = conflictParams.ConflictID.String()
 	afterData := map[string]any{
 		"status":                 "resolved",
@@ -105,17 +105,17 @@ func (db *DB) CreateTraceAndResolveConflictTx(ctx context.Context, traceParams C
 	}
 	conflictParams.Audit.AfterData = afterData
 	if err := InsertMutationAuditTx(ctx, tx, conflictParams.Audit); err != nil {
-		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: audit in trace+resolve tx: %w", err)
+		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: audit in trace+adjudicate tx: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: commit trace+resolve tx: %w", err)
+		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: commit trace+adjudicate tx: %w", err)
 	}
 	return run, d, nil
 }
 
 // createTraceInTx is the transactional core shared by CreateTraceTx and
-// CreateTraceAndResolveConflictTx. It creates the run, decision, alternatives,
+// CreateTraceAndAdjudicateConflictTx. It creates the run, decision, alternatives,
 // evidence, outbox entry, and audit within the provided transaction. The caller
 // manages Begin/Commit/Rollback.
 func (db *DB) createTraceInTx(ctx context.Context, tx pgx.Tx, params CreateTraceParams) (model.AgentRun, model.Decision, error) {

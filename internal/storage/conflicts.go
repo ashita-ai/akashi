@@ -290,39 +290,6 @@ func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.
 	return oldStatus, nil
 }
 
-// ResolveConflictWithDecisionAndAudit links a conflict resolution to the
-// decision that resolved it and inserts a mutation audit entry, atomically.
-// winningDecisionID is optional; when non-nil it must be one of the two sides
-// (validated by the caller) and is stored on scored_conflicts.winning_decision_id.
-func (db *DB) ResolveConflictWithDecisionAndAudit(ctx context.Context, id, orgID, resolutionDecisionID uuid.UUID, winningDecisionID *uuid.UUID, resolvedBy string, resolutionNote *string, audit MutationAuditEntry) error {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("storage: begin resolve conflict tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	tag, err := tx.Exec(ctx,
-		`UPDATE scored_conflicts SET status = 'resolved', resolved_by = $1, resolved_at = now(),
-		 resolution_note = $2, resolution_decision_id = $3, winning_decision_id = $4
-		 WHERE id = $5 AND org_id = $6`,
-		resolvedBy, resolutionNote, resolutionDecisionID, winningDecisionID, id, orgID)
-	if err != nil {
-		return fmt.Errorf("storage: resolve conflict with decision: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("storage: conflict not found")
-	}
-
-	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
-		return fmt.Errorf("storage: audit in resolve conflict tx: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("storage: commit resolve conflict tx: %w", err)
-	}
-	return nil
-}
-
 // InsertScoredConflict inserts a semantic conflict into scored_conflicts.
 // Ensures decision_a_id < decision_b_id for consistent ordering.
 func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict) error {
