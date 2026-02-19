@@ -1174,3 +1174,255 @@ func (db *DB) GetDecisionForScoring(ctx context.Context, id, orgID uuid.UUID) (m
 	}
 	return d, nil
 }
+
+// GetConsensusScores computes agreement and conflict counts for a single decision
+// by finding its embedding-similarity cluster (top 50 neighbors, cosine sim ≥ 0.70)
+// and classifying each as agreeing (outcome_sim ≥ 0.75) or conflicting (open scored_conflicts).
+// Returns 0, 0 for decisions without embeddings.
+func (db *DB) GetConsensusScores(ctx context.Context, decisionID, orgID uuid.UUID) (agreementCount, conflictCount int, err error) {
+	err = db.pool.QueryRow(ctx, `
+		WITH cluster AS (
+		    SELECT d2.id,
+		           1 - (d.outcome_embedding <=> d2.outcome_embedding) AS outcome_sim
+		    FROM decisions d
+		    JOIN decisions d2 ON d2.org_id = d.org_id
+		        AND d2.id != d.id
+		        AND d2.valid_to IS NULL
+		    WHERE d.id = $1
+		      AND d.org_id = $2
+		      AND d.embedding IS NOT NULL
+		      AND 1 - (d.embedding <=> d2.embedding) >= 0.70
+		    ORDER BY d.embedding <=> d2.embedding
+		    LIMIT 50
+		),
+		classified AS (
+		    SELECT c.id,
+		           CASE
+		               WHEN c.outcome_sim >= 0.75 THEN 'agreement'
+		               WHEN EXISTS (
+		                   SELECT 1 FROM scored_conflicts sc
+		                   WHERE sc.org_id = $2
+		                     AND sc.status IN ('open', 'acknowledged')
+		                     AND ((sc.decision_a_id = $1 AND sc.decision_b_id = c.id)
+		                       OR (sc.decision_b_id = $1 AND sc.decision_a_id = c.id))
+		               ) THEN 'conflict'
+		               ELSE 'neutral'
+		           END AS stance
+		    FROM cluster c
+		)
+		SELECT
+		    COALESCE(COUNT(*) FILTER (WHERE stance = 'agreement'), 0)::int,
+		    COALESCE(COUNT(*) FILTER (WHERE stance = 'conflict'), 0)::int
+		FROM classified`, decisionID, orgID).Scan(&agreementCount, &conflictCount)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, 0, nil
+		}
+		return 0, 0, fmt.Errorf("storage: consensus scores: %w", err)
+	}
+	return agreementCount, conflictCount, nil
+}
+
+// GetConsensusScoresBatch computes agreement and conflict counts for multiple decisions
+// in a single lateral-join query. Returns a map of decision ID → [agreementCount, conflictCount].
+// Decisions without embeddings are absent from the result map (treat as 0, 0).
+func (db *DB) GetConsensusScoresBatch(ctx context.Context, ids []uuid.UUID, orgID uuid.UUID) (map[uuid.UUID][2]int, error) {
+	if len(ids) == 0 {
+		return map[uuid.UUID][2]int{}, nil
+	}
+
+	rows, err := db.pool.Query(ctx, `
+		SELECT src.id,
+		       COALESCE(SUM(CASE WHEN cls.stance = 'agreement' THEN 1 ELSE 0 END), 0)::int,
+		       COALESCE(SUM(CASE WHEN cls.stance = 'conflict'  THEN 1 ELSE 0 END), 0)::int
+		FROM decisions src
+		CROSS JOIN LATERAL (
+		    SELECT
+		        CASE
+		            WHEN 1 - (src.outcome_embedding <=> d2.outcome_embedding) >= 0.75 THEN 'agreement'
+		            WHEN EXISTS (
+		                SELECT 1 FROM scored_conflicts sc2
+		                WHERE sc2.org_id = src.org_id
+		                  AND sc2.status IN ('open', 'acknowledged')
+		                  AND ((sc2.decision_a_id = src.id AND sc2.decision_b_id = d2.id)
+		                    OR (sc2.decision_b_id = src.id AND sc2.decision_a_id = d2.id))
+		            ) THEN 'conflict'
+		            ELSE 'neutral'
+		        END AS stance
+		    FROM decisions d2
+		    WHERE d2.org_id = src.org_id
+		      AND d2.id != src.id
+		      AND d2.valid_to IS NULL
+		      AND 1 - (src.embedding <=> d2.embedding) >= 0.70
+		    ORDER BY src.embedding <=> d2.embedding
+		    LIMIT 50
+		) AS cls
+		WHERE src.id = ANY($1) AND src.org_id = $2 AND src.embedding IS NOT NULL
+		GROUP BY src.id`, ids, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: consensus scores batch: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[uuid.UUID][2]int, len(ids))
+	for rows.Next() {
+		var id uuid.UUID
+		var agreements, conflicts int
+		if err := rows.Scan(&id, &agreements, &conflicts); err != nil {
+			return nil, fmt.Errorf("storage: scan consensus scores batch: %w", err)
+		}
+		result[id] = [2]int{agreements, conflicts}
+	}
+	return result, rows.Err()
+}
+
+// GetDecisionOutcomeSignals returns temporal, graph, and fate outcome signals for a single decision.
+// All signals are computed at query time from existing schema columns; none are stored.
+func (db *DB) GetDecisionOutcomeSignals(ctx context.Context, id, orgID uuid.UUID) (model.OutcomeSignals, error) {
+	var signals model.OutcomeSignals
+
+	// Supersession velocity: hours from this decision's valid_from to the superseding decision's valid_from.
+	if err := db.pool.QueryRow(ctx, `
+		SELECT EXTRACT(EPOCH FROM (s.valid_from - d.valid_from)) / 3600
+		FROM decisions d
+		JOIN decisions s ON s.supersedes_id = d.id AND s.org_id = d.org_id
+		WHERE d.id = $1 AND d.org_id = $2
+		LIMIT 1`, id, orgID).Scan(&signals.SupersessionVelocityHours); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return signals, fmt.Errorf("storage: supersession velocity: %w", err)
+		}
+		// ErrNoRows → never superseded, SupersessionVelocityHours remains nil.
+	}
+
+	// Precedent citation count: how many live decisions cite this one as a precedent.
+	if err := db.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM decisions
+		WHERE precedent_ref = $1 AND org_id = $2 AND valid_to IS NULL`,
+		id, orgID).Scan(&signals.PrecedentCitationCount); err != nil {
+		return signals, fmt.Errorf("storage: precedent citation count: %w", err)
+	}
+
+	// Conflict fate: won/lost/no-winner counts across all resolved conflicts involving this decision.
+	if err := db.pool.QueryRow(ctx, `
+		SELECT
+		    COUNT(*) FILTER (WHERE winning_decision_id = $1)::int,
+		    COUNT(*) FILTER (WHERE winning_decision_id IS NOT NULL AND winning_decision_id != $1)::int,
+		    COUNT(*) FILTER (WHERE winning_decision_id IS NULL AND status = 'resolved')::int
+		FROM scored_conflicts
+		WHERE org_id = $2
+		  AND status IN ('resolved', 'wont_fix')
+		  AND (decision_a_id = $1 OR decision_b_id = $1)`,
+		id, orgID).Scan(
+		&signals.ConflictFate.Won,
+		&signals.ConflictFate.Lost,
+		&signals.ConflictFate.ResolvedNoWinner,
+	); err != nil {
+		return signals, fmt.Errorf("storage: conflict fate: %w", err)
+	}
+
+	return signals, nil
+}
+
+// GetDecisionOutcomeSignalsBatch returns outcome signals for multiple decisions in three
+// batched queries (no N+1). Returns a map of decision ID → OutcomeSignals.
+// Decisions not found in the result have zero-value OutcomeSignals.
+func (db *DB) GetDecisionOutcomeSignalsBatch(ctx context.Context, ids []uuid.UUID, orgID uuid.UUID) (map[uuid.UUID]model.OutcomeSignals, error) {
+	if len(ids) == 0 {
+		return map[uuid.UUID]model.OutcomeSignals{}, nil
+	}
+
+	result := make(map[uuid.UUID]model.OutcomeSignals, len(ids))
+	for _, id := range ids {
+		result[id] = model.OutcomeSignals{}
+	}
+
+	// Batched supersession velocity.
+	velRows, err := db.pool.Query(ctx, `
+		SELECT d.id, EXTRACT(EPOCH FROM (s.valid_from - d.valid_from)) / 3600
+		FROM decisions d
+		JOIN decisions s ON s.supersedes_id = d.id AND s.org_id = d.org_id
+		WHERE d.id = ANY($1) AND d.org_id = $2`, ids, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: batch supersession velocity: %w", err)
+	}
+	defer velRows.Close()
+	for velRows.Next() {
+		var id uuid.UUID
+		var v float64
+		if err := velRows.Scan(&id, &v); err != nil {
+			return nil, fmt.Errorf("storage: scan batch supersession velocity: %w", err)
+		}
+		s := result[id]
+		s.SupersessionVelocityHours = &v
+		result[id] = s
+	}
+	if err := velRows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: batch supersession velocity rows: %w", err)
+	}
+
+	// Batched precedent citation counts.
+	citeRows, err := db.pool.Query(ctx, `
+		SELECT precedent_ref, COUNT(*)::int
+		FROM decisions
+		WHERE precedent_ref = ANY($1) AND org_id = $2 AND valid_to IS NULL
+		GROUP BY precedent_ref`, ids, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: batch precedent citations: %w", err)
+	}
+	defer citeRows.Close()
+	for citeRows.Next() {
+		var id uuid.UUID
+		var count int
+		if err := citeRows.Scan(&id, &count); err != nil {
+			return nil, fmt.Errorf("storage: scan batch precedent citations: %w", err)
+		}
+		s := result[id]
+		s.PrecedentCitationCount = count
+		result[id] = s
+	}
+	if err := citeRows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: batch precedent citations rows: %w", err)
+	}
+
+	// Batched conflict fate. Use UNION ALL so both sides of each conflict are correctly attributed.
+	fateRows, err := db.pool.Query(ctx, `
+		WITH sides AS (
+		    SELECT decision_a_id AS target_id, winning_decision_id, status
+		    FROM scored_conflicts
+		    WHERE org_id = $2
+		      AND status IN ('resolved', 'wont_fix')
+		      AND decision_a_id = ANY($1)
+		    UNION ALL
+		    SELECT decision_b_id AS target_id, winning_decision_id, status
+		    FROM scored_conflicts
+		    WHERE org_id = $2
+		      AND status IN ('resolved', 'wont_fix')
+		      AND decision_b_id = ANY($1)
+		)
+		SELECT
+		    target_id,
+		    COUNT(*) FILTER (WHERE winning_decision_id = target_id)::int,
+		    COUNT(*) FILTER (WHERE winning_decision_id IS NOT NULL AND winning_decision_id != target_id)::int,
+		    COUNT(*) FILTER (WHERE winning_decision_id IS NULL AND status = 'resolved')::int
+		FROM sides
+		GROUP BY target_id`, ids, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: batch conflict fate: %w", err)
+	}
+	defer fateRows.Close()
+	for fateRows.Next() {
+		var id uuid.UUID
+		var won, lost, noWinner int
+		if err := fateRows.Scan(&id, &won, &lost, &noWinner); err != nil {
+			return nil, fmt.Errorf("storage: scan batch conflict fate: %w", err)
+		}
+		s := result[id]
+		s.ConflictFate = model.ConflictFate{Won: won, Lost: lost, ResolvedNoWinner: noWinner}
+		result[id] = s
+	}
+	if err := fateRows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: batch conflict fate rows: %w", err)
+	}
+
+	return result, nil
+}

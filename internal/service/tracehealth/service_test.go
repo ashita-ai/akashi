@@ -15,7 +15,7 @@ func TestComputeGaps_AllHealthy(t *testing.T) {
 	es := storage.EvidenceCoverageStats{
 		TotalDecisions: 100, WithEvidence: 80, WithoutEvidenceCount: 20, CoveragePercent: 80,
 	}
-	gaps := computeGaps(qs, es, 5, 0)
+	gaps := computeGaps(qs, es, 5, 0, storage.OutcomeSignalsSummary{})
 
 	// No quality or coverage gaps. No open conflicts. Only "20 decisions lack evidence."
 	assert.LessOrEqual(t, len(gaps), 3)
@@ -33,7 +33,7 @@ func TestComputeGaps_LowQuality(t *testing.T) {
 	es := storage.EvidenceCoverageStats{
 		TotalDecisions: 50, WithEvidence: 30, WithoutEvidenceCount: 20, CoveragePercent: 60,
 	}
-	gaps := computeGaps(qs, es, 0, 0)
+	gaps := computeGaps(qs, es, 0, 0, storage.OutcomeSignalsSummary{})
 
 	assert.GreaterOrEqual(t, len(gaps), 1)
 	assert.Contains(t, gaps[0], "Average decision quality")
@@ -46,7 +46,7 @@ func TestComputeGaps_LowEvidence(t *testing.T) {
 	es := storage.EvidenceCoverageStats{
 		TotalDecisions: 100, WithEvidence: 30, WithoutEvidenceCount: 70, CoveragePercent: 30,
 	}
-	gaps := computeGaps(qs, es, 0, 0)
+	gaps := computeGaps(qs, es, 0, 0, storage.OutcomeSignalsSummary{})
 
 	found := false
 	for _, g := range gaps {
@@ -64,7 +64,7 @@ func TestComputeGaps_UnresolvedConflicts(t *testing.T) {
 	es := storage.EvidenceCoverageStats{
 		TotalDecisions: 100, WithEvidence: 80, WithoutEvidenceCount: 20, CoveragePercent: 80,
 	}
-	gaps := computeGaps(qs, es, 10, 7)
+	gaps := computeGaps(qs, es, 10, 7, storage.OutcomeSignalsSummary{})
 
 	found := false
 	for _, g := range gaps {
@@ -82,7 +82,7 @@ func TestComputeGaps_MaxThree(t *testing.T) {
 	es := storage.EvidenceCoverageStats{
 		TotalDecisions: 100, WithEvidence: 10, WithoutEvidenceCount: 90, CoveragePercent: 10,
 	}
-	gaps := computeGaps(qs, es, 20, 15)
+	gaps := computeGaps(qs, es, 20, 15, storage.OutcomeSignalsSummary{})
 
 	assert.LessOrEqual(t, len(gaps), 3, "should return at most 3 gaps")
 }

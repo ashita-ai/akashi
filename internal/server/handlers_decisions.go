@@ -200,6 +200,20 @@ func (h *Handlers) HandleGetDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Populate consensus scores and outcome signals (computed at query time, not stored).
+	agreementCount, conflictCount, err := h.db.GetConsensusScores(r.Context(), d.ID, orgID)
+	if err == nil {
+		d.AgreementCount = agreementCount
+		d.ConflictCount = conflictCount
+	}
+
+	signals, err := h.db.GetDecisionOutcomeSignals(r.Context(), d.ID, orgID)
+	if err == nil {
+		d.SupersessionVelocityHours = signals.SupersessionVelocityHours
+		d.PrecedentCitationCount = signals.PrecedentCitationCount
+		d.ConflictFate = signals.ConflictFate
+	}
+
 	writeJSON(w, r, http.StatusOK, d)
 }
 
@@ -236,6 +250,31 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.writeInternalError(w, r, "authorization check failed", err)
 		return
+	}
+
+	// Populate consensus scores and outcome signals in batch.
+	if len(decisions) > 0 {
+		ids := make([]uuid.UUID, len(decisions))
+		for i := range decisions {
+			ids[i] = decisions[i].ID
+		}
+		if consensusMap, err := h.db.GetConsensusScoresBatch(r.Context(), ids, orgID); err == nil {
+			for i := range decisions {
+				if scores, ok := consensusMap[decisions[i].ID]; ok {
+					decisions[i].AgreementCount = scores[0]
+					decisions[i].ConflictCount = scores[1]
+				}
+			}
+		}
+		if signalsMap, err := h.db.GetDecisionOutcomeSignalsBatch(r.Context(), ids, orgID); err == nil {
+			for i := range decisions {
+				if sig, ok := signalsMap[decisions[i].ID]; ok {
+					decisions[i].SupersessionVelocityHours = sig.SupersessionVelocityHours
+					decisions[i].PrecedentCitationCount = sig.PrecedentCitationCount
+					decisions[i].ConflictFate = sig.ConflictFate
+				}
+			}
+		}
 	}
 
 	resp := map[string]any{
@@ -444,6 +483,31 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Populate consensus scores and outcome signals in batch.
+	if len(decisions) > 0 {
+		ids := make([]uuid.UUID, len(decisions))
+		for i := range decisions {
+			ids[i] = decisions[i].ID
+		}
+		if consensusMap, err := h.db.GetConsensusScoresBatch(r.Context(), ids, orgID); err == nil {
+			for i := range decisions {
+				if scores, ok := consensusMap[decisions[i].ID]; ok {
+					decisions[i].AgreementCount = scores[0]
+					decisions[i].ConflictCount = scores[1]
+				}
+			}
+		}
+		if signalsMap, err := h.db.GetDecisionOutcomeSignalsBatch(r.Context(), ids, orgID); err == nil {
+			for i := range decisions {
+				if sig, ok := signalsMap[decisions[i].ID]; ok {
+					decisions[i].SupersessionVelocityHours = sig.SupersessionVelocityHours
+					decisions[i].PrecedentCitationCount = sig.PrecedentCitationCount
+					decisions[i].ConflictFate = sig.ConflictFate
+				}
+			}
+		}
+	}
+
 	resp := map[string]any{
 		"decisions": decisions,
 		"count":     len(decisions),
@@ -603,9 +667,10 @@ func (h *Handlers) HandleResolveConflict(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req struct {
-		Outcome      string  `json:"outcome"`
-		Reasoning    *string `json:"reasoning,omitempty"`
-		DecisionType string  `json:"decision_type,omitempty"`
+		Outcome           string     `json:"outcome"`
+		Reasoning         *string    `json:"reasoning,omitempty"`
+		DecisionType      string     `json:"decision_type,omitempty"`
+		WinningDecisionID *uuid.UUID `json:"winning_decision_id,omitempty"`
 	}
 	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
 		handleDecodeError(w, r, err)
@@ -624,6 +689,15 @@ func (h *Handlers) HandleResolveConflict(w http.ResponseWriter, r *http.Request)
 	if err != nil || conflict == nil {
 		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
 		return
+	}
+
+	// Validate winning_decision_id: if provided, must be one of the two conflict sides.
+	if req.WinningDecisionID != nil {
+		if *req.WinningDecisionID != conflict.DecisionAID && *req.WinningDecisionID != conflict.DecisionBID {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+				"winning_decision_id must be one of the two decisions in this conflict")
+			return
+		}
 	}
 
 	resolverAgent := claims.AgentID
@@ -662,10 +736,11 @@ func (h *Handlers) HandleResolveConflict(w http.ResponseWriter, r *http.Request)
 		APIKeyID:  claims.APIKeyID,
 		AuditMeta: h.buildAuditMeta(r, orgID),
 	}, storage.ResolveConflictInTraceParams{
-		ConflictID: id,
-		ResolvedBy: resolverAgent,
-		ResNote:    &note,
-		Audit:      conflictAudit,
+		ConflictID:        id,
+		ResolvedBy:        resolverAgent,
+		ResNote:           &note,
+		Audit:             conflictAudit,
+		WinningDecisionID: req.WinningDecisionID,
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "conflict not found") {

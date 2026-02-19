@@ -97,7 +97,7 @@ func TestCompactConflict(t *testing.T) {
 		DetectedAt:        time.Now(),
 	}
 
-	m := compactConflict(c)
+	m := compactConflict(c, "")
 
 	// Kept fields.
 	assert.Equal(t, c.ID, m["id"])
