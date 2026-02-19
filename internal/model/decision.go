@@ -175,8 +175,8 @@ type DecisionConflict struct {
 	WinningDecisionID *uuid.UUID `json:"winning_decision_id,omitempty"`
 }
 
-// ConflictResolution is the request body for PATCH /v1/conflicts/{id}.
-type ConflictResolution struct {
+// ConflictStatusUpdate is the request body for PATCH /v1/conflicts/{id}.
+type ConflictStatusUpdate struct {
 	Status         string  `json:"status"` // acknowledged, resolved, wont_fix
 	ResolutionNote *string `json:"resolution_note,omitempty"`
 }

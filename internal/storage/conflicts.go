@@ -290,39 +290,6 @@ func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.
 	return oldStatus, nil
 }
 
-// ResolveConflictWithDecisionAndAudit links a conflict resolution to the
-// decision that resolved it and inserts a mutation audit entry, atomically.
-// winningDecisionID is optional; when non-nil it must be one of the two sides
-// (validated by the caller) and is stored on scored_conflicts.winning_decision_id.
-func (db *DB) ResolveConflictWithDecisionAndAudit(ctx context.Context, id, orgID, resolutionDecisionID uuid.UUID, winningDecisionID *uuid.UUID, resolvedBy string, resolutionNote *string, audit MutationAuditEntry) error {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("storage: begin resolve conflict tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	tag, err := tx.Exec(ctx,
-		`UPDATE scored_conflicts SET status = 'resolved', resolved_by = $1, resolved_at = now(),
-		 resolution_note = $2, resolution_decision_id = $3, winning_decision_id = $4
-		 WHERE id = $5 AND org_id = $6`,
-		resolvedBy, resolutionNote, resolutionDecisionID, winningDecisionID, id, orgID)
-	if err != nil {
-		return fmt.Errorf("storage: resolve conflict with decision: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("storage: conflict not found")
-	}
-
-	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
-		return fmt.Errorf("storage: audit in resolve conflict tx: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("storage: commit resolve conflict tx: %w", err)
-	}
-	return nil
-}
-
 // InsertScoredConflict inserts a semantic conflict into scored_conflicts.
 // Ensures decision_a_id < decision_b_id for consistent ordering.
 func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict) error {
@@ -359,17 +326,28 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 		 category, severity, relationship, confidence_weight, temporal_decay)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 		 ON CONFLICT (decision_a_id, decision_b_id) DO UPDATE SET
-		 topic_similarity = EXCLUDED.topic_similarity,
-		 outcome_divergence = EXCLUDED.outcome_divergence,
-		 significance = EXCLUDED.significance,
-		 scoring_method = EXCLUDED.scoring_method,
-		 explanation = EXCLUDED.explanation,
-		 category = EXCLUDED.category,
-		 severity = EXCLUDED.severity,
-		 relationship = EXCLUDED.relationship,
-		 confidence_weight = EXCLUDED.confidence_weight,
-		 temporal_decay = EXCLUDED.temporal_decay,
-		 detected_at = now()`,
+		 topic_similarity    = EXCLUDED.topic_similarity,
+		 outcome_divergence  = EXCLUDED.outcome_divergence,
+		 significance        = EXCLUDED.significance,
+		 scoring_method      = EXCLUDED.scoring_method,
+		 explanation         = EXCLUDED.explanation,
+		 category            = EXCLUDED.category,
+		 severity            = EXCLUDED.severity,
+		 relationship        = EXCLUDED.relationship,
+		 confidence_weight   = EXCLUDED.confidence_weight,
+		 temporal_decay      = EXCLUDED.temporal_decay,
+		 detected_at         = now(),
+		 -- Re-open previously resolved conflicts: the resolution claim was falsified
+		 -- by re-detection. Leave wont_fix alone — that is a permanent policy decision,
+		 -- not a claim about empirical state.
+		 status              = CASE WHEN scored_conflicts.status = 'resolved' THEN 'open'
+		                            ELSE scored_conflicts.status END,
+		 resolved_by         = CASE WHEN scored_conflicts.status = 'resolved' THEN NULL
+		                            ELSE scored_conflicts.resolved_by END,
+		 resolved_at         = CASE WHEN scored_conflicts.status = 'resolved' THEN NULL
+		                            ELSE scored_conflicts.resolved_at END,
+		 resolution_note     = CASE WHEN scored_conflicts.status = 'resolved' THEN NULL
+		                            ELSE scored_conflicts.resolution_note END`,
 		da, dbID, c.OrgID, string(c.ConflictKind),
 		agentA, agentB, typeA, typeB, outcomeA, outcomeB,
 		topicSim, outcomeDiv, sig, method, c.Explanation,

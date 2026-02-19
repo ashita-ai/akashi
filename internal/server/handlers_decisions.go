@@ -612,7 +612,7 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req model.ConflictResolution
+	var req model.ConflictStatusUpdate
 	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
 		handleDecodeError(w, r, err)
 		return
@@ -653,9 +653,9 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, conflict)
 }
 
-// HandleResolveConflict handles POST /v1/conflicts/{id}/resolve.
-// Creates a resolution decision trace and links it to the conflict.
-func (h *Handlers) HandleResolveConflict(w http.ResponseWriter, r *http.Request) {
+// HandleAdjudicateConflict handles POST /v1/conflicts/{id}/adjudicate.
+// Creates an adjudication decision trace and links it to the conflict.
+func (h *Handlers) HandleAdjudicateConflict(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
 
@@ -716,26 +716,26 @@ func (h *Handlers) HandleResolveConflict(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Create a resolution decision trace AND resolve the conflict atomically.
-	// A single transaction prevents the failure mode where a resolution decision
+	// Create an adjudication decision trace AND resolve the conflict atomically.
+	// A single transaction prevents the failure mode where an adjudication decision
 	// exists but the conflict remains unresolved.
-	note := "Resolved by decision trace"
+	note := "Resolved by adjudication trace"
 	conflictAudit := h.buildAuditEntry(r, orgID,
-		"conflict_resolved_with_decision", "conflict", id.String(),
+		"conflict_adjudicated_with_decision", "conflict", id.String(),
 		nil, nil,
 		map[string]any{"resolved_by": resolverAgent},
 	)
-	result, err := h.decisionSvc.ResolveConflictWithTrace(r.Context(), orgID, decisions.TraceInput{
+	result, err := h.decisionSvc.AdjudicateConflictWithTrace(r.Context(), orgID, decisions.TraceInput{
 		AgentID: resolverAgent,
 		Decision: model.TraceDecision{
 			DecisionType: req.DecisionType,
 			Outcome:      req.Outcome,
-			Confidence:   1.0, // Resolution decisions are definitive.
+			Confidence:   1.0, // Adjudication decisions are definitive.
 			Reasoning:    req.Reasoning,
 		},
 		APIKeyID:  claims.APIKeyID,
 		AuditMeta: h.buildAuditMeta(r, orgID),
-	}, storage.ResolveConflictInTraceParams{
+	}, storage.AdjudicateConflictInTraceParams{
 		ConflictID:        id,
 		ResolvedBy:        resolverAgent,
 		ResNote:           &note,
@@ -747,7 +747,7 @@ func (h *Handlers) HandleResolveConflict(w http.ResponseWriter, r *http.Request)
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
 			return
 		}
-		h.writeInternalError(w, r, "failed to resolve conflict", err)
+		h.writeInternalError(w, r, "failed to adjudicate conflict", err)
 		return
 	}
 

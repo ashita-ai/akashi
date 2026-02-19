@@ -155,9 +155,9 @@ func New(cfg ServerConfig) *Server {
 	mux.Handle("POST /v1/grants", writeRole(http.HandlerFunc(h.HandleCreateGrant)))
 	mux.Handle("DELETE /v1/grants/{grant_id}", writeRole(http.HandlerFunc(h.HandleDeleteGrant)))
 
-	// Conflicts (reader+ for list, agent+ for resolve/patch).
+	// Conflicts (reader+ for list, agent+ for adjudicate/patch).
 	mux.Handle("GET /v1/conflicts", readRole(http.HandlerFunc(h.HandleListConflicts)))
-	mux.Handle("POST /v1/conflicts/{id}/resolve", writeRole(http.HandlerFunc(h.HandleResolveConflict)))
+	mux.Handle("POST /v1/conflicts/{id}/adjudicate", writeRole(http.HandlerFunc(h.HandleAdjudicateConflict)))
 	mux.Handle("PATCH /v1/conflicts/{id}", writeRole(http.HandlerFunc(h.HandlePatchConflict)))
 
 	// MCP StreamableHTTP transport (auth required, reader+).
