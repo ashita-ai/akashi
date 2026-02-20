@@ -58,36 +58,39 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: marshal private key: %v\n", err)
 		os.Exit(1)
 	}
-
-	privFile, err := os.OpenFile(privPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: create %s: %v\n", privPath, err)
+	if err := writeKeyFile(privPath, "PRIVATE KEY", privDER); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	if err := pem.Encode(privFile, &pem.Block{Type: "PRIVATE KEY", Bytes: privDER}); err != nil {
-		fmt.Fprintf(os.Stderr, "error: write private key: %v\n", err)
-		os.Exit(1)
-	}
-	privFile.Close()
 
 	pubDER, err := x509.MarshalPKIXPublicKey(pub)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: marshal public key: %v\n", err)
 		os.Exit(1)
 	}
-
-	pubFile, err := os.OpenFile(pubPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: create %s: %v\n", pubPath, err)
+	if err := writeKeyFile(pubPath, "PUBLIC KEY", pubDER); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	if err := pem.Encode(pubFile, &pem.Block{Type: "PUBLIC KEY", Bytes: pubDER}); err != nil {
-		fmt.Fprintf(os.Stderr, "error: write public key: %v\n", err)
-		os.Exit(1)
-	}
-	pubFile.Close()
 
 	fmt.Printf("wrote %s\n", privPath)
 	fmt.Printf("wrote %s\n", pubPath)
 	fmt.Println("Keys are ready. docker compose up -d will use them automatically.")
+}
+
+func writeKeyFile(path, pemType string, der []byte) error {
+	// #nosec G304 — path is constructed from a hardcoded dir + fixed filename,
+	// not from user input.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600) //nolint:gosec
+	if err != nil {
+		return fmt.Errorf("create %s: %w", path, err)
+	}
+	if err := pem.Encode(f, &pem.Block{Type: pemType, Bytes: der}); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", path, err)
+	}
+	return nil
 }
