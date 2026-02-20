@@ -6,7 +6,8 @@ All configuration is via environment variables. See [`.env.example`](../.env.exa
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `postgres://...@localhost:6432/akashi` | Connection string for queries (typically through PgBouncer) |
+| `DATABASE_URL` | — | PostgreSQL connection string for queries and writes |
+| `AKASHI_ADMIN_API_KEY` | — | Bootstrap API key for the admin agent. Required when the agents table is empty |
 
 ## Server
 
@@ -23,8 +24,8 @@ All configuration is via environment variables. See [`.env.example`](../.env.exa
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `postgres://...@localhost:6432/akashi` | PgBouncer or direct Postgres URL for all queries and writes |
-| `NOTIFY_URL` | `postgres://...@localhost:5432/akashi` | Direct Postgres URL for LISTEN/NOTIFY (SSE). Set `NOTIFY_URL=` to disable real-time push |
+| `DATABASE_URL` | — | PostgreSQL connection string for queries and writes. In production, point this at PgBouncer; in local dev, point directly at Postgres (port 5432) |
+| `NOTIFY_URL` | same as `DATABASE_URL` | Direct Postgres connection for LISTEN/NOTIFY (SSE). Must bypass PgBouncer — transaction-mode poolers do not support LISTEN. Set `NOTIFY_URL=` to disable SSE push entirely |
 | `AKASHI_SKIP_EMBEDDED_MIGRATIONS` | `false` | Skip startup embedded migrations (use when an external system like Atlas owns migration execution) |
 
 See [ADR-007](../adrs/ADR-007-dual-postgres-connections.md) for why two connections are needed.
@@ -34,11 +35,22 @@ See [ADR-007](../adrs/ADR-007-dual-postgres-connections.md) for why two connecti
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AKASHI_ADMIN_API_KEY` | _(empty)_ | Bootstrap admin API key. If no agents exist and this is empty, startup fails to prevent admin lockout |
-| `AKASHI_JWT_PRIVATE_KEY` | _(empty)_ | Path to Ed25519 private key PEM file. Empty = auto-generate ephemeral keys (dev only) |
-| `AKASHI_JWT_PUBLIC_KEY` | _(empty)_ | Path to Ed25519 public key PEM file |
+| `AKASHI_JWT_PRIVATE_KEY` | _(empty)_ | Path to Ed25519 private key PEM file. **Empty = ephemeral key generated on every startup** — all tokens are invalidated on each restart. Use persistent keys for any real use. |
+| `AKASHI_JWT_PUBLIC_KEY` | _(empty)_ | Path to Ed25519 public key PEM file (must be set alongside the private key) |
 | `AKASHI_JWT_EXPIRATION` | `24h` | JWT token lifetime |
 
-Key files must have `0600` permissions. See [ADR-005](../adrs/ADR-005-auth-rbac.md) for the auth architecture.
+Both key files must have `0600` permissions. The server rejects looser modes at startup.
+
+**Generating persistent keys** (run once from the repo root):
+
+```bash
+go run scripts/genkey/main.go
+# Writes: data/jwt_private.pem, data/jwt_public.pem
+```
+
+The `docker-compose.yml` mounts `./data` as `/data` in the container and sets the key paths to `/data/jwt_private.pem` and `/data/jwt_public.pem` by default, so the keys survive container rebuilds automatically.
+
+See [ADR-005](../adrs/ADR-005-auth-rbac.md) for the full auth architecture.
 
 For `Authorization: ApiKey <agent_id>:<api_key>`, send `X-Akashi-Org-ID` when the same `agent_id` exists in multiple organizations. Ambiguous API key auth requests are rejected.
 
