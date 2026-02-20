@@ -1002,7 +1002,11 @@ func (db *DB) BackfillOutcomeEmbedding(ctx context.Context, id, orgID uuid.UUID,
 
 // FindSimilarDecisionsByEmbedding returns decisions in the same org with similar
 // full embeddings (for conflict candidate discovery). Excludes the given decision ID.
-func (db *DB) FindSimilarDecisionsByEmbedding(ctx context.Context, orgID uuid.UUID, embedding pgvector.Vector, excludeID uuid.UUID, limit int) ([]model.Decision, error) {
+//
+// repo scopes candidate discovery: when non-nil, only decisions with the same
+// repo value (or no repo context at all) are returned. This prevents spurious
+// cross-project conflicts when multiple codebases share an org.
+func (db *DB) FindSimilarDecisionsByEmbedding(ctx context.Context, orgID uuid.UUID, embedding pgvector.Vector, excludeID uuid.UUID, limit int, repo *string) ([]model.Decision, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -1010,11 +1014,12 @@ func (db *DB) FindSimilarDecisionsByEmbedding(ctx context.Context, orgID uuid.UU
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
 		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context,
-		 embedding, outcome_embedding
+		 embedding, outcome_embedding, repo
 		 FROM decisions
 		 WHERE org_id = $1 AND id != $2 AND embedding IS NOT NULL AND outcome_embedding IS NOT NULL AND valid_to IS NULL
+		   AND ($5::text IS NULL OR repo IS NULL OR repo = $5)
 		 ORDER BY embedding <=> $3
-		 LIMIT $4`, orgID, excludeID, embedding, limit)
+		 LIMIT $4`, orgID, excludeID, embedding, limit, repo)
 	if err != nil {
 		return nil, fmt.Errorf("storage: find similar decisions: %w", err)
 	}
@@ -1028,7 +1033,7 @@ func (db *DB) FindSimilarDecisionsByEmbedding(ctx context.Context, orgID uuid.UU
 			&d.Metadata, &d.QualityScore, &d.PrecedentRef, &d.SupersedesID, &d.ContentHash,
 			&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
 			&d.SessionID, &d.AgentContext,
-			&d.Embedding, &d.OutcomeEmbedding,
+			&d.Embedding, &d.OutcomeEmbedding, &d.Repo,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan similar decision: %w", err)
 		}
@@ -1156,18 +1161,18 @@ func (db *DB) GetDecisionQualityStats(ctx context.Context, orgID uuid.UUID) (Dec
 }
 
 // GetDecisionForScoring returns a decision with embedding, outcome_embedding,
-// session_id, and agent_context for conflict scoring. The additional fields
+// session_id, agent_context, and repo for conflict scoring. The additional fields
 // provide project, task, and session context to the LLM validator.
 func (db *DB) GetDecisionForScoring(ctx context.Context, id, orgID uuid.UUID) (model.Decision, error) {
 	var d model.Decision
 	err := db.pool.QueryRow(ctx,
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 valid_from, embedding, outcome_embedding, session_id, agent_context
+		 valid_from, embedding, outcome_embedding, session_id, agent_context, repo
 		 FROM decisions WHERE id = $1 AND org_id = $2 AND valid_to IS NULL`,
 		id, orgID,
 	).Scan(
 		&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence, &d.Reasoning,
-		&d.ValidFrom, &d.Embedding, &d.OutcomeEmbedding, &d.SessionID, &d.AgentContext,
+		&d.ValidFrom, &d.Embedding, &d.OutcomeEmbedding, &d.SessionID, &d.AgentContext, &d.Repo,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

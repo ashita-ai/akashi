@@ -101,9 +101,15 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       AKASHI_EMBEDDING_MODEL: ${AKASHI_EMBEDDING_MODEL:-text-embedding-3-small}
 
+      # JWT signing keys (persistent across rebuilds).
+      AKASHI_JWT_PRIVATE_KEY: ${AKASHI_JWT_PRIVATE_KEY:-/data/jwt_private.pem}
+      AKASHI_JWT_PUBLIC_KEY: ${AKASHI_JWT_PUBLIC_KEY:-/data/jwt_public.pem}
+
       # Observability (optional).
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-akashi}
+    volumes:
+      - ./data:/data
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health || exit 1"]
       interval: 10s

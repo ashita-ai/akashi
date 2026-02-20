@@ -1135,3 +1135,133 @@ func TestBackfillScoring_Parallel(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, n2, "all decisions should be marked scored after parallel backfill")
 }
+
+// TestScoreForDecision_DifferentReposSuppressConflict verifies that two decisions
+// with identical topic embeddings and orthogonal outcome embeddings do NOT produce
+// a conflict when they belong to different repos. This prevents cross-project false
+// positives when multiple codebases share an org (e.g. reviewers working on
+// "project-alpha" and "project-beta" in the same Akashi org).
+func TestScoreForDecision_DifferentReposSuppressConflict(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentA := "repo-filter-a-" + suffix
+	agentB := "repo-filter-b-" + suffix
+	for _, ag := range []string{agentA, agentB} {
+		_, err := testDB.CreateAgent(ctx, model.Agent{
+			AgentID: ag, OrgID: orgID, Name: ag, Role: model.RoleAgent,
+		})
+		require.NoError(t, err)
+	}
+
+	runA := createRun(t, agentA, orgID)
+	runB := createRun(t, agentB, orgID)
+
+	// Identical topic embeddings and orthogonal outcome embeddings: without the repo
+	// filter these would produce a high-significance conflict.
+	topicEmb := makeEmbedding(500, 1.0)
+	outcomeEmbA := makeEmbedding(501, 1.0)
+	outcomeEmbB := makeEmbedding(502, 1.0) // orthogonal to A
+
+	// agent_context->>'repo' drives the generated `repo` column (migration 048).
+	decisionA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, OrgID: orgID,
+		DecisionType: "architecture",
+		Outcome:      "chose Redis for caching — project alpha",
+		Confidence:   0.8,
+		Embedding:    &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+		AgentContext: map[string]any{"repo": "project-alpha"},
+	})
+	require.NoError(t, err)
+
+	decisionB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, OrgID: orgID,
+		DecisionType: "architecture",
+		Outcome:      "chose Memcached for caching — project beta",
+		Confidence:   0.7,
+		Embedding:    &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+		AgentContext: map[string]any{"repo": "project-beta"},
+	})
+	require.NoError(t, err)
+
+	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer.ScoreForDecision(ctx, decisionA.ID, orgID)
+
+	// Verify that NO conflict was created between the two decisions. The repo filter
+	// should have excluded decisionB from the candidate set entirely.
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 500, 0)
+	require.NoError(t, err)
+
+	for _, c := range conflicts {
+		aInvolved := c.DecisionAID == decisionA.ID || c.DecisionBID == decisionA.ID
+		bInvolved := c.DecisionAID == decisionB.ID || c.DecisionBID == decisionB.ID
+		assert.False(t, aInvolved && bInvolved,
+			"cross-repo decisions should not produce a conflict (got one between %s and %s)",
+			decisionA.ID, decisionB.ID)
+	}
+}
+
+// TestScoreForDecision_SameRepoAllowsConflict confirms the positive case: decisions
+// from the same repo with conflicting embeddings DO produce a conflict. This guards
+// against accidentally over-filtering when the repo filter is active.
+func TestScoreForDecision_SameRepoAllowsConflict(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentA := "same-repo-a-" + suffix
+	agentB := "same-repo-b-" + suffix
+	for _, ag := range []string{agentA, agentB} {
+		_, err := testDB.CreateAgent(ctx, model.Agent{
+			AgentID: ag, OrgID: orgID, Name: ag, Role: model.RoleAgent,
+		})
+		require.NoError(t, err)
+	}
+
+	runA := createRun(t, agentA, orgID)
+	runB := createRun(t, agentB, orgID)
+
+	topicEmb := makeEmbedding(510, 1.0)
+	outcomeEmbA := makeEmbedding(511, 1.0)
+	outcomeEmbB := makeEmbedding(512, 1.0) // orthogonal to A
+
+	decisionA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, OrgID: orgID,
+		DecisionType: "architecture",
+		Outcome:      "chose Redis — shared repo",
+		Confidence:   0.8,
+		Embedding:    &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+		AgentContext: map[string]any{"repo": "shared-project"},
+	})
+	require.NoError(t, err)
+
+	decisionB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, OrgID: orgID,
+		DecisionType: "architecture",
+		Outcome:      "chose Memcached — shared repo",
+		Confidence:   0.7,
+		Embedding:    &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+		AgentContext: map[string]any{"repo": "shared-project"},
+	})
+	require.NoError(t, err)
+
+	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer.ScoreForDecision(ctx, decisionA.ID, orgID)
+
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 500, 0)
+	require.NoError(t, err)
+
+	var found bool
+	for _, c := range conflicts {
+		aInvolved := c.DecisionAID == decisionA.ID || c.DecisionBID == decisionA.ID
+		bInvolved := c.DecisionAID == decisionB.ID || c.DecisionBID == decisionB.ID
+		if aInvolved && bInvolved {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "same-repo decisions with conflicting embeddings should produce a conflict")
+}
