@@ -13,6 +13,12 @@ Akashi is the decision audit trail. Every agent decision gets recorded with its 
 ## Quick start
 
 ```bash
+# Generate a persistent JWT signing key — do this once, before first launch.
+# Without this, a new ephemeral key is generated every restart, invalidating
+# all existing tokens and browser sessions.
+mkdir -p data
+go run scripts/genkey/main.go   # writes data/jwt_private.pem + data/jwt_public.pem
+
 # Start the full stack (Postgres + TimescaleDB + Ollama + Qdrant + Akashi)
 docker compose up -d
 
@@ -80,7 +86,28 @@ curl -X POST http://localhost:8080/v1/search \
 
 ## MCP integration
 
-The fastest way to use Akashi is through MCP. Add it to your Claude, Cursor, or Windsurf configuration and your agent gains decision tracing with zero code changes.
+The fastest way to use Akashi is through MCP. Your agent gains decision tracing with zero code changes.
+
+### Claude Code (simplest)
+
+```bash
+# Get a token first
+TOKEN=$(curl -s -X POST http://localhost:8080/auth/token \
+  -H 'Content-Type: application/json' \
+  -d '{"agent_id": "admin", "api_key": "admin"}' | jq -r '.data.token')
+
+# Add globally (all projects on this machine)
+claude mcp add --transport http akashi http://localhost:8080/mcp \
+  --header "Authorization: Bearer $TOKEN"
+
+# Or scope it to just the current project
+claude mcp add --transport http --scope project akashi http://localhost:8080/mcp \
+  --header "Authorization: Bearer $TOKEN"
+```
+
+### Cursor, Windsurf, and other MCP clients
+
+Add to your MCP configuration file (`~/.cursor/mcp.json`, `~/.windsurf/mcp.json`, etc.):
 
 ```json
 {
@@ -95,7 +122,7 @@ The fastest way to use Akashi is through MCP. Add it to your Claude, Cursor, or 
 }
 ```
 
-The MCP server provides five tools:
+### Available tools
 
 | Tool | Purpose |
 |------|---------|

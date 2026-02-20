@@ -146,7 +146,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		return
 	}
 
-	candidates, err := s.db.FindSimilarDecisionsByEmbedding(ctx, orgID, *d.Embedding, decisionID, 50)
+	candidates, err := s.db.FindSimilarDecisionsByEmbedding(ctx, orgID, *d.Embedding, decisionID, 50, d.Repo)
 	if err != nil {
 		s.logger.Warn("conflict scorer: find similar failed", "decision_id", decisionID, "error", err)
 		return
@@ -254,8 +254,8 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				CreatedB:        cand.ValidFrom,
 				ReasoningA:      derefString(d.Reasoning),
 				ReasoningB:      derefString(cand.Reasoning),
-				RepoA:           agentContextString(d.AgentContext, "repo"),
-				RepoB:           agentContextString(cand.AgentContext, "repo"),
+				RepoA:           derefString(d.Repo),
+				RepoB:           derefString(cand.Repo),
 				TaskA:           agentContextString(d.AgentContext, "task"),
 				TaskB:           agentContextString(cand.AgentContext, "task"),
 				SessionIDA:      uuidString(d.SessionID),

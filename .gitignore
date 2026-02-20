@@ -1,5 +1,8 @@
 # Binaries
 bin/
+
+# Runtime data (WAL files, JWT keys — never commit)
+data/
 /akashi
 /akashi-*
 *.exe
