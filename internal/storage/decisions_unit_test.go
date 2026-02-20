@@ -29,39 +29,44 @@ func TestBuildDecisionWhereClause_CurrentOnly(t *testing.T) {
 	})
 }
 
-func TestBuildDecisionWhereClause_ToolFilterCoalesce(t *testing.T) {
+func TestBuildDecisionWhereClause_ToolFilter(t *testing.T) {
 	orgID := uuid.New()
 	tool := "claude-code"
 	filters := model.QueryFilters{Tool: &tool}
 
 	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
 
-	// The tool filter should use COALESCE to check both namespaced and flat paths.
-	assert.Contains(t, where, "COALESCE(agent_context->'server'->>'tool', agent_context->>'tool')")
+	// tool is a generated column — filter uses simple equality, not COALESCE.
+	assert.Contains(t, where, "tool = $2")
+	assert.NotContains(t, where, "COALESCE")
 	require.Len(t, args, 2) // org_id + tool
 	assert.Equal(t, "claude-code", args[1])
 }
 
-func TestBuildDecisionWhereClause_ModelFilterCoalesce(t *testing.T) {
+func TestBuildDecisionWhereClause_ModelFilter(t *testing.T) {
 	orgID := uuid.New()
 	model_ := "claude-opus-4-6"
 	filters := model.QueryFilters{Model: &model_}
 
 	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
 
-	assert.Contains(t, where, "COALESCE(agent_context->'client'->>'model', agent_context->>'model')")
+	// model is a generated column — filter uses simple equality, not COALESCE.
+	assert.Contains(t, where, "model = $2")
+	assert.NotContains(t, where, "COALESCE")
 	require.Len(t, args, 2)
 	assert.Equal(t, "claude-opus-4-6", args[1])
 }
 
-func TestBuildDecisionWhereClause_RepoFilterCoalesce(t *testing.T) {
+func TestBuildDecisionWhereClause_RepoFilter(t *testing.T) {
 	orgID := uuid.New()
 	repo := "ashita-ai/akashi"
 	filters := model.QueryFilters{Repo: &repo}
 
 	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
 
-	assert.Contains(t, where, "COALESCE(agent_context->'server'->>'repo', agent_context->>'repo')")
+	// repo is a generated column — filter uses simple equality, not COALESCE.
+	assert.Contains(t, where, "repo = $2")
+	assert.NotContains(t, where, "COALESCE")
 	require.Len(t, args, 2)
 	assert.Equal(t, "ashita-ai/akashi", args[1])
 }
@@ -104,9 +109,9 @@ func TestBuildDecisionWhereClause_AllFilters(t *testing.T) {
 	assert.Contains(t, where, "confidence >= $5")
 	assert.Contains(t, where, "outcome = $6")
 	assert.Contains(t, where, "session_id = $7")
-	assert.Contains(t, where, "COALESCE(agent_context->'server'->>'tool', agent_context->>'tool') = $8")
-	assert.Contains(t, where, "COALESCE(agent_context->'client'->>'model', agent_context->>'model') = $9")
-	assert.Contains(t, where, "COALESCE(agent_context->'server'->>'repo', agent_context->>'repo') = $10")
+	assert.Contains(t, where, "tool = $8")
+	assert.Contains(t, where, "model = $9")
+	assert.Contains(t, where, "repo = $10")
 }
 
 func TestBuildDecisionWhereClause_ArgIndexing(t *testing.T) {
@@ -118,7 +123,7 @@ func TestBuildDecisionWhereClause_ArgIndexing(t *testing.T) {
 	where, args := buildDecisionWhereClause(orgID, filters, 3, false)
 
 	assert.Contains(t, where, "org_id = $3")
-	assert.Contains(t, where, "COALESCE(agent_context->'server'->>'tool', agent_context->>'tool') = $4")
+	assert.Contains(t, where, "tool = $4")
 	require.Len(t, args, 2)
 }
 
