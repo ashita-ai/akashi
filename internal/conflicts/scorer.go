@@ -323,7 +323,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			continue
 		}
 		inserted++
-		if err := s.db.Notify(ctx, storage.ChannelConflicts, `{"source":"scorer"}`); err != nil {
+		if err := s.db.Notify(ctx, storage.ChannelConflicts, `{"source":"scorer","org_id":"`+orgID.String()+`"}`); err != nil {
 			s.logger.Debug("conflict scorer: notify failed", "error", err)
 		}
 	}

@@ -545,9 +545,11 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 		filters.Category = &cat
 	}
 	// Default to open conflicts unless explicitly overridden.
-	if st := r.URL.Query().Get("status"); st != "" {
-		filters.Status = &st
+	st := r.URL.Query().Get("status")
+	if st == "" {
+		st = "open"
 	}
+	filters.Status = &st
 	limit := queryLimit(r, 25)
 	offset := queryOffset(r)
 
