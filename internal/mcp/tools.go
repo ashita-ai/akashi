@@ -85,6 +85,8 @@ WHAT TO INCLUDE:
 - outcome: What you decided, stated as a fact ("chose gpt-4o for summarization")
 - confidence: How certain you are (0.0-1.0). Be honest — 0.6 is fine.
 - reasoning: Your chain of thought. Why this choice over alternatives?
+- alternatives: JSON array of options you considered and rejected (optional but improves quality score).
+  Format: [{"label":"option description","rejection_reason":"why not chosen"}]
 - evidence: JSON array of supporting facts (optional but improves quality score).
   Format: [{"source_type":"tool_output","content":"test suite passed with 0 failures"},
            {"source_type":"document","content":"ADR-007 requires event sourcing","source_uri":"adrs/007.md"}]
@@ -94,6 +96,7 @@ WHAT TO INCLUDE:
 EXAMPLE: After choosing a caching strategy, record decision_type="architecture",
 outcome="chose Redis with 5min TTL for session cache", confidence=0.85,
 reasoning="Redis handles our expected QPS, TTL prevents stale reads",
+alternatives='[{"label":"in-memory cache","rejection_reason":"not shared across instances"},{"label":"Memcached","rejection_reason":"no native clustering in our stack"}]',
 evidence='[{"source_type":"tool_output","content":"load test showed 8k req/s with Redis, 2k with DB"}]'
 
 TRACE AFTER: completing a review, choosing an approach, creating issues/PRs,
@@ -132,6 +135,9 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 			),
 			mcplib.WithString("evidence",
 				mcplib.Description(`JSON array of supporting facts. Each item: {"source_type":"<type>","content":"<text>","source_uri":"<optional>","relevance_score":<0-1 optional>}. source_type values: document, api_response, agent_output, user_input, search_result, tool_output, memory, database_query.`),
+			),
+			mcplib.WithString("alternatives",
+				mcplib.Description(`JSON array of options you considered and rejected. Each item: {"label":"<description of option>","rejection_reason":"<why you didn't choose it>"}. Providing alternatives improves completeness scoring and helps future agents understand your reasoning. Example: [{"label":"Use Redis for caching","rejection_reason":"adds operational overhead for our traffic levels"},{"label":"In-memory cache","rejection_reason":"not shared across instances"}]`),
 			),
 		),
 		s.handleTrace,
@@ -522,6 +528,17 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		}
 	}
 
+	// Parse alternatives JSON if provided. Same lenient approach as evidence:
+	// log and continue rather than rejecting the whole trace.
+	var alternatives []model.TraceAlternative
+	if alt := request.GetString("alternatives", ""); alt != "" {
+		if parseErr := json.Unmarshal([]byte(alt), &alternatives); parseErr != nil {
+			s.logger.Warn("akashi_trace: ignoring unparseable alternatives JSON",
+				"error", parseErr, "agent_id", agentID)
+			alternatives = nil
+		}
+	}
+
 	// Build agent_context with server/client namespace split.
 	// "server" contains values the server extracted or verified (MCP session,
 	// client info, roots, API key prefix). "client" contains self-reported
@@ -593,7 +610,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	idemKey := request.GetString("idempotency_key", "")
 	var idemOwned bool // true when this request owns the in-progress reservation
 	if idemKey != "" {
-		payloadHash, hashErr := mcpTraceHash(agentID, decisionType, outcome, confidence, reasoning, evidence)
+		payloadHash, hashErr := mcpTraceHash(agentID, decisionType, outcome, confidence, reasoning, evidence, alternatives)
 		if hashErr != nil {
 			return errorResult(fmt.Sprintf("failed to hash trace payload: %v", hashErr)), nil
 		}
@@ -651,6 +668,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 			Outcome:      outcome,
 			Confidence:   confidence,
 			Reasoning:    reasoningPtr,
+			Alternatives: alternatives,
 			Evidence:     evidence,
 		},
 	})
@@ -707,7 +725,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 
 // mcpTraceHash computes a deterministic SHA-256 hash of the trace parameters
 // used for idempotency payload comparison.
-func mcpTraceHash(agentID, decisionType, outcome string, confidence float32, reasoning string, evidence []model.TraceEvidence) (string, error) {
+func mcpTraceHash(agentID, decisionType, outcome string, confidence float32, reasoning string, evidence []model.TraceEvidence, alternatives []model.TraceAlternative) (string, error) {
 	b, err := json.Marshal(map[string]any{
 		"agent_id":      agentID,
 		"decision_type": decisionType,
@@ -715,6 +733,7 @@ func mcpTraceHash(agentID, decisionType, outcome string, confidence float32, rea
 		"confidence":    confidence,
 		"reasoning":     reasoning,
 		"evidence":      evidence,
+		"alternatives":  alternatives,
 	})
 	if err != nil {
 		return "", err

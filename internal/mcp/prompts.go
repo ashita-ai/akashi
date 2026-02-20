@@ -103,11 +103,13 @@ CALL akashi_trace with:
 - decision_type: "%s"
 - outcome: "%s"
 - confidence: your certainty about this decision (0.0-1.0). Be honest.
-- reasoning: explain your chain of thought. What alternatives did you consider?
-  What evidence supported this choice? What trade-offs did you accept?
+- reasoning: explain your chain of thought. What trade-offs did you accept?
+  What constraints or requirements drove the choice? What risks?
+- alternatives (optional but recommended): JSON array of options you considered
+  and rejected. Each item: {"label":"option description","rejection_reason":"why not chosen"}
+  Example: [{"label":"Option A","rejection_reason":"too slow for our latency budget"}]
 
 Good reasoning includes:
-- Why this option over alternatives
 - What constraints or requirements drove the choice
 - What risks you accepted
 - References to prior decisions that influenced you`, decisionType, outcome),
