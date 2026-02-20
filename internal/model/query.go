@@ -64,6 +64,7 @@ type CheckRequest struct {
 	DecisionType string `json:"decision_type"`
 	Query        string `json:"query,omitempty"`
 	AgentID      string `json:"agent_id,omitempty"`
+	Repo         string `json:"repo,omitempty"`
 	Limit        int    `json:"limit,omitempty"`
 }
 

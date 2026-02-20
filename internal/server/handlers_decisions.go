@@ -434,7 +434,13 @@ func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.decisionSvc.Check(r.Context(), orgID, req.DecisionType, req.Query, req.AgentID, req.Limit)
+	resp, err := h.decisionSvc.Check(r.Context(), orgID, decisions.CheckInput{
+		DecisionType: req.DecisionType,
+		Query:        req.Query,
+		AgentID:      req.AgentID,
+		Repo:         req.Repo,
+		Limit:        req.Limit,
+	})
 	if err != nil {
 		h.writeInternalError(w, r, "check failed", err)
 		return

@@ -317,21 +317,35 @@ func (s *Service) postTraceAsync(ctx context.Context, orgID uuid.UUID, input Tra
 	}
 }
 
+// CheckInput holds the parameters for a precedent check.
+type CheckInput struct {
+	DecisionType string
+	Query        string
+	AgentID      string
+	Repo         string
+	Limit        int
+}
+
 // Check performs a precedent lookup by semantic search or structured query.
-func (s *Service) Check(ctx context.Context, orgID uuid.UUID, decisionType, query, agentID string, limit int) (model.CheckResponse, error) {
-	if limit <= 0 {
-		limit = 5
+func (s *Service) Check(ctx context.Context, orgID uuid.UUID, input CheckInput) (model.CheckResponse, error) {
+	if input.Limit <= 0 {
+		input.Limit = 5
 	}
 
 	var decisions []model.Decision
 
-	if query != "" {
+	// Build the shared filter set (applied on both search and structured query paths).
+	filters := model.QueryFilters{DecisionType: &input.DecisionType}
+	if input.AgentID != "" {
+		filters.AgentIDs = []string{input.AgentID}
+	}
+	if input.Repo != "" {
+		filters.Repo = &input.Repo
+	}
+
+	if input.Query != "" {
 		// Use the same Qdrant → text fallback chain as Search.
-		filters := model.QueryFilters{DecisionType: &decisionType}
-		if agentID != "" {
-			filters.AgentIDs = []string{agentID}
-		}
-		results, err := s.Search(ctx, orgID, query, true, filters, limit)
+		results, err := s.Search(ctx, orgID, input.Query, true, filters, input.Limit)
 		if err != nil {
 			return model.CheckResponse{}, fmt.Errorf("check: search: %w", err)
 		}
@@ -344,16 +358,12 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, decisionType, quer
 		}
 	} else {
 		// Structured query path.
-		filters := model.QueryFilters{DecisionType: &decisionType}
-		if agentID != "" {
-			filters.AgentIDs = []string{agentID}
-		}
 		queried, _, err := s.db.QueryDecisions(ctx, orgID, model.QueryRequest{
 			Filters:  filters,
 			Include:  []string{"alternatives"},
 			OrderBy:  "valid_from",
 			OrderDir: "desc",
-			Limit:    limit,
+			Limit:    input.Limit,
 		})
 		if err != nil {
 			return model.CheckResponse{}, fmt.Errorf("check: query: %w", err)
@@ -362,7 +372,7 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, decisionType, quer
 	}
 
 	// Only surface open/acknowledged conflicts — resolved and wont_fix are hidden.
-	conflicts, err := s.db.ListConflicts(ctx, orgID, storage.ConflictFilters{DecisionType: &decisionType}, limit, 0)
+	conflicts, err := s.db.ListConflicts(ctx, orgID, storage.ConflictFilters{DecisionType: &input.DecisionType}, input.Limit, 0)
 	if err != nil {
 		s.logger.Warn("check: list conflicts", "error", err)
 		conflicts = nil

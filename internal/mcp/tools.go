@@ -54,6 +54,9 @@ decision_type="architecture" to see if anyone already decided on caching.`),
 			mcplib.WithString("agent_id",
 				mcplib.Description("Optional: only check decisions from a specific agent"),
 			),
+			mcplib.WithString("repo",
+				mcplib.Description("Optional: only check decisions from a specific repository or project. Matches the project name inferred from the working directory (e.g. \"akashi\", \"my-service\"). Use this to prevent decisions from unrelated projects bleeding into results when multiple projects share an org."),
+			),
 			mcplib.WithNumber("limit",
 				mcplib.Description("Maximum number of precedents to return"),
 				mcplib.Min(1),
@@ -358,9 +361,16 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 
 	query := request.GetString("query", "")
 	agentID := request.GetString("agent_id", "")
+	repo := request.GetString("repo", "")
 	limit := request.GetInt("limit", 5)
 
-	resp, err := s.decisionSvc.Check(ctx, orgID, decisionType, query, agentID, limit)
+	resp, err := s.decisionSvc.Check(ctx, orgID, decisions.CheckInput{
+		DecisionType: decisionType,
+		Query:        query,
+		AgentID:      agentID,
+		Repo:         repo,
+		Limit:        limit,
+	})
 	if err != nil {
 		return errorResult(fmt.Sprintf("check failed: %v", err)), nil
 	}
@@ -568,7 +578,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 			serverCtx["roots"] = uris
 		}
 		if project := inferProjectFromRoots(roots); project != "" {
-			serverCtx["project"] = project
+			serverCtx["repo"] = project
 		}
 	}
 

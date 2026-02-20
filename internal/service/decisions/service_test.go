@@ -191,7 +191,12 @@ func TestCheck_StructuredQuery(t *testing.T) {
 	require.NoError(t, err)
 
 	// Check should find the precedent.
-	resp, err := testSvc.Check(ctx, uuid.Nil, "security", "", agentID, 5)
+	resp, err := testSvc.Check(ctx, uuid.Nil, decisions.CheckInput{
+		DecisionType: "security",
+		Query:        "",
+		AgentID:      agentID,
+		Limit:        5,
+	})
 	require.NoError(t, err)
 	assert.True(t, resp.HasPrecedent)
 	assert.NotEmpty(t, resp.Decisions)
@@ -323,7 +328,12 @@ func TestCheck_DefaultLimit(t *testing.T) {
 	require.NoError(t, err)
 
 	// Check with limit=0 should default to 5 (service.go line 206-208).
-	resp, err := testSvc.Check(ctx, uuid.Nil, "planning", "", agentID, 0)
+	resp, err := testSvc.Check(ctx, uuid.Nil, decisions.CheckInput{
+		DecisionType: "planning",
+		Query:        "",
+		AgentID:      agentID,
+		Limit:        0,
+	})
 	require.NoError(t, err, "limit=0 should default to 5, not error")
 	assert.True(t, resp.HasPrecedent)
 	assert.NotEmpty(t, resp.Decisions)
@@ -439,7 +449,12 @@ func TestCheck_SemanticPath(t *testing.T) {
 	// Check with a non-empty query triggers the Search path inside Check
 	// (service.go line 212). With nil searcher and noop embedder, this falls
 	// through to text search.
-	resp, err := testSvc.Check(ctx, uuid.Nil, "investigation", keyword, agentID, 5)
+	resp, err := testSvc.Check(ctx, uuid.Nil, decisions.CheckInput{
+		DecisionType: "investigation",
+		Query:        keyword,
+		AgentID:      agentID,
+		Limit:        5,
+	})
 	require.NoError(t, err, "semantic path via Check should not error")
 	assert.True(t, resp.HasPrecedent, "text fallback should find the decision")
 	assert.NotEmpty(t, resp.Decisions)
