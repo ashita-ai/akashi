@@ -88,6 +88,9 @@ WHAT TO INCLUDE:
 - outcome: What you decided, stated as a fact ("chose gpt-4o for summarization")
 - confidence: How certain you are (0.0-1.0). Be honest — 0.6 is fine.
 - reasoning: Your chain of thought. Why this choice over alternatives?
+- precedent_ref: UUID of the prior decision this one builds on. Copy directly from
+  akashi_check's precedent_ref_hint field. Wires the attribution graph so the audit
+  trail shows how decisions evolved. Omit if there is no clear antecedent.
 - alternatives: JSON array of options you considered and rejected (optional but improves quality score).
   Format: [{"label":"option description","rejection_reason":"why not chosen"}]
 - evidence: JSON array of supporting facts (optional but improves quality score).
@@ -99,6 +102,7 @@ WHAT TO INCLUDE:
 EXAMPLE: After choosing a caching strategy, record decision_type="architecture",
 outcome="chose Redis with 5min TTL for session cache", confidence=0.85,
 reasoning="Redis handles our expected QPS, TTL prevents stale reads",
+precedent_ref="<uuid from akashi_check's precedent_ref_hint if applicable>",
 alternatives='[{"label":"in-memory cache","rejection_reason":"not shared across instances"},{"label":"Memcached","rejection_reason":"no native clustering in our stack"}]',
 evidence='[{"source_type":"tool_output","content":"load test showed 8k req/s with Redis, 2k with DB"}]'
 
@@ -141,6 +145,9 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 			),
 			mcplib.WithString("alternatives",
 				mcplib.Description(`JSON array of options you considered and rejected. Each item: {"label":"<description of option>","rejection_reason":"<why you didn't choose it>"}. Providing alternatives improves completeness scoring and helps future agents understand your reasoning. Example: [{"label":"Use Redis for caching","rejection_reason":"adds operational overhead for our traffic levels"},{"label":"In-memory cache","rejection_reason":"not shared across instances"}]`),
+			),
+			mcplib.WithString("precedent_ref",
+				mcplib.Description("UUID of the prior decision this one directly builds on. Copy the value from akashi_check's precedent_ref_hint field. Wires the attribution graph so the audit trail shows how decisions evolved over time. Omit if there is no clear antecedent."),
 			),
 		),
 		s.handleTrace,
@@ -549,6 +556,18 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		}
 	}
 
+	// Parse precedent_ref UUID if provided. Invalid format is logged and ignored —
+	// a trace without a precedent link is better than a failed trace.
+	var precedentRef *uuid.UUID
+	if pr := request.GetString("precedent_ref", ""); pr != "" {
+		if id, parseErr := uuid.Parse(pr); parseErr == nil {
+			precedentRef = &id
+		} else {
+			s.logger.Warn("akashi_trace: ignoring invalid precedent_ref UUID",
+				"value", pr, "error", parseErr, "agent_id", agentID)
+		}
+	}
+
 	// Build agent_context with server/client namespace split.
 	// "server" contains values the server extracted or verified (MCP session,
 	// client info, roots, API key prefix). "client" contains self-reported
@@ -620,7 +639,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	idemKey := request.GetString("idempotency_key", "")
 	var idemOwned bool // true when this request owns the in-progress reservation
 	if idemKey != "" {
-		payloadHash, hashErr := mcpTraceHash(agentID, decisionType, outcome, confidence, reasoning, evidence, alternatives)
+		payloadHash, hashErr := mcpTraceHash(agentID, decisionType, outcome, confidence, reasoning, evidence, alternatives, precedentRef)
 		if hashErr != nil {
 			return errorResult(fmt.Sprintf("failed to hash trace payload: %v", hashErr)), nil
 		}
@@ -673,6 +692,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		AgentContext: agentContext,
 		APIKeyID:     apiKeyID,
 		AuditMeta:    auditMeta,
+		PrecedentRef: precedentRef,
 		Decision: model.TraceDecision{
 			DecisionType: decisionType,
 			Outcome:      outcome,
@@ -734,8 +754,15 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 }
 
 // mcpTraceHash computes a deterministic SHA-256 hash of the trace parameters
-// used for idempotency payload comparison.
-func mcpTraceHash(agentID, decisionType, outcome string, confidence float32, reasoning string, evidence []model.TraceEvidence, alternatives []model.TraceAlternative) (string, error) {
+// used for idempotency payload comparison. precedentRef is included so that
+// the same outcome recorded with a different attribution link is treated as
+// a distinct payload (rather than a replay of the original).
+func mcpTraceHash(agentID, decisionType, outcome string, confidence float32, reasoning string, evidence []model.TraceEvidence, alternatives []model.TraceAlternative, precedentRef *uuid.UUID) (string, error) {
+	var prStr *string
+	if precedentRef != nil {
+		s := precedentRef.String()
+		prStr = &s
+	}
 	b, err := json.Marshal(map[string]any{
 		"agent_id":      agentID,
 		"decision_type": decisionType,
@@ -744,6 +771,7 @@ func mcpTraceHash(agentID, decisionType, outcome string, confidence float32, rea
 		"reasoning":     reasoning,
 		"evidence":      evidence,
 		"alternatives":  alternatives,
+		"precedent_ref": prStr,
 	})
 	if err != nil {
 		return "", err
