@@ -907,6 +907,77 @@ func TestRegisterTools(t *testing.T) {
 	assert.NotNil(t, testServer.MCPServer(), "MCPServer() accessor should work")
 }
 
+func TestHandleTrace_WithPrecedentRef(t *testing.T) {
+	ctx := adminCtx()
+	agentID := "precedent-ref-agent-" + uuid.New().String()[:8]
+	_, _ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
+
+	// Record the first (antecedent) decision.
+	firstID := mustTrace(t, agentID, "architecture", "chose PostgreSQL for primary storage", 0.85)
+
+	// Record a second decision that explicitly builds on the first.
+	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
+		"agent_id":      agentID,
+		"decision_type": "architecture",
+		"outcome":       "chose pgvector extension for vector storage",
+		"confidence":    0.9,
+		"reasoning":     "already on PostgreSQL, pgvector avoids a separate vector DB",
+		"precedent_ref": firstID,
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "trace with precedent_ref should succeed: %s", parseToolText(t, result))
+
+	var resp struct {
+		DecisionID string `json:"decision_id"`
+		Status     string `json:"status"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.Equal(t, "recorded", resp.Status)
+
+	// Fetch the stored decision and verify precedent_ref was persisted.
+	secondID, err := uuid.Parse(resp.DecisionID)
+	require.NoError(t, err)
+	stored, err := testDB.GetDecision(ctx, uuid.Nil, secondID, storage.GetDecisionOpts{})
+	require.NoError(t, err)
+	require.NotNil(t, stored.PrecedentRef, "PrecedentRef should be set on the stored decision")
+
+	firstUUID, err := uuid.Parse(firstID)
+	require.NoError(t, err)
+	assert.Equal(t, firstUUID, *stored.PrecedentRef)
+}
+
+func TestHandleTrace_PrecedentRef_InvalidUUIDIgnored(t *testing.T) {
+	ctx := adminCtx()
+	agentID := "bad-precedent-agent-" + uuid.New().String()[:8]
+	_, _ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
+
+	// A malformed precedent_ref should be silently ignored — the trace should
+	// still succeed, just without a precedent link.
+	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
+		"agent_id":      agentID,
+		"decision_type": "architecture",
+		"outcome":       "chose Redis for caching",
+		"confidence":    0.8,
+		"precedent_ref": "not-a-valid-uuid",
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "invalid precedent_ref UUID should be ignored, not fail the trace")
+
+	var resp struct {
+		DecisionID string `json:"decision_id"`
+		Status     string `json:"status"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.Equal(t, "recorded", resp.Status)
+
+	// PrecedentRef should be nil since the UUID was invalid.
+	id, err := uuid.Parse(resp.DecisionID)
+	require.NoError(t, err)
+	stored, err := testDB.GetDecision(ctx, uuid.Nil, id, storage.GetDecisionOpts{})
+	require.NoError(t, err)
+	assert.Nil(t, stored.PrecedentRef, "invalid precedent_ref UUID should not be persisted")
+}
+
 // ---------- errorResult helper ----------
 
 func TestErrorResult(t *testing.T) {
