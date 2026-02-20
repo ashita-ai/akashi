@@ -2019,6 +2019,25 @@ components:
           type: string
           format: uuid
           description: Managed API key that authenticated this decision.
+        agreement_count:
+          type: integer
+          description: |
+            Number of decisions in this decision's embedding-similarity cluster whose
+            outcomes agree (outcome cosine similarity ≥ 0.75). Computed at query time.
+        conflict_count:
+          type: integer
+          description: |
+            Number of open or acknowledged conflicts involving this decision.
+            Computed at query time.
+        consensus_weight:
+          type: number
+          format: float
+          minimum: 0.5
+          maximum: 1
+          description: |
+            0.5 + 0.5 × (agreement_count / max(1, agreement_count + conflict_count)).
+            Range [0.5, 1.0]. Only present when at least one agreement or conflict exists.
+            Not stored — computed at response time.
         alternatives:
           type: array
           items:
@@ -2227,6 +2246,13 @@ components:
           type: number
           format: float
           description: exp(-lambda × days_between) scaling factor applied to significance.
+        winning_decision_id:
+          type: string
+          format: uuid
+          description: |
+            ID of the decision judged to be correct when this conflict was adjudicated.
+            Must be either decision_a_id or decision_b_id. Optional — resolution is
+            valid without declaring a winner.
 
     ConflictStatusUpdate:
       type: object
@@ -2252,6 +2278,13 @@ components:
           type: string
           default: conflict_resolution
           description: Decision type for the adjudication trace (defaults to "conflict_resolution").
+        winning_decision_id:
+          type: string
+          format: uuid
+          description: |
+            Optional. The decision judged to be correct. Must be decision_a_id or
+            decision_b_id of the conflict being adjudicated. When omitted, the conflict
+            is resolved without declaring a winner.
 
     # ── API Key schemas ─────────────────────────────────────────────
     APIKey:
