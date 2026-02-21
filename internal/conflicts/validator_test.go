@@ -543,6 +543,48 @@ func TestFormatPrompt_EmptyEnrichmentFields(t *testing.T) {
 	assert.NotContains(t, prompt, "Task B")
 }
 
+func TestFormatPrompt_NullRepoDifferentAgents(t *testing.T) {
+	// When both repos are empty and agents differ, the prompt must include guidance
+	// to detect cross-project matches from outcome text. This is the primary guard
+	// against cross-project false positives when repo metadata is unavailable.
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA: "Comprehensive review of Engram memory system: aggregate 67/100",
+		OutcomeB: "Reviewed akashi OSS codebase: aggregate 78/100",
+		TypeA:    "code_review",
+		TypeB:    "code_review",
+		AgentA:   "senior-staff-reviewer",
+		AgentB:   "admin",
+		CreatedA: now,
+		CreatedB: now.Add(time.Hour),
+		// RepoA and RepoB intentionally empty (the common case for legacy decisions)
+	})
+	assert.Contains(t, prompt, "PROJECT CONTEXT")
+	assert.Contains(t, prompt, "DIFFERENT named systems")
+	// Explicit DIFFERENT PROJECTS block only fires when repos are set.
+	assert.NotContains(t, prompt, "DIFFERENT PROJECTS")
+}
+
+func TestFormatPrompt_NullRepoSameAgent(t *testing.T) {
+	// When both repos are empty and it is the SAME agent, we skip the PROJECT
+	// CONTEXT warning — same agent working on different things typically means
+	// sequential work within the same project, not cross-project confusion.
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA: "Chose PostgreSQL for storage backend",
+		OutcomeB: "Chose Redis for caching layer",
+		TypeA:    "architecture",
+		TypeB:    "architecture",
+		AgentA:   "planner",
+		AgentB:   "planner",
+		CreatedA: now,
+		CreatedB: now.Add(24 * time.Hour),
+	})
+	// Same agent → no cross-project project context warning.
+	assert.NotContains(t, prompt, "PROJECT CONTEXT")
+	assert.NotContains(t, prompt, "DIFFERENT PROJECTS")
+}
+
 func TestTruncateRunes(t *testing.T) {
 	// Below limit: unchanged.
 	assert.Equal(t, "hello", truncateRunes("hello", 10))
