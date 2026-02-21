@@ -28,7 +28,7 @@ func TestBrokerFanOut(t *testing.T) {
 
 	// Broadcast an event to that org.
 	event := formatSSE("akashi_decisions", `{"decision_id":"abc"}`)
-	broker.broadcastToOrg(event, orgID)
+	broker.broadcastToOrg(event, orgID, true)
 
 	// Both should receive it.
 	select {
@@ -52,7 +52,7 @@ func TestBrokerFanOut(t *testing.T) {
 	// Unsubscribe ch1, broadcast again — only ch2 should receive.
 	broker.Unsubscribe(ch1)
 	event2 := formatSSE("akashi_decisions", `{"decision_id":"def"}`)
-	broker.broadcastToOrg(event2, orgID)
+	broker.broadcastToOrg(event2, orgID, true)
 
 	select {
 	case got := <-ch2:
@@ -79,7 +79,7 @@ func TestBrokerOrgIsolation(t *testing.T) {
 
 	// Broadcast to org1 only.
 	event := formatSSE("akashi_decisions", `{"decision_id":"abc"}`)
-	broker.broadcastToOrg(event, org1)
+	broker.broadcastToOrg(event, org1, true)
 
 	// ch1 (org1) should receive it.
 	select {
@@ -103,7 +103,7 @@ func TestBrokerOrgIsolation(t *testing.T) {
 	broker.Unsubscribe(ch2)
 }
 
-func TestBrokerDropsNilOrgEvents(t *testing.T) {
+func TestBrokerDropsUnparseableOrgEvents(t *testing.T) {
 	orgID := uuid.New()
 	broker := &Broker{
 		subscribers: make(map[chan []byte]subscriber),
@@ -112,9 +112,9 @@ func TestBrokerDropsNilOrgEvents(t *testing.T) {
 
 	ch := broker.Subscribe(orgID)
 
-	// Broadcast with uuid.Nil — should be dropped.
+	// Broadcast with hasOrgID=false — event must be dropped, not leaked to subscribers.
 	event := formatSSE("akashi_decisions", `{"decision_id":"abc"}`)
-	broker.broadcastToOrg(event, uuid.Nil)
+	broker.broadcastToOrg(event, uuid.Nil, false)
 
 	select {
 	case got := <-ch:
@@ -126,39 +126,86 @@ func TestBrokerDropsNilOrgEvents(t *testing.T) {
 	broker.Unsubscribe(ch)
 }
 
+// TestBrokerZeroUUIDOrg verifies that the zero UUID is treated as a valid org
+// identifier (used by single-tenant / default-org deployments) and events are
+// delivered when hasOrgID=true, regardless of whether orgID is uuid.Nil.
+func TestBrokerZeroUUIDOrg(t *testing.T) {
+	broker := &Broker{
+		subscribers: make(map[chan []byte]subscriber),
+		logger:      testLogger(),
+	}
+
+	// Subscribe a client whose org IS the zero UUID (default org).
+	ch := broker.Subscribe(uuid.Nil)
+
+	event := formatSSE("akashi_conflicts", `{"org_id":"00000000-0000-0000-0000-000000000000"}`)
+	broker.broadcastToOrg(event, uuid.Nil, true) // hasOrgID=true: parse succeeded
+
+	select {
+	case got := <-ch:
+		if string(got) != string(event) {
+			t.Errorf("zero-UUID org: got %q, want %q", got, event)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("zero-UUID org subscriber did not receive event")
+	}
+
+	broker.Unsubscribe(ch)
+}
+
 func TestExtractOrgID(t *testing.T) {
 	tests := []struct {
 		name    string
 		payload string
-		want    uuid.UUID
+		wantID  uuid.UUID
+		wantOK  bool
 	}{
 		{
 			name:    "valid org_id",
 			payload: `{"org_id":"550e8400-e29b-41d4-a716-446655440000","decision_id":"abc"}`,
-			want:    uuid.MustParse("550e8400-e29b-41d4-a716-446655440000"),
+			wantID:  uuid.MustParse("550e8400-e29b-41d4-a716-446655440000"),
+			wantOK:  true,
+		},
+		{
+			// The zero UUID is a valid org_id for single-tenant / default-org deployments.
+			// extractOrgID must return (uuid.Nil, true) — not (uuid.Nil, false).
+			name:    "zero UUID org_id",
+			payload: `{"org_id":"00000000-0000-0000-0000-000000000000"}`,
+			wantID:  uuid.Nil,
+			wantOK:  true,
 		},
 		{
 			name:    "missing org_id",
 			payload: `{"decision_id":"abc"}`,
-			want:    uuid.Nil,
+			wantID:  uuid.Nil,
+			wantOK:  false,
 		},
 		{
 			name:    "invalid JSON",
 			payload: `not json`,
-			want:    uuid.Nil,
+			wantID:  uuid.Nil,
+			wantOK:  false,
 		},
 		{
-			name:    "empty org_id",
+			name:    "empty org_id string",
 			payload: `{"org_id":"","decision_id":"abc"}`,
-			want:    uuid.Nil,
+			wantID:  uuid.Nil,
+			wantOK:  false,
+		},
+		{
+			name:    "malformed UUID",
+			payload: `{"org_id":"not-a-uuid"}`,
+			wantID:  uuid.Nil,
+			wantOK:  false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := extractOrgID(tt.payload)
-			if got != tt.want {
-				t.Errorf("extractOrgID(%q) = %v, want %v", tt.payload, got, tt.want)
+			gotID, gotOK := extractOrgID(tt.payload)
+			if gotID != tt.wantID || gotOK != tt.wantOK {
+				t.Errorf("extractOrgID(%q) = (%v, %v), want (%v, %v)",
+					tt.payload, gotID, gotOK, tt.wantID, tt.wantOK)
 			}
 		})
 	}
@@ -192,12 +239,12 @@ func TestBrokerSlowSubscriber(t *testing.T) {
 
 	// Fill the slow subscriber's buffer.
 	for range 65 {
-		broker.broadcastToOrg(formatSSE("test", "fill"), orgID)
+		broker.broadcastToOrg(formatSSE("test", "fill"), orgID, true)
 	}
 
 	// Fast subscriber should still get events.
 	event := formatSSE("test", "after-fill")
-	broker.broadcastToOrg(event, orgID)
+	broker.broadcastToOrg(event, orgID, true)
 
 	select {
 	case <-fast:
@@ -221,7 +268,7 @@ func TestBrokerClose(t *testing.T) {
 
 	// Verify the channel is open by confirming we can send to it without panic.
 	event := formatSSE("test", `{"id":"close-test"}`)
-	broker.broadcastToOrg(event, orgID)
+	broker.broadcastToOrg(event, orgID, true)
 
 	select {
 	case got := <-ch:
@@ -287,7 +334,7 @@ func TestBrokerConcurrentSubscribe(t *testing.T) {
 
 	// Broadcast an event and verify all subscribers receive it.
 	event := formatSSE("test", `{"concurrent":"true"}`)
-	broker.broadcastToOrg(event, orgID)
+	broker.broadcastToOrg(event, orgID, true)
 
 	for i, ch := range channels {
 		select {

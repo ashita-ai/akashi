@@ -77,15 +77,15 @@ func (b *Broker) Start(ctx context.Context) {
 		}
 
 		// Extract org_id from the notification payload for tenant isolation.
-		orgID := extractOrgID(payload)
-		if orgID == uuid.Nil {
+		orgID, ok := extractOrgID(payload)
+		if !ok {
 			b.logger.Warn("broker: could not extract org_id from notification payload",
 				"channel", channel)
 		}
 
 		// Format as SSE event.
 		event := formatSSE(channel, payload)
-		b.broadcastToOrg(event, orgID)
+		b.broadcastToOrg(event, orgID, ok)
 	}
 }
 
@@ -134,11 +134,14 @@ func (b *Broker) Unsubscribe(ch chan []byte) {
 }
 
 // broadcastToOrg sends an event only to subscribers belonging to the given org.
-// If orgID is uuid.Nil (e.g. payload couldn't be parsed), the event is dropped
-// rather than leaked to all tenants. Slow subscribers that have a full buffer
-// are skipped to prevent one slow client from blocking all others.
-func (b *Broker) broadcastToOrg(event []byte, orgID uuid.UUID) {
-	if orgID == uuid.Nil {
+// hasOrgID must be true for the event to be routed; false means the org_id
+// could not be parsed and the event is dropped rather than leaked to all tenants.
+// The zero UUID is a valid org_id (used by the default org in single-tenant
+// deployments), so hasOrgID is the authoritative parse-success indicator.
+// Slow subscribers that have a full buffer are skipped to prevent one slow
+// client from blocking all others.
+func (b *Broker) broadcastToOrg(event []byte, orgID uuid.UUID, hasOrgID bool) {
+	if !hasOrgID {
 		b.logger.Warn("broker: dropping event with unparseable org_id")
 		if b.droppedEvents != nil {
 			b.droppedEvents.Add(context.Background(), 1)
@@ -168,19 +171,25 @@ func (b *Broker) broadcastToOrg(event []byte, orgID uuid.UUID) {
 }
 
 // extractOrgID parses the notification payload JSON to extract the org_id field.
-// Returns uuid.Nil if the payload is not valid JSON or lacks an org_id.
-func extractOrgID(payload string) uuid.UUID {
+// Returns (id, true) on success — including when org_id is the zero UUID, which
+// is a valid org identifier for single-tenant / default-org deployments.
+// Returns (uuid.Nil, false) if the payload is not valid JSON, lacks an org_id
+// field, or the value cannot be parsed as a UUID.
+func extractOrgID(payload string) (uuid.UUID, bool) {
 	var p struct {
 		OrgID string `json:"org_id"`
 	}
 	if err := json.Unmarshal([]byte(payload), &p); err != nil {
-		return uuid.Nil
+		return uuid.Nil, false
+	}
+	if p.OrgID == "" {
+		return uuid.Nil, false
 	}
 	id, err := uuid.Parse(p.OrgID)
 	if err != nil {
-		return uuid.Nil
+		return uuid.Nil, false
 	}
-	return id
+	return id, true
 }
 
 // formatSSE formats a notification as a Server-Sent Events message.

@@ -116,6 +116,15 @@ func formatPrompt(input ValidateInput) string {
 		} else {
 			fmt.Fprintf(&b, "Same project: %s\n", input.RepoA)
 		}
+	} else if input.AgentA != input.AgentB {
+		// Repository names unavailable — guide the LLM to identify projects from outcome text.
+		// Different agents frequently work on different codebases and use similar assessment
+		// vocabulary (e.g. "comprehensive review", "aggregate score") without those reviews
+		// being related. Cross-project confusion is the leading source of false positives.
+		b.WriteString("PROJECT CONTEXT: Repository names are not recorded for these decisions. " +
+			"Read the outcome text carefully for named codebases, products, or projects (e.g. proper nouns like product names, repository names, service names). " +
+			"If Decision A and Decision B clearly refer to DIFFERENT named systems, classify as UNRELATED — different codebases cannot contradict each other. " +
+			"Only classify as CONTRADICTION if both decisions are clearly about the SAME system and make incompatible claims about it.\n")
 	}
 	if input.TaskA != "" {
 		fmt.Fprintf(&b, "Task A: %s\n", truncateRunes(input.TaskA, 100))
@@ -157,7 +166,8 @@ IMPORTANT for assessments and code reviews:
 - A review that reports finding bugs does NOT contradict those bug reports — it discovered them.
 - A summary assessment ("security is strong") and a detailed review ("found vulnerability X") are NOT contradictions. Detailed reviews always find issues that summaries don't mention.
 - Two reviews finding different issues in the same codebase are complementary, not contradictory.
-- For assessments to contradict, they must make OPPOSITE claims about the SAME specific finding.
+- Two reviews of DIFFERENT codebases or products are UNRELATED — they cannot contradict each other.
+- For assessments to contradict, they must make OPPOSITE claims about the SAME specific finding in the SAME system.
 
 RELATIONSHIP: one of [contradiction, supersession, complementary, refinement, unrelated]
 CATEGORY: factual, assessment, strategic, or temporal
