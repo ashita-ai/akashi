@@ -257,6 +257,7 @@ func TestScoreForDecision(t *testing.T) {
 
 	// Use a low threshold so the conflict is detected.
 	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 
 	// Score for decisionB — it should find decisionA as a conflict.
 	scorer.ScoreForDecision(ctx, decisionB.ID, orgID)
@@ -319,6 +320,7 @@ func TestScoreForDecision_NoEmbeddings(t *testing.T) {
 	require.NoError(t, err)
 
 	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 
 	// Should return early without error (decision lacks embeddings).
 	scorer.ScoreForDecision(ctx, d.ID, orgID)
@@ -368,6 +370,7 @@ func TestScoreForDecision_CrossAgent(t *testing.T) {
 	require.NoError(t, err)
 
 	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
 	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 100, 0)
@@ -422,6 +425,7 @@ func TestBackfillScoring(t *testing.T) {
 	require.NoError(t, err)
 
 	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 
 	// BackfillScoring should process both decisions and produce a conflict.
 	processed, err := scorer.BackfillScoring(ctx, 100)
@@ -448,6 +452,7 @@ func TestBackfillScoring_EmptyDB(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
 	scorer := NewScorer(testDB, logger, 0.5, nil, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 
 	// Should handle gracefully when there are decisions but none with
 	// significance above the high threshold.
@@ -494,6 +499,7 @@ func TestScoreForDecision_SkipsRevisionChain(t *testing.T) {
 	require.NoError(t, err)
 
 	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
 	// Verify NO conflict was inserted between A and B despite divergent outcomes.
@@ -553,6 +559,7 @@ func TestScoreForDecision_RevisionChainTransitive(t *testing.T) {
 	require.NoError(t, err)
 
 	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 
 	// Score for C — should NOT conflict with A or B (transitive chain).
 	scorer.ScoreForDecision(ctx, dC.ID, orgID)
@@ -578,6 +585,7 @@ func TestBackfillScoring_ContextCancellation(t *testing.T) {
 	cancel() // Cancel immediately.
 
 	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	processed, err := scorer.BackfillScoring(ctx, 100)
 
 	// Either processes 0 or returns context.Canceled.
@@ -923,6 +931,7 @@ func TestScoreForDecision_ClaimMethodWinsOverEmbedding(t *testing.T) {
 	require.NoError(t, err)
 
 	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
 	// Find the conflict between our two decisions.
@@ -1041,6 +1050,7 @@ func TestBackfillScoring_MarksDecisionsScored(t *testing.T) {
 	require.NoError(t, err)
 
 	scorer := NewScorer(testDB, logger, 0.1, nil, 2, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 
 	// First backfill should process decisions.
 	n1, err := scorer.BackfillScoring(ctx, 500)
@@ -1126,6 +1136,7 @@ func TestBackfillScoring_Parallel(t *testing.T) {
 
 	// Use 3 workers to exercise parallel paths.
 	scorer := NewScorer(testDB, logger, 0.1, nil, 3, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	processed, err := scorer.BackfillScoring(ctx, 500)
 	require.NoError(t, err)
 	assert.Greater(t, processed, 0, "parallel backfill should process decisions")
@@ -1187,6 +1198,7 @@ func TestScoreForDecision_DifferentReposSuppressConflict(t *testing.T) {
 	require.NoError(t, err)
 
 	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer.ScoreForDecision(ctx, decisionA.ID, orgID)
 
 	// Verify that NO conflict was created between the two decisions. The repo filter
@@ -1249,6 +1261,7 @@ func TestScoreForDecision_SameRepoAllowsConflict(t *testing.T) {
 	require.NoError(t, err)
 
 	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer.ScoreForDecision(ctx, decisionA.ID, orgID)
 
 	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 500, 0)

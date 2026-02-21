@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
@@ -50,6 +51,15 @@ type Scorer struct {
 	validator       Validator
 	backfillWorkers int
 	decayLambda     float64 // Temporal decay rate. 0 disables decay.
+	finder          search.CandidateFinder
+}
+
+// WithCandidateFinder wires a Qdrant-backed CandidateFinder for conflict candidate
+// discovery. Without one, ScoreForDecision skips candidate retrieval and inserts
+// no conflicts. Must be called before any scoring starts.
+func (s *Scorer) WithCandidateFinder(cf search.CandidateFinder) *Scorer {
+	s.finder = cf
+	return s
 }
 
 // NewScorer creates a conflict scorer. If validator is nil, a NoopValidator is
@@ -146,11 +156,55 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		return
 	}
 
-	candidates, err := s.db.FindSimilarDecisionsByEmbedding(ctx, orgID, *d.Embedding, decisionID, 50, d.Repo)
-	if err != nil {
-		s.logger.Warn("conflict scorer: find similar failed", "decision_id", decisionID, "error", err)
+	if s.finder == nil {
+		s.logger.Debug("conflict scorer: no candidate finder configured, skipping", "decision_id", decisionID)
 		return
 	}
+
+	qdrantResults, err := s.finder.FindSimilar(ctx, orgID, d.Embedding.Slice(), decisionID, d.Repo, 50)
+	if err != nil {
+		s.logger.Warn("conflict scorer: qdrant find similar failed", "decision_id", decisionID, "error", err)
+		return
+	}
+	if len(qdrantResults) == 0 {
+		return
+	}
+
+	// Hydrate candidate IDs from Postgres to get full model data
+	// (outcome_embedding, reasoning, agent_context) for the scoring pipeline.
+	neighborIDs := make([]uuid.UUID, len(qdrantResults))
+	for i, r := range qdrantResults {
+		neighborIDs[i] = r.DecisionID
+	}
+	embMap, err := s.db.GetDecisionEmbeddings(ctx, neighborIDs, orgID)
+	if err != nil {
+		s.logger.Warn("conflict scorer: hydrate embeddings failed", "decision_id", decisionID, "error", err)
+		return
+	}
+
+	// GetDecisionEmbeddings returns only decisions with both embeddings present.
+	// Fetch full decision data for those IDs to get outcome, reasoning, etc.
+	hydratedIDs := make([]uuid.UUID, 0, len(embMap))
+	for id := range embMap {
+		hydratedIDs = append(hydratedIDs, id)
+	}
+	candidateMap, err := s.db.GetDecisionsByIDs(ctx, orgID, hydratedIDs)
+	if err != nil {
+		s.logger.Warn("conflict scorer: hydrate decisions failed", "decision_id", decisionID, "error", err)
+		return
+	}
+
+	// Assemble ordered candidate list preserving Qdrant ranking.
+	// GetDecisionsByIDs doesn't include embedding/outcome_embedding; re-attach from embMap.
+	candidates := make([]model.Decision, 0, len(candidateMap))
+	for id, cand := range candidateMap {
+		if embs, ok := embMap[id]; ok {
+			cand.Embedding = &embs[0]
+			cand.OutcomeEmbedding = &embs[1]
+		}
+		candidates = append(candidates, cand)
+	}
+
 	if len(candidates) == 0 {
 		return
 	}

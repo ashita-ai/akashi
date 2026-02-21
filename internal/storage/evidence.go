@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/pgvector/pgvector-go"
 
 	"github.com/ashita-ai/akashi/internal/model"
 )
@@ -163,37 +162,4 @@ func (db *DB) GetEvidenceCoverageStats(ctx context.Context, orgID uuid.UUID) (Ev
 		s.AvgPerDecision = float64(s.TotalRecords) / float64(s.TotalDecisions)
 	}
 	return s, nil
-}
-
-// SearchEvidenceByEmbedding performs semantic similarity search over evidence within an org.
-func (db *DB) SearchEvidenceByEmbedding(ctx context.Context, orgID uuid.UUID, embedding pgvector.Vector, limit int) ([]model.Evidence, error) {
-	if limit <= 0 {
-		limit = 10
-	}
-
-	rows, err := db.pool.Query(ctx,
-		`SELECT id, decision_id, org_id, source_type, source_uri, content,
-		 relevance_score, metadata, created_at
-		 FROM evidence
-		 WHERE org_id = $1 AND embedding IS NOT NULL
-		 ORDER BY embedding <=> $2
-		 LIMIT $3`, orgID, embedding, limit,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("storage: search evidence: %w", err)
-	}
-	defer rows.Close()
-
-	var evs []model.Evidence
-	for rows.Next() {
-		var ev model.Evidence
-		if err := rows.Scan(
-			&ev.ID, &ev.DecisionID, &ev.OrgID, &ev.SourceType, &ev.SourceURI, &ev.Content,
-			&ev.RelevanceScore, &ev.Metadata, &ev.CreatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("storage: scan evidence search: %w", err)
-		}
-		evs = append(evs, ev)
-	}
-	return evs, rows.Err()
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/search"
 )
 
 // CreateDecision inserts a decision and queues a search outbox entry if the
@@ -1000,46 +1001,133 @@ func (db *DB) BackfillOutcomeEmbedding(ctx context.Context, id, orgID uuid.UUID,
 	return nil
 }
 
-// FindSimilarDecisionsByEmbedding returns decisions in the same org with similar
-// full embeddings (for conflict candidate discovery). Excludes the given decision ID.
+// PgCandidateFinder implements search.CandidateFinder using a Postgres sequential scan.
+// This is the "no-Qdrant" fallback: acceptable for small deployments (<100k decisions)
+// where latency from a sequential scan is tolerable. At scale, use QdrantIndex instead.
 //
-// repo scopes candidate discovery: when non-nil, only decisions with the same
-// repo value (or no repo context at all) are returned. This prevents spurious
-// cross-project conflicts when multiple codebases share an org.
-func (db *DB) FindSimilarDecisionsByEmbedding(ctx context.Context, orgID uuid.UUID, embedding pgvector.Vector, excludeID uuid.UUID, limit int, repo *string) ([]model.Decision, error) {
+// Once Postgres HNSW indexes are dropped (migration 049), this performs a full sequential
+// scan for each ANN call — suitable only when Qdrant is unavailable and the dataset is small.
+type PgCandidateFinder struct {
+	db *DB
+}
+
+// NewPgCandidateFinder returns a CandidateFinder backed by Postgres sequential scan.
+func NewPgCandidateFinder(db *DB) *PgCandidateFinder {
+	return &PgCandidateFinder{db: db}
+}
+
+// FindSimilar returns the top-limit decisions ordered by cosine distance to embedding,
+// scoped to the org. excludeID is filtered in SQL. repo, when non-nil, restricts to
+// decisions with the same repo value or no repo.
+func (f *PgCandidateFinder) FindSimilar(ctx context.Context, orgID uuid.UUID, embedding []float32, excludeID uuid.UUID, repo *string, limit int) ([]search.Result, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := db.pool.Query(ctx,
-		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 metadata, quality_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context,
-		 embedding, outcome_embedding, repo
+	emb := pgvector.NewVector(embedding)
+	rows, err := f.db.pool.Query(ctx,
+		`SELECT id, 1 - (embedding <=> $3) AS score
 		 FROM decisions
 		 WHERE org_id = $1 AND id != $2 AND embedding IS NOT NULL AND outcome_embedding IS NOT NULL AND valid_to IS NULL
 		   AND ($5::text IS NULL OR repo IS NULL OR repo = $5)
 		 ORDER BY embedding <=> $3
-		 LIMIT $4`, orgID, excludeID, embedding, limit, repo)
+		 LIMIT $4`, orgID, excludeID, emb, limit, repo)
 	if err != nil {
-		return nil, fmt.Errorf("storage: find similar decisions: %w", err)
+		return nil, fmt.Errorf("storage: pg candidate finder: %w", err)
 	}
 	defer rows.Close()
 
-	var list []model.Decision
+	var results []search.Result
 	for rows.Next() {
-		var d model.Decision
-		if err := rows.Scan(
-			&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence, &d.Reasoning,
-			&d.Metadata, &d.QualityScore, &d.PrecedentRef, &d.SupersedesID, &d.ContentHash,
-			&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
-			&d.SessionID, &d.AgentContext,
-			&d.Embedding, &d.OutcomeEmbedding, &d.Repo,
-		); err != nil {
-			return nil, fmt.Errorf("storage: scan similar decision: %w", err)
+		var id uuid.UUID
+		var score float32
+		if err := rows.Scan(&id, &score); err != nil {
+			return nil, fmt.Errorf("storage: scan candidate: %w", err)
 		}
-		list = append(list, d)
+		results = append(results, search.Result{DecisionID: id, Score: score})
 	}
-	return list, rows.Err()
+	return results, rows.Err()
+}
+
+// GetDecisionEmbeddings returns (embedding, outcome_embedding) pairs for a batch of decisions.
+// Used by consensus scoring to prepare Qdrant queries and pairwise cosine comparisons.
+// Only decisions with both embeddings populated are included in the result.
+func (db *DB) GetDecisionEmbeddings(ctx context.Context, ids []uuid.UUID, orgID uuid.UUID) (map[uuid.UUID][2]pgvector.Vector, error) {
+	if len(ids) == 0 {
+		return map[uuid.UUID][2]pgvector.Vector{}, nil
+	}
+
+	rows, err := db.pool.Query(ctx,
+		`SELECT id, embedding, outcome_embedding
+		 FROM decisions
+		 WHERE id = ANY($1) AND org_id = $2 AND valid_to IS NULL
+		   AND embedding IS NOT NULL AND outcome_embedding IS NOT NULL`,
+		ids, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: get decision embeddings: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[uuid.UUID][2]pgvector.Vector, len(ids))
+	for rows.Next() {
+		var id uuid.UUID
+		var emb, outcomeEmb pgvector.Vector
+		if err := rows.Scan(&id, &emb, &outcomeEmb); err != nil {
+			return nil, fmt.Errorf("storage: scan decision embeddings: %w", err)
+		}
+		result[id] = [2]pgvector.Vector{emb, outcomeEmb}
+	}
+	return result, rows.Err()
+}
+
+// GetConflictCount returns the number of open or acknowledged conflicts involving a decision.
+func (db *DB) GetConflictCount(ctx context.Context, decisionID, orgID uuid.UUID) (int, error) {
+	var count int
+	err := db.pool.QueryRow(ctx,
+		`SELECT COUNT(*)
+		 FROM scored_conflicts
+		 WHERE org_id = $2
+		   AND status IN ('open', 'acknowledged')
+		   AND (decision_a_id = $1 OR decision_b_id = $1)`,
+		decisionID, orgID,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("storage: conflict count: %w", err)
+	}
+	return count, nil
+}
+
+// GetConflictCountsBatch returns conflict counts for a batch of decisions.
+// A conflict is counted if there is an open or acknowledged entry in scored_conflicts.
+// Decisions with no conflicts are absent from the returned map.
+func (db *DB) GetConflictCountsBatch(ctx context.Context, ids []uuid.UUID, orgID uuid.UUID) (map[uuid.UUID]int, error) {
+	if len(ids) == 0 {
+		return map[uuid.UUID]int{}, nil
+	}
+
+	rows, err := db.pool.Query(ctx, `
+		WITH batch AS (SELECT unnest($1::uuid[]) AS id)
+		SELECT b.id, COUNT(*) AS conflict_count
+		FROM batch b
+		JOIN scored_conflicts sc
+		     ON (sc.decision_a_id = b.id OR sc.decision_b_id = b.id)
+		     AND sc.org_id = $2
+		     AND sc.status IN ('open', 'acknowledged')
+		GROUP BY b.id`, ids, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: conflict counts batch: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[uuid.UUID]int, len(ids))
+	for rows.Next() {
+		var id uuid.UUID
+		var count int
+		if err := rows.Scan(&id, &count); err != nil {
+			return nil, fmt.Errorf("storage: scan conflict count: %w", err)
+		}
+		result[id] = count
+	}
+	return result, rows.Err()
 }
 
 // DecisionRef is a lightweight reference to a decision for batch operations.
@@ -1181,141 +1269,6 @@ func (db *DB) GetDecisionForScoring(ctx context.Context, id, orgID uuid.UUID) (m
 		return model.Decision{}, fmt.Errorf("storage: get decision for scoring: %w", err)
 	}
 	return d, nil
-}
-
-// GetConsensusScores computes agreement and conflict counts for a single decision
-// by finding its embedding-similarity cluster (top 50 neighbors, cosine sim ≥ 0.70)
-// and classifying each as agreeing (outcome_sim ≥ 0.75) or conflicting (open scored_conflicts).
-// Returns 0, 0 for decisions without embeddings.
-func (db *DB) GetConsensusScores(ctx context.Context, decisionID, orgID uuid.UUID) (agreementCount, conflictCount int, err error) {
-	err = db.pool.QueryRow(ctx, `
-		WITH cluster AS (
-		    SELECT d2.id,
-		           1 - (d.outcome_embedding <=> d2.outcome_embedding) AS outcome_sim
-		    FROM decisions d
-		    JOIN decisions d2 ON d2.org_id = d.org_id
-		        AND d2.id != d.id
-		        AND d2.valid_to IS NULL
-		    WHERE d.id = $1
-		      AND d.org_id = $2
-		      AND d.embedding IS NOT NULL
-		      AND 1 - (d.embedding <=> d2.embedding) >= 0.70
-		    ORDER BY d.embedding <=> d2.embedding
-		    LIMIT 50
-		),
-		classified AS (
-		    SELECT c.id,
-		           CASE
-		               WHEN c.outcome_sim >= 0.75 THEN 'agreement'
-		               WHEN EXISTS (
-		                   SELECT 1 FROM scored_conflicts sc
-		                   WHERE sc.org_id = $2
-		                     AND sc.status IN ('open', 'acknowledged')
-		                     AND ((sc.decision_a_id = $1 AND sc.decision_b_id = c.id)
-		                       OR (sc.decision_b_id = $1 AND sc.decision_a_id = c.id))
-		               ) THEN 'conflict'
-		               ELSE 'neutral'
-		           END AS stance
-		    FROM cluster c
-		)
-		SELECT
-		    COALESCE(COUNT(*) FILTER (WHERE stance = 'agreement'), 0)::int,
-		    COALESCE(COUNT(*) FILTER (WHERE stance = 'conflict'), 0)::int
-		FROM classified`, decisionID, orgID).Scan(&agreementCount, &conflictCount)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, 0, nil
-		}
-		return 0, 0, fmt.Errorf("storage: consensus scores: %w", err)
-	}
-	return agreementCount, conflictCount, nil
-}
-
-// GetConsensusScoresBatch computes agreement and conflict counts for multiple decisions.
-// Returns a map of decision ID → [agreementCount, conflictCount].
-// Decisions without embeddings have agreement=0; all decisions can have conflict>0.
-//
-// Implemented as two queries to avoid an O(N×50) correlated EXISTS scan:
-//
-//  1. Conflict counts: simple batch join on scored_conflicts — no ANN needed,
-//     O(index scan) regardless of batch size.
-//
-//  2. Agreement counts: LATERAL ANN per decision (unavoidable with pgvector), but
-//     without the nested EXISTS that the original single-query approach required.
-func (db *DB) GetConsensusScoresBatch(ctx context.Context, ids []uuid.UUID, orgID uuid.UUID) (map[uuid.UUID][2]int, error) {
-	if len(ids) == 0 {
-		return map[uuid.UUID][2]int{}, nil
-	}
-
-	result := make(map[uuid.UUID][2]int, len(ids))
-
-	// Query 1: conflict counts via direct batch join on scored_conflicts.
-	// Counts every open/acknowledged conflict involving each decision — not limited
-	// to the embedding neighborhood, so no ANN needed and no data is missed.
-	conflictRows, err := db.pool.Query(ctx, `
-		WITH batch AS (SELECT unnest($1::uuid[]) AS id)
-		SELECT b.id, COUNT(*) AS conflict_count
-		FROM batch b
-		JOIN scored_conflicts sc
-		     ON (sc.decision_a_id = b.id OR sc.decision_b_id = b.id)
-		     AND sc.org_id = $2
-		     AND sc.status IN ('open', 'acknowledged')
-		GROUP BY b.id`, ids, orgID)
-	if err != nil {
-		return nil, fmt.Errorf("storage: consensus conflict counts: %w", err)
-	}
-	defer conflictRows.Close()
-	for conflictRows.Next() {
-		var id uuid.UUID
-		var count int
-		if err := conflictRows.Scan(&id, &count); err != nil {
-			return nil, fmt.Errorf("storage: scan conflict count: %w", err)
-		}
-		v := result[id]
-		v[1] = count
-		result[id] = v
-	}
-	if err := conflictRows.Err(); err != nil {
-		return nil, fmt.Errorf("storage: conflict counts rows: %w", err)
-	}
-
-	// Query 2: agreement counts via LATERAL ANN — one ANN search per decision in
-	// the batch (N = page size, typically 20-50). The EXISTS check on scored_conflicts
-	// has been moved to query 1, eliminating the per-neighbor correlated subquery.
-	agreementRows, err := db.pool.Query(ctx, `
-		SELECT src.id, COUNT(neighbors.id) AS agreement_count
-		FROM decisions src
-		CROSS JOIN LATERAL (
-		    SELECT d2.id
-		    FROM decisions d2
-		    WHERE d2.org_id = src.org_id
-		      AND d2.id != src.id
-		      AND d2.valid_to IS NULL
-		      AND 1 - (src.outcome_embedding <=> d2.outcome_embedding) >= 0.75
-		    ORDER BY src.embedding <=> d2.embedding
-		    LIMIT 50
-		) AS neighbors
-		WHERE src.id = ANY($1) AND src.org_id = $2 AND src.embedding IS NOT NULL
-		GROUP BY src.id`, ids, orgID)
-	if err != nil {
-		return nil, fmt.Errorf("storage: consensus agreement counts: %w", err)
-	}
-	defer agreementRows.Close()
-	for agreementRows.Next() {
-		var id uuid.UUID
-		var count int
-		if err := agreementRows.Scan(&id, &count); err != nil {
-			return nil, fmt.Errorf("storage: scan agreement count: %w", err)
-		}
-		v := result[id]
-		v[0] = count
-		result[id] = v
-	}
-	if err := agreementRows.Err(); err != nil {
-		return nil, fmt.Errorf("storage: agreement counts rows: %w", err)
-	}
-
-	return result, nil
 }
 
 // GetDecisionOutcomeSignals returns temporal, graph, and fate outcome signals for a single decision.

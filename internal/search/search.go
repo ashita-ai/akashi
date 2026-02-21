@@ -31,6 +31,19 @@ type Searcher interface {
 	Healthy(ctx context.Context) error
 }
 
+// CandidateFinder performs ANN search for internal use (conflict detection, consensus scoring).
+// Unlike Searcher (user-facing, with filter parameters), CandidateFinder is optimized for
+// internal org-scoped ANN: minimal filters, excludes a single source decision by ID.
+//
+// QdrantIndex implements both Searcher and CandidateFinder; callers that hold a Searcher
+// can type-assert to CandidateFinder when they need internal ANN access.
+type CandidateFinder interface {
+	// FindSimilar returns decision IDs similar to the given embedding within an org.
+	// excludeID is removed from results (the source decision). repo, when non-nil,
+	// restricts results to decisions with the same repo value or no repo.
+	FindSimilar(ctx context.Context, orgID uuid.UUID, embedding []float32, excludeID uuid.UUID, repo *string, limit int) ([]Result, error)
+}
+
 // ReScore adjusts raw similarity scores with quality and recency weighting, sorts
 // descending by adjusted score, and truncates to limit.
 //
