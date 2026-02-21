@@ -129,7 +129,7 @@ The tradeoff is that COPY does not return per-row conflict information (no `ON C
 - The primary key must include `occurred_at` (the partitioning column). Lookups by `id` alone require a composite index or must also specify `occurred_at`.
 - Indexes on hypertables are per-chunk, not global. Index creation is fast (only indexes the latest chunk), but total index count grows with chunk count.
 - Compressed chunks are read-only. If a future requirement needs to mutate historical events (contradicting the append-only model), those chunks must be decompressed first.
-- The chunk interval (currently 1 day) is a tuning knob that should be revisited after observing production traffic patterns. See spec 06a, section 7.
+- The chunk interval (currently 1 day) is a tuning knob that should be revisited after observing production traffic patterns.
 - Retention policy implementation is deferred. Storage grows monotonically until GDPR deletion is implemented.
 
 ## References

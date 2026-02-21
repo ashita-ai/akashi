@@ -120,9 +120,11 @@ func run(ctx context.Context, logger *slog.Logger) error {
 
 	// Initialize Qdrant search index and outbox worker (optional — disabled if QDRANT_URL is empty).
 	var searcher search.Searcher
+	var qdrantIndex *search.QdrantIndex
 	var outboxWorker *search.OutboxWorker
 	if cfg.QdrantURL != "" {
-		qdrantIndex, err := search.NewQdrantIndex(search.QdrantConfig{
+		var err error
+		qdrantIndex, err = search.NewQdrantIndex(search.QdrantConfig{
 			URL:        cfg.QdrantURL,
 			APIKey:     cfg.QdrantAPIKey,
 			Collection: cfg.QdrantCollection,
@@ -158,6 +160,9 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		logger.Info("conflict backfill: capped workers to 1 (Ollama is serial)")
 	}
 	conflictScorer := conflicts.NewScorer(db, logger, cfg.ConflictSignificanceThreshold, conflictValidator, backfillWorkers, cfg.ConflictDecayLambda)
+	if qdrantIndex != nil {
+		conflictScorer = conflictScorer.WithCandidateFinder(qdrantIndex)
+	}
 
 	// Create decision service (shared by HTTP and MCP handlers).
 	decisionSvc := decisions.New(db, embedder, searcher, logger, conflictScorer)

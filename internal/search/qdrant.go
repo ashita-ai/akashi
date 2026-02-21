@@ -163,6 +163,58 @@ func (q *QdrantIndex) EnsureCollection(ctx context.Context) error {
 	return nil
 }
 
+// FindSimilar returns decision IDs with embeddings similar to the given embedding
+// within an org. Used internally for conflict detection and consensus scoring.
+// excludeID is stripped from results in Go (simpler than a Qdrant filter for one ID).
+// repo, when non-nil, restricts results to decisions with a matching repo payload field.
+func (q *QdrantIndex) FindSimilar(ctx context.Context, orgID uuid.UUID, embedding []float32, excludeID uuid.UUID, repo *string, limit int) ([]Result, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	must := []*qdrant.Condition{
+		qdrant.NewMatch("org_id", orgID.String()),
+	}
+	if repo != nil && *repo != "" {
+		must = append(must, qdrant.NewMatch("repo", *repo))
+	}
+
+	// Over-fetch by 1 to absorb the excludeID removal.
+	fetchLimit := uint64(limit + 1) //nolint:gosec
+	scored, err := q.client.Query(ctx, &qdrant.QueryPoints{
+		CollectionName: q.collection,
+		Query:          qdrant.NewQueryDense(embedding),
+		Filter:         &qdrant.Filter{Must: must},
+		Limit:          &fetchLimit,
+		WithPayload:    qdrant.NewWithPayload(false),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("search: qdrant find similar: %w", err)
+	}
+
+	results := make([]Result, 0, len(scored))
+	for _, sp := range scored {
+		idStr := sp.Id.GetUuid()
+		if idStr == "" {
+			continue
+		}
+		decisionID, err := uuid.Parse(idStr)
+		if err != nil {
+			q.logger.Warn("qdrant: invalid UUID in point ID", "id", idStr)
+			continue
+		}
+		if decisionID == excludeID {
+			continue // Strip the source decision from its own neighbor list.
+		}
+		results = append(results, Result{DecisionID: decisionID, Score: sp.Score})
+		if len(results) == limit {
+			break
+		}
+	}
+
+	return results, nil
+}
+
 // Search queries Qdrant for decisions matching the embedding and filters.
 // org_id is always applied as the first filter (tenant isolation).
 // Over-fetches limit*3 to allow re-scoring by the caller.
