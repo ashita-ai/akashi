@@ -401,7 +401,7 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 		for i := range resp.Decisions {
 			ids[i] = resp.Decisions[i].ID
 		}
-		if consensusMap, cErr := s.db.GetConsensusScoresBatch(ctx, ids, orgID); cErr == nil {
+		if consensusMap, cErr := s.decisionSvc.ConsensusScoresBatch(ctx, ids, orgID); cErr == nil {
 			for i := range resp.Decisions {
 				if scores, ok := consensusMap[resp.Decisions[i].ID]; ok {
 					resp.Decisions[i].AgreementCount = scores[0]

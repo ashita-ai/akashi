@@ -201,7 +201,7 @@ func (h *Handlers) HandleGetDecision(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Populate consensus scores and outcome signals (computed at query time, not stored).
-	agreementCount, conflictCount, err := h.db.GetConsensusScores(r.Context(), d.ID, orgID)
+	agreementCount, conflictCount, err := h.decisionSvc.ConsensusScores(r.Context(), d.ID, orgID)
 	if err == nil {
 		d.AgreementCount = agreementCount
 		d.ConflictCount = conflictCount
@@ -258,7 +258,7 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		for i := range decisions {
 			ids[i] = decisions[i].ID
 		}
-		if consensusMap, err := h.db.GetConsensusScoresBatch(r.Context(), ids, orgID); err == nil {
+		if consensusMap, err := h.decisionSvc.ConsensusScoresBatch(r.Context(), ids, orgID); err == nil {
 			for i := range decisions {
 				if scores, ok := consensusMap[decisions[i].ID]; ok {
 					decisions[i].AgreementCount = scores[0]
@@ -400,6 +400,14 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		req.Limit = 100
 	}
 
+	// Detect whether Qdrant is reachable before the search. If the searcher is
+	// absent or unhealthy, the service falls back to text search — we signal this
+	// to the caller via X-Search-Backend so they know results are not semantic.
+	searchBackend := "qdrant"
+	if h.searcher == nil || h.searcher.Healthy(r.Context()) != nil {
+		searchBackend = "text"
+	}
+
 	results, err := h.decisionSvc.Search(r.Context(), orgID, req.Query, req.Semantic, req.Filters, req.Limit)
 	if err != nil {
 		h.writeInternalError(w, r, "search failed", err)
@@ -412,6 +420,7 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("X-Search-Backend", searchBackend)
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"results": results,
 		"total":   len(results),
@@ -495,7 +504,7 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 		for i := range decisions {
 			ids[i] = decisions[i].ID
 		}
-		if consensusMap, err := h.db.GetConsensusScoresBatch(r.Context(), ids, orgID); err == nil {
+		if consensusMap, err := h.decisionSvc.ConsensusScoresBatch(r.Context(), ids, orgID); err == nil {
 			for i := range decisions {
 				if scores, ok := consensusMap[decisions[i].ID]; ok {
 					decisions[i].AgreementCount = scores[0]

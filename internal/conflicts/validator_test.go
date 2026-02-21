@@ -850,6 +850,7 @@ func TestScoreForDecision_LLMConfirms(t *testing.T) {
 		Severity:     "high",
 	}}
 	scorer := NewScorer(testDB, logger, 0.1, validator, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
 	assert.Greater(t, validator.callCount, 0, "validator should have been called")
@@ -919,6 +920,7 @@ func TestScoreForDecision_LLMRejectsComplementary(t *testing.T) {
 		Explanation:  "Different topics — tests vs licensing.",
 	}}
 	scorer := NewScorer(testDB, logger, 0.1, validator, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
 	assert.Greater(t, validator.callCount, 0, "validator should have been called")
@@ -975,6 +977,7 @@ func TestScoreForDecision_LLMSupersession(t *testing.T) {
 		Severity:     "medium",
 	}}
 	scorer := NewScorer(testDB, logger, 0.1, validator, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
 	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 1000, 0)
@@ -1031,6 +1034,7 @@ func TestScoreForDecision_LLMError(t *testing.T) {
 
 	validator := &mockValidator{err: fmt.Errorf("ollama unavailable")}
 	scorer := NewScorer(testDB, logger, 0.1, validator, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
 	assert.Greater(t, validator.callCount, 0, "validator should have been called")
@@ -1119,6 +1123,7 @@ func TestScoreForDecision_DirectToLLM(t *testing.T) {
 		Severity:     "high",
 	}}
 	scorer := NewScorer(testDB, logger, 0.5, validator, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
 	assert.Greater(t, validator.callCount, 0,
@@ -1198,6 +1203,7 @@ func TestScoreForDecision_DirectToLLM_NoopSkips(t *testing.T) {
 
 	// NoopValidator + high threshold = significance gate applies, no bypass.
 	scorer := NewScorer(testDB, logger, 0.5, NoopValidator{}, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
 	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 1000, 0)
