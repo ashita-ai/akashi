@@ -172,11 +172,11 @@ func (db *DB) createTraceInTx(ctx context.Context, tx pgx.Tx, params CreateTrace
 	d.ContentHash = integrity.ComputeContentHash(d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome, confidence,
-		 reasoning, embedding, outcome_embedding, metadata, quality_score, precedent_ref, supersedes_id, content_hash,
+		 reasoning, embedding, outcome_embedding, metadata, completeness_score, precedent_ref, supersedes_id, content_hash,
 		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
 		d.ID, d.RunID, d.AgentID, d.OrgID, d.DecisionType, d.Outcome, d.Confidence,
-		d.Reasoning, d.Embedding, d.OutcomeEmbedding, d.Metadata, d.QualityScore, d.PrecedentRef,
+		d.Reasoning, d.Embedding, d.OutcomeEmbedding, d.Metadata, d.CompletenessScore, d.PrecedentRef,
 		d.SupersedesID, d.ContentHash,
 		d.ValidFrom, d.ValidTo, d.TransactionTime, d.CreatedAt,
 		d.SessionID, d.AgentContext, d.APIKeyID,

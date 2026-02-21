@@ -200,13 +200,13 @@ export default function Decisions() {
                   </TableCell>
                   <TableCell className="text-right font-mono">
                     <span className={
-                      d.quality_score >= 0.7
+                      d.completeness_score >= 0.7
                         ? "text-emerald-600"
-                        : d.quality_score >= 0.5
+                        : d.completeness_score >= 0.5
                         ? "text-amber-600"
                         : "text-red-600"
                     }>
-                      {(d.quality_score * 100).toFixed(0)}%
+                      {(d.completeness_score * 100).toFixed(0)}%
                     </span>
                   </TableCell>
                   <TableCell className="max-w-[240px] text-xs text-muted-foreground">

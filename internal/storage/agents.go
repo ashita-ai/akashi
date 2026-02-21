@@ -387,7 +387,7 @@ type AgentStats struct {
 	AvgConfidence float64        `json:"avg_confidence"`
 	FirstDecision *time.Time     `json:"first_decision,omitempty"`
 	LastDecision  *time.Time     `json:"last_decision,omitempty"`
-	LowQuality    int            `json:"low_quality_count"` // quality_score < 0.5
+	LowQuality    int            `json:"low_quality_count"` // completeness_score < 0.5
 	TypeBreakdown map[string]int `json:"decision_types"`
 }
 
@@ -397,7 +397,7 @@ func (db *DB) GetAgentStats(ctx context.Context, orgID uuid.UUID, agentID string
 	err := db.pool.QueryRow(ctx, `
 		SELECT count(*), COALESCE(avg(confidence), 0),
 		       min(created_at), max(created_at),
-		       count(*) FILTER (WHERE quality_score < 0.5)
+		       count(*) FILTER (WHERE completeness_score < 0.5)
 		FROM decisions
 		WHERE org_id = $1 AND agent_id = $2 AND valid_to IS NULL`,
 		orgID, agentID,

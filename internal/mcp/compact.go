@@ -14,7 +14,7 @@ const maxCompactReasoning = 200
 
 // compactDecision returns a minimal representation of a decision for MCP responses.
 // Drops internal bookkeeping (content_hash, transaction_time, valid_from/to,
-// quality_score, org_id, run_id, metadata, embedding fields) that agents don't act on.
+// completeness_score, quality_score, org_id, run_id, metadata, embedding fields) that agents don't act on.
 // Includes consensus scoring and outcome signals when populated.
 func compactDecision(d model.Decision) map[string]any {
 	m := map[string]any{

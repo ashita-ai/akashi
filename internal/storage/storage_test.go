@@ -3010,7 +3010,7 @@ func TestDecisionImmutability_AllowsMutableFieldUpdates(t *testing.T) {
 		{"outcome_embedding", `UPDATE decisions SET outcome_embedding = $1 WHERE id = $2`, []any{pgvector.NewVector(make([]float32, 1024)), d.ID}},
 		{"precedent_ref", `UPDATE decisions SET precedent_ref = NULL WHERE id = $1`, []any{d.ID}},
 		{"supersedes_id", `UPDATE decisions SET supersedes_id = NULL WHERE id = $1`, []any{d.ID}},
-		{"quality_score", `UPDATE decisions SET quality_score = 0.99 WHERE id = $1`, []any{d.ID}},
+		{"completeness_score", `UPDATE decisions SET completeness_score = 0.99 WHERE id = $1`, []any{d.ID}},
 		{"metadata", `UPDATE decisions SET metadata = '{"test": true}' WHERE id = $1`, []any{d.ID}},
 		{"session_id", `UPDATE decisions SET session_id = $1 WHERE id = $2`, []any{uuid.New(), d.ID}},
 		{"agent_context", `UPDATE decisions SET agent_context = '{"enriched": true}' WHERE id = $1`, []any{d.ID}},

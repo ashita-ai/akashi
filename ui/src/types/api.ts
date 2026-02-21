@@ -66,7 +66,7 @@ export interface Decision {
   confidence: number;
   reasoning: string | null;
   metadata: Record<string, unknown> | null;
-  quality_score: number;
+  completeness_score: number;
   precedent_ref: string | null;
   valid_from: string;
   valid_to: string | null;

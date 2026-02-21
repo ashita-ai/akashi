@@ -15,20 +15,20 @@ func TestCompactDecision(t *testing.T) {
 	reasoning := "Because Redis handles our expected QPS and TTL prevents stale reads"
 	sessionID := uuid.New()
 	d := model.Decision{
-		ID:           uuid.New(),
-		RunID:        uuid.New(),
-		AgentID:      "planner",
-		OrgID:        uuid.New(),
-		DecisionType: "architecture",
-		Outcome:      "chose Redis with 5min TTL",
-		Confidence:   0.85,
-		Reasoning:    &reasoning,
-		QualityScore: 0.55,
-		ContentHash:  "v2:abc123",
-		ValidFrom:    time.Now(),
-		CreatedAt:    time.Now(),
-		SessionID:    &sessionID,
-		AgentContext: map[string]any{"tool": "claude-code", "model": "claude-opus-4-6", "operator": "System Admin"},
+		ID:                uuid.New(),
+		RunID:             uuid.New(),
+		AgentID:           "planner",
+		OrgID:             uuid.New(),
+		DecisionType:      "architecture",
+		Outcome:           "chose Redis with 5min TTL",
+		Confidence:        0.85,
+		Reasoning:         &reasoning,
+		CompletenessScore: 0.55,
+		ContentHash:       "v2:abc123",
+		ValidFrom:         time.Now(),
+		CreatedAt:         time.Now(),
+		SessionID:         &sessionID,
+		AgentContext:      map[string]any{"tool": "claude-code", "model": "claude-opus-4-6", "operator": "System Admin"},
 	}
 
 	m := compactDecision(d)
@@ -48,12 +48,14 @@ func TestCompactDecision(t *testing.T) {
 	_, hasRunID := m["run_id"]
 	_, hasOrgID := m["org_id"]
 	_, hasQuality := m["quality_score"]
+	_, hasCompleteness := m["completeness_score"]
 	_, hasContentHash := m["content_hash"]
 	_, hasValidFrom := m["valid_from"]
 	_, hasMetadata := m["metadata"]
 	assert.False(t, hasRunID, "run_id should be dropped")
 	assert.False(t, hasOrgID, "org_id should be dropped")
 	assert.False(t, hasQuality, "quality_score should be dropped")
+	assert.False(t, hasCompleteness, "completeness_score should be dropped")
 	assert.False(t, hasContentHash, "content_hash should be dropped")
 	assert.False(t, hasValidFrom, "valid_from should be dropped")
 	assert.False(t, hasMetadata, "metadata should be dropped")

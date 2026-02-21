@@ -19,7 +19,7 @@ type Decision struct {
 	Confidence   float32        `json:"confidence"`
 	Reasoning    *string        `json:"reasoning,omitempty"`
 	Metadata     map[string]any `json:"metadata"`
-	QualityScore float64        `json:"quality_score"`
+	CompletenessScore float64 `json:"completeness_score"`
 	PrecedentRef *uuid.UUID     `json:"precedent_ref,omitempty"`
 	SupersedesID *uuid.UUID     `json:"supersedes_id,omitempty"`
 	ContentHash  string         `json:"content_hash,omitempty"`
