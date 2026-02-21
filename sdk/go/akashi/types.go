@@ -25,7 +25,7 @@ type Decision struct {
 	ContentHash  string         `json:"content_hash,omitempty"`
 	Tags         []string       `json:"tags,omitempty"`
 
-	// Composite agent identity (spec 31).
+	// Composite agent identity: session and runtime context from the calling agent.
 	SessionID    *uuid.UUID     `json:"session_id,omitempty"`
 	AgentContext map[string]any `json:"agent_context,omitempty"`
 
@@ -147,7 +147,7 @@ type QueryFilters struct {
 	ConfidenceMin *float32 `json:"confidence_min,omitempty"`
 	Outcome       *string  `json:"outcome,omitempty"`
 
-	// Composite agent identity filters (spec 31).
+	// Filters for composite agent identity fields (session, tool, model, repo).
 	SessionID *string `json:"session_id,omitempty"`
 	Tool      *string `json:"tool,omitempty"`
 	Model     *string `json:"model,omitempty"`

@@ -164,7 +164,7 @@ type DecisionConflict struct {
 	ScoringMethod     string       `json:"scoring_method,omitempty"`
 	Explanation       *string      `json:"explanation,omitempty"`
 
-	// Lifecycle fields (ADR-015).
+	// Conflict lifecycle fields: category, severity, and resolution state.
 	Category       *string    `json:"category,omitempty"` // factual, assessment, strategic, temporal
 	Severity       *string    `json:"severity,omitempty"` // critical, high, medium, low
 	Status         string     `json:"status"`             // open, acknowledged, resolved, wont_fix
