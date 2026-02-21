@@ -267,9 +267,9 @@ When Akashi runs behind a load balancer, set `AKASHI_TRUST_PROXY=true` so IP-bas
 **Symptoms**: Log line `"embedding: ... error"`. Decisions stored with `embedding = NULL`. Semantic search returns fewer results than expected.
 
 **Common causes**:
-- Ollama is down or unreachable (check `OLLAMA_URL`)
-- Model not pulled (`docker exec akashi-ollama ollama pull mxbai-embed-large`)
-- Embedding dimension mismatch between config and model output
+- `AKASHI_EMBEDDING_PROVIDER=openai` but `OPENAI_API_KEY` is unset or invalid
+- Ollama is down or unreachable (check `OLLAMA_URL` if using Ollama)
+- Embedding dimension mismatch between `AKASHI_EMBEDDING_DIMENSIONS` and model output
 
 **Recovery**: Fix the provider, then restart the server. The startup backfill job will embed any decisions that have `embedding IS NULL`.
 

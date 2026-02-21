@@ -19,18 +19,14 @@ Akashi is the decision audit trail. Every agent decision gets recorded with its 
 mkdir -p data
 go run scripts/genkey/main.go   # writes data/jwt_private.pem + data/jwt_public.pem
 
-# Start the full stack (Postgres + TimescaleDB + Ollama + Qdrant + Akashi)
-docker compose up -d
-
-# Pull the embedding model — required for semantic search and conflict detection.
-# Skip this and those features silently degrade to text search / disabled.
-docker exec akashi-ollama ollama pull mxbai-embed-large   # first run only (~670 MB, one-time)
+# Start the stack (Postgres + TimescaleDB + Qdrant + Akashi)
+docker compose up -d --build
 
 curl http://localhost:8080/health
 # Open http://localhost:8080 for the audit dashboard
 ```
 
-No external services required. Everything runs locally.
+Postgres and Qdrant run in-stack. Semantic search and conflict detection work out of the box if `OPENAI_API_KEY` is set in `.env`; without one they fall back to text search. See [Configuration](docs/configuration.md) for embedding options including local Ollama.
 
 ### Record your first decision
 
@@ -230,9 +226,10 @@ AKASHI_ADMIN_API_KEY=admin ./bin/akashi
 
 Requires:
 - PostgreSQL 18 with pgvector and TimescaleDB extensions (connection via `DATABASE_URL` / `NOTIFY_URL`)
-- Ollama with `mxbai-embed-large` pulled, or an OpenAI API key — without an embedding provider, semantic search and conflict detection are disabled (server still starts, falls back to text search)
+- Qdrant for vector search (optional — falls back to text search without it)
+- An OpenAI API key or a local Ollama instance for embeddings — optional, but required for semantic search and conflict detection
 
-See [Configuration](docs/configuration.md) for all environment variables. For local dev against the Docker-managed dependencies, start just the backing services (`docker compose up -d postgres qdrant ollama`) and set `DATABASE_URL` / `NOTIFY_URL` to point at the exposed Postgres port.
+See [Configuration](docs/configuration.md) for all environment variables. For local dev, `docker compose up -d --build` starts Postgres and Qdrant in-stack. Set `DATABASE_URL` / `NOTIFY_URL` to override with an external database.
 
 ## Testing
 
