@@ -1,0 +1,174 @@
+# Akashi: Complete local stack — TimescaleDB + Qdrant + Ollama + Akashi.
+#
+# Requires nothing but Docker. No API keys, no external services.
+# Embeddings run locally via Ollama (mxbai-embed-large, ~670MB download on first launch).
+#
+# Usage:
+#   docker compose -f docker-compose.complete.yml up -d
+#
+# First launch builds the server image from source and downloads the embedding model.
+# Expect 5–15 minutes on first run. Track progress:
+#   docker compose -f docker-compose.complete.yml logs -f akashi
+#
+# The Akashi server starts as soon as the database is ready (~2–3 min).
+# Ollama model download runs in the background; embeddings activate automatically once ready.
+#
+# Open http://localhost:8080 for the audit dashboard.
+
+services:
+
+  # Generate persistent Ed25519 JWT signing keys into ./data on first launch.
+  # Skipped on subsequent launches if keys already exist.
+  keygen:
+    image: alpine:3.21
+    command: >
+      sh -c "
+        apk add --no-cache --quiet openssl &&
+        mkdir -p /data &&
+        if [ ! -f /data/jwt_private.pem ]; then
+          openssl genpkey -algorithm ed25519 -out /data/jwt_private.pem 2>/dev/null &&
+          openssl pkey -in /data/jwt_private.pem -pubout -out /data/jwt_public.pem 2>/dev/null &&
+          chown 10001:10001 /data/jwt_private.pem /data/jwt_public.pem &&
+          chmod 600 /data/jwt_private.pem &&
+          echo 'Generated JWT signing keys in ./data/'
+        else
+          echo 'JWT signing keys already exist'
+        fi
+      "
+    volumes:
+      - ./data:/data
+    restart: "no"
+
+  postgres:
+    image: timescale/timescaledb-ha:pg18
+    container_name: akashi-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: akashi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-akashi}
+      POSTGRES_DB: akashi
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    command: >
+      postgres
+        -c shared_buffers=256MB
+        -c effective_cache_size=768MB
+        -c wal_buffers=16MB
+        -c max_wal_size=1GB
+        -c synchronous_commit=off
+        -c max_connections=200
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U akashi -d akashi"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.6
+    container_name: akashi-qdrant
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/6333' 2>/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  ollama:
+    image: ollama/ollama
+    container_name: akashi-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:11434/ > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  # One-shot: pull the embedding model into the Ollama volume.
+  # Waits for Ollama to be healthy, then pulls if not already present.
+  #
+  # akashi does NOT depend on this service — it starts immediately after
+  # postgres and qdrant are ready. Ollama embeddings activate automatically
+  # once the model pull completes.
+  ollama-init:
+    image: alpine:3.21
+    depends_on:
+      ollama:
+        condition: service_healthy
+    command: >
+      sh -c "
+        apk add --no-cache --quiet curl &&
+        if curl -sf http://ollama:11434/api/tags | grep -q 'mxbai-embed-large'; then
+          echo 'mxbai-embed-large already available'
+        else
+          echo 'Pulling mxbai-embed-large (~670MB, first launch only)...' &&
+          curl -sf -X POST http://ollama:11434/api/pull \
+            -H 'Content-Type: application/json' \
+            -d '{\"model\":\"mxbai-embed-large\",\"stream\":false}' > /dev/null &&
+          echo 'Embedding model ready'
+        fi
+      "
+    restart: "no"
+
+  akashi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: akashi-server
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      DATABASE_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi?sslmode=disable
+      NOTIFY_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi?sslmode=disable
+      AKASHI_PORT: "8080"
+      AKASHI_ADMIN_API_KEY: ${AKASHI_ADMIN_API_KEY:-admin}
+      AKASHI_LOG_LEVEL: ${AKASHI_LOG_LEVEL:-info}
+
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-akashi_decisions}
+
+      AKASHI_EMBEDDING_PROVIDER: ollama
+      AKASHI_EMBEDDING_DIMENSIONS: "1024"
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-mxbai-embed-large}
+
+      # LLM conflict validation is off by default — running a full LLM on CPU is
+      # too slow without a GPU. Enable by pulling a model and setting this to its name,
+      # e.g. AKASHI_CONFLICT_LLM_MODEL=qwen2.5:7b (requires an additional ollama pull).
+      AKASHI_CONFLICT_LLM_MODEL: ${AKASHI_CONFLICT_LLM_MODEL:-}
+
+      AKASHI_JWT_PRIVATE_KEY: /data/jwt_private.pem
+      AKASHI_JWT_PUBLIC_KEY: /data/jwt_public.pem
+      AKASHI_JWT_EXPIRATION: ${AKASHI_JWT_EXPIRATION:-24h}
+
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-akashi}
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      keygen:
+        condition: service_completed_successfully
+      # NOT ollama-init: akashi starts independently and activates Ollama embeddings
+      # automatically once the model pull completes in the background.
+
+volumes:
+  pgdata:
+  qdrant_data:
+  ollama_data:

@@ -1,62 +1,17 @@
-# Akashi: Docker Compose for local development.
+# Akashi: Binary-only mode.
 #
-# Two modes:
+# Just the Akashi server. Bring your own TimescaleDB, Qdrant, and embedding provider.
+# Configure everything via environment variables or a .env file.
 #
-#   Full local stack (Postgres + Qdrant run in-container):
-#     docker compose --profile local up -d --build
+# Usage:
+#   cp docker/env.example .env
+#   # Edit .env with your DATABASE_URL, QDRANT_URL, and API keys
+#   docker compose up -d --build
 #
-#   Cloud services (DATABASE_URL + QDRANT_URL set in .env):
-#     docker compose up -d --build
-#
-# First time only — generate persistent JWT signing keys before first launch:
-#   go run scripts/genkey/main.go   # writes data/jwt_private.pem + data/jwt_public.pem
-#
-# Embeddings: set OPENAI_API_KEY in .env, or point OLLAMA_URL at a local Ollama instance.
-# Without an embedding provider the server starts fine — search falls back to text.
+# For a zero-config local stack (TimescaleDB + Qdrant + Ollama all included), use:
+#   docker compose -f docker-compose.complete.yml up -d
 
 services:
-  postgres:
-    profiles: [local]
-    image: timescale/timescaledb-ha:pg18
-    container_name: akashi-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: akashi
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-akashi}
-      POSTGRES_DB: akashi
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./docker/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
-    command: >
-      postgres
-        -c shared_buffers=256MB
-        -c effective_cache_size=768MB
-        -c wal_buffers=16MB
-        -c max_wal_size=1GB
-        -c synchronous_commit=off
-        -c max_connections=200
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U akashi -d akashi"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  qdrant:
-    profiles: [local]
-    image: qdrant/qdrant:v1.13.6
-    container_name: akashi-qdrant
-    restart: unless-stopped
-    volumes:
-      - qdrant_data:/qdrant/storage
-    environment:
-      QDRANT__SERVICE__GRPC_PORT: "6334"
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/6333'"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
   akashi:
     build:
       context: .
@@ -65,42 +20,48 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"
+    env_file:
+      - path: .env
+        required: false
     environment:
-      # Database: defaults to local Postgres (local profile); set DATABASE_URL in .env for cloud.
-      DATABASE_URL: ${DATABASE_URL:-postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi?sslmode=disable}
-      NOTIFY_URL: ${NOTIFY_URL:-postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi?sslmode=disable}
+      # Required: set these in .env or pass directly.
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required — set it in .env}
+      NOTIFY_URL: ${NOTIFY_URL:-${DATABASE_URL}}
+      AKASHI_ADMIN_API_KEY: ${AKASHI_ADMIN_API_KEY:?AKASHI_ADMIN_API_KEY is required}
 
-      # Core settings.
-      AKASHI_PORT: "8080"
-      AKASHI_ADMIN_API_KEY: ${AKASHI_ADMIN_API_KEY:-admin}
-      AKASHI_LOG_LEVEL: ${AKASHI_LOG_LEVEL:-info}
-
-      # Qdrant: defaults to local in-stack instance (local profile); set QDRANT_URL in .env for cloud.
-      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      # Optional — Qdrant for vector search. Without it, search falls back to text.
+      QDRANT_URL: ${QDRANT_URL:-}
       QDRANT_API_KEY: ${QDRANT_API_KEY:-}
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-akashi_decisions}
 
-      # Embeddings: auto-detects OpenAI (if OPENAI_API_KEY set) or Ollama (if OLLAMA_URL reachable).
-      # Without either, the server starts fine — semantic search falls back to text.
+      # Optional — embeddings. Without a provider, semantic search and conflict
+      # detection are disabled (text search still works).
       AKASHI_EMBEDDING_PROVIDER: ${AKASHI_EMBEDDING_PROVIDER:-auto}
       AKASHI_EMBEDDING_DIMENSIONS: ${AKASHI_EMBEDDING_DIMENSIONS:-1024}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       AKASHI_EMBEDDING_MODEL: ${AKASHI_EMBEDDING_MODEL:-text-embedding-3-small}
-      OLLAMA_URL: ${OLLAMA_URL:-http://localhost:11434}
+      OLLAMA_URL: ${OLLAMA_URL:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mxbai-embed-large}
 
-      # Conflict validation: auto-detects OpenAI (gpt-4o-mini) when OPENAI_API_KEY is set.
-      # Set to an Ollama model name to use local LLM validation instead.
+      # Optional — LLM conflict validation (reduces false positives ~93%).
       AKASHI_CONFLICT_LLM_MODEL: ${AKASHI_CONFLICT_LLM_MODEL:-}
 
-      # JWT signing keys (persistent across rebuilds — ./data is mounted as /data below).
-      AKASHI_JWT_PRIVATE_KEY: /data/jwt_private.pem
-      AKASHI_JWT_PUBLIC_KEY: /data/jwt_public.pem
+      AKASHI_PORT: ${AKASHI_PORT:-8080}
+      AKASHI_LOG_LEVEL: ${AKASHI_LOG_LEVEL:-info}
 
-      # Observability (optional).
+      # JWT signing keys. Without these, ephemeral keys are generated each restart,
+      # invalidating all existing tokens. For persistent sessions, generate keys:
+      #   openssl genpkey -algorithm ed25519 -out data/jwt_private.pem
+      #   openssl pkey -in data/jwt_private.pem -pubout -out data/jwt_public.pem
+      # Then mount ./data:/data and set these paths.
+      AKASHI_JWT_PRIVATE_KEY: ${AKASHI_JWT_PRIVATE_KEY:-}
+      AKASHI_JWT_PUBLIC_KEY: ${AKASHI_JWT_PUBLIC_KEY:-}
+      AKASHI_JWT_EXPIRATION: ${AKASHI_JWT_EXPIRATION:-24h}
+
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-akashi}
     volumes:
+      # Mount ./data if using persistent JWT keys.
       - ./data:/data
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health || exit 1"]
@@ -108,14 +69,3 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
-    depends_on:
-      postgres:
-        condition: service_healthy
-        required: false
-      qdrant:
-        condition: service_healthy
-        required: false
-
-volumes:
-  pgdata:
-  qdrant_data:
