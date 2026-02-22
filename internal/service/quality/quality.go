@@ -1,6 +1,7 @@
-// Package quality provides decision trace quality scoring.
-// Quality scores (0.0-1.0) measure trace completeness and are used
-// to rank precedent lookup results.
+// Package quality provides decision trace completeness scoring.
+// Completeness scores (0.0-1.0) measure trace completeness at write time —
+// whether the agent provided reasoning, alternatives, evidence, etc.
+// They do NOT measure whether the decision was correct or adopted.
 package quality
 
 import (
@@ -26,8 +27,8 @@ var StandardDecisionTypes = map[string]bool{
 	"assessment":      true,
 }
 
-// Score computes a quality score (0.0-1.0) for a trace decision.
-// Higher scores indicate more complete, useful traces.
+// Score computes a completeness score (0.0-1.0) for a trace decision.
+// Higher scores indicate more complete traces (more fields populated).
 //
 // Scoring factors:
 //   - Confidence present and reasonable (0.05-0.95): 0.15

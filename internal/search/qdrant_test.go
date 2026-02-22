@@ -90,22 +90,22 @@ func TestReScore(t *testing.T) {
 
 	decisions := map[uuid.UUID]model.Decision{
 		uuid.MustParse("00000000-0000-0000-0000-000000000001"): {
-			ID:           uuid.MustParse("00000000-0000-0000-0000-000000000001"),
-			OrgID:        orgID,
-			QualityScore: 1.0,
-			ValidFrom:    now, // age = 0 days
+			ID:                uuid.MustParse("00000000-0000-0000-0000-000000000001"),
+			OrgID:             orgID,
+			CompletenessScore: 1.0,
+			ValidFrom:         now, // age = 0 days
 		},
 		uuid.MustParse("00000000-0000-0000-0000-000000000002"): {
-			ID:           uuid.MustParse("00000000-0000-0000-0000-000000000002"),
-			OrgID:        orgID,
-			QualityScore: 0.5,
-			ValidFrom:    now.Add(-90 * 24 * time.Hour), // age = 90 days
+			ID:                uuid.MustParse("00000000-0000-0000-0000-000000000002"),
+			OrgID:             orgID,
+			CompletenessScore: 0.5,
+			ValidFrom:         now.Add(-90 * 24 * time.Hour), // age = 90 days
 		},
 		uuid.MustParse("00000000-0000-0000-0000-000000000003"): {
-			ID:           uuid.MustParse("00000000-0000-0000-0000-000000000003"),
-			OrgID:        orgID,
-			QualityScore: 0.0,
-			ValidFrom:    now.Add(-180 * 24 * time.Hour), // age = 180 days
+			ID:                uuid.MustParse("00000000-0000-0000-0000-000000000003"),
+			OrgID:             orgID,
+			CompletenessScore: 0.0,
+			ValidFrom:         now.Add(-180 * 24 * time.Hour), // age = 180 days
 		},
 	}
 
@@ -121,20 +121,24 @@ func TestReScore(t *testing.T) {
 	// Missing decision should be filtered out.
 	require.Len(t, scored, 3)
 
-	// First result: high quality, no age decay → highest relevance.
-	// relevance ≈ 0.95 * (0.6 + 0.3*1.0) * (1.0 / (1.0 + 0/90)) = 0.95 * 0.9 * 1.0 = 0.855
+	// First result: high completeness, no age decay → highest relevance.
+	// cold-start outcomeWeight = 0.4*0 + 0.3*0.5 + 0.2*0 + 0.1*1.0 = 0.25
+	// multiplier = 0.5 + 0.3*0.25 + 0.2*1.0 = 0.775
+	// relevance = 0.95 * 0.775 * 1.0 = 0.73625
 	assert.Equal(t, uuid.MustParse("00000000-0000-0000-0000-000000000001"), scored[0].Decision.ID)
-	assert.InDelta(t, 0.855, scored[0].SimilarityScore, 0.01)
+	assert.InDelta(t, 0.73625, scored[0].SimilarityScore, 0.01)
 
-	// Second result: medium quality, 90-day decay.
-	// relevance ≈ 0.90 * (0.6 + 0.3*0.5) * (1.0 / (1.0 + 1.0)) = 0.90 * 0.75 * 0.5 = 0.3375
+	// Second result: medium completeness, 90-day decay.
+	// multiplier = 0.5 + 0.3*0.25 + 0.2*0.5 = 0.675; recency = 1/(1+1) = 0.5
+	// relevance = 0.90 * 0.675 * 0.5 = 0.30375
 	assert.Equal(t, uuid.MustParse("00000000-0000-0000-0000-000000000002"), scored[1].Decision.ID)
-	assert.InDelta(t, 0.3375, scored[1].SimilarityScore, 0.01)
+	assert.InDelta(t, 0.30375, scored[1].SimilarityScore, 0.01)
 
-	// Third result: no quality, 180-day decay.
-	// relevance ≈ 0.85 * (0.6 + 0.0) * (1.0 / (1.0 + 2.0)) = 0.85 * 0.6 * 0.333 = 0.17
+	// Third result: no completeness, 180-day decay.
+	// multiplier = 0.5 + 0.3*0.25 + 0.2*0.0 = 0.575; recency = 1/(1+2) = 0.333
+	// relevance = 0.85 * 0.575 * 0.333 ≈ 0.163
 	assert.Equal(t, uuid.MustParse("00000000-0000-0000-0000-000000000003"), scored[2].Decision.ID)
-	assert.InDelta(t, 0.17, scored[2].SimilarityScore, 0.01)
+	assert.InDelta(t, 0.163, scored[2].SimilarityScore, 0.01)
 
 	// Results are sorted descending.
 	assert.GreaterOrEqual(t, scored[0].SimilarityScore, scored[1].SimilarityScore)
@@ -147,8 +151,8 @@ func TestReScoreTruncatesAtLimit(t *testing.T) {
 	id2 := uuid.New()
 
 	decisions := map[uuid.UUID]model.Decision{
-		id1: {ID: id1, QualityScore: 1.0, ValidFrom: now},
-		id2: {ID: id2, QualityScore: 0.5, ValidFrom: now},
+		id1: {ID: id1, CompletenessScore: 1.0, ValidFrom: now},
+		id2: {ID: id2, CompletenessScore: 0.5, ValidFrom: now},
 	}
 
 	results := []Result{
@@ -332,28 +336,28 @@ func TestReScore_WithMatchingResults(t *testing.T) {
 
 	decisions := map[uuid.UUID]model.Decision{
 		id1: {
-			ID:           id1,
-			AgentID:      "planner",
-			DecisionType: "architecture",
-			Outcome:      "chose microservices",
-			QualityScore: 0.9,
-			ValidFrom:    now, // age 0 → recency = 1.0
+			ID:                id1,
+			AgentID:           "planner",
+			DecisionType:      "architecture",
+			Outcome:           "chose microservices",
+			CompletenessScore: 0.9,
+			ValidFrom:         now, // age 0 → recency = 1.0
 		},
 		id2: {
-			ID:           id2,
-			AgentID:      "coder",
-			DecisionType: "trade_off",
-			Outcome:      "chose gRPC over REST",
-			QualityScore: 0.6,
-			ValidFrom:    now.Add(-45 * 24 * time.Hour), // age 45 days → recency = 1/(1+0.5) = 0.667
+			ID:                id2,
+			AgentID:           "coder",
+			DecisionType:      "trade_off",
+			Outcome:           "chose gRPC over REST",
+			CompletenessScore: 0.6,
+			ValidFrom:         now.Add(-45 * 24 * time.Hour), // age 45 days → recency = 1/(1+0.5) = 0.667
 		},
 		id3: {
-			ID:           id3,
-			AgentID:      "reviewer",
-			DecisionType: "code_review",
-			Outcome:      "approved with comments",
-			QualityScore: 0.3,
-			ValidFrom:    now.Add(-1 * 24 * time.Hour), // age 1 day → recency ~ 1/(1+1/90) ~ 0.989
+			ID:                id3,
+			AgentID:           "reviewer",
+			DecisionType:      "code_review",
+			Outcome:           "approved with comments",
+			CompletenessScore: 0.3,
+			ValidFrom:         now.Add(-1 * 24 * time.Hour), // age 1 day → recency ~ 1/(1+1/90) ~ 0.989
 		},
 	}
 
@@ -367,9 +371,11 @@ func TestReScore_WithMatchingResults(t *testing.T) {
 	require.Len(t, scored, 3, "all results should match decisions")
 
 	// Verify the first result (sorted descending by adjusted score).
-	// id1: 0.92 * (0.6 + 0.3*0.9) * 1.0 = 0.92 * 0.87 * 1.0 = 0.8004
+	// cold-start outcomeWeight = 0.25
+	// id1: multiplier = 0.5 + 0.3*0.25 + 0.2*0.9 = 0.755; recency = 1.0 (age=0)
+	// relevance = 0.92 * 0.755 * 1.0 = 0.6946
 	assert.Equal(t, id1, scored[0].Decision.ID)
-	assert.InDelta(t, 0.80, scored[0].SimilarityScore, 0.02)
+	assert.InDelta(t, 0.6946, scored[0].SimilarityScore, 0.02)
 
 	// Verify all results are sorted descending by adjusted score.
 	for i := 1; i < len(scored); i++ {
@@ -392,18 +398,19 @@ func TestReScore_ScoreCappedAtOne(t *testing.T) {
 
 	decisions := map[uuid.UUID]model.Decision{
 		id: {
-			ID:           id,
-			QualityScore: 1.0,
-			ValidFrom:    now, // age 0
+			ID:                id,
+			CompletenessScore: 1.0,
+			ValidFrom:         now, // age 0
 		},
 	}
 
-	// similarity=1.0, quality=1.0, age=0 → relevance = 1.0 * 0.9 * 1.0 = 0.9
-	// Even with score = 1.0, the formula caps at 0.9 (quality bonus maxes at 0.9).
+	// cold-start outcomeWeight = 0.25
+	// multiplier = 0.5 + 0.3*0.25 + 0.2*1.0 = 0.775
+	// relevance = 1.0 * 0.775 * 1.0 = 0.775 (capped at 1.0, but naturally below)
 	results := []Result{{DecisionID: id, Score: 1.0}}
 	scored := ReScore(results, decisions, 10)
 	require.Len(t, scored, 1)
-	assert.InDelta(t, 0.9, scored[0].SimilarityScore, 0.01)
+	assert.InDelta(t, 0.775, scored[0].SimilarityScore, 0.01)
 	assert.LessOrEqual(t, scored[0].SimilarityScore, float32(1.0))
 }
 
@@ -415,14 +422,14 @@ func TestReScore_PreservesDecisionMetadata(t *testing.T) {
 
 	decisions := map[uuid.UUID]model.Decision{
 		id: {
-			ID:           id,
-			OrgID:        orgID,
-			AgentID:      "test-agent",
-			DecisionType: "security",
-			Outcome:      "enabled TLS",
-			Confidence:   0.95,
-			QualityScore: 0.8,
-			ValidFrom:    now,
+			ID:                id,
+			OrgID:             orgID,
+			AgentID:           "test-agent",
+			DecisionType:      "security",
+			Outcome:           "enabled TLS",
+			Confidence:        0.95,
+			CompletenessScore: 0.8,
+			ValidFrom:         now,
 		},
 	}
 

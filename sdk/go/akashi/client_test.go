@@ -1689,7 +1689,7 @@ func TestDecisionDeserializesAllFields(t *testing.T) {
 							"outcome":           "microservices",
 							"confidence":        0.85,
 							"metadata":          map[string]any{},
-							"quality_score":     0.92,
+							"completeness_score": 0.92,
 							"precedent_ref":     precedentRef,
 							"supersedes_id":     supersedesID,
 							"content_hash":      "sha256:abc123def456",
@@ -1724,8 +1724,8 @@ func TestDecisionDeserializesAllFields(t *testing.T) {
 	if d.OrgID != orgID {
 		t.Errorf("expected org_id %s, got %s", orgID, d.OrgID)
 	}
-	if d.QualityScore != 0.92 {
-		t.Errorf("expected quality_score 0.92, got %f", d.QualityScore)
+	if d.CompletenessScore != 0.92 {
+		t.Errorf("expected completeness_score 0.92, got %f", d.CompletenessScore)
 	}
 	if d.PrecedentRef == nil || *d.PrecedentRef != precedentRef {
 		t.Errorf("expected precedent_ref %s, got %v", precedentRef, d.PrecedentRef)

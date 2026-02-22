@@ -22,7 +22,7 @@ class Decision(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
-    quality_score: float = 0.0
+    completeness_score: float = 0.0
     precedent_ref: UUID | None = None
     supersedes_id: UUID | None = None
     content_hash: str = ""

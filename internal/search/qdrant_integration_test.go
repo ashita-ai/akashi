@@ -205,14 +205,14 @@ func TestQdrantUpsert_FailsWithoutServer(t *testing.T) {
 
 	points := []Point{
 		{
-			ID:           uuid.New(),
-			OrgID:        uuid.New(),
-			AgentID:      "test-agent",
-			DecisionType: "architecture",
-			Confidence:   0.9,
-			QualityScore: 0.8,
-			ValidFrom:    time.Now(),
-			Embedding:    make([]float32, 1024),
+			ID:                uuid.New(),
+			OrgID:             uuid.New(),
+			AgentID:           "test-agent",
+			DecisionType:      "architecture",
+			Confidence:        0.9,
+			CompletenessScore: 0.8,
+			ValidFrom:         time.Now(),
+			Embedding:         make([]float32, 1024),
 		},
 	}
 
@@ -264,30 +264,30 @@ func TestQdrantUpsert_PointPayloadFields(t *testing.T) {
 	// Point with all optional fields set.
 	sessionID := uuid.New()
 	fullPoint := Point{
-		ID:           uuid.New(),
-		OrgID:        uuid.New(),
-		AgentID:      "coder",
-		DecisionType: "architecture",
-		Confidence:   0.95,
-		QualityScore: 0.85,
-		ValidFrom:    time.Now(),
-		Embedding:    make([]float32, 1024),
-		SessionID:    &sessionID,
-		Tool:         "claude-code",
-		Model:        "claude-opus-4-6",
-		Repo:         "ashita-ai/akashi",
+		ID:                uuid.New(),
+		OrgID:             uuid.New(),
+		AgentID:           "coder",
+		DecisionType:      "architecture",
+		Confidence:        0.95,
+		CompletenessScore: 0.85,
+		ValidFrom:         time.Now(),
+		Embedding:         make([]float32, 1024),
+		SessionID:         &sessionID,
+		Tool:              "claude-code",
+		Model:             "claude-opus-4-6",
+		Repo:              "ashita-ai/akashi",
 	}
 
 	// Point with minimal fields (no optional fields).
 	minimalPoint := Point{
-		ID:           uuid.New(),
-		OrgID:        uuid.New(),
-		AgentID:      "planner",
-		DecisionType: "planning",
-		Confidence:   0.5,
-		QualityScore: 0.3,
-		ValidFrom:    time.Now(),
-		Embedding:    make([]float32, 1024),
+		ID:                uuid.New(),
+		OrgID:             uuid.New(),
+		AgentID:           "planner",
+		DecisionType:      "planning",
+		Confidence:        0.5,
+		CompletenessScore: 0.3,
+		ValidFrom:         time.Now(),
+		Embedding:         make([]float32, 1024),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

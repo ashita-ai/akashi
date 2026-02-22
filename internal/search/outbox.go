@@ -29,16 +29,16 @@ type outboxEntry struct {
 // DecisionForIndex holds the fields needed to build a Qdrant point.
 // Populated by the outbox worker from Postgres.
 type DecisionForIndex struct {
-	ID           uuid.UUID
-	OrgID        uuid.UUID
-	AgentID      string
-	DecisionType string
-	Confidence   float32
-	QualityScore float32
-	ValidFrom    time.Time
-	Embedding    []float32
-	SessionID    *uuid.UUID
-	AgentContext map[string]any
+	ID                uuid.UUID
+	OrgID             uuid.UUID
+	AgentID           string
+	DecisionType      string
+	Confidence        float32
+	CompletenessScore float32
+	ValidFrom         time.Time
+	Embedding         []float32
+	SessionID         *uuid.UUID
+	AgentContext      map[string]any
 }
 
 // OutboxWorker polls the search_outbox table and syncs changes to Qdrant.
@@ -367,15 +367,15 @@ func (w *OutboxWorker) processUpserts(ctx context.Context, entries []outboxEntry
 		points := make([]Point, 0, len(readyDecisions))
 		for _, d := range readyDecisions {
 			p := Point{
-				ID:           d.ID,
-				OrgID:        d.OrgID,
-				AgentID:      d.AgentID,
-				DecisionType: d.DecisionType,
-				Confidence:   d.Confidence,
-				QualityScore: d.QualityScore,
-				ValidFrom:    d.ValidFrom,
-				Embedding:    d.Embedding,
-				SessionID:    d.SessionID,
+				ID:                d.ID,
+				OrgID:             d.OrgID,
+				AgentID:           d.AgentID,
+				DecisionType:      d.DecisionType,
+				Confidence:        d.Confidence,
+				CompletenessScore: d.CompletenessScore,
+				ValidFrom:         d.ValidFrom,
+				Embedding:         d.Embedding,
+				SessionID:         d.SessionID,
 			}
 			if d.AgentContext != nil {
 				p.Tool = agentContextString(d.AgentContext, "server", "tool")
@@ -504,7 +504,7 @@ func (w *OutboxWorker) fetchDecisionsForIndex(ctx context.Context, ids, orgIDs [
 	// not-yet-embedded decisions are deferred rather than treated as missing
 	// rows (issue #60). partitionUpsertEntries splits by embedding presence.
 	rows, err := w.pool.Query(ctx,
-		`SELECT d.id, d.org_id, d.agent_id, d.decision_type, d.confidence, d.quality_score, d.valid_from, d.embedding,
+		`SELECT d.id, d.org_id, d.agent_id, d.decision_type, d.confidence, d.completeness_score, d.valid_from, d.embedding,
 		        d.session_id, d.agent_context
 		 FROM decisions d
 		 JOIN unnest($1::uuid[], $2::uuid[]) AS pair(did, oid)
@@ -523,7 +523,7 @@ func (w *OutboxWorker) fetchDecisionsForIndex(ctx context.Context, ids, orgIDs [
 		var emb *pgvector.Vector
 		if err := rows.Scan(
 			&d.ID, &d.OrgID, &d.AgentID, &d.DecisionType,
-			&d.Confidence, &d.QualityScore, &d.ValidFrom, &emb,
+			&d.Confidence, &d.CompletenessScore, &d.ValidFrom, &emb,
 			&d.SessionID, &d.AgentContext,
 		); err != nil {
 			return nil, fmt.Errorf("search outbox: scan decision: %w", err)

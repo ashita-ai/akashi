@@ -44,10 +44,22 @@ type CandidateFinder interface {
 	FindSimilar(ctx context.Context, orgID uuid.UUID, embedding []float32, excludeID uuid.UUID, repo *string, limit int) ([]Result, error)
 }
 
-// ReScore adjusts raw similarity scores with quality and recency weighting, sorts
-// descending by adjusted score, and truncates to limit.
+// ReScore adjusts raw similarity scores with outcome signals, completeness, and recency
+// weighting, sorts descending by adjusted score, and truncates to limit.
 //
-// Formula: relevance = similarity * (0.6 + 0.3 * quality_score) * (1.0 / (1.0 + age_days / 90.0))
+// Formula (spec 36):
+//
+//	outcome_weight =
+//	    0.4 * min(PrecedentCitationCount / 5.0, 1.0)   // citation_score
+//	    0.3 * wins / (wins + losses), default 0.5       // conflict_win_rate
+//	    0.2 * min(AgreementCount / 3.0, 1.0)            // agreement_score
+//	    0.1 * stability_score                           // 1.0 if not superseded within 48h, else 0.0
+//
+//	relevance = similarity * (0.5 + 0.3*outcome_weight + 0.2*completeness_score) * recency_decay
+//
+// Cold-start (new decision, all signals zero): outcome_weight = 0.25, relevance multiplier ≈ 0.665.
+// The caller is responsible for populating outcome signal fields on model.Decision before calling
+// (see hydrateAndReScore which calls GetDecisionOutcomeSignalsBatch first).
 func ReScore(results []Result, decisions map[uuid.UUID]model.Decision, limit int) []model.SearchResult {
 	now := time.Now()
 	scored := make([]model.SearchResult, 0, len(results))
@@ -59,10 +71,26 @@ func ReScore(results []Result, decisions map[uuid.UUID]model.Decision, limit int
 			continue
 		}
 
+		// Outcome signals.
+		citationScore := math.Min(float64(d.PrecedentCitationCount)/5.0, 1.0)
+		wins := float64(d.ConflictFate.Won)
+		losses := float64(d.ConflictFate.Lost)
+		var conflictWinRate float64
+		if wins+losses > 0 {
+			conflictWinRate = wins / (wins + losses)
+		} else {
+			conflictWinRate = 0.5 // neutral: no resolved conflicts yet
+		}
+		agreementScore := math.Min(float64(d.AgreementCount)/3.0, 1.0)
+		stabilityScore := 1.0
+		if d.SupersessionVelocityHours != nil && *d.SupersessionVelocityHours < 48 {
+			stabilityScore = 0.0
+		}
+		outcomeWeight := 0.4*citationScore + 0.3*conflictWinRate + 0.2*agreementScore + 0.1*stabilityScore
+
 		ageDays := math.Max(0, now.Sub(d.ValidFrom).Hours()/24.0)
-		qualityBonus := 0.6 + 0.3*float64(d.QualityScore)
 		recencyDecay := 1.0 / (1.0 + ageDays/90.0)
-		relevance := float64(r.Score) * qualityBonus * recencyDecay
+		relevance := float64(r.Score) * (0.5 + 0.3*outcomeWeight + 0.2*float64(d.CompletenessScore)) * recencyDecay
 
 		scored = append(scored, model.SearchResult{
 			Decision:        d,

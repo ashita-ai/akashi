@@ -9,7 +9,7 @@ export interface Decision {
   confidence: number;
   reasoning?: string;
   metadata: Record<string, unknown>;
-  quality_score: number;
+  completeness_score: number;
   precedent_ref?: string;
   supersedes_id?: string;
   content_hash?: string;
