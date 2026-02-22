@@ -90,6 +90,7 @@ func New(cfg ServerConfig) *Server {
 
 	// Agent management (admin-only).
 	adminOnly := requireRole(model.RoleAdmin)
+	mux.Handle("POST /v1/auth/scoped-token", adminOnly(http.HandlerFunc(h.HandleScopedToken)))
 	mux.Handle("POST /v1/agents", adminOnly(http.HandlerFunc(h.HandleCreateAgent)))
 	mux.Handle("GET /v1/agents", adminOnly(http.HandlerFunc(h.HandleListAgents)))
 	mux.Handle("GET /v1/agents/{agent_id}", adminOnly(http.HandlerFunc(h.HandleGetAgent)))

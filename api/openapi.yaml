@@ -130,6 +130,42 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /v1/auth/scoped-token:
+    post:
+      operationId: createScopedToken
+      tags: [Auth]
+      summary: Issue a scoped token (admin only)
+      description: |
+        Issues a short-lived JWT that authenticates as a target agent, with the
+        issuing admin's identity recorded in a `scoped_by` claim. Useful for
+        testing access control and debugging what a specific agent can see without
+        needing its API key.
+
+        - Requires `admin` role or higher.
+        - Scoped tokens cannot issue further scoped tokens (no delegation chains).
+        - TTL defaults to 5 minutes; maximum is 1 hour (`expires_in` is capped).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScopedTokenRequest"
+      responses:
+        "200":
+          description: Scoped token issued successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_ScopedTokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   # ── Agents ─────────────────────────────────────────────────────────
   /v1/agents:
     post:
@@ -1567,6 +1603,35 @@ components:
           type: string
           format: date-time
 
+    ScopedTokenRequest:
+      type: object
+      required: [as_agent_id]
+      properties:
+        as_agent_id:
+          type: string
+          description: The agent_id to impersonate for the duration of the token.
+        expires_in:
+          type: integer
+          description: Token lifetime in seconds. Defaults to 300 (5 min), capped at 3600 (1 hr).
+          example: 300
+
+    ScopedTokenResponse:
+      type: object
+      required: [token, expires_at, as_agent_id, scoped_by]
+      properties:
+        token:
+          type: string
+          description: The issued JWT, valid as the target agent.
+        expires_at:
+          type: string
+          format: date-time
+        as_agent_id:
+          type: string
+          description: The agent_id this token authenticates as.
+        scoped_by:
+          type: string
+          description: The admin agent_id that issued this scoped token.
+
     # ── Agent schemas ────────────────────────────────────────────────
     AgentRole:
       type: string
@@ -2792,6 +2857,15 @@ components:
       properties:
         data:
           $ref: "#/components/schemas/AuthTokenResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_ScopedTokenResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ScopedTokenResponse"
         meta:
           $ref: "#/components/schemas/ResponseMeta"
 

@@ -164,6 +164,87 @@ func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleScopedToken handles POST /auth/scoped-token (admin-only).
+// Issues a short-lived JWT that acts as the target agent, with the issuing
+// admin's agent_id recorded in the ScopedBy claim. Useful for testing access
+// control and debugging what a specific agent can see without needing its key.
+func (h *Handlers) HandleScopedToken(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
+
+	// Scoped tokens cannot issue further scoped tokens — no delegation chains.
+	if claims.ScopedBy != "" {
+		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden,
+			"scoped tokens cannot issue further scoped tokens")
+		return
+	}
+
+	var req model.ScopedTokenRequest
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
+		return
+	}
+	if req.AsAgentID == "" {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "as_agent_id is required")
+		return
+	}
+	if err := model.ValidateAgentID(req.AsAgentID); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
+
+	ttl := 5 * time.Minute
+	if req.ExpiresIn > 0 {
+		ttl = time.Duration(req.ExpiresIn) * time.Second
+	}
+	// Cap is enforced inside IssueScopedToken, but clamp the value used for
+	// the audit log so it reflects what was actually issued.
+	if ttl > auth.MaxScopedTokenTTL {
+		ttl = auth.MaxScopedTokenTTL
+	}
+
+	target, err := h.db.GetAgentByAgentID(r.Context(), orgID, req.AsAgentID)
+	if err != nil {
+		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound,
+			"agent not found: "+req.AsAgentID)
+		return
+	}
+
+	token, expiresAt, err := h.jwtMgr.IssueScopedToken(claims.AgentID, target, ttl)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to issue scoped token", err)
+		return
+	}
+
+	slog.Info("scoped token issued",
+		"issuer", claims.AgentID,
+		"as_agent_id", target.AgentID,
+		"as_role", target.Role,
+		"ttl_seconds", int(ttl.Seconds()),
+		"request_id", RequestIDFromContext(r.Context()),
+	)
+
+	if auditErr := h.recordMutationAuditBestEffort(r, orgID,
+		"scoped_token_issued", "auth_token", target.AgentID, nil, nil,
+		map[string]any{
+			"issuer":      claims.AgentID,
+			"as_role":     string(target.Role),
+			"ttl_seconds": int(ttl.Seconds()),
+			"token_exp":   expiresAt,
+		},
+	); auditErr != nil {
+		slog.Error("failed to audit scoped token issuance",
+			"issuer", claims.AgentID, "as_agent_id", target.AgentID, "error", auditErr)
+	}
+
+	writeJSON(w, r, http.StatusOK, model.ScopedTokenResponse{
+		Token:     token,
+		ExpiresAt: expiresAt,
+		AsAgentID: target.AgentID,
+		ScopedBy:  claims.AgentID,
+	})
+}
+
 // HandleSubscribe handles GET /v1/subscribe (SSE).
 func (h *Handlers) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	if h.broker == nil {
