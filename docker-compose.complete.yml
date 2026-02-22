@@ -6,8 +6,12 @@
 # Usage:
 #   docker compose -f docker-compose.complete.yml up -d
 #
-# First launch takes a few minutes while Ollama pulls the embedding model.
-# Subsequent launches are instant.
+# First launch builds the server image from source and downloads the embedding model.
+# Expect 5–15 minutes on first run. Track progress:
+#   docker compose -f docker-compose.complete.yml logs -f akashi
+#
+# The Akashi server starts as soon as the database is ready (~2–3 min).
+# Ollama model download runs in the background; embeddings activate automatically once ready.
 #
 # Open http://localhost:8080 for the audit dashboard.
 
@@ -67,7 +71,7 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/6333'"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/6333' 2>/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -79,24 +83,35 @@ services:
     restart: unless-stopped
     volumes:
       - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:11434/ > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
 
   # One-shot: pull the embedding model into the Ollama volume.
-  # Waits for Ollama to start, skips pull if the model is already present.
+  # Waits for Ollama to be healthy, then pulls if not already present.
+  #
+  # akashi does NOT depend on this service — it starts immediately after
+  # postgres and qdrant are ready. Ollama embeddings activate automatically
+  # once the model pull completes.
   ollama-init:
     image: alpine:3.21
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     command: >
       sh -c "
         apk add --no-cache --quiet curl &&
-        echo 'Waiting for Ollama...' &&
-        until curl -sf http://ollama:11434/api/tags > /dev/null 2>&1; do sleep 2; done &&
         if curl -sf http://ollama:11434/api/tags | grep -q 'mxbai-embed-large'; then
           echo 'mxbai-embed-large already available'
         else
           echo 'Pulling mxbai-embed-large (~670MB, first launch only)...' &&
-          curl -s http://ollama:11434/api/pull -d '{\"model\":\"mxbai-embed-large\"}' | grep -v 'pulling' | tail -3 &&
-          echo 'Pull complete'
+          curl -sf -X POST http://ollama:11434/api/pull \
+            -H 'Content-Type: application/json' \
+            -d '{\"model\":\"mxbai-embed-large\",\"stream\":false}' > /dev/null &&
+          echo 'Embedding model ready'
         fi
       "
     restart: "no"
@@ -150,8 +165,8 @@ services:
         condition: service_healthy
       keygen:
         condition: service_completed_successfully
-      ollama-init:
-        condition: service_completed_successfully
+      # NOT ollama-init: akashi starts independently and activates Ollama embeddings
+      # automatically once the model pull completes in the background.
 
 volumes:
   pgdata:
