@@ -142,6 +142,24 @@ func TestValidateTag(t *testing.T) {
 	})
 }
 
+func TestIsReservedAgentID(t *testing.T) {
+	reserved := []string{
+		"admin", "system", "root", "platform",
+		"superuser", "service", "akashi", "internal",
+	}
+	for _, id := range reserved {
+		assert.True(t, model.IsReservedAgentID(id), "expected %q to be reserved", id)
+	}
+
+	notReserved := []string{
+		"agent", "planner", "coder", "reviewer",
+		"admin-bot", "my-admin", "sys-agent", // prefix/suffix variants are fine
+	}
+	for _, id := range notReserved {
+		assert.False(t, model.IsReservedAgentID(id), "expected %q to not be reserved", id)
+	}
+}
+
 func TestValidateAgentID_Invalid(t *testing.T) {
 	tests := []struct {
 		name string

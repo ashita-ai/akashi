@@ -109,6 +109,31 @@ func ValidateTag(tag string) error {
 	return nil
 }
 
+// reservedAgentIDs is the set of agent_id values that cannot be claimed by
+// user-created agents. These names imply elevated privilege or system identity
+// and would be misleading in the audit trail if assigned to ordinary agents.
+//
+// Note: the seed admin agent (agent_id="admin") is created internally at
+// startup and is intentionally exempt from this check.
+var reservedAgentIDs = map[string]struct{}{
+	"admin":     {},
+	"system":    {},
+	"root":      {},
+	"platform":  {},
+	"superuser": {},
+	"service":   {},
+	"akashi":    {},
+	"internal":  {},
+}
+
+// IsReservedAgentID reports whether id is a reserved name that cannot be
+// claimed by user-created agents. Call this at agent creation time only —
+// not on lookup paths, since the seed "admin" agent already exists.
+func IsReservedAgentID(id string) bool {
+	_, ok := reservedAgentIDs[id]
+	return ok
+}
+
 // ValidateAgentID checks that an agent ID conforms to the allowed format.
 // Agent IDs must be 1-255 ASCII characters: alphanumeric, dots, hyphens,
 // underscores, and @ signs.
