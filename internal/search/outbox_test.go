@@ -80,7 +80,7 @@ func TestScanOutboxEntriesEmpty(t *testing.T) {
 	_ = p.AgentID
 	_ = p.DecisionType
 	_ = p.Confidence
-	_ = p.QualityScore
+	_ = p.CompletenessScore
 	_ = p.ValidFrom
 	_ = p.Embedding
 
@@ -91,7 +91,7 @@ func TestScanOutboxEntriesEmpty(t *testing.T) {
 	_ = d.AgentID
 	_ = d.DecisionType
 	_ = d.Confidence
-	_ = d.QualityScore
+	_ = d.CompletenessScore
 	_ = d.ValidFrom
 	_ = d.Embedding
 }
@@ -198,15 +198,15 @@ func TestPointConversion_FlatContext(t *testing.T) {
 	validFrom := time.Date(2026, 2, 14, 10, 30, 0, 0, time.UTC)
 
 	d := DecisionForIndex{
-		ID:           decisionID,
-		OrgID:        orgID,
-		AgentID:      "coder",
-		DecisionType: "architecture",
-		Confidence:   0.85,
-		QualityScore: 0.72,
-		ValidFrom:    validFrom,
-		Embedding:    []float32{0.1, 0.2, 0.3, 0.4},
-		SessionID:    &sessionID,
+		ID:                decisionID,
+		OrgID:             orgID,
+		AgentID:           "coder",
+		DecisionType:      "architecture",
+		Confidence:        0.85,
+		CompletenessScore: 0.72,
+		ValidFrom:         validFrom,
+		Embedding:         []float32{0.1, 0.2, 0.3, 0.4},
+		SessionID:         &sessionID,
 		AgentContext: map[string]any{
 			"tool":  "claude-code",
 			"model": "claude-opus-4-6",
@@ -221,7 +221,7 @@ func TestPointConversion_FlatContext(t *testing.T) {
 	assert.Equal(t, "coder", p.AgentID)
 	assert.Equal(t, "architecture", p.DecisionType)
 	assert.InDelta(t, 0.85, float64(p.Confidence), 0.001)
-	assert.InDelta(t, 0.72, float64(p.QualityScore), 0.001)
+	assert.InDelta(t, 0.72, float64(p.CompletenessScore), 0.001)
 	assert.Equal(t, validFrom, p.ValidFrom)
 	assert.Equal(t, []float32{0.1, 0.2, 0.3, 0.4}, p.Embedding)
 	require.NotNil(t, p.SessionID)
@@ -234,14 +234,14 @@ func TestPointConversion_FlatContext(t *testing.T) {
 func TestPointConversion_NamespacedContext(t *testing.T) {
 	// New namespaced agent_context format (PR #180+).
 	d := DecisionForIndex{
-		ID:           uuid.New(),
-		OrgID:        uuid.New(),
-		AgentID:      "admin",
-		DecisionType: "security",
-		Confidence:   0.92,
-		QualityScore: 0.88,
-		ValidFrom:    time.Now(),
-		Embedding:    []float32{0.5, 0.6},
+		ID:                uuid.New(),
+		OrgID:             uuid.New(),
+		AgentID:           "admin",
+		DecisionType:      "security",
+		Confidence:        0.92,
+		CompletenessScore: 0.88,
+		ValidFrom:         time.Now(),
+		Embedding:         []float32{0.5, 0.6},
 		AgentContext: map[string]any{
 			"server": map[string]any{
 				"tool":         "claude-code",
@@ -282,15 +282,15 @@ func TestPointConversion_NilContext(t *testing.T) {
 // pointFromDecision replicates the conversion logic from processUpserts.
 func pointFromDecision(d DecisionForIndex) Point {
 	p := Point{
-		ID:           d.ID,
-		OrgID:        d.OrgID,
-		AgentID:      d.AgentID,
-		DecisionType: d.DecisionType,
-		Confidence:   d.Confidence,
-		QualityScore: d.QualityScore,
-		ValidFrom:    d.ValidFrom,
-		Embedding:    d.Embedding,
-		SessionID:    d.SessionID,
+		ID:                d.ID,
+		OrgID:             d.OrgID,
+		AgentID:           d.AgentID,
+		DecisionType:      d.DecisionType,
+		Confidence:        d.Confidence,
+		CompletenessScore: d.CompletenessScore,
+		ValidFrom:         d.ValidFrom,
+		Embedding:         d.Embedding,
+		SessionID:         d.SessionID,
 	}
 	if d.AgentContext != nil {
 		p.Tool = agentContextString(d.AgentContext, "server", "tool")

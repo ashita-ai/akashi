@@ -22,7 +22,16 @@ type Decision struct {
 	OutcomeEmbedding *pgvector.Vector `json:"-"` // Outcome-only embedding for semantic conflict detection.
 	Metadata         map[string]any   `json:"metadata"`
 
-	// Quality score (0.0-1.0) measuring trace completeness.
+	// CompletenessScore (0.0-1.0) measures trace completeness at write time:
+	// whether the agent provided reasoning, alternatives, evidence, etc.
+	// It does NOT measure whether the decision was correct or adopted.
+	CompletenessScore float32 `json:"completeness_score"`
+
+	// QualityScore is a deprecated alias for CompletenessScore. It is emitted
+	// alongside completeness_score for one release cycle to give API clients
+	// time to migrate. Do not use in new code.
+	//
+	// Deprecated: use CompletenessScore.
 	QualityScore float32 `json:"quality_score"`
 
 	// Precedent reference: decision that influenced this one.

@@ -566,6 +566,7 @@ paths:
                       metadata:
                         sprint: "2026-Q1"
                         ticket: "ARCH-142"
+                      completeness_score: 0.85
                       quality_score: 0.85
                       valid_from: "2026-01-15T10:30:00Z"
                       transaction_time: "2026-01-15T10:30:00Z"
@@ -1683,7 +1684,7 @@ components:
           description: Timestamp of the agent's most recent decision.
         low_quality_count:
           type: integer
-          description: Number of decisions with quality_score below 0.5.
+          description: Number of decisions with completeness_score below 0.5.
         decision_types:
           type: object
           additionalProperties:
@@ -1917,6 +1918,7 @@ components:
         - outcome
         - confidence
         - metadata
+        - completeness_score
         - quality_score
         - valid_from
         - transaction_time
@@ -1947,9 +1949,20 @@ components:
         metadata:
           type: object
           additionalProperties: true
+        completeness_score:
+          type: number
+          format: float
+          description: >
+            Completeness score (0.0–1.0) measuring how thoroughly the trace was filled in at
+            write time (reasoning length, alternatives, evidence, etc.). Does not measure
+            whether the decision was correct or adopted.
         quality_score:
           type: number
           format: float
+          deprecated: true
+          description: >
+            Deprecated alias for completeness_score. Emitted alongside completeness_score for
+            one release cycle. Use completeness_score in new code.
         precedent_ref:
           type: string
           format: uuid
@@ -3053,10 +3066,10 @@ components:
           description: Average quality score across all decisions (0.0–1.0).
         below_half:
           type: integer
-          description: Count of decisions with quality_score < 0.5.
+          description: Count of decisions with completeness_score < 0.5.
         below_third:
           type: integer
-          description: Count of decisions with quality_score < 0.33.
+          description: Count of decisions with completeness_score < 0.33.
         with_reasoning:
           type: integer
           description: Count of decisions that include reasoning text.

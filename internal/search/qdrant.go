@@ -26,18 +26,18 @@ type QdrantConfig struct {
 
 // Point is the data needed to upsert a single decision into Qdrant.
 type Point struct {
-	ID           uuid.UUID
-	OrgID        uuid.UUID
-	AgentID      string
-	DecisionType string
-	Confidence   float32
-	QualityScore float32
-	ValidFrom    time.Time
-	Embedding    []float32
-	SessionID    *uuid.UUID
-	Tool         string
-	Model        string
-	Repo         string
+	ID                uuid.UUID
+	OrgID             uuid.UUID
+	AgentID           string
+	DecisionType      string
+	Confidence        float32
+	CompletenessScore float32
+	ValidFrom         time.Time
+	Embedding         []float32
+	SessionID         *uuid.UUID
+	Tool              string
+	Model             string
+	Repo              string
 }
 
 // QdrantIndex implements Searcher backed by Qdrant Cloud.
@@ -149,7 +149,7 @@ func (q *QdrantIndex) EnsureCollection(ctx context.Context) error {
 	}
 
 	floatType := qdrant.FieldType_FieldTypeFloat
-	for _, field := range []string{"confidence", "quality_score", "valid_from_unix"} {
+	for _, field := range []string{"confidence", "completeness_score", "valid_from_unix"} {
 		if _, err := q.client.CreateFieldIndex(ctx, &qdrant.CreateFieldIndexCollection{
 			CollectionName: q.collection,
 			FieldName:      field,
@@ -306,12 +306,12 @@ func (q *QdrantIndex) Upsert(ctx context.Context, points []Point) error {
 	qdrantPoints := make([]*qdrant.PointStruct, len(points))
 	for i, p := range points {
 		payload := map[string]any{
-			"org_id":          p.OrgID.String(),
-			"agent_id":        p.AgentID,
-			"decision_type":   p.DecisionType,
-			"confidence":      float64(p.Confidence),
-			"quality_score":   float64(p.QualityScore),
-			"valid_from_unix": float64(p.ValidFrom.Unix()),
+			"org_id":             p.OrgID.String(),
+			"agent_id":           p.AgentID,
+			"decision_type":      p.DecisionType,
+			"confidence":         float64(p.Confidence),
+			"completeness_score": float64(p.CompletenessScore),
+			"valid_from_unix":    float64(p.ValidFrom.Unix()),
 		}
 		if p.SessionID != nil {
 			payload["session_id"] = p.SessionID.String()

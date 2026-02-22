@@ -250,15 +250,15 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 		TraceID:  input.TraceID,
 		Metadata: input.Metadata,
 		Decision: model.Decision{
-			DecisionType:     input.Decision.DecisionType,
-			Outcome:          input.Decision.Outcome,
-			Confidence:       input.Decision.Confidence,
-			Reasoning:        input.Decision.Reasoning,
-			Embedding:        decisionEmb,
-			OutcomeEmbedding: outcomeEmb,
-			QualityScore:     qualityScore,
-			PrecedentRef:     input.PrecedentRef,
-			APIKeyID:         input.APIKeyID,
+			DecisionType:      input.Decision.DecisionType,
+			Outcome:           input.Decision.Outcome,
+			Confidence:        input.Decision.Confidence,
+			Reasoning:         input.Decision.Reasoning,
+			Embedding:         decisionEmb,
+			OutcomeEmbedding:  outcomeEmb,
+			CompletenessScore: qualityScore,
+			PrecedentRef:      input.PrecedentRef,
+			APIKeyID:          input.APIKeyID,
 		},
 		Alternatives: alts,
 		Evidence:     evs,
@@ -429,7 +429,8 @@ func (s *Service) Search(ctx context.Context, orgID uuid.UUID, query string, sem
 	return s.db.SearchDecisionsByText(ctx, orgID, query, filters, limit)
 }
 
-// hydrateAndReScore fetches full decisions from Postgres and applies quality+recency re-scoring.
+// hydrateAndReScore fetches full decisions from Postgres, enriches them with outcome signals,
+// and applies completeness+outcome+recency re-scoring (spec 36).
 func (s *Service) hydrateAndReScore(ctx context.Context, orgID uuid.UUID, results []search.Result, limit int) ([]model.SearchResult, error) {
 	if len(results) == 0 {
 		return []model.SearchResult{}, nil
@@ -443,6 +444,22 @@ func (s *Service) hydrateAndReScore(ctx context.Context, orgID uuid.UUID, result
 	decisions, err := s.db.GetDecisionsByIDs(ctx, orgID, ids)
 	if err != nil {
 		return nil, fmt.Errorf("search: hydrate decisions: %w", err)
+	}
+
+	// Enrich with outcome signals (3 batched SQL queries, no N+1).
+	signals, err := s.db.GetDecisionOutcomeSignalsBatch(ctx, ids, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("search: outcome signals: %w", err)
+	}
+	for id, sig := range signals {
+		if d, ok := decisions[id]; ok {
+			d.SupersessionVelocityHours = sig.SupersessionVelocityHours
+			d.PrecedentCitationCount = sig.PrecedentCitationCount
+			d.ConflictFate = sig.ConflictFate
+			d.AgreementCount = sig.AgreementCount
+			d.ConflictCount = sig.ConflictCount
+			decisions[id] = d
+		}
 	}
 
 	return search.ReScore(results, decisions, limit), nil

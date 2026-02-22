@@ -161,7 +161,7 @@ func createTestDecision(ctx context.Context, t *testing.T, orgID uuid.UUID, agen
 	var decID uuid.UUID
 	emb := pgvector.NewVector(embedding)
 	err := testPool.QueryRow(ctx,
-		`INSERT INTO decisions (run_id, agent_id, decision_type, outcome, confidence, embedding, org_id, quality_score)
+		`INSERT INTO decisions (run_id, agent_id, decision_type, outcome, confidence, embedding, org_id, completeness_score)
 		 VALUES ($1, $2, $3, 'test outcome', 0.8, $4, $5, 0.5) RETURNING id`,
 		runID, agentID, decisionType, emb, orgID,
 	).Scan(&decID)
@@ -176,7 +176,7 @@ func createTestDecisionWithSession(ctx context.Context, t *testing.T, orgID uuid
 	var decID uuid.UUID
 	emb := pgvector.NewVector(embedding)
 	err := testPool.QueryRow(ctx,
-		`INSERT INTO decisions (run_id, agent_id, decision_type, outcome, confidence, embedding, org_id, quality_score, session_id, agent_context)
+		`INSERT INTO decisions (run_id, agent_id, decision_type, outcome, confidence, embedding, org_id, completeness_score, session_id, agent_context)
 		 VALUES ($1, $2, $3, 'test outcome', 0.8, $4, $5, 0.5, $6, $7) RETURNING id`,
 		runID, agentID, decisionType, emb, orgID, sessionID, `{"tool":"claude-code","model":"opus"}`,
 	).Scan(&decID)
@@ -190,7 +190,7 @@ func createTestDecisionNoEmbedding(ctx context.Context, t *testing.T, orgID uuid
 	runID := createTestRun(ctx, t, orgID, agentID)
 	var decID uuid.UUID
 	err := testPool.QueryRow(ctx,
-		`INSERT INTO decisions (run_id, agent_id, decision_type, outcome, confidence, org_id, quality_score)
+		`INSERT INTO decisions (run_id, agent_id, decision_type, outcome, confidence, org_id, completeness_score)
 		 VALUES ($1, $2, $3, 'test outcome', 0.8, $4, 0.5) RETURNING id`,
 		runID, agentID, decisionType, orgID,
 	).Scan(&decID)
@@ -423,7 +423,7 @@ func TestFetchDecisionsForIndex(t *testing.T) {
 	assert.Equal(t, "test-agent", d.AgentID)
 	assert.Equal(t, "architecture", d.DecisionType)
 	assert.InDelta(t, 0.8, float64(d.Confidence), 0.01)
-	assert.InDelta(t, 0.5, float64(d.QualityScore), 0.01)
+	assert.InDelta(t, 0.5, float64(d.CompletenessScore), 0.01)
 	assert.False(t, d.ValidFrom.IsZero())
 	require.Len(t, d.Embedding, 1024)
 	assert.InDelta(t, 0.001, float64(d.Embedding[1]), 0.0001)

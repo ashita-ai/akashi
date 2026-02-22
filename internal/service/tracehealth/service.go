@@ -27,8 +27,8 @@ type Metrics struct {
 type CompletenessMetrics struct {
 	TotalDecisions   int     `json:"total_decisions"`
 	AvgQuality       float64 `json:"avg_quality"`
-	BelowHalf        int     `json:"below_half"`  // quality_score < 0.5
-	BelowThird       int     `json:"below_third"` // quality_score < 0.33
+	BelowHalf        int     `json:"below_half"`  // completeness_score < 0.5
+	BelowThird       int     `json:"below_third"` // completeness_score < 0.33
 	WithReasoning    int     `json:"with_reasoning"`
 	ReasoningPct     float64 `json:"reasoning_pct"`
 	WithAlternatives int     `json:"with_alternatives"`
