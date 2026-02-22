@@ -355,6 +355,10 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 	orgID := ctxutil.OrgIDFromContext(ctx)
 	claims := ctxutil.ClaimsFromContext(ctx)
 
+	if claims == nil {
+		return errorResult("authentication required"), nil
+	}
+
 	decisionType := request.GetString("decision_type", "")
 	if decisionType == "" {
 		return errorResult("decision_type is required"), nil
@@ -482,6 +486,10 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	orgID := ctxutil.OrgIDFromContext(ctx)
 	claims := ctxutil.ClaimsFromContext(ctx)
 
+	if claims == nil {
+		return errorResult("authentication required"), nil
+	}
+
 	agentID := request.GetString("agent_id", "")
 	decisionType := request.GetString("decision_type", "")
 	outcome := request.GetString("outcome", "")
@@ -504,6 +512,19 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	// Validate agent_id format (same as HTTP handler).
 	if err := model.ValidateAgentID(agentID); err != nil {
 		return errorResult(fmt.Sprintf("invalid agent_id: %v", err)), nil
+	}
+
+	// Per-field length limits and source_uri scheme validation.
+	// Validated here (before evidence/alternatives parsing) so that the raw
+	// string values can be checked before JSON unmarshalling allocates slices.
+	if len(decisionType) > model.MaxDecisionTypeLen {
+		return errorResult(fmt.Sprintf("decision_type exceeds maximum length of %d characters", model.MaxDecisionTypeLen)), nil
+	}
+	if len(outcome) > model.MaxOutcomeLen {
+		return errorResult(fmt.Sprintf("outcome exceeds maximum length of %d bytes", model.MaxOutcomeLen)), nil
+	}
+	if len(reasoning) > model.MaxReasoningLen {
+		return errorResult(fmt.Sprintf("reasoning exceeds maximum length of %d bytes", model.MaxReasoningLen)), nil
 	}
 
 	// Non-admin callers can only trace for their own agent_id.
@@ -542,6 +563,16 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 			s.logger.Warn("akashi_trace: ignoring unparseable evidence JSON",
 				"error", parseErr, "agent_id", agentID)
 			evidence = nil
+		}
+	}
+
+	// Validate source_uri on each evidence item. Invalid URIs are rejected
+	// rather than silently dropped — callers should know their URIs are unsafe.
+	for i, ev := range evidence {
+		if ev.SourceURI != nil {
+			if err := model.ValidateSourceURI(*ev.SourceURI); err != nil {
+				return errorResult(fmt.Sprintf("evidence[%d].source_uri: %v", i, err)), nil
+			}
 		}
 	}
 
@@ -783,6 +814,11 @@ func mcpTraceHash(agentID, decisionType, outcome string, confidence float32, rea
 func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	orgID := ctxutil.OrgIDFromContext(ctx)
 	claims := ctxutil.ClaimsFromContext(ctx)
+
+	if claims == nil {
+		return errorResult("authentication required"), nil
+	}
+
 	filters := model.QueryFilters{}
 
 	if agentID := request.GetString("agent_id", ""); agentID != "" {
@@ -863,6 +899,10 @@ func (s *Server) handleSearch(ctx context.Context, request mcplib.CallToolReques
 	orgID := ctxutil.OrgIDFromContext(ctx)
 	claims := ctxutil.ClaimsFromContext(ctx)
 
+	if claims == nil {
+		return errorResult("authentication required"), nil
+	}
+
 	query := request.GetString("query", "")
 	if query == "" {
 		return errorResult("query is required"), nil
@@ -910,6 +950,11 @@ func (s *Server) handleSearch(ctx context.Context, request mcplib.CallToolReques
 func (s *Server) handleRecent(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	orgID := ctxutil.OrgIDFromContext(ctx)
 	claims := ctxutil.ClaimsFromContext(ctx)
+
+	if claims == nil {
+		return errorResult("authentication required"), nil
+	}
+
 	limit := request.GetInt("limit", 10)
 
 	filters := model.QueryFilters{}
@@ -967,6 +1012,11 @@ func (s *Server) handleRecent(ctx context.Context, request mcplib.CallToolReques
 func (s *Server) handleConflicts(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	orgID := ctxutil.OrgIDFromContext(ctx)
 	claims := ctxutil.ClaimsFromContext(ctx)
+
+	if claims == nil {
+		return errorResult("authentication required"), nil
+	}
+
 	limit := request.GetInt("limit", 10)
 
 	filters := storage.ConflictFilters{}

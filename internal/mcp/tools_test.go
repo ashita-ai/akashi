@@ -184,27 +184,31 @@ func TestHandleTrace_MissingFields(t *testing.T) {
 			args:    map[string]any{"agent_id": "admin", "decision_type": "architecture", "confidence": 0.5},
 			errText: "decision_type and outcome are required",
 		},
-		{
-			name:    "missing agent_id without claims",
-			args:    map[string]any{"decision_type": "architecture", "outcome": "x", "confidence": 0.5},
-			errText: "agent_id is required",
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			testCtx := ctx
-			if tt.name == "missing agent_id without claims" {
-				// Use context without claims so agent_id default fails.
-				testCtx = context.Background()
-			}
-
-			result, err := testServer.handleTrace(testCtx, traceRequest(tt.args))
+			result, err := testServer.handleTrace(ctx, traceRequest(tt.args))
 			require.NoError(t, err, "handler should not return go error, only tool error")
 			require.True(t, result.IsError, "expected tool error for %s", tt.name)
 			assert.Contains(t, parseToolText(t, result), tt.errText)
 		})
 	}
+}
+
+// TestHandleTrace_NilClaims verifies that a context without auth claims is
+// rejected immediately. This exercises the H2 nil-claims guard that prevents
+// access-filtering bypass on unauthenticated paths.
+func TestHandleTrace_NilClaims(t *testing.T) {
+	result, err := testServer.handleTrace(context.Background(), traceRequest(map[string]any{
+		"agent_id":      "some-agent",
+		"decision_type": "architecture",
+		"outcome":       "x",
+		"confidence":    0.5,
+	}))
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, parseToolText(t, result), "authentication required")
 }
 
 func TestHandleTrace_InvalidAgentID(t *testing.T) {
@@ -845,11 +849,9 @@ func TestCheckBeforeTraceWorkflow(t *testing.T) {
 // ---------- handleRecent/handleQuery: no-context (nil claims) ----------
 
 func TestHandleRecent_NilClaims(t *testing.T) {
-	// Using context.Background() gives nil claims and uuid.Nil orgID.
+	// H2 fix: nil claims must be rejected immediately rather than silently
+	// skipping access filtering and returning unfiltered cross-org data.
 	ctx := context.Background()
-
-	// Pre-seed a decision using admin context.
-	mustTrace(t, "nil-claims-agent-"+uuid.New().String()[:8], "architecture", "nil claims test", 0.7)
 
 	result, err := testServer.handleRecent(ctx, mcplib.CallToolRequest{
 		Params: mcplib.CallToolParams{
@@ -860,8 +862,8 @@ func TestHandleRecent_NilClaims(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.False(t, result.IsError,
-		"handleRecent should succeed without claims (skips access filtering)")
+	require.True(t, result.IsError, "unauthenticated handleRecent must return an error")
+	assert.Contains(t, parseToolText(t, result), "authentication required")
 }
 
 // ---------- handleTrace: non-admin agent cannot trace for another agent ----------
