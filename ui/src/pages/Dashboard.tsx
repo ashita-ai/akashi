@@ -124,7 +124,7 @@ export default function Dashboard() {
                   {healthConfig.label}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  avg quality: {((traceHealth.data?.completeness.avg_quality ?? 0) * 100).toFixed(0)}%
+                  avg completeness: {((traceHealth.data?.completeness.avg_completeness ?? 0) * 100).toFixed(0)}%
                 </p>
               </>
             )}

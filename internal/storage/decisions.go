@@ -1227,7 +1227,7 @@ func (db *DB) CountUnvalidatedConflicts(ctx context.Context) (int, error) {
 // DecisionQualityStats holds aggregate completeness metrics for an org's decisions.
 type DecisionQualityStats struct {
 	Total            int
-	AvgQuality       float64
+	AvgCompleteness  float64
 	BelowHalf        int // completeness_score < 0.5
 	BelowThird       int // completeness_score < 0.33
 	WithReasoning    int // reasoning IS NOT NULL AND reasoning != ''
@@ -1248,7 +1248,7 @@ func (db *DB) GetDecisionQualityStats(ctx context.Context, orgID uuid.UUID) (Dec
 		       ))
 		FROM decisions
 		WHERE org_id = $1 AND valid_to IS NULL`, orgID).Scan(
-		&s.Total, &s.AvgQuality, &s.BelowHalf, &s.BelowThird, &s.WithReasoning, &s.WithAlternatives)
+		&s.Total, &s.AvgCompleteness, &s.BelowHalf, &s.BelowThird, &s.WithReasoning, &s.WithAlternatives)
 	if err != nil {
 		return s, fmt.Errorf("storage: decision quality stats: %w", err)
 	}
