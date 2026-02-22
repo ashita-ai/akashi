@@ -117,6 +117,20 @@ type AuthTokenResponse struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+// ScopedTokenRequest is the request body for POST /auth/scoped-token.
+type ScopedTokenRequest struct {
+	AsAgentID string `json:"as_agent_id"`
+	ExpiresIn int    `json:"expires_in,omitempty"` // seconds; defaults to 300, capped at 3600
+}
+
+// ScopedTokenResponse is the response for POST /auth/scoped-token.
+type ScopedTokenResponse struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
+	AsAgentID string    `json:"as_agent_id"`
+	ScopedBy  string    `json:"scoped_by"`
+}
+
 // CreateAgentRequest is the request body for POST /v1/agents.
 type CreateAgentRequest struct {
 	AgentID  string         `json:"agent_id"`

@@ -103,6 +103,9 @@ func loggingMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
 		}
 		if claims := ClaimsFromContext(r.Context()); claims != nil {
 			attrs = append(attrs, "agent_id", claims.AgentID)
+			if claims.ScopedBy != "" {
+				attrs = append(attrs, "scoped_by", claims.ScopedBy)
+			}
 		}
 
 		level := slog.LevelInfo
