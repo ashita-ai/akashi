@@ -12,21 +12,59 @@ Akashi is the decision audit trail. Every agent decision gets recorded with its 
 
 ## Quick start
 
+Two modes. Pick one.
+
+### Complete local stack (recommended for trying Akashi)
+
+Everything runs in Docker — TimescaleDB, Qdrant, Ollama, and the Akashi server. No API keys, no external accounts.
+
 ```bash
-# Generate a persistent JWT signing key — do this once, before first launch.
-# Without this, a new ephemeral key is generated every restart, invalidating
-# all existing tokens and browser sessions.
-mkdir -p data
-go run scripts/genkey/main.go   # writes data/jwt_private.pem + data/jwt_public.pem
+docker compose -f docker-compose.complete.yml up -d
+```
 
-# Start the stack (Postgres + TimescaleDB + Qdrant + Akashi)
-docker compose up -d --build
+**First launch builds the server image from source and downloads the Ollama embedding model (~670MB).** Expect 5–15 minutes on first run depending on your machine and network. Subsequent launches start in seconds.
 
+Watch akashi come up:
+
+```bash
+docker compose -f docker-compose.complete.yml logs -f akashi
+```
+
+The server is ready when you see a `listening` log line. The Ollama model download continues in the background — embeddings activate automatically once it completes.
+
+```bash
 curl http://localhost:8080/health
 # Open http://localhost:8080 for the audit dashboard
 ```
 
-Postgres and Qdrant run in-stack. Semantic search and conflict detection work out of the box if `OPENAI_API_KEY` is set in `.env`; without one they fall back to text search. See [Configuration](docs/configuration.md) for embedding options including local Ollama.
+### Binary only (bring your own infrastructure)
+
+Just the Akashi server container. You provide TimescaleDB, Qdrant, and an embedding API key.
+
+```bash
+cp docker/env.example .env
+# Edit .env: set DATABASE_URL, AKASHI_ADMIN_API_KEY, and optionally QDRANT_URL / OPENAI_API_KEY
+docker compose up -d
+```
+
+First run builds the server image from source (~3–5 minutes). After that, `docker compose up -d` starts in seconds. To force a rebuild after updating the source: `docker compose up -d --build`.
+
+Required variables:
+
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | TimescaleDB connection string (pgvector + TimescaleDB extensions required) |
+| `AKASHI_ADMIN_API_KEY` | Bootstrap API key for the admin agent |
+
+Optional (server starts without them — search falls back to text):
+
+| Variable | Description |
+|----------|-------------|
+| `QDRANT_URL` | Qdrant endpoint for vector search |
+| `OPENAI_API_KEY` | Enables OpenAI embeddings and LLM conflict validation |
+| `OLLAMA_URL` | Ollama endpoint for local embeddings |
+
+See [Configuration](docs/configuration.md) for all variables.
 
 ### Record your first decision
 
@@ -216,20 +254,32 @@ flowchart TD
 ```bash
 # Without UI
 make build
-AKASHI_ADMIN_API_KEY=admin ./bin/akashi
+DATABASE_URL=postgres://... AKASHI_ADMIN_API_KEY=admin ./bin/akashi
 
 # With the embedded audit dashboard
 make build-with-ui
-AKASHI_ADMIN_API_KEY=admin ./bin/akashi
+DATABASE_URL=postgres://... AKASHI_ADMIN_API_KEY=admin ./bin/akashi
 # Open http://localhost:8080
 ```
 
-Requires:
-- PostgreSQL 18 with pgvector and TimescaleDB extensions (connection via `DATABASE_URL` / `NOTIFY_URL`)
-- Qdrant for vector search (optional — falls back to text search without it)
-- An OpenAI API key or a local Ollama instance for embeddings — optional, but required for semantic search and conflict detection
+The binary requires a PostgreSQL 18 database with the `pgvector` and `timescaledb` extensions pre-installed (see `docker/init.sql`). Qdrant and an embedding provider are optional — the server starts without them and falls back to text search.
 
-See [Configuration](docs/configuration.md) for all environment variables. For local dev, `docker compose up -d --build` starts Postgres and Qdrant in-stack. Set `DATABASE_URL` / `NOTIFY_URL` to override with an external database.
+For a local database during development:
+
+```bash
+# Start just the database and Qdrant (no Akashi binary — run that from source)
+docker run -d --name akashi-pg \
+  -e POSTGRES_USER=akashi -e POSTGRES_PASSWORD=akashi -e POSTGRES_DB=akashi \
+  -v "$(pwd)/docker/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro" \
+  -p 5432:5432 timescale/timescaledb-ha:pg18
+
+docker run -d --name akashi-qdrant -p 6333:6333 qdrant/qdrant:v1.13.6
+
+DATABASE_URL=postgres://akashi:akashi@localhost:5432/akashi?sslmode=disable \
+QDRANT_URL=http://localhost:6333 \
+AKASHI_ADMIN_API_KEY=admin \
+./bin/akashi
+```
 
 ## Testing
 
