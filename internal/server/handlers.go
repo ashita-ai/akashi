@@ -34,10 +34,13 @@ type Handlers struct {
 	maxRequestBodyBytes     int64
 	openapiSpec             []byte
 	enableDestructiveDelete bool
+	// decisionHooks are fired asynchronously after decision lifecycle events.
+	// Nil or empty slice means no hooks registered.
+	decisionHooks []DecisionHook
 }
 
 // HandlersDeps holds all dependencies for constructing Handlers.
-// Optional (nil-safe): Broker, Searcher, GrantCache, OpenAPISpec.
+// Optional (nil-safe): Broker, Searcher, GrantCache, OpenAPISpec, DecisionHooks.
 type HandlersDeps struct {
 	DB                      *storage.DB
 	JWTMgr                  *auth.JWTManager
@@ -51,6 +54,7 @@ type HandlersDeps struct {
 	MaxRequestBodyBytes     int64
 	OpenAPISpec             []byte
 	EnableDestructiveDelete bool
+	DecisionHooks           []DecisionHook
 }
 
 // NewHandlers creates a new Handlers with all dependencies.
@@ -69,6 +73,7 @@ func NewHandlers(d HandlersDeps) *Handlers {
 		maxRequestBodyBytes:     d.MaxRequestBodyBytes,
 		openapiSpec:             d.OpenAPISpec,
 		enableDestructiveDelete: d.EnableDestructiveDelete,
+		decisionHooks:           d.DecisionHooks,
 	}
 }
 

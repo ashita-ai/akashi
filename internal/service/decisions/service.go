@@ -94,6 +94,9 @@ type TraceResult struct {
 	RunID      uuid.UUID
 	DecisionID uuid.UUID
 	EventCount int
+	// Decision is the full model as stored, available for event hooks.
+	// Populated by Trace() and AdjudicateConflictWithTrace().
+	Decision model.Decision
 }
 
 // Trace records a complete decision with its alternatives and evidence.
@@ -121,6 +124,7 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 		RunID:      run.ID,
 		DecisionID: decision.ID,
 		EventCount: len(params.Alternatives) + len(params.Evidence) + 1,
+		Decision:   decision,
 	}, nil
 }
 
@@ -150,6 +154,7 @@ func (s *Service) AdjudicateConflictWithTrace(ctx context.Context, orgID uuid.UU
 		RunID:      run.ID,
 		DecisionID: decision.ID,
 		EventCount: len(params.Alternatives) + len(params.Evidence) + 1,
+		Decision:   decision,
 	}, nil
 }
 
