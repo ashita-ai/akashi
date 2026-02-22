@@ -17,10 +17,10 @@ func TestComputeGaps_AllHealthy(t *testing.T) {
 	}
 	gaps := computeGaps(qs, es, 5, 0, storage.OutcomeSignalsSummary{})
 
-	// No quality or coverage gaps. No open conflicts. Only "20 decisions lack evidence."
+	// No completeness or coverage gaps. No open conflicts. Only "20 decisions lack evidence."
 	assert.LessOrEqual(t, len(gaps), 3)
 	for _, g := range gaps {
-		assert.NotContains(t, g, "Average decision quality")
+		assert.NotContains(t, g, "Average completeness score")
 		assert.NotContains(t, g, "Less than half")
 		assert.NotContains(t, g, "unresolved")
 	}
@@ -36,7 +36,7 @@ func TestComputeGaps_LowQuality(t *testing.T) {
 	gaps := computeGaps(qs, es, 0, 0, storage.OutcomeSignalsSummary{})
 
 	assert.GreaterOrEqual(t, len(gaps), 1)
-	assert.Contains(t, gaps[0], "Average decision quality")
+	assert.Contains(t, gaps[0], "Average completeness score")
 }
 
 func TestComputeGaps_LowEvidence(t *testing.T) {
