@@ -42,6 +42,10 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "decision.confidence must be between 0 and 1")
 		return
 	}
+	if err := model.ValidateTraceDecision(req.Decision); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
 
 	if !model.RoleAtLeast(claims.Role, model.RoleAdmin) && req.AgentID != claims.AgentID {
 		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "can only trace for your own agent_id")

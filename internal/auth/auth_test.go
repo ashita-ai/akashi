@@ -94,10 +94,12 @@ func TestValidateToken_WrongIssuer(t *testing.T) {
 	mgr, privKey := newTestJWTManagerWithKey(t)
 
 	now := time.Now().UTC()
+	// Include correct audience so aud check passes and issuer check fires.
 	token := forgeToken(t, privKey, &auth.Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   uuid.New().String(),
 			Issuer:    "not-akashi",
+			Audience:  jwt.ClaimStrings{"akashi"},
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
 			ID:        uuid.New().String(),
@@ -115,10 +117,12 @@ func TestValidateToken_EmptyIssuer(t *testing.T) {
 	mgr, privKey := newTestJWTManagerWithKey(t)
 
 	now := time.Now().UTC()
+	// Include correct audience so aud check passes and issuer check fires.
 	token := forgeToken(t, privKey, &auth.Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   uuid.New().String(),
 			Issuer:    "",
+			Audience:  jwt.ClaimStrings{"akashi"},
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
 			ID:        uuid.New().String(),
@@ -130,6 +134,50 @@ func TestValidateToken_EmptyIssuer(t *testing.T) {
 	_, err := mgr.ValidateToken(token)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid issuer")
+}
+
+func TestValidateToken_WrongAudience(t *testing.T) {
+	mgr, privKey := newTestJWTManagerWithKey(t)
+
+	now := time.Now().UTC()
+	token := forgeToken(t, privKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   uuid.New().String(),
+			Issuer:    "akashi",
+			Audience:  jwt.ClaimStrings{"other-service"},
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+			ID:        uuid.New().String(),
+		},
+		AgentID: "test-agent",
+		Role:    model.RoleAgent,
+	})
+
+	_, err := mgr.ValidateToken(token)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "aud")
+}
+
+func TestValidateToken_MissingAudience(t *testing.T) {
+	mgr, privKey := newTestJWTManagerWithKey(t)
+
+	now := time.Now().UTC()
+	// No Audience field — simulates pre-M3 tokens or tokens from another service.
+	token := forgeToken(t, privKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   uuid.New().String(),
+			Issuer:    "akashi",
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+			ID:        uuid.New().String(),
+		},
+		AgentID: "test-agent",
+		Role:    model.RoleAgent,
+	})
+
+	_, err := mgr.ValidateToken(token)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "aud")
 }
 
 func TestIssueScopedToken(t *testing.T) {
@@ -194,10 +242,12 @@ func TestValidateToken_MalformedSubject(t *testing.T) {
 	mgr, privKey := newTestJWTManagerWithKey(t)
 
 	now := time.Now().UTC()
+	// Correct audience and issuer so that the subject check fires.
 	token := forgeToken(t, privKey, &auth.Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   "not-a-uuid",
 			Issuer:    "akashi",
+			Audience:  jwt.ClaimStrings{"akashi"},
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
 			ID:        uuid.New().String(),

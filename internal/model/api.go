@@ -1,10 +1,100 @@
 package model
 
 import (
+	"fmt"
+	"net"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// Field length limits for TraceDecision fields.
+// These prevent a single oversized field from exhausting the embedding
+// pipeline, triggering quadratic conflict extraction cost, or filling
+// Postgres TEXT columns with caller-controlled garbage.
+const (
+	MaxDecisionTypeLen = 200
+	MaxOutcomeLen      = 32 * 1024 // 32 KB
+	MaxReasoningLen    = 64 * 1024 // 64 KB
+)
+
+// privateIPRanges is the set of CIDR blocks considered non-public.
+// Populated once at package init; used by ValidateSourceURI.
+var privateIPRanges []*net.IPNet
+
+func init() {
+	for _, cidr := range []string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"127.0.0.0/8",
+		"169.254.0.0/16", // link-local
+		"::1/128",
+		"fc00::/7",  // unique-local IPv6
+		"fe80::/10", // link-local IPv6
+	} {
+		_, network, err := net.ParseCIDR(cidr)
+		if err == nil {
+			privateIPRanges = append(privateIPRanges, network)
+		}
+	}
+}
+
+// ValidateTraceDecision checks per-field length limits on the fields that flow
+// into the embedding pipeline and Postgres TEXT columns.
+func ValidateTraceDecision(d TraceDecision) error {
+	if len(d.DecisionType) > MaxDecisionTypeLen {
+		return fmt.Errorf("decision_type exceeds maximum length of %d characters", MaxDecisionTypeLen)
+	}
+	if len(d.Outcome) > MaxOutcomeLen {
+		return fmt.Errorf("outcome exceeds maximum length of %d bytes", MaxOutcomeLen)
+	}
+	if d.Reasoning != nil && len(*d.Reasoning) > MaxReasoningLen {
+		return fmt.Errorf("reasoning exceeds maximum length of %d bytes", MaxReasoningLen)
+	}
+	for i, ev := range d.Evidence {
+		if ev.SourceURI != nil {
+			if err := ValidateSourceURI(*ev.SourceURI); err != nil {
+				return fmt.Errorf("evidence[%d].source_uri: %w", i, err)
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateSourceURI ensures a source_uri is a safe, publicly-routable http/https URL.
+// Rejects javascript: and file: schemes (XSS via UI), credentials embedded in
+// the URL, and private/loopback addresses (future SSRF surface).
+func ValidateSourceURI(rawURI string) error {
+	u, err := url.Parse(rawURI)
+	if err != nil {
+		return fmt.Errorf("invalid URI: %w", err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("source_uri must use http or https scheme (got %q)", u.Scheme)
+	}
+	if u.User != nil {
+		return fmt.Errorf("source_uri must not include credentials")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("source_uri must include a host")
+	}
+	if strings.EqualFold(host, "localhost") {
+		return fmt.Errorf("source_uri must not point to localhost")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		for _, r := range privateIPRanges {
+			if r.Contains(ip) {
+				return fmt.Errorf("source_uri must not point to a private or loopback address")
+			}
+		}
+	}
+	return nil
+}
 
 // APIResponse is the standard response envelope for all HTTP API responses.
 type APIResponse struct {

@@ -210,6 +210,15 @@ func (h *Handlers) HandleScopedToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Privilege escalation guard: callers can only impersonate agents whose role
+	// is strictly below their own. Without this check an admin-role caller could
+	// issue a scoped token for org_owner or platform_admin.
+	if model.RoleRank(claims.Role) <= model.RoleRank(target.Role) {
+		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden,
+			"cannot issue scoped token for agent with role equal to or higher than your own")
+		return
+	}
+
 	token, expiresAt, err := h.jwtMgr.IssueScopedToken(claims.AgentID, target, ttl)
 	if err != nil {
 		h.writeInternalError(w, r, "failed to issue scoped token", err)
