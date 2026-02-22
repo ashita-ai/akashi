@@ -132,6 +132,64 @@ func TestValidateToken_EmptyIssuer(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid issuer")
 }
 
+func TestIssueScopedToken(t *testing.T) {
+	mgr, err := auth.NewJWTManager("", "", 24*time.Hour)
+	require.NoError(t, err)
+
+	admin := model.Agent{
+		ID:      uuid.New(),
+		AgentID: "admin",
+		OrgID:   uuid.New(),
+		Role:    model.RoleAdmin,
+	}
+	target := model.Agent{
+		ID:      uuid.New(),
+		AgentID: "reviewer",
+		OrgID:   admin.OrgID,
+		Role:    model.RoleReader,
+	}
+
+	t.Run("claims carry target identity and scoped_by", func(t *testing.T) {
+		token, expiresAt, err := mgr.IssueScopedToken(admin.AgentID, target, 5*time.Minute)
+		require.NoError(t, err)
+		assert.NotEmpty(t, token)
+		assert.True(t, expiresAt.After(time.Now()))
+		assert.True(t, expiresAt.Before(time.Now().Add(6*time.Minute)))
+
+		claims, err := mgr.ValidateToken(token)
+		require.NoError(t, err)
+		assert.Equal(t, "reviewer", claims.AgentID)
+		assert.Equal(t, model.RoleReader, claims.Role)
+		assert.Equal(t, target.OrgID, claims.OrgID)
+		assert.Equal(t, "admin", claims.ScopedBy)
+	})
+
+	t.Run("TTL is capped at MaxScopedTokenTTL", func(t *testing.T) {
+		token, expiresAt, err := mgr.IssueScopedToken(admin.AgentID, target, 48*time.Hour)
+		require.NoError(t, err)
+		assert.NotEmpty(t, token)
+		// Should expire within MaxScopedTokenTTL, not 48 hours.
+		assert.True(t, expiresAt.Before(time.Now().Add(auth.MaxScopedTokenTTL+time.Minute)),
+			"expiry should be capped at MaxScopedTokenTTL")
+	})
+
+	t.Run("zero TTL defaults to MaxScopedTokenTTL", func(t *testing.T) {
+		token, expiresAt, err := mgr.IssueScopedToken(admin.AgentID, target, 0)
+		require.NoError(t, err)
+		assert.NotEmpty(t, token)
+		assert.True(t, expiresAt.After(time.Now()))
+	})
+
+	t.Run("token is valid and passes ValidateToken", func(t *testing.T) {
+		token, _, err := mgr.IssueScopedToken(admin.AgentID, target, 5*time.Minute)
+		require.NoError(t, err)
+		claims, err := mgr.ValidateToken(token)
+		require.NoError(t, err)
+		assert.Equal(t, target.ID.String(), claims.Subject)
+		assert.Equal(t, "akashi", claims.Issuer)
+	})
+}
+
 func TestValidateToken_MalformedSubject(t *testing.T) {
 	mgr, privKey := newTestJWTManagerWithKey(t)
 

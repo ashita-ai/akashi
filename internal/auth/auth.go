@@ -28,7 +28,11 @@ type Claims struct {
 	OrgID    uuid.UUID       `json:"org_id"`
 	Role     model.AgentRole `json:"role"`
 	APIKeyID *uuid.UUID      `json:"api_key_id,omitempty"` // Set when authenticated via a managed API key.
+	ScopedBy string          `json:"scoped_by,omitempty"`  // Set when issued via POST /auth/scoped-token; contains the issuing admin's agent_id.
 }
+
+// MaxScopedTokenTTL is the maximum lifetime of a scoped token.
+const MaxScopedTokenTTL = time.Hour
 
 // JWTManager handles JWT creation and validation using Ed25519.
 type JWTManager struct {
@@ -115,6 +119,39 @@ func (m *JWTManager) IssueToken(agent model.Agent) (string, time.Time, error) {
 	signed, err := token.SignedString(m.privateKey)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("auth: sign token: %w", err)
+	}
+	return signed, exp, nil
+}
+
+// IssueScopedToken issues a short-lived token that acts as targetAgent but
+// carries the issuing admin's agent_id in the ScopedBy claim. TTL is capped
+// at MaxScopedTokenTTL regardless of the requested value.
+func (m *JWTManager) IssueScopedToken(issuingAdminAgentID string, target model.Agent, ttl time.Duration) (string, time.Time, error) {
+	if ttl <= 0 || ttl > MaxScopedTokenTTL {
+		ttl = MaxScopedTokenTTL
+	}
+
+	now := time.Now().UTC()
+	exp := now.Add(ttl)
+
+	claims := Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   target.ID.String(),
+			Issuer:    "akashi",
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(exp),
+			ID:        uuid.New().String(),
+		},
+		AgentID:  target.AgentID,
+		OrgID:    target.OrgID,
+		Role:     target.Role,
+		ScopedBy: issuingAdminAgentID,
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
+	signed, err := token.SignedString(m.privateKey)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("auth: sign scoped token: %w", err)
 	}
 	return signed, exp, nil
 }
