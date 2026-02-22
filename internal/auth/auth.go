@@ -106,6 +106,7 @@ func (m *JWTManager) IssueToken(agent model.Agent) (string, time.Time, error) {
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   agent.ID.String(),
 			Issuer:    "akashi",
+			Audience:  jwt.ClaimStrings{"akashi"},
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(exp),
 			ID:        uuid.New().String(),
@@ -138,6 +139,7 @@ func (m *JWTManager) IssueScopedToken(issuingAdminAgentID string, target model.A
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   target.ID.String(),
 			Issuer:    "akashi",
+			Audience:  jwt.ClaimStrings{"akashi"},
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(exp),
 			ID:        uuid.New().String(),
@@ -158,12 +160,17 @@ func (m *JWTManager) IssueScopedToken(issuingAdminAgentID string, target model.A
 
 // ValidateToken parses and validates a JWT, returning the claims.
 func (m *JWTManager) ValidateToken(tokenStr string) (*Claims, error) {
-	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(token *jwt.Token) (any, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodEd25519); !ok {
-			return nil, fmt.Errorf("auth: unexpected signing method: %v", token.Header["alg"])
-		}
-		return m.publicKey, nil
-	})
+	token, err := jwt.ParseWithClaims(
+		tokenStr,
+		&Claims{},
+		func(token *jwt.Token) (any, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodEd25519); !ok {
+				return nil, fmt.Errorf("auth: unexpected signing method: %v", token.Header["alg"])
+			}
+			return m.publicKey, nil
+		},
+		jwt.WithAudience("akashi"),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("auth: validate token: %w", err)
 	}
