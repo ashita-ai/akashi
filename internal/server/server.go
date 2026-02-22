@@ -33,8 +33,14 @@ func (s *Server) Handler() http.Handler {
 	return s.handler
 }
 
+// RoleMiddlewareFn is a function that wraps an HTTP handler to enforce a minimum RBAC role.
+// Exported for use by RouteRegistrar adapters in the root akashi package so enterprise
+// routes can use the same auth chain without importing internal/server directly.
+type RoleMiddlewareFn func(minRole model.AgentRole) func(http.Handler) http.Handler
+
 // ServerConfig holds all dependencies and configuration for creating a Server.
-// Optional fields (nil-safe): Broker, Searcher, MCPServer, UIFS, OpenAPISpec.
+// Optional fields (nil-safe): Broker, Searcher, MCPServer, UIFS, OpenAPISpec,
+// ExtraRoutes, Middlewares, DecisionHooks.
 type ServerConfig struct {
 	// Required dependencies.
 	DB          *storage.DB
@@ -63,6 +69,16 @@ type ServerConfig struct {
 	// Optional embedded assets.
 	UIFS        fs.FS  // Embedded UI filesystem (SPA).
 	OpenAPISpec []byte // Embedded OpenAPI YAML.
+
+	// Extension points (enterprise / plugin).
+	// ExtraRoutes are called after all OSS routes are registered. Each function
+	// receives the mux and a RoleMiddlewareFn that applies RBAC role enforcement.
+	ExtraRoutes []func(*http.ServeMux, RoleMiddlewareFn)
+	// Middlewares wrap the fully-assembled handler (outermost position).
+	// Applied in registration order: index 0 is the outermost middleware.
+	Middlewares []func(http.Handler) http.Handler
+	// DecisionHooks are fired asynchronously on decision lifecycle events.
+	DecisionHooks []DecisionHook
 }
 
 // New creates a new HTTP server with all routes configured.
@@ -80,6 +96,7 @@ func New(cfg ServerConfig) *Server {
 		MaxRequestBodyBytes:     cfg.MaxRequestBodyBytes,
 		OpenAPISpec:             cfg.OpenAPISpec,
 		EnableDestructiveDelete: cfg.EnableDestructiveDelete,
+		DecisionHooks:           cfg.DecisionHooks,
 	})
 
 	mux := http.NewServeMux()
@@ -183,6 +200,13 @@ func New(cfg ServerConfig) *Server {
 		cfg.Logger.Info("ui enabled, serving SPA at /")
 	}
 
+	// Extra routes from enterprise/plugins — registered after all OSS routes so
+	// OSS routes always take precedence when there is a path conflict.
+	roleFn := RoleMiddlewareFn(requireRole)
+	for _, fn := range cfg.ExtraRoutes {
+		fn(mux, roleFn)
+	}
+
 	// Middleware chain (outermost executes first):
 	// request ID → security headers → CORS → tracing → logging → baggage → auth → recovery → rateLimit → handler.
 	var handler http.Handler = mux
@@ -197,6 +221,12 @@ func New(cfg ServerConfig) *Server {
 	handler = corsMiddleware(cfg.CORSAllowedOrigins, handler)
 	handler = securityHeadersMiddleware(handler)
 	handler = requestIDMiddleware(handler)
+
+	// Enterprise/plugin middlewares — applied outermost (index 0 = first-registered = outermost).
+	// Iterate in reverse so that Middlewares[0] ends up as the true outermost layer.
+	for i := len(cfg.Middlewares) - 1; i >= 0; i-- {
+		handler = cfg.Middlewares[i](handler)
+	}
 
 	return &Server{
 		httpServer: &http.Server{
