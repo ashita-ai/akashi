@@ -29,7 +29,7 @@ services:
           openssl genpkey -algorithm ed25519 -out /data/jwt_private.pem 2>/dev/null &&
           openssl pkey -in /data/jwt_private.pem -pubout -out /data/jwt_public.pem 2>/dev/null &&
           chown 10001:10001 /data/jwt_private.pem /data/jwt_public.pem &&
-          chmod 600 /data/jwt_private.pem &&
+          chmod 600 /data/jwt_private.pem /data/jwt_public.pem &&
           echo 'Generated JWT signing keys in ./data/'
         else
           echo 'JWT signing keys already exist'
@@ -84,7 +84,7 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:11434/ > /dev/null"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/11434' 2>/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -101,19 +101,20 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
-    command: >
-      sh -c "
+    command:
+      - sh
+      - -c
+      - |
         apk add --no-cache --quiet curl &&
         if curl -sf http://ollama:11434/api/tags | grep -q 'mxbai-embed-large'; then
           echo 'mxbai-embed-large already available'
         else
-          echo 'Pulling mxbai-embed-large (~670MB, first launch only)...' &&
+          echo 'Pulling mxbai-embed-large (first launch only)...' &&
           curl -sf -X POST http://ollama:11434/api/pull \
             -H 'Content-Type: application/json' \
-            -d '{\"model\":\"mxbai-embed-large\",\"stream\":false}' > /dev/null &&
+            -d '{"model":"mxbai-embed-large","stream":false}' > /dev/null &&
           echo 'Embedding model ready'
         fi
-      "
     restart: "no"
 
   akashi:
