@@ -22,7 +22,15 @@ Everything runs in Docker — TimescaleDB, Qdrant, Ollama, and the Akashi server
 docker compose -f docker-compose.complete.yml up -d
 ```
 
-That's it. First launch downloads the Ollama embedding model (~670MB) and generates persistent JWT keys — takes a few minutes. Subsequent launches are instant.
+**First launch builds the server image from source and downloads the Ollama embedding model (~670MB).** Expect 5–15 minutes on first run depending on your machine and network. Subsequent launches start in seconds.
+
+Watch akashi come up:
+
+```bash
+docker compose -f docker-compose.complete.yml logs -f akashi
+```
+
+The server is ready when you see a `listening` log line. The Ollama model download continues in the background — embeddings activate automatically once it completes.
 
 ```bash
 curl http://localhost:8080/health
@@ -35,9 +43,11 @@ Just the Akashi server container. You provide TimescaleDB, Qdrant, and an embedd
 
 ```bash
 cp docker/env.example .env
-# Edit .env: set DATABASE_URL, QDRANT_URL, OPENAI_API_KEY (or Ollama URL)
-docker compose up -d --build
+# Edit .env: set DATABASE_URL, AKASHI_ADMIN_API_KEY, and optionally QDRANT_URL / OPENAI_API_KEY
+docker compose up -d
 ```
+
+First run builds the server image from source (~3–5 minutes). After that, `docker compose up -d` starts in seconds. To force a rebuild after updating the source: `docker compose up -d --build`.
 
 Required variables:
 
