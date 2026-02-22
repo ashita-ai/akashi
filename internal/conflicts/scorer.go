@@ -43,6 +43,19 @@ func uuidString(id *uuid.UUID) string {
 	return id.String()
 }
 
+// PairwiseScorer performs pairwise conflict scoring between two decisions.
+// The default implementation uses the Validator (embedding similarity + LLM confirmation).
+// An external implementation may be injected via conflicts.Scorer.WithPairwiseScorer
+// to replace the built-in confirmation step (enterprise override).
+//
+// ScorePair returns (score, explanation, error):
+//   - score: 0.0 = no conflict, positive value = conflict detected.
+//   - explanation: human-readable reason for the classification.
+//   - error: only for transient failures; the caller skips the pair on error.
+type PairwiseScorer interface {
+	ScorePair(ctx context.Context, a, b model.Decision) (score float32, explanation string, err error)
+}
+
 // Scorer finds and scores semantic conflicts for new decisions.
 type Scorer struct {
 	db              *storage.DB
@@ -52,6 +65,9 @@ type Scorer struct {
 	backfillWorkers int
 	decayLambda     float64 // Temporal decay rate. 0 disables decay.
 	finder          search.CandidateFinder
+	// pairwiseScorer is an optional external override for the confirmation step.
+	// When non-nil, it replaces the built-in Validator-backed scoring for each candidate pair.
+	pairwiseScorer PairwiseScorer
 }
 
 // WithCandidateFinder wires a Qdrant-backed CandidateFinder for conflict candidate
@@ -59,6 +75,15 @@ type Scorer struct {
 // no conflicts. Must be called before any scoring starts.
 func (s *Scorer) WithCandidateFinder(cf search.CandidateFinder) *Scorer {
 	s.finder = cf
+	return s
+}
+
+// WithPairwiseScorer sets an external pairwise scorer to replace the built-in
+// Validator-backed confirmation step. When set, each candidate pair is classified
+// by the external scorer instead of the embedding+LLM pipeline. Candidate finding
+// via Qdrant still runs in OSS. Must be called before any scoring starts.
+func (s *Scorer) WithPairwiseScorer(ps PairwiseScorer) *Scorer {
+	s.pairwiseScorer = ps
 	return s
 }
 
@@ -273,23 +298,48 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		}
 
 		// Cross-agent pairs with high topic similarity bypass the cosine-divergence
-		// significance gate when an LLM validator is active. Bi-encoders cannot
-		// detect stance opposition for same-topic decisions: two agents saying
-		// "X is the right shape" and "X is the wrong shape" embed close together
-		// because they share all the same domain vocabulary. The LLM is the right
-		// classifier for this case; the significance gate would filter it out
-		// before the LLM ever sees it. See: NLI literature on bi-encoder limits.
-		directToLLM := !isNoop && d.AgentID != cand.AgentID && topicSim >= decisionTopicSimFloor
+		// significance gate when an LLM validator or external pairwise scorer is active.
+		// Bi-encoders cannot detect stance opposition for same-topic decisions: two agents
+		// saying "X is the right shape" and "X is the wrong shape" embed close together
+		// because they share all the same domain vocabulary. The LLM (or external scorer)
+		// is the right classifier for this case. See: NLI literature on bi-encoder limits.
+		hasScorer := s.pairwiseScorer != nil || !isNoop
+		directToScorer := hasScorer && d.AgentID != cand.AgentID && topicSim >= decisionTopicSimFloor
 
-		if bestSig < s.threshold && !directToLLM {
+		if bestSig < s.threshold && !directToScorer {
 			continue
 		}
 
-		// LLM validation gate: classify the relationship between candidates.
-		// NoopValidator always returns "contradiction" (preserving current behavior).
+		// Confirmation gate: classify the candidate pair as conflict or not.
+		// Priority: (1) external pairwise scorer, (2) built-in LLM validator, (3) noop.
+		// NoopValidator always returns "contradiction" (preserving legacy embedding-only behavior).
 		var explanation *string
 		var category, severity, relationship *string
-		if !isNoop {
+
+		if s.pairwiseScorer != nil {
+			// External pairwise scorer (enterprise override).
+			if cache != nil && cache.checkAndMark(decisionID, cand.ID) {
+				s.logger.Debug("conflict scorer: pair already evaluated, skipping external scorer call",
+					"decision_a", decisionID, "decision_b", cand.ID)
+				continue
+			}
+			extScore, extExpl, err := s.pairwiseScorer.ScorePair(ctx, d, cand)
+			if err != nil {
+				s.logger.Warn("conflict scorer: external pairwise scorer failed, skipping candidate",
+					"error", err, "decision_a", decisionID, "decision_b", cand.ID)
+				continue // fail-safe: don't insert unscored conflicts
+			}
+			if extScore <= 0 {
+				s.logger.Debug("conflict scorer: external scorer classified as non-conflict",
+					"decision_a", decisionID, "decision_b", cand.ID)
+				continue
+			}
+			bestMethod = "external"
+			if extExpl != "" {
+				explanation = &extExpl
+			}
+		} else if !isNoop {
+			// Built-in LLM validation gate.
 			// Skip LLM call if this pair was already evaluated during backfill.
 			if cache != nil && cache.checkAndMark(decisionID, cand.ID) {
 				s.logger.Debug("conflict scorer: pair already evaluated, skipping LLM call",
@@ -486,6 +536,12 @@ func (s *Scorer) BackfillScoring(ctx context.Context, batchSize int) (int, error
 func (s *Scorer) HasLLMValidator() bool {
 	_, isNoop := s.validator.(NoopValidator)
 	return !isNoop
+}
+
+// Validator returns the underlying Validator for inspection (e.g., type assertions
+// to access provider-specific methods like OllamaValidator.Warmup).
+func (s *Scorer) Validator() Validator {
+	return s.validator
 }
 
 // ClearUnvalidatedConflicts deletes all scored_conflicts that were not validated

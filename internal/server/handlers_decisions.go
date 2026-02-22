@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -157,6 +158,23 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		h.clearIdempotentWrite(r, orgID, idem)
 		h.writeInternalError(w, r, "failed to create trace", err)
 		return
+	}
+
+	// Fire OnDecisionTraced hooks asynchronously. Hook failures are logged
+	// but never fail the request — the decision is already durably stored.
+	if len(h.decisionHooks) > 0 {
+		decision := result.Decision
+		hooks := h.decisionHooks
+		logger := h.logger
+		go func() {
+			hookCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			for _, hook := range hooks {
+				if err := hook.OnDecisionTraced(hookCtx, decision); err != nil {
+					logger.Warn("event hook OnDecisionTraced failed", "error", err)
+				}
+			}
+		}()
 	}
 
 	resp := map[string]any{

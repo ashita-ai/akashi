@@ -37,6 +37,57 @@ type Provider interface {
 	Dimensions() int
 }
 
+// PublicProviderAdapter wraps an external embedding provider (defined in the root
+// akashi package) to satisfy the internal embedding.Provider interface.
+//
+// It accepts the external provider as an anonymous interface with []float32 return
+// types, avoiding a direct import of the root akashi package from internal/
+// (which would create a circular import: akashi → internal/embedding → akashi).
+// The root akashi package constructs this adapter with a concrete akashi.EmbeddingProvider
+// value; since akashi.EmbeddingProvider satisfies the anonymous interface, no
+// import of the root package is needed here.
+type PublicProviderAdapter struct {
+	external interface {
+		Embed(context.Context, string) ([]float32, error)
+		EmbedBatch(context.Context, []string) ([][]float32, error)
+		Dimensions() int
+	}
+}
+
+// NewPublicProviderAdapter wraps an external embedding provider.
+func NewPublicProviderAdapter(ext interface {
+	Embed(context.Context, string) ([]float32, error)
+	EmbedBatch(context.Context, []string) ([][]float32, error)
+	Dimensions() int
+}) *PublicProviderAdapter {
+	return &PublicProviderAdapter{external: ext}
+}
+
+// Embed implements embedding.Provider.
+func (a *PublicProviderAdapter) Embed(ctx context.Context, text string) (pgvector.Vector, error) {
+	v, err := a.external.Embed(ctx, text)
+	if err != nil {
+		return pgvector.Vector{}, err
+	}
+	return pgvector.NewVector(v), nil
+}
+
+// EmbedBatch implements embedding.Provider.
+func (a *PublicProviderAdapter) EmbedBatch(ctx context.Context, texts []string) ([]pgvector.Vector, error) {
+	vecs, err := a.external.EmbedBatch(ctx, texts)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]pgvector.Vector, len(vecs))
+	for i, v := range vecs {
+		out[i] = pgvector.NewVector(v)
+	}
+	return out, nil
+}
+
+// Dimensions implements embedding.Provider.
+func (a *PublicProviderAdapter) Dimensions() int { return a.external.Dimensions() }
+
 // openAIMaxInputChars is a safe default for text-embedding-3-small (8191 tokens).
 // At ~4 chars/token for English prose, 30000 chars ≈ 7500 tokens — well within the
 // 8191-token limit. Code-heavy content tokenizes at ~2-3 chars/token, but even at
