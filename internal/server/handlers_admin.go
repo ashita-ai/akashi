@@ -36,6 +36,11 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
 		return
 	}
+	if model.IsReservedAgentID(req.AgentID) {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"agent_id \""+req.AgentID+"\" is reserved and cannot be used")
+		return
+	}
 
 	if req.Role == "" {
 		req.Role = model.RoleAgent
