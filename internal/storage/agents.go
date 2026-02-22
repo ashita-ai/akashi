@@ -383,12 +383,12 @@ func (db *DB) UpdateAgentWithAudit(ctx context.Context, orgID uuid.UUID, agentID
 
 // AgentStats holds aggregate statistics for a single agent.
 type AgentStats struct {
-	DecisionCount int            `json:"decision_count"`
-	AvgConfidence float64        `json:"avg_confidence"`
-	FirstDecision *time.Time     `json:"first_decision,omitempty"`
-	LastDecision  *time.Time     `json:"last_decision,omitempty"`
-	LowQuality    int            `json:"low_quality_count"` // completeness_score < 0.5
-	TypeBreakdown map[string]int `json:"decision_types"`
+	DecisionCount   int            `json:"decision_count"`
+	AvgConfidence   float64        `json:"avg_confidence"`
+	FirstDecision   *time.Time     `json:"first_decision,omitempty"`
+	LastDecision    *time.Time     `json:"last_decision,omitempty"`
+	LowCompleteness int            `json:"low_completeness_count"` // completeness_score < 0.5
+	TypeBreakdown   map[string]int `json:"decision_types"`
 }
 
 // GetAgentStats returns aggregate decision statistics for a specific agent.
@@ -401,7 +401,7 @@ func (db *DB) GetAgentStats(ctx context.Context, orgID uuid.UUID, agentID string
 		FROM decisions
 		WHERE org_id = $1 AND agent_id = $2 AND valid_to IS NULL`,
 		orgID, agentID,
-	).Scan(&s.DecisionCount, &s.AvgConfidence, &s.FirstDecision, &s.LastDecision, &s.LowQuality)
+	).Scan(&s.DecisionCount, &s.AvgConfidence, &s.FirstDecision, &s.LastDecision, &s.LowCompleteness)
 	if err != nil {
 		return s, fmt.Errorf("storage: agent stats: %w", err)
 	}

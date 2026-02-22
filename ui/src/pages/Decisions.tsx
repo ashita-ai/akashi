@@ -164,7 +164,7 @@ export default function Decisions() {
                 <TableHead>Type</TableHead>
                 <TableHead>Outcome</TableHead>
                 <TableHead className="text-right">Confidence</TableHead>
-                <TableHead className="text-right">Quality</TableHead>
+                <TableHead className="text-right">Completeness</TableHead>
                 <TableHead>Reasoning</TableHead>
               </TableRow>
             </TableHeader>

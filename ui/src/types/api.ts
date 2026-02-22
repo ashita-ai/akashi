@@ -241,7 +241,7 @@ export interface AgentStats {
   avg_confidence: number;
   first_decision_at: string | null;
   last_decision_at: string | null;
-  low_quality_count: number;
+  low_completeness_count: number;
   type_breakdown: Record<string, number>;
 }
 
@@ -256,7 +256,7 @@ export interface TraceHealth {
 
 export interface TraceHealthCompleteness {
   total_decisions: number;
-  avg_quality: number;
+  avg_completeness: number;
   below_half: number;
   below_third: number;
   with_reasoning: number;

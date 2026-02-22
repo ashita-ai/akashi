@@ -26,7 +26,7 @@ type Metrics struct {
 // CompletenessMetrics tracks decision quality and reasoning coverage.
 type CompletenessMetrics struct {
 	TotalDecisions   int     `json:"total_decisions"`
-	AvgQuality       float64 `json:"avg_quality"`
+	AvgCompleteness  float64 `json:"avg_completeness"`
 	BelowHalf        int     `json:"below_half"`  // completeness_score < 0.5
 	BelowThird       int     `json:"below_third"` // completeness_score < 0.33
 	WithReasoning    int     `json:"with_reasoning"`
@@ -109,7 +109,7 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID) (*Metrics, error
 	m := &Metrics{
 		Completeness: &CompletenessMetrics{
 			TotalDecisions:   qs.Total,
-			AvgQuality:       qs.AvgQuality,
+			AvgCompleteness:  qs.AvgCompleteness,
 			BelowHalf:        qs.BelowHalf,
 			BelowThird:       qs.BelowThird,
 			WithReasoning:    qs.WithReasoning,
@@ -163,9 +163,9 @@ func computeGaps(qs storage.DecisionQualityStats, es storage.EvidenceCoverageSta
 	var gaps []string
 
 	// Most severe first.
-	if qs.AvgQuality < 0.3 {
+	if qs.AvgCompleteness < 0.3 {
 		gaps = append(gaps, fmt.Sprintf(
-			"Average decision quality is %.2f. Most decisions lack substantive reasoning.", qs.AvgQuality))
+			"Average completeness score is %.2f. Most decisions lack substantive reasoning.", qs.AvgCompleteness))
 	}
 
 	if es.CoveragePercent < 50 {
@@ -188,7 +188,7 @@ func computeGaps(qs storage.DecisionQualityStats, es storage.EvidenceCoverageSta
 
 	if len(gaps) < 3 && qs.BelowHalf > 0 {
 		gaps = append(gaps, fmt.Sprintf(
-			"%d decisions have quality scores below 0.5.", qs.BelowHalf))
+			"%d decisions have completeness scores below 0.5.", qs.BelowHalf))
 	}
 
 	// Outcome signal gaps (Spec 35).
@@ -218,7 +218,7 @@ func computeGaps(qs storage.DecisionQualityStats, es storage.EvidenceCoverageSta
 // computeStatus determines the overall health status.
 func computeStatus(qs storage.DecisionQualityStats, es storage.EvidenceCoverageStats, openConflicts int) string {
 	problems := 0
-	if qs.AvgQuality < 0.3 {
+	if qs.AvgCompleteness < 0.3 {
 		problems++
 	}
 	if es.CoveragePercent < 50 {
