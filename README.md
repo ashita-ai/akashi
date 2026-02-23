@@ -139,7 +139,7 @@ TOKEN=$(curl -s -X POST http://localhost:8080/auth/token \
   -d '{"agent_id": "admin", "api_key": "admin"}' | jq -r '.data.token')
 
 # Add globally (all projects on this machine)
-claude mcp add --transport http akashi http://localhost:8080/mcp \
+claude mcp add --transport http --scope user akashi http://localhost:8080/mcp \
   --header "Authorization: Bearer $TOKEN"
 
 # Or scope it to just the current project
