@@ -58,10 +58,11 @@ services:
         -c synchronous_commit=off
         -c max_connections=200
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U akashi -d akashi"]
+      test: ["CMD-SHELL", "PGPASSWORD=$POSTGRES_PASSWORD psql -h 127.0.0.1 -U $POSTGRES_USER -d $POSTGRES_DB -tAc \"SELECT COUNT(*) = 2 FROM pg_extension WHERE extname IN ('vector','timescaledb')\" 2>/dev/null | grep -q t"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
+      start_period: 10s
 
   qdrant:
     image: qdrant/qdrant:v1.13.6
