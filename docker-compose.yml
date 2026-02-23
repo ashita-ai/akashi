@@ -19,7 +19,7 @@ services:
     container_name: akashi-server
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${AKASHI_PORT:-8080}:${AKASHI_PORT:-8080}"
     env_file:
       - path: .env
         required: false
@@ -64,7 +64,7 @@ services:
       # Mount ./data if using persistent JWT keys.
       - ./data:/data
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${AKASHI_PORT:-8080}/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5

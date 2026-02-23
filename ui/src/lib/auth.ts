@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { createElement } from "react";
-import { login as apiLogin, setTokenProvider } from "@/lib/api";
+import { login as apiLogin } from "@/lib/api";
 
 const STORAGE_KEY_TOKEN = "akashi_token";
 const STORAGE_KEY_AGENT = "akashi_agent_id";
@@ -37,6 +37,14 @@ export function useAuth(): AuthContextValue {
   return ctx;
 }
 
+// Normalize RFC3339Nano (9 fractional digits) to millisecond precision.
+// Go's time.Time JSON marshals with nanosecond precision; JS Date only supports milliseconds.
+function parseExpiresAt(raw: string): Date | null {
+  const normalized = raw.replace(/(\.\d{3})\d*/, "$1");
+  const d = new Date(normalized);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
 function loadPersistedAuth(): AuthState {
   try {
     const token = localStorage.getItem(STORAGE_KEY_TOKEN);
@@ -45,8 +53,8 @@ function loadPersistedAuth(): AuthState {
     if (!token || !agentId || !expiresRaw) {
       return { token: null, agentId: null, expiresAt: null };
     }
-    const expiresAt = new Date(expiresRaw);
-    if (expiresAt.getTime() <= Date.now()) {
+    const expiresAt = parseExpiresAt(expiresRaw);
+    if (!expiresAt || expiresAt.getTime() <= Date.now()) {
       clearPersistedAuth();
       return { token: null, agentId: null, expiresAt: null };
     }
@@ -79,30 +87,36 @@ function clearPersistedAuth(): void {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>(loadPersistedAuth);
 
-  // Register the token provider for the API client.
-  useEffect(() => {
-    setTokenProvider(() => state.token);
-  }, [state.token]);
-
   // Auto-logout when token expires.
   useEffect(() => {
-    if (!state.expiresAt) return;
+    if (!state.expiresAt || !Number.isFinite(state.expiresAt.getTime())) return;
     const ms = state.expiresAt.getTime() - Date.now();
     if (ms <= 0) {
       clearPersistedAuth();
       setState({ token: null, agentId: null, expiresAt: null });
       return;
     }
+    // setTimeout delay is a 32-bit signed integer internally; values above
+    // 2^31-1 ms (~24.8 days) wrap around and fire immediately. Cap the delay
+    // so long-lived tokens don't instantly log the user out. If the cap fires
+    // before actual expiry, the callback re-checks before clearing.
+    const MAX_TIMEOUT_MS = 2_147_483_647; // 2^31 - 1
+    const delay = Math.min(ms, MAX_TIMEOUT_MS);
     const timer = setTimeout(() => {
-      clearPersistedAuth();
-      setState({ token: null, agentId: null, expiresAt: null });
-    }, ms);
+      if (!state.expiresAt || state.expiresAt.getTime() <= Date.now()) {
+        clearPersistedAuth();
+        setState({ token: null, agentId: null, expiresAt: null });
+      }
+    }, delay);
     return () => clearTimeout(timer);
   }, [state.expiresAt]);
 
   const login = useCallback(async (agentId: string, apiKey: string) => {
     const result = await apiLogin(agentId, apiKey);
-    const expiresAt = new Date(result.expires_at);
+    const expiresAt = parseExpiresAt(result.expires_at);
+    if (!expiresAt || !Number.isFinite(expiresAt.getTime())) {
+      throw new Error("Invalid token expiration from server");
+    }
     persistAuth(result.token, agentId, expiresAt);
     setState({ token: result.token, agentId, expiresAt });
   }, []);

@@ -37,6 +37,14 @@ curl http://localhost:8080/health
 # Open http://localhost:8080 for the audit dashboard
 ```
 
+If port 8080 is already in use, set `AKASHI_PORT` before starting:
+
+```bash
+echo "AKASHI_PORT=8081" > .env
+docker compose -f docker-compose.complete.yml up -d
+# Open http://localhost:8081
+```
+
 ### Binary only (bring your own infrastructure)
 
 Just the Akashi server container. You provide TimescaleDB, Qdrant, and an embedding API key.

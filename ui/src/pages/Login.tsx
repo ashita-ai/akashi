@@ -1,5 +1,4 @@
 import { useState, type FormEvent } from "react";
-import { useNavigate } from "react-router";
 import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +11,6 @@ export default function Login() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
-  const navigate = useNavigate();
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -20,10 +18,12 @@ export default function Login() {
     setLoading(true);
     try {
       await login(agentId, apiKey);
-      navigate("/", { replace: true });
+      // persistAuth wrote the token to localStorage before returning.
+      // Use a hard redirect so the app re-initialises from localStorage
+      // cleanly, bypassing React Router v7 data router state tearing.
+      window.location.replace("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
-    } finally {
       setLoading(false);
     }
   }
