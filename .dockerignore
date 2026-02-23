@@ -8,3 +8,4 @@ docker/
 specs/
 *.md
 !migrations/
+ui/node_modules
