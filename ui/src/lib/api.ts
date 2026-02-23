@@ -34,10 +34,15 @@ class ApiError extends Error {
   }
 }
 
-let getToken: (() => string | null) | null = null;
-
-export function setTokenProvider(provider: () => string | null) {
-  getToken = provider;
+// Read the token directly from localStorage on every request. This avoids
+// the React effect timing race where a module-level callback would be null
+// during the first render cycle after login or page load.
+function getStoredToken(): string | null {
+  try {
+    return localStorage.getItem("akashi_token");
+  } catch {
+    return null;
+  }
 }
 
 async function request<T>(
@@ -49,7 +54,7 @@ async function request<T>(
     ...(options.headers as Record<string, string>),
   };
 
-  const token = getToken?.();
+  const token = getStoredToken();
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
@@ -316,3 +321,7 @@ export async function deleteGrant(grantId: string): Promise<void> {
 }
 
 export { ApiError };
+
+// setTokenProvider kept for compatibility but is no longer used — token is
+// read directly from localStorage in request().
+export function setTokenProvider(_provider: () => string | null): void {}
