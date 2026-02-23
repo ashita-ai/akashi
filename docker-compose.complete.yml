@@ -13,7 +13,7 @@
 # The Akashi server starts as soon as the database is ready (~2–3 min).
 # Ollama model download runs in the background; embeddings activate automatically once ready.
 #
-# Open http://localhost:8080 for the audit dashboard.
+# Open http://localhost:8080 for the audit dashboard (or http://localhost:$AKASHI_PORT if overridden).
 
 services:
 
@@ -124,11 +124,11 @@ services:
     container_name: akashi-server
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${AKASHI_PORT:-8080}:${AKASHI_PORT:-8080}"
     environment:
       DATABASE_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi?sslmode=disable
       NOTIFY_URL: postgres://akashi:${POSTGRES_PASSWORD:-akashi}@postgres:5432/akashi?sslmode=disable
-      AKASHI_PORT: "8080"
+      AKASHI_PORT: ${AKASHI_PORT:-8080}
       AKASHI_ADMIN_API_KEY: ${AKASHI_ADMIN_API_KEY:-admin}
       AKASHI_LOG_LEVEL: ${AKASHI_LOG_LEVEL:-info}
 
@@ -154,7 +154,7 @@ services:
     volumes:
       - ./data:/data
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${AKASHI_PORT:-8080}/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5

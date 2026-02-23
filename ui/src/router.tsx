@@ -39,6 +39,7 @@ export const router = createBrowserRouter([
     ),
   },
   {
+    path: "/",
     element: (
       <AuthGuard>
         <Layout />
