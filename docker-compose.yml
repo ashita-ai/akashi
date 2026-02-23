@@ -16,7 +16,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: akashi-server
     restart: unless-stopped
     ports:
       - "127.0.0.1:${AKASHI_PORT:-8080}:${AKASHI_PORT:-8080}"
