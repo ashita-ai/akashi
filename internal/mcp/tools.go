@@ -54,8 +54,8 @@ decision_type="architecture" to see if anyone already decided on caching.`),
 			mcplib.WithString("agent_id",
 				mcplib.Description("Optional: only check decisions from a specific agent"),
 			),
-			mcplib.WithString("repo",
-				mcplib.Description("Optional: filter by repository or project name (e.g. \"akashi\", \"my-service\"). Auto-detected from the working directory when omitted. Pass \"*\" to disable filtering and see decisions across all projects."),
+			mcplib.WithString("project",
+				mcplib.Description("Optional: filter by project name (e.g. \"akashi\", \"my-langchain-app\"). Auto-detected from the working directory when omitted. Pass \"*\" to disable filtering and see decisions across all projects."),
 			),
 			mcplib.WithNumber("limit",
 				mcplib.Description("Maximum number of precedents to return"),
@@ -88,7 +88,7 @@ WHAT TO INCLUDE:
 - outcome: What you decided, stated as a fact ("chose gpt-4o for summarization")
 - confidence: How certain you are (0.0-1.0). Be honest — 0.6 is fine.
 - reasoning: Your chain of thought. Why this choice over alternatives?
-- repo: The project or repository this decision belongs to (e.g. "akashi", "my-service").
+- project: The project, application, or service this decision belongs to (e.g. "akashi", "my-langchain-app", "customer-support-bot").
   Include this so the decision appears in project-scoped queries.
 - precedent_ref: UUID of the prior decision this one builds on. Copy directly from
   akashi_check's precedent_ref_hint field. Wires the attribution graph so the audit
@@ -104,7 +104,7 @@ WHAT TO INCLUDE:
 EXAMPLE: After choosing a caching strategy, record decision_type="architecture",
 outcome="chose Redis with 5min TTL for session cache", confidence=0.85,
 reasoning="Redis handles our expected QPS, TTL prevents stale reads",
-repo="my-service",
+project="my-service",
 precedent_ref="<uuid from akashi_check's precedent_ref_hint if applicable>",
 alternatives='[{"label":"in-memory cache","rejection_reason":"not shared across instances"},{"label":"Memcached","rejection_reason":"no native clustering in our stack"}]',
 evidence='[{"source_type":"tool_output","content":"load test showed 8k req/s with Redis, 2k with DB"}]'
@@ -140,8 +140,8 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 			mcplib.WithString("task",
 				mcplib.Description(`What you're working on (e.g. "codebase review", "implement rate limiting"). Groups related decisions.`),
 			),
-			mcplib.WithString("repo",
-				mcplib.Description(`The project or repository this decision belongs to (e.g. "akashi", "my-service"). Include this so the decision appears in project-scoped queries and can be filtered by other agents working on the same project.`),
+			mcplib.WithString("project",
+				mcplib.Description(`The project, application, or service this decision belongs to (e.g. "akashi", "my-langchain-app", "customer-support-bot"). Include this so the decision appears in project-scoped queries and can be filtered by other agents working on the same project.`),
 			),
 			mcplib.WithString("idempotency_key",
 				mcplib.Description("Optional key for retry safety. Same key + same payload replays the original response. Same key + different payload returns an error. Use a UUID or deterministic identifier per logical operation."),
@@ -199,8 +199,8 @@ FILTER EXAMPLES:
 			mcplib.WithString("model",
 				mcplib.Description("Filter by model name (e.g. 'claude-opus-4-6')"),
 			),
-			mcplib.WithString("repo",
-				mcplib.Description("Filter by repository or project name. Auto-detected from the working directory when omitted. Pass \"*\" to query across all projects."),
+			mcplib.WithString("project",
+				mcplib.Description("Filter by project name (e.g. \"akashi\", \"my-langchain-app\"). Auto-detected from the working directory when omitted. Pass \"*\" to query across all projects."),
 			),
 			mcplib.WithNumber("limit",
 				mcplib.Description("Maximum results to return"),
@@ -247,8 +247,8 @@ EXAMPLE QUERIES:
 				mcplib.Min(0),
 				mcplib.Max(1),
 			),
-			mcplib.WithString("repo",
-				mcplib.Description("Optional: filter by repository or project name. Auto-detected from the working directory when omitted. Pass \"*\" to search across all projects."),
+			mcplib.WithString("project",
+				mcplib.Description("Optional: filter by project name (e.g. \"akashi\", \"my-langchain-app\"). Auto-detected from the working directory when omitted. Pass \"*\" to search across all projects."),
 			),
 			mcplib.WithString("format",
 				mcplib.Description(`Response format: "concise" (default) returns compact results. "full" returns complete decision objects.`),
@@ -286,8 +286,8 @@ filters for agent_id and decision_type.`),
 			mcplib.WithString("model",
 				mcplib.Description("Optional: filter by model name (e.g. 'claude-opus-4-6')"),
 			),
-			mcplib.WithString("repo",
-				mcplib.Description("Optional: filter by repository or project name. Auto-detected from the working directory when omitted. Pass \"*\" to see recent decisions across all projects."),
+			mcplib.WithString("project",
+				mcplib.Description("Optional: filter by project name (e.g. \"akashi\", \"my-langchain-app\"). Auto-detected from the working directory when omitted. Pass \"*\" to see recent decisions across all projects."),
 			),
 			mcplib.WithNumber("limit",
 				mcplib.Description("Maximum results to return"),
@@ -398,18 +398,18 @@ After testing, the coder calls akashi_assess to mark it correct:
 	)
 }
 
-// resolveRepoFilter returns the repo filter to apply to a read operation.
+// resolveProjectFilter returns the project filter to apply to a read operation.
 //
 // Priority:
-//  1. Explicit "repo" param — always wins.
-//  2. repo == "*" — opt-out wildcard, disables filtering (returns nil).
-//  3. No explicit repo — auto-detect from MCP roots (git remote > directory name).
+//  1. Explicit "project" param — always wins.
+//  2. project == "*" — opt-out wildcard, disables filtering (returns nil).
+//  3. No explicit project — auto-detect from MCP roots (git remote > directory name).
 //  4. Roots unavailable or detection fails — no filter (nil).
 //
 // This makes queries naturally project-scoped without requiring agents to know
-// the project name. Agents can pass repo="*" for intentional cross-project queries.
-func (s *Server) resolveRepoFilter(ctx context.Context, request mcplib.CallToolRequest) *string {
-	explicit := request.GetString("repo", "")
+// the project name. Agents can pass project="*" for intentional cross-project queries.
+func (s *Server) resolveProjectFilter(ctx context.Context, request mcplib.CallToolRequest) *string {
+	explicit := request.GetString("project", "")
 	if explicit == "*" {
 		return nil // cross-project opt-out
 	}
@@ -454,8 +454,8 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 		AgentID:      agentID,
 		Limit:        limit,
 	}
-	if repo := s.resolveRepoFilter(ctx, request); repo != nil {
-		checkInput.Repo = *repo
+	if project := s.resolveProjectFilter(ctx, request); project != nil {
+		checkInput.Project = *project
 	}
 
 	resp, err := s.decisionSvc.Check(ctx, orgID, checkInput)
@@ -714,7 +714,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 			serverCtx["roots"] = uris
 		}
 		if project := inferProjectFromRoots(roots); project != "" {
-			serverCtx["repo"] = project
+			serverCtx["project"] = project
 		}
 	}
 
@@ -733,8 +733,8 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	if t := request.GetString("task", ""); t != "" {
 		clientCtx["task"] = t
 	}
-	if r := request.GetString("repo", ""); r != "" {
-		clientCtx["repo"] = r
+	if r := request.GetString("project", ""); r != "" {
+		clientCtx["project"] = r
 	}
 
 	// Operator from JWT claims: use the agent's display name if distinct from agent_id.
@@ -933,7 +933,7 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 	if m := request.GetString("model", ""); m != "" {
 		filters.Model = &m
 	}
-	filters.Repo = s.resolveRepoFilter(ctx, request)
+	filters.Project = s.resolveProjectFilter(ctx, request)
 
 	limit := request.GetInt("limit", 10)
 
@@ -1000,7 +1000,7 @@ func (s *Server) handleSearch(ctx context.Context, request mcplib.CallToolReques
 	if confMin := float32(request.GetFloat("confidence_min", 0)); confMin > 0 {
 		filters.ConfidenceMin = &confMin
 	}
-	filters.Repo = s.resolveRepoFilter(ctx, request)
+	filters.Project = s.resolveProjectFilter(ctx, request)
 
 	results, err := s.decisionSvc.Search(ctx, orgID, query, true, filters, limit)
 	if err != nil {
@@ -1063,7 +1063,7 @@ func (s *Server) handleRecent(ctx context.Context, request mcplib.CallToolReques
 	if m := request.GetString("model", ""); m != "" {
 		filters.Model = &m
 	}
-	filters.Repo = s.resolveRepoFilter(ctx, request)
+	filters.Project = s.resolveProjectFilter(ctx, request)
 
 	decs, _, err := s.decisionSvc.Recent(ctx, orgID, filters, limit, 0)
 	if err != nil {

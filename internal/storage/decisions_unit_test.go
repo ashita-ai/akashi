@@ -60,12 +60,12 @@ func TestBuildDecisionWhereClause_ModelFilter(t *testing.T) {
 func TestBuildDecisionWhereClause_RepoFilter(t *testing.T) {
 	orgID := uuid.New()
 	repo := "ashita-ai/akashi"
-	filters := model.QueryFilters{Repo: &repo}
+	filters := model.QueryFilters{Project: &repo}
 
 	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
 
-	// repo is a generated column — filter uses simple equality, not COALESCE.
-	assert.Contains(t, where, "repo = $2")
+	// project is a generated column — filter uses simple equality, not COALESCE.
+	assert.Contains(t, where, "project = $2")
 	assert.NotContains(t, where, "COALESCE")
 	require.Len(t, args, 2)
 	assert.Equal(t, "ashita-ai/akashi", args[1])
@@ -91,13 +91,13 @@ func TestBuildDecisionWhereClause_AllFilters(t *testing.T) {
 		SessionID:     &sessionID,
 		Tool:          &tool,
 		Model:         &mdl,
-		Repo:          &repo,
+		Project:       &repo,
 	}
 
 	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
 
 	// org_id + agent_ids + run_id + decision_type + confidence_min + outcome
-	// + session_id + tool + model + repo = 10 args
+	// + session_id + tool + model + project = 10 args
 	require.Len(t, args, 10)
 
 	// Verify all conditions are present.
@@ -111,7 +111,7 @@ func TestBuildDecisionWhereClause_AllFilters(t *testing.T) {
 	assert.Contains(t, where, "session_id = $7")
 	assert.Contains(t, where, "tool = $8")
 	assert.Contains(t, where, "model = $9")
-	assert.Contains(t, where, "repo = $10")
+	assert.Contains(t, where, "project = $10")
 }
 
 func TestBuildDecisionWhereClause_ArgIndexing(t *testing.T) {

@@ -257,8 +257,8 @@ func buildFilterConditions(orgID uuid.UUID, filters model.QueryFilters) []string
 	if filters.Model != nil {
 		conditions = append(conditions, "model")
 	}
-	if filters.Repo != nil {
-		conditions = append(conditions, "repo")
+	if filters.Project != nil {
+		conditions = append(conditions, "project")
 	}
 	return conditions
 }
@@ -287,23 +287,23 @@ func TestBuildQdrantFilter_SessionAndContext(t *testing.T) {
 	sessionID := uuid.New()
 	tool := "claude-code"
 	mdl := "claude-opus-4-6"
-	repo := "ashita-ai/akashi"
+	project := "ashita-ai/akashi"
 
 	filters := model.QueryFilters{
 		SessionID: &sessionID,
 		Tool:      &tool,
 		Model:     &mdl,
-		Repo:      &repo,
+		Project:   &project,
 	}
 
 	conditions := buildFilterConditions(uuid.New(), filters)
-	// Expect 5 conditions: org_id + session_id + tool + model + repo.
+	// Expect 5 conditions: org_id + session_id + tool + model + project.
 	require.Len(t, conditions, 5)
 	assert.Contains(t, conditions, "org_id")
 	assert.Contains(t, conditions, "session_id")
 	assert.Contains(t, conditions, "tool")
 	assert.Contains(t, conditions, "model")
-	assert.Contains(t, conditions, "repo")
+	assert.Contains(t, conditions, "project")
 }
 
 func TestOutboxWorkerDrain_WithoutStart(t *testing.T) {
