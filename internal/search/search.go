@@ -47,19 +47,20 @@ type CandidateFinder interface {
 // ReScore adjusts raw similarity scores with outcome signals, completeness, and recency
 // weighting, sorts descending by adjusted score, and truncates to limit.
 //
-// Formula (spec 36):
+// Formula (spec 36 + assessment extension):
 //
 //	outcome_weight =
-//	    0.4 * min(PrecedentCitationCount / 5.0, 1.0)   // citation_score
-//	    0.3 * wins / (wins + losses), default 0.5       // conflict_win_rate
-//	    0.2 * min(AgreementCount / 3.0, 1.0)            // agreement_score
-//	    0.1 * stability_score                           // 1.0 if not superseded within 48h, else 0.0
+//	    0.35 * min(PrecedentCitationCount / 5.0, 1.0)           // citation_score
+//	    0.25 * wins / (wins + losses), default 0.5              // conflict_win_rate
+//	    0.15 * min(AgreementCount / 3.0, 1.0)                   // agreement_score
+//	    0.10 * stability_score                                   // 1.0 if not superseded within 48h, else 0.0
+//	    0.15 * (correct + 0.5*partially_correct) / total, 0.5   // assessment_score
 //
 //	relevance = similarity * (0.5 + 0.3*outcome_weight + 0.2*completeness_score) * recency_decay
 //
-// Cold-start (new decision, all signals zero): outcome_weight = 0.25, relevance multiplier ≈ 0.665.
+// Cold-start (new decision, no signals): outcome_weight = 0.25, relevance multiplier ≈ 0.665.
 // The caller is responsible for populating outcome signal fields on model.Decision before calling
-// (see hydrateAndReScore which calls GetDecisionOutcomeSignalsBatch first).
+// (see hydrateAndReScore which calls GetDecisionOutcomeSignalsBatch and GetAssessmentSummaryBatch).
 func ReScore(results []Result, decisions map[uuid.UUID]model.Decision, limit int) []model.SearchResult {
 	now := time.Now()
 	scored := make([]model.SearchResult, 0, len(results))
@@ -86,7 +87,16 @@ func ReScore(results []Result, decisions map[uuid.UUID]model.Decision, limit int
 		if d.SupersessionVelocityHours != nil && *d.SupersessionVelocityHours < 48 {
 			stabilityScore = 0.0
 		}
-		outcomeWeight := 0.4*citationScore + 0.3*conflictWinRate + 0.2*agreementScore + 0.1*stabilityScore
+
+		// Assessment signal: explicit correctness feedback from agents. Partially-correct
+		// counts as half a correct. Neutral (0.5) when no assessments exist.
+		assessmentScore := 0.5
+		if d.AssessmentSummary != nil && d.AssessmentSummary.Total > 0 {
+			a := d.AssessmentSummary
+			assessmentScore = (float64(a.Correct) + 0.5*float64(a.PartiallyCorrect)) / float64(a.Total)
+		}
+
+		outcomeWeight := 0.35*citationScore + 0.25*conflictWinRate + 0.15*agreementScore + 0.10*stabilityScore + 0.15*assessmentScore
 
 		ageDays := math.Max(0, now.Sub(d.ValidFrom).Hours()/24.0)
 		recencyDecay := 1.0 / (1.0 + ageDays/90.0)

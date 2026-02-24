@@ -434,7 +434,7 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 		resp.HasPrecedent = len(resp.Decisions) > 0
 	}
 
-	// Populate consensus scores and outcome signals for decisions (concise and full formats).
+	// Populate consensus scores, outcome signals, and assessment summaries for decisions.
 	if len(resp.Decisions) > 0 {
 		ids := make([]uuid.UUID, len(resp.Decisions))
 		for i := range resp.Decisions {
@@ -454,6 +454,15 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 					resp.Decisions[i].SupersessionVelocityHours = sig.SupersessionVelocityHours
 					resp.Decisions[i].PrecedentCitationCount = sig.PrecedentCitationCount
 					resp.Decisions[i].ConflictFate = sig.ConflictFate
+				}
+			}
+		}
+		// Assessment summaries: explicit correctness feedback. Non-fatal on error.
+		if assessments, aErr := s.db.GetAssessmentSummaryBatch(ctx, ids); aErr == nil {
+			for i := range resp.Decisions {
+				if sum, ok := assessments[resp.Decisions[i].ID]; ok {
+					cp := sum
+					resp.Decisions[i].AssessmentSummary = &cp
 				}
 			}
 		}
