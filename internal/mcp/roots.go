@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"net/url"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -101,6 +102,55 @@ func inferProjectFromRoots(roots []mcplib.Root) string {
 		path := filepath.Clean(parsed.Path)
 		if path == "" || path == "/" || path == "." {
 			continue
+		}
+		return filepath.Base(path)
+	}
+	return ""
+}
+
+// gitRepoName extracts the repository name from the git origin remote URL
+// at the given path. Returns "" if the path is not a git repo, has no remote,
+// git is not installed, or the call times out.
+//
+// Uses exec (not shell) so the path is passed as a literal argument — no injection risk.
+func gitRepoName(path string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", path, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return ""
+	}
+	remote := strings.TrimSpace(string(out))
+	if remote == "" {
+		return ""
+	}
+	// Normalize: strip .git suffix, then take the last path component.
+	// Works for SSH (git@github.com:org/repo.git) and HTTPS (https://github.com/org/repo).
+	remote = strings.TrimSuffix(remote, ".git")
+	return filepath.Base(remote)
+}
+
+// inferProjectFromRootsWithGit extracts a likely project name from the first
+// file:// root URI, preferring the git origin remote name over the directory
+// basename. Falls back to directory basename when git detection fails (no remote,
+// not a git repo, or git not available).
+//
+// Returns empty string if no usable root is found.
+func inferProjectFromRootsWithGit(roots []mcplib.Root) string {
+	for _, root := range roots {
+		if !strings.HasPrefix(root.URI, "file://") {
+			continue
+		}
+		parsed, err := url.Parse(root.URI)
+		if err != nil {
+			continue
+		}
+		path := filepath.Clean(parsed.Path)
+		if path == "" || path == "/" || path == "." {
+			continue
+		}
+		if name := gitRepoName(path); name != "" {
+			return name
 		}
 		return filepath.Base(path)
 	}
