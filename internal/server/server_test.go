@@ -564,7 +564,7 @@ func TestMCPListTools(t *testing.T) {
 
 	toolsResult, err := c.ListTools(ctx, mcplib.ListToolsRequest{})
 	require.NoError(t, err)
-	assert.Len(t, toolsResult.Tools, 7)
+	assert.Len(t, toolsResult.Tools, 8)
 
 	toolNames := make(map[string]bool)
 	for _, tool := range toolsResult.Tools {
@@ -577,6 +577,7 @@ func TestMCPListTools(t *testing.T) {
 	assert.True(t, toolNames["akashi_recent"], "expected akashi_recent tool")
 	assert.True(t, toolNames["akashi_conflicts"], "expected akashi_conflicts tool")
 	assert.True(t, toolNames["akashi_stats"], "expected akashi_stats tool")
+	assert.True(t, toolNames["akashi_assess"], "expected akashi_assess tool")
 }
 
 func TestMCPListResources(t *testing.T) {

@@ -857,6 +857,104 @@ paths:
         "400":
           $ref: "#/components/responses/BadRequest"
 
+  /v1/decisions/{id}/assess:
+    post:
+      operationId: assessDecision
+      tags: [Decisions]
+      summary: Submit outcome assessment for a decision
+      description: |
+        Records explicit outcome feedback for a prior decision. Append-only:
+        each call creates a new row. Re-assessing creates a revision record
+        rather than overwriting, preserving the full assessment history.
+        The summary counts only the latest assessment per assessor so current
+        verdicts are accurate even when assessors change their minds.
+        Requires `agent` role or higher.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The decision ID to assess.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome]
+              properties:
+                outcome:
+                  type: string
+                  enum: [correct, incorrect, partially_correct]
+                  description: Whether the decision turned out to be correct.
+                notes:
+                  type: string
+                  description: Optional explanation of the assessment.
+      responses:
+        "200":
+          description: Assessment recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/DecisionAssessment"
+                  meta:
+                    $ref: "#/components/schemas/ResponseMeta"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/decisions/{id}/assessments:
+    get:
+      operationId: listDecisionAssessments
+      tags: [Decisions]
+      summary: List assessments for a decision
+      description: |
+        Returns all outcome assessments for a decision, newest first,
+        along with an aggregated summary of counts by outcome.
+        Requires `reader` role or higher.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The decision ID.
+      responses:
+        "200":
+          description: Assessments and summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      decision_id:
+                        type: string
+                        format: uuid
+                      summary:
+                        $ref: "#/components/schemas/AssessmentSummary"
+                      assessments:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/DecisionAssessment"
+                      count:
+                        type: integer
+                  meta:
+                    $ref: "#/components/schemas/ResponseMeta"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /v1/verify/{id}:
     get:
       operationId: verifyDecision
@@ -2186,6 +2284,52 @@ components:
         metadata:
           type: object
           additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+
+    AssessmentSummary:
+      type: object
+      description: Aggregated counts of outcome assessments for a decision.
+      properties:
+        total:
+          type: integer
+          description: Total number of assessments.
+        correct:
+          type: integer
+        incorrect:
+          type: integer
+        partially_correct:
+          type: integer
+
+    DecisionAssessment:
+      type: object
+      description: Explicit outcome feedback for a decision from an agent.
+      required:
+        - id
+        - decision_id
+        - org_id
+        - assessor_agent_id
+        - outcome
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        decision_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        assessor_agent_id:
+          type: string
+        outcome:
+          type: string
+          enum: [correct, incorrect, partially_correct]
+        notes:
+          type: string
+          nullable: true
         created_at:
           type: string
           format: date-time
