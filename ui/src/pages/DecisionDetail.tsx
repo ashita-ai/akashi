@@ -182,14 +182,14 @@ function SessionContext({ decision }: { decision: Decision }) {
   const ctx = decision.metadata as Record<string, unknown> | null;
   if (!ctx) return null;
 
-  // Extract agent_context fields (session_id, tool, model, repo)
+  // Extract agent_context fields (session_id, tool, model, project)
   const agentContext = ctx.agent_context as Record<string, unknown> | undefined;
   const sessionId = (ctx.session_id ?? agentContext?.session_id) as string | undefined;
   const tool = agentContext?.tool as string | undefined;
   const model = agentContext?.model as string | undefined;
-  const repo = agentContext?.repo as string | undefined;
+  const project = (ctx.project ?? agentContext?.project ?? agentContext?.repo) as string | undefined;
 
-  if (!sessionId && !tool && !model && !repo) return null;
+  if (!sessionId && !tool && !model && !project) return null;
 
   return (
     <div className="space-y-2">
@@ -214,9 +214,9 @@ function SessionContext({ decision }: { decision: Decision }) {
             {model}
           </Badge>
         )}
-        {repo && (
+        {project && (
           <Badge variant="outline" className="text-xs font-mono">
-            {repo}
+            {project}
           </Badge>
         )}
       </div>

@@ -54,12 +54,12 @@ type Decision struct {
 	SessionID    *uuid.UUID     `json:"session_id,omitempty"`
 	AgentContext map[string]any `json:"agent_context,omitempty"`
 
-	// First-class attribution columns (migration 048): indexed fast-path for
+	// First-class attribution columns (migration 048/052): indexed fast-path for
 	// the three most-filtered context fields. Auto-computed from agent_context
 	// by generated columns; nil when the context fields were not provided.
-	Tool  *string `json:"tool,omitempty"`
-	Model *string `json:"model,omitempty"`
-	Repo  *string `json:"repo,omitempty"`
+	Tool    *string `json:"tool,omitempty"`
+	Model   *string `json:"model,omitempty"`
+	Project *string `json:"project,omitempty"`
 
 	// API key attribution: which managed key authenticated this decision.
 	APIKeyID *uuid.UUID `json:"api_key_id,omitempty"`

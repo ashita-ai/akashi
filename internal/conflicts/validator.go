@@ -25,8 +25,8 @@ type ValidateInput struct {
 	// Enrichment fields — may be empty when context is unavailable.
 	ReasoningA      string // decision reasoning
 	ReasoningB      string
-	RepoA           string // from agent_context["repo"]
-	RepoB           string
+	ProjectA        string // from agent_context["project"] (or legacy "repo")
+	ProjectB        string
 	TaskA           string // from agent_context["task"]
 	TaskB           string
 	SessionIDA      string // UUID string
@@ -109,12 +109,12 @@ func formatPrompt(input ValidateInput) string {
 	fmt.Fprintf(&b, "\nContext: These decisions were recorded %s apart by %s.\n", deltaStr, agentContext)
 
 	// --- Project context (#168: cross-project confusion) ---
-	if input.RepoA != "" && input.RepoB != "" {
-		if input.RepoA != input.RepoB {
+	if input.ProjectA != "" && input.ProjectB != "" {
+		if input.ProjectA != input.ProjectB {
 			fmt.Fprintf(&b, "DIFFERENT PROJECTS: Decision A is about %q, Decision B is about %q. Decisions about different codebases are almost always UNRELATED.\n",
-				input.RepoA, input.RepoB)
+				input.ProjectA, input.ProjectB)
 		} else {
-			fmt.Fprintf(&b, "Same project: %s\n", input.RepoA)
+			fmt.Fprintf(&b, "Same project: %s\n", input.ProjectA)
 		}
 	} else if input.AgentA != input.AgentB {
 		// Repository names unavailable — guide the LLM to identify projects from outcome text.
