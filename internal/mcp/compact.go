@@ -47,6 +47,17 @@ func compactDecision(d model.Decision) map[string]any {
 		m["consensus_weight"] = math.Round(cw*1000) / 1000 // 3 decimal places
 	}
 
+	// Assessment summary: explicit correctness feedback from agents.
+	if d.AssessmentSummary != nil && d.AssessmentSummary.Total > 0 {
+		a := d.AssessmentSummary
+		m["assessment_summary"] = map[string]any{
+			"total":             a.Total,
+			"correct":           a.Correct,
+			"incorrect":         a.Incorrect,
+			"partially_correct": a.PartiallyCorrect,
+		}
+	}
+
 	// Outcome-based context note (rule-based, not LLM).
 	if note := generateContextNote(d); note != "" {
 		m["context_note"] = note
@@ -57,8 +68,21 @@ func compactDecision(d model.Decision) map[string]any {
 
 // generateContextNote produces a human-readable signal note for a decision.
 // Rules are evaluated in priority order; first match wins. Returns "" when no rule fires.
+// Assessment rules take priority since they are explicit feedback, not indirect signals.
 func generateContextNote(d model.Decision) string {
 	vel := d.SupersessionVelocityHours
+
+	// Assessment rules (explicit feedback — highest priority signal).
+	if a := d.AssessmentSummary; a != nil && a.Total >= 2 {
+		majorityCorrect := a.Correct*2 > a.Total
+		majorityIncorrect := a.Incorrect*2 > a.Total
+		switch {
+		case majorityCorrect:
+			return fmt.Sprintf("Assessed correct by %d of %d agent(s).", a.Correct, a.Total)
+		case majorityIncorrect:
+			return fmt.Sprintf("Assessed incorrect by %d of %d agent(s) — review carefully.", a.Incorrect, a.Total)
+		}
+	}
 
 	switch {
 	case vel != nil && *vel < 48 && d.PrecedentCitationCount == 0:
@@ -182,6 +206,9 @@ func generateCheckSummary(decisions []model.Decision, conflicts []model.Decision
 		}
 		if most.PrecedentCitationCount >= 2 {
 			signals = append(signals, fmt.Sprintf("cited %d times", most.PrecedentCitationCount))
+		}
+		if a := most.AssessmentSummary; a != nil && a.Total > 0 {
+			signals = append(signals, fmt.Sprintf("assessed correct %d/%d", a.Correct, a.Total))
 		}
 		if len(signals) > 0 {
 			summaryLine += ", " + strings.Join(signals, ", ")

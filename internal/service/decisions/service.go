@@ -467,6 +467,21 @@ func (s *Service) hydrateAndReScore(ctx context.Context, orgID uuid.UUID, result
 		}
 	}
 
+	// Enrich with assessment summaries for ReScore (explicit correctness signal).
+	// Non-fatal: a missing batch is just treated as no assessments.
+	assessments, aErr := s.db.GetAssessmentSummaryBatch(ctx, ids)
+	if aErr != nil {
+		s.logger.Warn("search: assessment summaries batch", "error", aErr)
+	} else {
+		for id, sum := range assessments {
+			if d, ok := decisions[id]; ok {
+				cp := sum
+				d.AssessmentSummary = &cp
+				decisions[id] = d
+			}
+		}
+	}
+
 	return search.ReScore(results, decisions, limit), nil
 }
 
