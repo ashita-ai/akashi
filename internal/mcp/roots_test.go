@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"os/exec"
 	"testing"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
@@ -56,6 +57,75 @@ func TestInferProjectFromRoots(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+// makeGitRepo creates a temporary git repository with an origin remote for testing.
+// Returns the directory path, or skips the test if git is not available.
+func makeGitRepo(t *testing.T, originURL string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "-C", dir, "init").CombinedOutput(); err != nil { //nolint:gosec
+		t.Skipf("git unavailable: %s", out)
+	}
+	if out, err := exec.Command("git", "-C", dir, "remote", "add", "origin", originURL).CombinedOutput(); err != nil { //nolint:gosec
+		t.Skipf("git remote add failed: %s", out)
+	}
+	return dir
+}
+
+func TestGitRepoName(t *testing.T) {
+	t.Run("HTTPS remote extracts repo name", func(t *testing.T) {
+		dir := makeGitRepo(t, "https://github.com/example/my-service.git")
+		assert.Equal(t, "my-service", gitRepoName(dir))
+	})
+
+	t.Run("SSH remote extracts repo name", func(t *testing.T) {
+		dir := makeGitRepo(t, "git@github.com:example/my-repo.git")
+		assert.Equal(t, "my-repo", gitRepoName(dir))
+	})
+
+	t.Run("remote without .git suffix", func(t *testing.T) {
+		dir := makeGitRepo(t, "https://github.com/example/no-suffix")
+		assert.Equal(t, "no-suffix", gitRepoName(dir))
+	})
+
+	t.Run("non-existent path returns empty", func(t *testing.T) {
+		assert.Empty(t, gitRepoName("/tmp/no-such-directory-akashi-test-xyz"))
+	})
+
+	t.Run("non-git directory returns empty", func(t *testing.T) {
+		dir := t.TempDir() // plain dir, no git init
+		assert.Empty(t, gitRepoName(dir))
+	})
+}
+
+func TestInferProjectFromRootsWithGit(t *testing.T) {
+	t.Run("empty roots returns empty", func(t *testing.T) {
+		assert.Empty(t, inferProjectFromRootsWithGit(nil))
+	})
+
+	t.Run("git repo with HTTPS remote uses remote name", func(t *testing.T) {
+		dir := makeGitRepo(t, "https://github.com/example/cool-service.git")
+		roots := []mcplib.Root{{URI: "file://" + dir}}
+		assert.Equal(t, "cool-service", inferProjectFromRootsWithGit(roots))
+	})
+
+	t.Run("git repo with SSH remote uses remote name", func(t *testing.T) {
+		dir := makeGitRepo(t, "git@github.com:org/ssh-project.git")
+		roots := []mcplib.Root{{URI: "file://" + dir}}
+		assert.Equal(t, "ssh-project", inferProjectFromRootsWithGit(roots))
+	})
+
+	t.Run("non-git path falls back to directory name", func(t *testing.T) {
+		roots := []mcplib.Root{{URI: "file:///tmp/my-cool-project"}}
+		// /tmp/my-cool-project doesn't exist so git fails; falls back to directory name.
+		assert.Equal(t, "my-cool-project", inferProjectFromRootsWithGit(roots))
+	})
+
+	t.Run("non-file URI skipped", func(t *testing.T) {
+		roots := []mcplib.Root{{URI: "https://example.com/repo"}}
+		assert.Empty(t, inferProjectFromRootsWithGit(roots))
+	})
 }
 
 func TestRootURIs(t *testing.T) {
