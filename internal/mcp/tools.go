@@ -349,6 +349,40 @@ Only open/acknowledged conflicts are shown by default.`),
 		),
 		s.handleConflicts,
 	)
+
+	// akashi_assess — record explicit outcome feedback for a prior decision.
+	s.mcpServer.AddTool(
+		mcplib.NewTool("akashi_assess",
+			mcplib.WithDescription(`Record explicit outcome feedback for a prior decision.
+
+WHEN TO USE: After you observe whether a prior decision turned out to be
+correct — e.g., the build passed, the approach worked, the prediction was
+right. Call this to close the learning loop.
+
+Use the decision_id from the original akashi_trace response or from
+akashi_check's precedent_ref_hint. You can only assess decisions within
+your org. Re-submitting overwrites your previous assessment.
+
+EXAMPLE: A coder agent implemented a planner's architecture decision.
+After testing, the coder calls akashi_assess to mark it correct:
+  decision_id="<uuid>", outcome="correct", notes="All tests pass, no regressions"`),
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithIdempotentHintAnnotation(false),
+			mcplib.WithOpenWorldHintAnnotation(true),
+			mcplib.WithString("decision_id",
+				mcplib.Description("UUID of the decision being assessed"),
+				mcplib.Required(),
+			),
+			mcplib.WithString("outcome",
+				mcplib.Description(`Assessment verdict: "correct", "incorrect", or "partially_correct"`),
+				mcplib.Required(),
+			),
+			mcplib.WithString("notes",
+				mcplib.Description("Optional free-text explanation of the assessment outcome"),
+			),
+		),
+		s.handleAssess,
+	)
 }
 
 func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
@@ -1077,6 +1111,69 @@ func (s *Server) handleConflicts(ctx context.Context, request mcplib.CallToolReq
 	}
 
 	resultData, _ := json.MarshalIndent(payload, "", "  ")
+	return &mcplib.CallToolResult{
+		Content: []mcplib.Content{
+			mcplib.TextContent{Type: "text", Text: string(resultData)},
+		},
+	}, nil
+}
+
+func (s *Server) handleAssess(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	orgID := ctxutil.OrgIDFromContext(ctx)
+	claims := ctxutil.ClaimsFromContext(ctx)
+
+	if claims == nil {
+		return errorResult("authentication required"), nil
+	}
+
+	decisionIDStr := request.GetString("decision_id", "")
+	if decisionIDStr == "" {
+		return errorResult("decision_id is required"), nil
+	}
+	decisionID, err := uuid.Parse(decisionIDStr)
+	if err != nil {
+		return errorResult("decision_id must be a valid UUID"), nil
+	}
+
+	outcomeStr := request.GetString("outcome", "")
+	outcome := model.AssessmentOutcome(outcomeStr)
+	switch outcome {
+	case model.AssessmentCorrect, model.AssessmentIncorrect, model.AssessmentPartiallyCorrect:
+		// valid
+	default:
+		return errorResult(`outcome must be one of: "correct", "incorrect", "partially_correct"`), nil
+	}
+
+	var notes *string
+	if n := request.GetString("notes", ""); n != "" {
+		notes = &n
+	}
+
+	a := model.DecisionAssessment{
+		DecisionID:      decisionID,
+		OrgID:           orgID,
+		AssessorAgentID: claims.AgentID,
+		Outcome:         outcome,
+		Notes:           notes,
+	}
+
+	result, err := s.db.CreateOrUpdateAssessment(ctx, orgID, a)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return errorResult("decision not found"), nil
+		}
+		return errorResult(fmt.Sprintf("failed to save assessment: %v", err)), nil
+	}
+
+	// Return compact confirmation.
+	resultData, _ := json.MarshalIndent(map[string]any{
+		"assessment_id": result.ID,
+		"decision_id":   result.DecisionID,
+		"outcome":       result.Outcome,
+		"assessor":      result.AssessorAgentID,
+		"recorded_at":   result.CreatedAt,
+	}, "", "  ")
+
 	return &mcplib.CallToolResult{
 		Content: []mcplib.Content{
 			mcplib.TextContent{Type: "text", Text: string(resultData)},

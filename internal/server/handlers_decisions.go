@@ -236,6 +236,11 @@ func (h *Handlers) HandleGetDecision(w http.ResponseWriter, r *http.Request) {
 		d.ConflictFate = signals.ConflictFate
 	}
 
+	summary, err := h.db.GetAssessmentSummary(r.Context(), d.ID)
+	if err == nil {
+		d.AssessmentSummary = &summary
+	}
+
 	writeJSON(w, r, http.StatusOK, d)
 }
 
@@ -1037,4 +1042,112 @@ func (h *Handlers) HandleDecisionConflicts(w http.ResponseWriter, r *http.Reques
 		resp["has_more"] = offset+len(conflicts) < total
 	}
 	writeJSON(w, r, http.StatusOK, resp)
+}
+
+// HandleAssessDecision handles POST /v1/decisions/{id}/assess (writer+).
+// Creates or updates the caller's outcome assessment for a decision.
+// An assessor may only hold one assessment per decision; re-submitting
+// overwrites the previous outcome and notes.
+func (h *Handlers) HandleAssessDecision(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
+
+	idStr := r.PathValue("id")
+	decisionID, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid decision ID")
+		return
+	}
+
+	var req model.AssessRequest
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
+		return
+	}
+
+	switch req.Outcome {
+	case model.AssessmentCorrect, model.AssessmentIncorrect, model.AssessmentPartiallyCorrect:
+		// valid
+	default:
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"outcome must be one of: correct, incorrect, partially_correct")
+		return
+	}
+
+	a := model.DecisionAssessment{
+		DecisionID:      decisionID,
+		OrgID:           orgID,
+		AssessorAgentID: claims.AgentID,
+		Outcome:         req.Outcome,
+		Notes:           req.Notes,
+	}
+
+	result, err := h.db.CreateOrUpdateAssessment(r.Context(), orgID, a)
+	if err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "decision not found")
+			return
+		}
+		h.writeInternalError(w, r, "failed to save assessment", err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, result)
+}
+
+// HandleListAssessments handles GET /v1/decisions/{id}/assessments (reader+).
+// Returns all assessments for a decision, newest first.
+func (h *Handlers) HandleListAssessments(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
+
+	idStr := r.PathValue("id")
+	decisionID, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid decision ID")
+		return
+	}
+
+	// Verify access to the decision itself before returning its assessments.
+	d, err := h.db.GetDecision(r.Context(), orgID, decisionID, storage.GetDecisionOpts{})
+	if err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "decision not found")
+			return
+		}
+		h.writeInternalError(w, r, "failed to get decision", err)
+		return
+	}
+	ok, err := canAccessAgent(r.Context(), h.db, claims, d.AgentID)
+	if err != nil {
+		h.writeInternalError(w, r, "authorization check failed", err)
+		return
+	}
+	if !ok {
+		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "no access to this decision")
+		return
+	}
+
+	assessments, err := h.db.ListAssessments(r.Context(), orgID, decisionID)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to list assessments", err)
+		return
+	}
+
+	if assessments == nil {
+		assessments = []model.DecisionAssessment{}
+	}
+
+	summary, err := h.db.GetAssessmentSummary(r.Context(), decisionID)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to get assessment summary", err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"decision_id": decisionID,
+		"summary":     summary,
+		"assessments": assessments,
+		"count":       len(assessments),
+	})
 }
