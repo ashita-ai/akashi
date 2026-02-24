@@ -361,7 +361,8 @@ right. Call this to close the learning loop.
 
 Use the decision_id from the original akashi_trace response or from
 akashi_check's precedent_ref_hint. You can only assess decisions within
-your org. Re-submitting overwrites your previous assessment.
+your org. Each call appends a new row — re-assessing creates a revision
+record rather than overwriting, preserving the full assessment history.
 
 EXAMPLE: A coder agent implemented a planner's architecture decision.
 After testing, the coder calls akashi_assess to mark it correct:
@@ -1157,7 +1158,7 @@ func (s *Server) handleAssess(ctx context.Context, request mcplib.CallToolReques
 		Notes:           notes,
 	}
 
-	result, err := s.db.CreateOrUpdateAssessment(ctx, orgID, a)
+	result, err := s.db.CreateAssessment(ctx, orgID, a)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			return errorResult("decision not found"), nil

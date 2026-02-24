@@ -863,10 +863,11 @@ paths:
       tags: [Decisions]
       summary: Submit outcome assessment for a decision
       description: |
-        Records explicit outcome feedback for a prior decision. An assessor
-        may only hold one assessment per decision; re-submitting overwrites
-        the previous outcome and notes (upsert). Multiple agents can assess
-        the same decision, producing a majority-vote signal for search ranking.
+        Records explicit outcome feedback for a prior decision. Append-only:
+        each call creates a new row. Re-assessing creates a revision record
+        rather than overwriting, preserving the full assessment history.
+        The summary counts only the latest assessment per assessor so current
+        verdicts are accurate even when assessors change their minds.
         Requires `agent` role or higher.
       parameters:
         - name: id

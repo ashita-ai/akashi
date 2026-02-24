@@ -1,7 +1,9 @@
 -- 051: decision_assessments — explicit outcome feedback for decisions (spec 29 / ADR-020 Tier 2).
 -- Agents assess a prior decision after seeing the outcome: correct, incorrect, or partially_correct.
--- One assessor may assess each decision exactly once (unique index). Multiple agents can assess
--- the same decision, producing a majority-vote signal for ReScore and akashi_check.
+-- Append-only: each assessment is a new row. An assessor changing their verdict later is itself
+-- an auditable event — we never overwrite prior assessments. GetAssessmentSummary counts only
+-- the latest assessment per assessor (DISTINCT ON) so summaries reflect current verdicts without
+-- erasing history.
 
 CREATE TABLE decision_assessments (
     id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -14,29 +16,35 @@ CREATE TABLE decision_assessments (
 );
 
 -- Fast lookup by decision (used by GET /v1/decisions/{id}/assessments and GET /v1/decisions/{id}).
+-- Covers DISTINCT ON queries ordered by (decision_id, assessor_agent_id, created_at DESC).
 CREATE INDEX idx_decision_assessments_decision_id
-    ON decision_assessments (decision_id);
+    ON decision_assessments (decision_id, assessor_agent_id, created_at DESC);
 
 -- Org-scoped time-ordered listing (used by export, analytics).
 CREATE INDEX idx_decision_assessments_org_created
     ON decision_assessments (org_id, created_at DESC);
 
--- One assessor per decision. Prevents duplicate assessments while allowing
--- updates via ON CONFLICT DO UPDATE (agents can revise their assessment).
-CREATE UNIQUE INDEX idx_decision_assessments_unique_assessor
-    ON decision_assessments (decision_id, assessor_agent_id);
-
--- Immutability trigger: prevent DELETE on decision_assessments.
--- Assessments are part of the audit trail — they can be superseded (upserted)
--- but never silently removed. Hard deletes require a cascade from decisions.
-CREATE OR REPLACE FUNCTION prevent_assessment_delete()
+-- Immutability triggers: prevent DELETE and UPDATE on decision_assessments.
+-- Assessments are append-only audit records. A revised assessment is a new row,
+-- not an overwrite. Hard deletes are only permitted via ON DELETE CASCADE from decisions.
+CREATE OR REPLACE FUNCTION prevent_assessment_mutation()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-    RAISE EXCEPTION 'decision_assessments rows are immutable: use upsert to revise an assessment (decision_id=%, assessor=%)',
-        OLD.decision_id, OLD.assessor_agent_id;
+    IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'decision_assessments rows are immutable: a revised assessment is a new row (decision_id=%, assessor=%)',
+            OLD.decision_id, OLD.assessor_agent_id;
+    ELSIF TG_OP = 'UPDATE' THEN
+        RAISE EXCEPTION 'decision_assessments rows are immutable: a revised assessment is a new row (decision_id=%, assessor=%)',
+            OLD.decision_id, OLD.assessor_agent_id;
+    END IF;
+    RETURN OLD;
 END;
 $$;
 
 CREATE TRIGGER trg_prevent_assessment_delete
     BEFORE DELETE ON decision_assessments
-    FOR EACH ROW EXECUTE FUNCTION prevent_assessment_delete();
+    FOR EACH ROW EXECUTE FUNCTION prevent_assessment_mutation();
+
+CREATE TRIGGER trg_prevent_assessment_update
+    BEFORE UPDATE ON decision_assessments
+    FOR EACH ROW EXECUTE FUNCTION prevent_assessment_mutation();

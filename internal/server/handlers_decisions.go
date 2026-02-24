@@ -1082,7 +1082,7 @@ func (h *Handlers) HandleAssessDecision(w http.ResponseWriter, r *http.Request) 
 		Notes:           req.Notes,
 	}
 
-	result, err := h.db.CreateOrUpdateAssessment(r.Context(), orgID, a)
+	result, err := h.db.CreateAssessment(r.Context(), orgID, a)
 	if err != nil {
 		if isNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "decision not found")
