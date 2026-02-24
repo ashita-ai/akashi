@@ -77,6 +77,11 @@ type Decision struct {
 	SupersessionVelocityHours *float64     `json:"supersession_velocity"`
 	PrecedentCitationCount    int          `json:"precedent_citation_count"`
 	ConflictFate              ConflictFate `json:"conflict_fate"`
+
+	// Explicit outcome feedback (Spec 29): assessment counts from agents who
+	// observed whether this decision turned out to be correct.
+	// Populated on GET /v1/decisions/{id}; nil in list responses.
+	AssessmentSummary *AssessmentSummary `json:"assessment_summary,omitempty"`
 }
 
 // Alternative represents an option considered for a decision. Immutable.
@@ -195,4 +200,41 @@ type DecisionConflict struct {
 type ConflictStatusUpdate struct {
 	Status         string  `json:"status"` // acknowledged, resolved, wont_fix
 	ResolutionNote *string `json:"resolution_note,omitempty"`
+}
+
+// AssessmentOutcome enumerates valid values for DecisionAssessment.Outcome.
+type AssessmentOutcome string
+
+const (
+	AssessmentCorrect          AssessmentOutcome = "correct"
+	AssessmentIncorrect        AssessmentOutcome = "incorrect"
+	AssessmentPartiallyCorrect AssessmentOutcome = "partially_correct"
+)
+
+// DecisionAssessment is explicit outcome feedback from an agent that observed
+// whether a prior decision turned out to be correct. Immutable once written;
+// an assessor can revise by upserting (same decision_id + assessor_agent_id).
+type DecisionAssessment struct {
+	ID              uuid.UUID         `json:"id"`
+	DecisionID      uuid.UUID         `json:"decision_id"`
+	OrgID           uuid.UUID         `json:"org_id"`
+	AssessorAgentID string            `json:"assessor_agent_id"`
+	Outcome         AssessmentOutcome `json:"outcome"`
+	Notes           *string           `json:"notes,omitempty"`
+	CreatedAt       time.Time         `json:"created_at"`
+}
+
+// AssessmentSummary is a precomputed count of assessments by outcome.
+// Returned inline on GET /v1/decisions/{id} and in akashi_check responses.
+type AssessmentSummary struct {
+	Total            int `json:"total"`
+	Correct          int `json:"correct"`
+	Incorrect        int `json:"incorrect"`
+	PartiallyCorrect int `json:"partially_correct"`
+}
+
+// AssessRequest is the request body for POST /v1/decisions/{id}/assess.
+type AssessRequest struct {
+	Outcome AssessmentOutcome `json:"outcome"`
+	Notes   *string           `json:"notes,omitempty"`
 }
