@@ -39,9 +39,9 @@ func TestReScore_OutcomeDominatesCompleteness(t *testing.T) {
 
 	scored := ReScore(results, decisions, 10)
 	assert.Len(t, scored, 2)
-	// highCitation: outcomeWeight=0.4*1+0.3*0.5+0.1=0.65; multiplier=0.5+0.195+0=0.695; score=0.9*0.695=0.6255
-	// highCompleteness: outcomeWeight=0.25; multiplier=0.5+0.075+0.1=0.675; score=0.9*0.675=0.6075
-	// highCitation (0.6255) > highCompleteness (0.6075) — citations win.
+	// highCitation: outcomeWeight=0.35*1+0.25*0.5+0.10*1+0.15*0.5=0.650; multiplier=0.5+0.195+0=0.695; score=0.9*0.695=0.6255
+	// highCompleteness: outcomeWeight=0.300; multiplier=0.5+0.09+0.1=0.690; score=0.9*0.690=0.621
+	// highCitation (0.6255) > highCompleteness (0.621) — citations win.
 	assert.Equal(t, highCitation, scored[0].Decision.ID,
 		"decision with 5 citations should outrank one with completeness=0.5 and zero citations")
 }
@@ -100,11 +100,11 @@ func TestReScore_ColdStart(t *testing.T) {
 	scored := ReScore(results, decisions, 10)
 	assert.Len(t, scored, 1)
 
-	// outcome_weight = 0.4*0 + 0.3*0.5 + 0.2*0 + 0.1*1.0 = 0.25
-	// relevance multiplier = 0.5 + 0.3*0.25 + 0.2*0.0 = 0.575
-	// With similarity=1.0 and recency=1.0 (age=0): relevance = 0.575
-	assert.InDelta(t, 0.575, float64(scored[0].SimilarityScore), 0.001,
-		"cold-start decision should have relevance multiplier ~0.575")
+	// outcome_weight = 0.35*0 + 0.25*0.5 + 0.15*0 + 0.10*1.0 + 0.15*0.5 = 0.300
+	// relevance multiplier = 0.5 + 0.3*0.300 + 0.2*0.0 = 0.590
+	// With similarity=1.0 and recency=1.0 (age=0): relevance = 0.590
+	assert.InDelta(t, 0.590, float64(scored[0].SimilarityScore), 0.001,
+		"cold-start decision should have relevance multiplier ~0.590")
 }
 
 // TestReScore_BoundedToOne verifies acceptance criterion 8:
