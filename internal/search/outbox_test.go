@@ -196,6 +196,7 @@ func TestPointConversion_FlatContext(t *testing.T) {
 	orgID := uuid.New()
 	sessionID := uuid.New()
 	validFrom := time.Date(2026, 2, 14, 10, 30, 0, 0, time.UTC)
+	proj := "ashita-ai/akashi"
 
 	d := DecisionForIndex{
 		ID:                decisionID,
@@ -207,10 +208,10 @@ func TestPointConversion_FlatContext(t *testing.T) {
 		ValidFrom:         validFrom,
 		Embedding:         []float32{0.1, 0.2, 0.3, 0.4},
 		SessionID:         &sessionID,
+		Project:           &proj,
 		AgentContext: map[string]any{
 			"tool":  "claude-code",
 			"model": "claude-opus-4-6",
-			"repo":  "ashita-ai/akashi",
 		},
 	}
 
@@ -228,11 +229,12 @@ func TestPointConversion_FlatContext(t *testing.T) {
 	assert.Equal(t, sessionID, *p.SessionID)
 	assert.Equal(t, "claude-code", p.Tool)
 	assert.Equal(t, "claude-opus-4-6", p.Model)
-	assert.Equal(t, "ashita-ai/akashi", p.Repo)
+	assert.Equal(t, "ashita-ai/akashi", p.Project)
 }
 
 func TestPointConversion_NamespacedContext(t *testing.T) {
 	// New namespaced agent_context format (PR #180+).
+	proj := "ashita-ai/akashi"
 	d := DecisionForIndex{
 		ID:                uuid.New(),
 		OrgID:             uuid.New(),
@@ -242,11 +244,11 @@ func TestPointConversion_NamespacedContext(t *testing.T) {
 		CompletenessScore: 0.88,
 		ValidFrom:         time.Now(),
 		Embedding:         []float32{0.5, 0.6},
+		Project:           &proj,
 		AgentContext: map[string]any{
 			"server": map[string]any{
 				"tool":         "claude-code",
 				"tool_version": "1.0.30",
-				"repo":         "ashita-ai/akashi",
 			},
 			"client": map[string]any{
 				"model": "claude-opus-4-6",
@@ -259,7 +261,7 @@ func TestPointConversion_NamespacedContext(t *testing.T) {
 
 	assert.Equal(t, "claude-code", p.Tool)
 	assert.Equal(t, "claude-opus-4-6", p.Model)
-	assert.Equal(t, "ashita-ai/akashi", p.Repo)
+	assert.Equal(t, "ashita-ai/akashi", p.Project)
 }
 
 func TestPointConversion_NilContext(t *testing.T) {
@@ -276,10 +278,13 @@ func TestPointConversion_NilContext(t *testing.T) {
 
 	assert.Empty(t, p.Tool)
 	assert.Empty(t, p.Model)
-	assert.Empty(t, p.Repo)
+	assert.Empty(t, p.Project)
 }
 
 // pointFromDecision replicates the conversion logic from processUpserts.
+// In production, d.Project comes from the Postgres generated column, which
+// handles the COALESCE over all agent_context fallback paths. Tests that
+// want a non-empty project must set DecisionForIndex.Project explicitly.
 func pointFromDecision(d DecisionForIndex) Point {
 	p := Point{
 		ID:                d.ID,
@@ -295,7 +300,9 @@ func pointFromDecision(d DecisionForIndex) Point {
 	if d.AgentContext != nil {
 		p.Tool = agentContextString(d.AgentContext, "server", "tool")
 		p.Model = agentContextString(d.AgentContext, "client", "model")
-		p.Repo = agentContextString(d.AgentContext, "server", "repo")
+	}
+	if d.Project != nil {
+		p.Project = *d.Project
 	}
 	return p
 }

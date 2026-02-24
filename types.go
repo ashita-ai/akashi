@@ -94,7 +94,7 @@ type SearchFilters struct {
 	SessionID     *uuid.UUID
 	Tool          *string
 	Model         *string
-	Repo          *string
+	Project       *string
 }
 
 // SearchResult holds a decision ID and similarity score from a Searcher.

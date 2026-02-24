@@ -704,7 +704,7 @@ func (a *searcherAdapter) Search(ctx context.Context, orgID uuid.UUID, emb []flo
 		SessionID:     filters.SessionID,
 		Tool:          filters.Tool,
 		Model:         filters.Model,
-		Repo:          filters.Repo,
+		Project:       filters.Project,
 	}
 	results, err := a.s.Search(ctx, orgID, emb, pubFilters, limit)
 	if err != nil {

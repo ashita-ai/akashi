@@ -37,7 +37,7 @@ type Point struct {
 	SessionID         *uuid.UUID
 	Tool              string
 	Model             string
-	Repo              string
+	Project           string
 }
 
 // QdrantIndex implements Searcher backed by Qdrant Cloud.
@@ -138,7 +138,7 @@ func (q *QdrantIndex) EnsureCollection(ctx context.Context) error {
 
 	// Create payload indexes for filtered search.
 	keywordType := qdrant.FieldType_FieldTypeKeyword
-	for _, field := range []string{"org_id", "agent_id", "decision_type", "session_id", "tool", "model", "repo"} {
+	for _, field := range []string{"org_id", "agent_id", "decision_type", "session_id", "tool", "model", "project"} {
 		if _, err := q.client.CreateFieldIndex(ctx, &qdrant.CreateFieldIndexCollection{
 			CollectionName: q.collection,
 			FieldName:      field,
@@ -166,8 +166,8 @@ func (q *QdrantIndex) EnsureCollection(ctx context.Context) error {
 // FindSimilar returns decision IDs with embeddings similar to the given embedding
 // within an org. Used internally for conflict detection and consensus scoring.
 // excludeID is stripped from results in Go (simpler than a Qdrant filter for one ID).
-// repo, when non-nil, restricts results to decisions with a matching repo payload field.
-func (q *QdrantIndex) FindSimilar(ctx context.Context, orgID uuid.UUID, embedding []float32, excludeID uuid.UUID, repo *string, limit int) ([]Result, error) {
+// project, when non-nil, restricts results to decisions with a matching project payload field.
+func (q *QdrantIndex) FindSimilar(ctx context.Context, orgID uuid.UUID, embedding []float32, excludeID uuid.UUID, project *string, limit int) ([]Result, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -175,8 +175,8 @@ func (q *QdrantIndex) FindSimilar(ctx context.Context, orgID uuid.UUID, embeddin
 	must := []*qdrant.Condition{
 		qdrant.NewMatch("org_id", orgID.String()),
 	}
-	if repo != nil && *repo != "" {
-		must = append(must, qdrant.NewMatch("repo", *repo))
+	if project != nil && *project != "" {
+		must = append(must, qdrant.NewMatch("project", *project))
 	}
 
 	// Over-fetch by 1 to absorb the excludeID removal.
@@ -261,8 +261,8 @@ func (q *QdrantIndex) Search(ctx context.Context, orgID uuid.UUID, embedding []f
 	if filters.Model != nil {
 		must = append(must, qdrant.NewMatch("model", *filters.Model))
 	}
-	if filters.Repo != nil {
-		must = append(must, qdrant.NewMatch("repo", *filters.Repo))
+	if filters.Project != nil {
+		must = append(must, qdrant.NewMatch("project", *filters.Project))
 	}
 
 	fetchLimit := uint64(limit) * 3 //nolint:gosec // limit is bounded by caller (max 1000)
@@ -322,8 +322,8 @@ func (q *QdrantIndex) Upsert(ctx context.Context, points []Point) error {
 		if p.Model != "" {
 			payload["model"] = p.Model
 		}
-		if p.Repo != "" {
-			payload["repo"] = p.Repo
+		if p.Project != "" {
+			payload["project"] = p.Project
 		}
 		qdrantPoints[i] = &qdrant.PointStruct{
 			Id:      qdrant.NewID(p.ID.String()),

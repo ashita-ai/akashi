@@ -328,7 +328,7 @@ type CheckInput struct {
 	DecisionType string
 	Query        string
 	AgentID      string
-	Repo         string
+	Project      string
 	Limit        int
 }
 
@@ -345,8 +345,8 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, input CheckInput) 
 	if input.AgentID != "" {
 		filters.AgentIDs = []string{input.AgentID}
 	}
-	if input.Repo != "" {
-		filters.Repo = &input.Repo
+	if input.Project != "" {
+		filters.Project = &input.Project
 	}
 
 	if input.Query != "" {

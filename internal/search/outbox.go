@@ -39,6 +39,7 @@ type DecisionForIndex struct {
 	Embedding         []float32
 	SessionID         *uuid.UUID
 	AgentContext      map[string]any
+	Project           *string // from generated column; handles all agent_context fallbacks
 }
 
 // OutboxWorker polls the search_outbox table and syncs changes to Qdrant.
@@ -380,7 +381,9 @@ func (w *OutboxWorker) processUpserts(ctx context.Context, entries []outboxEntry
 			if d.AgentContext != nil {
 				p.Tool = agentContextString(d.AgentContext, "server", "tool")
 				p.Model = agentContextString(d.AgentContext, "client", "model")
-				p.Repo = agentContextString(d.AgentContext, "server", "repo")
+			}
+			if d.Project != nil {
+				p.Project = *d.Project
 			}
 			points = append(points, p)
 		}
@@ -505,7 +508,7 @@ func (w *OutboxWorker) fetchDecisionsForIndex(ctx context.Context, ids, orgIDs [
 	// rows (issue #60). partitionUpsertEntries splits by embedding presence.
 	rows, err := w.pool.Query(ctx,
 		`SELECT d.id, d.org_id, d.agent_id, d.decision_type, d.confidence, d.completeness_score, d.valid_from, d.embedding,
-		        d.session_id, d.agent_context
+		        d.session_id, d.agent_context, d.project
 		 FROM decisions d
 		 JOIN unnest($1::uuid[], $2::uuid[]) AS pair(did, oid)
 		   ON d.id = pair.did AND d.org_id = pair.oid
@@ -524,7 +527,7 @@ func (w *OutboxWorker) fetchDecisionsForIndex(ctx context.Context, ids, orgIDs [
 		if err := rows.Scan(
 			&d.ID, &d.OrgID, &d.AgentID, &d.DecisionType,
 			&d.Confidence, &d.CompletenessScore, &d.ValidFrom, &emb,
-			&d.SessionID, &d.AgentContext,
+			&d.SessionID, &d.AgentContext, &d.Project,
 		); err != nil {
 			return nil, fmt.Errorf("search outbox: scan decision: %w", err)
 		}

@@ -17,7 +17,7 @@ type QueryFilters struct {
 	SessionID     *uuid.UUID `json:"session_id,omitempty"`
 	Tool          *string    `json:"tool,omitempty"`
 	Model         *string    `json:"model,omitempty"`
-	Repo          *string    `json:"repo,omitempty"`
+	Project       *string    `json:"project,omitempty"`
 }
 
 // TimeRange defines a time range for queries.
@@ -64,7 +64,7 @@ type CheckRequest struct {
 	DecisionType string `json:"decision_type"`
 	Query        string `json:"query,omitempty"`
 	AgentID      string `json:"agent_id,omitempty"`
-	Repo         string `json:"repo,omitempty"`
+	Project      string `json:"project,omitempty"`
 	Limit        int    `json:"limit,omitempty"`
 }
 

@@ -186,7 +186,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		return
 	}
 
-	qdrantResults, err := s.finder.FindSimilar(ctx, orgID, d.Embedding.Slice(), decisionID, d.Repo, 50)
+	qdrantResults, err := s.finder.FindSimilar(ctx, orgID, d.Embedding.Slice(), decisionID, d.Project, 50)
 	if err != nil {
 		s.logger.Warn("conflict scorer: qdrant find similar failed", "decision_id", decisionID, "error", err)
 		return
@@ -358,8 +358,8 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				CreatedB:        cand.ValidFrom,
 				ReasoningA:      derefString(d.Reasoning),
 				ReasoningB:      derefString(cand.Reasoning),
-				RepoA:           derefString(d.Repo),
-				RepoB:           derefString(cand.Repo),
+				ProjectA:        derefString(d.Project),
+				ProjectB:        derefString(cand.Project),
 				TaskA:           agentContextString(d.AgentContext, "task"),
 				TaskB:           agentContextString(cand.AgentContext, "task"),
 				SessionIDA:      uuidString(d.SessionID),

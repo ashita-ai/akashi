@@ -474,7 +474,7 @@ func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 		DecisionType: req.DecisionType,
 		Query:        req.Query,
 		AgentID:      req.AgentID,
-		Repo:         req.Repo,
+		Project:      req.Project,
 		Limit:        req.Limit,
 	})
 	if err != nil {

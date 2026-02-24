@@ -325,8 +325,8 @@ func TestFormatPrompt_DifferentProjects(t *testing.T) {
 		AgentB:   "coder",
 		CreatedA: now,
 		CreatedB: now.Add(time.Hour),
-		RepoA:    "ashita-ai/akashi",
-		RepoB:    "ashita-ai/engram",
+		ProjectA: "ashita-ai/akashi",
+		ProjectB: "ashita-ai/engram",
 	})
 	assert.Contains(t, prompt, "DIFFERENT PROJECTS")
 	assert.Contains(t, prompt, "ashita-ai/akashi")
@@ -345,8 +345,8 @@ func TestFormatPrompt_SameProject(t *testing.T) {
 		AgentB:   "coder",
 		CreatedA: now,
 		CreatedB: now.Add(time.Hour),
-		RepoA:    "ashita-ai/akashi",
-		RepoB:    "ashita-ai/akashi",
+		ProjectA: "ashita-ai/akashi",
+		ProjectB: "ashita-ai/akashi",
 	})
 	assert.Contains(t, prompt, "Same project: ashita-ai/akashi")
 	assert.NotContains(t, prompt, "DIFFERENT PROJECTS")

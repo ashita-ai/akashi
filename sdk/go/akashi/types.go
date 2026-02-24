@@ -147,11 +147,11 @@ type QueryFilters struct {
 	ConfidenceMin *float32 `json:"confidence_min,omitempty"`
 	Outcome       *string  `json:"outcome,omitempty"`
 
-	// Filters for composite agent identity fields (session, tool, model, repo).
+	// Filters for composite agent identity fields (session, tool, model, project).
 	SessionID *string `json:"session_id,omitempty"`
 	Tool      *string `json:"tool,omitempty"`
 	Model     *string `json:"model,omitempty"`
-	Repo      *string `json:"repo,omitempty"`
+	Project   *string `json:"project,omitempty"`
 }
 
 // QueryOptions control ordering and pagination for Client.Query.

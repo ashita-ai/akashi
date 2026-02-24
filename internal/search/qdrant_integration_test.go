@@ -275,7 +275,7 @@ func TestQdrantUpsert_PointPayloadFields(t *testing.T) {
 		SessionID:         &sessionID,
 		Tool:              "claude-code",
 		Model:             "claude-opus-4-6",
-		Repo:              "ashita-ai/akashi",
+		Project:           "ashita-ai/akashi",
 	}
 
 	// Point with minimal fields (no optional fields).
@@ -353,11 +353,11 @@ func TestQdrantSearch_WithFilters(t *testing.T) {
 		require.Error(t, err)
 	})
 
-	t.Run("tool_model_repo filters", func(t *testing.T) {
+	t.Run("tool_model_project filters", func(t *testing.T) {
 		tool := "claude-code"
 		mdl := "opus"
-		repo := "ashita-ai/akashi"
-		filters := model.QueryFilters{Tool: &tool, Model: &mdl, Repo: &repo}
+		project := "ashita-ai/akashi"
+		filters := model.QueryFilters{Tool: &tool, Model: &mdl, Project: &project}
 		_, err := idx.Search(ctx, uuid.New(), embedding, filters, 10)
 		require.Error(t, err)
 	})

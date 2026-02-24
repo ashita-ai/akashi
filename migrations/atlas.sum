@@ -1,4 +1,4 @@
-h1:ufX1Fx/ItyWi3MB0n0E/YQ3t5I0/FtfDpPW0eeqtanY=
+h1:eiz/MxPuA8PGBxdzCW8Sn80aPutRnzi+GBEBuYX0UeU=
 001_initial.sql h1:uhyGXto+QacAaGYb9ZTGjsBs5chlKi8O0eHz9aCQsrY=
 022_full_text_search.sql h1:9iwtA8MgCzAxDV9YkUBn0CLT9ePSmj3GcPoMGg8TXf0=
 023_fix_outbox_index.sql h1:OtMEFBcMRWej02+ghnBXlPr6BVq+LoA62Id9XUWfDNI=
@@ -30,3 +30,4 @@ h1:ufX1Fx/ItyWi3MB0n0E/YQ3t5I0/FtfDpPW0eeqtanY=
 049_drop_hnsw_indexes.sql h1:X3soDC8e/ThYQrues25Qmme5HacdaZj0/ppvKFsq+mc=
 050_completeness_score.sql h1:1b3WBDX2BO1wLfFvuPaO/myxmVLb8yFmqrc0ZyefzcE=
 051_decision_assessments.sql h1:FmLxZFiedBfMBWdPIZ6gT2ZKLWscQ91XA8aidOZsLJ8=
+052_rename_repo_to_project.sql h1:nM5KnntlNvhqBGdflCVA4dXCAd2Q1n5g6dDxW0La9Ws=
