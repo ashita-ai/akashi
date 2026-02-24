@@ -29,8 +29,8 @@ WORKFLOW — follow this for every non-trivial decision:
    and avoid contradicting prior work.
 
 2. AFTER deciding: call akashi_trace with what you decided (outcome), why (reasoning),
-   your confidence (0.0–1.0), and repo (the project or repo name, e.g. "akashi",
-   "my-service"). This creates a provable record so other agents can learn from it.
+   your confidence (0.0–1.0), and project (the project or app name, e.g. "akashi",
+   "my-langchain-app"). This creates a provable record so other agents can learn from it.
 
 TOOLS:
 - akashi_check: look up precedents before deciding (always call first)

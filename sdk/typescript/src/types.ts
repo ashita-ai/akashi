@@ -183,7 +183,7 @@ export interface QueryFilters {
   session_id?: string;
   tool?: string;
   model?: string;
-  repo?: string;
+  project?: string;
 }
 
 /** Request body for creating a run. */

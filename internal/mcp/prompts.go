@@ -77,7 +77,7 @@ func (s *Server) handleBeforeDecisionPrompt(ctx context.Context, request mcplib.
    - outcome: what you decided (be specific)
    - confidence: your certainty (0.0-1.0)
    - reasoning: why you chose this, referencing precedents if applicable
-   - repo: the project or repo name (e.g. "akashi", "my-service") so this decision
+   - project: the project or application name (e.g. "akashi", "my-langchain-app") so this decision
      appears in project-scoped queries`, decisionType, decisionType, decisionType),
 				},
 			},
@@ -107,7 +107,7 @@ CALL akashi_trace with:
 - confidence: your certainty about this decision (0.0-1.0). Be honest.
 - reasoning: explain your chain of thought. What trade-offs did you accept?
   What constraints or requirements drove the choice? What risks?
-- repo: the project or repo name (e.g. "akashi", "my-service") so this decision
+- project: the project or application name (e.g. "akashi", "my-langchain-app") so this decision
   appears in project-scoped queries.
 - alternatives (optional but recommended): JSON array of options you considered
   and rejected. Each item: {"label":"option description","rejection_reason":"why not chosen"}

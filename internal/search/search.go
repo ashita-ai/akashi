@@ -39,9 +39,9 @@ type Searcher interface {
 // can type-assert to CandidateFinder when they need internal ANN access.
 type CandidateFinder interface {
 	// FindSimilar returns decision IDs similar to the given embedding within an org.
-	// excludeID is removed from results (the source decision). repo, when non-nil,
-	// restricts results to decisions with the same repo value or no repo.
-	FindSimilar(ctx context.Context, orgID uuid.UUID, embedding []float32, excludeID uuid.UUID, repo *string, limit int) ([]Result, error)
+	// excludeID is removed from results (the source decision). project, when non-nil,
+	// restricts results to decisions with the same project value or no project.
+	FindSimilar(ctx context.Context, orgID uuid.UUID, embedding []float32, excludeID uuid.UUID, project *string, limit int) ([]Result, error)
 }
 
 // ReScore adjusts raw similarity scores with outcome signals, completeness, and recency
