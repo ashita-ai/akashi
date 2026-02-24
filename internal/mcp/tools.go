@@ -88,6 +88,8 @@ WHAT TO INCLUDE:
 - outcome: What you decided, stated as a fact ("chose gpt-4o for summarization")
 - confidence: How certain you are (0.0-1.0). Be honest — 0.6 is fine.
 - reasoning: Your chain of thought. Why this choice over alternatives?
+- repo: The project or repository this decision belongs to (e.g. "akashi", "my-service").
+  Include this so the decision appears in project-scoped queries.
 - precedent_ref: UUID of the prior decision this one builds on. Copy directly from
   akashi_check's precedent_ref_hint field. Wires the attribution graph so the audit
   trail shows how decisions evolved. Omit if there is no clear antecedent.
@@ -102,6 +104,7 @@ WHAT TO INCLUDE:
 EXAMPLE: After choosing a caching strategy, record decision_type="architecture",
 outcome="chose Redis with 5min TTL for session cache", confidence=0.85,
 reasoning="Redis handles our expected QPS, TTL prevents stale reads",
+repo="my-service",
 precedent_ref="<uuid from akashi_check's precedent_ref_hint if applicable>",
 alternatives='[{"label":"in-memory cache","rejection_reason":"not shared across instances"},{"label":"Memcached","rejection_reason":"no native clustering in our stack"}]',
 evidence='[{"source_type":"tool_output","content":"load test showed 8k req/s with Redis, 2k with DB"}]'
@@ -136,6 +139,9 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 			),
 			mcplib.WithString("task",
 				mcplib.Description(`What you're working on (e.g. "codebase review", "implement rate limiting"). Groups related decisions.`),
+			),
+			mcplib.WithString("repo",
+				mcplib.Description(`The project or repository this decision belongs to (e.g. "akashi", "my-service"). Include this so the decision appears in project-scoped queries and can be filtered by other agents working on the same project.`),
 			),
 			mcplib.WithString("idempotency_key",
 				mcplib.Description("Optional key for retry safety. Same key + same payload replays the original response. Same key + different payload returns an error. Use a UUID or deterministic identifier per logical operation."),
@@ -726,6 +732,9 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	}
 	if t := request.GetString("task", ""); t != "" {
 		clientCtx["task"] = t
+	}
+	if r := request.GetString("repo", ""); r != "" {
+		clientCtx["repo"] = r
 	}
 
 	// Operator from JWT claims: use the agent's display name if distinct from agent_id.
