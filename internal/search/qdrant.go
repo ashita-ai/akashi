@@ -106,37 +106,42 @@ func NewQdrantIndex(cfg QdrantConfig, logger *slog.Logger) (*QdrantIndex, error)
 	}, nil
 }
 
-// EnsureCollection creates the collection if it doesn't already exist,
-// with HNSW parameters tuned for 1024-dim cosine similarity.
+// EnsureCollection creates the collection if it doesn't already exist and
+// ensures all payload indexes are present. Index creation is always attempted
+// regardless of whether the collection pre-existed — CreateFieldIndex is
+// idempotent on Qdrant, so this safely backfills any indexes added after the
+// collection was first created (e.g. when a field is renamed in a migration).
 func (q *QdrantIndex) EnsureCollection(ctx context.Context) error {
 	exists, err := q.client.CollectionExists(ctx, q.collection)
 	if err != nil {
 		return fmt.Errorf("search: check collection exists: %w", err)
 	}
-	if exists {
+
+	if !exists {
+		m := uint64(16)
+		efConstruct := uint64(128)
+
+		if err := q.client.CreateCollection(ctx, &qdrant.CreateCollection{
+			CollectionName: q.collection,
+			VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{
+				Size:     q.dims,
+				Distance: qdrant.Distance_Cosine,
+				HnswConfig: &qdrant.HnswConfigDiff{
+					M:           &m,
+					EfConstruct: &efConstruct,
+				},
+			}),
+		}); err != nil {
+			return fmt.Errorf("search: create collection %q: %w", q.collection, err)
+		}
+		q.logger.Info("qdrant: created collection", "collection", q.collection, "dims", q.dims)
+	} else {
 		q.logger.Info("qdrant: collection already exists", "collection", q.collection)
-		return nil
 	}
 
-	m := uint64(16)
-	efConstruct := uint64(128)
-
-	err = q.client.CreateCollection(ctx, &qdrant.CreateCollection{
-		CollectionName: q.collection,
-		VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{
-			Size:     q.dims,
-			Distance: qdrant.Distance_Cosine,
-			HnswConfig: &qdrant.HnswConfigDiff{
-				M:           &m,
-				EfConstruct: &efConstruct,
-			},
-		}),
-	})
-	if err != nil {
-		return fmt.Errorf("search: create collection %q: %w", q.collection, err)
-	}
-
-	// Create payload indexes for filtered search.
+	// Always ensure payload indexes exist. CreateFieldIndex is idempotent —
+	// calling it on an existing index is a no-op. This guarantees indexes
+	// added after the collection was first created are backfilled on restart.
 	keywordType := qdrant.FieldType_FieldTypeKeyword
 	for _, field := range []string{"org_id", "agent_id", "decision_type", "session_id", "tool", "model", "project"} {
 		if _, err := q.client.CreateFieldIndex(ctx, &qdrant.CreateFieldIndexCollection{
@@ -144,7 +149,7 @@ func (q *QdrantIndex) EnsureCollection(ctx context.Context) error {
 			FieldName:      field,
 			FieldType:      &keywordType,
 		}); err != nil {
-			return fmt.Errorf("search: create index on %q: %w", field, err)
+			return fmt.Errorf("search: ensure index on %q: %w", field, err)
 		}
 	}
 
@@ -155,11 +160,11 @@ func (q *QdrantIndex) EnsureCollection(ctx context.Context) error {
 			FieldName:      field,
 			FieldType:      &floatType,
 		}); err != nil {
-			return fmt.Errorf("search: create index on %q: %w", field, err)
+			return fmt.Errorf("search: ensure index on %q: %w", field, err)
 		}
 	}
 
-	q.logger.Info("qdrant: created collection with payload indexes", "collection", q.collection, "dims", q.dims)
+	q.logger.Info("qdrant: payload indexes ensured", "collection", q.collection)
 	return nil
 }
 
