@@ -149,7 +149,7 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID) (*Metrics, error
 	}
 
 	// Gap detection: rule-based, max 3 gaps, ordered by severity.
-	m.Gaps = computeGaps(qs, es, cc.Total, cc.Open, os)
+	m.Gaps = computeGaps(qs, cc.Total, cc.Open, os)
 
 	// Overall status.
 	m.Status = computeStatus(qs, cc.Open)
@@ -159,7 +159,7 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID) (*Metrics, error
 
 // computeGaps identifies the most important areas for improvement.
 // Returns at most 3 gaps, ordered by severity.
-func computeGaps(qs storage.DecisionQualityStats, es storage.EvidenceCoverageStats, totalConflicts, openConflicts int, os storage.OutcomeSignalsSummary) []string {
+func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts int, os storage.OutcomeSignalsSummary) []string {
 	var gaps []string
 
 	// Most severe first.
@@ -171,17 +171,6 @@ func computeGaps(qs storage.DecisionQualityStats, es storage.EvidenceCoverageSta
 	if openConflicts > 0 && totalConflicts > 0 {
 		gaps = append(gaps, fmt.Sprintf(
 			"%d of %d conflicts are unresolved.", openConflicts, totalConflicts))
-	}
-
-	// Evidence coverage: only surface when coverage is genuinely low (< 50%).
-	// Use the specific count to avoid vague generic messages.
-	if len(gaps) < 3 && es.CoveragePercent < 50 && es.WithoutEvidenceCount > 0 {
-		pct := 0.0
-		if es.TotalDecisions > 0 {
-			pct = float64(es.WithoutEvidenceCount) / float64(es.TotalDecisions) * 100
-		}
-		gaps = append(gaps, fmt.Sprintf(
-			"%d decisions (%.0f%%) lack evidence records.", es.WithoutEvidenceCount, pct))
 	}
 
 	if len(gaps) < 3 && qs.BelowHalf > 0 {
