@@ -95,7 +95,6 @@ func (h *Handlers) beginIdempotentWrite(
 }
 
 func (h *Handlers) completeIdempotentWrite(
-	r *http.Request,
 	orgID uuid.UUID,
 	idem *idempotencyHandle,
 	statusCode int,
@@ -150,7 +149,7 @@ func (h *Handlers) completeIdempotentWriteBestEffort(
 	statusCode int,
 	data any,
 ) {
-	if err := h.completeIdempotentWrite(r, orgID, idem, statusCode, data); err != nil {
+	if err := h.completeIdempotentWrite(orgID, idem, statusCode, data); err != nil {
 		h.logger.Error("failed to finalize idempotency record after committed mutation — clearing key to unblock retries",
 			"error", err,
 			"org_id", orgID,
