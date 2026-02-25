@@ -121,24 +121,23 @@ func TestReScore(t *testing.T) {
 	// Missing decision should be filtered out.
 	require.Len(t, scored, 3)
 
-	// First result: high completeness, no age decay → highest relevance.
-	// cold-start outcomeWeight = 0.35*0 + 0.25*0.5 + 0.15*0 + 0.10*1.0 + 0.15*0.5 = 0.300
-	// multiplier = 0.5 + 0.3*0.300 + 0.2*1.0 = 0.790
-	// relevance = 0.95 * 0.790 * 1.0 = 0.7505
+	// Completeness no longer affects the relevance formula (issue #235).
+	// All three are cold-start: outcomeWeight = stability=1.0 * 0.15 = 0.15; multiplier = 0.575.
+	//
+	// First result: no age decay → highest relevance.
+	// relevance = 0.95 * 0.575 * 1.0 = 0.54625
 	assert.Equal(t, uuid.MustParse("00000000-0000-0000-0000-000000000001"), scored[0].Decision.ID)
-	assert.InDelta(t, 0.7505, scored[0].SimilarityScore, 0.01)
+	assert.InDelta(t, 0.54625, scored[0].SimilarityScore, 0.01)
 
-	// Second result: medium completeness, 90-day decay.
-	// multiplier = 0.5 + 0.3*0.300 + 0.2*0.5 = 0.690; recency = 1/(1+1) = 0.5
-	// relevance = 0.90 * 0.690 * 0.5 = 0.3105
+	// Second result: 90-day decay: recency = 1/(1+1) = 0.5
+	// relevance = 0.90 * 0.575 * 0.5 = 0.25875
 	assert.Equal(t, uuid.MustParse("00000000-0000-0000-0000-000000000002"), scored[1].Decision.ID)
-	assert.InDelta(t, 0.3105, scored[1].SimilarityScore, 0.01)
+	assert.InDelta(t, 0.25875, scored[1].SimilarityScore, 0.01)
 
-	// Third result: no completeness, 180-day decay.
-	// multiplier = 0.5 + 0.3*0.300 + 0.2*0.0 = 0.590; recency = 1/(1+2) = 0.333
-	// relevance = 0.85 * 0.590 * 0.333 ≈ 0.167
+	// Third result: 180-day decay: recency = 1/(1+2) = 0.333
+	// relevance = 0.85 * 0.575 * 0.333 ≈ 0.163
 	assert.Equal(t, uuid.MustParse("00000000-0000-0000-0000-000000000003"), scored[2].Decision.ID)
-	assert.InDelta(t, 0.167, scored[2].SimilarityScore, 0.01)
+	assert.InDelta(t, 0.163, scored[2].SimilarityScore, 0.01)
 
 	// Results are sorted descending.
 	assert.GreaterOrEqual(t, scored[0].SimilarityScore, scored[1].SimilarityScore)
@@ -327,7 +326,7 @@ func TestOutboxWorkerDrain_WithoutStart(t *testing.T) {
 
 func TestReScore_WithMatchingResults(t *testing.T) {
 	// Test ReScore when all results have matching decisions, verifying the
-	// formula: relevance = similarity * (0.6 + 0.3 * quality) * (1 / (1 + age/90))
+	// formula: relevance = similarity * (0.5 + 0.5 * outcome_weight) * recency_decay
 	now := time.Now()
 
 	id1 := uuid.New()
@@ -371,11 +370,11 @@ func TestReScore_WithMatchingResults(t *testing.T) {
 	require.Len(t, scored, 3, "all results should match decisions")
 
 	// Verify the first result (sorted descending by adjusted score).
-	// cold-start outcomeWeight = 0.300
-	// id1: multiplier = 0.5 + 0.3*0.300 + 0.2*0.9 = 0.770; recency = 1.0 (age=0)
-	// relevance = 0.92 * 0.770 * 1.0 = 0.7084
+	// Completeness no longer in relevance formula (issue #235).
+	// id1: cold-start outcomeWeight = 0.15; multiplier = 0.575; recency = 1.0 (age=0)
+	// relevance = 0.92 * 0.575 * 1.0 = 0.529
 	assert.Equal(t, id1, scored[0].Decision.ID)
-	assert.InDelta(t, 0.7084, scored[0].SimilarityScore, 0.02)
+	assert.InDelta(t, 0.529, scored[0].SimilarityScore, 0.02)
 
 	// Verify all results are sorted descending by adjusted score.
 	for i := 1; i < len(scored); i++ {
@@ -391,8 +390,8 @@ func TestReScore_WithMatchingResults(t *testing.T) {
 }
 
 func TestReScore_ScoreCappedAtOne(t *testing.T) {
-	// When similarity score is very high and quality is perfect, the adjusted
-	// score should be capped at 1.0 (the math.Min(relevance, 1.0) guard).
+	// When similarity is 1.0 with perfect outcome signals, the adjusted score
+	// must be capped at 1.0 by the math.Min(relevance, 1.0) guard.
 	now := time.Now()
 	id := uuid.New()
 
@@ -404,13 +403,13 @@ func TestReScore_ScoreCappedAtOne(t *testing.T) {
 		},
 	}
 
-	// cold-start outcomeWeight = 0.300
-	// multiplier = 0.5 + 0.3*0.300 + 0.2*1.0 = 0.790
-	// relevance = 1.0 * 0.790 * 1.0 = 0.790 (capped at 1.0, but naturally below)
+	// Completeness no longer in relevance formula (issue #235).
+	// cold-start outcomeWeight = 0.15 (stability=1.0 only); multiplier = 0.575
+	// relevance = 1.0 * 0.575 * 1.0 = 0.575 (below cap)
 	results := []Result{{DecisionID: id, Score: 1.0}}
 	scored := ReScore(results, decisions, 10)
 	require.Len(t, scored, 1)
-	assert.InDelta(t, 0.790, scored[0].SimilarityScore, 0.01)
+	assert.InDelta(t, 0.575, scored[0].SimilarityScore, 0.01)
 	assert.LessOrEqual(t, scored[0].SimilarityScore, float32(1.0))
 }
 
