@@ -160,7 +160,7 @@ Created automatically on startup if missing. Configuration:
 | HNSW M | 16 |
 | HNSW ef_construct | 128 |
 
-**Payload indexes** (for filtered search): `org_id`, `agent_id`, `decision_type` (keyword); `confidence`, `quality_score`, `valid_from_unix` (float).
+**Payload indexes** (for filtered search): `org_id`, `agent_id`, `decision_type` (keyword); `confidence`, `completeness_score`, `valid_from_unix` (float).
 
 Tenant isolation: every query includes `org_id` as a required filter.
 
@@ -186,10 +186,21 @@ WHERE attempts >= 10;
 Raw Qdrant similarity scores are adjusted before returning results:
 
 ```
-relevance = similarity * (0.6 + 0.3 * quality_score) * (1.0 / (1.0 + age_days / 90.0))
+outcome_weight =
+    0.40 * assessment_score    (explicit feedback; 0 if no assessments)
+    0.25 * log1p(citations)/log(6)  (logarithmic, saturates at 5 citations)
+    0.15 * stability_score     (0 if superseded within 48h)
+    0.10 * agreement_score     (min(AgreementCount/3, 1))
+    0.10 * conflict_win_rate   (0 if no conflict history)
+
+relevance = similarity × (0.5 + 0.5×outcome_weight) × recency_decay
+recency_decay = 1 / (1 + age_days/90)
 ```
 
-- **Quality weight** (30%): Higher-quality decisions rank higher.
+- **Assessment (primary, 40%)**: Explicit correctness feedback from `akashi_assess`. Contributes 0 when no assessments exist.
+- **Citations (25%)**: Logarithmic — first citation worth more than later ones.
+- **Stability (15%)**: Decisions superseded within 48h of creation score 0.
+- **Agreement / conflict win rate**: Minor boosts based on consensus signals.
 - **Recency decay**: Decisions lose relevance with a 90-day half-life.
 - **Over-fetch**: Qdrant returns `limit * 3` results; re-scoring and truncation happen in Go.
 

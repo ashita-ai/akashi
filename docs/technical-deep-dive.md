@@ -300,16 +300,19 @@ Decisions are embedded for similarity search using pgvector:
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-**Weighted relevance scoring** (storage/decisions.go:269):
-```sql
-SELECT *,
-  (1 - (embedding <=> $1))                    -- cosine similarity (60%)
-  * (0.6 + 0.3 * COALESCE(quality_score, 0))  -- quality bonus (up to 30%)
-  * (1.0 / (1.0 + age_days / 90.0))           -- recency decay (to 50% at 90d)
-  AS relevance
-FROM decisions
-ORDER BY relevance DESC
+**Weighted relevance scoring** (`internal/search/search.go` — `ReScore`):
 ```
+outcome_weight =
+    0.40 * assessment_score         // explicit correctness feedback (primary signal)
+    0.25 * log1p(citations)/log(6)  // logarithmic citation score
+    0.15 * stability_score          // 0 if superseded within 48h
+    0.10 * agreement_score          // min(AgreementCount/3, 1)
+    0.10 * conflict_win_rate        // 0 if no conflict history
+
+relevance = similarity × (0.5 + 0.5×outcome_weight) × (1 / (1 + age_days/90))
+```
+
+Qdrant returns `limit × 3` candidates; ReScore reranks and truncates in Go.
 
 **Provider selection** (main.go:168):
 ```go

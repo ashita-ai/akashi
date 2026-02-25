@@ -42,13 +42,13 @@ sequenceDiagram
     DS->>E: Embed(evidence[i].content) for each evidence
     E-->>DS: evidence vectors
     DS->>Q: Score(decision)
-    Q-->>DS: quality_score (0.0-1.0)
+    Q-->>DS: completeness_score (0.0-1.0)
     DS->>DB: CreateTraceTx(params)
 
     rect rgb(235, 245, 255)
         Note over DB: Single PostgreSQL Transaction
         DB->>DB: INSERT INTO agent_runs (status=running)
-        DB->>DB: INSERT INTO decisions (embedding, quality_score)
+        DB->>DB: INSERT INTO decisions (embedding, completeness_score)
         DB->>DB: COPY INTO alternatives
         DB->>DB: COPY INTO evidence
         DB->>DB: INSERT INTO search_outbox (if embedding present)
@@ -83,10 +83,10 @@ flowchart TD
     CHK -- Yes --> EMB[embedder.Embed query text]
     EMB --> ANN[Qdrant ANN search<br/>cosine similarity<br/>org_id payload filter]
     ANN --> HYD[Hydrate from PostgreSQL<br/>GetDecisionsByIDs]
-    HYD --> RESCORE["ReScore:<br/>relevance = similarity<br/>* (0.6 + 0.3 * quality_score)<br/>* 1/(1 + age_days/90)"]
+    HYD --> RESCORE["ReScore:<br/>relevance = similarity<br/>* (0.5 + 0.5 * outcome_weight)<br/>* 1/(1 + age_days/90)"]
     RESCORE --> FILTER
     CHK -- No --> ILIKE[PostgreSQL ILIKE fallback<br/>keyword match on outcome,<br/>reasoning, decision_type]
-    ILIKE --> RESCORE2["SQL relevance:<br/>(0.6 + 0.3 * quality_score)<br/>* 1/(1 + age_days/90)"]
+    ILIKE --> RESCORE2["SQL relevance:<br/>(0.5 + 0.5 * outcome_weight)<br/>* 1/(1 + age_days/90)"]
     RESCORE2 --> FILTER
 
     Q3[POST /v1/query/temporal] --> PARSE3[Parse TemporalQueryRequest<br/>as_of timestamp + filters]
@@ -133,7 +133,7 @@ sequenceDiagram
         W->>PG: UPDATE search_outbox SET locked_until = now() + 60s<br/>WHERE id = ANY(batch_ids)
         W->>PG: COMMIT (lock acquired)
 
-        W->>PG: SELECT id, org_id, agent_id, decision_type,<br/>confidence, quality_score, valid_from, embedding<br/>FROM decisions WHERE id = ANY(decision_ids)<br/>AND valid_to IS NULL AND embedding IS NOT NULL
+        W->>PG: SELECT id, org_id, agent_id, decision_type,<br/>confidence, completeness_score, valid_from, embedding<br/>FROM decisions WHERE id = ANY(decision_ids)<br/>AND valid_to IS NULL AND embedding IS NOT NULL
         PG-->>W: DecisionForIndex rows
 
         alt Qdrant upsert succeeds
@@ -340,7 +340,7 @@ erDiagram
         real confidence "0.0 to 1.0"
         text reasoning "nullable"
         vector_1024 embedding "nullable"
-        real quality_score "0.0 to 1.0"
+        real completeness_score "0.0 to 1.0"
         uuid precedent_ref FK "nullable, self-ref"
         jsonb metadata
         timestamptz valid_from "business time start"
