@@ -170,19 +170,19 @@ func TestBuildQdrantFilter(t *testing.T) {
 
 	t.Run("org_id only", func(t *testing.T) {
 		filters := model.QueryFilters{}
-		conditions := buildFilterConditions(uuid.New(), filters)
+		conditions := buildFilterConditions(filters)
 		assert.Len(t, conditions, 1) // org_id only
 	})
 
 	t.Run("with agent_id", func(t *testing.T) {
 		filters := model.QueryFilters{AgentIDs: []string{"planner"}}
-		conditions := buildFilterConditions(uuid.New(), filters)
+		conditions := buildFilterConditions(filters)
 		assert.Len(t, conditions, 2) // org_id + agent_id
 	})
 
 	t.Run("with multiple agent_ids", func(t *testing.T) {
 		filters := model.QueryFilters{AgentIDs: []string{"planner", "coder"}}
-		conditions := buildFilterConditions(uuid.New(), filters)
+		conditions := buildFilterConditions(filters)
 		assert.Len(t, conditions, 2) // org_id + agent_ids (keywords match)
 	})
 
@@ -193,7 +193,7 @@ func TestBuildQdrantFilter(t *testing.T) {
 			DecisionType:  &decType,
 			ConfidenceMin: &confMin,
 		}
-		conditions := buildFilterConditions(uuid.New(), filters)
+		conditions := buildFilterConditions(filters)
 		assert.Len(t, conditions, 3) // org_id + decision_type + confidence
 	})
 
@@ -203,7 +203,7 @@ func TestBuildQdrantFilter(t *testing.T) {
 		filters := model.QueryFilters{
 			TimeRange: &model.TimeRange{From: &from, To: &to},
 		}
-		conditions := buildFilterConditions(uuid.New(), filters)
+		conditions := buildFilterConditions(filters)
 		assert.Len(t, conditions, 3) // org_id + from + to
 	})
 
@@ -218,7 +218,7 @@ func TestBuildQdrantFilter(t *testing.T) {
 			ConfidenceMin: &confMin,
 			TimeRange:     &model.TimeRange{From: &from, To: &to},
 		}
-		conditions := buildFilterConditions(uuid.New(), filters)
+		conditions := buildFilterConditions(filters)
 		assert.Len(t, conditions, 6) // org_id + agent_id + decision_type + confidence + from + to
 	})
 }
@@ -226,7 +226,7 @@ func TestBuildQdrantFilter(t *testing.T) {
 // buildFilterConditions extracts the filter-building logic for testability.
 // This mirrors the condition-building in QdrantIndex.Search, including the
 // SessionID, Tool, Model, and Repo filters added for composite agent identity.
-func buildFilterConditions(orgID uuid.UUID, filters model.QueryFilters) []string {
+func buildFilterConditions(filters model.QueryFilters) []string {
 	var conditions []string
 	conditions = append(conditions, "org_id")
 
@@ -295,7 +295,7 @@ func TestBuildQdrantFilter_SessionAndContext(t *testing.T) {
 		Project:   &project,
 	}
 
-	conditions := buildFilterConditions(uuid.New(), filters)
+	conditions := buildFilterConditions(filters)
 	// Expect 5 conditions: org_id + session_id + tool + model + project.
 	require.Len(t, conditions, 5)
 	assert.Contains(t, conditions, "org_id")
