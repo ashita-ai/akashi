@@ -83,19 +83,20 @@ WHEN TO USE: After you make any non-trivial decision — choosing a model,
 selecting an approach, picking a data source, resolving an ambiguity,
 or committing to a course of action.
 
-WHAT TO INCLUDE:
+TWO REQUIRED FIELDS — everything else is optional:
 - decision_type: A short category (see enum for standard types)
 - outcome: What you decided, stated as a fact ("chose gpt-4o for summarization")
+
+OPTIONAL FIELDS (each improves quality score and future usefulness):
 - confidence: How certain you are (0.0-1.0). Be honest — 0.6 is fine.
 - reasoning: Your chain of thought. Why this choice over alternatives?
-- project: The project, application, or service this decision belongs to (e.g. "akashi", "my-langchain-app", "customer-support-bot").
-  Include this so the decision appears in project-scoped queries.
-- precedent_ref: UUID of the prior decision this one builds on. Copy directly from
-  akashi_check's precedent_ref_hint field. Wires the attribution graph so the audit
-  trail shows how decisions evolved. Omit if there is no clear antecedent.
-- alternatives: JSON array of options you considered and rejected (optional but improves quality score).
+- project: The project or app this belongs to (e.g. "akashi", "my-langchain-app").
+  Enables project-scoped queries. Auto-detected from working directory if omitted.
+- precedent_ref: Copy the value of precedent_ref_hint from akashi_check's response.
+  Wires the attribution graph so the audit trail shows how decisions evolved.
+- alternatives: JSON array of options considered and rejected.
   Format: [{"label":"option description","rejection_reason":"why not chosen"}]
-- evidence: JSON array of supporting facts (optional but improves quality score).
+- evidence: JSON array of supporting facts.
   Format: [{"source_type":"tool_output","content":"test suite passed with 0 failures"},
            {"source_type":"document","content":"ADR-007 requires event sourcing","source_uri":"adrs/007.md"}]
   source_type values: document, api_response, agent_output, user_input, search_result,
@@ -105,7 +106,7 @@ EXAMPLE: After choosing a caching strategy, record decision_type="architecture",
 outcome="chose Redis with 5min TTL for session cache", confidence=0.85,
 reasoning="Redis handles our expected QPS, TTL prevents stale reads",
 project="my-service",
-precedent_ref="<uuid from akashi_check's precedent_ref_hint if applicable>",
+precedent_ref="<paste precedent_ref_hint from akashi_check here, if applicable>",
 alternatives='[{"label":"in-memory cache","rejection_reason":"not shared across instances"},{"label":"Memcached","rejection_reason":"no native clustering in our stack"}]',
 evidence='[{"source_type":"tool_output","content":"load test showed 8k req/s with Redis, 2k with DB"}]'
 
@@ -371,8 +372,8 @@ WHEN TO USE: After you observe whether a prior decision turned out to be
 correct — e.g., the build passed, the approach worked, the prediction was
 right. Call this to close the learning loop.
 
-Use the decision_id from the original akashi_trace response or from
-akashi_check's precedent_ref_hint. You can only assess decisions within
+Use the decision_id from the original akashi_trace response, or from
+the id field of a decision returned by akashi_check. You can only assess decisions within
 your org. Each call appends a new row — re-assessing creates a revision
 record rather than overwriting, preserving the full assessment history.
 
@@ -546,15 +547,14 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 		"conflicts":      compactConfs,
 	}
 
-	// precedent_ref_hint: shown to write-role callers when matching decisions are returned,
-	// nudging them to set precedent_ref when tracing to build the attribution graph.
+	// precedent_ref_hint: the UUID of the best candidate for precedent_ref in the
+	// subsequent akashi_trace call. Emitted as a bare UUID so agents can copy it
+	// directly without parsing. Only shown when decisions are returned and the caller
+	// has write access. We pick the least-cited decision to spread attribution.
 	if len(resp.Decisions) > 0 && claims != nil && model.RoleAtLeast(claims.Role, model.RoleAgent) {
-		// Find a decision with low citation count to use as the example.
 		for _, d := range resp.Decisions {
 			if d.PrecedentCitationCount < 5 {
-				result["precedent_ref_hint"] = fmt.Sprintf(
-					"If your current decision builds on any of the above, set precedent_ref: %s in akashi_trace. This builds the attribution graph used by outcome signals.",
-					d.ID)
+				result["precedent_ref_hint"] = d.ID.String()
 				break
 			}
 		}
