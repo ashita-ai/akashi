@@ -279,31 +279,6 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Populate consensus scores and outcome signals in batch.
-	if len(decisions) > 0 {
-		ids := make([]uuid.UUID, len(decisions))
-		for i := range decisions {
-			ids[i] = decisions[i].ID
-		}
-		if consensusMap, err := h.decisionSvc.ConsensusScoresBatch(r.Context(), ids, orgID); err == nil {
-			for i := range decisions {
-				if scores, ok := consensusMap[decisions[i].ID]; ok {
-					decisions[i].AgreementCount = scores[0]
-					decisions[i].ConflictCount = scores[1]
-				}
-			}
-		}
-		if signalsMap, err := h.db.GetDecisionOutcomeSignalsBatch(r.Context(), ids, orgID); err == nil {
-			for i := range decisions {
-				if sig, ok := signalsMap[decisions[i].ID]; ok {
-					decisions[i].SupersessionVelocityHours = sig.SupersessionVelocityHours
-					decisions[i].PrecedentCitationCount = sig.PrecedentCitationCount
-					decisions[i].ConflictFate = sig.ConflictFate
-				}
-			}
-		}
-	}
-
 	resp := map[string]any{
 		"decisions": decisions,
 		"count":     len(decisions),
@@ -523,31 +498,6 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		h.writeInternalError(w, r, "authorization check failed", err)
 		return
-	}
-
-	// Populate consensus scores and outcome signals in batch.
-	if len(decisions) > 0 {
-		ids := make([]uuid.UUID, len(decisions))
-		for i := range decisions {
-			ids[i] = decisions[i].ID
-		}
-		if consensusMap, err := h.decisionSvc.ConsensusScoresBatch(r.Context(), ids, orgID); err == nil {
-			for i := range decisions {
-				if scores, ok := consensusMap[decisions[i].ID]; ok {
-					decisions[i].AgreementCount = scores[0]
-					decisions[i].ConflictCount = scores[1]
-				}
-			}
-		}
-		if signalsMap, err := h.db.GetDecisionOutcomeSignalsBatch(r.Context(), ids, orgID); err == nil {
-			for i := range decisions {
-				if sig, ok := signalsMap[decisions[i].ID]; ok {
-					decisions[i].SupersessionVelocityHours = sig.SupersessionVelocityHours
-					decisions[i].PrecedentCitationCount = sig.PrecedentCitationCount
-					decisions[i].ConflictFate = sig.ConflictFate
-				}
-			}
-		}
 	}
 
 	resp := map[string]any{

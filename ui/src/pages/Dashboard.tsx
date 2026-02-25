@@ -81,11 +81,7 @@ export default function Dashboard() {
                 {agents.data?.length ?? 0}
               </div>
             )}
-            {traceHealth.data?.evidence && (
-              <p className="text-xs text-muted-foreground">
-                {traceHealth.data.evidence.coverage_pct.toFixed(0)}% with evidence
-              </p>
-            )}
+            <p className="text-xs text-muted-foreground">registered</p>
           </CardContent>
         </Card>
 
