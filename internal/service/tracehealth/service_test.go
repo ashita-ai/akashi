@@ -48,13 +48,19 @@ func TestComputeGaps_LowEvidence(t *testing.T) {
 	}
 	gaps := computeGaps(qs, es, 0, 0, storage.OutcomeSignalsSummary{})
 
+	// Expect one specific count message, not the generic "Less than half" message.
 	found := false
 	for _, g := range gaps {
-		if g == "Less than half of decisions have supporting evidence." {
+		if g == "70 decisions (70%) lack evidence records." {
 			found = true
 		}
 	}
-	assert.True(t, found, "expected low evidence gap")
+	assert.True(t, found, "expected specific evidence gap with count and pct")
+
+	// Generic message must not appear — it would duplicate the specific one.
+	for _, g := range gaps {
+		assert.NotContains(t, g, "Less than half")
+	}
 }
 
 func TestComputeGaps_UnresolvedConflicts(t *testing.T) {
@@ -89,18 +95,24 @@ func TestComputeGaps_MaxThree(t *testing.T) {
 
 func TestComputeStatus_Healthy(t *testing.T) {
 	qs := storage.DecisionQualityStats{Total: 100, AvgCompleteness: 0.8}
-	es := storage.EvidenceCoverageStats{CoveragePercent: 80}
-	assert.Equal(t, "healthy", computeStatus(qs, es, 0))
+	assert.Equal(t, "healthy", computeStatus(qs, 0))
 }
 
 func TestComputeStatus_NeedsAttention(t *testing.T) {
 	qs := storage.DecisionQualityStats{Total: 100, AvgCompleteness: 0.2}
-	es := storage.EvidenceCoverageStats{CoveragePercent: 30}
-	assert.Equal(t, "needs_attention", computeStatus(qs, es, 5))
+	assert.Equal(t, "needs_attention", computeStatus(qs, 5))
 }
 
+// A single genuine problem (low completeness) is enough to trigger needs_attention.
+// We don't require two simultaneous failures before warning the user.
 func TestComputeStatus_OneProblem(t *testing.T) {
 	qs := storage.DecisionQualityStats{Total: 100, AvgCompleteness: 0.2}
-	es := storage.EvidenceCoverageStats{CoveragePercent: 80}
-	assert.Equal(t, "healthy", computeStatus(qs, es, 0))
+	assert.Equal(t, "needs_attention", computeStatus(qs, 0))
+}
+
+// Evidence coverage alone — even very low — does not affect health status.
+// It is surfaced as a coverage tip, not a health failure.
+func TestComputeStatus_LowEvidenceAloneIsHealthy(t *testing.T) {
+	qs := storage.DecisionQualityStats{Total: 100, AvgCompleteness: 0.8}
+	assert.Equal(t, "healthy", computeStatus(qs, 0))
 }

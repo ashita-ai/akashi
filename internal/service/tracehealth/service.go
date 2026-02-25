@@ -152,7 +152,7 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID) (*Metrics, error
 	m.Gaps = computeGaps(qs, es, cc.Total, cc.Open, os)
 
 	// Overall status.
-	m.Status = computeStatus(qs, es, cc.Open)
+	m.Status = computeStatus(qs, cc.Open)
 
 	return m, nil
 }
@@ -168,16 +168,14 @@ func computeGaps(qs storage.DecisionQualityStats, es storage.EvidenceCoverageSta
 			"Average completeness score is %.2f. Most decisions lack substantive reasoning.", qs.AvgCompleteness))
 	}
 
-	if es.CoveragePercent < 50 {
-		gaps = append(gaps, "Less than half of decisions have supporting evidence.")
-	}
-
 	if openConflicts > 0 && totalConflicts > 0 {
 		gaps = append(gaps, fmt.Sprintf(
 			"%d of %d conflicts are unresolved.", openConflicts, totalConflicts))
 	}
 
-	if len(gaps) < 3 && es.WithoutEvidenceCount > 0 {
+	// Evidence coverage: only surface when coverage is genuinely low (< 50%).
+	// Use the specific count to avoid vague generic messages.
+	if len(gaps) < 3 && es.CoveragePercent < 50 && es.WithoutEvidenceCount > 0 {
 		pct := 0.0
 		if es.TotalDecisions > 0 {
 			pct = float64(es.WithoutEvidenceCount) / float64(es.TotalDecisions) * 100
@@ -216,19 +214,19 @@ func computeGaps(qs storage.DecisionQualityStats, es storage.EvidenceCoverageSta
 }
 
 // computeStatus determines the overall health status.
-func computeStatus(qs storage.DecisionQualityStats, es storage.EvidenceCoverageStats, openConflicts int) string {
+// Evidence coverage is intentionally excluded: most orgs don't provide evidence
+// records and that's expected. Missing evidence is surfaced as a coverage tip,
+// not a health failure.
+func computeStatus(qs storage.DecisionQualityStats, openConflicts int) string {
 	problems := 0
 	if qs.AvgCompleteness < 0.3 {
-		problems++
-	}
-	if es.CoveragePercent < 50 {
 		problems++
 	}
 	if openConflicts > 3 {
 		problems++
 	}
 
-	if problems >= 2 {
+	if problems >= 1 {
 		return "needs_attention"
 	}
 	return "healthy"
