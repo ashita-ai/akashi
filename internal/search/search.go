@@ -44,21 +44,33 @@ type CandidateFinder interface {
 	FindSimilar(ctx context.Context, orgID uuid.UUID, embedding []float32, excludeID uuid.UUID, project *string, limit int) ([]Result, error)
 }
 
-// ReScore adjusts raw similarity scores with outcome signals, completeness, and recency
-// weighting, sorts descending by adjusted score, and truncates to limit.
+// ReScore adjusts raw similarity scores with outcome signals and recency weighting,
+// sorts descending by adjusted score, and truncates to limit.
 //
-// Formula (spec 36 + assessment extension):
+// Formula (issue #235 redesign):
 //
 //	outcome_weight =
-//	    0.35 * min(PrecedentCitationCount / 5.0, 1.0)           // citation_score
-//	    0.25 * wins / (wins + losses), default 0.5              // conflict_win_rate
-//	    0.15 * min(AgreementCount / 3.0, 1.0)                   // agreement_score
-//	    0.10 * stability_score                                   // 1.0 if not superseded within 48h, else 0.0
-//	    0.15 * (correct + 0.5*partially_correct) / total, 0.5   // assessment_score
+//	    0.40 * assessment_score    // (correct + 0.5*partial) / total; ONLY when assessed
+//	    0.25 * citation_score      // log1p(citations) / log(6); logarithmic, saturates at 5
+//	    0.15 * stability_score     // 1.0 unless superseded within 48h (0.0)
+//	    0.10 * agreement_score     // min(AgreementCount / 3.0, 1.0)
+//	    0.10 * conflict_win_rate   // wins/(wins+losses); ONLY when conflict history exists
 //
-//	relevance = similarity * (0.5 + 0.3*outcome_weight + 0.2*completeness_score) * recency_decay
+//	relevance = similarity * (0.5 + 0.5*outcome_weight) * recency_decay
 //
-// Cold-start (new decision, no signals): outcome_weight = 0.25, relevance multiplier ≈ 0.665.
+// Key design choices vs prior formula:
+//   - Assessment is the primary signal (0.40) because it's the only explicit correctness feedback.
+//     It contributes 0 when no assessments exist — no phantom neutral score.
+//   - Citations use a logarithmic cap so the first citation is worth more than later ones.
+//   - Conflict win rate contributes 0 when no conflict history exists, separating "never contested"
+//     from "won all conflicts". A decision that lost all conflicts scores 0 on this signal, same as
+//     one that was never contested — neither is penalized for the absence of conflict history.
+//   - Completeness is removed from the relevance formula. Field-filling quality (evidence,
+//     alternatives, reasoning present) does not imply decision correctness. Completeness remains
+//     as a display metric but no longer inflates ranking.
+//
+// Cold-start (new decision, stable, no other signals): outcome_weight = 0.15, multiplier = 0.575.
+// Maximum (all signals perfect): outcome_weight = 1.0, multiplier = 1.0 (capped to 1.0 by caller).
 // The caller is responsible for populating outcome signal fields on model.Decision before calling
 // (see hydrateAndReScore which calls GetDecisionOutcomeSignalsBatch and GetAssessmentSummaryBatch).
 func ReScore(results []Result, decisions map[uuid.UUID]model.Decision, limit int) []model.SearchResult {
@@ -72,35 +84,44 @@ func ReScore(results []Result, decisions map[uuid.UUID]model.Decision, limit int
 			continue
 		}
 
-		// Outcome signals.
-		citationScore := math.Min(float64(d.PrecedentCitationCount)/5.0, 1.0)
-		wins := float64(d.ConflictFate.Won)
-		losses := float64(d.ConflictFate.Lost)
-		var conflictWinRate float64
-		if wins+losses > 0 {
-			conflictWinRate = wins / (wins + losses)
-		} else {
-			conflictWinRate = 0.5 // neutral: no resolved conflicts yet
-		}
+		// Citation: logarithmic cap — first citations matter more than later ones.
+		// Saturates at 5 citations (log(6)/log(6) = 1.0).
+		citationScore := math.Min(math.Log1p(float64(d.PrecedentCitationCount))/math.Log(6), 1.0)
+
+		// Agreement: linear cap (unchanged).
 		agreementScore := math.Min(float64(d.AgreementCount)/3.0, 1.0)
+
+		// Stability: decisions superseded within 48h of creation were likely wrong.
 		stabilityScore := 1.0
 		if d.SupersessionVelocityHours != nil && *d.SupersessionVelocityHours < 48 {
 			stabilityScore = 0.0
 		}
 
-		// Assessment signal: explicit correctness feedback from agents. Partially-correct
-		// counts as half a correct. Neutral (0.5) when no assessments exist.
-		assessmentScore := 0.5
-		if d.AssessmentSummary != nil && d.AssessmentSummary.Total > 0 {
-			a := d.AssessmentSummary
-			assessmentScore = (float64(a.Correct) + 0.5*float64(a.PartiallyCorrect)) / float64(a.Total)
+		// Conflict win rate: only contributes when conflict history exists.
+		// "Never contested" (no history) is neutral — it contributes 0 like a 50% win rate would.
+		// A decision that won adjudicated conflicts earns a boost; one that lost doesn't.
+		conflictContrib := 0.0
+		wins := float64(d.ConflictFate.Won)
+		losses := float64(d.ConflictFate.Lost)
+		if wins+losses > 0 {
+			conflictContrib = (wins / (wins + losses)) * 0.10
 		}
 
-		outcomeWeight := 0.35*citationScore + 0.25*conflictWinRate + 0.15*agreementScore + 0.10*stabilityScore + 0.15*assessmentScore
+		// Assessment: primary signal — explicit correctness feedback from agents.
+		// Partially-correct counts as half a correct.
+		// Contributes 0 when no assessments exist: no phantom neutral boost for unreviewed decisions.
+		assessmentContrib := 0.0
+		if d.AssessmentSummary != nil && d.AssessmentSummary.Total > 0 {
+			a := d.AssessmentSummary
+			assessmentContrib = ((float64(a.Correct) + 0.5*float64(a.PartiallyCorrect)) / float64(a.Total)) * 0.40
+		}
+
+		outcomeWeight := assessmentContrib + 0.25*citationScore + 0.15*stabilityScore + 0.10*agreementScore + conflictContrib
 
 		ageDays := math.Max(0, now.Sub(d.ValidFrom).Hours()/24.0)
 		recencyDecay := 1.0 / (1.0 + ageDays/90.0)
-		relevance := float64(r.Score) * (0.5 + 0.3*outcomeWeight + 0.2*float64(d.CompletenessScore)) * recencyDecay
+		// Completeness removed: field-filling quality ≠ decision correctness.
+		relevance := float64(r.Score) * (0.5 + 0.5*outcomeWeight) * recencyDecay
 
 		scored = append(scored, model.SearchResult{
 			Decision:        d,
