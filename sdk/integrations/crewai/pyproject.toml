@@ -20,5 +20,8 @@ dev = [
     "pytest-asyncio>=0.24",
 ]
 
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/akashi_crewai"]
