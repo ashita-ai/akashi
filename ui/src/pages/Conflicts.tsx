@@ -300,13 +300,11 @@ export default function Conflicts() {
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
         ...(agentFilter ? { agent_id: agentFilter } : {}),
+        ...(statusFilter ? { status: statusFilter } : {}),
       }),
   });
 
-  // Client-side status filter (backend may not support status filter on list)
-  const filteredConflicts = statusFilter
-    ? data?.conflicts?.filter((c) => c.status === statusFilter)
-    : data?.conflicts;
+  const filteredConflicts = data?.conflicts;
 
   const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
 

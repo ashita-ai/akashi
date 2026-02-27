@@ -297,14 +297,15 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			bestSig *= decay
 		}
 
-		// Cross-agent pairs with high topic similarity bypass the cosine-divergence
-		// significance gate when an LLM validator or external pairwise scorer is active.
-		// Bi-encoders cannot detect stance opposition for same-topic decisions: two agents
-		// saying "X is the right shape" and "X is the wrong shape" embed close together
-		// because they share all the same domain vocabulary. The LLM (or external scorer)
-		// is the right classifier for this case. See: NLI literature on bi-encoder limits.
+		// High-topic-similarity pairs bypass the cosine-divergence significance gate
+		// when an LLM validator or external pairwise scorer is active. This applies
+		// to both cross-agent and same-agent pairs: bi-encoders cannot detect stance
+		// opposition for same-topic decisions ("X is correct" vs "X is wrong" embed
+		// close together because they share domain vocabulary). The LLM is the right
+		// classifier for this, regardless of whether the two decisions came from the
+		// same agent or different agents. See: NLI literature on bi-encoder limits.
 		hasScorer := s.pairwiseScorer != nil || !isNoop
-		directToScorer := hasScorer && d.AgentID != cand.AgentID && topicSim >= decisionTopicSimFloor
+		directToScorer := hasScorer && topicSim >= decisionTopicSimFloor
 
 		if bestSig < s.threshold && !directToScorer {
 			continue

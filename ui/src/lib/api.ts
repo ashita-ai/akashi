@@ -189,6 +189,7 @@ export async function listConflicts(params?: {
   decision_type?: string;
   agent_id?: string;
   conflict_kind?: "cross_agent" | "self_contradiction";
+  status?: string;
   limit?: number;
   offset?: number;
 }): Promise<ConflictsList> {
@@ -199,6 +200,7 @@ export async function listConflicts(params?: {
     searchParams.set("decision_type", params.decision_type);
   if (params?.agent_id) searchParams.set("agent_id", params.agent_id);
   if (params?.conflict_kind) searchParams.set("conflict_kind", params.conflict_kind);
+  if (params?.status) searchParams.set("status", params.status);
   const qs = searchParams.toString();
   return request<ConflictsList>(`/v1/conflicts${qs ? `?${qs}` : ""}`);
 }
