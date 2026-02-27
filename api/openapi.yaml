@@ -1015,7 +1015,7 @@ paths:
           schema:
             type: string
             enum: [open, acknowledged, resolved, wont_fix]
-          description: Filter by lifecycle status.
+          description: Filter by lifecycle status. Omit to return conflicts of all statuses.
         - name: severity
           in: query
           schema:
