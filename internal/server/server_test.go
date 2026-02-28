@@ -951,17 +951,15 @@ func TestDecisionsRecentEndpoint(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var result struct {
-		Data struct {
-			Decisions []model.Decision `json:"decisions"`
-			Total     int              `json:"total"`
-			Limit     int              `json:"limit"`
-		} `json:"data"`
+		Data  []model.Decision `json:"data"`
+		Total int              `json:"total"`
+		Limit int              `json:"limit"`
 	}
 	data, _ := io.ReadAll(resp.Body)
 	err = json.Unmarshal(data, &result)
 	require.NoError(t, err)
-	assert.NotEmpty(t, result.Data.Decisions, "expected at least one recent decision")
-	assert.Equal(t, 10, result.Data.Limit, "expected default limit of 10")
+	assert.NotEmpty(t, result.Data, "expected at least one recent decision")
+	assert.Equal(t, 10, result.Limit, "expected default limit of 10")
 
 	// GET with agent_id filter.
 	resp2, err := authedRequest("GET", testSrv.URL+"/v1/decisions/recent?agent_id=test-agent&limit=3", agentToken, nil)
@@ -970,16 +968,14 @@ func TestDecisionsRecentEndpoint(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp2.StatusCode)
 
 	var result2 struct {
-		Data struct {
-			Decisions []model.Decision `json:"decisions"`
-			Limit     int              `json:"limit"`
-		} `json:"data"`
+		Data  []model.Decision `json:"data"`
+		Limit int              `json:"limit"`
 	}
 	data2, _ := io.ReadAll(resp2.Body)
 	err = json.Unmarshal(data2, &result2)
 	require.NoError(t, err)
-	assert.Equal(t, 3, result2.Data.Limit)
-	for _, d := range result2.Data.Decisions {
+	assert.Equal(t, 3, result2.Limit)
+	for _, d := range result2.Data {
 		assert.Equal(t, "test-agent", d.AgentID, "expected only test-agent decisions")
 	}
 }
@@ -1073,13 +1069,11 @@ func TestDeleteAgentData(t *testing.T) {
 	defer func() { _ = resp2.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp2.StatusCode)
 	var hist struct {
-		Data struct {
-			Decisions []model.Decision `json:"decisions"`
-		} `json:"data"`
+		Data []model.Decision `json:"data"`
 	}
 	data, _ := io.ReadAll(resp2.Body)
 	_ = json.Unmarshal(data, &hist)
-	assert.NotEmpty(t, hist.Data.Decisions, "agent should have decisions before deletion")
+	assert.NotEmpty(t, hist.Data, "agent should have decisions before deletion")
 
 	t.Run("non-admin cannot delete", func(t *testing.T) {
 		resp, err := authedRequest("DELETE", testSrv.URL+"/v1/agents/delete-me", deleteToken, nil)
@@ -1195,13 +1189,11 @@ func TestAccessGrantEnforcement(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 		var result struct {
-			Data struct {
-				Decisions []model.Decision `json:"decisions"`
-			} `json:"data"`
+			Data []model.Decision `json:"data"`
 		}
 		data, _ := io.ReadAll(resp.Body)
 		_ = json.Unmarshal(data, &result)
-		assert.Empty(t, result.Data.Decisions, "reader should see no decisions without a grant")
+		assert.Empty(t, result.Data, "reader should see no decisions without a grant")
 	})
 
 	t.Run("reader gets empty recent decisions", func(t *testing.T) {
@@ -1211,13 +1203,11 @@ func TestAccessGrantEnforcement(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 		var result struct {
-			Data struct {
-				Decisions []model.Decision `json:"decisions"`
-			} `json:"data"`
+			Data []model.Decision `json:"data"`
 		}
 		data, _ := io.ReadAll(resp.Body)
 		_ = json.Unmarshal(data, &result)
-		assert.Empty(t, result.Data.Decisions, "reader should see no recent decisions without a grant")
+		assert.Empty(t, result.Data, "reader should see no recent decisions without a grant")
 	})
 
 	t.Run("admin can grant access to reader", func(t *testing.T) {
@@ -1241,13 +1231,11 @@ func TestAccessGrantEnforcement(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 		var result struct {
-			Data struct {
-				Decisions []model.Decision `json:"decisions"`
-			} `json:"data"`
+			Data []model.Decision `json:"data"`
 		}
 		data, _ := io.ReadAll(resp.Body)
 		_ = json.Unmarshal(data, &result)
-		assert.NotEmpty(t, result.Data.Decisions, "reader should see decisions after grant")
+		assert.NotEmpty(t, result.Data, "reader should see decisions after grant")
 	})
 
 	t.Run("reader can query after grant", func(t *testing.T) {
@@ -1265,13 +1253,11 @@ func TestAccessGrantEnforcement(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 		var result struct {
-			Data struct {
-				Decisions []model.Decision `json:"decisions"`
-			} `json:"data"`
+			Data []model.Decision `json:"data"`
 		}
 		data, _ := io.ReadAll(resp.Body)
 		_ = json.Unmarshal(data, &result)
-		assert.NotEmpty(t, result.Data.Decisions, "reader should see decisions after grant")
+		assert.NotEmpty(t, result.Data, "reader should see decisions after grant")
 	})
 
 	t.Run("admin sees everything regardless", func(t *testing.T) {
@@ -1281,13 +1267,11 @@ func TestAccessGrantEnforcement(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 		var result struct {
-			Data struct {
-				Decisions []model.Decision `json:"decisions"`
-			} `json:"data"`
+			Data []model.Decision `json:"data"`
 		}
 		data, _ := io.ReadAll(resp.Body)
 		_ = json.Unmarshal(data, &result)
-		assert.NotEmpty(t, result.Data.Decisions, "admin should always see decisions")
+		assert.NotEmpty(t, result.Data, "admin should always see decisions")
 	})
 
 	t.Run("agent can see own data", func(t *testing.T) {
@@ -1297,13 +1281,11 @@ func TestAccessGrantEnforcement(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 		var result struct {
-			Data struct {
-				Decisions []model.Decision `json:"decisions"`
-			} `json:"data"`
+			Data []model.Decision `json:"data"`
 		}
 		data, _ := io.ReadAll(resp.Body)
 		_ = json.Unmarshal(data, &result)
-		assert.NotEmpty(t, result.Data.Decisions, "agent should see own decisions")
+		assert.NotEmpty(t, result.Data, "agent should see own decisions")
 	})
 }
 
@@ -1387,15 +1369,13 @@ func TestMCPTraceAutoRegister(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var agentList struct {
-		Data struct {
-			Agents []model.Agent `json:"agents"`
-		} `json:"data"`
+		Data []model.Agent `json:"data"`
 	}
 	data, _ := io.ReadAll(resp.Body)
 	_ = json.Unmarshal(data, &agentList)
 
 	found := false
-	for _, a := range agentList.Data.Agents {
+	for _, a := range agentList.Data {
 		if a.AgentID == newAgentID {
 			found = true
 			assert.Equal(t, model.RoleAgent, a.Role, "auto-registered agent should have role=agent")
@@ -1429,15 +1409,13 @@ func TestTraceAutoRegisterHTTP(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp2.StatusCode)
 
 	var agentList struct {
-		Data struct {
-			Agents []model.Agent `json:"agents"`
-		} `json:"data"`
+		Data []model.Agent `json:"data"`
 	}
 	data, _ := io.ReadAll(resp2.Body)
 	_ = json.Unmarshal(data, &agentList)
 
 	found := false
-	for _, a := range agentList.Data.Agents {
+	for _, a := range agentList.Data {
 		if a.AgentID == newAgentID {
 			found = true
 			assert.Equal(t, model.RoleAgent, a.Role, "auto-registered agent should have role=agent")
@@ -1662,13 +1640,11 @@ func TestHandleTrace_IdempotencyReplay(t *testing.T) {
 	require.Equal(t, http.StatusOK, respQ.StatusCode)
 
 	var queried struct {
-		Data struct {
-			Decisions []json.RawMessage `json:"decisions"`
-		} `json:"data"`
+		Data []json.RawMessage `json:"data"`
 	}
 	qData, _ := io.ReadAll(respQ.Body)
 	require.NoError(t, json.Unmarshal(qData, &queried))
-	assert.Len(t, queried.Data.Decisions, 1)
+	assert.Len(t, queried.Data, 1)
 }
 
 func TestHandleTrace_IdempotencyPayloadMismatch(t *testing.T) {
@@ -1714,16 +1690,14 @@ func TestHandleQuery_EmptyResult(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var result struct {
-		Data struct {
-			Decisions []json.RawMessage `json:"decisions"`
-		} `json:"data"`
+		Data []json.RawMessage `json:"data"`
 	}
 	data, _ := io.ReadAll(resp.Body)
 	err = json.Unmarshal(data, &result)
 	require.NoError(t, err)
 	// Verify the array is present and empty (not null).
-	assert.NotNil(t, result.Data.Decisions, "decisions should be an empty array, not null")
-	assert.Len(t, result.Data.Decisions, 0)
+	assert.NotNil(t, result.Data, "decisions should be an empty array, not null")
+	assert.Len(t, result.Data, 0)
 }
 
 func TestHandleQuery_LimitBounds(t *testing.T) {
@@ -1740,13 +1714,11 @@ func TestHandleQuery_LimitBounds(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 		var result struct {
-			Data struct {
-				Limit int `json:"limit"`
-			} `json:"data"`
+			Limit int `json:"limit"`
 		}
 		data, _ := io.ReadAll(resp.Body)
 		_ = json.Unmarshal(data, &result)
-		assert.Equal(t, 50, result.Data.Limit, "limit should be normalized in the handler")
+		assert.Equal(t, 50, result.Limit, "limit should be normalized in the handler")
 	})
 
 	t.Run("limit above max is clamped", func(t *testing.T) {
@@ -1762,13 +1734,11 @@ func TestHandleQuery_LimitBounds(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 		var result struct {
-			Data struct {
-				Limit int `json:"limit"`
-			} `json:"data"`
+			Limit int `json:"limit"`
 		}
 		data, _ := io.ReadAll(resp.Body)
 		_ = json.Unmarshal(data, &result)
-		assert.Equal(t, 1000, result.Data.Limit, "limit should be clamped in the handler")
+		assert.Equal(t, 1000, result.Limit, "limit should be clamped in the handler")
 	})
 
 	t.Run("offset above max is clamped", func(t *testing.T) {
@@ -1785,13 +1755,11 @@ func TestHandleQuery_LimitBounds(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 		var result struct {
-			Data struct {
-				Offset int `json:"offset"`
-			} `json:"data"`
+			Offset int `json:"offset"`
 		}
 		data, _ := io.ReadAll(resp.Body)
 		_ = json.Unmarshal(data, &result)
-		assert.Equal(t, 100_000, result.Data.Offset, "offset should be clamped in the handler")
+		assert.Equal(t, 100_000, result.Offset, "offset should be clamped in the handler")
 	})
 }
 
@@ -1861,29 +1829,21 @@ func TestHandleListConflicts_Pagination(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-	// Parse into a generic map so we can inspect pagination fields regardless
-	// of whether conflicts is null or an empty array.
+	// Parse the flat list envelope: data is the array, pagination fields are top-level.
 	var result struct {
-		Data map[string]json.RawMessage `json:"data"`
+		Data    []json.RawMessage `json:"data"`
+		Limit   int               `json:"limit"`
+		Offset  int               `json:"offset"`
+		HasMore bool              `json:"has_more"`
 	}
 	data, _ := io.ReadAll(resp.Body)
 	err = json.Unmarshal(data, &result)
 	require.NoError(t, err)
 
-	// Verify pagination fields are present.
-	assert.Contains(t, result.Data, "limit", "response should have limit field")
-	assert.Contains(t, result.Data, "offset", "response should have offset field")
-	assert.Contains(t, result.Data, "has_more", "response should have has_more field")
-	assert.Contains(t, result.Data, "conflicts", "response should have conflicts field")
-	assert.Contains(t, result.Data, "count", "response should have count field")
-
-	var limit int
-	_ = json.Unmarshal(result.Data["limit"], &limit)
-	assert.Equal(t, 1, limit, "limit should be 1")
-
-	var offset int
-	_ = json.Unmarshal(result.Data["offset"], &offset)
-	assert.Equal(t, 0, offset, "offset should default to 0")
+	// Verify pagination fields are present at the top level.
+	assert.NotNil(t, result.Data, "response data should be an array")
+	assert.Equal(t, 1, result.Limit, "limit should be 1")
+	assert.Equal(t, 0, result.Offset, "offset should default to 0")
 }
 
 func TestHandleDecisionRevisions_InvalidID(t *testing.T) {
@@ -2058,23 +2018,21 @@ func TestHandleQuery_PaginationResponse(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var result struct {
-		Data struct {
-			Decisions []json.RawMessage `json:"decisions"`
-			Total     *int              `json:"total"`
-			Limit     int               `json:"limit"`
-			Offset    int               `json:"offset"`
-			HasMore   bool              `json:"has_more"`
-		} `json:"data"`
+		Data    []json.RawMessage `json:"data"`
+		Total   *int              `json:"total"`
+		Limit   int               `json:"limit"`
+		Offset  int               `json:"offset"`
+		HasMore bool              `json:"has_more"`
 	}
 	data, _ := io.ReadAll(resp.Body)
 	err = json.Unmarshal(data, &result)
 	require.NoError(t, err)
 
-	assert.Equal(t, 5, result.Data.Limit, "response should include the requested limit")
-	assert.Equal(t, 0, result.Data.Offset, "response should include the requested offset")
+	assert.Equal(t, 5, result.Limit, "response should include the requested limit")
+	assert.Equal(t, 0, result.Offset, "response should include the requested offset")
 	// total is present when no access filtering reduces the result set.
-	assert.NotNil(t, result.Data.Total, "total should be present for non-filtered results")
-	assert.GreaterOrEqual(t, *result.Data.Total, 1, "total should be at least 1")
+	assert.NotNil(t, result.Total, "total should be present for non-filtered results")
+	assert.GreaterOrEqual(t, *result.Total, 1, "total should be at least 1")
 }
 
 func TestHandleCreateRun_Valid(t *testing.T) {
@@ -2162,18 +2120,16 @@ func TestHandleSearch_ValidQuery(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var result struct {
-		Data struct {
-			Results []json.RawMessage `json:"results"`
-			Total   int               `json:"total"`
-		} `json:"data"`
+		Data  []json.RawMessage `json:"data"`
+		Total int               `json:"total"`
 	}
 	data, _ := io.ReadAll(resp.Body)
 	err = json.Unmarshal(data, &result)
 	require.NoError(t, err)
 
 	// Verify response structure: results array and total count are present.
-	assert.NotNil(t, result.Data.Results, "results should be an array, not null")
-	assert.GreaterOrEqual(t, result.Data.Total, 0, "total should be non-negative")
+	assert.NotNil(t, result.Data, "results should be an array, not null")
+	assert.GreaterOrEqual(t, result.Total, 0, "total should be non-negative")
 }
 
 func TestHandleSessionView_WithDecisions(t *testing.T) {

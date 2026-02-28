@@ -156,12 +156,8 @@ func (h *Handlers) HandleListAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := map[string]any{
-		"total":    total,
-		"limit":    limit,
-		"offset":   offset,
-		"has_more": offset+len(agents) < total,
-	}
+	ptotal := total
+	hasMore := offset+len(agents) < total
 
 	if r.URL.Query().Get("include") == "stats" {
 		statsMap, err := h.db.GetAgentListStats(r.Context(), orgID)
@@ -182,12 +178,10 @@ func (h *Handlers) HandleListAgents(w http.ResponseWriter, r *http.Request) {
 				enriched[i].LastDecisionAt = s.LastDecisionAt
 			}
 		}
-		resp["agents"] = enriched
+		writeListJSON(w, r, enriched, &ptotal, hasMore, limit, offset)
 	} else {
-		resp["agents"] = agents
+		writeListJSON(w, r, agents, &ptotal, hasMore, limit, offset)
 	}
-
-	writeJSON(w, r, http.StatusOK, resp)
 }
 
 // HandleCreateGrant handles POST /v1/grants.
@@ -338,13 +332,8 @@ func (h *Handlers) HandleListGrants(w http.ResponseWriter, r *http.Request) {
 		grants = []model.AccessGrant{}
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"grants":   grants,
-		"total":    total,
-		"limit":    limit,
-		"offset":   offset,
-		"has_more": offset+len(grants) < total,
-	})
+	ptotal := total
+	writeListJSON(w, r, grants, &ptotal, offset+len(grants) < total, limit, offset)
 }
 
 // HandleGetAgent handles GET /v1/agents/{agent_id} (admin-only).

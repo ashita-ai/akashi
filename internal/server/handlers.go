@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -505,19 +506,39 @@ func queryTime(r *http.Request, key string) (*time.Time, error) {
 	return &t, nil
 }
 
-// applyPaginationMeta sets "has_more" (and optionally "total") on a paginated
-// response map, correctly handling the case where access-filtering reduced the
-// visible result set below the DB total.
+// computePagination derives pagination metadata from a query result set,
+// correctly handling the case where access-filtering reduced the visible result
+// set below the DB total.
 //
 // When returned < preFilter, some rows were hidden by access control and the
-// true total is unknowable without scanning every page — "has_more" is
-// estimated conservatively from the page size. Otherwise the DB total is
-// exact and included in the response.
-func applyPaginationMeta(resp map[string]any, returned, preFilter, limit, offset, dbTotal int) {
+// true total is unknowable without scanning every page — total is nil and
+// has_more is estimated conservatively from the page size. Otherwise the DB
+// total is exact and returned as a non-nil pointer.
+func computePagination(returned, preFilter, limit, offset, dbTotal int) (total *int, hasMore bool) {
 	if returned < preFilter {
-		resp["has_more"] = returned == limit
-	} else {
-		resp["total"] = dbTotal
-		resp["has_more"] = offset+returned < dbTotal
+		return nil, returned == limit
+	}
+	t := dbTotal
+	return &t, offset+returned < dbTotal
+}
+
+// writeListJSON writes a standard list response envelope (data array + pagination metadata).
+func writeListJSON(w http.ResponseWriter, r *http.Request, items any, total *int, hasMore bool, limit, offset int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(model.ListResponse{
+		Data:    items,
+		Total:   total,
+		HasMore: hasMore,
+		Limit:   limit,
+		Offset:  offset,
+		Meta: model.ResponseMeta{
+			RequestID: RequestIDFromContext(r.Context()),
+			Timestamp: time.Now().UTC(),
+		},
+	}); err != nil {
+		slog.Warn("failed to encode list JSON response",
+			"error", err,
+			"request_id", RequestIDFromContext(r.Context()))
 	}
 }

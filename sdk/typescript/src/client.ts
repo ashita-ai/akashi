@@ -26,6 +26,7 @@ import type {
   QueryFilters,
   QueryResponse,
   SearchResponse,
+  SearchResult,
   TraceRequest,
   TraceResponse,
 } from "./types.js";
@@ -186,6 +187,22 @@ interface ApiEnvelope<T> {
   data?: T;
 }
 
+interface ListEnvelope<T> {
+  items: T[];
+  total: number;
+  has_more: boolean;
+  limit: number;
+  offset: number;
+}
+
+interface RawListEnvelope {
+  data?: unknown;
+  total?: number;
+  has_more?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
 async function extractErrorMessage(
   resp: Response,
   fallback: string,
@@ -247,6 +264,58 @@ async function handleResponse<T>(resp: Response): Promise<T> {
     return body.data;
   }
   return body as unknown as T;
+}
+
+async function handleListResponse<T>(resp: Response): Promise<ListEnvelope<T>> {
+  // Error handling is identical to handleResponse.
+  if (resp.status === 400) {
+    throw new ValidationError(await extractErrorMessage(resp, "Bad request"));
+  }
+  if (resp.status === 401) {
+    throw new AuthenticationError(
+      await extractErrorMessage(resp, "Authentication failed"),
+    );
+  }
+  if (resp.status === 403) {
+    throw new AuthorizationError(
+      await extractErrorMessage(resp, "Insufficient permissions"),
+    );
+  }
+  if (resp.status === 404) {
+    throw new NotFoundError(
+      await extractErrorMessage(resp, "Resource not found"),
+    );
+  }
+  if (resp.status === 409) {
+    throw new ConflictError(await extractErrorMessage(resp, "Conflict"));
+  }
+  if (resp.status === 429) {
+    throw new RateLimitError(
+      await extractErrorMessage(resp, "Rate limit exceeded"),
+    );
+  }
+  if (resp.status >= 500) {
+    throw new ServerError(
+      resp.status,
+      await extractErrorMessage(resp, "Server error"),
+    );
+  }
+  if (resp.status >= 400) {
+    throw new AkashiError(
+      await extractErrorMessage(resp, `Unexpected: ${resp.status}`),
+      resp.status,
+    );
+  }
+
+  const body = (await resp.json()) as RawListEnvelope;
+  const items = Array.isArray(body.data) ? (body.data as T[]) : [];
+  return {
+    items,
+    total: body.total ?? items.length,
+    has_more: body.has_more ?? false,
+    limit: body.limit ?? items.length,
+    offset: body.offset ?? 0,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -336,16 +405,25 @@ export class AkashiClient {
       orderDir?: string;
     },
   ): Promise<QueryResponse> {
-    return this.post<QueryResponse>(
+    const limit = options?.limit ?? 50;
+    const offset = options?.offset ?? 0;
+    const envelope = await this.postList<Decision>(
       "/v1/query",
       buildQueryBody(
         filters,
-        options?.limit ?? 50,
-        options?.offset ?? 0,
+        limit,
+        offset,
         options?.orderBy ?? "valid_from",
         options?.orderDir ?? "desc",
       ),
     );
+    return {
+      decisions: envelope.items,
+      total: envelope.total,
+      has_more: envelope.has_more,
+      limit: envelope.limit,
+      offset: envelope.offset,
+    };
   }
 
   /** Search decision history by semantic similarity. */
@@ -354,10 +432,17 @@ export class AkashiClient {
     limit?: number,
     semantic = false,
   ): Promise<SearchResponse> {
-    return this.post<SearchResponse>(
+    const envelope = await this.postList<SearchResult>(
       "/v1/search",
       buildSearchBody(query, limit ?? 5, semantic),
     );
+    return {
+      results: envelope.items,
+      total: envelope.total,
+      has_more: envelope.has_more,
+      limit: envelope.limit,
+      offset: envelope.offset,
+    };
   }
 
   /** Get the most recent decisions. */
@@ -371,10 +456,10 @@ export class AkashiClient {
       options?.agentId,
       options?.decisionType,
     );
-    const data = await this.get<{ decisions: Decision[] }>(
+    const envelope = await this.getList<Decision>(
       `/v1/decisions/recent?${params.toString()}`,
     );
-    return data.decisions ?? [];
+    return envelope.items;
   }
 
   // --- Run lifecycle ---
@@ -513,6 +598,24 @@ export class AkashiClient {
     return handleResponse<T>(resp);
   }
 
+  private async postList<T>(
+    path: string,
+    body: unknown,
+  ): Promise<ListEnvelope<T>> {
+    const token = await this.tokenManager.getToken();
+    const resp = await fetch(`${this.baseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        "User-Agent": USER_AGENT,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    return handleListResponse<T>(resp);
+  }
+
   private async get<T>(path: string): Promise<T> {
     const token = await this.tokenManager.getToken();
     const resp = await fetch(`${this.baseUrl}${path}`, {
@@ -524,6 +627,19 @@ export class AkashiClient {
       signal: AbortSignal.timeout(this.timeoutMs),
     });
     return handleResponse<T>(resp);
+  }
+
+  private async getList<T>(path: string): Promise<ListEnvelope<T>> {
+    const token = await this.tokenManager.getToken();
+    const resp = await fetch(`${this.baseUrl}${path}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "User-Agent": USER_AGENT,
+      },
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    return handleListResponse<T>(resp);
   }
 
   private async del(path: string): Promise<void> {

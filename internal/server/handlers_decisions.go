@@ -295,14 +295,8 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := map[string]any{
-		"decisions": decisions,
-		"count":     len(decisions),
-		"limit":     req.Limit,
-		"offset":    req.Offset,
-	}
-	applyPaginationMeta(resp, len(decisions), preFilterCount, req.Limit, req.Offset, total)
-	writeJSON(w, r, http.StatusOK, resp)
+	ptotal, hasMore := computePagination(len(decisions), preFilterCount, req.Limit, req.Offset, total)
+	writeListJSON(w, r, decisions, ptotal, hasMore, req.Limit, req.Offset)
 }
 
 // HandleTemporalQuery handles POST /v1/query/temporal.
@@ -380,14 +374,8 @@ func (h *Handlers) HandleAgentHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"agent_id":  agentID,
-		"decisions": decisions,
-		"total":     total,
-		"limit":     limit,
-		"offset":    offset,
-		"has_more":  offset+len(decisions) < total,
-	})
+	ptotal := total
+	writeListJSON(w, r, decisions, &ptotal, offset+len(decisions) < total, limit, offset)
 }
 
 // HandleSearch handles POST /v1/search.
@@ -430,11 +418,9 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	total := len(results)
 	w.Header().Set("X-Search-Backend", searchBackend)
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"results": results,
-		"total":   len(results),
-	})
+	writeListJSON(w, r, results, &total, false, len(results), 0)
 }
 
 // HandleCheck handles POST /v1/check.
@@ -508,14 +494,8 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	resp := map[string]any{
-		"decisions": decisions,
-		"count":     len(decisions),
-		"limit":     limit,
-		"offset":    offset,
-	}
-	applyPaginationMeta(resp, len(decisions), preFilterCount, limit, offset, total)
-	writeJSON(w, r, http.StatusOK, resp)
+	ptotal, hasMore := computePagination(len(decisions), preFilterCount, limit, offset, total)
+	writeListJSON(w, r, decisions, ptotal, hasMore, limit, offset)
 }
 
 // HandleListConflicts handles GET /v1/conflicts.
@@ -569,14 +549,8 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 		conflicts = []model.DecisionConflict{}
 	}
 
-	resp := map[string]any{
-		"conflicts": conflicts,
-		"count":     len(conflicts),
-		"limit":     limit,
-		"offset":    offset,
-	}
-	applyPaginationMeta(resp, len(conflicts), preFilterCount, limit, offset, total)
-	writeJSON(w, r, http.StatusOK, resp)
+	ptotal, hasMore := computePagination(len(conflicts), preFilterCount, limit, offset, total)
+	writeListJSON(w, r, conflicts, ptotal, hasMore, limit, offset)
 }
 
 // validConflictStatuses defines the allowed values for conflict status transitions.
@@ -993,15 +967,8 @@ func (h *Handlers) HandleDecisionConflicts(w http.ResponseWriter, r *http.Reques
 		conflicts = []model.DecisionConflict{}
 	}
 
-	resp := map[string]any{
-		"decision_id": decisionID,
-		"conflicts":   conflicts,
-		"count":       len(conflicts),
-		"limit":       limit,
-		"offset":      offset,
-	}
-	applyPaginationMeta(resp, len(conflicts), preFilterCount, limit, offset, total)
-	writeJSON(w, r, http.StatusOK, resp)
+	ptotal, hasMore := computePagination(len(conflicts), preFilterCount, limit, offset, total)
+	writeListJSON(w, r, conflicts, ptotal, hasMore, limit, offset)
 }
 
 // HandleAssessDecision handles POST /v1/decisions/{id}/assess (writer+).
