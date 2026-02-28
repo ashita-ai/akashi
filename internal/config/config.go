@@ -90,6 +90,7 @@ type Config struct {
 	IdempotencyCompletedTTL       time.Duration // Retention for completed idempotency records.
 	IdempotencyAbandonedTTL       time.Duration // Hard TTL for abandoned in-progress idempotency records.
 	MaxRequestBodyBytes           int64         // Maximum request body size in bytes.
+	RetentionInterval             time.Duration // How often the background retention worker runs (default 24h).
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -165,6 +166,7 @@ func Load() (Config, error) {
 	cfg.IdempotencyCleanupInterval, errs = collectDuration(errs, "AKASHI_IDEMPOTENCY_CLEANUP_INTERVAL", time.Hour)
 	cfg.IdempotencyCompletedTTL, errs = collectDuration(errs, "AKASHI_IDEMPOTENCY_COMPLETED_TTL", 7*24*time.Hour)
 	cfg.IdempotencyAbandonedTTL, errs = collectDuration(errs, "AKASHI_IDEMPOTENCY_ABANDONED_TTL", 24*time.Hour)
+	cfg.RetentionInterval, errs = collectDuration(errs, "AKASHI_RETENTION_INTERVAL", 24*time.Hour)
 
 	if len(errs) > 0 {
 		msgs := make([]string, len(errs))
