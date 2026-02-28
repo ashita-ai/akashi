@@ -131,11 +131,22 @@ func (c *Client) Trace(ctx context.Context, req TraceRequest) (*TraceResponse, e
 // Nil opts are replaced with sensible defaults.
 func (c *Client) Query(ctx context.Context, filters *QueryFilters, opts *QueryOptions) (*QueryResponse, error) {
 	body := buildQueryBody(filters, opts)
-	var resp QueryResponse
-	if err := c.post(ctx, "/v1/query", body, &resp); err != nil {
+	var items []Decision
+	env, err := c.doPostList(ctx, "/v1/query", body, &items)
+	if err != nil {
 		return nil, err
 	}
-	return &resp, nil
+	total := 0
+	if env.Total != nil {
+		total = *env.Total
+	}
+	return &QueryResponse{
+		Decisions: items,
+		Total:     total,
+		HasMore:   env.HasMore,
+		Limit:     env.Limit,
+		Offset:    env.Offset,
+	}, nil
 }
 
 // Search performs a semantic similarity search over decision history.
@@ -144,11 +155,19 @@ func (c *Client) Search(ctx context.Context, query string, limit int) (*SearchRe
 		limit = 5
 	}
 	body := map[string]any{"query": query, "limit": limit}
-	var resp SearchResponse
-	if err := c.post(ctx, "/v1/search", body, &resp); err != nil {
+	var items []SearchResult
+	env, err := c.doPostList(ctx, "/v1/search", body, &items)
+	if err != nil {
 		return nil, err
 	}
-	return &resp, nil
+	total := len(items)
+	if env.Total != nil {
+		total = *env.Total
+	}
+	return &SearchResponse{
+		Results: items,
+		Total:   total,
+	}, nil
 }
 
 // RecentOptions are optional filters for the Recent method.
@@ -177,11 +196,11 @@ func (c *Client) Recent(ctx context.Context, opts *RecentOptions) ([]Decision, e
 	}
 
 	path := "/v1/decisions/recent?" + params.Encode()
-	var resp recentResponse
-	if err := c.get(ctx, path, &resp); err != nil {
+	var items []Decision
+	if _, err := c.doGetList(ctx, path, &items); err != nil {
 		return nil, err
 	}
-	return resp.Decisions, nil
+	return items, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -283,11 +302,23 @@ func (c *Client) AgentHistory(ctx context.Context, agentID string, limit int) (*
 	params.Set("limit", strconv.Itoa(limit))
 
 	path := "/v1/agents/" + agentID + "/history?" + params.Encode()
-	var resp AgentHistoryResponse
-	if err := c.get(ctx, path, &resp); err != nil {
+	var items []Decision
+	env, err := c.doGetList(ctx, path, &items)
+	if err != nil {
 		return nil, err
 	}
-	return &resp, nil
+	total := 0
+	if env.Total != nil {
+		total = *env.Total
+	}
+	return &AgentHistoryResponse{
+		AgentID:   agentID,
+		Decisions: items,
+		Total:     total,
+		HasMore:   env.HasMore,
+		Limit:     env.Limit,
+		Offset:    env.Offset,
+	}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -374,11 +405,22 @@ func (c *Client) ListConflicts(ctx context.Context, opts *ConflictOptions) (*Con
 	if len(params) > 0 {
 		path += "?" + params.Encode()
 	}
-	var resp ConflictsResponse
-	if err := c.get(ctx, path, &resp); err != nil {
+	var items []DecisionConflict
+	env, err := c.doGetList(ctx, path, &items)
+	if err != nil {
 		return nil, err
 	}
-	return &resp, nil
+	total := 0
+	if env.Total != nil {
+		total = *env.Total
+	}
+	return &ConflictsResponse{
+		Conflicts: items,
+		Total:     total,
+		HasMore:   env.HasMore,
+		Limit:     env.Limit,
+		Offset:    env.Offset,
+	}, nil
 }
 
 // Health checks the server's health status. This endpoint does not require
@@ -467,10 +509,6 @@ func buildQueryBody(filters *QueryFilters, opts *QueryOptions) queryBody {
 	return b
 }
 
-type recentResponse struct {
-	Decisions []Decision `json:"decisions"`
-}
-
 // ---------------------------------------------------------------------------
 // HTTP transport
 // ---------------------------------------------------------------------------
@@ -478,6 +516,17 @@ type recentResponse struct {
 // apiEnvelope is the server's standard response wrapper.
 type apiEnvelope struct {
 	Data json.RawMessage `json:"data"`
+}
+
+// listEnvelope is the server's response wrapper for paginated list endpoints.
+// data is the items array; total is nil when access-filtering makes the DB
+// total unreliable.
+type listEnvelope struct {
+	Data    json.RawMessage `json:"data"`
+	Total   *int            `json:"total"`
+	HasMore bool            `json:"has_more"`
+	Limit   int             `json:"limit"`
+	Offset  int             `json:"offset"`
 }
 
 // apiErrorEnvelope is the server's standard error response wrapper.
@@ -552,22 +601,66 @@ func (c *Client) getNoAuth(ctx context.Context, path string, dest any) error {
 	return handleResponse(resp, dest)
 }
 
-func (c *Client) doRequest(ctx context.Context, req *http.Request, dest any) error {
+// execRequest adds auth headers and executes an HTTP request.
+// The caller is responsible for closing the response body.
+func (c *Client) execRequest(ctx context.Context, req *http.Request) (*http.Response, error) {
 	req.Header.Set("User-Agent", userAgent)
 
 	token, err := c.tokenMgr.getToken(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("akashi: %s %s: %w", req.Method, req.URL.Path, err)
+		return nil, fmt.Errorf("akashi: %s %s: %w", req.Method, req.URL.Path, err)
+	}
+	return resp, nil
+}
+
+func (c *Client) doRequest(ctx context.Context, req *http.Request, dest any) error {
+	resp, err := c.execRequest(ctx, req)
+	if err != nil {
+		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-
 	return handleResponse(resp, dest)
+}
+
+// doGetList issues a GET request and decodes the list envelope.
+// items must be a pointer to a slice.
+func (c *Client) doGetList(ctx context.Context, path string, items any) (listEnvelope, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return listEnvelope{}, fmt.Errorf("akashi: create request: %w", err)
+	}
+	resp, err := c.execRequest(ctx, req)
+	if err != nil {
+		return listEnvelope{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return handleListResponse(resp, items)
+}
+
+// doPostList issues a POST request and decodes the list envelope.
+// items must be a pointer to a slice.
+func (c *Client) doPostList(ctx context.Context, path string, body any, items any) (listEnvelope, error) {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return listEnvelope{}, fmt.Errorf("akashi: marshal request body: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(encoded))
+	if err != nil {
+		return listEnvelope{}, fmt.Errorf("akashi: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.execRequest(ctx, req)
+	if err != nil {
+		return listEnvelope{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return handleListResponse(resp, items)
 }
 
 func handleResponse(resp *http.Response, dest any) error {
@@ -597,6 +690,31 @@ func handleResponse(resp *http.Response, dest any) error {
 	}
 
 	return json.Unmarshal(envelope.Data, dest)
+}
+
+// handleListResponse parses the list envelope from a response body.
+// items must be a pointer to a slice (e.g., *[]Decision).
+func handleListResponse(resp *http.Response, items any) (listEnvelope, error) {
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return listEnvelope{}, fmt.Errorf("akashi: read response body: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return listEnvelope{}, parseErrorResponse(resp.StatusCode, bodyBytes)
+	}
+
+	var env listEnvelope
+	if err := json.Unmarshal(bodyBytes, &env); err != nil {
+		return listEnvelope{}, fmt.Errorf("akashi: decode list envelope: %w", err)
+	}
+
+	if env.Data != nil && items != nil {
+		if err := json.Unmarshal(env.Data, items); err != nil {
+			return listEnvelope{}, fmt.Errorf("akashi: decode list items: %w", err)
+		}
+	}
+	return env, nil
 }
 
 func parseErrorResponse(statusCode int, body []byte) *Error {

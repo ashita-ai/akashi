@@ -365,7 +365,7 @@ describe("AkashiClient", () => {
         },
       ];
       mockFetch.mockResolvedValueOnce(
-        mockResponse(200, { data: { decisions, total: 1 } }),
+        mockResponse(200, { data: decisions, total: 1, has_more: false, limit: 20, offset: 10 }),
       );
 
       const result = await client.query(
@@ -385,7 +385,7 @@ describe("AkashiClient", () => {
 
     it("uses defaults for optional parameters", async () => {
       mockFetch.mockResolvedValueOnce(
-        mockResponse(200, { data: { decisions: [], total: 0 } }),
+        mockResponse(200, { data: [], total: 0, has_more: false, limit: 50, offset: 0 }),
       );
 
       await client.query();
@@ -400,9 +400,7 @@ describe("AkashiClient", () => {
 
     it("sends correct wire format for query body", async () => {
       mockFetch.mockResolvedValueOnce(
-        mockResponse(200, {
-          data: { decisions: [], total: 0, limit: 50, offset: 0 },
-        }),
+        mockResponse(200, { data: [], total: 0, has_more: false, limit: 50, offset: 0 }),
       );
 
       await client.query(
@@ -440,7 +438,7 @@ describe("AkashiClient", () => {
         },
       ];
       mockFetch.mockResolvedValueOnce(
-        mockResponse(200, { data: { results } }),
+        mockResponse(200, { data: results, total: 1, has_more: false, limit: 10, offset: 0 }),
       );
 
       const response = await client.search("which model for text tasks", 10, true);
@@ -456,7 +454,7 @@ describe("AkashiClient", () => {
 
     it("sends correct wire format for search body", async () => {
       mockFetch.mockResolvedValueOnce(
-        mockResponse(200, { data: { results: [], total: 0 } }),
+        mockResponse(200, { data: [], total: 0, has_more: false, limit: 5, offset: 0 }),
       );
 
       await client.search("find decisions about storage");
@@ -491,7 +489,7 @@ describe("AkashiClient", () => {
         },
       ];
       mockFetch.mockResolvedValueOnce(
-        mockResponse(200, { data: { decisions } }),
+        mockResponse(200, { data: decisions, total: 1, has_more: false, limit: 5, offset: 0 }),
       );
 
       const result = await client.recent({
@@ -513,7 +511,7 @@ describe("AkashiClient", () => {
 
     it("uses default limit when no options provided", async () => {
       mockFetch.mockResolvedValueOnce(
-        mockResponse(200, { data: { decisions: [] } }),
+        mockResponse(200, { data: [], total: 0, has_more: false, limit: 10, offset: 0 }),
       );
 
       await client.recent();

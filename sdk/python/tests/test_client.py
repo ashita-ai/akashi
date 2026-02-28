@@ -389,12 +389,11 @@ class TestQuery:
         respx.post(f"{BASE_URL}/v1/query").respond(
             200,
             json={
-                "data": {
-                    "decisions": [_decision_json()],
-                    "total": 1,
-                    "limit": 50,
-                    "offset": 0,
-                }
+                "data": [_decision_json()],
+                "total": 1,
+                "has_more": False,
+                "limit": 50,
+                "offset": 0,
             },
         )
 
@@ -412,12 +411,11 @@ class TestQuery:
         respx.post(f"{BASE_URL}/v1/query").respond(
             200,
             json={
-                "data": {
-                    "decisions": [],
-                    "total": 0,
-                    "limit": 10,
-                    "offset": 0,
-                }
+                "data": [],
+                "total": 0,
+                "has_more": False,
+                "limit": 10,
+                "offset": 0,
             },
         )
 
@@ -439,15 +437,16 @@ class TestSearch:
         respx.post(f"{BASE_URL}/v1/search").respond(
             200,
             json={
-                "data": {
-                    "results": [
-                        {
-                            "decision": _decision_json(),
-                            "similarity_score": 0.92,
-                        }
-                    ],
-                    "total": 1,
-                }
+                "data": [
+                    {
+                        "decision": _decision_json(),
+                        "similarity_score": 0.92,
+                    }
+                ],
+                "total": 1,
+                "has_more": False,
+                "limit": 1,
+                "offset": 0,
             },
         )
 
@@ -466,12 +465,11 @@ class TestRecent:
         respx.get(f"{BASE_URL}/v1/decisions/recent").respond(
             200,
             json={
-                "data": {
-                    "decisions": [_decision_json()],
-                    "total": 1,
-                    "count": 1,
-                    "limit": 10,
-                }
+                "data": [_decision_json()],
+                "total": 1,
+                "has_more": False,
+                "limit": 10,
+                "offset": 0,
             },
         )
 
@@ -644,13 +642,11 @@ class TestAgentHistory:
         respx.get(f"{BASE_URL}/v1/agents/coder/history").respond(
             200,
             json={
-                "data": {
-                    "agent_id": "coder",
-                    "decisions": [_decision_json()],
-                    "total": 1,
-                    "limit": 50,
-                    "offset": 0,
-                }
+                "data": [_decision_json()],
+                "total": 1,
+                "has_more": False,
+                "limit": 50,
+                "offset": 0,
             },
         )
 
@@ -699,12 +695,11 @@ class TestListConflicts:
         respx.get(f"{BASE_URL}/v1/conflicts").respond(
             200,
             json={
-                "data": {
-                    "conflicts": [_conflict_json()],
-                    "total": 1,
-                    "limit": 25,
-                    "offset": 0,
-                }
+                "data": [_conflict_json()],
+                "total": 1,
+                "has_more": False,
+                "limit": 25,
+                "offset": 0,
             },
         )
 
@@ -802,22 +797,21 @@ class TestDecisionSpec31Fields:
         respx.post(f"{BASE_URL}/v1/query").respond(
             200,
             json={
-                "data": {
-                    "decisions": [
-                        {
-                            **_decision_json(),
-                            "session_id": session_id,
-                            "agent_context": {
-                                "tool": "claude-code",
-                                "tool_version": "akashi-python/0.2.0",
-                                "model": "claude-opus-4-6",
-                            },
-                        }
-                    ],
-                    "total": 1,
-                    "limit": 50,
-                    "offset": 0,
-                }
+                "data": [
+                    {
+                        **_decision_json(),
+                        "session_id": session_id,
+                        "agent_context": {
+                            "tool": "claude-code",
+                            "tool_version": "akashi-python/0.2.0",
+                            "model": "claude-opus-4-6",
+                        },
+                    }
+                ],
+                "total": 1,
+                "has_more": False,
+                "limit": 50,
+                "offset": 0,
             },
         )
 

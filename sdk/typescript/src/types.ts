@@ -241,7 +241,7 @@ export interface CheckResponse {
 export interface QueryResponse {
   decisions: Decision[];
   total: number;
-  count: number;
+  has_more: boolean;
   limit: number;
   offset: number;
 }
@@ -254,6 +254,9 @@ export interface SearchResult {
 export interface SearchResponse {
   results: SearchResult[];
   total: number;
+  has_more: boolean;
+  limit: number;
+  offset: number;
 }
 
 /** Result type that can be converted to a trace request. */

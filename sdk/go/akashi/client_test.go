@@ -513,22 +513,22 @@ func TestQueryReturnsDecisions(t *testing.T) {
 				})
 				return
 			}
+			total := 1
 			writeJSON(w, http.StatusOK, map[string]any{
-				"data": QueryResponse{
-					Decisions: []Decision{
-						{
-							ID:           decisionID,
-							RunID:        runID,
-							AgentID:      "planner",
-							DecisionType: dt,
-							Outcome:      "microservices",
-							Confidence:   0.85,
-						},
+				"data": []Decision{
+					{
+						ID:           decisionID,
+						RunID:        runID,
+						AgentID:      "planner",
+						DecisionType: dt,
+						Outcome:      "microservices",
+						Confidence:   0.85,
 					},
-					Total:  1,
-					Limit:  50,
-					Offset: 0,
 				},
+				"total":    total,
+				"has_more": false,
+				"limit":    50,
+				"offset":   0,
 			})
 		},
 	})
@@ -574,23 +574,25 @@ func TestSearchReturnsResults(t *testing.T) {
 			if body["query"] != "architecture decisions" {
 				t.Errorf("expected query 'architecture decisions', got %v", body["query"])
 			}
+			total := 1
 			writeJSON(w, http.StatusOK, map[string]any{
-				"data": SearchResponse{
-					Results: []SearchResult{
-						{
-							Decision: Decision{
-								ID:           decisionID,
-								RunID:        runID,
-								AgentID:      "planner",
-								DecisionType: "architecture",
-								Outcome:      "microservices",
-								Confidence:   0.85,
-							},
-							SimilarityScore: 0.92,
+				"data": []SearchResult{
+					{
+						Decision: Decision{
+							ID:           decisionID,
+							RunID:        runID,
+							AgentID:      "planner",
+							DecisionType: "architecture",
+							Outcome:      "microservices",
+							Confidence:   0.85,
 						},
+						SimilarityScore: 0.92,
 					},
-					Total: 1,
 				},
+				"total":    total,
+				"has_more": false,
+				"limit":    100,
+				"offset":   0,
 			})
 		},
 	})
@@ -624,19 +626,22 @@ func TestRecentReturnsDecisions(t *testing.T) {
 			if r.URL.Query().Get("agent_id") != "planner" {
 				t.Errorf("expected agent_id=planner, got %q", r.URL.Query().Get("agent_id"))
 			}
+			total := 1
 			writeJSON(w, http.StatusOK, map[string]any{
-				"data": map[string]any{
-					"decisions": []Decision{
-						{
-							ID:           decisionID,
-							RunID:        runID,
-							AgentID:      "planner",
-							DecisionType: "routing",
-							Outcome:      "route-a",
-							Confidence:   0.88,
-						},
+				"data": []Decision{
+					{
+						ID:           decisionID,
+						RunID:        runID,
+						AgentID:      "planner",
+						DecisionType: "routing",
+						Outcome:      "route-a",
+						Confidence:   0.88,
 					},
 				},
+				"total":    total,
+				"has_more": false,
+				"limit":    5,
+				"offset":   0,
 			})
 		},
 	})
@@ -1099,23 +1104,22 @@ func TestAgentHistory(t *testing.T) {
 			if r.URL.Query().Get("limit") != "10" {
 				t.Errorf("expected limit=10, got %q", r.URL.Query().Get("limit"))
 			}
+			total := 1
 			writeJSON(w, http.StatusOK, map[string]any{
-				"data": map[string]any{
-					"agent_id": "planner",
-					"decisions": []Decision{
-						{
-							ID:           decisionID,
-							RunID:        runID,
-							AgentID:      "planner",
-							DecisionType: "routing",
-							Outcome:      "route-b",
-							Confidence:   0.75,
-						},
+				"data": []Decision{
+					{
+						ID:           decisionID,
+						RunID:        runID,
+						AgentID:      "planner",
+						DecisionType: "routing",
+						Outcome:      "route-b",
+						Confidence:   0.75,
 					},
-					"total":  1,
-					"limit":  10,
-					"offset": 0,
 				},
+				"total":    total,
+				"has_more": false,
+				"limit":    10,
+				"offset":   0,
 			})
 		},
 	})
@@ -1235,31 +1239,31 @@ func TestListConflicts(t *testing.T) {
 			if r.URL.Query().Get("limit") != "10" {
 				t.Errorf("expected limit=10, got %q", r.URL.Query().Get("limit"))
 			}
+			total := 1
 			writeJSON(w, http.StatusOK, map[string]any{
-				"data": map[string]any{
-					"conflicts": []DecisionConflict{
-						{
-							ConflictKind: ConflictKindCrossAgent,
-							DecisionAID:  uuid.New(),
-							DecisionBID:  uuid.New(),
-							AgentA:       "planner",
-							AgentB:       "coder",
-							RunA:         uuid.New(),
-							RunB:         uuid.New(),
-							DecisionType: "architecture",
-							OutcomeA:     "microservices",
-							OutcomeB:     "monolith",
-							ConfidenceA:  0.85,
-							ConfidenceB:  0.90,
-							DecidedAtA:   now,
-							DecidedAtB:   now,
-							DetectedAt:   now,
-						},
+				"data": []DecisionConflict{
+					{
+						ConflictKind: ConflictKindCrossAgent,
+						DecisionAID:  uuid.New(),
+						DecisionBID:  uuid.New(),
+						AgentA:       "planner",
+						AgentB:       "coder",
+						RunA:         uuid.New(),
+						RunB:         uuid.New(),
+						DecisionType: "architecture",
+						OutcomeA:     "microservices",
+						OutcomeB:     "monolith",
+						ConfidenceA:  0.85,
+						ConfidenceB:  0.90,
+						DecidedAtA:   now,
+						DecidedAtB:   now,
+						DetectedAt:   now,
 					},
-					"total":  1,
-					"limit":  10,
-					"offset": 0,
 				},
+				"total":    total,
+				"has_more": false,
+				"limit":    10,
+				"offset":   0,
 			})
 		},
 	})
@@ -1294,13 +1298,13 @@ func TestListConflictsNilOptions(t *testing.T) {
 			if r.URL.RawQuery != "" {
 				t.Errorf("expected no query params, got %q", r.URL.RawQuery)
 			}
+			total := 0
 			writeJSON(w, http.StatusOK, map[string]any{
-				"data": map[string]any{
-					"conflicts": []DecisionConflict{},
-					"total":     0,
-					"limit":     25,
-					"offset":    0,
-				},
+				"data":     []DecisionConflict{},
+				"total":    total,
+				"has_more": false,
+				"limit":    25,
+				"offset":   0,
 			})
 		},
 	})
@@ -1677,33 +1681,32 @@ func TestDecisionDeserializesAllFields(t *testing.T) {
 
 	srv := mockServer(t, map[string]http.HandlerFunc{
 		"POST /v1/query": func(w http.ResponseWriter, r *http.Request) {
+			total := 1
 			writeJSON(w, http.StatusOK, map[string]any{
-				"data": map[string]any{
-					"decisions": []map[string]any{
-						{
-							"id":               decisionID,
-							"run_id":            runID,
-							"agent_id":          "planner",
-							"org_id":            orgID,
-							"decision_type":     "architecture",
-							"outcome":           "microservices",
-							"confidence":        0.85,
-							"metadata":          map[string]any{},
-							"completeness_score": 0.92,
-							"precedent_ref":     precedentRef,
-							"supersedes_id":     supersedesID,
-							"content_hash":      "sha256:abc123def456",
-							"tags":              []string{"backend", "infra"},
-							"valid_from":        now,
-							"transaction_time":  now,
-							"created_at":        now,
-						},
+				"data": []map[string]any{
+					{
+						"id":                decisionID,
+						"run_id":             runID,
+						"agent_id":           "planner",
+						"org_id":             orgID,
+						"decision_type":      "architecture",
+						"outcome":            "microservices",
+						"confidence":         0.85,
+						"metadata":           map[string]any{},
+						"completeness_score": 0.92,
+						"precedent_ref":      precedentRef,
+						"supersedes_id":      supersedesID,
+						"content_hash":       "sha256:abc123def456",
+						"tags":               []string{"backend", "infra"},
+						"valid_from":         now,
+						"transaction_time":   now,
+						"created_at":         now,
 					},
-					"total":  1,
-					"count":  1,
-					"limit":  50,
-					"offset": 0,
 				},
+				"total":    total,
+				"has_more": false,
+				"limit":    50,
+				"offset":   0,
 			})
 		},
 	})
@@ -1716,8 +1719,8 @@ func TestDecisionDeserializesAllFields(t *testing.T) {
 		t.Fatalf("Query failed: %v", err)
 	}
 
-	if resp.Count != 1 {
-		t.Errorf("expected count 1, got %d", resp.Count)
+	if resp.Total != 1 {
+		t.Errorf("expected total 1, got %d", resp.Total)
 	}
 
 	d := resp.Decisions[0]
@@ -1746,35 +1749,34 @@ func TestDecisionDeserializesSpec31Fields(t *testing.T) {
 
 	srv := mockServer(t, map[string]http.HandlerFunc{
 		"POST /v1/query": func(w http.ResponseWriter, r *http.Request) {
+			total := 1
 			writeJSON(w, http.StatusOK, map[string]any{
-				"data": map[string]any{
-					"decisions": []map[string]any{
-						{
-							"id":            uuid.New(),
-							"run_id":        uuid.New(),
-							"agent_id":      "coder",
-							"org_id":        uuid.New(),
-							"decision_type": "architecture",
-							"outcome":       "microservices",
-							"confidence":    0.85,
-							"metadata":      map[string]any{},
-							"session_id":    sessionID,
-							"agent_context": map[string]any{
-								"tool":         "claude-code",
-								"tool_version": "akashi-go/0.2.0",
-								"model":        "claude-opus-4-6",
-								"task":         "code review",
-							},
-							"valid_from":       time.Now(),
-							"transaction_time": time.Now(),
-							"created_at":       time.Now(),
+				"data": []map[string]any{
+					{
+						"id":            uuid.New(),
+						"run_id":        uuid.New(),
+						"agent_id":      "coder",
+						"org_id":        uuid.New(),
+						"decision_type": "architecture",
+						"outcome":       "microservices",
+						"confidence":    0.85,
+						"metadata":      map[string]any{},
+						"session_id":    sessionID,
+						"agent_context": map[string]any{
+							"tool":         "claude-code",
+							"tool_version": "akashi-go/0.2.0",
+							"model":        "claude-opus-4-6",
+							"task":         "code review",
 						},
+						"valid_from":       time.Now(),
+						"transaction_time": time.Now(),
+						"created_at":       time.Now(),
 					},
-					"total":  1,
-					"count":  1,
-					"limit":  50,
-					"offset": 0,
 				},
+				"total":    total,
+				"has_more": false,
+				"limit":    50,
+				"offset":   0,
 			})
 		},
 	})

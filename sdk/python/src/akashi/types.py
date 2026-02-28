@@ -293,10 +293,10 @@ class CheckResponse(BaseModel):
 class QueryResponse(BaseModel):
     """Response from a structured query."""
 
-    decisions: list[Decision]
-    total: int
-    count: int = 0
-    limit: int
+    decisions: list[Decision] = Field(default_factory=list)
+    total: int = 0
+    has_more: bool = False
+    limit: int = 0
     offset: int = 0
 
 
