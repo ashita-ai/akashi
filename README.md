@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo.png" alt="Akashi" width="400" />
+  <img src="docs/assets/logo.jpeg" alt="Akashi" width="400" />
 </p>
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
