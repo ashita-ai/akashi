@@ -326,12 +326,9 @@ func (w *WAL) Close() error {
 }
 
 // PendingBytes returns the approximate bytes in un-flushed WAL segments.
+// Fully-flushed segments are deleted by cleanupSegments, so the sum of all
+// remaining segment sizes is already a tight upper bound on pending data.
 func (w *WAL) PendingBytes() int64 {
-	cp, err := w.loadCheckpoint()
-	if err != nil {
-		return 0
-	}
-
 	segments, err := w.listSegments()
 	if err != nil {
 		return 0
@@ -345,8 +342,6 @@ func (w *WAL) PendingBytes() int64 {
 		}
 		total += info.Size()
 	}
-	// Subtract estimated flushed portion (rough: assume uniform distribution).
-	_ = cp
 	return total
 }
 

@@ -501,3 +501,20 @@ func queryTime(r *http.Request, key string) (*time.Time, error) {
 	}
 	return &t, nil
 }
+
+// applyPaginationMeta sets "has_more" (and optionally "total") on a paginated
+// response map, correctly handling the case where access-filtering reduced the
+// visible result set below the DB total.
+//
+// When returned < preFilter, some rows were hidden by access control and the
+// true total is unknowable without scanning every page — "has_more" is
+// estimated conservatively from the page size. Otherwise the DB total is
+// exact and included in the response.
+func applyPaginationMeta(resp map[string]any, returned, preFilter, limit, offset, dbTotal int) {
+	if returned < preFilter {
+		resp["has_more"] = returned == limit
+	} else {
+		resp["total"] = dbTotal
+		resp["has_more"] = offset+returned < dbTotal
+	}
+}
