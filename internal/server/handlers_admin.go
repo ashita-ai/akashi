@@ -474,6 +474,24 @@ func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Block deletion if an active legal hold covers this agent's decisions.
+	holdActive, err := h.db.ActiveHoldsExistForAgent(r.Context(), orgID, agentID)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to check legal holds", err)
+		return
+	}
+	if holdActive {
+		writeError(w, r, http.StatusConflict, model.ErrCodeConflict,
+			"agent data is covered by an active legal hold and cannot be deleted")
+		return
+	}
+
+	claims := ClaimsFromContext(r.Context())
+	initiatedBy := claims.AgentID
+	if initiatedBy == "" {
+		initiatedBy = claims.Subject
+	}
+
 	audit := h.buildAuditEntry(r, orgID, "delete_agent", "agent", agentID,
 		map[string]any{"agent_id": agentID}, nil, nil)
 	result, err := h.db.DeleteAgentData(r.Context(), orgID, agentID, &audit)
@@ -484,6 +502,20 @@ func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		h.writeInternalError(w, r, "failed to delete agent data", err)
 		return
+	}
+
+	// Record the GDPR erasure in the operation-level deletion log.
+	logID, lerr := h.db.StartDeletionLog(r.Context(), orgID, "gdpr", initiatedBy,
+		map[string]any{"agent_id": agentID})
+	if lerr == nil {
+		countMap := map[string]any{
+			"decisions":    result.Decisions,
+			"alternatives": result.Alternatives,
+			"evidence":     result.Evidence,
+			"claims":       result.Claims,
+			"events":       result.Events,
+		}
+		_ = h.db.CompleteDeletionLog(r.Context(), logID, countMap)
 	}
 
 	writeJSON(w, r, http.StatusOK, map[string]any{

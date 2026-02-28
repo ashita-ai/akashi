@@ -34,6 +34,7 @@ type Handlers struct {
 	maxRequestBodyBytes     int64
 	openapiSpec             []byte
 	enableDestructiveDelete bool
+	retentionInterval       time.Duration
 	// decisionHooks are fired asynchronously after decision lifecycle events.
 	// Nil or empty slice means no hooks registered.
 	decisionHooks []DecisionHook
@@ -54,6 +55,7 @@ type HandlersDeps struct {
 	MaxRequestBodyBytes     int64
 	OpenAPISpec             []byte
 	EnableDestructiveDelete bool
+	RetentionInterval       time.Duration
 	DecisionHooks           []DecisionHook
 }
 
@@ -73,6 +75,7 @@ func NewHandlers(d HandlersDeps) *Handlers {
 		maxRequestBodyBytes:     d.MaxRequestBodyBytes,
 		openapiSpec:             d.OpenAPISpec,
 		enableDestructiveDelete: d.EnableDestructiveDelete,
+		retentionInterval:       d.RetentionInterval,
 		decisionHooks:           d.DecisionHooks,
 	}
 }

@@ -177,3 +177,11 @@ Operational idempotency settings:
 | `AKASHI_IDEMPOTENCY_CLEANUP_INTERVAL` | `1h` | Background cleanup cadence for idempotency records |
 | `AKASHI_IDEMPOTENCY_COMPLETED_TTL` | `168h` (7d) | Retention for completed idempotency records |
 | `AKASHI_IDEMPOTENCY_ABANDONED_TTL` | `24h` | Retention for abandoned in-progress idempotency records |
+
+## Data retention
+
+Akashi supports per-org data retention policies that automatically delete decisions older than a configured threshold. Policies are set via `PUT /v1/retention` (admin-only). Legal holds (`POST /v1/retention/hold`) exempt matching decisions from both automated and GDPR deletion. All deletion operations are recorded in the `deletion_log` table.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AKASHI_RETENTION_INTERVAL` | `24h` | How often the background retention worker runs. Set to `0` to disable. |
