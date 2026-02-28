@@ -65,6 +65,7 @@ type ServerConfig struct {
 	CORSAllowedOrigins      []string // Allowed origins for CORS; ["*"] permits all.
 	TrustProxy              bool     // When true, use X-Forwarded-For for rate limit client IP.
 	EnableDestructiveDelete bool
+	RetentionInterval       time.Duration // How often the background retention worker runs (default 24h).
 
 	// Optional embedded assets.
 	UIFS        fs.FS  // Embedded UI filesystem (SPA).
@@ -96,6 +97,7 @@ func New(cfg ServerConfig) *Server {
 		MaxRequestBodyBytes:     cfg.MaxRequestBodyBytes,
 		OpenAPISpec:             cfg.OpenAPISpec,
 		EnableDestructiveDelete: cfg.EnableDestructiveDelete,
+		RetentionInterval:       cfg.RetentionInterval,
 		DecisionHooks:           cfg.DecisionHooks,
 	})
 
@@ -181,6 +183,13 @@ func New(cfg ServerConfig) *Server {
 	mux.Handle("GET /v1/conflicts", readRole(http.HandlerFunc(h.HandleListConflicts)))
 	mux.Handle("POST /v1/conflicts/{id}/adjudicate", writeRole(http.HandlerFunc(h.HandleAdjudicateConflict)))
 	mux.Handle("PATCH /v1/conflicts/{id}", writeRole(http.HandlerFunc(h.HandlePatchConflict)))
+
+	// Retention policy and legal holds (admin for writes, reader+ for GET).
+	mux.Handle("GET /v1/retention", readRole(http.HandlerFunc(h.HandleGetRetention)))
+	mux.Handle("PUT /v1/retention", adminOnly(http.HandlerFunc(h.HandleSetRetention)))
+	mux.Handle("POST /v1/retention/purge", adminOnly(http.HandlerFunc(h.HandlePurge)))
+	mux.Handle("POST /v1/retention/hold", adminOnly(http.HandlerFunc(h.HandleCreateHold)))
+	mux.Handle("DELETE /v1/retention/hold/{id}", adminOnly(http.HandlerFunc(h.HandleReleaseHold)))
 
 	// MCP StreamableHTTP transport (auth required, reader+).
 	if cfg.MCPServer != nil {

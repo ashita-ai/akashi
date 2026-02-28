@@ -387,6 +387,7 @@ func New(opts ...Option) (*App, error) {
 		TrustProxy:              cfg.TrustProxy,
 		CORSAllowedOrigins:      cfg.CORSAllowedOrigins,
 		EnableDestructiveDelete: cfg.EnableDestructiveDelete,
+		RetentionInterval:       cfg.RetentionInterval,
 		UIFS:                    uiFS,
 		OpenAPISpec:             api.OpenAPISpec,
 		ExtraRoutes:             extraRoutes,
@@ -443,6 +444,7 @@ func (a *App) Run(ctx context.Context) error {
 	go a.conflictRefreshLoop(ctx)
 	go a.integrityProofLoop(ctx)
 	go a.idempotencyCleanupLoop(ctx)
+	go a.retentionLoop(ctx)
 
 	// Start HTTP server.
 	errCh := make(chan error, 1)
@@ -658,6 +660,79 @@ func (a *App) idempotencyCleanupLoop(ctx context.Context) {
 			if deleted > 0 {
 				a.logger.Info("idempotency cleanup deleted rows", "deleted", deleted)
 			}
+		}
+	}
+}
+
+func (a *App) retentionLoop(ctx context.Context) {
+	if a.cfg.RetentionInterval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(a.cfg.RetentionInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.runRetention(ctx)
+		}
+	}
+}
+
+// runRetention processes data retention policies for all orgs that have a
+// retention_days set. Each org gets its own deletion_log entry.
+func (a *App) runRetention(ctx context.Context) {
+	opCtx, cancel := context.WithTimeout(ctx, a.cfg.RetentionInterval/2)
+	defer cancel()
+
+	orgs, err := a.db.GetOrgsWithRetention(opCtx)
+	if err != nil {
+		a.logger.Warn("retention: failed to list orgs with policy", "error", err)
+		return
+	}
+	if len(orgs) == 0 {
+		return
+	}
+
+	for _, org := range orgs {
+		cutoff := time.Now().UTC().AddDate(0, 0, -org.RetentionDays)
+		criteria := map[string]any{"before": cutoff, "retention_days": org.RetentionDays}
+		if len(org.RetentionExcludeTypes) > 0 {
+			criteria["exclude_types"] = org.RetentionExcludeTypes
+		}
+
+		logID, err := a.db.StartDeletionLog(opCtx, org.OrgID, "policy", "", criteria)
+		if err != nil {
+			a.logger.Warn("retention: failed to start deletion log", "org_id", org.OrgID, "error", err)
+			continue
+		}
+
+		counts, err := a.db.BatchDeleteDecisions(opCtx, org.OrgID, cutoff, nil, nil, org.RetentionExcludeTypes, 1000)
+		if err != nil {
+			a.logger.Warn("retention: batch delete failed", "org_id", org.OrgID, "error", err)
+			// Still complete the log even on partial failure so the run is recorded.
+		}
+
+		countMap := map[string]any{
+			"decisions":    counts.Decisions,
+			"alternatives": counts.Alternatives,
+			"evidence":     counts.Evidence,
+			"claims":       counts.Claims,
+			"events":       counts.Events,
+		}
+		if cerr := a.db.CompleteDeletionLog(opCtx, logID, countMap); cerr != nil {
+			a.logger.Warn("retention: failed to complete deletion log", "org_id", org.OrgID, "error", cerr)
+		}
+
+		if counts.Decisions > 0 || counts.Events > 0 {
+			a.logger.Info("retention: deleted stale records",
+				"org_id", org.OrgID,
+				"decisions", counts.Decisions,
+				"events", counts.Events,
+				"cutoff", cutoff,
+			)
 		}
 	}
 }
