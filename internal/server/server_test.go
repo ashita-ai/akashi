@@ -2416,3 +2416,422 @@ func TestSecurityHeaders_AllRequired(t *testing.T) {
 	assert.Contains(t, resp.Header.Get("Permissions-Policy"), "camera=()",
 		"Permissions-Policy should be present on authenticated endpoints")
 }
+
+// ---- HandleGetDecision ---------------------------------------------------
+
+func TestHandleGetDecision(t *testing.T) {
+	// Trace a decision to get a valid ID.
+	dt := "get_decision_test_" + uuid.NewString()[:8]
+	traceResp, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken,
+		model.TraceRequest{
+			AgentID: "test-agent",
+			Decision: model.TraceDecision{
+				DecisionType: dt,
+				Outcome:      "retrieved ok",
+				Confidence:   0.8,
+				Reasoning:    ptrStr("for get decision test"),
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = traceResp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, traceResp.StatusCode)
+
+	var traceResult struct {
+		Data struct {
+			DecisionID uuid.UUID `json:"decision_id"`
+		} `json:"data"`
+	}
+	data, _ := io.ReadAll(traceResp.Body)
+	require.NoError(t, json.Unmarshal(data, &traceResult))
+	decisionID := traceResult.Data.DecisionID
+	require.NotEqual(t, uuid.Nil, decisionID)
+
+	t.Run("happy path returns decision", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/"+decisionID.String(), agentToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data model.Decision `json:"data"`
+		}
+		body, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(body, &result))
+		assert.Equal(t, decisionID, result.Data.ID)
+		assert.Equal(t, dt, result.Data.DecisionType)
+		assert.Equal(t, "retrieved ok", result.Data.Outcome)
+	})
+
+	t.Run("invalid UUID returns 400", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/not-a-uuid", agentToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("nonexistent ID returns 404", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/"+uuid.New().String(), agentToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+}
+
+// ---- HandleTraceHealth (exercises tracehealth.New + tracehealth.Compute) -
+
+func TestHandleTraceHealth(t *testing.T) {
+	t.Run("returns valid metrics structure", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/trace-health", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data struct {
+				Status       string `json:"status"`
+				Completeness *struct {
+					TotalDecisions int `json:"total_decisions"`
+				} `json:"completeness"`
+				Gaps []string `json:"gaps"`
+			} `json:"data"`
+		}
+		body, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(body, &result))
+		assert.Contains(t, []string{"healthy", "needs_attention", "insufficient_data"}, result.Data.Status)
+		assert.NotNil(t, result.Data.Completeness)
+		assert.NotNil(t, result.Data.Gaps)
+	})
+
+	t.Run("requires authentication", func(t *testing.T) {
+		req, _ := http.NewRequest("GET", testSrv.URL+"/v1/trace-health", nil)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
+// ---- HandlePatchConflict -------------------------------------------------
+
+func TestHandlePatchConflict(t *testing.T) {
+	t.Run("invalid UUID returns 400", func(t *testing.T) {
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflicts/not-a-uuid", adminToken,
+			model.ConflictStatusUpdate{Status: "acknowledged"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("invalid status returns 400", func(t *testing.T) {
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflicts/"+uuid.New().String(), adminToken,
+			model.ConflictStatusUpdate{Status: "invalid_status"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+		var errResp model.APIError
+		body, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(body, &errResp)
+		assert.Equal(t, model.ErrCodeInvalidInput, errResp.Error.Code)
+	})
+
+	t.Run("nonexistent conflict returns 404", func(t *testing.T) {
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflicts/"+uuid.New().String(), adminToken,
+			model.ConflictStatusUpdate{Status: "acknowledged"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+}
+
+// ---- HandleAdjudicateConflict --------------------------------------------
+
+func TestHandleAdjudicateConflict(t *testing.T) {
+	t.Run("invalid UUID returns 400", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/conflicts/not-a-uuid/adjudicate", adminToken,
+			map[string]any{"outcome": "agent-a is correct"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("missing outcome returns 400", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/conflicts/"+uuid.New().String()+"/adjudicate", adminToken,
+			map[string]any{"outcome": ""})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+		var errResp model.APIError
+		body, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(body, &errResp)
+		assert.Equal(t, model.ErrCodeInvalidInput, errResp.Error.Code)
+	})
+
+	t.Run("nonexistent conflict returns 404", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/conflicts/"+uuid.New().String()+"/adjudicate", adminToken,
+			map[string]any{"outcome": "agent-a is correct"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+}
+
+// ---- MCP: akashi_conflicts -----------------------------------------------
+
+func TestMCPConflictsTool(t *testing.T) {
+	c := newMCPClient(t, agentToken)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
+		Params: mcplib.InitializeParams{
+			ClientInfo: mcplib.Implementation{Name: "test-client", Version: "1.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	result, err := c.CallTool(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name:      "akashi_conflicts",
+			Arguments: map[string]any{"limit": 10},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, result.IsError, "akashi_conflicts returned error: %v", result.Content)
+
+	// Response must include a "conflicts" array (may be empty).
+	var resp struct {
+		Conflicts []any `json:"conflicts"`
+		Total     int   `json:"total"`
+	}
+	for _, content := range result.Content {
+		if tc, ok := content.(mcplib.TextContent); ok {
+			require.NoError(t, json.Unmarshal([]byte(tc.Text), &resp))
+			break
+		}
+	}
+	assert.NotNil(t, resp.Conflicts, "conflicts field should be present")
+}
+
+func TestMCPConflictsTool_WithStatusFilter(t *testing.T) {
+	c := newMCPClient(t, agentToken)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
+		Params: mcplib.InitializeParams{
+			ClientInfo: mcplib.Implementation{Name: "test-client", Version: "1.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	result, err := c.CallTool(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name:      "akashi_conflicts",
+			Arguments: map[string]any{"status": "resolved", "limit": 5},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, result.IsError, "akashi_conflicts with status filter returned error: %v", result.Content)
+}
+
+// ---- MCP: akashi_assess --------------------------------------------------
+
+func TestMCPAssessTool(t *testing.T) {
+	c := newMCPClient(t, agentToken)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
+		Params: mcplib.InitializeParams{
+			ClientInfo: mcplib.Implementation{Name: "test-client", Version: "1.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	// Trace a decision to assess.
+	traceResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name: "akashi_trace",
+			Arguments: map[string]any{
+				"agent_id":      "test-agent",
+				"decision_type": "assess_tool_test",
+				"outcome":       "chose the right approach",
+				"confidence":    0.9,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, traceResult.IsError, "trace returned error: %v", traceResult.Content)
+
+	var traceResp struct {
+		DecisionID string `json:"decision_id"`
+	}
+	for _, content := range traceResult.Content {
+		if tc, ok := content.(mcplib.TextContent); ok {
+			require.NoError(t, json.Unmarshal([]byte(tc.Text), &traceResp))
+			break
+		}
+	}
+	require.NotEmpty(t, traceResp.DecisionID)
+
+	t.Run("valid assessment is recorded", func(t *testing.T) {
+		result, err := c.CallTool(ctx, mcplib.CallToolRequest{
+			Params: mcplib.CallToolParams{
+				Name: "akashi_assess",
+				Arguments: map[string]any{
+					"decision_id": traceResp.DecisionID,
+					"outcome":     "correct",
+					"notes":       "verified in production",
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.False(t, result.IsError, "akashi_assess returned error: %v", result.Content)
+
+		var assessResp struct {
+			AssessmentID string `json:"assessment_id"`
+			DecisionID   string `json:"decision_id"`
+			Outcome      string `json:"outcome"`
+		}
+		for _, content := range result.Content {
+			if tc, ok := content.(mcplib.TextContent); ok {
+				require.NoError(t, json.Unmarshal([]byte(tc.Text), &assessResp))
+				break
+			}
+		}
+		assert.NotEmpty(t, assessResp.AssessmentID)
+		assert.Equal(t, traceResp.DecisionID, assessResp.DecisionID)
+		assert.Equal(t, "correct", assessResp.Outcome)
+	})
+
+	t.Run("missing decision_id returns tool error", func(t *testing.T) {
+		result, err := c.CallTool(ctx, mcplib.CallToolRequest{
+			Params: mcplib.CallToolParams{
+				Name:      "akashi_assess",
+				Arguments: map[string]any{"outcome": "correct"},
+			},
+		})
+		require.NoError(t, err)
+		assert.True(t, result.IsError, "missing decision_id should produce tool error")
+	})
+
+	t.Run("invalid outcome returns tool error", func(t *testing.T) {
+		result, err := c.CallTool(ctx, mcplib.CallToolRequest{
+			Params: mcplib.CallToolParams{
+				Name: "akashi_assess",
+				Arguments: map[string]any{
+					"decision_id": traceResp.DecisionID,
+					"outcome":     "definitely_not_a_valid_outcome",
+				},
+			},
+		})
+		require.NoError(t, err)
+		assert.True(t, result.IsError, "invalid outcome should produce tool error")
+	})
+}
+
+// ---- MCP: akashi_stats ---------------------------------------------------
+
+func TestMCPStatsTool(t *testing.T) {
+	c := newMCPClient(t, agentToken)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
+		Params: mcplib.InitializeParams{
+			ClientInfo: mcplib.Implementation{Name: "test-client", Version: "1.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	result, err := c.CallTool(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name:      "akashi_stats",
+			Arguments: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, result.IsError, "akashi_stats returned error: %v", result.Content)
+
+	var statsResp struct {
+		TraceHealth struct {
+			Status string `json:"status"`
+		} `json:"trace_health"`
+		Agents int `json:"agents"`
+	}
+	for _, content := range result.Content {
+		if tc, ok := content.(mcplib.TextContent); ok {
+			require.NoError(t, json.Unmarshal([]byte(tc.Text), &statsResp))
+			break
+		}
+	}
+	assert.Contains(t, []string{"healthy", "needs_attention", "insufficient_data"}, statsResp.TraceHealth.Status)
+	assert.GreaterOrEqual(t, statsResp.Agents, 0)
+}
+
+// ---- MCP: akashi_trace with idempotency_key (exercises mcpTraceHash) -----
+
+func TestMCPTraceIdempotencyKey(t *testing.T) {
+	c := newMCPClient(t, agentToken)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	_, err := c.Initialize(ctx, mcplib.InitializeRequest{
+		Params: mcplib.InitializeParams{
+			ClientInfo: mcplib.Implementation{Name: "test-client", Version: "1.0"},
+		},
+	})
+	require.NoError(t, err)
+
+	idemKey := "mcp-idem-" + uuid.NewString()
+	args := map[string]any{
+		"agent_id":        "test-agent",
+		"decision_type":   "mcp_idempotency_test",
+		"outcome":         "chose postgres",
+		"confidence":      0.85,
+		"idempotency_key": idemKey,
+	}
+
+	// First call — should record and return a decision_id.
+	r1, err := c.CallTool(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{Name: "akashi_trace", Arguments: args},
+	})
+	require.NoError(t, err)
+	require.False(t, r1.IsError, "first trace with idempotency_key failed: %v", r1.Content)
+
+	var resp1 struct {
+		DecisionID string `json:"decision_id"`
+		Status     string `json:"status"`
+	}
+	for _, content := range r1.Content {
+		if tc, ok := content.(mcplib.TextContent); ok {
+			require.NoError(t, json.Unmarshal([]byte(tc.Text), &resp1))
+			break
+		}
+	}
+	require.NotEmpty(t, resp1.DecisionID)
+	assert.Equal(t, "recorded", resp1.Status)
+
+	// Second call with the same key and payload — must replay the original decision_id.
+	r2, err := c.CallTool(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{Name: "akashi_trace", Arguments: args},
+	})
+	require.NoError(t, err)
+	require.False(t, r2.IsError, "idempotency replay failed: %v", r2.Content)
+
+	var resp2 struct {
+		DecisionID string `json:"decision_id"`
+	}
+	for _, content := range r2.Content {
+		if tc, ok := content.(mcplib.TextContent); ok {
+			require.NoError(t, json.Unmarshal([]byte(tc.Text), &resp2))
+			break
+		}
+	}
+	assert.Equal(t, resp1.DecisionID, resp2.DecisionID, "idempotency replay must return the same decision_id")
+}
+
+// ptrStr is a test convenience helper for *string literals.
+func ptrStr(s string) *string { return &s }
