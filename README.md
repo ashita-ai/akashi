@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="docs/assets/logo.jpeg" alt="Akashi" width="400" />
-</p>
-
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8.svg)](https://go.dev/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-336791.svg)](https://www.postgresql.org/)
