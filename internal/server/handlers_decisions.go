@@ -611,6 +611,28 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// winning_decision_id is only valid when resolving a conflict.
+	if req.WinningDecisionID != nil && req.Status != "resolved" {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"winning_decision_id can only be set when status is 'resolved'")
+		return
+	}
+
+	// If a winner is declared, validate it belongs to this conflict before
+	// touching the DB (avoids a silent no-op or cross-conflict winner reference).
+	if req.WinningDecisionID != nil {
+		conflict, cErr := h.db.GetConflict(r.Context(), id, orgID)
+		if cErr != nil || conflict == nil {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
+			return
+		}
+		if *req.WinningDecisionID != conflict.DecisionAID && *req.WinningDecisionID != conflict.DecisionBID {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+				"winning_decision_id must be one of the two decisions in this conflict")
+			return
+		}
+	}
+
 	resolvedBy := claims.AgentID
 	if resolvedBy == "" {
 		resolvedBy = claims.Subject
@@ -621,7 +643,7 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 		nil, nil,
 		map[string]any{"new_status": req.Status, "resolved_by": resolvedBy},
 	)
-	if _, err := h.db.UpdateConflictStatusWithAudit(r.Context(), id, orgID, req.Status, resolvedBy, req.ResolutionNote, audit); err != nil {
+	if _, err := h.db.UpdateConflictStatusWithAudit(r.Context(), id, orgID, req.Status, resolvedBy, req.ResolutionNote, req.WinningDecisionID, audit); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
 			return

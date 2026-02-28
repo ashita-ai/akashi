@@ -423,7 +423,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			TemporalDecay:     ptr(decay),
 			Status:            "open",
 		}
-		if err := s.db.InsertScoredConflict(ctx, c); err != nil {
+		if _, err := s.db.InsertScoredConflict(ctx, c); err != nil {
 			s.logger.Warn("conflict scorer: insert failed", "decision_a", decisionID, "decision_b", cand.ID, "error", err)
 			continue
 		}

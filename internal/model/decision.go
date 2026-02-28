@@ -200,6 +200,9 @@ type DecisionConflict struct {
 type ConflictStatusUpdate struct {
 	Status         string  `json:"status"` // acknowledged, resolved, wont_fix
 	ResolutionNote *string `json:"resolution_note,omitempty"`
+	// WinningDecisionID identifies which side prevailed. Only valid when status is
+	// "resolved"; must be decision_a_id or decision_b_id of the conflict.
+	WinningDecisionID *uuid.UUID `json:"winning_decision_id,omitempty"`
 }
 
 // AssessmentOutcome enumerates valid values for DecisionAssessment.Outcome.

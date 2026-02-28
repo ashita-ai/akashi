@@ -2485,6 +2485,13 @@ components:
           enum: [acknowledged, resolved, wont_fix]
         resolution_note:
           type: string
+        winning_decision_id:
+          type: string
+          format: uuid
+          description: |
+            Optional. The decision judged to be correct. Must be decision_a_id or
+            decision_b_id of the conflict. Only valid when status is "resolved".
+            When omitted, the conflict is resolved without declaring a winner.
 
     AdjudicateConflictRequest:
       type: object
