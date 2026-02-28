@@ -182,7 +182,7 @@ type TraceResponse struct {
 type QueryResponse struct {
 	Decisions []Decision `json:"decisions"`
 	Total     int        `json:"total"`
-	Count     int        `json:"count"`
+	HasMore   bool       `json:"has_more"`
 	Limit     int        `json:"limit"`
 	Offset    int        `json:"offset"`
 }
@@ -385,6 +385,7 @@ type AgentHistoryResponse struct {
 	AgentID   string     `json:"agent_id"`
 	Decisions []Decision `json:"decisions"`
 	Total     int        `json:"total"`
+	HasMore   bool       `json:"has_more"`
 	Limit     int        `json:"limit"`
 	Offset    int        `json:"offset"`
 }
@@ -399,6 +400,7 @@ type DeleteAgentResponse struct {
 type ConflictsResponse struct {
 	Conflicts []DecisionConflict `json:"conflicts"`
 	Total     int                `json:"total"`
+	HasMore   bool               `json:"has_more"`
 	Limit     int                `json:"limit"`
 	Offset    int                `json:"offset"`
 }

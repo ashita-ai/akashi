@@ -102,6 +102,18 @@ type APIResponse struct {
 	Meta ResponseMeta `json:"meta"`
 }
 
+// ListResponse is the standard envelope for paginated list endpoints.
+// The array of items is in Data; Total is omitted when access-filtering
+// makes the DB total unreliable (i.e., some rows were hidden by grants).
+type ListResponse struct {
+	Data    any          `json:"data"`
+	Total   *int         `json:"total,omitempty"`
+	HasMore bool         `json:"has_more"`
+	Limit   int          `json:"limit"`
+	Offset  int          `json:"offset"`
+	Meta    ResponseMeta `json:"meta"`
+}
+
 // APIError is the standard error response envelope.
 type APIError struct {
 	Error ErrorDetail  `json:"error"`

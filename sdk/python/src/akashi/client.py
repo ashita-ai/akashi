@@ -36,6 +36,7 @@ from akashi.types import (
     QueryFilters,
     QueryResponse,
     SearchResponse,
+    SearchResult,
     TraceRequest,
     TraceResponse,
 )
@@ -228,8 +229,8 @@ def _extract_error_message(resp: httpx.Response, fallback: str) -> str:
         return fallback
 
 
-def _handle_response(resp: httpx.Response) -> dict[str, Any]:
-    """Map HTTP status codes to SDK exceptions and unwrap the API envelope."""
+def _raise_for_status(resp: httpx.Response) -> None:
+    """Raise an SDK exception for error status codes."""
     if resp.status_code == 400:
         raise ValidationError(_extract_error_message(resp, "Bad request"))
     if resp.status_code == 401:
@@ -246,8 +247,29 @@ def _handle_response(resp: httpx.Response) -> dict[str, Any]:
         raise ServerError(_extract_error_message(resp, f"Server error: {resp.status_code}"))
     if resp.status_code >= 400:
         raise AkashiError(_extract_error_message(resp, f"Unexpected error: {resp.status_code}"))
+
+
+def _handle_response(resp: httpx.Response) -> dict[str, Any]:
+    """Map HTTP status codes to SDK exceptions and unwrap the API envelope."""
+    _raise_for_status(resp)
     body = resp.json()
     return body.get("data", body)
+
+
+def _handle_list_body(resp: httpx.Response) -> tuple[list[Any], dict[str, Any]]:
+    """Parse a list envelope response. Returns (items, pagination_meta)."""
+    _raise_for_status(resp)
+    body = resp.json()
+    items = body.get("data", [])
+    if not isinstance(items, list):
+        items = []
+    meta: dict[str, Any] = {
+        "total": body.get("total"),
+        "has_more": body.get("has_more", False),
+        "limit": body.get("limit", 0),
+        "offset": body.get("offset", 0),
+    }
+    return items, meta
 
 
 def _handle_no_content(resp: httpx.Response) -> None:
@@ -349,13 +371,22 @@ class AkashiClient:
         order_dir: str = "desc",
     ) -> QueryResponse:
         """Query past decisions with structured filters."""
-        data = await self._post("/v1/query", _build_query_body(filters, limit, offset, order_by, order_dir))
-        return QueryResponse.model_validate(data)
+        items, meta = await self._post_list("/v1/query", _build_query_body(filters, limit, offset, order_by, order_dir))
+        return QueryResponse(
+            decisions=[Decision.model_validate(d) for d in items],
+            total=meta.get("total") or 0,
+            has_more=meta.get("has_more", False),
+            limit=meta.get("limit", 0),
+            offset=meta.get("offset", 0),
+        )
 
     async def search(self, query: str, *, limit: int = 5) -> SearchResponse:
         """Search decision history by semantic similarity."""
-        data = await self._post("/v1/search", _build_search_body(query, limit))
-        return SearchResponse.model_validate(data)
+        items, meta = await self._post_list("/v1/search", _build_search_body(query, limit))
+        return SearchResponse(
+            results=[SearchResult.model_validate(r) for r in items],
+            total=meta.get("total") or len(items),
+        )
 
     async def recent(
         self,
@@ -365,8 +396,8 @@ class AkashiClient:
         decision_type: str | None = None,
     ) -> list[Decision]:
         """Get the most recent decisions."""
-        data = await self._get("/v1/decisions/recent", params=_build_recent_params(limit, agent_id, decision_type))
-        return [Decision.model_validate(d) for d in data.get("decisions", [])]
+        items, _ = await self._get_list("/v1/decisions/recent", params=_build_recent_params(limit, agent_id, decision_type))
+        return [Decision.model_validate(d) for d in items]
 
     # --- Runs ---
 
@@ -418,10 +449,7 @@ class AkashiClient:
     async def list_agents(self) -> list[Agent]:
         """List all agents in the organization (admin-only)."""
         data = await self._get("/v1/agents")
-        # Server returns an array directly (wrapped by writeJSON in data envelope).
-        if isinstance(data, list):
-            return [Agent.model_validate(a) for a in data]
-        return [Agent.model_validate(a) for a in data.get("agents", data)]
+        return [Agent.model_validate(a) for a in (data if isinstance(data, list) else [])]
 
     async def delete_agent(self, agent_id: str) -> None:
         """Delete an agent and all associated data (admin-only)."""
@@ -442,11 +470,11 @@ class AkashiClient:
 
     async def agent_history(self, agent_id: str, *, limit: int = 50) -> list[Decision]:
         """Get the decision history for a specific agent."""
-        data = await self._get(
+        items, _ = await self._get_list(
             f"/v1/agents/{agent_id}/history",
             params=_build_agent_history_params(limit),
         )
-        return [Decision.model_validate(d) for d in data.get("decisions", [])]
+        return [Decision.model_validate(d) for d in items]
 
     # --- Grants ---
 
@@ -471,13 +499,13 @@ class AkashiClient:
         offset: int = 0,
     ) -> list[DecisionConflict]:
         """List detected decision conflicts."""
-        data = await self._get(
+        items, _ = await self._get_list(
             "/v1/conflicts",
             params=_build_conflicts_params(
                 decision_type, agent_id, conflict_kind, limit, offset
             ),
         )
-        return [DecisionConflict.model_validate(c) for c in data.get("conflicts", [])]
+        return [DecisionConflict.model_validate(c) for c in items]
 
     # --- Health (no auth) ---
 
@@ -497,6 +525,15 @@ class AkashiClient:
         )
         return _handle_response(resp)
 
+    async def _post_list(self, path: str, body: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]:
+        token = await self._token_mgr.get_token(self._client)
+        resp = await self._client.post(
+            f"{self.base_url}{path}",
+            json=body,
+            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
+        )
+        return _handle_list_body(resp)
+
     async def _get(self, path: str, *, params: dict[str, str] | None = None) -> dict[str, Any]:
         token = await self._token_mgr.get_token(self._client)
         resp = await self._client.get(
@@ -505,6 +542,15 @@ class AkashiClient:
             headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
         )
         return _handle_response(resp)
+
+    async def _get_list(self, path: str, *, params: dict[str, str] | None = None) -> tuple[list[Any], dict[str, Any]]:
+        token = await self._token_mgr.get_token(self._client)
+        resp = await self._client.get(
+            f"{self.base_url}{path}",
+            params=params,
+            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
+        )
+        return _handle_list_body(resp)
 
     async def _delete(self, path: str) -> None:
         token = await self._token_mgr.get_token(self._client)
@@ -604,13 +650,22 @@ class AkashiSyncClient:
         order_dir: str = "desc",
     ) -> QueryResponse:
         """Query past decisions with structured filters."""
-        data = self._post("/v1/query", _build_query_body(filters, limit, offset, order_by, order_dir))
-        return QueryResponse.model_validate(data)
+        items, meta = self._post_list("/v1/query", _build_query_body(filters, limit, offset, order_by, order_dir))
+        return QueryResponse(
+            decisions=[Decision.model_validate(d) for d in items],
+            total=meta.get("total") or 0,
+            has_more=meta.get("has_more", False),
+            limit=meta.get("limit", 0),
+            offset=meta.get("offset", 0),
+        )
 
     def search(self, query: str, *, limit: int = 5) -> SearchResponse:
         """Search decision history by semantic similarity."""
-        data = self._post("/v1/search", _build_search_body(query, limit))
-        return SearchResponse.model_validate(data)
+        items, meta = self._post_list("/v1/search", _build_search_body(query, limit))
+        return SearchResponse(
+            results=[SearchResult.model_validate(r) for r in items],
+            total=meta.get("total") or len(items),
+        )
 
     def recent(
         self,
@@ -620,8 +675,8 @@ class AkashiSyncClient:
         decision_type: str | None = None,
     ) -> list[Decision]:
         """Get the most recent decisions."""
-        data = self._get("/v1/decisions/recent", params=_build_recent_params(limit, agent_id, decision_type))
-        return [Decision.model_validate(d) for d in data.get("decisions", [])]
+        items, _ = self._get_list("/v1/decisions/recent", params=_build_recent_params(limit, agent_id, decision_type))
+        return [Decision.model_validate(d) for d in items]
 
     # --- Runs ---
 
@@ -673,9 +728,7 @@ class AkashiSyncClient:
     def list_agents(self) -> list[Agent]:
         """List all agents in the organization (admin-only)."""
         data = self._get("/v1/agents")
-        if isinstance(data, list):
-            return [Agent.model_validate(a) for a in data]
-        return [Agent.model_validate(a) for a in data.get("agents", data)]
+        return [Agent.model_validate(a) for a in (data if isinstance(data, list) else [])]
 
     def delete_agent(self, agent_id: str) -> None:
         """Delete an agent and all associated data (admin-only)."""
@@ -696,11 +749,11 @@ class AkashiSyncClient:
 
     def agent_history(self, agent_id: str, *, limit: int = 50) -> list[Decision]:
         """Get the decision history for a specific agent."""
-        data = self._get(
+        items, _ = self._get_list(
             f"/v1/agents/{agent_id}/history",
             params=_build_agent_history_params(limit),
         )
-        return [Decision.model_validate(d) for d in data.get("decisions", [])]
+        return [Decision.model_validate(d) for d in items]
 
     # --- Grants ---
 
@@ -725,13 +778,13 @@ class AkashiSyncClient:
         offset: int = 0,
     ) -> list[DecisionConflict]:
         """List detected decision conflicts."""
-        data = self._get(
+        items, _ = self._get_list(
             "/v1/conflicts",
             params=_build_conflicts_params(
                 decision_type, agent_id, conflict_kind, limit, offset
             ),
         )
-        return [DecisionConflict.model_validate(c) for c in data.get("conflicts", [])]
+        return [DecisionConflict.model_validate(c) for c in items]
 
     # --- Health (no auth) ---
 
@@ -751,6 +804,15 @@ class AkashiSyncClient:
         )
         return _handle_response(resp)
 
+    def _post_list(self, path: str, body: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]:
+        token = self._token_mgr.get_token_sync(self._client)
+        resp = self._client.post(
+            f"{self.base_url}{path}",
+            json=body,
+            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
+        )
+        return _handle_list_body(resp)
+
     def _get(self, path: str, *, params: dict[str, str] | None = None) -> dict[str, Any]:
         token = self._token_mgr.get_token_sync(self._client)
         resp = self._client.get(
@@ -759,6 +821,15 @@ class AkashiSyncClient:
             headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
         )
         return _handle_response(resp)
+
+    def _get_list(self, path: str, *, params: dict[str, str] | None = None) -> tuple[list[Any], dict[str, Any]]:
+        token = self._token_mgr.get_token_sync(self._client)
+        resp = self._client.get(
+            f"{self.base_url}{path}",
+            params=params,
+            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
+        )
+        return _handle_list_body(resp)
 
     def _delete(self, path: str) -> None:
         token = self._token_mgr.get_token_sync(self._client)
