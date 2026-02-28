@@ -1133,7 +1133,7 @@ func TestListConflicts_Filters(t *testing.T) {
 	topicSim := 0.95
 	outcomeDiv := 0.85
 	sig := topicSim * outcomeDiv
-	err = testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+	_, err = testDB.InsertScoredConflict(ctx, model.DecisionConflict{
 		ConflictKind:      model.ConflictKindCrossAgent,
 		DecisionAID:       dA.ID,
 		DecisionBID:       dB.ID,
@@ -1341,7 +1341,7 @@ func TestNewConflictsSince(t *testing.T) {
 	topicSim := 0.90
 	outcomeDiv := 0.80
 	sig := topicSim * outcomeDiv
-	err = testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+	_, err = testDB.InsertScoredConflict(ctx, model.DecisionConflict{
 		ConflictKind:      model.ConflictKindCrossAgent,
 		DecisionAID:       dA.ID,
 		DecisionBID:       dB.ID,
@@ -2558,7 +2558,7 @@ func TestNewConflictsSinceByOrg(t *testing.T) {
 	topicSim := 0.88
 	outcomeDiv := 0.75
 	sig := topicSim * outcomeDiv
-	err = testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+	_, err = testDB.InsertScoredConflict(ctx, model.DecisionConflict{
 		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
 		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
 		DecisionTypeA: decisionType, DecisionTypeB: decisionType,

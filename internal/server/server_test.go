@@ -36,6 +36,8 @@ import (
 
 var (
 	testSrv       *httptest.Server
+	testDB        *storage.DB   // exposed so tests can seed data not reachable via HTTP
+	testBuf       *trace.Buffer // exposed so tests can flush the buffer before seeding conflicts
 	testcontainer testcontainers.Container
 	adminToken    string
 	agentToken    string
@@ -89,6 +91,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "failed to create DB: %v\n", err)
 		os.Exit(1)
 	}
+	testDB = db
 
 	if err := db.RunMigrations(ctx, migrations.FS); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to run migrations: %v\n", err)
@@ -100,6 +103,7 @@ func TestMain(m *testing.M) {
 	decisionSvc := decisions.New(db, embedder, nil, logger, nil)
 	buf := trace.NewBuffer(db, logger, 1000, 50*time.Millisecond, nil)
 	buf.Start(ctx)
+	testBuf = buf
 
 	mcpSrv := mcp.New(db, decisionSvc, nil, logger, "test")
 	srv := server.New(server.ServerConfig{
@@ -2835,3 +2839,141 @@ func TestMCPTraceIdempotencyKey(t *testing.T) {
 
 // ptrStr is a test convenience helper for *string literals.
 func ptrStr(s string) *string { return &s }
+
+// ---- Spec-34: winning_decision_id on PATCH /v1/conflicts/{id} ------------
+
+// seedConflict traces two decisions via HTTP and inserts a scored conflict
+// referencing them directly via testDB. Returns the two decision IDs and the
+// conflict ID so callers can drive conflict resolution scenarios.
+func seedConflict(t *testing.T) (decisionAID, decisionBID, conflictID uuid.UUID) {
+	t.Helper()
+	orgID := uuid.Nil // default org from SeedAdmin
+
+	traceDecision := func(outcome string, confidence float32) uuid.UUID {
+		resp, tErr := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken, model.TraceRequest{
+			AgentID: "admin",
+			Decision: model.TraceDecision{
+				DecisionType: "architecture",
+				Outcome:      outcome,
+				Confidence:   confidence,
+			},
+		})
+		require.NoError(t, tErr)
+		defer func() { _ = resp.Body.Close() }()
+		require.Contains(t, []int{http.StatusOK, http.StatusCreated, http.StatusAccepted}, resp.StatusCode, "trace %q", outcome)
+		var result struct {
+			Data struct {
+				DecisionID uuid.UUID `json:"decision_id"`
+			} `json:"data"`
+		}
+		b, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(b, &result))
+		require.NotEqual(t, uuid.Nil, result.Data.DecisionID)
+		return result.Data.DecisionID
+	}
+
+	decisionAID = traceDecision("spec-34 side A: use Redis", 0.9)
+	decisionBID = traceDecision("spec-34 side B: use Memcached", 0.8)
+
+	// Flush the event buffer so the decisions are committed before we insert
+	// the conflict (which has FKs to decision_a_id and decision_b_id).
+	require.NoError(t, testBuf.FlushNow(context.Background()))
+
+	// Insert scored conflict directly — embedding pipeline won't produce one
+	// with the noop embedder (zero vectors have undefined cosine similarity).
+	// InsertScoredConflict ignores c.ID; the database auto-generates it.
+	// Capture the returned UUID so callers can reference the actual row.
+	c := model.DecisionConflict{
+		OrgID:         orgID,
+		ConflictKind:  model.ConflictKindCrossAgent,
+		DecisionAID:   decisionAID,
+		DecisionBID:   decisionBID,
+		AgentA:        "admin",
+		AgentB:        "admin",
+		DecisionTypeA: "architecture",
+		DecisionTypeB: "architecture",
+		OutcomeA:      "spec-34 side A: use Redis",
+		OutcomeB:      "spec-34 side B: use Memcached",
+		Status:        "open",
+	}
+	var err error
+	conflictID, err = testDB.InsertScoredConflict(context.Background(), c)
+	require.NoError(t, err)
+	return decisionAID, decisionBID, conflictID
+}
+
+func TestHandlePatchConflict_WinningDecisionID(t *testing.T) {
+	decisionAID, decisionBID, conflictID := seedConflict(t)
+
+	t.Run("winning_decision_id without resolved status returns 400", func(t *testing.T) {
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflicts/"+conflictID.String(), adminToken,
+			model.ConflictStatusUpdate{Status: "acknowledged", WinningDecisionID: &decisionAID})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		var errResp model.APIError
+		body, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(body, &errResp)
+		assert.Equal(t, model.ErrCodeInvalidInput, errResp.Error.Code)
+	})
+
+	t.Run("winning_decision_id not in conflict returns 400", func(t *testing.T) {
+		stranger := uuid.New()
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflicts/"+conflictID.String(), adminToken,
+			model.ConflictStatusUpdate{Status: "resolved", WinningDecisionID: &stranger})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		var errResp model.APIError
+		body, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(body, &errResp)
+		assert.Equal(t, model.ErrCodeInvalidInput, errResp.Error.Code)
+	})
+
+	t.Run("resolved with winning_decision_id persists winner", func(t *testing.T) {
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflicts/"+conflictID.String(), adminToken,
+			model.ConflictStatusUpdate{Status: "resolved", WinningDecisionID: &decisionAID})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var envelope struct {
+			Data struct {
+				WinningDecisionID *uuid.UUID `json:"winning_decision_id"`
+				Status            string     `json:"status"`
+			} `json:"data"`
+		}
+		body, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(body, &envelope))
+		result := envelope.Data
+		assert.Equal(t, "resolved", result.Status)
+		require.NotNil(t, result.WinningDecisionID)
+		assert.Equal(t, decisionAID, *result.WinningDecisionID)
+	})
+
+	t.Run("resolved without winning_decision_id leaves winner nil", func(t *testing.T) {
+		_, _, noWinnerConflict := seedConflict(t)
+
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflicts/"+noWinnerConflict.String(), adminToken,
+			model.ConflictStatusUpdate{Status: "resolved"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var envelope struct {
+			Data struct {
+				WinningDecisionID *uuid.UUID `json:"winning_decision_id"`
+				Status            string     `json:"status"`
+			} `json:"data"`
+		}
+		body, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(body, &envelope))
+		result := envelope.Data
+		assert.Equal(t, "resolved", result.Status)
+		assert.Nil(t, result.WinningDecisionID, "no winner declared → field must be absent/null")
+	})
+
+	// Silence unused variable warning: decisionBID is set by seedConflict
+	// and exists to make conflict-side validation meaningful.
+	_ = decisionBID
+}
