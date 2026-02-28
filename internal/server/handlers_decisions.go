@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
@@ -77,57 +78,7 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Build agent_context with server/client namespace split.
-	// "server" contains server-extracted values (User-Agent, API key prefix).
-	// "client" contains self-reported values from the request body context.
-	serverCtx := map[string]any{}
-	clientCtx := map[string]any{}
-
-	// Client-reported context from request body (backward compat: flat → client).
-	for k, v := range req.Context {
-		clientCtx[k] = v
-	}
-
-	// Tool from User-Agent header (SDKs send "akashi-go/0.1.0" etc).
-	if ua := r.Header.Get("User-Agent"); ua != "" && strings.HasPrefix(ua, "akashi-") {
-		parts := strings.SplitN(ua, "/", 2)
-		serverCtx["tool"] = parts[0]
-		if len(parts) > 1 {
-			serverCtx["tool_version"] = parts[1]
-		}
-	}
-
-	// API key prefix for server-verified attribution.
-	if claims.APIKeyID != nil {
-		key, keyErr := h.db.GetAPIKeyByID(r.Context(), orgID, *claims.APIKeyID)
-		if keyErr == nil && key.Prefix != "" {
-			serverCtx["api_key_prefix"] = key.Prefix
-		}
-	}
-
-	// Operator from JWT claims: use the agent's display name if distinct from agent_id.
-	// If the calling agent is the same as the traced agent, reuse the already-fetched
-	// record. Otherwise fetch the caller separately (admin tracing on behalf of another agent).
-	if claims != nil {
-		var callerAgent model.Agent
-		if claims.AgentID == req.AgentID {
-			callerAgent = resolvedAgent
-		} else {
-			callerAgent, _ = h.db.GetAgentByAgentID(r.Context(), orgID, claims.AgentID)
-		}
-		if callerAgent.Name != "" && callerAgent.Name != callerAgent.AgentID {
-			clientCtx["operator"] = callerAgent.Name
-		}
-	}
-
-	// Assemble namespaced agent_context.
-	agentContext := map[string]any{}
-	if len(serverCtx) > 0 {
-		agentContext["server"] = serverCtx
-	}
-	if len(clientCtx) > 0 {
-		agentContext["client"] = clientCtx
-	}
+	agentContext := h.buildTraceAgentContext(r, orgID, claims, req, resolvedAgent)
 
 	idemPayload := struct {
 		Request       model.TraceRequest `json:"request"`
@@ -184,6 +135,71 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	}
 	h.completeIdempotentWriteBestEffort(r, orgID, idem, http.StatusCreated, resp)
 	writeJSON(w, r, http.StatusCreated, resp)
+}
+
+// buildTraceAgentContext constructs the namespaced agent_context map for a
+// trace request. It merges three sources:
+//   - "client": caller-supplied context from the request body (self-reported).
+//   - "server": server-verified values extracted from HTTP headers and JWT claims
+//     (tool name from User-Agent, API key prefix, operator display name).
+//
+// The server namespace is omitted when empty so traces from plain HTTP callers
+// (no User-Agent prefix, no API key, anonymous context) produce a compact JSON payload.
+func (h *Handlers) buildTraceAgentContext(
+	r *http.Request,
+	orgID uuid.UUID,
+	claims *auth.Claims,
+	req model.TraceRequest,
+	resolvedAgent model.Agent,
+) map[string]any {
+	serverCtx := map[string]any{}
+	clientCtx := map[string]any{}
+
+	// Client-reported context from request body (backward compat: flat → client).
+	for k, v := range req.Context {
+		clientCtx[k] = v
+	}
+
+	// Tool from User-Agent header (SDKs send "akashi-go/0.1.0" etc).
+	if ua := r.Header.Get("User-Agent"); ua != "" && strings.HasPrefix(ua, "akashi-") {
+		parts := strings.SplitN(ua, "/", 2)
+		serverCtx["tool"] = parts[0]
+		if len(parts) > 1 {
+			serverCtx["tool_version"] = parts[1]
+		}
+	}
+
+	// API key prefix for server-verified attribution.
+	if claims.APIKeyID != nil {
+		key, keyErr := h.db.GetAPIKeyByID(r.Context(), orgID, *claims.APIKeyID)
+		if keyErr == nil && key.Prefix != "" {
+			serverCtx["api_key_prefix"] = key.Prefix
+		}
+	}
+
+	// Operator: the agent's display name when it differs from agent_id.
+	// If the calling agent is the same as the traced agent, reuse the already-fetched
+	// record. Otherwise fetch the caller separately (admin tracing on behalf of another agent).
+	if claims != nil {
+		var callerAgent model.Agent
+		if claims.AgentID == req.AgentID {
+			callerAgent = resolvedAgent
+		} else {
+			callerAgent, _ = h.db.GetAgentByAgentID(r.Context(), orgID, claims.AgentID)
+		}
+		if callerAgent.Name != "" && callerAgent.Name != callerAgent.AgentID {
+			clientCtx["operator"] = callerAgent.Name
+		}
+	}
+
+	agentContext := map[string]any{}
+	if len(serverCtx) > 0 {
+		agentContext["server"] = serverCtx
+	}
+	if len(clientCtx) > 0 {
+		agentContext["client"] = clientCtx
+	}
+	return agentContext
 }
 
 // HandleGetDecision handles GET /v1/decisions/{id} (reader+).
@@ -285,15 +301,7 @@ func (h *Handlers) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		"limit":     req.Limit,
 		"offset":    req.Offset,
 	}
-	if len(decisions) < preFilterCount {
-		// Access filtering is active — the DB total counted decisions the caller
-		// can't see, so it's unknowable without scanning all pages. Omit total
-		// and use has_more instead.
-		resp["has_more"] = len(decisions) == req.Limit
-	} else {
-		resp["total"] = total
-		resp["has_more"] = req.Offset+len(decisions) < total
-	}
+	applyPaginationMeta(resp, len(decisions), preFilterCount, req.Limit, req.Offset, total)
 	writeJSON(w, r, http.StatusOK, resp)
 }
 
@@ -506,12 +514,7 @@ func (h *Handlers) HandleDecisionsRecent(w http.ResponseWriter, r *http.Request)
 		"limit":     limit,
 		"offset":    offset,
 	}
-	if len(decisions) < preFilterCount {
-		resp["has_more"] = len(decisions) == limit
-	} else {
-		resp["total"] = total
-		resp["has_more"] = offset+len(decisions) < total
-	}
+	applyPaginationMeta(resp, len(decisions), preFilterCount, limit, offset, total)
 	writeJSON(w, r, http.StatusOK, resp)
 }
 
@@ -572,14 +575,7 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 		"limit":     limit,
 		"offset":    offset,
 	}
-	if len(conflicts) < preFilterCount {
-		// Access filtering removed conflicts — the DB total counted rows the caller
-		// can't see, so it's unknowable without scanning all pages. Omit total.
-		resp["has_more"] = len(conflicts) == limit
-	} else {
-		resp["total"] = total
-		resp["has_more"] = offset+len(conflicts) < total
-	}
+	applyPaginationMeta(resp, len(conflicts), preFilterCount, limit, offset, total)
 	writeJSON(w, r, http.StatusOK, resp)
 }
 
@@ -982,12 +978,7 @@ func (h *Handlers) HandleDecisionConflicts(w http.ResponseWriter, r *http.Reques
 		"limit":       limit,
 		"offset":      offset,
 	}
-	if len(conflicts) < preFilterCount {
-		resp["has_more"] = len(conflicts) == limit
-	} else {
-		resp["total"] = total
-		resp["has_more"] = offset+len(conflicts) < total
-	}
+	applyPaginationMeta(resp, len(conflicts), preFilterCount, limit, offset, total)
 	writeJSON(w, r, http.StatusOK, resp)
 }
 
