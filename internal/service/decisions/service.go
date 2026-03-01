@@ -403,11 +403,25 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, input CheckInput) 
 	}
 	conflicts = filtered
 
-	return model.CheckResponse{
+	resp := model.CheckResponse{
 		HasPrecedent: len(decisions) > 0,
 		Decisions:    decisions,
 		Conflicts:    conflicts,
-	}, nil
+	}
+
+	// Fetch prior resolutions so agents know which approach prevailed for this
+	// decision type and can avoid resurrecting the losing side. Only meaningful
+	// when the type is known; skip for open-ended queries across all types.
+	if input.DecisionType != "" {
+		resolutions, rErr := s.db.GetResolvedConflictsByType(ctx, orgID, input.DecisionType, input.Limit)
+		if rErr != nil {
+			s.logger.Warn("check: get resolved conflicts by type", "decision_type", input.DecisionType, "error", rErr)
+		} else {
+			resp.PriorResolutions = resolutions
+		}
+	}
+
+	return resp, nil
 }
 
 // Search performs semantic or text-based search over decisions.

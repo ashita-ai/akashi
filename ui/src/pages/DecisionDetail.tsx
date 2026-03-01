@@ -13,7 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { formatDate, formatRelativeTime } from "@/lib/utils";
+import { formatDate, formatRelativeTime, truncate } from "@/lib/utils";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -112,6 +112,20 @@ function RevisionChain({ decisionId }: { decisionId: string }) {
   );
 }
 
+const conflictStatusLabel: Record<string, string> = {
+  open: "Open",
+  acknowledged: "Acknowledged",
+  resolved: "Resolved",
+  wont_fix: "Won't Fix",
+};
+
+const conflictStatusVariant: Record<string, "warning" | "secondary" | "success" | "outline"> = {
+  open: "warning",
+  acknowledged: "secondary",
+  resolved: "success",
+  wont_fix: "outline",
+};
+
 function DecisionConflicts({ decisionId }: { decisionId: string }) {
   const { data, isPending } = useQuery({
     queryKey: ["decision-conflicts", decisionId],
@@ -132,46 +146,52 @@ function DecisionConflicts({ decisionId }: { decisionId: string }) {
       </CardHeader>
       <CardContent>
         <div className="space-y-3">
-          {data.conflicts.map((c: DecisionConflict) => (
-            <div
-              key={c.id ?? `${c.decision_a_id}-${c.decision_b_id}`}
-              className="rounded-md border p-3 text-sm"
-            >
-              <div className="flex items-center justify-between mb-1">
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline" className="font-mono text-xs">
-                    {c.agent_a}
-                  </Badge>
-                  <span className="text-xs text-muted-foreground">vs</span>
-                  <Badge variant="outline" className="font-mono text-xs">
-                    {c.agent_b}
-                  </Badge>
+          {data.conflicts.map((c: DecisionConflict) => {
+            // Identify which side is "this" decision so we can show
+            // what the OTHER decision said — otherwise all rows look identical.
+            const isA = c.decision_a_id === decisionId;
+            const otherAgent = isA ? c.agent_b : c.agent_a;
+            const otherOutcome = isA ? c.outcome_b : c.outcome_a;
+            const otherRunId = isA ? c.run_b : c.run_a;
+            return (
+              <div
+                key={c.id ?? `${c.decision_a_id}-${c.decision_b_id}`}
+                className="rounded-md border p-3 text-sm space-y-2"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">conflicts with</span>
+                    <Badge variant="outline" className="font-mono text-xs">
+                      {otherAgent}
+                    </Badge>
+                    {c.conflict_kind === "self_contradiction" && (
+                      <Badge variant="outline" className="text-[10px] px-1.5 py-0">self</Badge>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge
+                      variant={conflictStatusVariant[c.status] ?? "secondary"}
+                      className="text-xs"
+                    >
+                      {conflictStatusLabel[c.status] ?? c.status}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">
+                      {formatRelativeTime(c.detected_at)}
+                    </span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Badge
-                    variant={
-                      c.status === "open"
-                        ? "warning"
-                        : c.status === "resolved"
-                          ? "success"
-                          : "secondary"
-                    }
-                    className="text-xs"
-                  >
-                    {c.status}
-                  </Badge>
-                  <span className="text-xs text-muted-foreground">
-                    {formatRelativeTime(c.detected_at)}
-                  </span>
-                </div>
-              </div>
-              {c.explanation && (
-                <p className="text-xs text-muted-foreground italic mt-1">
-                  {c.explanation}
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  {truncate(otherOutcome, 160)}
                 </p>
-              )}
-            </div>
-          ))}
+                <Link
+                  to={`/decisions/${otherRunId}`}
+                  className="text-xs text-primary hover:underline inline-flex items-center gap-1"
+                >
+                  View conflicting decision →
+                </Link>
+              </div>
+            );
+          })}
         </div>
       </CardContent>
     </Card>
@@ -261,9 +281,9 @@ export default function DecisionDetail() {
       <div className="flex items-center gap-4">
         <Link to="/decisions" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="h-4 w-4" />
-          Back
+          Back to Decisions
         </Link>
-        <h1 className="text-2xl font-bold tracking-tight">Run Detail</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Agent Run</h1>
       </div>
 
       {/* Run header */}
@@ -420,7 +440,7 @@ export default function DecisionDetail() {
                               {alt.selected ? (
                                 <CheckCircle2 className="h-4 w-4 text-emerald-500" />
                               ) : (
-                                <span className="text-muted-foreground">\u2014</span>
+                                <span className="text-muted-foreground">{"—"}</span>
                               )}
                             </TableCell>
                             <TableCell className="text-sm text-muted-foreground">
@@ -456,7 +476,16 @@ export default function DecisionDetail() {
                               </span>
                             )}
                           </div>
-                          <p className="whitespace-pre-wrap">{ev.content}</p>
+                          {["tool_output", "api_response", "database_query"].includes(ev.source_type)
+                            ? (
+                              <pre className="mt-2 rounded-md bg-muted px-3 py-2 text-xs font-mono overflow-x-auto whitespace-pre-wrap leading-relaxed">
+                                {ev.content}
+                              </pre>
+                            )
+                            : (
+                              <p className="mt-1 whitespace-pre-wrap text-sm">{ev.content}</p>
+                            )
+                          }
                           {ev.source_uri && (
                             <p className="mt-1 text-xs text-muted-foreground font-mono">
                               {ev.source_uri}
