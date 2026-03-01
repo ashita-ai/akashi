@@ -737,7 +737,8 @@ func filterDecisionsByAccess(ctx, db, claims, decisions) ([]Decision, error) {
 | `alternatives` | Options considered for each decision |
 | `evidence` | Supporting data for decisions |
 | `access_grants` | Fine-grained access permissions |
-| `scored_conflicts` | Semantic conflict pairs (event-driven, see docs/decisions.md) |
+| `scored_conflicts` | Raw pairwise conflict instances (event-driven, see docs/decisions.md) |
+| `conflict_groups` | Logical conflict groups — one per (org, agent-pair, conflict-kind, decision-type). Collapses pairwise noise. |
 
 ### API Endpoints
 

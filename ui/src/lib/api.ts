@@ -11,12 +11,15 @@ import type {
   CreateGrantRequest,
   Decision,
   DecisionConflict,
+  ConflictGroup,
   Grant,
   GrantsList,
   PaginatedDecisions,
   QueryRequest,
   ConflictsList,
+  ConflictGroupsList,
   SearchResponse,
+  SearchResult,
   SessionView,
   TraceHealth,
   AgentRun,
@@ -45,41 +48,69 @@ function getStoredToken(): string | null {
   }
 }
 
-async function request<T>(
-  path: string,
-  options: RequestInit = {},
-): Promise<T> {
+function buildRequestHeaders(
+  extra?: Record<string, string>,
+): Record<string, string> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    ...(options.headers as Record<string, string>),
+    ...(extra ?? {}),
   };
-
   const token = getStoredToken();
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
+  return headers;
+}
 
+async function throwOnError(res: Response): Promise<void> {
+  if (res.ok) return;
+  let apiError: APIError | null = null;
+  try {
+    apiError = (await res.json()) as APIError;
+  } catch {
+    // Response wasn't JSON
+  }
+  throw new ApiError(
+    res.status,
+    apiError?.error.code ?? "UNKNOWN",
+    apiError?.error.message ?? `Request failed with status ${res.status}`,
+  );
+}
+
+async function request<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
   const res = await fetch(path, {
     ...options,
-    headers,
+    headers: buildRequestHeaders(options.headers as Record<string, string>),
   });
-
-  if (!res.ok) {
-    let apiError: APIError | null = null;
-    try {
-      apiError = (await res.json()) as APIError;
-    } catch {
-      // Response wasn't JSON
-    }
-    throw new ApiError(
-      res.status,
-      apiError?.error.code ?? "UNKNOWN",
-      apiError?.error.message ?? `Request failed with status ${res.status}`,
-    );
-  }
-
+  await throwOnError(res);
   const json = (await res.json()) as APIResponse<T>;
   return json.data;
+}
+
+// All list endpoints return { data: T[], total, has_more, limit, offset }.
+// This helper fetches without unwrapping so callers can reshape to their
+// named-collection types (decisions, conflicts, grants, results, etc.).
+interface ListEnvelope<T> {
+  data: T[];
+  total: number;
+  has_more: boolean;
+  limit: number;
+  offset: number;
+}
+
+async function requestListEnvelope<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<ListEnvelope<T>> {
+  const res = await fetch(path, {
+    ...options,
+    headers: buildRequestHeaders(options.headers as Record<string, string>),
+  });
+  await throwOnError(res);
+  return res.json() as Promise<ListEnvelope<T>>;
 }
 
 // Auth
@@ -98,10 +129,17 @@ export async function login(
 export async function queryDecisions(
   req: QueryRequest,
 ): Promise<PaginatedDecisions> {
-  return request<PaginatedDecisions>("/v1/query", {
+  const env = await requestListEnvelope<Decision>("/v1/query", {
     method: "POST",
     body: JSON.stringify(req),
   });
+  return {
+    decisions: env.data,
+    total: env.total,
+    count: env.data.length,
+    limit: env.limit,
+    offset: env.offset,
+  };
 }
 
 export async function getRecentDecisions(params?: {
@@ -115,9 +153,16 @@ export async function getRecentDecisions(params?: {
   if (params?.decision_type)
     searchParams.set("decision_type", params.decision_type);
   const qs = searchParams.toString();
-  return request<PaginatedDecisions>(
+  const env = await requestListEnvelope<Decision>(
     `/v1/decisions/recent${qs ? `?${qs}` : ""}`,
   );
+  return {
+    decisions: env.data,
+    total: env.total,
+    count: env.data.length,
+    limit: env.limit,
+    offset: env.offset,
+  };
 }
 
 // Runs
@@ -202,7 +247,38 @@ export async function listConflicts(params?: {
   if (params?.conflict_kind) searchParams.set("conflict_kind", params.conflict_kind);
   if (params?.status) searchParams.set("status", params.status);
   const qs = searchParams.toString();
-  return request<ConflictsList>(`/v1/conflicts${qs ? `?${qs}` : ""}`);
+  const env = await requestListEnvelope<DecisionConflict>(`/v1/conflicts${qs ? `?${qs}` : ""}`);
+  return { conflicts: env.data, total: env.total, limit: env.limit, offset: env.offset };
+}
+
+// Conflict groups
+export async function listConflictGroups(params?: {
+  decision_type?: string;
+  agent_id?: string;
+  conflict_kind?: "cross_agent" | "self_contradiction";
+  status?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<ConflictGroupsList> {
+  const searchParams = new URLSearchParams();
+  if (params?.limit) searchParams.set("limit", String(params.limit));
+  if (params?.offset) searchParams.set("offset", String(params.offset));
+  if (params?.decision_type)
+    searchParams.set("decision_type", params.decision_type);
+  if (params?.agent_id) searchParams.set("agent_id", params.agent_id);
+  if (params?.conflict_kind)
+    searchParams.set("conflict_kind", params.conflict_kind);
+  if (params?.status) searchParams.set("status", params.status);
+  const qs = searchParams.toString();
+  const env = await requestListEnvelope<ConflictGroup>(
+    `/v1/conflict-groups${qs ? `?${qs}` : ""}`,
+  );
+  return {
+    conflict_groups: env.data,
+    total: env.total,
+    limit: env.limit,
+    offset: env.offset,
+  };
 }
 
 // Search
@@ -211,10 +287,11 @@ export async function searchDecisions(
   semantic: boolean,
   limit = 20,
 ): Promise<SearchResponse> {
-  return request<SearchResponse>("/v1/search", {
+  const env = await requestListEnvelope<SearchResult>("/v1/search", {
     method: "POST",
     body: JSON.stringify({ query, semantic, limit }),
   });
+  return { results: env.data, total: env.total };
 }
 
 // Agent history
@@ -260,7 +337,8 @@ export async function verifyDecisionIntegrity(
 export async function getDecisionConflicts(
   id: string,
 ): Promise<{ conflicts: DecisionConflict[]; total: number }> {
-  return request(`/v1/decisions/${id}/conflicts`);
+  const env = await requestListEnvelope<DecisionConflict>(`/v1/decisions/${id}/conflicts`);
+  return { conflicts: env.data, total: env.total };
 }
 
 // Patch conflict status
@@ -304,7 +382,14 @@ export async function listGrants(params?: {
   if (params?.limit) searchParams.set("limit", String(params.limit));
   if (params?.offset) searchParams.set("offset", String(params.offset));
   const qs = searchParams.toString();
-  return request<GrantsList>(`/v1/grants${qs ? `?${qs}` : ""}`);
+  const env = await requestListEnvelope<Grant>(`/v1/grants${qs ? `?${qs}` : ""}`);
+  return {
+    grants: env.data,
+    total: env.total,
+    limit: env.limit,
+    offset: env.offset,
+    has_more: env.has_more,
+  };
 }
 
 export async function createGrant(

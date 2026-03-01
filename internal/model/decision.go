@@ -194,6 +194,35 @@ type DecisionConflict struct {
 
 	// Winner (migration 046): which of the two decisions prevailed in resolution.
 	WinningDecisionID *uuid.UUID `json:"winning_decision_id,omitempty"`
+
+	// GroupID (migration 054): canonical conflict group this pair belongs to.
+	// All pairwise conflicts between the same agents on the same decision_type share a group.
+	GroupID *uuid.UUID `json:"group_id,omitempty"`
+}
+
+// ConflictGroup is a canonical conflict cluster: one row per
+// (org, normalized-agent-pair, conflict-kind, decision-type). It collapses
+// the N×M pairwise explosion from conflict detection into a single logical
+// disagreement that the UI and MCP tool can surface without noise.
+type ConflictGroup struct {
+	ID              uuid.UUID    `json:"id"`
+	OrgID           uuid.UUID    `json:"org_id"`
+	AgentA          string       `json:"agent_a"` // normalized: LEAST(agent_a, agent_b)
+	AgentB          string       `json:"agent_b"` // normalized: GREATEST(agent_a, agent_b)
+	ConflictKind    ConflictKind `json:"conflict_kind"`
+	DecisionType    string       `json:"decision_type"`
+	FirstDetectedAt time.Time    `json:"first_detected_at"`
+	LastDetectedAt  time.Time    `json:"last_detected_at"`
+	// ConflictCount is the total number of pairwise conflicts in this group.
+	ConflictCount int `json:"conflict_count"`
+	// OpenCount is the number of pairwise conflicts with status open or acknowledged.
+	OpenCount int `json:"open_count"`
+	// Representative is the highest-significance conflict in the group.
+	// Populated by ListConflictGroups; nil when the group has no scored pairs yet.
+	Representative *DecisionConflict `json:"representative,omitempty"`
+	// OpenConflicts contains all open or acknowledged pairwise conflicts in this group,
+	// ordered by significance DESC. Populated by ListConflictGroups; nil when none exist.
+	OpenConflicts []DecisionConflict `json:"open_conflicts,omitempty"`
 }
 
 // ConflictStatusUpdate is the request body for PATCH /v1/conflicts/{id}.

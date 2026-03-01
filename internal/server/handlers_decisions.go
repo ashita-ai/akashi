@@ -553,6 +553,52 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 	writeListJSON(w, r, conflicts, ptotal, hasMore, limit, offset)
 }
 
+// HandleListConflictGroups handles GET /v1/conflict-groups.
+// Returns one entry per logical conflict cluster (same agents × decision-type) with
+// the highest-significance representative conflict embedded. This is the deduplicated
+// view that eliminates N×M pairwise noise from the raw conflicts list.
+func (h *Handlers) HandleListConflictGroups(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+
+	filters := storage.ConflictGroupFilters{}
+	if dt := r.URL.Query().Get("decision_type"); dt != "" {
+		filters.DecisionType = &dt
+	}
+	if aid := r.URL.Query().Get("agent_id"); aid != "" {
+		filters.AgentID = &aid
+	}
+	if ck := r.URL.Query().Get("conflict_kind"); ck != "" {
+		filters.ConflictKind = &ck
+	}
+	// status=open (or acknowledged) maps to OpenOnly. Any other value (resolved, wont_fix)
+	// is not yet supported at the group level — fall through to all groups.
+	if st := r.URL.Query().Get("status"); st == "open" || st == "acknowledged" {
+		filters.OpenOnly = true
+	}
+
+	limit := queryLimit(r, 25)
+	offset := queryOffset(r)
+
+	total, err := h.db.CountConflictGroups(r.Context(), orgID, filters)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to count conflict groups", err)
+		return
+	}
+
+	groups, err := h.db.ListConflictGroups(r.Context(), orgID, filters, limit, offset)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to list conflict groups", err)
+		return
+	}
+
+	if groups == nil {
+		groups = []model.ConflictGroup{}
+	}
+
+	hasMore := offset+len(groups) < total
+	writeListJSON(w, r, groups, &total, hasMore, limit, offset)
+}
+
 // validConflictStatuses defines the allowed values for conflict status transitions.
 var validConflictStatuses = map[string]bool{
 	"acknowledged": true,

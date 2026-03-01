@@ -220,6 +220,28 @@ export interface ConflictsList {
   offset: number;
 }
 
+export interface ConflictGroup {
+  id: string;
+  agent_a: string;
+  agent_b: string;
+  conflict_kind: ConflictKind;
+  decision_type: string;
+  first_detected_at: string;
+  last_detected_at: string;
+  conflict_count: number;
+  open_count: number;
+  representative?: DecisionConflict;
+  /** All open/acknowledged conflicts in this group, ordered by significance DESC. */
+  open_conflicts?: DecisionConflict[];
+}
+
+export interface ConflictGroupsList {
+  conflict_groups: ConflictGroup[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface AgentsList {
   agents: Agent[];
 }

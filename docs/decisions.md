@@ -135,7 +135,7 @@ The classifier also assigns a **category** and **severity**:
 
 | Provider | Configuration | Notes |
 |----------|--------------|-------|
-| `OllamaValidator` | `AKASHI_OLLAMA_VALIDATOR_MODEL` (e.g. `qwen2.5:3b`) | On-premises; warms up on startup to avoid cold-start delay. |
+| `OllamaValidator` | `AKASHI_CONFLICT_LLM_MODEL` (e.g. `qwen2.5:3b`) | On-premises; warms up on startup to avoid cold-start delay. |
 | `OpenAIValidator` | `OPENAI_API_KEY` | Uses `gpt-4o-mini` by default. |
 | `NoopValidator` | No LLM configured | Falls back to embedding-only detection; higher false positive rate. |
 
@@ -216,7 +216,8 @@ This creates a decision of type `"conflict_resolution"` (unless overridden), sto
 
 | Endpoint | Method | Role |
 |----------|--------|------|
-| `GET /v1/conflicts` | read | List conflicts with filters (status, decision_type, agent_id, etc.) |
+| `GET /v1/conflict-groups` | read | List logical conflict groups, collapsing pairwise noise. Each group has a representative conflict plus `conflict_count` and `open_count`. Default view. |
+| `GET /v1/conflicts` | read | List raw pairwise conflict instances with filters (status, decision_type, agent_id, etc.) |
 | `PATCH /v1/conflicts/{id}` | write | Transition status; optionally set winner and resolution note. |
 | `POST /v1/conflicts/{id}/adjudicate` | write | Record a formal resolution decision linked to the conflict. |
 | `POST /v1/check` | read | Returns recent conflicts alongside precedents for a given decision type. |

@@ -140,4 +140,3 @@ DATABASE_URL=postgres://... make verify-exit-criteria
 
 - `docs/runbook.md`
 - `docs/configuration.md`
-- `docs/execution-plan-durability-and-consistency.md`
