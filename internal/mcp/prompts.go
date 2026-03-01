@@ -152,11 +152,12 @@ can learn from it, and so the decision is provable later.
 
 ## Available Tools
 
-- akashi_check: Check the black box for precedents before deciding (use FIRST)
+- akashi_check: Check the black box for precedents before deciding (use FIRST; pass query for semantic search)
 - akashi_trace: Record a decision to the black box (use AFTER deciding)
-- akashi_query: Query the audit trail by exact filters (type, agent, confidence)
-- akashi_search: Search the black box by semantic similarity (natural language)
-- akashi_recent: See what the black box recorded recently (good for context)
+- akashi_query: Query the audit trail — structured filters or natural-language query for semantic search
+- akashi_conflicts: List open conflicts between agents
+- akashi_assess: Record whether a past decision turned out to be correct
+- akashi_stats: Aggregate health metrics for the decision trail
 
 ## Decision Types
 

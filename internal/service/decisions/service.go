@@ -341,7 +341,12 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, input CheckInput) 
 	var decisions []model.Decision
 
 	// Build the shared filter set (applied on both search and structured query paths).
-	filters := model.QueryFilters{DecisionType: &input.DecisionType}
+	// DecisionType is optional — omitting it broadens the search across all types.
+	filters := model.QueryFilters{}
+	if input.DecisionType != "" {
+		dt := input.DecisionType
+		filters.DecisionType = &dt
+	}
 	if input.AgentID != "" {
 		filters.AgentIDs = []string{input.AgentID}
 	}
@@ -377,8 +382,13 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, input CheckInput) 
 		decisions = queried
 	}
 
-	// Only surface open/acknowledged conflicts — resolved and wont_fix are hidden.
-	conflicts, err := s.db.ListConflicts(ctx, orgID, storage.ConflictFilters{DecisionType: &input.DecisionType}, input.Limit, 0)
+	// Only surface open/acknowledged conflicts, optionally scoped to decision type.
+	conflictFilter := storage.ConflictFilters{}
+	if input.DecisionType != "" {
+		dt := input.DecisionType
+		conflictFilter.DecisionType = &dt
+	}
+	conflicts, err := s.db.ListConflicts(ctx, orgID, conflictFilter, input.Limit, 0)
 	if err != nil {
 		s.logger.Warn("check: list conflicts", "error", err)
 		conflicts = nil

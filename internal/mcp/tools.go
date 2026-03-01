@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,7 +23,7 @@ import (
 )
 
 func (s *Server) registerTools() {
-	// akashi_check — check the black box for decision precedents.
+	// akashi_check — look up precedents and active conflicts before deciding.
 	s.mcpServer.AddTool(
 		mcplib.NewTool("akashi_check",
 			mcplib.WithDescription(`Check the black box for decision precedents before making a new one.
@@ -30,26 +31,30 @@ func (s *Server) registerTools() {
 WHEN TO USE: BEFORE making any decision. This is the most important tool —
 it prevents contradictions and lets you build on prior work.
 
-Call this FIRST with the type of decision you're about to make. If the audit
-trail shows precedents, factor them into your reasoning. If conflicts exist,
-resolve them explicitly.
+Call this FIRST. Pass a natural language query describing what you're about
+to decide, and optionally narrow by decision_type. If the audit trail shows
+precedents, factor them into your reasoning. If conflicts exist, resolve them.
 
 WHAT YOU GET BACK:
-- has_precedent: whether any prior decisions exist for this type
+- has_precedent: whether any relevant prior decisions exist
 - decisions: the most relevant prior decisions (up to limit)
-- conflicts: any active conflicts on this decision type
+- conflicts: any active conflicts in this decision area
+- precedent_ref_hint: UUID to copy into akashi_trace's precedent_ref field
+
+decision_type is optional. When omitted the search spans all types —
+useful when you're not sure how past decisions were categorized.
 
 EXAMPLE: Before choosing a caching strategy, call akashi_check with
-decision_type="architecture" to see if anyone already decided on caching.`),
+query="caching strategy for session data" to find relevant precedents
+regardless of whether they were tagged "architecture" or "trade_off".`),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithIdempotentHintAnnotation(true),
 			mcplib.WithOpenWorldHintAnnotation(false),
-			mcplib.WithString("decision_type",
-				mcplib.Description("The type of decision you're about to make. Common types: architecture, security, code_review, investigation, planning, assessment, trade_off, feature_scope, deployment, error_handling, model_selection, data_source. Any string is accepted."),
-				mcplib.Required(),
-			),
 			mcplib.WithString("query",
-				mcplib.Description("Optional natural language query for semantic search over past decisions. If omitted, returns recent decisions of this type."),
+				mcplib.Description("Natural language description of the decision you're about to make. Drives semantic search. If omitted, returns recent decisions filtered by decision_type."),
+			),
+			mcplib.WithString("decision_type",
+				mcplib.Description("Optional: narrow results to a specific category (e.g. architecture, security, trade_off). Case-insensitive. Omit to search across all types."),
 			),
 			mcplib.WithString("agent_id",
 				mcplib.Description("Optional: only check decisions from a specific agent"),
@@ -120,7 +125,7 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 				mcplib.Description(`Your role in this task — "reviewer", "coder", "planner", "security-auditor", or similar. Describes what you're doing, not who you authenticate as. Defaults to your authenticated identity if omitted.`),
 			),
 			mcplib.WithString("decision_type",
-				mcplib.Description("Category of decision. Common types: architecture, security, code_review, investigation, planning, assessment, trade_off, feature_scope, deployment, error_handling, model_selection, data_source. Any string is accepted."),
+				mcplib.Description("Category of decision. Common types: architecture, security, code_review, investigation, planning, assessment, trade_off, feature_scope, deployment, error_handling, model_selection, data_source. Any string is accepted. Stored lowercase."),
 				mcplib.Required(),
 			),
 			mcplib.WithString("outcome",
@@ -160,147 +165,75 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 		s.handleTrace,
 	)
 
-	// akashi_query — structured query over the decision audit trail.
+	// akashi_query — structured or semantic query over the decision audit trail.
 	s.mcpServer.AddTool(
 		mcplib.NewTool("akashi_query",
-			mcplib.WithDescription(`Query the decision audit trail with structured filters.
+			mcplib.WithDescription(`Query the decision audit trail with structured filters or free-text search.
 
-WHEN TO USE: When you need to find specific decisions by exact criteria —
-a particular agent, decision type, confidence threshold, or outcome.
-For fuzzy/semantic searches, use akashi_search instead.
+WHEN TO USE: When you need to explore or filter past decisions —
+either by exact criteria (agent, type, confidence) or by natural language.
 
-FILTER EXAMPLES:
-- All architecture decisions: decision_type="architecture"
-- High-confidence decisions by agent-7: agent_id="agent-7", confidence_min=0.8
-- Specific outcome: outcome="chose PostgreSQL"
-- Combined: decision_type="model_selection", confidence_min=0.7, limit=20`),
+TWO MODES:
+- With "query": semantic/text search — finds decisions by meaning, not exact match.
+  Use this when you don't know exact field values: "caching decisions", "rate limit choices".
+- Without "query": structured filter — exact match on the fields you provide.
+  Use this when you know exactly what you want: all architecture decisions by agent-7
+  with confidence >= 0.8.
+
+Results always sorted by recency. Use limit + offset for pagination.
+
+EXAMPLES:
+- Semantic: query="how did we handle rate limiting?"
+- Structured: decision_type="architecture", confidence_min=0.8, agent_id="planner"
+- Recent activity: no filters, limit=20 (returns newest decisions)`),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithIdempotentHintAnnotation(true),
 			mcplib.WithOpenWorldHintAnnotation(false),
+			mcplib.WithString("query",
+				mcplib.Description("Natural language search query. When provided, performs semantic/text search and ignores structured filters except confidence_min and project. When omitted, uses structured filter mode."),
+			),
 			mcplib.WithString("decision_type",
-				mcplib.Description("Filter by decision type (any string, e.g. architecture, security, code_review)"),
+				mcplib.Description("Filter by decision type (any string, e.g. architecture, security, code_review). Case-insensitive. Ignored when query is provided."),
 			),
 			mcplib.WithString("agent_id",
-				mcplib.Description("Filter by agent ID — whose decisions to look at"),
+				mcplib.Description("Filter by agent ID — whose decisions to look at. Ignored when query is provided."),
 			),
 			mcplib.WithString("outcome",
-				mcplib.Description("Filter by exact outcome text"),
+				mcplib.Description("Filter by exact outcome text. Ignored when query is provided."),
 			),
 			mcplib.WithNumber("confidence_min",
-				mcplib.Description("Minimum confidence threshold (0.0-1.0). Use 0.7+ for reliable decisions."),
+				mcplib.Description("Minimum confidence threshold (0.0-1.0). Use 0.7+ for reliable decisions. Applied in both modes."),
 				mcplib.Min(0),
 				mcplib.Max(1),
 			),
 			mcplib.WithString("session_id",
-				mcplib.Description("Filter by session UUID"),
+				mcplib.Description("Filter by session UUID. Ignored when query is provided."),
 			),
 			mcplib.WithString("tool",
-				mcplib.Description("Filter by tool name (e.g. 'claude-code', 'cursor')"),
+				mcplib.Description("Filter by tool name (e.g. 'claude-code', 'cursor'). Ignored when query is provided."),
 			),
 			mcplib.WithString("model",
-				mcplib.Description("Filter by model name (e.g. 'claude-opus-4-6')"),
+				mcplib.Description("Filter by model name (e.g. 'claude-opus-4-6'). Ignored when query is provided."),
 			),
 			mcplib.WithString("project",
-				mcplib.Description("Filter by project name (e.g. \"akashi\", \"my-langchain-app\"). Auto-detected from the working directory when omitted. Pass \"*\" to query across all projects."),
+				mcplib.Description("Filter by project name (e.g. \"akashi\", \"my-langchain-app\"). Auto-detected from the working directory when omitted. Pass \"*\" to query across all projects. Applied in both modes."),
 			),
 			mcplib.WithNumber("limit",
 				mcplib.Description("Maximum results to return"),
 				mcplib.Min(1),
 				mcplib.Max(100),
 				mcplib.DefaultNumber(10),
+			),
+			mcplib.WithNumber("offset",
+				mcplib.Description("Number of results to skip for pagination. Only applies in structured filter mode."),
+				mcplib.Min(0),
+				mcplib.DefaultNumber(0),
 			),
 			mcplib.WithString("format",
 				mcplib.Description(`Response format: "concise" (default) returns compact decisions. "full" returns complete decision objects.`),
 			),
 		),
 		s.handleQuery,
-	)
-
-	// akashi_search — search the black box for similar past decisions.
-	s.mcpServer.AddTool(
-		mcplib.NewTool("akashi_search",
-			mcplib.WithDescription(`Search the black box for similar past decisions by semantic similarity.
-
-WHEN TO USE: When you have a natural language question about past decisions
-and want to find the most relevant matches regardless of exact wording.
-For exact-match filtering, use akashi_query instead.
-
-EXAMPLE QUERIES:
-- "How did we handle rate limiting?"
-- "What caching decisions were made?"
-- "Previous choices about error handling in the payment flow"
-- "Model selection for text summarization tasks"`),
-			mcplib.WithReadOnlyHintAnnotation(true),
-			mcplib.WithIdempotentHintAnnotation(true),
-			mcplib.WithOpenWorldHintAnnotation(false),
-			mcplib.WithString("query",
-				mcplib.Description("Natural language search query — describe what you're looking for"),
-				mcplib.Required(),
-			),
-			mcplib.WithNumber("limit",
-				mcplib.Description("Maximum results to return"),
-				mcplib.Min(1),
-				mcplib.Max(100),
-				mcplib.DefaultNumber(5),
-			),
-			mcplib.WithNumber("confidence_min",
-				mcplib.Description("Minimum confidence threshold for results (0.0-1.0)"),
-				mcplib.Min(0),
-				mcplib.Max(1),
-			),
-			mcplib.WithString("project",
-				mcplib.Description("Optional: filter by project name (e.g. \"akashi\", \"my-langchain-app\"). Auto-detected from the working directory when omitted. Pass \"*\" to search across all projects."),
-			),
-			mcplib.WithString("format",
-				mcplib.Description(`Response format: "concise" (default) returns compact results. "full" returns complete decision objects.`),
-			),
-		),
-		s.handleSearch,
-	)
-
-	// akashi_recent — see what the black box recorded recently.
-	s.mcpServer.AddTool(
-		mcplib.NewTool("akashi_recent",
-			mcplib.WithDescription(`See what the black box recorded recently across all agents.
-
-WHEN TO USE: To get a quick overview of what's been decided recently.
-Useful at the start of a session to understand current context,
-or to review what other agents have been doing.
-
-Returns decisions ordered by time (newest first) with optional
-filters for agent_id and decision_type.`),
-			mcplib.WithReadOnlyHintAnnotation(true),
-			mcplib.WithIdempotentHintAnnotation(true),
-			mcplib.WithOpenWorldHintAnnotation(false),
-			mcplib.WithString("agent_id",
-				mcplib.Description("Optional: only show decisions from a specific agent"),
-			),
-			mcplib.WithString("decision_type",
-				mcplib.Description("Optional: only show decisions of a specific type (any string, e.g. architecture, security, code_review)"),
-			),
-			mcplib.WithString("session_id",
-				mcplib.Description("Optional: filter by session UUID"),
-			),
-			mcplib.WithString("tool",
-				mcplib.Description("Optional: filter by tool name (e.g. 'claude-code', 'cursor')"),
-			),
-			mcplib.WithString("model",
-				mcplib.Description("Optional: filter by model name (e.g. 'claude-opus-4-6')"),
-			),
-			mcplib.WithString("project",
-				mcplib.Description("Optional: filter by project name (e.g. \"akashi\", \"my-langchain-app\"). Auto-detected from the working directory when omitted. Pass \"*\" to see recent decisions across all projects."),
-			),
-			mcplib.WithNumber("limit",
-				mcplib.Description("Maximum results to return"),
-				mcplib.Min(1),
-				mcplib.Max(100),
-				mcplib.DefaultNumber(10),
-			),
-			mcplib.WithString("format",
-				mcplib.Description(`Response format: "concise" (default) returns compact decisions. "full" returns complete decision objects.`),
-			),
-		),
-		s.handleRecent,
 	)
 
 	// akashi_stats — aggregate statistics about the decision trail.
@@ -434,17 +367,8 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 		return errorResult("authentication required"), nil
 	}
 
-	decisionType := request.GetString("decision_type", "")
-	if decisionType == "" {
-		return errorResult("decision_type is required"), nil
-	}
-
-	// Record that this caller checked precedents for this decision type.
-	// handleTrace uses this to detect the check-before-trace workflow.
-	if claims != nil {
-		s.checkTracker.Record(claims.AgentID, decisionType)
-	}
-
+	// decision_type is optional — normalize if provided.
+	decisionType := strings.ToLower(strings.TrimSpace(request.GetString("decision_type", "")))
 	query := request.GetString("query", "")
 	agentID := request.GetString("agent_id", "")
 	limit := request.GetInt("limit", 5)
@@ -577,7 +501,8 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	}
 
 	agentID := request.GetString("agent_id", "")
-	decisionType := request.GetString("decision_type", "")
+	// Normalize decision_type to lowercase for consistent storage and retrieval.
+	decisionType := strings.ToLower(strings.TrimSpace(request.GetString("decision_type", "")))
 	outcome := request.GetString("outcome", "")
 	confidence := float32(request.GetFloat("confidence", 0.7))
 	reasoning := request.GetString("reasoning", "")
@@ -850,27 +775,11 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		}
 	}
 
-	contents := []mcplib.Content{
-		mcplib.TextContent{Type: "text", Text: string(resultData)},
-	}
-
-	// Nudge: if the caller didn't call akashi_check for this decision_type
-	// recently, include a reminder. The trace still succeeds — this is
-	// advisory, not a gate.
-	callerID := ""
-	if claims != nil {
-		callerID = claims.AgentID
-	}
-	if callerID != "" && !s.checkTracker.WasChecked(callerID, decisionType) {
-		contents = append(contents, mcplib.TextContent{
-			Type: "text",
-			Text: "NOTE: No akashi_check was called for decision_type=\"" + decisionType + "\" before this trace. " +
-				"Checking for precedents first prevents contradictions and duplicate work. " +
-				"Next time, call akashi_check before akashi_trace.",
-		})
-	}
-
-	return &mcplib.CallToolResult{Content: contents}, nil
+	return &mcplib.CallToolResult{
+		Content: []mcplib.Content{
+			mcplib.TextContent{Type: "text", Text: string(resultData)},
+		},
+	}, nil
 }
 
 // mcpTraceHash computes a deterministic SHA-256 hash of the trace parameters
@@ -908,19 +817,57 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 		return errorResult("authentication required"), nil
 	}
 
-	filters := model.QueryFilters{}
+	query := request.GetString("query", "")
+	limit := request.GetInt("limit", 10)
+	format := request.GetString("format", "concise")
 
+	// Build shared filters (applied to both modes; some are ignored in semantic mode).
+	filters := model.QueryFilters{}
+	if confMin := float32(request.GetFloat("confidence_min", 0)); confMin > 0 {
+		filters.ConfidenceMin = &confMin
+	}
+	filters.Project = s.resolveProjectFilter(ctx, request)
+
+	if query != "" {
+		// Semantic/text search path. Structured filters other than confidence_min
+		// and project are intentionally ignored — the query drives discovery.
+		results, err := s.decisionSvc.Search(ctx, orgID, query, true, filters, limit)
+		if err != nil {
+			return errorResult(fmt.Sprintf("search failed: %v", err)), nil
+		}
+		if claims != nil {
+			results, err = authz.FilterSearchResults(ctx, s.db, claims, results, s.grantCache)
+			if err != nil {
+				return errorResult(fmt.Sprintf("authorization check failed: %v", err)), nil
+			}
+		}
+		var payload any
+		if format == "full" {
+			payload = map[string]any{"decisions": results, "total": len(results)}
+		} else {
+			compact := make([]map[string]any, len(results))
+			for i, r := range results {
+				compact[i] = compactSearchResult(r)
+			}
+			payload = map[string]any{"decisions": compact, "total": len(results)}
+		}
+		resultData, _ := json.MarshalIndent(payload, "", "  ")
+		return &mcplib.CallToolResult{
+			Content: []mcplib.Content{
+				mcplib.TextContent{Type: "text", Text: string(resultData)},
+			},
+		}, nil
+	}
+
+	// Structured filter path.
 	if agentID := request.GetString("agent_id", ""); agentID != "" {
 		filters.AgentIDs = []string{agentID}
 	}
-	if dt := request.GetString("decision_type", ""); dt != "" {
+	if dt := strings.ToLower(strings.TrimSpace(request.GetString("decision_type", ""))); dt != "" {
 		filters.DecisionType = &dt
 	}
 	if outcome := request.GetString("outcome", ""); outcome != "" {
 		filters.Outcome = &outcome
-	}
-	if confMin := float32(request.GetFloat("confidence_min", 0)); confMin > 0 {
-		filters.ConfidenceMin = &confMin
 	}
 	if sidStr := request.GetString("session_id", ""); sidStr != "" {
 		if sid, parseErr := uuid.Parse(sidStr); parseErr == nil {
@@ -933,9 +880,8 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 	if m := request.GetString("model", ""); m != "" {
 		filters.Model = &m
 	}
-	filters.Project = s.resolveProjectFilter(ctx, request)
 
-	limit := request.GetInt("limit", 10)
+	offset := request.GetInt("offset", 0)
 
 	decs, total, err := s.decisionSvc.Query(ctx, orgID, model.QueryRequest{
 		Filters:  filters,
@@ -943,6 +889,7 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 		OrderBy:  "valid_from",
 		OrderDir: "desc",
 		Limit:    limit,
+		Offset:   offset,
 	})
 	if err != nil {
 		return errorResult(fmt.Sprintf("query failed: %v", err)), nil
@@ -962,7 +909,6 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 		}
 	}
 
-	format := request.GetString("format", "concise")
 	var payload any
 	if format == "full" {
 		payload = map[string]any{"decisions": decs, "total": total}
@@ -972,122 +918,6 @@ func (s *Server) handleQuery(ctx context.Context, request mcplib.CallToolRequest
 			compact[i] = compactDecision(d)
 		}
 		payload = map[string]any{"decisions": compact, "total": total}
-	}
-
-	resultData, _ := json.MarshalIndent(payload, "", "  ")
-	return &mcplib.CallToolResult{
-		Content: []mcplib.Content{
-			mcplib.TextContent{Type: "text", Text: string(resultData)},
-		},
-	}, nil
-}
-
-func (s *Server) handleSearch(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-	orgID := ctxutil.OrgIDFromContext(ctx)
-	claims := ctxutil.ClaimsFromContext(ctx)
-
-	if claims == nil {
-		return errorResult("authentication required"), nil
-	}
-
-	query := request.GetString("query", "")
-	if query == "" {
-		return errorResult("query is required"), nil
-	}
-
-	limit := request.GetInt("limit", 5)
-	filters := model.QueryFilters{}
-	if confMin := float32(request.GetFloat("confidence_min", 0)); confMin > 0 {
-		filters.ConfidenceMin = &confMin
-	}
-	filters.Project = s.resolveProjectFilter(ctx, request)
-
-	results, err := s.decisionSvc.Search(ctx, orgID, query, true, filters, limit)
-	if err != nil {
-		return errorResult(fmt.Sprintf("search failed: %v", err)), nil
-	}
-
-	// Apply access filtering.
-	if claims != nil {
-		results, err = authz.FilterSearchResults(ctx, s.db, claims, results, s.grantCache)
-		if err != nil {
-			return errorResult(fmt.Sprintf("authorization check failed: %v", err)), nil
-		}
-	}
-
-	format := request.GetString("format", "concise")
-	var payload any
-	if format == "full" {
-		payload = map[string]any{"results": results, "total": len(results)}
-	} else {
-		compact := make([]map[string]any, len(results))
-		for i, r := range results {
-			compact[i] = compactSearchResult(r)
-		}
-		payload = map[string]any{"results": compact, "total": len(results)}
-	}
-
-	resultData, _ := json.MarshalIndent(payload, "", "  ")
-	return &mcplib.CallToolResult{
-		Content: []mcplib.Content{
-			mcplib.TextContent{Type: "text", Text: string(resultData)},
-		},
-	}, nil
-}
-
-func (s *Server) handleRecent(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-	orgID := ctxutil.OrgIDFromContext(ctx)
-	claims := ctxutil.ClaimsFromContext(ctx)
-
-	if claims == nil {
-		return errorResult("authentication required"), nil
-	}
-
-	limit := request.GetInt("limit", 10)
-
-	filters := model.QueryFilters{}
-	if agentID := request.GetString("agent_id", ""); agentID != "" {
-		filters.AgentIDs = []string{agentID}
-	}
-	if dt := request.GetString("decision_type", ""); dt != "" {
-		filters.DecisionType = &dt
-	}
-	if sidStr := request.GetString("session_id", ""); sidStr != "" {
-		if sid, parseErr := uuid.Parse(sidStr); parseErr == nil {
-			filters.SessionID = &sid
-		}
-	}
-	if tool := request.GetString("tool", ""); tool != "" {
-		filters.Tool = &tool
-	}
-	if m := request.GetString("model", ""); m != "" {
-		filters.Model = &m
-	}
-	filters.Project = s.resolveProjectFilter(ctx, request)
-
-	decs, _, err := s.decisionSvc.Recent(ctx, orgID, filters, limit, 0)
-	if err != nil {
-		return errorResult(fmt.Sprintf("query failed: %v", err)), nil
-	}
-
-	// Apply access filtering.
-	if claims != nil {
-		decs, err = authz.FilterDecisions(ctx, s.db, claims, decs, s.grantCache)
-		if err != nil {
-			return errorResult(fmt.Sprintf("authorization check failed: %v", err)), nil
-		}
-	}
-
-	format := request.GetString("format", "concise")
-	var payload any
-	if format == "full" {
-		payload = map[string]any{"decisions": decs, "total": len(decs)}
-	} else {
-		compact := make([]map[string]any, len(decs))
-		for i, d := range decs {
-			compact[i] = compactDecision(d)
-		}
-		payload = map[string]any{"decisions": compact, "total": len(decs)}
 	}
 
 	resultData, _ := json.MarshalIndent(payload, "", "  ")

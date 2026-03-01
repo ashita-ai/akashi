@@ -176,10 +176,10 @@ func TestAgentSetupPrompt(t *testing.T) {
 		"setup prompt should mention akashi_trace tool")
 	assert.Contains(t, tc.Text, "akashi_query",
 		"setup prompt should mention akashi_query tool")
-	assert.Contains(t, tc.Text, "akashi_search",
-		"setup prompt should mention akashi_search tool")
-	assert.Contains(t, tc.Text, "akashi_recent",
-		"setup prompt should mention akashi_recent tool")
+	assert.Contains(t, tc.Text, "akashi_conflicts",
+		"setup prompt should mention akashi_conflicts tool")
+	assert.Contains(t, tc.Text, "akashi_assess",
+		"setup prompt should mention akashi_assess tool")
 	assert.Contains(t, tc.Text, "Confidence",
 		"setup prompt should explain confidence levels")
 	assert.Contains(t, tc.Text, "Decision Types",

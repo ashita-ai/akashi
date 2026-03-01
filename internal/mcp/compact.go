@@ -181,7 +181,7 @@ func generateCheckSummary(decisions []model.Decision, conflicts []model.Decision
 
 	// Decision summary.
 	if len(decisions) == 0 {
-		parts = append(parts, "No prior decisions found for this type.")
+		parts = append(parts, "No prior decisions found.")
 	} else {
 		types := map[string]int{}
 		for _, d := range decisions {

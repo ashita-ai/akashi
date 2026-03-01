@@ -80,11 +80,12 @@ result = await middleware.wrap("model_selection", choose_model)
 
 | Tool | Purpose | When to use |
 |------|---------|-------------|
-| `akashi_check` | Look for precedents | Before every decision |
+| `akashi_check` | Look for precedents (semantic or by type) | Before every decision |
 | `akashi_trace` | Record a decision | After every decision |
-| `akashi_query` | Find by exact filters | When you know the type/agent/outcome |
-| `akashi_search` | Find by meaning | When you have a natural-language question |
-| `akashi_recent` | See latest decisions | At session start or for context |
+| `akashi_query` | Find decisions: filters or semantic `query` | Structured lookup or natural-language search |
+| `akashi_conflicts` | List open conflicts between agents | When resolving disagreements |
+| `akashi_assess` | Record whether a decision was correct | After observing an outcome |
+| `akashi_stats` | Aggregate health metrics | For situational awareness |
 
 ### Standard Decision Types
 
