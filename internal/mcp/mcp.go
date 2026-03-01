@@ -7,7 +7,6 @@ package mcp
 
 import (
 	"log/slog"
-	"time"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -24,20 +23,21 @@ const serverInstructions = `You have access to Akashi, a decision audit trail fo
 
 WORKFLOW — follow this for every non-trivial decision:
 
-1. BEFORE deciding: call akashi_check with the decision_type you're about to make.
-   This returns prior precedents and conflicts. Use them to make a better decision
-   and avoid contradicting prior work.
+1. BEFORE deciding: call akashi_check to look for prior decisions and active conflicts.
+   Pass a natural language query describing what you're about to decide. Use the results
+   to avoid contradicting prior work and to cite relevant precedents.
 
 2. AFTER deciding: call akashi_trace with what you decided (outcome), why (reasoning),
    your confidence (0.0–1.0), and project (the project or app name, e.g. "akashi",
    "my-langchain-app"). This creates a provable record so other agents can learn from it.
 
 TOOLS:
-- akashi_check: look up precedents before deciding (always call first)
+- akashi_check: look up precedents and conflicts before deciding (always call first)
 - akashi_trace: record a decision after making it (always call after)
-- akashi_query: filter the audit trail by type, agent, confidence, time range
-- akashi_search: semantic similarity search across decisions
-- akashi_recent: see recent decisions for context
+- akashi_query: filter or search the audit trail by type, agent, confidence, or free-text
+- akashi_conflicts: list and filter open conflicts between agents
+- akashi_assess: record whether a prior decision turned out to be correct
+- akashi_stats: aggregate health metrics for the decision trail
 
 CHECK BEFORE: choosing architecture/technology, starting a review or audit,
 making trade-offs, filing issues/PRs, changing existing behavior.
@@ -52,24 +52,22 @@ Be honest about confidence. Reference precedents when they influence you.`
 
 // Server wraps the MCP server with Akashi's service layer.
 type Server struct {
-	mcpServer    *mcpserver.MCPServer
-	db           *storage.DB        // for resources (read-only queries)
-	decisionSvc  *decisions.Service // for tools (shared business logic)
-	grantCache   *authz.GrantCache  // optional cache for LoadGrantedSet
-	logger       *slog.Logger
-	checkTracker *checkTracker // tracks check-before-trace workflow compliance
-	rootsCache   *rootsCache   // caches MCP roots per session (one request per session)
+	mcpServer   *mcpserver.MCPServer
+	db          *storage.DB        // for resources (read-only queries)
+	decisionSvc *decisions.Service // for tools (shared business logic)
+	grantCache  *authz.GrantCache  // optional cache for LoadGrantedSet
+	logger      *slog.Logger
+	rootsCache  *rootsCache // caches MCP roots per session (one request per session)
 }
 
 // New creates and configures a new MCP server with all resources, tools, and prompts.
 func New(db *storage.DB, decisionSvc *decisions.Service, grantCache *authz.GrantCache, logger *slog.Logger, version string) *Server {
 	s := &Server{
-		db:           db,
-		decisionSvc:  decisionSvc,
-		grantCache:   grantCache,
-		logger:       logger,
-		checkTracker: newCheckTracker(time.Hour),
-		rootsCache:   newRootsCache(),
+		db:          db,
+		decisionSvc: decisionSvc,
+		grantCache:  grantCache,
+		logger:      logger,
+		rootsCache:  newRootsCache(),
 	}
 
 	s.mcpServer = mcpserver.NewMCPServer(

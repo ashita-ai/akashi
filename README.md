@@ -8,6 +8,70 @@ Multi-agent AI systems are moving from demos to production, but their decisions 
 
 Akashi is the decision audit trail. Every agent decision gets recorded with its full reasoning chain, the alternatives that were weighed, the evidence that informed it, and the confidence level. When the CTO asks "why did the AI do that?" or an auditor asks for proof of decision traceability, you have the answer.
 
+## How it works
+
+Akashi is built around two primitives: **check before deciding, trace after deciding.**
+
+```
+Before making a decision          After making a decision
+─────────────────────────         ───────────────────────
+akashi_check                      akashi_trace
+  "has anyone decided this?"        "here's what I decided and why"
+  → precedents                      → stored permanently
+  → known conflicts                 → embeddings computed
+                                    → conflicts detected
+```
+
+### Recording a decision
+
+When an agent calls `akashi_trace`, five things happen:
+
+1. **Two embeddings are computed** — one from `decision_type + outcome + reasoning` (for semantic search and conflict topic matching), one from `outcome` alone (for detecting stance divergence between decisions on the same topic).
+
+2. **A completeness score is assigned** — a 0–1 heuristic based on whether reasoning, alternatives, evidence, and confidence were provided.
+
+3. **Everything is written atomically** — the decision, alternatives, evidence, and a search index entry commit in a single transaction.
+
+4. **Conflict detection runs asynchronously** — the new decision is compared against the 50 most semantically similar decisions in the org's history. Pairs above a significance threshold are validated by an LLM (Ollama or OpenAI), which classifies the relationship as `contradiction`, `supersession`, `complementary`, `refinement`, or `unrelated`. Only genuine conflicts are stored.
+
+5. **Subscribers are notified** — real-time SSE subscribers and the audit dashboard see new decisions and conflicts immediately.
+
+### Looking up precedents
+
+Before making a decision, an agent calls `akashi_check` with a description of what it's about to decide. Akashi returns:
+
+- **Precedents** — the most relevant past decisions on similar topics, re-ranked by assessment outcomes, citation count, and recency
+- **Conflicts** — any open conflicts involving those precedents
+
+This is the mechanism by which later agents build on earlier decisions rather than rediscovering the same ground.
+
+### Conflict detection
+
+Conflicts are detected semantically, not by type matching. The significance formula is:
+
+```
+significance = topic_similarity × outcome_divergence × confidence_weight × temporal_decay
+```
+
+A planner recommending microservices and a coder recommending a monolith for the same system will have high topic similarity (same domain vocabulary) and high outcome divergence (opposite conclusions) — that pair surfaces as a conflict regardless of what `decision_type` either agent used.
+
+Conflicts have a lifecycle: `open → acknowledged → resolved` (or `wont_fix`). When resolving, you can declare a winner — which of the two decisions prevailed — or use the adjudication endpoint to record the resolution itself as a new traceable decision.
+
+### Closing the loop
+
+When an agent later observes whether a past decision was correct, it calls `akashi_assess`:
+
+```
+akashi_assess
+  decision_id: <uuid>
+  outcome: "correct" | "incorrect" | "partially_correct"
+  notes: "the cache TTL was too short; needed 15 minutes not 5"
+```
+
+Assessments feed back into search re-ranking — decisions assessed as correct surface higher as precedents. This is how the audit trail improves over time rather than just accumulating records.
+
+---
+
 ## Quick start
 
 Two modes. Pick one.
@@ -166,11 +230,12 @@ Add to your MCP configuration file (`~/.cursor/mcp.json`, `~/.windsurf/mcp.json`
 
 | Tool | Purpose |
 |------|---------|
-| `akashi_check` | Look for precedents before making a decision |
+| `akashi_check` | Look for precedents before making a decision (optional type filter; semantic query) |
 | `akashi_trace` | Record a decision with reasoning and confidence |
-| `akashi_query` | Structured query with filters (type, agent, confidence) |
-| `akashi_search` | Semantic similarity search over past decisions |
-| `akashi_recent` | Quick overview of recent decisions |
+| `akashi_assess` | Record whether a past decision turned out to be correct |
+| `akashi_query` | Find decisions: structured filters (type, agent, confidence) or semantic search via `query` param |
+| `akashi_conflicts` | List and filter open conflicts between agents |
+| `akashi_stats` | Aggregate health metrics for the decision trail |
 
 Three prompts guide the workflow: `agent-setup` (system prompt with the check-before/record-after pattern), `before-decision` (precedent lookup guidance), and `after-decision` (recording reminder).
 

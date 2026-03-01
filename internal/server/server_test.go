@@ -568,7 +568,7 @@ func TestMCPListTools(t *testing.T) {
 
 	toolsResult, err := c.ListTools(ctx, mcplib.ListToolsRequest{})
 	require.NoError(t, err)
-	assert.Len(t, toolsResult.Tools, 8)
+	assert.Len(t, toolsResult.Tools, 6)
 
 	toolNames := make(map[string]bool)
 	for _, tool := range toolsResult.Tools {
@@ -577,8 +577,6 @@ func TestMCPListTools(t *testing.T) {
 	assert.True(t, toolNames["akashi_check"], "expected akashi_check tool")
 	assert.True(t, toolNames["akashi_trace"], "expected akashi_trace tool")
 	assert.True(t, toolNames["akashi_query"], "expected akashi_query tool")
-	assert.True(t, toolNames["akashi_search"], "expected akashi_search tool")
-	assert.True(t, toolNames["akashi_recent"], "expected akashi_recent tool")
 	assert.True(t, toolNames["akashi_conflicts"], "expected akashi_conflicts tool")
 	assert.True(t, toolNames["akashi_stats"], "expected akashi_stats tool")
 	assert.True(t, toolNames["akashi_assess"], "expected akashi_assess tool")
@@ -645,18 +643,6 @@ func TestMCPTraceAndQuery(t *testing.T) {
 	require.False(t, queryResult.IsError, "query tool returned error: %v", queryResult.Content)
 	assert.NotEmpty(t, queryResult.Content)
 
-	// Search via the MCP search tool.
-	searchResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
-		Params: mcplib.CallToolParams{
-			Name: "akashi_search",
-			Arguments: map[string]any{
-				"query": "mcp approved decisions",
-				"limit": 5,
-			},
-		},
-	})
-	require.NoError(t, err)
-	require.False(t, searchResult.IsError, "search tool returned error: %v", searchResult.Content)
 }
 
 func TestMCPReadResource(t *testing.T) {
@@ -786,7 +772,7 @@ func TestMCPCheckNoPrecedent(t *testing.T) {
 	assert.False(t, checkResp.HasPrecedent, "expected has_precedent=false for unused decision type")
 }
 
-func TestMCPRecentTool(t *testing.T) {
+func TestMCPQueryRecentDecisions(t *testing.T) {
 	c := newMCPClient(t, agentToken)
 	defer func() { _ = c.Close() }()
 
@@ -798,7 +784,7 @@ func TestMCPRecentTool(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Record a decision so there's at least one recent one.
+	// Record a decision so there's at least one to retrieve.
 	_, err = c.CallTool(ctx, mcplib.CallToolRequest{
 		Params: mcplib.CallToolParams{
 			Name: "akashi_trace",
@@ -812,32 +798,32 @@ func TestMCPRecentTool(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Call akashi_recent.
-	recentResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
+	// akashi_query with no filters returns recent decisions (replaces akashi_recent).
+	queryResult, err := c.CallTool(ctx, mcplib.CallToolRequest{
 		Params: mcplib.CallToolParams{
-			Name: "akashi_recent",
+			Name: "akashi_query",
 			Arguments: map[string]any{
 				"limit": 5,
 			},
 		},
 	})
 	require.NoError(t, err)
-	require.False(t, recentResult.IsError, "recent tool returned error: %v", recentResult.Content)
+	require.False(t, queryResult.IsError, "query tool returned error: %v", queryResult.Content)
 
 	// Parse and verify we got results.
-	var recentResp struct {
+	var queryResp struct {
 		Decisions []model.Decision `json:"decisions"`
 		Total     int              `json:"total"`
 	}
-	for _, content := range recentResult.Content {
+	for _, content := range queryResult.Content {
 		if tc, ok := content.(mcplib.TextContent); ok {
-			err := json.Unmarshal([]byte(tc.Text), &recentResp)
+			err := json.Unmarshal([]byte(tc.Text), &queryResp)
 			require.NoError(t, err)
 			break
 		}
 	}
-	assert.NotEmpty(t, recentResp.Decisions, "expected at least one recent decision")
-	assert.Greater(t, recentResp.Total, 0, "expected total > 0")
+	assert.NotEmpty(t, queryResp.Decisions, "expected at least one decision")
+	assert.Greater(t, queryResp.Total, 0, "expected total > 0")
 }
 
 func TestMCPPrompts(t *testing.T) {

@@ -278,32 +278,34 @@ func TestHandleTrace_ModelAndTaskContext(t *testing.T) {
 	assert.Equal(t, "codebase review", clientCtx["task"])
 }
 
-func TestHandleTrace_CheckNudge(t *testing.T) {
+func TestHandleTrace_NormalizedDecisionType(t *testing.T) {
 	ctx := adminCtx()
+	agentID := "trace-norm-" + uuid.New().String()[:8]
+	_, _ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
 
-	// Trace without prior akashi_check should include the nudge message.
+	// Trace with mixed-case decision_type — should be stored lowercase.
 	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
-		"decision_type": "nudge-test-" + uuid.New().String()[:8],
-		"outcome":       "nudge test decision",
-		"confidence":    0.5,
+		"agent_id":      agentID,
+		"decision_type": "  Architecture  ",
+		"outcome":       "normalization test",
+		"confidence":    0.8,
 	}))
 	require.NoError(t, err)
 	require.False(t, result.IsError)
 
-	// The result should have 2 content items: the trace result + the nudge note.
-	assert.GreaterOrEqual(t, len(result.Content), 2, "expected trace result + nudge note")
-
-	// Find the nudge content.
-	var foundNudge bool
-	for _, c := range result.Content {
-		if tc, ok := c.(mcplib.TextContent); ok {
-			if tc.Text != "" && len(tc.Text) > 10 && tc.Text[:4] == "NOTE" {
-				foundNudge = true
-				assert.Contains(t, tc.Text, "akashi_check")
-			}
-		}
+	var resp struct {
+		DecisionID string `json:"decision_id"`
+		Status     string `json:"status"`
 	}
-	assert.True(t, foundNudge, "expected check-before-trace nudge note")
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	require.Equal(t, "recorded", resp.Status)
+
+	// Verify stored decision_type is lowercase.
+	id, err := uuid.Parse(resp.DecisionID)
+	require.NoError(t, err)
+	stored, err := testDB.GetDecision(ctx, uuid.Nil, id, storage.GetDecisionOpts{})
+	require.NoError(t, err)
+	assert.Equal(t, "architecture", stored.DecisionType, "decision_type should be stored lowercase")
 }
 
 // ---------- handleCheck tests ----------
@@ -332,9 +334,14 @@ func TestHandleCheck(t *testing.T) {
 	assert.NotEmpty(t, resp.Decisions, "expected at least one precedent decision")
 }
 
-func TestHandleCheck_MissingDecisionType(t *testing.T) {
+func TestHandleCheck_NoDecisionType(t *testing.T) {
 	ctx := adminCtx()
+	agentID := "check-nodtype-" + uuid.New().String()[:8]
 
+	// Trace a decision so there's something to find.
+	mustTrace(t, agentID, "architecture", "broad check test decision", 0.8)
+
+	// Check with no decision_type should succeed and return decisions.
 	result, err := testServer.handleCheck(ctx, mcplib.CallToolRequest{
 		Params: mcplib.CallToolParams{
 			Name:      "akashi_check",
@@ -342,8 +349,11 @@ func TestHandleCheck_MissingDecisionType(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.True(t, result.IsError, "expected error when decision_type is missing")
-	assert.Contains(t, parseToolText(t, result), "decision_type is required")
+	require.False(t, result.IsError, "check without decision_type should succeed: %s", parseToolText(t, result))
+
+	var resp model.CheckResponse
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	// has_precedent depends on whether decisions exist — we just verify no error.
 }
 
 func TestHandleCheck_NoPrecedent(t *testing.T) {
@@ -421,26 +431,30 @@ func TestHandleCheck_WithQuery(t *testing.T) {
 	assert.True(t, resp.HasPrecedent, "text search should find the traced decision")
 }
 
-func TestHandleCheck_RecordsTracker(t *testing.T) {
+func TestHandleCheck_CaseInsensitiveType(t *testing.T) {
 	ctx := adminCtx()
-	decisionType := "tracker-test-" + uuid.New().String()[:8]
+	agentID := "check-case-" + uuid.New().String()[:8]
 
-	// Before check: tracker should not have this type.
-	assert.False(t, testServer.checkTracker.WasChecked(testAdminID, decisionType))
+	// Trace with lowercase type.
+	mustTrace(t, agentID, "architecture", "case insensitive test", 0.8)
 
-	_, err := testServer.handleCheck(ctx, mcplib.CallToolRequest{
+	// Check with mixed-case type should find the decision.
+	result, err := testServer.handleCheck(ctx, mcplib.CallToolRequest{
 		Params: mcplib.CallToolParams{
 			Name: "akashi_check",
 			Arguments: map[string]any{
-				"decision_type": decisionType,
+				"decision_type": "  ARCHITECTURE  ",
+				"agent_id":      agentID,
+				"limit":         50,
 			},
 		},
 	})
 	require.NoError(t, err)
+	require.False(t, result.IsError)
 
-	// After check: tracker should record it.
-	assert.True(t, testServer.checkTracker.WasChecked(testAdminID, decisionType),
-		"handleCheck should record the check in the tracker")
+	var resp model.CheckResponse
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.True(t, resp.HasPrecedent, "mixed-case decision_type should match stored lowercase decisions")
 }
 
 // ---------- handleQuery tests ----------
@@ -590,18 +604,19 @@ func TestHandleQuery_EmptyResult(t *testing.T) {
 	assert.Equal(t, 0, resp.Total)
 }
 
-// ---------- handleSearch tests ----------
+// ---------- handleQuery: semantic mode ----------
 
-func TestHandleSearch(t *testing.T) {
+func TestHandleQuery_WithQuery(t *testing.T) {
 	ctx := adminCtx()
-	agentID := "search-basic-" + uuid.New().String()[:8]
-	keyword := "searchable-keyword-" + agentID
+	agentID := "query-semantic-" + uuid.New().String()[:8]
+	keyword := "semantic-keyword-" + agentID
 
 	mustTrace(t, agentID, "error_handling", keyword, 0.8)
 
-	result, err := testServer.handleSearch(ctx, mcplib.CallToolRequest{
+	// query param triggers the semantic/text search path.
+	result, err := testServer.handleQuery(ctx, mcplib.CallToolRequest{
 		Params: mcplib.CallToolParams{
-			Name: "akashi_search",
+			Name: "akashi_query",
 			Arguments: map[string]any{
 				"query": keyword,
 				"limit": 5,
@@ -609,53 +624,27 @@ func TestHandleSearch(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.False(t, result.IsError, "search should succeed: %s", parseToolText(t, result))
+	require.False(t, result.IsError, "query with semantic param should succeed: %s", parseToolText(t, result))
 
 	var resp struct {
-		Results []model.SearchResult `json:"results"`
-		Total   int                  `json:"total"`
+		Decisions []map[string]any `json:"decisions"`
+		Total     int              `json:"total"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
-	assert.NotEmpty(t, resp.Results, "text search should find the decision by keyword")
+	assert.NotEmpty(t, resp.Decisions, "text search should find the decision by keyword")
 	assert.Greater(t, resp.Total, 0)
+
+	// Semantic results include similarity_score.
+	assert.Contains(t, resp.Decisions[0], "similarity_score",
+		"semantic mode results should include similarity_score")
 }
 
-func TestHandleSearch_EmptyQuery(t *testing.T) {
+func TestHandleQuery_WithQuery_NoResults(t *testing.T) {
 	ctx := adminCtx()
 
-	result, err := testServer.handleSearch(ctx, mcplib.CallToolRequest{
+	result, err := testServer.handleQuery(ctx, mcplib.CallToolRequest{
 		Params: mcplib.CallToolParams{
-			Name: "akashi_search",
-			Arguments: map[string]any{
-				"query": "",
-			},
-		},
-	})
-	require.NoError(t, err)
-	require.True(t, result.IsError, "expected error for empty query")
-	assert.Contains(t, parseToolText(t, result), "query is required")
-}
-
-func TestHandleSearch_MissingQuery(t *testing.T) {
-	ctx := adminCtx()
-
-	result, err := testServer.handleSearch(ctx, mcplib.CallToolRequest{
-		Params: mcplib.CallToolParams{
-			Name:      "akashi_search",
-			Arguments: map[string]any{},
-		},
-	})
-	require.NoError(t, err)
-	require.True(t, result.IsError, "expected error when query is missing")
-	assert.Contains(t, parseToolText(t, result), "query is required")
-}
-
-func TestHandleSearch_NoResults(t *testing.T) {
-	ctx := adminCtx()
-
-	result, err := testServer.handleSearch(ctx, mcplib.CallToolRequest{
-		Params: mcplib.CallToolParams{
-			Name: "akashi_search",
+			Name: "akashi_query",
 			Arguments: map[string]any{
 				"query": "completely-nonexistent-" + uuid.New().String(),
 			},
@@ -665,205 +654,82 @@ func TestHandleSearch_NoResults(t *testing.T) {
 	require.False(t, result.IsError)
 
 	var resp struct {
-		Results []model.SearchResult `json:"results"`
-		Total   int                  `json:"total"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
-	assert.Empty(t, resp.Results)
-	assert.Equal(t, 0, resp.Total)
-}
-
-// ---------- handleRecent tests ----------
-
-func TestHandleRecent(t *testing.T) {
-	ctx := adminCtx()
-	agentID := "recent-basic-" + uuid.New().String()[:8]
-
-	mustTrace(t, agentID, "feature_scope", "included pagination in API", 0.9)
-
-	result, err := testServer.handleRecent(ctx, mcplib.CallToolRequest{
-		Params: mcplib.CallToolParams{
-			Name: "akashi_recent",
-			Arguments: map[string]any{
-				"limit": 10,
-			},
-		},
-	})
-	require.NoError(t, err)
-	require.False(t, result.IsError, "recent should succeed: %s", parseToolText(t, result))
-
-	var resp struct {
-		Decisions []model.Decision `json:"decisions"`
-		Total     int              `json:"total"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
-	assert.NotEmpty(t, resp.Decisions, "expected at least one recent decision")
-	assert.Greater(t, resp.Total, 0)
-}
-
-func TestHandleRecent_WithLimit(t *testing.T) {
-	ctx := adminCtx()
-	agentID := "recent-limit-" + uuid.New().String()[:8]
-
-	// Create 3 decisions.
-	for i := range 3 {
-		mustTrace(t, agentID, "planning", fmt.Sprintf("plan iteration %d", i), 0.7)
-	}
-
-	// Request with limit=1.
-	result, err := testServer.handleRecent(ctx, mcplib.CallToolRequest{
-		Params: mcplib.CallToolParams{
-			Name: "akashi_recent",
-			Arguments: map[string]any{
-				"agent_id": agentID,
-				"limit":    1,
-			},
-		},
-	})
-	require.NoError(t, err)
-	require.False(t, result.IsError)
-
-	var resp struct {
-		Decisions []model.Decision `json:"decisions"`
-		Total     int              `json:"total"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
-	assert.Len(t, resp.Decisions, 1, "limit=1 should return exactly 1 decision")
-}
-
-func TestHandleRecent_WithAgentFilter(t *testing.T) {
-	ctx := adminCtx()
-	agentA := "recent-a-" + uuid.New().String()[:8]
-	agentB := "recent-b-" + uuid.New().String()[:8]
-
-	mustTrace(t, agentA, "security", "chose TLS 1.3", 0.95)
-	mustTrace(t, agentB, "security", "chose TLS 1.2", 0.6)
-
-	result, err := testServer.handleRecent(ctx, mcplib.CallToolRequest{
-		Params: mcplib.CallToolParams{
-			Name: "akashi_recent",
-			Arguments: map[string]any{
-				"agent_id": agentA,
-				"limit":    50,
-			},
-		},
-	})
-	require.NoError(t, err)
-	require.False(t, result.IsError)
-
-	var resp struct {
-		Decisions []model.Decision `json:"decisions"`
-		Total     int              `json:"total"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
-	for _, dec := range resp.Decisions {
-		assert.Equal(t, agentA, dec.AgentID, "agent filter should restrict results")
-	}
-}
-
-func TestHandleRecent_WithDecisionTypeFilter(t *testing.T) {
-	ctx := adminCtx()
-	agentID := "recent-dtype-" + uuid.New().String()[:8]
-	uniqueType := "unique-dtype-" + uuid.New().String()[:8]
-
-	mustTrace(t, agentID, uniqueType, "test outcome", 0.7)
-	mustTrace(t, agentID, "architecture", "other outcome", 0.8)
-
-	result, err := testServer.handleRecent(ctx, mcplib.CallToolRequest{
-		Params: mcplib.CallToolParams{
-			Name: "akashi_recent",
-			Arguments: map[string]any{
-				"decision_type": uniqueType,
-				"limit":         50,
-			},
-		},
-	})
-	require.NoError(t, err)
-	require.False(t, result.IsError)
-
-	var resp struct {
-		Decisions []model.Decision `json:"decisions"`
-		Total     int              `json:"total"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
-	require.NotEmpty(t, resp.Decisions)
-	for _, dec := range resp.Decisions {
-		assert.Equal(t, uniqueType, dec.DecisionType)
-	}
-}
-
-func TestHandleRecent_EmptyResult(t *testing.T) {
-	ctx := adminCtx()
-
-	result, err := testServer.handleRecent(ctx, mcplib.CallToolRequest{
-		Params: mcplib.CallToolParams{
-			Name: "akashi_recent",
-			Arguments: map[string]any{
-				"agent_id": "nonexistent-agent-" + uuid.New().String()[:8],
-				"limit":    10,
-			},
-		},
-	})
-	require.NoError(t, err)
-	require.False(t, result.IsError)
-
-	var resp struct {
-		Decisions []model.Decision `json:"decisions"`
+		Decisions []map[string]any `json:"decisions"`
 		Total     int              `json:"total"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
 	assert.Empty(t, resp.Decisions)
+	assert.Equal(t, 0, resp.Total)
 }
 
-// ---------- Integration: check-before-trace workflow ----------
-
-func TestCheckBeforeTraceWorkflow(t *testing.T) {
-	ctx := adminCtx()
-	decisionType := "workflow-" + uuid.New().String()[:8]
-
-	// Step 1: Check first.
-	_, err := testServer.handleCheck(ctx, mcplib.CallToolRequest{
-		Params: mcplib.CallToolParams{
-			Name: "akashi_check",
-			Arguments: map[string]any{
-				"decision_type": decisionType,
-			},
-		},
-	})
-	require.NoError(t, err)
-
-	// Step 2: Trace after checking. The nudge should NOT appear because we checked.
-	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
-		"decision_type": decisionType,
-		"outcome":       "workflow test decision",
-		"confidence":    0.8,
-	}))
-	require.NoError(t, err)
-	require.False(t, result.IsError)
-
-	// Verify no nudge (only 1 content item, the trace result).
-	assert.Len(t, result.Content, 1,
-		"after checking, trace should not include the nudge note")
-}
-
-// ---------- handleRecent/handleQuery: no-context (nil claims) ----------
-
-func TestHandleRecent_NilClaims(t *testing.T) {
+func TestHandleQuery_NilClaims(t *testing.T) {
 	// H2 fix: nil claims must be rejected immediately rather than silently
 	// skipping access filtering and returning unfiltered cross-org data.
 	ctx := context.Background()
 
-	result, err := testServer.handleRecent(ctx, mcplib.CallToolRequest{
+	result, err := testServer.handleQuery(ctx, mcplib.CallToolRequest{
 		Params: mcplib.CallToolParams{
-			Name: "akashi_recent",
+			Name: "akashi_query",
 			Arguments: map[string]any{
 				"limit": 5,
 			},
 		},
 	})
 	require.NoError(t, err)
-	require.True(t, result.IsError, "unauthenticated handleRecent must return an error")
+	require.True(t, result.IsError, "unauthenticated handleQuery must return an error")
 	assert.Contains(t, parseToolText(t, result), "authentication required")
+}
+
+func TestHandleQuery_WithOffset(t *testing.T) {
+	ctx := adminCtx()
+	agentID := "query-offset-" + uuid.New().String()[:8]
+
+	// Create 3 decisions.
+	for i := range 3 {
+		mustTrace(t, agentID, "planning", fmt.Sprintf("offset plan %d", i), 0.7)
+	}
+
+	// First page.
+	result1, err := testServer.handleQuery(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name: "akashi_query",
+			Arguments: map[string]any{
+				"agent_id": agentID,
+				"limit":    2,
+				"offset":   0,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, result1.IsError)
+
+	// Second page.
+	result2, err := testServer.handleQuery(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name: "akashi_query",
+			Arguments: map[string]any{
+				"agent_id": agentID,
+				"limit":    2,
+				"offset":   2,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, result2.IsError)
+
+	var page1, page2 struct {
+		Decisions []model.Decision `json:"decisions"`
+		Total     int              `json:"total"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result1)), &page1))
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result2)), &page2))
+
+	assert.Len(t, page1.Decisions, 2, "first page should have 2 decisions")
+	// Pages should not overlap.
+	if len(page1.Decisions) > 0 && len(page2.Decisions) > 0 {
+		assert.NotEqual(t, page1.Decisions[0].ID, page2.Decisions[0].ID,
+			"pages should not overlap")
+	}
 }
 
 // ---------- handleTrace: non-admin agent cannot trace for another agent ----------
@@ -900,11 +766,9 @@ func TestHandleTrace_NonAdminCrossTrace(t *testing.T) {
 
 func TestRegisterTools(t *testing.T) {
 	// The server's registerTools is called during New(). Verify the MCPServer
-	// has the expected tools by attempting to list them. Since we can't call
-	// ListTools directly (that's a client method), we verify indirectly by
-	// calling each tool handler and confirming none panic.
-
-	// Verify the server object has its MCPServer initialized.
+	// has the 6 expected tools registered: akashi_check, akashi_trace,
+	// akashi_query, akashi_conflicts, akashi_assess, akashi_stats.
+	// We verify indirectly by ensuring the server is initialized correctly.
 	assert.NotNil(t, testServer.mcpServer, "MCPServer should be initialized")
 	assert.NotNil(t, testServer.MCPServer(), "MCPServer() accessor should work")
 }
