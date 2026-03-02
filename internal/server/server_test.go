@@ -1913,6 +1913,137 @@ func TestHandleCreateGrant_Valid(t *testing.T) {
 	assert.Equal(t, "read", result.Data.Permission)
 }
 
+func TestHandleCreateAndListKeys(t *testing.T) {
+	// Create a dedicated agent for this test to own the key.
+	agentID := fmt.Sprintf("key-agent-%d", time.Now().UnixNano())
+	createAgent(testSrv.URL, adminToken, agentID, "Key Agent", "agent", "key-agent-init")
+
+	// Create key
+	req := model.CreateKeyRequest{AgentID: agentID, Label: "test-key"}
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/keys", adminToken, req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var created struct {
+		Data model.APIKeyWithRawKey `json:"data"`
+	}
+	data, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(data, &created))
+	assert.NotEmpty(t, created.Data.RawKey)
+	assert.NotEqual(t, uuid.Nil, created.Data.ID)
+
+	// List keys and ensure the created key's prefix appears (raw key not returned)
+	resp2, err := authedRequest("GET", testSrv.URL+"/v1/keys", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp2.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp2.StatusCode)
+
+	var list struct {
+		Data model.APIKeyResponse `json:"data"`
+	}
+	listData, _ := io.ReadAll(resp2.Body)
+	require.NoError(t, json.Unmarshal(listData, &list))
+	found := false
+	for _, k := range list.Data.Keys {
+		if k.ID == created.Data.ID {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "created key should appear in list")
+}
+
+func TestHandleRevokeKey_ValidAndRevokedKeyReturns401(t *testing.T) {
+	// Create agent + key
+	tagent := fmt.Sprintf("revoke-agent-%d", time.Now().UnixNano())
+	createAgent(testSrv.URL, adminToken, tagent, "Revoke Agent", "agent", "revoke-init-key")
+
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/keys", adminToken, model.CreateKeyRequest{AgentID: tagent, Label: "revoke-test"})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var created struct {
+		Data model.APIKeyWithRawKey `json:"data"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(body, &created))
+
+	// Verify the raw key works before revocation: get a token successfully.
+	pre := getToken(testSrv.URL, tagent, created.Data.RawKey)
+	assert.NotEmpty(t, pre)
+
+	// Revoke the key.
+	reqDel, _ := http.NewRequest("DELETE", testSrv.URL+"/v1/keys/"+created.Data.ID.String(), nil)
+	reqDel.Header.Set("Authorization", "Bearer "+adminToken)
+	respDel, err := http.DefaultClient.Do(reqDel)
+	require.NoError(t, err)
+	defer func() { _ = respDel.Body.Close() }()
+	assert.Equal(t, http.StatusNoContent, respDel.StatusCode)
+
+	// After revocation, requesting a NEW token with the old key must return 401.
+	// (JWTs already issued are stateless and stay valid until expiry.)
+	authBody, _ := json.Marshal(model.AuthTokenRequest{AgentID: tagent, APIKey: created.Data.RawKey})
+	respNew, err := http.Post(testSrv.URL+"/auth/token", "application/json", bytes.NewReader(authBody))
+	require.NoError(t, err)
+	defer func() { _ = respNew.Body.Close() }()
+	assert.Equal(t, http.StatusUnauthorized, respNew.StatusCode, "revoked key must not issue new tokens")
+}
+
+func TestHandleRevokeKey_NotFound(t *testing.T) {
+	// Attempt to revoke a random UUID
+	randID := uuid.New()
+	reqDel, _ := http.NewRequest("DELETE", testSrv.URL+"/v1/keys/"+randID.String(), nil)
+	reqDel.Header.Set("Authorization", "Bearer "+adminToken)
+	respDel, err := http.DefaultClient.Do(reqDel)
+	require.NoError(t, err)
+	defer func() { _ = respDel.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, respDel.StatusCode)
+}
+
+func TestHandleRotateKey_Valid(t *testing.T) {
+	// Create agent + key
+	rAgent := fmt.Sprintf("rotate-agent-%d", time.Now().UnixNano())
+	createAgent(testSrv.URL, adminToken, rAgent, "Rotate Agent", "agent", "rotate-init-key")
+
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/keys", adminToken, model.CreateKeyRequest{AgentID: rAgent, Label: "rotate-test"})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var created struct {
+		Data model.APIKeyWithRawKey `json:"data"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(body, &created))
+
+	// Rotate
+	respRot, err := authedRequest("POST", testSrv.URL+"/v1/keys/"+created.Data.ID.String()+"/rotate", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = respRot.Body.Close() }()
+	require.Equal(t, http.StatusOK, respRot.StatusCode)
+
+	var rot struct {
+		Data model.RotateKeyResponse `json:"data"`
+	}
+	rotBody, _ := io.ReadAll(respRot.Body)
+	require.NoError(t, json.Unmarshal(rotBody, &rot))
+	assert.NotEmpty(t, rot.Data.NewKey.RawKey)
+	assert.Equal(t, created.Data.ID, rot.Data.RevokedKeyID)
+
+	// After rotation, the OLD raw key must no longer issue new tokens.
+	oldAuthBody, _ := json.Marshal(model.AuthTokenRequest{AgentID: rAgent, APIKey: created.Data.RawKey})
+	respOld, err := http.Post(testSrv.URL+"/auth/token", "application/json", bytes.NewReader(oldAuthBody))
+	require.NoError(t, err)
+	defer func() { _ = respOld.Body.Close() }()
+	assert.Equal(t, http.StatusUnauthorized, respOld.StatusCode, "rotated (revoked) key must not issue new tokens")
+
+	// New raw key should obtain a fresh token.
+	newToken := getToken(testSrv.URL, rAgent, rot.Data.NewKey.RawKey)
+	assert.NotEmpty(t, newToken)
+}
+
 func TestHandleUpdateAgentTags_Dedup(t *testing.T) {
 	// Create a dedicated agent for tag updates.
 	tagAgentID := fmt.Sprintf("tag-agent-%d", time.Now().UnixNano())
