@@ -98,66 +98,86 @@ function countDistinctDecisions(conflicts: DecisionConflict[]): number {
 // ── Conflict pair row ────────────────────────────────────────────────────────
 //
 // Shows one explicit conflict: which exact decision from agent A is paired
-// against which exact decision from agent B. This is the unit that the
-// conflict detector found — not an aggregate of each agent's history.
+// against which exact decision from agent B. groupAgentA normalises the
+// display so the same agent always appears on the same side regardless of
+// how the conflict was stored internally. repeatedLeft/repeatedRight flag
+// decisions that already appeared in an earlier pair in this group.
 
 function ConflictPairRow({
   c,
+  groupAgentA,
+  repeatedLeft,
+  repeatedRight,
   onAdjudicate,
 }: {
   c: DecisionConflict;
+  groupAgentA: string;
+  repeatedLeft: boolean;
+  repeatedRight: boolean;
   onAdjudicate: (c: DecisionConflict) => void;
 }) {
+  // Normalise: always show groupAgentA on the left.
+  const flip = c.agent_a !== groupAgentA;
+  const left = {
+    agent: flip ? c.agent_b : c.agent_a,
+    decidedAt: flip ? c.decided_at_b : c.decided_at_a,
+    confidence: flip ? c.confidence_b : c.confidence_a,
+    outcome: flip ? c.outcome_b : c.outcome_a,
+    runId: flip ? c.run_b : c.run_a,
+  };
+  const right = {
+    agent: flip ? c.agent_a : c.agent_b,
+    decidedAt: flip ? c.decided_at_a : c.decided_at_b,
+    confidence: flip ? c.confidence_a : c.confidence_b,
+    outcome: flip ? c.outcome_a : c.outcome_b,
+    runId: flip ? c.run_a : c.run_b,
+  };
+
   const canAdjudicate = c.status === "open" || c.status === "acknowledged";
+
+  function Side({
+    side,
+    repeated,
+  }: {
+    side: typeof left;
+    repeated: boolean;
+  }) {
+    return (
+      <Link
+        to={`/decisions/${side.runId}`}
+        className={`p-3 block transition-colors hover:bg-muted/50 min-w-0 ${repeated ? "opacity-50" : ""}`}
+      >
+        <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+          <Badge variant="outline" className="font-mono text-[10px] shrink-0">
+            {side.agent}
+          </Badge>
+          <span className="text-[10px] text-muted-foreground tabular-nums">
+            {formatDate(side.decidedAt)}
+          </span>
+          {repeated && (
+            <span className="text-[10px] text-muted-foreground italic shrink-0">
+              same as above
+            </span>
+          )}
+          <Badge variant="secondary" className="text-[10px] shrink-0 ml-auto">
+            {(side.confidence * 100).toFixed(0)}%
+          </Badge>
+        </div>
+        <p className={`leading-snug ${repeated ? "text-muted-foreground" : "text-foreground/80"}`}>
+          {truncate(side.outcome, 120)}
+        </p>
+      </Link>
+    );
+  }
+
   return (
     <div className="rounded border overflow-hidden text-xs">
       <div className="grid grid-cols-[1fr,auto,1fr]">
-        {/* Left: agent_a's decision */}
-        <Link
-          to={`/decisions/${c.run_a}`}
-          className="p-3 block transition-colors hover:bg-muted/50 min-w-0"
-        >
-          <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
-            <Badge variant="outline" className="font-mono text-[10px] shrink-0">
-              {c.agent_a}
-            </Badge>
-            <span className="text-[10px] text-muted-foreground tabular-nums">
-              {formatDate(c.decided_at_a)}
-            </span>
-            <Badge variant="secondary" className="text-[10px] shrink-0 ml-auto">
-              {(c.confidence_a * 100).toFixed(0)}%
-            </Badge>
-          </div>
-          <p className="leading-snug text-foreground/80">
-            {truncate(c.outcome_a, 120)}
-          </p>
-        </Link>
-
-        {/* Center divider */}
+        <Side side={left} repeated={repeatedLeft} />
         <div className="flex items-center justify-center px-2 border-x bg-muted/30">
           <span className="text-[10px] font-medium text-muted-foreground">vs</span>
         </div>
-
-        {/* Right: agent_b's decision */}
-        <Link
-          to={`/decisions/${c.run_b}`}
-          className="p-3 block transition-colors hover:bg-muted/50 min-w-0"
-        >
-          <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
-            <Badge variant="outline" className="font-mono text-[10px] shrink-0">
-              {c.agent_b}
-            </Badge>
-            <span className="text-[10px] text-muted-foreground tabular-nums">
-              {formatDate(c.decided_at_b)}
-            </span>
-            <Badge variant="secondary" className="text-[10px] shrink-0 ml-auto">
-              {(c.confidence_b * 100).toFixed(0)}%
-            </Badge>
-          </div>
-          <p className="leading-snug text-foreground/80">
-            {truncate(c.outcome_b, 120)}
-          </p>
-        </Link>
+        <Side side={right} repeated={repeatedRight} />
       </div>
 
       {canAdjudicate && (
@@ -298,8 +318,8 @@ function ConflictGroupCard({
                     ? `${openConflicts.length} self-contradicting decision pair${openConflicts.length !== 1 ? "s" : ""}`
                     : `${openConflicts.length} conflicting pair${openConflicts.length !== 1 ? "s" : ""} — each row is one specific decision vs one specific decision`}
                 </p>
-                {[...openConflicts]
-                  .sort((a, b) => {
+                {(() => {
+                  const sorted = [...openConflicts].sort((a, b) => {
                     const latestA = Math.max(
                       new Date(a.decided_at_a).getTime(),
                       new Date(a.decided_at_b).getTime(),
@@ -309,14 +329,33 @@ function ConflictGroupCard({
                       new Date(b.decided_at_b).getTime(),
                     );
                     return latestB - latestA;
-                  })
-                  .map((c) => (
-                    <ConflictPairRow
-                      key={c.id}
-                      c={c}
-                      onAdjudicate={onAdjudicate}
-                    />
-                  ))}
+                  });
+
+                  // Track which decision IDs have already been shown on each
+                  // side so we can mark repeats.
+                  const seenLeft = new Set<string>();
+                  const seenRight = new Set<string>();
+
+                  return sorted.map((c) => {
+                    const flip = c.agent_a !== group.agent_a;
+                    const leftId = flip ? c.decision_b_id : c.decision_a_id;
+                    const rightId = flip ? c.decision_a_id : c.decision_b_id;
+                    const repeatedLeft = seenLeft.has(leftId);
+                    const repeatedRight = seenRight.has(rightId);
+                    seenLeft.add(leftId);
+                    seenRight.add(rightId);
+                    return (
+                      <ConflictPairRow
+                        key={c.id}
+                        c={c}
+                        groupAgentA={group.agent_a}
+                        repeatedLeft={repeatedLeft}
+                        repeatedRight={repeatedRight}
+                        onAdjudicate={onAdjudicate}
+                      />
+                    );
+                  });
+                })()}
               </>
             )}
           </div>
