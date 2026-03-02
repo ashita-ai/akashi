@@ -433,7 +433,7 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 			}
 		}
 		// Assessment summaries: explicit correctness feedback. Non-fatal on error.
-		if assessments, aErr := s.db.GetAssessmentSummaryBatch(ctx, ids); aErr == nil {
+		if assessments, aErr := s.db.GetAssessmentSummaryBatch(ctx, orgID, ids); aErr == nil {
 			for i := range resp.Decisions {
 				if sum, ok := assessments[resp.Decisions[i].ID]; ok {
 					cp := sum

@@ -551,12 +551,19 @@ func (s *Scorer) Validator() Validator {
 // Returns the number of rows deleted.
 // SECURITY: Intentionally global — one-time startup migration that clears stale
 // conflicts across all orgs when transitioning to LLM validation.
+// Only open/acknowledged conflicts are removed; resolved and wont_fix conflicts
+// represent explicit human decisions and are preserved.
 func (s *Scorer) ClearUnvalidatedConflicts(ctx context.Context) (int, error) {
-	tag, err := s.db.Pool().Exec(ctx, `DELETE FROM scored_conflicts WHERE scoring_method NOT IN ('llm_v2')`)
+	tag, err := s.db.Pool().Exec(ctx,
+		`DELETE FROM scored_conflicts
+		 WHERE scoring_method NOT IN ('llm_v2')
+		   AND status IN ('open', 'acknowledged')`)
 	if err != nil {
 		return 0, fmt.Errorf("conflicts: clear unvalidated: %w", err)
 	}
-	return int(tag.RowsAffected()), nil
+	n := int(tag.RowsAffected())
+	s.logger.Warn("startup: cleared unvalidated conflicts", "deleted", n, "reason", "scoring_method_migration_to_llm_v2")
+	return n, nil
 }
 
 func cosineSimilarity(a, b []float32) float64 {
@@ -576,17 +583,22 @@ func cosineSimilarity(a, b []float32) float64 {
 	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }
 
-// ClearAllConflicts deletes all scored_conflicts regardless of scoring method.
-// Used after prompt improvements to force re-evaluation of all decision pairs.
+// ClearAllConflicts deletes open and acknowledged scored_conflicts regardless
+// of scoring method, forcing re-evaluation of all pending decision pairs.
+// Conflicts with status 'resolved' or 'wont_fix' represent explicit human
+// decisions and are preserved — they are never wiped by this operation.
 // Returns the number of rows deleted.
-// SECURITY: Intentionally global — one-time startup operation that clears
-// conflicts across all orgs when the conflict prompt is improved.
+// SECURITY: Intentionally global — one-time startup operation across all orgs.
+// Set AKASHI_FORCE_CONFLICT_RESCORE=true to trigger.
 func (s *Scorer) ClearAllConflicts(ctx context.Context) (int, error) {
-	tag, err := s.db.Pool().Exec(ctx, `DELETE FROM scored_conflicts`)
+	tag, err := s.db.Pool().Exec(ctx,
+		`DELETE FROM scored_conflicts WHERE status IN ('open', 'acknowledged')`)
 	if err != nil {
 		return 0, fmt.Errorf("conflicts: clear all: %w", err)
 	}
-	return int(tag.RowsAffected()), nil
+	n := int(tag.RowsAffected())
+	s.logger.Warn("startup: cleared all open/acknowledged conflicts", "deleted", n, "reason", "AKASHI_FORCE_CONFLICT_RESCORE")
+	return n, nil
 }
 
 func derefString(s *string) string {
