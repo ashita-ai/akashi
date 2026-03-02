@@ -129,6 +129,48 @@ function ConflictSide({
   );
 }
 
+// Compact single-row view used when a group has many open conflicts.
+// Emphasises timestamps so it's obvious these are distinct decision pairs.
+function CompactConflictRow({
+  c,
+  onAdjudicate,
+}: {
+  c: DecisionConflict;
+  onAdjudicate: (c: DecisionConflict) => void;
+}) {
+  return (
+    <div className="grid grid-cols-[1fr,auto,1fr,auto] items-center gap-3 rounded border px-3 py-2 text-xs">
+      <div className="min-w-0">
+        <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+          <Badge variant="outline" className="font-mono text-[10px] shrink-0">{c.agent_a}</Badge>
+          <span className="text-[10px] text-muted-foreground shrink-0">{formatDate(c.decided_at_a)}</span>
+        </div>
+        <p className="truncate text-muted-foreground leading-snug">{c.outcome_a}</p>
+      </div>
+      <Swords className="h-3.5 w-3.5 text-muted-foreground/30 shrink-0" />
+      <div className="min-w-0">
+        <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+          <Badge variant="outline" className="font-mono text-[10px] shrink-0">{c.agent_b}</Badge>
+          <span className="text-[10px] text-muted-foreground shrink-0">{formatDate(c.decided_at_b)}</span>
+        </div>
+        <p className="truncate text-muted-foreground leading-snug">{c.outcome_b}</p>
+      </div>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-7 text-xs shrink-0"
+        onClick={() => onAdjudicate(c)}
+      >
+        <Eye className="h-3 w-3 mr-1" />
+        Adjudicate
+      </Button>
+    </div>
+  );
+}
+
+// Threshold above which we switch from full side-by-side panels to compact rows.
+const COMPACT_CONFLICT_THRESHOLD = 3;
+
 function ConflictGroupCard({
   group,
   onAdjudicate,
@@ -242,9 +284,22 @@ function ConflictGroupCard({
             }
           </Button>
           {expanded && (
-            <div className="mt-3 space-y-4">
-              {openConflicts.length > 0
-                ? openConflicts.map((c, idx) => (
+            <div className="mt-3">
+              {openConflicts.length >= COMPACT_CONFLICT_THRESHOLD ? (
+                // Many conflicts: compact table so differing timestamps make clear
+                // these are distinct decision pairs, not the same conflict repeated.
+                <div className="space-y-1.5">
+                  <p className="text-[10px] text-muted-foreground mb-2">
+                    {openConflicts.length} decision pairs in conflict — each row is a different pair
+                  </p>
+                  {openConflicts.map((c) => (
+                    <CompactConflictRow key={c.id} c={c} onAdjudicate={onAdjudicate} />
+                  ))}
+                </div>
+              ) : openConflicts.length > 0 ? (
+                // 1–2 conflicts: full side-by-side panels
+                <div className="space-y-4">
+                  {openConflicts.map((c, idx) => (
                     <div key={c.id}>
                       {openConflicts.length > 1 && (
                         <div className="flex items-center justify-between mb-2">
@@ -287,34 +342,35 @@ function ConflictGroupCard({
                         />
                       </div>
                     </div>
-                  ))
-                : (
-                    <div className="grid gap-3 sm:grid-cols-[1fr,auto,1fr]">
-                      <ConflictSide
-                        agent={rep.agent_a}
-                        outcome={rep.outcome_a}
-                        confidence={rep.confidence_a}
-                        reasoning={rep.reasoning_a}
-                        decidedAt={rep.decided_at_a}
-                        runId={rep.run_a}
-                      />
-                      <div className="hidden sm:flex items-center justify-center">
-                        <Swords className="h-5 w-5 text-muted-foreground/40" />
-                      </div>
-                      <div className="sm:hidden flex items-center justify-center py-1">
-                        <span className="text-xs font-medium text-muted-foreground">vs</span>
-                      </div>
-                      <ConflictSide
-                        agent={rep.agent_b}
-                        outcome={rep.outcome_b}
-                        confidence={rep.confidence_b}
-                        reasoning={rep.reasoning_b}
-                        decidedAt={rep.decided_at_b}
-                        runId={rep.run_b}
-                      />
-                    </div>
-                  )
-              }
+                  ))}
+                </div>
+              ) : (
+                // Fully resolved group: show representative for context
+                <div className="grid gap-3 sm:grid-cols-[1fr,auto,1fr]">
+                  <ConflictSide
+                    agent={rep.agent_a}
+                    outcome={rep.outcome_a}
+                    confidence={rep.confidence_a}
+                    reasoning={rep.reasoning_a}
+                    decidedAt={rep.decided_at_a}
+                    runId={rep.run_a}
+                  />
+                  <div className="hidden sm:flex items-center justify-center">
+                    <Swords className="h-5 w-5 text-muted-foreground/40" />
+                  </div>
+                  <div className="sm:hidden flex items-center justify-center py-1">
+                    <span className="text-xs font-medium text-muted-foreground">vs</span>
+                  </div>
+                  <ConflictSide
+                    agent={rep.agent_b}
+                    outcome={rep.outcome_b}
+                    confidence={rep.confidence_b}
+                    reasoning={rep.reasoning_b}
+                    decidedAt={rep.decided_at_b}
+                    runId={rep.run_b}
+                  />
+                </div>
+              )}
             </div>
           )}
         </CardContent>
