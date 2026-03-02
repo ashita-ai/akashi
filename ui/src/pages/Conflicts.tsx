@@ -1,7 +1,7 @@
 import { Link, useSearchParams } from "react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { listConflictGroups, patchConflict, listAgents, ApiError } from "@/lib/api";
-import type { ConflictGroup, DecisionConflict, ConflictStatus } from "@/types/api";
+import type { ConflictGroup, DecisionConflict } from "@/types/api";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,7 +24,6 @@ import {
 import { formatDate } from "@/lib/utils";
 import {
   AlertTriangle,
-  ArrowRight,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -42,134 +41,125 @@ function truncate(text: string, maxLen: number): string {
   return text.slice(0, maxLen).trimEnd() + "\u2026";
 }
 
-const statusConfig: Record<
-  ConflictStatus,
-  { label: string; variant: "default" | "secondary" | "destructive" | "success" | "warning" | "outline" }
+const severityConfig: Record<
+  string,
+  {
+    variant:
+      | "default"
+      | "secondary"
+      | "destructive"
+      | "success"
+      | "warning"
+      | "outline";
+    label: string;
+  }
 > = {
-  open: { label: "Open", variant: "warning" },
-  acknowledged: { label: "Acknowledged", variant: "secondary" },
-  resolved: { label: "Resolved", variant: "success" },
-  wont_fix: { label: "Won't Fix", variant: "outline" },
+  critical: { variant: "destructive", label: "Critical" },
+  high: { variant: "warning", label: "High" },
+  medium: { variant: "secondary", label: "Medium" },
+  low: { variant: "outline", label: "Low" },
 };
-
-const severityConfig: Record<string, { variant: "default" | "secondary" | "destructive" | "success" | "warning" | "outline" }> = {
-  critical: { variant: "destructive" },
-  high: { variant: "warning" },
-  medium: { variant: "secondary" },
-  low: { variant: "outline" },
-};
-
-function StatusBadge({ status }: { status: ConflictStatus }) {
-  const config = statusConfig[status] ?? statusConfig.open;
-  return <Badge variant={config.variant}>{config.label}</Badge>;
-}
 
 function SeverityBadge({ severity }: { severity: string | null }) {
   if (!severity) return null;
-  const config = severityConfig[severity] ?? { variant: "secondary" as const };
+  const cfg = severityConfig[severity] ?? {
+    variant: "secondary" as const,
+    label: severity,
+  };
   return (
-    <Badge variant={config.variant} className="text-xs">
-      {severity}
+    <Badge variant={cfg.variant} className="text-xs font-semibold uppercase tracking-wide shrink-0">
+      {cfg.label}
     </Badge>
   );
 }
 
-function CategoryBadge({ category }: { category: string | null }) {
-  if (!category) return null;
-  return (
-    <Badge variant="outline" className="text-xs">
-      {category}
-    </Badge>
-  );
-}
+// ── Per-agent decision helpers ──────────────────────────────────────────────
 
-function ConflictSide({
-  agent,
-  outcome,
-  confidence,
-  reasoning,
-  decidedAt,
-  runId,
-}: {
-  agent: string;
+interface AgentDecision {
+  decisionId: string;
   outcome: string;
-  confidence: number;
-  reasoning: string | null;
   decidedAt: string;
   runId: string;
-}) {
+  confidence: number;
+}
+
+/** Collect unique decisions for one agent from a list of conflict pairs, newest first. */
+function getAgentDecisions(
+  conflicts: DecisionConflict[],
+  agent: string,
+): AgentDecision[] {
+  const seen = new Set<string>();
+  const decisions: AgentDecision[] = [];
+
+  for (const c of conflicts) {
+    if (c.agent_a === agent && !seen.has(c.decision_a_id)) {
+      seen.add(c.decision_a_id);
+      decisions.push({
+        decisionId: c.decision_a_id,
+        outcome: c.outcome_a,
+        decidedAt: c.decided_at_a,
+        runId: c.run_a,
+        confidence: c.confidence_a,
+      });
+    }
+    if (c.agent_b === agent && !seen.has(c.decision_b_id)) {
+      seen.add(c.decision_b_id);
+      decisions.push({
+        decisionId: c.decision_b_id,
+        outcome: c.outcome_b,
+        decidedAt: c.decided_at_b,
+        runId: c.run_b,
+        confidence: c.confidence_b,
+      });
+    }
+  }
+
+  return decisions.sort(
+    (a, b) =>
+      new Date(b.decidedAt).getTime() - new Date(a.decidedAt).getTime(),
+  );
+}
+
+/** Count distinct run IDs across all conflict pairs. */
+function countDistinctTraces(conflicts: DecisionConflict[]): number {
+  const runs = new Set<string>();
+  for (const c of conflicts) {
+    if (c.run_a) runs.add(c.run_a);
+    if (c.run_b) runs.add(c.run_b);
+  }
+  return runs.size;
+}
+
+/** Count distinct decision IDs across all conflict pairs. */
+function countDistinctDecisions(conflicts: DecisionConflict[]): number {
+  const ids = new Set<string>();
+  for (const c of conflicts) {
+    if (c.decision_a_id) ids.add(c.decision_a_id);
+    if (c.decision_b_id) ids.add(c.decision_b_id);
+  }
+  return ids.size;
+}
+
+// ── Decision entry card ─────────────────────────────────────────────────────
+
+function DecisionEntry({ d }: { d: AgentDecision }) {
   return (
     <Link
-      to={`/decisions/${runId}`}
-      className="block h-full space-y-2 rounded-md border p-4 transition-colors hover:border-primary/50 hover:bg-muted/50"
+      to={`/decisions/${d.runId}`}
+      className="block rounded border px-3 py-2 text-xs transition-colors hover:border-primary/50 hover:bg-muted/50"
     >
-      <div className="flex items-center justify-between">
-        <Badge variant="outline" className="font-mono text-xs">
-          {agent}
-        </Badge>
-        <Badge variant="secondary">
-          {(confidence * 100).toFixed(0)}%
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-muted-foreground tabular-nums">{formatDate(d.decidedAt)}</span>
+        <Badge variant="secondary" className="text-[10px] shrink-0 ml-2">
+          {(d.confidence * 100).toFixed(0)}%
         </Badge>
       </div>
-      <p className="text-sm font-medium leading-snug">{outcome}</p>
-      {reasoning && (
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          {truncate(reasoning, 200)}
-        </p>
-      )}
-      <div className="flex items-center justify-between pt-1">
-        <span className="text-xs text-muted-foreground">
-          {formatDate(decidedAt)}
-        </span>
-        <span className="flex items-center gap-1 text-xs text-primary">
-          View decision <ArrowRight className="h-3 w-3" />
-        </span>
-      </div>
+      <p className="leading-snug text-foreground/80">{truncate(d.outcome, 140)}</p>
     </Link>
   );
 }
 
-// Compact single-row view used when a group has many open conflicts.
-// Emphasises timestamps so it's obvious these are distinct decision pairs.
-function CompactConflictRow({
-  c,
-  onAdjudicate,
-}: {
-  c: DecisionConflict;
-  onAdjudicate: (c: DecisionConflict) => void;
-}) {
-  return (
-    <div className="grid grid-cols-[1fr,auto,1fr,auto] items-center gap-3 rounded border px-3 py-2 text-xs">
-      <div className="min-w-0">
-        <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
-          <Badge variant="outline" className="font-mono text-[10px] shrink-0">{c.agent_a}</Badge>
-          <span className="text-[10px] text-muted-foreground shrink-0">{formatDate(c.decided_at_a)}</span>
-        </div>
-        <p className="truncate text-muted-foreground leading-snug">{c.outcome_a}</p>
-      </div>
-      <Swords className="h-3.5 w-3.5 text-muted-foreground/30 shrink-0" />
-      <div className="min-w-0">
-        <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
-          <Badge variant="outline" className="font-mono text-[10px] shrink-0">{c.agent_b}</Badge>
-          <span className="text-[10px] text-muted-foreground shrink-0">{formatDate(c.decided_at_b)}</span>
-        </div>
-        <p className="truncate text-muted-foreground leading-snug">{c.outcome_b}</p>
-      </div>
-      <Button
-        variant="ghost"
-        size="sm"
-        className="h-7 text-xs shrink-0"
-        onClick={() => onAdjudicate(c)}
-      >
-        <Eye className="h-3 w-3 mr-1" />
-        Adjudicate
-      </Button>
-    </div>
-  );
-}
-
-// Threshold above which we switch from full side-by-side panels to compact rows.
-const COMPACT_CONFLICT_THRESHOLD = 3;
+// ── Group card ──────────────────────────────────────────────────────────────
 
 function ConflictGroupCard({
   group,
@@ -179,40 +169,73 @@ function ConflictGroupCard({
   onAdjudicate: (conflict: DecisionConflict) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+
   const rep = group.representative;
   const openConflicts = group.open_conflicts ?? [];
+  const isSelf = group.conflict_kind === "self_contradiction";
 
-  const groupLabel =
-    group.conflict_kind === "self_contradiction"
-      ? group.agent_a
-      : `${group.agent_a} vs ${group.agent_b}`;
+  const leftDecisions = getAgentDecisions(openConflicts, group.agent_a);
+  const rightDecisions = isSelf
+    ? []
+    : getAgentDecisions(openConflicts, group.agent_b);
+
+  const traceCount = countDistinctTraces(openConflicts);
+  const decisionCount = countDistinctDecisions(openConflicts);
+
+  const canAdjudicate =
+    rep && (rep.status === "open" || rep.status === "acknowledged");
 
   return (
     <Card>
       <CardHeader className="pb-3">
-        {/* Row 1: badges + date + adjudicate */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* Group status: reflect overall state, not the representative's individual status.
-                Showing "Won't Fix" while open items exist is contradictory. */}
-            {group.open_count > 0 ? (
-              <Badge variant="warning" className="text-xs font-medium">
-                {group.open_count} open
+        {/* ── Row 1: severity · agents · topic ── */}
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              {rep?.severity && <SeverityBadge severity={rep.severity} />}
+              <span className="font-semibold text-sm">{group.agent_a}</span>
+              {!isSelf ? (
+                <>
+                  <Swords className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" />
+                  <span className="font-semibold text-sm">{group.agent_b}</span>
+                </>
+              ) : (
+                <Badge variant="outline" className="text-[10px]">
+                  self
+                </Badge>
+              )}
+              <Badge variant="outline" className="font-mono text-xs">
+                {group.decision_type}
               </Badge>
-            ) : (
-              rep && <StatusBadge status={rep.status} />
-            )}
-            {rep && <SeverityBadge severity={rep.severity} />}
-            {rep && <CategoryBadge category={rep.category} />}
-            <Badge variant="outline" className="font-mono text-xs">
-              {group.decision_type}
-            </Badge>
+            </div>
+
+            {/* ── Row 2: counts ── */}
+            <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
+              {group.open_count > 0 && (
+                <Badge variant="warning" className="text-xs">
+                  {group.open_count} open
+                </Badge>
+              )}
+              {decisionCount > 0 && (
+                <span>
+                  {decisionCount} decision{decisionCount !== 1 ? "s" : ""} in
+                  conflict
+                </span>
+              )}
+              {traceCount > 0 && (
+                <span>
+                  {traceCount} trace{traceCount !== 1 ? "s" : ""}
+                </span>
+              )}
+              <span className="text-muted-foreground/60">
+                Last {formatDate(group.last_detected_at)}
+              </span>
+            </div>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="text-xs text-muted-foreground">
-              {formatDate(group.last_detected_at)}
-            </span>
-            {rep && (rep.status === "open" || rep.status === "acknowledged") && (
+
+          {/* ── Actions ── */}
+          <div className="flex items-center gap-1 shrink-0">
+            {canAdjudicate && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -223,161 +246,100 @@ function ConflictGroupCard({
                 Adjudicate
               </Button>
             )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 p-0"
+              onClick={() => setExpanded(!expanded)}
+              aria-label={expanded ? "Collapse" : "Expand"}
+            >
+              {expanded ? (
+                <ChevronUp className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronDown className="h-3.5 w-3.5" />
+              )}
+            </Button>
           </div>
         </div>
 
-        {/* Row 2: explanation */}
-        {rep?.explanation ? (
-          <p className="text-sm leading-relaxed mt-2">{rep.explanation}</p>
-        ) : (
-          <p className="text-sm text-muted-foreground mt-2">
-            {group.conflict_kind === "self_contradiction"
-              ? `${group.agent_a} made contradictory ${group.decision_type} decisions.`
-              : `${group.agent_a} and ${group.agent_b} disagree on ${group.decision_type}.`}
-          </p>
-        )}
-
-        {/* Row 3: agents + conflict count */}
-        <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1">
-            <Swords className="h-3 w-3" />
-            <span className="font-medium text-foreground">{groupLabel}</span>
-          </span>
-          <span>
-            {group.conflict_count} conflict{group.conflict_count !== 1 ? "s" : ""} detected
-          </span>
-          {group.conflict_kind === "self_contradiction" && (
-            <Badge variant="outline" className="text-[10px] px-1.5 py-0">self</Badge>
-          )}
-        </div>
-
-        {/* Resolution note from representative */}
-        {rep?.resolution_note && (
-          <p className="text-xs mt-2 border-l-2 border-emerald-500 pl-2">
-            <span className="text-muted-foreground">Resolution:</span>{" "}
-            {rep.resolution_note}
-            {rep.resolved_by && (
-              <span className="text-muted-foreground"> by {rep.resolved_by}</span>
-            )}
+        {/* ── LLM explanation — always shown, this is the narrative ── */}
+        {rep?.explanation && (
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            {rep.explanation}
           </p>
         )}
       </CardHeader>
 
-      {/* Collapsible detail: all open conflicts, or the representative if fully closed */}
-      {rep && (
+      {/* ── Expanded: per-agent decision timelines ── */}
+      {expanded && (
         <CardContent className="pt-0">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full justify-between text-xs text-muted-foreground h-8"
-            onClick={() => setExpanded(!expanded)}
-          >
-            <span>
-              {expanded ? "Hide" : "Show"}{" "}
-              {openConflicts.length > 0
-                ? `${openConflicts.length} open conflict${openConflicts.length !== 1 ? "s" : ""}`
-                : "decisions"}
-            </span>
-            {expanded
-              ? <ChevronUp className="h-3.5 w-3.5" />
-              : <ChevronDown className="h-3.5 w-3.5" />
-            }
-          </Button>
-          {expanded && (
-            <div className="mt-3">
-              {openConflicts.length >= COMPACT_CONFLICT_THRESHOLD ? (
-                // Many conflicts: compact table so differing timestamps make clear
-                // these are distinct decision pairs, not the same conflict repeated.
-                <div className="space-y-1.5">
-                  <p className="text-[10px] text-muted-foreground mb-2">
-                    {openConflicts.length} decision pairs in conflict — each row is a different pair
+          <div className="border-t pt-4">
+            {openConflicts.length === 0 ? (
+              <p className="text-xs text-muted-foreground italic">
+                All conflicts in this group have been resolved.
+              </p>
+            ) : isSelf ? (
+              /* Self-contradiction: one agent, single column */
+              <div className="max-w-lg">
+                <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                  {group.agent_a} &mdash;{" "}
+                  {leftDecisions.length} conflicting decision
+                  {leftDecisions.length !== 1 ? "s" : ""}
+                </p>
+                <div className="space-y-2">
+                  {leftDecisions.map((d) => (
+                    <DecisionEntry key={d.decisionId} d={d} />
+                  ))}
+                </div>
+              </div>
+            ) : (
+              /* Cross-agent: two independent timelines, newest first */
+              <div className="grid grid-cols-2 gap-6">
+                <div>
+                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                    {group.agent_a} &mdash; {leftDecisions.length} decision
+                    {leftDecisions.length !== 1 ? "s" : ""}
                   </p>
-                  {openConflicts.map((c) => (
-                    <CompactConflictRow key={c.id} c={c} onAdjudicate={onAdjudicate} />
-                  ))}
-                </div>
-              ) : openConflicts.length > 0 ? (
-                // 1–2 conflicts: full side-by-side panels
-                <div className="space-y-4">
-                  {openConflicts.map((c, idx) => (
-                    <div key={c.id}>
-                      {openConflicts.length > 1 && (
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-xs font-medium text-muted-foreground">
-                            Conflict {idx + 1} of {openConflicts.length}
-                          </span>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 text-xs"
-                            onClick={() => onAdjudicate(c)}
-                          >
-                            <Eye className="h-3 w-3 mr-1" />
-                            Adjudicate
-                          </Button>
-                        </div>
-                      )}
-                      <div className="grid gap-3 sm:grid-cols-[1fr,auto,1fr]">
-                        <ConflictSide
-                          agent={c.agent_a}
-                          outcome={c.outcome_a}
-                          confidence={c.confidence_a}
-                          reasoning={c.reasoning_a}
-                          decidedAt={c.decided_at_a}
-                          runId={c.run_a}
-                        />
-                        <div className="hidden sm:flex items-center justify-center">
-                          <Swords className="h-5 w-5 text-muted-foreground/40" />
-                        </div>
-                        <div className="sm:hidden flex items-center justify-center py-1">
-                          <span className="text-xs font-medium text-muted-foreground">vs</span>
-                        </div>
-                        <ConflictSide
-                          agent={c.agent_b}
-                          outcome={c.outcome_b}
-                          confidence={c.confidence_b}
-                          reasoning={c.reasoning_b}
-                          decidedAt={c.decided_at_b}
-                          runId={c.run_b}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                // Fully resolved group: show representative for context
-                <div className="grid gap-3 sm:grid-cols-[1fr,auto,1fr]">
-                  <ConflictSide
-                    agent={rep.agent_a}
-                    outcome={rep.outcome_a}
-                    confidence={rep.confidence_a}
-                    reasoning={rep.reasoning_a}
-                    decidedAt={rep.decided_at_a}
-                    runId={rep.run_a}
-                  />
-                  <div className="hidden sm:flex items-center justify-center">
-                    <Swords className="h-5 w-5 text-muted-foreground/40" />
+                  <div className="space-y-2">
+                    {leftDecisions.length > 0 ? (
+                      leftDecisions.map((d) => (
+                        <DecisionEntry key={d.decisionId} d={d} />
+                      ))
+                    ) : (
+                      <p className="text-xs text-muted-foreground italic">
+                        No open decisions
+                      </p>
+                    )}
                   </div>
-                  <div className="sm:hidden flex items-center justify-center py-1">
-                    <span className="text-xs font-medium text-muted-foreground">vs</span>
-                  </div>
-                  <ConflictSide
-                    agent={rep.agent_b}
-                    outcome={rep.outcome_b}
-                    confidence={rep.confidence_b}
-                    reasoning={rep.reasoning_b}
-                    decidedAt={rep.decided_at_b}
-                    runId={rep.run_b}
-                  />
                 </div>
-              )}
-            </div>
-          )}
+
+                <div>
+                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                    {group.agent_b} &mdash; {rightDecisions.length} decision
+                    {rightDecisions.length !== 1 ? "s" : ""}
+                  </p>
+                  <div className="space-y-2">
+                    {rightDecisions.length > 0 ? (
+                      rightDecisions.map((d) => (
+                        <DecisionEntry key={d.decisionId} d={d} />
+                      ))
+                    ) : (
+                      <p className="text-xs text-muted-foreground italic">
+                        No open decisions
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </CardContent>
       )}
     </Card>
   );
 }
+
+// ── Page ────────────────────────────────────────────────────────────────────
 
 const PAGE_SIZE = 25;
 const ALL_AGENTS = "__all__";
@@ -396,8 +358,10 @@ export default function Conflicts() {
     staleTime: 60_000,
   });
 
-  const [adjudicateTarget, setAdjudicateTarget] = useState<DecisionConflict | null>(null);
-  const [adjudicateStatus, setAdjudicateStatus] = useState<string>("acknowledged");
+  const [adjudicateTarget, setAdjudicateTarget] =
+    useState<DecisionConflict | null>(null);
+  const [adjudicateStatus, setAdjudicateStatus] =
+    useState<string>("acknowledged");
   const [adjudicateNote, setAdjudicateNote] = useState("");
   const [adjudicateWinner, setAdjudicateWinner] = useState<string | null>(null);
   const [adjudicateError, setAdjudicateError] = useState<string | null>(null);
@@ -417,7 +381,12 @@ export default function Conflicts() {
   const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
 
   const adjudicateMutation = useMutation({
-    mutationFn: (params: { id: string; status: string; resolution_note?: string; winning_decision_id?: string }) =>
+    mutationFn: (params: {
+      id: string;
+      status: string;
+      resolution_note?: string;
+      winning_decision_id?: string;
+    }) =>
       patchConflict(params.id, {
         status: params.status,
         resolution_note: params.resolution_note,
@@ -431,7 +400,9 @@ export default function Conflicts() {
       setAdjudicateError(null);
     },
     onError: (err) => {
-      setAdjudicateError(err instanceof ApiError ? err.message : "Failed to update conflict");
+      setAdjudicateError(
+        err instanceof ApiError ? err.message : "Failed to update conflict",
+      );
     },
   });
 
@@ -472,7 +443,9 @@ export default function Conflicts() {
       id: adjudicateTarget.id,
       status: adjudicateStatus,
       ...(adjudicateNote.trim() ? { resolution_note: adjudicateNote.trim() } : {}),
-      ...(adjudicateStatus === "resolved" && adjudicateWinner ? { winning_decision_id: adjudicateWinner } : {}),
+      ...(adjudicateStatus === "resolved" && adjudicateWinner
+        ? { winning_decision_id: adjudicateWinner }
+        : {}),
     });
   }
 
@@ -481,7 +454,9 @@ export default function Conflicts() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold tracking-tight">Conflicts</h1>
         {data?.total != null && data.total > 0 && (
-          <Badge variant="outline">{data.total} group{data.total !== 1 ? "s" : ""}</Badge>
+          <Badge variant="outline">
+            {data.total} group{data.total !== 1 ? "s" : ""}
+          </Badge>
         )}
       </div>
 
@@ -530,7 +505,7 @@ export default function Conflicts() {
       {isPending ? (
         <div className="space-y-4">
           {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-48 w-full" />
+            <Skeleton key={i} className="h-32 w-full" />
           ))}
         </div>
       ) : !groups?.length ? (
@@ -544,7 +519,7 @@ export default function Conflicts() {
         </div>
       ) : (
         <>
-          <div className="space-y-4">
+          <div className="space-y-3">
             {groups.map((group) => (
               <ConflictGroupCard
                 key={group.id}
@@ -554,11 +529,10 @@ export default function Conflicts() {
             ))}
           </div>
 
-          {/* Pagination */}
           {data && data.total > PAGE_SIZE && (
             <div className="flex items-center justify-between">
               <p className="text-sm text-muted-foreground">
-                Showing {page * PAGE_SIZE + 1}{"\u2013"}
+                Showing {page * PAGE_SIZE + 1}&ndash;
                 {Math.min((page + 1) * PAGE_SIZE, data.total)} of{" "}
                 {data.total.toLocaleString()}
               </p>
@@ -587,8 +561,11 @@ export default function Conflicts() {
         </>
       )}
 
-      {/* Adjudication dialog — operates on the representative conflict */}
-      <Dialog open={adjudicateTarget !== null} onOpenChange={(open) => !open && setAdjudicateTarget(null)}>
+      {/* Adjudication dialog */}
+      <Dialog
+        open={adjudicateTarget !== null}
+        onOpenChange={(open) => !open && setAdjudicateTarget(null)}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Adjudicate Conflict</DialogTitle>
@@ -596,9 +573,12 @@ export default function Conflicts() {
               Update the status of this conflict between{" "}
               <strong>{adjudicateTarget?.agent_a}</strong>
               {adjudicateTarget?.agent_a !== adjudicateTarget?.agent_b && (
-                <> and <strong>{adjudicateTarget?.agent_b}</strong></>
-              )}
-              {" on "}<strong>{adjudicateTarget?.decision_type}</strong>.
+                <>
+                  {" "}
+                  and <strong>{adjudicateTarget?.agent_b}</strong>
+                </>
+              )}{" "}
+              on <strong>{adjudicateTarget?.decision_type}</strong>.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
@@ -606,7 +586,9 @@ export default function Conflicts() {
               <label className="text-sm font-medium">Action</label>
               <div className="flex gap-2">
                 <Button
-                  variant={adjudicateStatus === "acknowledged" ? "default" : "outline"}
+                  variant={
+                    adjudicateStatus === "acknowledged" ? "default" : "outline"
+                  }
                   size="sm"
                   onClick={() => setAdjudicateStatus("acknowledged")}
                 >
@@ -614,7 +596,9 @@ export default function Conflicts() {
                   Acknowledge
                 </Button>
                 <Button
-                  variant={adjudicateStatus === "resolved" ? "default" : "outline"}
+                  variant={
+                    adjudicateStatus === "resolved" ? "default" : "outline"
+                  }
                   size="sm"
                   onClick={() => setAdjudicateStatus("resolved")}
                 >
@@ -622,73 +606,67 @@ export default function Conflicts() {
                   Resolve
                 </Button>
                 <Button
-                  variant={adjudicateStatus === "wont_fix" ? "default" : "outline"}
+                  variant={
+                    adjudicateStatus === "wont_fix" ? "default" : "outline"
+                  }
                   size="sm"
                   onClick={() => setAdjudicateStatus("wont_fix")}
                 >
                   <XCircle className="h-3.5 w-3.5 mr-1.5" />
-                  Won't Fix
+                  Won&apos;t Fix
                 </Button>
               </div>
             </div>
             {adjudicateStatus === "resolved" && adjudicateTarget && (
               <div className="space-y-2">
-                <label className="text-sm font-medium">Winner (optional)</label>
+                <label className="text-sm font-medium">
+                  Winner (optional)
+                </label>
                 <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setAdjudicateWinner(
-                        adjudicateWinner === adjudicateTarget.decision_a_id
-                          ? null
-                          : adjudicateTarget.decision_a_id,
-                      )
-                    }
-                    className={`text-left rounded-md border p-3 text-xs transition-colors ${
-                      adjudicateWinner === adjudicateTarget.decision_a_id
-                        ? "border-primary bg-primary/5"
-                        : "hover:border-primary/50 hover:bg-muted/50"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-1.5">
-                      <Badge variant="outline" className="font-mono text-[10px]">
-                        {adjudicateTarget.agent_a}
-                      </Badge>
-                      {adjudicateWinner === adjudicateTarget.decision_a_id && (
-                        <Check className="h-3 w-3 text-primary" />
-                      )}
-                    </div>
-                    <p className="leading-snug text-muted-foreground">
-                      {truncate(adjudicateTarget.outcome_a, 80)}
-                    </p>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setAdjudicateWinner(
-                        adjudicateWinner === adjudicateTarget.decision_b_id
-                          ? null
-                          : adjudicateTarget.decision_b_id,
-                      )
-                    }
-                    className={`text-left rounded-md border p-3 text-xs transition-colors ${
-                      adjudicateWinner === adjudicateTarget.decision_b_id
-                        ? "border-primary bg-primary/5"
-                        : "hover:border-primary/50 hover:bg-muted/50"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-1.5">
-                      <Badge variant="outline" className="font-mono text-[10px]">
-                        {adjudicateTarget.agent_b}
-                      </Badge>
-                      {adjudicateWinner === adjudicateTarget.decision_b_id && (
-                        <Check className="h-3 w-3 text-primary" />
-                      )}
-                    </div>
-                    <p className="leading-snug text-muted-foreground">
-                      {truncate(adjudicateTarget.outcome_b, 80)}
-                    </p>
-                  </button>
+                  {(
+                    [
+                      {
+                        id: adjudicateTarget.decision_a_id,
+                        agent: adjudicateTarget.agent_a,
+                        outcome: adjudicateTarget.outcome_a,
+                      },
+                      {
+                        id: adjudicateTarget.decision_b_id,
+                        agent: adjudicateTarget.agent_b,
+                        outcome: adjudicateTarget.outcome_b,
+                      },
+                    ] as const
+                  ).map((side) => (
+                    <button
+                      key={side.id}
+                      type="button"
+                      onClick={() =>
+                        setAdjudicateWinner(
+                          adjudicateWinner === side.id ? null : side.id,
+                        )
+                      }
+                      className={`text-left rounded-md border p-3 text-xs transition-colors ${
+                        adjudicateWinner === side.id
+                          ? "border-primary bg-primary/5"
+                          : "hover:border-primary/50 hover:bg-muted/50"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1.5">
+                        <Badge
+                          variant="outline"
+                          className="font-mono text-[10px]"
+                        >
+                          {side.agent}
+                        </Badge>
+                        {adjudicateWinner === side.id && (
+                          <Check className="h-3 w-3 text-primary" />
+                        )}
+                      </div>
+                      <p className="leading-snug text-muted-foreground">
+                        {truncate(side.outcome, 80)}
+                      </p>
+                    </button>
+                  ))}
                 </div>
               </div>
             )}
@@ -706,10 +684,16 @@ export default function Conflicts() {
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setAdjudicateTarget(null)}>
+            <Button
+              variant="outline"
+              onClick={() => setAdjudicateTarget(null)}
+            >
               Cancel
             </Button>
-            <Button onClick={handleAdjudicate} disabled={adjudicateMutation.isPending}>
+            <Button
+              onClick={handleAdjudicate}
+              disabled={adjudicateMutation.isPending}
+            >
               <Check className="h-4 w-4 mr-1.5" />
               {adjudicateMutation.isPending ? "Saving\u2026" : "Save"}
             </Button>
