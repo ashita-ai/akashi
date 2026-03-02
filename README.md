@@ -133,6 +133,25 @@ Optional (server starts without them — search falls back to text):
 | `QDRANT_URL` | Qdrant endpoint for vector search |
 | `OPENAI_API_KEY` | Enables OpenAI embeddings and LLM conflict validation |
 | `OLLAMA_URL` | Ollama endpoint for local embeddings |
+| `AKASHI_JWT_PRIVATE_KEY` | Path to Ed25519 private key PEM file. **Empty = ephemeral key pair generated on every startup** — all tokens are invalidated on each restart. Set this for any persistent deployment. |
+| `AKASHI_JWT_PUBLIC_KEY` | Path to Ed25519 public key PEM file. Must be set alongside the private key. |
+| `AKASHI_JWT_EXPIRATION` | JWT token lifetime. Default: `24h`. |
+
+**Generating persistent signing keys** (run once from the repo root):
+
+```bash
+go run ./scripts/genkey -out data/
+# Writes: data/jwt_private.pem, data/jwt_public.pem
+```
+
+Then add to `.env`:
+
+```
+AKASHI_JWT_PRIVATE_KEY=/data/jwt_private.pem
+AKASHI_JWT_PUBLIC_KEY=/data/jwt_public.pem
+```
+
+The `docker-compose.yml` already mounts `./data` as `/data` inside the container — no other changes needed. Both PEM files must have `0600` permissions; the server rejects looser modes at startup.
 
 See [Configuration](docs/configuration.md) for all variables.
 
@@ -208,6 +227,8 @@ claude mcp add --transport http --scope user akashi http://localhost:8080/mcp \
 claude mcp add --transport http --scope project akashi http://localhost:8080/mcp \
   --header "Authorization: Bearer $TOKEN"
 ```
+
+> **Token lifetime:** JWTs expire after 24 hours by default. With ephemeral signing keys (the default when `AKASHI_JWT_PRIVATE_KEY` is unset), tokens are also invalidated on every server restart. Configure persistent signing keys (see above) and you only need to re-mint a token when it genuinely expires.
 
 ### Cursor, Windsurf, and other MCP clients
 
