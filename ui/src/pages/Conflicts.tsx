@@ -73,52 +73,7 @@ function SeverityBadge({ severity }: { severity: string | null }) {
   );
 }
 
-// ── Per-agent decision helpers ──────────────────────────────────────────────
-
-interface AgentDecision {
-  decisionId: string;
-  outcome: string;
-  decidedAt: string;
-  runId: string;
-  confidence: number;
-}
-
-/** Collect unique decisions for one agent from a list of conflict pairs, newest first. */
-function getAgentDecisions(
-  conflicts: DecisionConflict[],
-  agent: string,
-): AgentDecision[] {
-  const seen = new Set<string>();
-  const decisions: AgentDecision[] = [];
-
-  for (const c of conflicts) {
-    if (c.agent_a === agent && !seen.has(c.decision_a_id)) {
-      seen.add(c.decision_a_id);
-      decisions.push({
-        decisionId: c.decision_a_id,
-        outcome: c.outcome_a,
-        decidedAt: c.decided_at_a,
-        runId: c.run_a,
-        confidence: c.confidence_a,
-      });
-    }
-    if (c.agent_b === agent && !seen.has(c.decision_b_id)) {
-      seen.add(c.decision_b_id);
-      decisions.push({
-        decisionId: c.decision_b_id,
-        outcome: c.outcome_b,
-        decidedAt: c.decided_at_b,
-        runId: c.run_b,
-        confidence: c.confidence_b,
-      });
-    }
-  }
-
-  return decisions.sort(
-    (a, b) =>
-      new Date(b.decidedAt).getTime() - new Date(a.decidedAt).getTime(),
-  );
-}
+// ── Conflict pair helpers ────────────────────────────────────────────────────
 
 /** Count distinct run IDs across all conflict pairs. */
 function countDistinctTraces(conflicts: DecisionConflict[]): number {
@@ -140,22 +95,85 @@ function countDistinctDecisions(conflicts: DecisionConflict[]): number {
   return ids.size;
 }
 
-// ── Decision entry card ─────────────────────────────────────────────────────
+// ── Conflict pair row ────────────────────────────────────────────────────────
+//
+// Shows one explicit conflict: which exact decision from agent A is paired
+// against which exact decision from agent B. This is the unit that the
+// conflict detector found — not an aggregate of each agent's history.
 
-function DecisionEntry({ d }: { d: AgentDecision }) {
+function ConflictPairRow({
+  c,
+  onAdjudicate,
+}: {
+  c: DecisionConflict;
+  onAdjudicate: (c: DecisionConflict) => void;
+}) {
+  const canAdjudicate = c.status === "open" || c.status === "acknowledged";
   return (
-    <Link
-      to={`/decisions/${d.runId}`}
-      className="block rounded border px-3 py-2 text-xs transition-colors hover:border-primary/50 hover:bg-muted/50"
-    >
-      <div className="flex items-center justify-between mb-1">
-        <span className="text-muted-foreground tabular-nums">{formatDate(d.decidedAt)}</span>
-        <Badge variant="secondary" className="text-[10px] shrink-0 ml-2">
-          {(d.confidence * 100).toFixed(0)}%
-        </Badge>
+    <div className="rounded border overflow-hidden text-xs">
+      <div className="grid grid-cols-[1fr,auto,1fr]">
+        {/* Left: agent_a's decision */}
+        <Link
+          to={`/decisions/${c.run_a}`}
+          className="p-3 block transition-colors hover:bg-muted/50 min-w-0"
+        >
+          <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+            <Badge variant="outline" className="font-mono text-[10px] shrink-0">
+              {c.agent_a}
+            </Badge>
+            <span className="text-[10px] text-muted-foreground tabular-nums">
+              {formatDate(c.decided_at_a)}
+            </span>
+            <Badge variant="secondary" className="text-[10px] shrink-0 ml-auto">
+              {(c.confidence_a * 100).toFixed(0)}%
+            </Badge>
+          </div>
+          <p className="leading-snug text-foreground/80">
+            {truncate(c.outcome_a, 120)}
+          </p>
+        </Link>
+
+        {/* Center divider */}
+        <div className="flex items-center justify-center px-2 border-x bg-muted/30">
+          <span className="text-[10px] font-medium text-muted-foreground">vs</span>
+        </div>
+
+        {/* Right: agent_b's decision */}
+        <Link
+          to={`/decisions/${c.run_b}`}
+          className="p-3 block transition-colors hover:bg-muted/50 min-w-0"
+        >
+          <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+            <Badge variant="outline" className="font-mono text-[10px] shrink-0">
+              {c.agent_b}
+            </Badge>
+            <span className="text-[10px] text-muted-foreground tabular-nums">
+              {formatDate(c.decided_at_b)}
+            </span>
+            <Badge variant="secondary" className="text-[10px] shrink-0 ml-auto">
+              {(c.confidence_b * 100).toFixed(0)}%
+            </Badge>
+          </div>
+          <p className="leading-snug text-foreground/80">
+            {truncate(c.outcome_b, 120)}
+          </p>
+        </Link>
       </div>
-      <p className="leading-snug text-foreground/80">{truncate(d.outcome, 140)}</p>
-    </Link>
+
+      {canAdjudicate && (
+        <div className="flex justify-end border-t px-3 py-1.5 bg-muted/20">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 text-[10px]"
+            onClick={() => onAdjudicate(c)}
+          >
+            <Eye className="h-3 w-3 mr-1" />
+            Adjudicate this pair
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -173,11 +191,6 @@ function ConflictGroupCard({
   const rep = group.representative;
   const openConflicts = group.open_conflicts ?? [];
   const isSelf = group.conflict_kind === "self_contradiction";
-
-  const leftDecisions = getAgentDecisions(openConflicts, group.agent_a);
-  const rightDecisions = isSelf
-    ? []
-    : getAgentDecisions(openConflicts, group.agent_b);
 
   const traceCount = countDistinctTraces(openConflicts);
   const decisionCount = countDistinctDecisions(openConflicts);
@@ -270,67 +283,29 @@ function ConflictGroupCard({
         )}
       </CardHeader>
 
-      {/* ── Expanded: per-agent decision timelines ── */}
+      {/* ── Expanded: explicit conflict pairs ── */}
       {expanded && (
         <CardContent className="pt-0">
-          <div className="border-t pt-4">
+          <div className="border-t pt-4 space-y-3">
             {openConflicts.length === 0 ? (
               <p className="text-xs text-muted-foreground italic">
                 All conflicts in this group have been resolved.
               </p>
-            ) : isSelf ? (
-              /* Self-contradiction: one agent, single column */
-              <div className="max-w-lg">
-                <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-2">
-                  {group.agent_a} &mdash;{" "}
-                  {leftDecisions.length} conflicting decision
-                  {leftDecisions.length !== 1 ? "s" : ""}
-                </p>
-                <div className="space-y-2">
-                  {leftDecisions.map((d) => (
-                    <DecisionEntry key={d.decisionId} d={d} />
-                  ))}
-                </div>
-              </div>
             ) : (
-              /* Cross-agent: two independent timelines, newest first */
-              <div className="grid grid-cols-2 gap-6">
-                <div>
-                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-2">
-                    {group.agent_a} &mdash; {leftDecisions.length} decision
-                    {leftDecisions.length !== 1 ? "s" : ""}
-                  </p>
-                  <div className="space-y-2">
-                    {leftDecisions.length > 0 ? (
-                      leftDecisions.map((d) => (
-                        <DecisionEntry key={d.decisionId} d={d} />
-                      ))
-                    ) : (
-                      <p className="text-xs text-muted-foreground italic">
-                        No open decisions
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-2">
-                    {group.agent_b} &mdash; {rightDecisions.length} decision
-                    {rightDecisions.length !== 1 ? "s" : ""}
-                  </p>
-                  <div className="space-y-2">
-                    {rightDecisions.length > 0 ? (
-                      rightDecisions.map((d) => (
-                        <DecisionEntry key={d.decisionId} d={d} />
-                      ))
-                    ) : (
-                      <p className="text-xs text-muted-foreground italic">
-                        No open decisions
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
+              <>
+                <p className="text-[10px] text-muted-foreground">
+                  {isSelf
+                    ? `${openConflicts.length} self-contradicting decision pair${openConflicts.length !== 1 ? "s" : ""}`
+                    : `${openConflicts.length} conflicting pair${openConflicts.length !== 1 ? "s" : ""} — each row is one specific decision vs one specific decision`}
+                </p>
+                {openConflicts.map((c) => (
+                  <ConflictPairRow
+                    key={c.id}
+                    c={c}
+                    onAdjudicate={onAdjudicate}
+                  />
+                ))}
+              </>
             )}
           </div>
         </CardContent>
