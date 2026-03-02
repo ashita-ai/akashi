@@ -38,4 +38,7 @@ export type {
   CreateGrantRequest,
   Traceable,
   AkashiConfig,
+  AssessOutcome,
+  AssessRequest,
+  AssessResponse,
 } from "./types.js";

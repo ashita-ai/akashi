@@ -23,6 +23,9 @@ from akashi.middleware import AkashiSyncMiddleware
 from akashi.types import (
     Agent,
     AgentRun,
+    AssessOutcome,
+    AssessRequest,
+    AssessResponse,
     CheckResponse,
     CreateAgentRequest,
     CreateGrantRequest,
@@ -1006,3 +1009,229 @@ class TestAsyncClient:
 
         async with _make_async_client() as client:
             await client.delete_grant(grant_id)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_async_assess(self) -> None:
+        _mock_auth(respx)
+        decision_id = uuid.UUID(DECISION_ID)
+        assessment_id = str(uuid.uuid4())
+        respx.post(f"{BASE_URL}/v1/decisions/{decision_id}/assess").respond(
+            201,
+            json={
+                "data": {
+                    "id": assessment_id,
+                    "decision_id": DECISION_ID,
+                    "org_id": ORG_ID,
+                    "assessor_agent_id": "test-agent",
+                    "outcome": "correct",
+                    "notes": "looks good",
+                    "created_at": NOW,
+                }
+            },
+        )
+
+        async with _make_async_client() as client:
+            resp = await client.assess(
+                decision_id,
+                AssessRequest(outcome=AssessOutcome.correct, notes="looks good"),
+            )
+
+        assert isinstance(resp, AssessResponse)
+        assert resp.outcome == AssessOutcome.correct
+        assert resp.notes == "looks good"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_async_list_assessments(self) -> None:
+        _mock_auth(respx)
+        decision_id = uuid.UUID(DECISION_ID)
+        respx.get(f"{BASE_URL}/v1/decisions/{decision_id}/assessments").respond(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": str(uuid.uuid4()),
+                        "decision_id": DECISION_ID,
+                        "org_id": ORG_ID,
+                        "assessor_agent_id": "reviewer",
+                        "outcome": "partially_correct",
+                        "notes": "needs more context",
+                        "created_at": NOW,
+                    }
+                ],
+                "total": 1,
+                "has_more": False,
+                "limit": 50,
+                "offset": 0,
+            },
+        )
+
+        async with _make_async_client() as client:
+            items = await client.list_assessments(decision_id)
+
+        assert len(items) == 1
+        assert isinstance(items[0], AssessResponse)
+        assert items[0].outcome == AssessOutcome.partially_correct
+
+
+class TestAssess:
+    """Tests for assess() and list_assessments() on the sync client."""
+
+    @respx.mock
+    def test_assess_returns_assess_response(self) -> None:
+        _mock_auth(respx)
+        decision_id = uuid.UUID(DECISION_ID)
+        assessment_id = str(uuid.uuid4())
+        respx.post(f"{BASE_URL}/v1/decisions/{decision_id}/assess").respond(
+            201,
+            json={
+                "data": {
+                    "id": assessment_id,
+                    "decision_id": DECISION_ID,
+                    "org_id": ORG_ID,
+                    "assessor_agent_id": "test-agent",
+                    "outcome": "correct",
+                    "notes": "all tests passed",
+                    "created_at": NOW,
+                }
+            },
+        )
+
+        with _make_client() as client:
+            resp = client.assess(
+                decision_id,
+                AssessRequest(outcome=AssessOutcome.correct, notes="all tests passed"),
+            )
+
+        assert isinstance(resp, AssessResponse)
+        assert resp.outcome == AssessOutcome.correct
+        assert resp.notes == "all tests passed"
+        assert resp.assessor_agent_id == "test-agent"
+
+    @respx.mock
+    def test_assess_without_notes(self) -> None:
+        _mock_auth(respx)
+        decision_id = uuid.UUID(DECISION_ID)
+        captured_body: dict = {}
+
+        def _capture(request: httpx.Request) -> httpx.Response:
+            captured_body.update(json.loads(request.content.decode()))
+            return httpx.Response(
+                201,
+                json={
+                    "data": {
+                        "id": str(uuid.uuid4()),
+                        "decision_id": DECISION_ID,
+                        "org_id": ORG_ID,
+                        "assessor_agent_id": "test-agent",
+                        "outcome": "incorrect",
+                        "created_at": NOW,
+                    }
+                },
+            )
+
+        respx.post(f"{BASE_URL}/v1/decisions/{decision_id}/assess").mock(side_effect=_capture)
+
+        with _make_client() as client:
+            resp = client.assess(decision_id, AssessRequest(outcome=AssessOutcome.incorrect))
+
+        assert resp.outcome == AssessOutcome.incorrect
+        assert captured_body.get("notes") is None
+
+    @respx.mock
+    def test_list_assessments_returns_history(self) -> None:
+        _mock_auth(respx)
+        decision_id = uuid.UUID(DECISION_ID)
+        respx.get(f"{BASE_URL}/v1/decisions/{decision_id}/assessments").respond(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": str(uuid.uuid4()),
+                        "decision_id": DECISION_ID,
+                        "org_id": ORG_ID,
+                        "assessor_agent_id": "reviewer",
+                        "outcome": "partially_correct",
+                        "notes": "needs more evidence",
+                        "created_at": NOW,
+                    },
+                    {
+                        "id": str(uuid.uuid4()),
+                        "decision_id": DECISION_ID,
+                        "org_id": ORG_ID,
+                        "assessor_agent_id": "reviewer",
+                        "outcome": "correct",
+                        "notes": "updated verdict",
+                        "created_at": NOW,
+                    },
+                ],
+                "total": 2,
+                "has_more": False,
+                "limit": 50,
+                "offset": 0,
+            },
+        )
+
+        with _make_client() as client:
+            items = client.list_assessments(decision_id)
+
+        assert len(items) == 2
+        assert items[0].outcome == AssessOutcome.partially_correct
+        assert items[1].outcome == AssessOutcome.correct
+
+    @respx.mock
+    def test_list_assessments_empty(self) -> None:
+        _mock_auth(respx)
+        decision_id = uuid.UUID(DECISION_ID)
+        respx.get(f"{BASE_URL}/v1/decisions/{decision_id}/assessments").respond(
+            200,
+            json={"data": [], "total": 0, "has_more": False, "limit": 50, "offset": 0},
+        )
+
+        with _make_client() as client:
+            items = client.list_assessments(decision_id)
+
+        assert items == []
+
+
+class TestDecisionTypeNormalization:
+    """decision_type should be lowercased and stripped before sending (issue #254)."""
+
+    @respx.mock
+    def test_trace_normalizes_decision_type(self) -> None:
+        _mock_auth(respx)
+        captured_body: dict = {}
+
+        def _capture(request: httpx.Request) -> httpx.Response:
+            captured_body.update(json.loads(request.content.decode()))
+            return httpx.Response(
+                201,
+                json={
+                    "data": {
+                        "run_id": RUN_ID,
+                        "decision_id": DECISION_ID,
+                        "event_count": 1,
+                    }
+                },
+            )
+
+        respx.post(f"{BASE_URL}/v1/trace").mock(side_effect=_capture)
+
+        cases = [
+            ("Architecture", "architecture"),
+            ("  SECURITY  ", "security"),
+            ("Trade_Off", "trade_off"),
+            ("code_review", "code_review"),
+        ]
+
+        with _make_client() as client:
+            for raw, want in cases:
+                captured_body.clear()
+                client.trace(TraceRequest(
+                    decision_type=raw,
+                    outcome="chose option",
+                    confidence=0.8,
+                ))
+                got = captured_body["decision"]["decision_type"]
+                assert got == want, f"expected {want!r} for input {raw!r}, got {got!r}"
