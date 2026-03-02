@@ -493,7 +493,7 @@ func (s *Service) hydrateAndReScore(ctx context.Context, orgID uuid.UUID, result
 
 	// Enrich with assessment summaries for ReScore (explicit correctness signal).
 	// Non-fatal: a missing batch is just treated as no assessments.
-	assessments, aErr := s.db.GetAssessmentSummaryBatch(ctx, ids)
+	assessments, aErr := s.db.GetAssessmentSummaryBatch(ctx, orgID, ids)
 	if aErr != nil {
 		s.logger.Warn("search: assessment summaries batch", "error", aErr)
 	} else {

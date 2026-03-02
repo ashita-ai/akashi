@@ -64,9 +64,9 @@ func (db *DB) ListAssessments(ctx context.Context, orgID, decisionID uuid.UUID) 
 	rows, err := db.pool.Query(ctx, `
 		SELECT id, decision_id, org_id, assessor_agent_id, outcome, notes, created_at
 		FROM decision_assessments
-		WHERE decision_id = $1
+		WHERE decision_id = $1 AND org_id = $2
 		ORDER BY created_at DESC`,
-		decisionID,
+		decisionID, orgID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("storage: list assessments: query: %w", err)
@@ -96,18 +96,18 @@ func (db *DB) ListAssessments(ctx context.Context, orgID, decisionID uuid.UUID) 
 // counts as one "incorrect" in the summary; the history is preserved in
 // ListAssessments but does not skew the current-state count.
 // Returns a zero-value summary (all counts 0) if no assessments exist.
-func (db *DB) GetAssessmentSummary(ctx context.Context, decisionID uuid.UUID) (model.AssessmentSummary, error) {
+func (db *DB) GetAssessmentSummary(ctx context.Context, orgID, decisionID uuid.UUID) (model.AssessmentSummary, error) {
 	rows, err := db.pool.Query(ctx, `
 		SELECT outcome, COUNT(*)
 		FROM (
 			SELECT DISTINCT ON (assessor_agent_id)
 				outcome
 			FROM decision_assessments
-			WHERE decision_id = $1
+			WHERE decision_id = $1 AND org_id = $2
 			ORDER BY assessor_agent_id, created_at DESC
 		) latest
 		GROUP BY outcome`,
-		decisionID,
+		decisionID, orgID,
 	)
 	if err != nil {
 		return model.AssessmentSummary{}, fmt.Errorf("storage: assessment summary: %w", err)
@@ -136,7 +136,7 @@ func (db *DB) GetAssessmentSummary(ctx context.Context, decisionID uuid.UUID) (m
 
 // GetAssessmentSummaryBatch returns latest-per-assessor outcome counts for
 // multiple decisions. Decisions with no assessments are omitted from the map.
-func (db *DB) GetAssessmentSummaryBatch(ctx context.Context, decisionIDs []uuid.UUID) (map[uuid.UUID]model.AssessmentSummary, error) {
+func (db *DB) GetAssessmentSummaryBatch(ctx context.Context, orgID uuid.UUID, decisionIDs []uuid.UUID) (map[uuid.UUID]model.AssessmentSummary, error) {
 	if len(decisionIDs) == 0 {
 		return nil, nil
 	}
@@ -146,11 +146,11 @@ func (db *DB) GetAssessmentSummaryBatch(ctx context.Context, decisionIDs []uuid.
 			SELECT DISTINCT ON (decision_id, assessor_agent_id)
 				decision_id, outcome
 			FROM decision_assessments
-			WHERE decision_id = ANY($1)
+			WHERE decision_id = ANY($1) AND org_id = $2
 			ORDER BY decision_id, assessor_agent_id, created_at DESC
 		) latest
 		GROUP BY decision_id, outcome`,
-		decisionIDs,
+		decisionIDs, orgID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("storage: assessment summary batch: %w", err)

@@ -252,7 +252,7 @@ func (h *Handlers) HandleGetDecision(w http.ResponseWriter, r *http.Request) {
 		d.ConflictFate = signals.ConflictFate
 	}
 
-	summary, err := h.db.GetAssessmentSummary(r.Context(), d.ID)
+	summary, err := h.db.GetAssessmentSummary(r.Context(), orgID, d.ID)
 	if err == nil {
 		d.AssessmentSummary = &summary
 	}
@@ -1018,9 +1018,11 @@ func (h *Handlers) HandleDecisionConflicts(w http.ResponseWriter, r *http.Reques
 }
 
 // HandleAssessDecision handles POST /v1/decisions/{id}/assess (writer+).
-// Creates or updates the caller's outcome assessment for a decision.
-// An assessor may only hold one assessment per decision; re-submitting
-// overwrites the previous outcome and notes.
+// Records an outcome assessment for a decision. Assessments are append-only:
+// each call creates a new row. An assessor changing their verdict over time
+// is itself an auditable event — prior assessments are never overwritten.
+// GetAssessmentSummary uses DISTINCT ON to count only each assessor's latest
+// verdict when computing summary statistics.
 func (h *Handlers) HandleAssessDecision(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
@@ -1064,6 +1066,9 @@ func (h *Handlers) HandleAssessDecision(w http.ResponseWriter, r *http.Request) 
 		h.writeInternalError(w, r, "failed to save assessment", err)
 		return
 	}
+
+	_ = h.db.Notify(r.Context(), storage.ChannelDecisions,
+		`{"source":"assess","decision_id":"`+decisionID.String()+`","org_id":"`+orgID.String()+`"}`)
 
 	writeJSON(w, r, http.StatusOK, result)
 }
@@ -1111,7 +1116,7 @@ func (h *Handlers) HandleListAssessments(w http.ResponseWriter, r *http.Request)
 		assessments = []model.DecisionAssessment{}
 	}
 
-	summary, err := h.db.GetAssessmentSummary(r.Context(), decisionID)
+	summary, err := h.db.GetAssessmentSummary(r.Context(), orgID, decisionID)
 	if err != nil {
 		h.writeInternalError(w, r, "failed to get assessment summary", err)
 		return
