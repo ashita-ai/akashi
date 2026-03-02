@@ -298,13 +298,25 @@ function ConflictGroupCard({
                     ? `${openConflicts.length} self-contradicting decision pair${openConflicts.length !== 1 ? "s" : ""}`
                     : `${openConflicts.length} conflicting pair${openConflicts.length !== 1 ? "s" : ""} — each row is one specific decision vs one specific decision`}
                 </p>
-                {openConflicts.map((c) => (
-                  <ConflictPairRow
-                    key={c.id}
-                    c={c}
-                    onAdjudicate={onAdjudicate}
-                  />
-                ))}
+                {[...openConflicts]
+                  .sort((a, b) => {
+                    const latestA = Math.max(
+                      new Date(a.decided_at_a).getTime(),
+                      new Date(a.decided_at_b).getTime(),
+                    );
+                    const latestB = Math.max(
+                      new Date(b.decided_at_a).getTime(),
+                      new Date(b.decided_at_b).getTime(),
+                    );
+                    return latestB - latestA;
+                  })
+                  .map((c) => (
+                    <ConflictPairRow
+                      key={c.id}
+                      c={c}
+                      onAdjudicate={onAdjudicate}
+                    />
+                  ))}
               </>
             )}
           </div>
