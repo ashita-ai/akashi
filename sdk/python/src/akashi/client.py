@@ -24,6 +24,8 @@ from akashi.exceptions import (
 from akashi.types import (
     Agent,
     AgentRun,
+    AssessRequest,
+    AssessResponse,
     CheckResponse,
     CompleteRunRequest,
     CreateAgentRequest,
@@ -69,9 +71,12 @@ def _build_trace_body(agent_id: str, request: TraceRequest) -> dict[str, Any]:
     The server expects ``{agent_id, decision: {decision_type, outcome, ...}}``.
     Rather than popping keys one-by-one and hoping we didn't miss any,
     we build the ``decision`` dict directly from the model's fields.
+
+    decision_type is normalized to lowercase with surrounding whitespace stripped
+    so that callers using "Architecture" vs "architecture" are treated identically.
     """
     decision: dict[str, Any] = {
-        "decision_type": request.decision_type,
+        "decision_type": request.decision_type.strip().lower(),
         "outcome": request.outcome,
         "confidence": request.confidence,
     }
@@ -214,6 +219,14 @@ def _build_conflicts_params(
 def _build_agent_history_params(limit: int) -> dict[str, str]:
     """Build query params for GET /v1/agents/{agent_id}/history."""
     return {"limit": str(limit)}
+
+
+def _build_assess_body(req: AssessRequest) -> dict[str, Any]:
+    """Build the wire-format body for POST /v1/decisions/{id}/assess."""
+    body: dict[str, Any] = {"outcome": req.outcome.value}
+    if req.notes is not None:
+        body["notes"] = req.notes
+    return body
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +520,23 @@ class AkashiClient:
         )
         return [DecisionConflict.model_validate(c) for c in items]
 
+    # --- Assessments (spec 29) ---
+
+    async def assess(self, decision_id: UUID, req: AssessRequest) -> AssessResponse:
+        """Record an outcome assessment for a prior decision.
+
+        Assessments are append-only — each call creates a new row. An assessor
+        changing their verdict over time is itself an auditable event; prior
+        assessments are never overwritten.
+        """
+        data = await self._post(f"/v1/decisions/{decision_id}/assess", _build_assess_body(req))
+        return AssessResponse.model_validate(data)
+
+    async def list_assessments(self, decision_id: UUID) -> list[AssessResponse]:
+        """Return the full assessment history for a decision, newest first."""
+        items, _ = await self._get_list(f"/v1/decisions/{decision_id}/assessments")
+        return [AssessResponse.model_validate(a) for a in items]
+
     # --- Health (no auth) ---
 
     async def health(self) -> HealthResponse:
@@ -785,6 +815,23 @@ class AkashiSyncClient:
             ),
         )
         return [DecisionConflict.model_validate(c) for c in items]
+
+    # --- Assessments (spec 29) ---
+
+    def assess(self, decision_id: UUID, req: AssessRequest) -> AssessResponse:
+        """Record an outcome assessment for a prior decision.
+
+        Assessments are append-only — each call creates a new row. An assessor
+        changing their verdict over time is itself an auditable event; prior
+        assessments are never overwritten.
+        """
+        data = self._post(f"/v1/decisions/{decision_id}/assess", _build_assess_body(req))
+        return AssessResponse.model_validate(data)
+
+    def list_assessments(self, decision_id: UUID) -> list[AssessResponse]:
+        """Return the full assessment history for a decision, newest first."""
+        items, _ = self._get_list(f"/v1/decisions/{decision_id}/assessments")
+        return [AssessResponse.model_validate(a) for a in items]
 
     # --- Health (no auth) ---
 

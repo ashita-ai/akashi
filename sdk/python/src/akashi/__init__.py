@@ -19,6 +19,9 @@ from akashi.types import (
     AgentEvent,
     AgentRun,
     Alternative,
+    AssessOutcome,
+    AssessRequest,
+    AssessResponse,
     CheckResponse,
     CompleteRunRequest,
     CreateAgentRequest,
@@ -68,6 +71,8 @@ __all__ = [
     "CreateAgentRequest",
     "CreateGrantRequest",
     "TemporalQueryRequest",
+    "AssessOutcome",
+    "AssessRequest",
     # Types — responses
     "TraceResponse",
     "CheckResponse",
@@ -75,6 +80,7 @@ __all__ = [
     "SearchResult",
     "SearchResponse",
     "HealthResponse",
+    "AssessResponse",
     # OTEL helpers
     "trace_id_from_context",
     # Exceptions

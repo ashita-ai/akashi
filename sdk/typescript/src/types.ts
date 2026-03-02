@@ -274,3 +274,26 @@ export interface AkashiConfig {
   /** Override the auto-generated session UUID. If omitted, one is generated. */
   sessionId?: string;
 }
+
+// --- Assessment types (spec 29) ---
+
+export type AssessOutcome = "correct" | "incorrect" | "partially_correct";
+
+/** Request body for recording an outcome assessment. */
+export interface AssessRequest {
+  /** Must be "correct", "incorrect", or "partially_correct". */
+  outcome: AssessOutcome;
+  /** Optional free-text explanation. */
+  notes?: string;
+}
+
+/** Response from POST /v1/decisions/{id}/assess and element of GET /v1/decisions/{id}/assessments. */
+export interface AssessResponse {
+  id: string;
+  decision_id: string;
+  org_id: string;
+  assessor_agent_id: string;
+  outcome: AssessOutcome;
+  notes?: string;
+  created_at: string;
+}

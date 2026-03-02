@@ -312,3 +312,33 @@ class SearchResponse(BaseModel):
 
     results: list[SearchResult]
     total: int
+
+
+# --- Assessment types (spec 29) ---
+
+
+class AssessOutcome(str, Enum):
+    """The verdict an assessor records for a prior decision."""
+
+    correct = "correct"
+    incorrect = "incorrect"
+    partially_correct = "partially_correct"
+
+
+class AssessRequest(BaseModel):
+    """Request body for recording an outcome assessment."""
+
+    outcome: AssessOutcome
+    notes: str | None = None
+
+
+class AssessResponse(BaseModel):
+    """Response from POST /v1/decisions/{id}/assess and a list element from GET /v1/decisions/{id}/assessments."""
+
+    id: UUID
+    decision_id: UUID
+    org_id: UUID
+    assessor_agent_id: str
+    outcome: AssessOutcome
+    notes: str | None = None
+    created_at: datetime

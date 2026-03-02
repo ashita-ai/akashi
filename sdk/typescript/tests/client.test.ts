@@ -12,6 +12,7 @@ import {
   ValidationError,
 } from "../src/errors.js";
 import type {
+  AssessResponse,
   CheckResponse,
   Decision,
   TraceRequest,
@@ -1268,6 +1269,179 @@ describe("AkashiClient", () => {
       } catch (e) {
         expect(e).toBeInstanceOf(AuthenticationError);
         expect((e as Error).message).toBe("Authentication failed");
+      }
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Assessments (spec 29)
+  // -----------------------------------------------------------------------
+
+  describe("assess", () => {
+    beforeEach(() => {
+      mockFetch.mockResolvedValueOnce(mockResponse(200, TOKEN_RESPONSE));
+    });
+
+    it("records an assessment and returns AssessResponse", async () => {
+      const resp: AssessResponse = {
+        id: "assess-1",
+        decision_id: "dec-1",
+        org_id: "org-1",
+        assessor_agent_id: "test-agent",
+        outcome: "correct",
+        notes: "all tests passed",
+        created_at: "2024-01-01T00:00:00Z",
+      };
+      mockFetch.mockResolvedValueOnce(mockResponse(201, { data: resp }));
+
+      const result = await client.assess("dec-1", {
+        outcome: "correct",
+        notes: "all tests passed",
+      });
+
+      expect(result).toEqual(resp);
+      const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+      expect(lastCall[0]).toBe(
+        "http://localhost:8080/v1/decisions/dec-1/assess",
+      );
+      expect(lastCall[1].method).toBe("POST");
+      const body = JSON.parse(lastCall[1].body);
+      expect(body).toEqual({ outcome: "correct", notes: "all tests passed" });
+    });
+
+    it("sends assess without notes", async () => {
+      const resp: AssessResponse = {
+        id: "assess-2",
+        decision_id: "dec-2",
+        org_id: "org-1",
+        assessor_agent_id: "test-agent",
+        outcome: "incorrect",
+        created_at: "2024-01-01T00:00:00Z",
+      };
+      mockFetch.mockResolvedValueOnce(mockResponse(201, { data: resp }));
+
+      await client.assess("dec-2", { outcome: "incorrect" });
+
+      const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+      const body = JSON.parse(lastCall[1].body);
+      expect(body.notes).toBeUndefined();
+      expect(body.outcome).toBe("incorrect");
+    });
+
+    it("URL-encodes the decision ID", async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse(201, {
+          data: {
+            id: "a",
+            decision_id: "d",
+            org_id: "o",
+            assessor_agent_id: "test-agent",
+            outcome: "correct",
+            created_at: "2024-01-01T00:00:00Z",
+          },
+        }),
+      );
+
+      await client.assess("decision/with spaces", { outcome: "correct" });
+
+      const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+      expect(lastCall[0]).toBe(
+        "http://localhost:8080/v1/decisions/decision%2Fwith%20spaces/assess",
+      );
+    });
+  });
+
+  describe("listAssessments", () => {
+    beforeEach(() => {
+      mockFetch.mockResolvedValueOnce(mockResponse(200, TOKEN_RESPONSE));
+    });
+
+    it("returns assessment history newest-first", async () => {
+      const assessments: AssessResponse[] = [
+        {
+          id: "assess-1",
+          decision_id: "dec-1",
+          org_id: "org-1",
+          assessor_agent_id: "reviewer",
+          outcome: "partially_correct",
+          notes: "needs more evidence",
+          created_at: "2024-01-02T00:00:00Z",
+        },
+        {
+          id: "assess-0",
+          decision_id: "dec-1",
+          org_id: "org-1",
+          assessor_agent_id: "reviewer",
+          outcome: "correct",
+          notes: "updated verdict",
+          created_at: "2024-01-01T00:00:00Z",
+        },
+      ];
+      mockFetch.mockResolvedValueOnce(
+        mockResponse(200, {
+          data: assessments,
+          total: 2,
+          has_more: false,
+          limit: 50,
+          offset: 0,
+        }),
+      );
+
+      const result = await client.listAssessments("dec-1");
+
+      expect(result).toHaveLength(2);
+      expect(result[0].outcome).toBe("partially_correct");
+      expect(result[1].outcome).toBe("correct");
+      const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+      expect(lastCall[0]).toBe(
+        "http://localhost:8080/v1/decisions/dec-1/assessments",
+      );
+      expect(lastCall[1].method).toBe("GET");
+    });
+
+    it("returns empty array when no assessments", async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse(200, { data: [], total: 0, has_more: false }),
+      );
+
+      const result = await client.listAssessments("dec-99");
+      expect(result).toEqual([]);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // decision_type normalization (issue #254)
+  // -----------------------------------------------------------------------
+
+  describe("trace decision_type normalization", () => {
+    it("lowercases and trims decision_type before sending", async () => {
+      const cases: Array<[string, string]> = [
+        ["Architecture", "architecture"],
+        ["  SECURITY  ", "security"],
+        ["Trade_Off", "trade_off"],
+        ["code_review", "code_review"],
+      ];
+
+      for (const [raw, want] of cases) {
+        mockFetch.mockReset();
+        mockFetch
+          .mockResolvedValueOnce(mockResponse(200, TOKEN_RESPONSE))
+          .mockResolvedValueOnce(
+            mockResponse(200, {
+              data: { run_id: "r", decision_id: "d", event_count: 1 },
+            }),
+          );
+
+        await client.trace({
+          decisionType: raw,
+          outcome: "chose option",
+          confidence: 0.8,
+        });
+
+        const traceCall =
+          mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+        const body = JSON.parse(traceCall[1].body);
+        expect(body.decision.decision_type).toBe(want);
       }
     });
   });

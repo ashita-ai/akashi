@@ -428,3 +428,33 @@ type ConflictOptions struct {
 	Limit         int
 	Offset        int
 }
+
+// --- Assessment types ---
+
+// AssessOutcome is the verdict an agent records for a prior decision.
+type AssessOutcome string
+
+const (
+	AssessCorrect          AssessOutcome = "correct"
+	AssessIncorrect        AssessOutcome = "incorrect"
+	AssessPartiallyCorrect AssessOutcome = "partially_correct"
+)
+
+// AssessRequest is the input for Client.Assess.
+type AssessRequest struct {
+	// Outcome is required. Must be "correct", "incorrect", or "partially_correct".
+	Outcome AssessOutcome `json:"outcome"`
+	// Notes is optional free-text explanation.
+	Notes string `json:"notes,omitempty"`
+}
+
+// AssessResponse is the output of Client.Assess and an element of Client.ListAssessments.
+type AssessResponse struct {
+	ID              uuid.UUID     `json:"id"`
+	DecisionID      uuid.UUID     `json:"decision_id"`
+	OrgID           uuid.UUID     `json:"org_id"`
+	AssessorAgentID string        `json:"assessor_agent_id"`
+	Outcome         AssessOutcome `json:"outcome"`
+	Notes           string        `json:"notes,omitempty"`
+	CreatedAt       time.Time     `json:"created_at"`
+}

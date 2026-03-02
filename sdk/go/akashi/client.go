@@ -363,6 +363,32 @@ func (c *Client) VerifyDecision(ctx context.Context, decisionID uuid.UUID) (*Ver
 }
 
 // ---------------------------------------------------------------------------
+// Assessments
+// ---------------------------------------------------------------------------
+
+// Assess records an outcome assessment for a prior decision.
+// Assessments are append-only — each call creates a new row. An assessor
+// changing their verdict over time is itself an auditable event; prior
+// assessments are never overwritten.
+func (c *Client) Assess(ctx context.Context, decisionID uuid.UUID, req AssessRequest) (*AssessResponse, error) {
+	var resp AssessResponse
+	if err := c.post(ctx, "/v1/decisions/"+decisionID.String()+"/assess", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ListAssessments returns the full assessment history for a decision, newest first.
+// Multiple rows from the same assessor reflect verdict changes over time.
+func (c *Client) ListAssessments(ctx context.Context, decisionID uuid.UUID) ([]AssessResponse, error) {
+	var items []AssessResponse
+	if _, err := c.doGetList(ctx, "/v1/decisions/"+decisionID.String()+"/assessments", &items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// ---------------------------------------------------------------------------
 // Agent tags
 // ---------------------------------------------------------------------------
 
@@ -460,7 +486,7 @@ func buildTraceBody(agentID string, req TraceRequest) traceBody {
 	return traceBody{
 		AgentID: agentID,
 		Decision: traceDecision{
-			DecisionType: req.DecisionType,
+			DecisionType: strings.ToLower(strings.TrimSpace(req.DecisionType)),
 			Outcome:      req.Outcome,
 			Confidence:   req.Confidence,
 			Reasoning:    req.Reasoning,
