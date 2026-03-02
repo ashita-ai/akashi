@@ -12,6 +12,8 @@ import {
 import type {
   Agent,
   AgentRun,
+  AssessRequest,
+  AssessResponse,
   CheckResponse,
   CompleteRunRequest,
   CreateAgentRequest,
@@ -57,7 +59,7 @@ function buildTraceBody(
   request: TraceRequest,
 ): Record<string, unknown> {
   const decision: Record<string, unknown> = {
-    decision_type: request.decisionType,
+    decision_type: request.decisionType.trim().toLowerCase(),
     outcome: request.outcome,
     confidence: request.confidence,
   };
@@ -572,6 +574,35 @@ export class AkashiClient {
       params.set("offset", String(options.offset));
     const qs = params.toString();
     return this.get<DecisionConflict[]>(`/v1/conflicts${qs ? `?${qs}` : ""}`);
+  }
+
+  // --- Assessments (spec 29) ---
+
+  /**
+   * Record an outcome assessment for a prior decision.
+   *
+   * Assessments are append-only — each call creates a new row. An assessor
+   * changing their verdict over time is itself an auditable event; prior
+   * assessments are never overwritten.
+   */
+  async assess(
+    decisionId: string,
+    req: AssessRequest,
+  ): Promise<AssessResponse> {
+    const body: Record<string, unknown> = { outcome: req.outcome };
+    if (req.notes !== undefined) body.notes = req.notes;
+    return this.post<AssessResponse>(
+      `/v1/decisions/${encodeURIComponent(decisionId)}/assess`,
+      body,
+    );
+  }
+
+  /** Return the full assessment history for a decision, newest first. */
+  async listAssessments(decisionId: string): Promise<AssessResponse[]> {
+    const envelope = await this.getList<AssessResponse>(
+      `/v1/decisions/${encodeURIComponent(decisionId)}/assessments`,
+    );
+    return envelope.items;
   }
 
   // --- Health (no auth) ---

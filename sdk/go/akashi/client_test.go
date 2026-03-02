@@ -1803,3 +1803,186 @@ func TestDecisionDeserializesSpec31Fields(t *testing.T) {
 		t.Errorf("expected agent_context.model 'claude-opus-4-6', got %v", d.AgentContext["model"])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Assessments (spec 29)
+// ---------------------------------------------------------------------------
+
+func TestAssess(t *testing.T) {
+	decisionID := uuid.New()
+	assessmentID := uuid.New()
+	orgID := uuid.New()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	var receivedBody map[string]any
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"POST /v1/decisions/" + decisionID.String() + "/assess": func(w http.ResponseWriter, r *http.Request) {
+			if err := json.NewDecoder(r.Body).Decode(&receivedBody); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{
+					"error": map[string]any{"code": "INVALID_INPUT", "message": err.Error()},
+				})
+				return
+			}
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"data": map[string]any{
+					"id":                assessmentID,
+					"decision_id":       decisionID,
+					"org_id":            orgID,
+					"assessor_agent_id": "test-agent",
+					"outcome":           "correct",
+					"notes":             "all tests passed",
+					"created_at":        now,
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	resp, err := client.Assess(context.Background(), decisionID, AssessRequest{
+		Outcome: AssessCorrect,
+		Notes:   "all tests passed",
+	})
+	if err != nil {
+		t.Fatalf("Assess failed: %v", err)
+	}
+	if resp.ID != assessmentID {
+		t.Errorf("expected id %s, got %s", assessmentID, resp.ID)
+	}
+	if resp.DecisionID != decisionID {
+		t.Errorf("expected decision_id %s, got %s", decisionID, resp.DecisionID)
+	}
+	if resp.Outcome != AssessCorrect {
+		t.Errorf("expected outcome %q, got %q", AssessCorrect, resp.Outcome)
+	}
+	if resp.Notes != "all tests passed" {
+		t.Errorf("expected notes %q, got %q", "all tests passed", resp.Notes)
+	}
+	if resp.AssessorAgentID != "test-agent" {
+		t.Errorf("expected assessor_agent_id %q, got %q", "test-agent", resp.AssessorAgentID)
+	}
+
+	// Verify request body.
+	if outcome, ok := receivedBody["outcome"].(string); !ok || outcome != "correct" {
+		t.Errorf("expected request body outcome 'correct', got %v", receivedBody["outcome"])
+	}
+	if notes, ok := receivedBody["notes"].(string); !ok || notes != "all tests passed" {
+		t.Errorf("expected request body notes 'all tests passed', got %v", receivedBody["notes"])
+	}
+}
+
+func TestListAssessments(t *testing.T) {
+	decisionID := uuid.New()
+	orgID := uuid.New()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"GET /v1/decisions/" + decisionID.String() + "/assessments": func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"data": []map[string]any{
+					{
+						"id":                uuid.New(),
+						"decision_id":       decisionID,
+						"org_id":            orgID,
+						"assessor_agent_id": "reviewer",
+						"outcome":           "partially_correct",
+						"notes":             "needs more evidence",
+						"created_at":        now,
+					},
+					{
+						"id":                uuid.New(),
+						"decision_id":       decisionID,
+						"org_id":            orgID,
+						"assessor_agent_id": "reviewer",
+						"outcome":           "correct",
+						"notes":             "updated after review",
+						"created_at":        now.Add(-time.Hour),
+					},
+				},
+				"total":    2,
+				"has_more": false,
+				"limit":    50,
+				"offset":   0,
+			})
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	items, err := client.ListAssessments(context.Background(), decisionID)
+	if err != nil {
+		t.Fatalf("ListAssessments failed: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 assessments, got %d", len(items))
+	}
+	if items[0].Outcome != AssessPartiallyCorrect {
+		t.Errorf("expected first outcome %q, got %q", AssessPartiallyCorrect, items[0].Outcome)
+	}
+	if items[0].AssessorAgentID != "reviewer" {
+		t.Errorf("expected assessor_agent_id 'reviewer', got %q", items[0].AssessorAgentID)
+	}
+	if items[1].Outcome != AssessCorrect {
+		t.Errorf("expected second outcome %q, got %q", AssessCorrect, items[1].Outcome)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// decision_type normalization (issue #254)
+// ---------------------------------------------------------------------------
+
+func TestTraceNormalizesDecisionType(t *testing.T) {
+	var receivedBody map[string]any
+
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"POST /v1/trace": func(w http.ResponseWriter, r *http.Request) {
+			if err := json.NewDecoder(r.Body).Decode(&receivedBody); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{
+					"error": map[string]any{"code": "INVALID_INPUT", "message": err.Error()},
+				})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"data": map[string]any{
+					"run_id":      uuid.New(),
+					"decision_id": uuid.New(),
+					"event_count": 1,
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"Architecture", "architecture"},
+		{"  SECURITY  ", "security"},
+		{"Code_Review", "code_review"},
+		{"trade_off", "trade_off"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			receivedBody = nil
+			_, err := client.Trace(context.Background(), TraceRequest{
+				DecisionType: tc.input,
+				Outcome:      "chose option A",
+				Confidence:   0.8,
+			})
+			if err != nil {
+				t.Fatalf("Trace failed: %v", err)
+			}
+			decMap, ok := receivedBody["decision"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected decision object in body, got %T", receivedBody["decision"])
+			}
+			if got, _ := decMap["decision_type"].(string); got != tc.want {
+				t.Errorf("decision_type: want %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
