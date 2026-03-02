@@ -68,9 +68,31 @@ type CheckRequest struct {
 	Limit        int    `json:"limit,omitempty"`
 }
 
+// ConflictResolution summarises a resolved conflict for use in akashi_check responses.
+// It tells an agent which approach prevailed on this decision type so they can avoid
+// resurrecting the losing side of an already-resolved disagreement.
+type ConflictResolution struct {
+	ID                uuid.UUID `json:"id"`
+	DecisionType      string    `json:"decision_type"`
+	WinningDecisionID uuid.UUID `json:"winning_decision_id"`
+	WinningAgent      string    `json:"winning_agent"`
+	WinningOutcome    string    `json:"winning_outcome"`
+	LosingAgent       string    `json:"losing_agent"`
+	LosingOutcome     string    `json:"losing_outcome"`
+	Explanation       *string   `json:"explanation,omitempty"`
+	ResolutionNote    *string   `json:"resolution_note,omitempty"`
+	ResolvedAt        time.Time `json:"resolved_at"`
+}
+
 // CheckResponse is the response for POST /v1/check.
 type CheckResponse struct {
 	HasPrecedent bool               `json:"has_precedent"`
 	Decisions    []Decision         `json:"decisions"`
 	Conflicts    []DecisionConflict `json:"conflicts,omitempty"`
+	// PriorResolutions contains recently resolved conflicts for the requested
+	// decision type. Each entry shows which approach was formally chosen
+	// (winning_outcome / winning_agent) and which was rejected
+	// (losing_outcome / losing_agent). Use winning_decision_id as precedent_ref
+	// in akashi_trace to build on the validated approach.
+	PriorResolutions []ConflictResolution `json:"prior_resolutions,omitempty"`
 }

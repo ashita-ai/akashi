@@ -181,6 +181,7 @@ func New(cfg ServerConfig) *Server {
 
 	// Conflicts (reader+ for list, agent+ for adjudicate/patch).
 	mux.Handle("GET /v1/conflicts", readRole(http.HandlerFunc(h.HandleListConflicts)))
+	mux.Handle("GET /v1/conflict-groups", readRole(http.HandlerFunc(h.HandleListConflictGroups)))
 	mux.Handle("POST /v1/conflicts/{id}/adjudicate", writeRole(http.HandlerFunc(h.HandleAdjudicateConflict)))
 	mux.Handle("PATCH /v1/conflicts/{id}", writeRole(http.HandlerFunc(h.HandlePatchConflict)))
 

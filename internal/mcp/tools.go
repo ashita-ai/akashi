@@ -39,10 +39,18 @@ WHAT YOU GET BACK:
 - has_precedent: whether any relevant prior decisions exist
 - decisions: the most relevant prior decisions (up to limit)
 - conflicts: any active conflicts in this decision area
+- prior_resolutions: resolved conflicts for this decision type that had a
+  declared winner. Each entry shows winning_outcome (the approach that
+  prevailed), winning_agent, losing_outcome (the approach that was rejected),
+  and winning_decision_id. Use winning_decision_id as precedent_ref in
+  akashi_trace to build explicitly on the validated approach. This is the
+  mechanism that prevents agents from resurrecting losing approaches after
+  a conflict has been formally resolved.
 - precedent_ref_hint: UUID to copy into akashi_trace's precedent_ref field
 
 decision_type is optional. When omitted the search spans all types —
 useful when you're not sure how past decisions were categorized.
+prior_resolutions are only returned when decision_type is specified.
 
 EXAMPLE: Before choosing a caching strategy, call akashi_check with
 query="caching strategy for session data" to find relevant precedents
@@ -461,14 +469,24 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 		note := buildConsensusNote(c, agreementCounts)
 		compactConfs[i] = compactConflict(c, note)
 	}
+	compactResolutions := make([]map[string]any, len(resp.PriorResolutions))
+	for i, r := range resp.PriorResolutions {
+		compactResolutions[i] = compactResolution(r)
+	}
+
+	summary := generateCheckSummary(resp.Decisions, resp.Conflicts)
+	if len(resp.PriorResolutions) > 0 {
+		summary += fmt.Sprintf(" %d prior conflict(s) for this decision type were formally resolved; winning approach(es) listed in prior_resolutions.", len(resp.PriorResolutions))
+	}
 
 	result := map[string]any{
-		"has_precedent":  resp.HasPrecedent,
-		"summary":        generateCheckSummary(resp.Decisions, resp.Conflicts),
-		"action_needed":  actionNeeded(resp.Conflicts),
-		"relevant_count": len(resp.Decisions),
-		"decisions":      compactDecs,
-		"conflicts":      compactConfs,
+		"has_precedent":     resp.HasPrecedent,
+		"summary":           summary,
+		"action_needed":     actionNeeded(resp.Conflicts),
+		"relevant_count":    len(resp.Decisions),
+		"decisions":         compactDecs,
+		"conflicts":         compactConfs,
+		"prior_resolutions": compactResolutions,
 	}
 
 	// precedent_ref_hint: the UUID of the best candidate for precedent_ref in the
@@ -937,62 +955,89 @@ func (s *Server) handleConflicts(ctx context.Context, request mcplib.CallToolReq
 	}
 
 	limit := request.GetInt("limit", 10)
+	format := request.GetString("format", "concise")
 
-	filters := storage.ConflictFilters{}
+	// Build group filters. The MCP tool defaults to open+acknowledged groups so
+	// agents see actionable disagreements, not resolved history.
+	statusFilter := request.GetString("status", "")
+	groupFilters := storage.ConflictGroupFilters{
+		OpenOnly: statusFilter == "" || statusFilter == "open" || statusFilter == "acknowledged",
+	}
 	if dt := request.GetString("decision_type", ""); dt != "" {
-		filters.DecisionType = &dt
+		groupFilters.DecisionType = &dt
 	}
 	if aid := request.GetString("agent_id", ""); aid != "" {
-		filters.AgentID = &aid
-	}
-	if st := request.GetString("status", ""); st != "" {
-		filters.Status = &st
-	}
-	if sev := request.GetString("severity", ""); sev != "" {
-		filters.Severity = &sev
-	}
-	if cat := request.GetString("category", ""); cat != "" {
-		filters.Category = &cat
+		groupFilters.AgentID = &aid
 	}
 
-	conflicts, err := s.db.ListConflicts(ctx, orgID, filters, limit, 0)
+	// Use the category/severity filters from the request to post-filter on the
+	// representative conflict — they are not group-level columns.
+	severityFilter := request.GetString("severity", "")
+	categoryFilter := request.GetString("category", "")
+
+	groups, err := s.db.ListConflictGroups(ctx, orgID, groupFilters, limit, 0)
 	if err != nil {
-		return errorResult(fmt.Sprintf("list conflicts failed: %v", err)), nil
+		return errorResult(fmt.Sprintf("list conflict groups failed: %v", err)), nil
 	}
 
-	// Apply access filtering.
-	if claims != nil {
-		conflicts, err = authz.FilterConflicts(ctx, s.db, claims, conflicts, s.grantCache)
+	// Post-filter by severity/category on the representative conflict.
+	if severityFilter != "" || categoryFilter != "" {
+		var filtered []model.ConflictGroup
+		for _, g := range groups {
+			if g.Representative == nil {
+				continue
+			}
+			if severityFilter != "" && (g.Representative.Severity == nil || *g.Representative.Severity != severityFilter) {
+				continue
+			}
+			if categoryFilter != "" && (g.Representative.Category == nil || *g.Representative.Category != categoryFilter) {
+				continue
+			}
+			filtered = append(filtered, g)
+		}
+		groups = filtered
+	}
+
+	// Access filtering: keep groups whose representative conflict passes the authz check.
+	// This mirrors the pattern in handleConflicts for individual pairs.
+	if claims != nil && len(groups) > 0 {
+		// Extract representative conflicts for the authz filter.
+		reps := make([]model.DecisionConflict, 0, len(groups))
+		for _, g := range groups {
+			if g.Representative != nil {
+				reps = append(reps, *g.Representative)
+			}
+		}
+		allowed, err := authz.FilterConflicts(ctx, s.db, claims, reps, s.grantCache)
 		if err != nil {
 			return errorResult(fmt.Sprintf("authorization check failed: %v", err)), nil
 		}
-	}
-
-	// Default to open+acknowledged if no status filter was provided.
-	if request.GetString("status", "") == "" {
-		var actionable []model.DecisionConflict
-		for _, c := range conflicts {
-			if c.Status == "open" || c.Status == "acknowledged" {
-				actionable = append(actionable, c)
+		allowedIDs := make(map[string]bool, len(allowed))
+		for _, c := range allowed {
+			allowedIDs[c.ID.String()] = true
+		}
+		var accessible []model.ConflictGroup
+		for _, g := range groups {
+			if g.Representative == nil || allowedIDs[g.Representative.ID.String()] {
+				accessible = append(accessible, g)
 			}
 		}
-		conflicts = actionable
+		groups = accessible
 	}
 
-	if conflicts == nil {
-		conflicts = []model.DecisionConflict{}
+	if groups == nil {
+		groups = []model.ConflictGroup{}
 	}
 
-	format := request.GetString("format", "concise")
 	var payload any
 	if format == "full" {
-		payload = map[string]any{"conflicts": conflicts, "total": len(conflicts)}
+		payload = map[string]any{"conflicts": groups, "total": len(groups)}
 	} else {
-		compact := make([]map[string]any, len(conflicts))
-		for i, c := range conflicts {
-			compact[i] = compactConflict(c, "")
+		compact := make([]map[string]any, len(groups))
+		for i, g := range groups {
+			compact[i] = compactConflictGroup(g)
 		}
-		payload = map[string]any{"conflicts": compact, "total": len(conflicts)}
+		payload = map[string]any{"conflicts": compact, "total": len(groups)}
 	}
 
 	resultData, _ := json.MarshalIndent(payload, "", "  ")

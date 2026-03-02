@@ -142,6 +142,40 @@ func compactConflict(c model.DecisionConflict, consensusNote string) map[string]
 	return m
 }
 
+// compactConflictGroup renders a ConflictGroup for the MCP concise format.
+// Shows the group identity (agents, type, count) and key fields from the
+// representative conflict so agents understand what the disagreement is about
+// without scanning N×M pairwise rows.
+func compactConflictGroup(g model.ConflictGroup) map[string]any {
+	m := map[string]any{
+		"id":             g.ID,
+		"agent_a":        g.AgentA,
+		"agent_b":        g.AgentB,
+		"conflict_kind":  g.ConflictKind,
+		"decision_type":  g.DecisionType,
+		"conflict_count": g.ConflictCount,
+		"open_count":     g.OpenCount,
+		"first_detected": g.FirstDetectedAt,
+		"last_detected":  g.LastDetectedAt,
+	}
+	if g.Representative != nil {
+		r := g.Representative
+		if r.Severity != nil {
+			m["severity"] = *r.Severity
+		}
+		if r.Category != nil {
+			m["category"] = *r.Category
+		}
+		if r.Explanation != nil && *r.Explanation != "" {
+			m["explanation"] = *r.Explanation
+		}
+		m["outcome_a"] = truncate(r.OutcomeA, maxCompactReasoning)
+		m["outcome_b"] = truncate(r.OutcomeB, maxCompactReasoning)
+		m["status"] = r.Status
+	}
+	return m
+}
+
 // compactSearchResult wraps a search result with its similarity score.
 func compactSearchResult(r model.SearchResult) map[string]any {
 	m := compactDecision(r.Decision)
@@ -296,6 +330,28 @@ func decisionAgreementCount(decisions []model.Decision, id uuid.UUID) int {
 		}
 	}
 	return 0
+}
+
+// compactResolution returns a minimal representation of a ConflictResolution
+// for the akashi_check concise response. Truncates long outcomes so agents
+// get a clear signal without being buried in text.
+func compactResolution(r model.ConflictResolution) map[string]any {
+	m := map[string]any{
+		"decision_type":       r.DecisionType,
+		"winning_decision_id": r.WinningDecisionID,
+		"winning_agent":       r.WinningAgent,
+		"winning_outcome":     truncate(r.WinningOutcome, maxCompactReasoning),
+		"losing_agent":        r.LosingAgent,
+		"losing_outcome":      truncate(r.LosingOutcome, maxCompactReasoning),
+		"resolved_at":         r.ResolvedAt,
+	}
+	if r.Explanation != nil && *r.Explanation != "" {
+		m["explanation"] = *r.Explanation
+	}
+	if r.ResolutionNote != nil && *r.ResolutionNote != "" {
+		m["resolution_note"] = *r.ResolutionNote
+	}
+	return m
 }
 
 // actionNeeded returns true if there are open critical/high conflicts.

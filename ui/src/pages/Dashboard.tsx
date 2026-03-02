@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { getRecentDecisions, listAgents, listConflicts, getTraceHealth } from "@/lib/api";
+import { getRecentDecisions, listAgents, getTraceHealth } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -28,10 +28,6 @@ export default function Dashboard() {
   const agents = useQuery({
     queryKey: ["dashboard", "agents"],
     queryFn: listAgents,
-  });
-  const conflicts = useQuery({
-    queryKey: ["dashboard", "conflicts"],
-    queryFn: () => listConflicts({ limit: 1 }),
   });
   const traceHealth = useQuery({
     queryKey: ["dashboard", "trace-health"],
@@ -92,14 +88,14 @@ export default function Dashboard() {
               <AlertTriangle className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              {conflicts.isPending ? (
+              {traceHealth.isPending ? (
                 <Skeleton className="h-8 w-12" />
               ) : (
                 <div className="text-2xl font-bold">
-                  {conflicts.data?.total ?? 0}
+                  {traceHealth.data?.conflicts?.open ?? 0}
                 </div>
               )}
-              <p className="text-xs text-muted-foreground">detected</p>
+              <p className="text-xs text-muted-foreground">need attention</p>
             </CardContent>
           </Card>
         </Link>
