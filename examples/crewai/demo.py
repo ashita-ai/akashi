@@ -15,6 +15,9 @@ Force a specific scenario (0–3):
 
 With real LLM agents (CrewAI + OpenAI):
     OPENAI_API_KEY=sk-... python demo.py --live
+
+Skip semantic-search pre-flight (if you know your setup has embeddings):
+    python demo.py --no-verify --scenario 2
 """
 from __future__ import annotations
 
@@ -227,9 +230,10 @@ SCENARIOS = [
             "label": "Data Engineer",
             "confidence": 0.87,
             "outcome": (
-                "Adopt ClickHouse as the observability store. Columnar MergeTree engine "
-                "handles 2TB/day ingest with P99 query latency under 200ms. Kafka to "
-                "ClickHouse via native connector, Grafana for dashboards."
+                "Adopt ClickHouse as the ONLY observability store for this platform. "
+                "Do NOT use TimescaleDB for this workload: at 2TB/day ingest and "
+                "13-month hot retention, a row-oriented Postgres stack will become the "
+                "bottleneck and miss dashboard latency targets."
             ),
             "reasoning": textwrap.dedent("""\
                 Observability data has a well-understood access pattern: append-only
@@ -263,9 +267,10 @@ SCENARIOS = [
             "label": "SRE Lead",
             "confidence": 0.83,
             "outcome": (
-                "Use TimescaleDB (PostgreSQL + TimescaleDB extension). The team already "
-                "operates PostgreSQL — hypertables, continuous aggregates, and compression "
-                "cover our requirements. No new database paradigm, no new on-call runbook."
+                "Use TimescaleDB (PostgreSQL + TimescaleDB extension) as the ONLY "
+                "observability store for this platform. Do NOT introduce ClickHouse: "
+                "operational complexity and new failure modes outweigh the latency gain "
+                "for a 4-engineer team."
             ),
             "reasoning": textwrap.dedent("""\
                 Every database you add to your stack is a new thing that pages you at 3am.
@@ -486,6 +491,15 @@ class _AkashiDemo:
         self._client = httpx.Client(timeout=30.0)
         self._jwt = self._authenticate(api_key)
 
+    def _check_search_enabled(self) -> bool:
+        """Verify semantic search (embeddings + Qdrant) is ready. Required for conflict detection."""
+        resp = self._client.get(f"{AKASHI_URL}/config")
+        if resp.status_code != 200:
+            return False
+        payload = resp.json()
+        data = payload.get("data", {})
+        return bool(data.get("search_enabled", False))
+
     def _authenticate(self, api_key: str) -> str:
         resp = self._client.post(
             f"{AKASHI_URL}/auth/token",
@@ -530,8 +544,8 @@ class _AkashiDemo:
         self,
         agent_ids: list[str],
         decision_type: str,
-        timeout: int = 60,
-        interval: float = 2.5,
+        timeout: int = 90,
+        interval: float = 2.0,
     ) -> list[dict]:
         deadline = time.time() + timeout
         spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -611,8 +625,9 @@ def _run_live_agent(
 # Main demo
 # ---------------------------------------------------------------------------
 
-def _parse_args() -> tuple[bool, dict]:
+def _parse_args() -> tuple[bool, bool, dict]:
     live = "--live" in sys.argv
+    no_verify = "--no-verify" in sys.argv
 
     scenario: dict | None = None
     if "--scenario" in sys.argv:
@@ -629,11 +644,11 @@ def _parse_args() -> tuple[bool, dict]:
     if scenario is None:
         scenario = random.choice(SCENARIOS)
 
-    return live, scenario
+    return live, no_verify, scenario
 
 
 def main() -> None:
-    live, scenario = _parse_args()
+    live, no_verify, scenario = _parse_args()
 
     if live and not os.environ.get("OPENAI_API_KEY"):
         sys.exit(
@@ -641,16 +656,36 @@ def main() -> None:
             "Run without --live for the pre-scripted demo (no API key needed)."
         )
 
+    admin_key = _load_admin_key()
+    akashi = _AkashiDemo(admin_key)
+
+    # Pre-flight: conflict detection requires embeddings + Qdrant. Without it, no conflicts.
+    if not no_verify and not akashi._check_search_enabled():
+        akashi.close()
+        sys.exit(
+            "ERROR: Semantic search is disabled (search_enabled=false).\n"
+            "\n"
+            "You need Akashi with Qdrant + embeddings. Use the complete stack:\n"
+            "\n"
+            "  docker compose -f docker-compose.complete.yml up -d\n"
+            "  # Wait for models (5–15 min first run):\n"
+            "  docker compose -f docker-compose.complete.yml logs -f ollama-init\n"
+            "\n"
+            "Then: export AKASHI_ADMIN_API_KEY=admin && python demo.py --scenario 2\n"
+            "\n"
+            "To skip this check: python demo.py --no-verify --scenario 2  (conflicts may not appear)\n"
+        )
+
     agent_a = scenario["agent_a"]
     agent_b = scenario["agent_b"]
     decision_type = scenario["decision_type"]
+    run_suffix = str(int(time.time()))
+    agent_a_run_id = f"{agent_a['id']}-{run_suffix}"
+    agent_b_run_id = f"{agent_b['id']}-{run_suffix}"
 
     _banner(scenario["id"])
 
-    # ── Auth ──────────────────────────────────────────────────────────────
-    _step("🔑", "Authenticating with Akashi...")
-    akashi = _AkashiDemo(_load_admin_key())
-    _step("✓", f"Connected  →  {AKASHI_URL}", GREEN)
+    _step("🔑", f"Connected  →  {AKASHI_URL}", GREEN)
 
     # ── Scenario ──────────────────────────────────────────────────────────
     _section("THE SCENARIO")
@@ -685,7 +720,7 @@ def main() -> None:
 
     _step("📡", "Tracing decision to Akashi...")
     decision_a = akashi.trace(
-        agent_id=agent_a["id"],
+        agent_id=agent_a_run_id,
         decision_type=decision_type,
         outcome=outcome_a,
         reasoning=reasoning_a.strip(),
@@ -693,9 +728,11 @@ def main() -> None:
     )
     _step("✓", f"Recorded  decision_id={decision_a}", GREEN)
 
-    # Give the embedding pipeline time to index decision A before B arrives.
-    # The conflict detector needs A in the ANN index to find it when scoring B.
-    time.sleep(4.0)
+    # Give the outbox worker time to sync A to Qdrant before B is traced.
+    # Conflict detection queries Qdrant for similar decisions; A must be indexed.
+    # Outbox polls every 1s; 10s allows for Docker cold-start and model loading.
+    delay = float(os.environ.get("DEMO_OUTBOX_DELAY_SEC", "10"))
+    time.sleep(delay)
 
     # ── Agent B ───────────────────────────────────────────────────────────
     _section(f"AGENT 2  ·  {agent_b['id']}")
@@ -720,7 +757,7 @@ def main() -> None:
 
     _step("📡", "Tracing decision to Akashi...")
     decision_b = akashi.trace(
-        agent_id=agent_b["id"],
+        agent_id=agent_b_run_id,
         decision_type=decision_type,
         outcome=outcome_b,
         reasoning=reasoning_b.strip(),
@@ -736,17 +773,18 @@ def main() -> None:
     _step("🧠", "LLM validator classifying relationship (contradiction / supersession)...")
     print()
 
+    poll_timeout = int(os.environ.get("DEMO_CONFLICT_TIMEOUT_SEC", "90"))
     conflicts = akashi.poll_conflicts(
-        agent_ids=[agent_a["id"], agent_b["id"]],
+        agent_ids=[agent_a_run_id, agent_b_run_id],
         decision_type=decision_type,
-        timeout=60,
-        interval=2.5,
+        timeout=poll_timeout,
+        interval=2.0,
     )
 
     if conflicts:
         c = conflicts[0]
-        ca_id = c.get("agent_a", agent_a["id"])
-        cb_id = c.get("agent_b", agent_b["id"])
+        ca_id = c.get("agent_a", agent_a_run_id)
+        cb_id = c.get("agent_b", agent_b_run_id)
         outcome_ca = c.get("outcome_a", outcome_a)
         outcome_cb = c.get("outcome_b", outcome_b)
         similarity = c.get("topic_similarity")
@@ -792,17 +830,17 @@ def main() -> None:
 
     else:
         print()
-        _step(
-            "ℹ",
-            "Conflict not yet detected (LLM validator may still be processing).",
-            YELLOW,
-        )
+        _step("ℹ", f"No conflict detected after {poll_timeout}s poll.", YELLOW)
         print()
         print("  Both decisions were recorded successfully. Check the dashboard:")
         print(f"  → {_c('http://localhost:8080/decisions', BOLD, CYAN)}")
         print()
-        print(_c("  Tip: conflict detection requires an embedding model.", DIM))
-        print(_c("  Set OLLAMA_HOST or OPENAI_API_KEY in akashi/.env to enable it.", DIM))
+        print(_c("  Why no conflict? Common causes:", BOLD))
+        print(_c("  • Docker: ollama-init still pulling models? Logs: docker compose -f docker-compose.complete.yml logs ollama-init", DIM))
+        print(_c("  • Embeddings disabled: need QDRANT_URL + OLLAMA or OPENAI_API_KEY", DIM))
+        print(_c("  • Live mode: LLM outputs may be too similar (low outcome divergence)", DIM))
+        print(_c("  • LLM validator: classifier may say 'complementary'", DIM))
+        print(_c("  • Try pre-scripted mode: python demo.py --scenario 2  (no --live)", DIM))
         print()
 
     akashi.close()
