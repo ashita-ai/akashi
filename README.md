@@ -214,10 +214,13 @@ The fastest way to use Akashi is through MCP. Your agent gains decision tracing 
 ### Claude Code (simplest)
 
 ```bash
-# Get a token first
+# Get a token first.
+# - docker-compose.complete.yml default: admin
+# - docker-compose.yml with docker/env.example default: changeme
+AKASHI_ADMIN_API_KEY="${AKASHI_ADMIN_API_KEY:-changeme}"
 TOKEN=$(curl -s -X POST http://localhost:8080/auth/token \
   -H 'Content-Type: application/json' \
-  -d '{"agent_id": "admin", "api_key": "admin"}' | jq -r '.data.token')
+  -d "{\"agent_id\":\"admin\",\"api_key\":\"$AKASHI_ADMIN_API_KEY\"}" | jq -r '.data.token')
 
 # Add globally (all projects on this machine)
 claude mcp add --transport http --scope user akashi http://localhost:8080/mcp \
