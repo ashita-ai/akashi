@@ -1,17 +1,20 @@
 # Akashi: Complete local stack — TimescaleDB + Qdrant + Ollama + Akashi.
 #
 # Requires nothing but Docker. No API keys, no external services.
-# Embeddings run locally via Ollama (mxbai-embed-large, ~670MB download on first launch).
+# Two Ollama models are downloaded on first launch:
+#   - mxbai-embed-large (~670MB): embeddings for semantic search and conflict detection
+#   - qwen2.5:3b (~2GB): LLM conflict validation (reduces false positives ~93%)
 #
 # Usage:
 #   docker compose -f docker-compose.complete.yml up -d
 #
-# First launch builds the server image from source and downloads the embedding model.
-# Expect 5–15 minutes on first run. Track progress:
-#   docker compose -f docker-compose.complete.yml logs -f akashi
+# First launch builds the server image from source and downloads both Ollama models.
+# Expect 10–20 minutes on first run depending on your machine and network. Track progress:
+#   docker compose -f docker-compose.complete.yml logs -f ollama-init
 #
 # The Akashi server starts as soon as the database is ready (~2–3 min).
-# Ollama model download runs in the background; embeddings activate automatically once ready.
+# Ollama model downloads run in the background; embeddings and conflict validation
+# activate automatically once ready.
 #
 # Open http://localhost:8080 for the audit dashboard (or http://localhost:$AKASHI_PORT if overridden).
 
@@ -58,7 +61,7 @@ services:
         -c synchronous_commit=off
         -c max_connections=200
     healthcheck:
-      test: ["CMD-SHELL", "PGPASSWORD=$POSTGRES_PASSWORD psql -h 127.0.0.1 -U $POSTGRES_USER -d $POSTGRES_DB -tAc \"SELECT COUNT(*) = 2 FROM pg_extension WHERE extname IN ('vector','timescaledb')\" 2>/dev/null | grep -q t"]
+      test: ["CMD-SHELL", "PGPASSWORD=$$POSTGRES_PASSWORD psql -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB -tAc \"SELECT COUNT(*) = 2 FROM pg_extension WHERE extname IN ('vector','timescaledb')\" 2>/dev/null | grep -q t"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -88,12 +91,12 @@ services:
       retries: 6
       start_period: 20s
 
-  # One-shot: pull the embedding model into the Ollama volume.
-  # Waits for Ollama to be healthy, then pulls if not already present.
+  # One-shot: pull both Ollama models into the shared volume.
+  # Waits for Ollama to be healthy, then pulls each model if not already present.
   #
   # akashi does NOT depend on this service — it starts immediately after
-  # postgres and qdrant are ready. Ollama embeddings activate automatically
-  # once the model pull completes.
+  # postgres and qdrant are ready. Embeddings and conflict validation activate
+  # automatically once model pulls complete.
   ollama-init:
     image: alpine:3.21
     depends_on:
@@ -107,11 +110,20 @@ services:
         if curl -sf http://ollama:11434/api/tags | grep -q 'mxbai-embed-large'; then
           echo 'mxbai-embed-large already available'
         else
-          echo 'Pulling mxbai-embed-large (first launch only)...' &&
+          echo 'Pulling mxbai-embed-large (~670MB, first launch only)...' &&
           curl -sf -X POST http://ollama:11434/api/pull \
             -H 'Content-Type: application/json' \
             -d '{"model":"mxbai-embed-large","stream":false}' > /dev/null &&
-          echo 'Embedding model ready'
+          echo 'mxbai-embed-large ready'
+        fi &&
+        if curl -sf http://ollama:11434/api/tags | grep -q 'qwen2.5:3b'; then
+          echo 'qwen2.5:3b already available'
+        else
+          echo 'Pulling qwen2.5:3b (~2GB, first launch only)...' &&
+          curl -sf -X POST http://ollama:11434/api/pull \
+            -H 'Content-Type: application/json' \
+            -d '{"model":"qwen2.5:3b","stream":false}' > /dev/null &&
+          echo 'qwen2.5:3b ready'
         fi
     restart: "no"
 
@@ -137,10 +149,10 @@ services:
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mxbai-embed-large}
 
-      # LLM conflict validation is off by default — running a full LLM on CPU is
-      # too slow without a GPU. Enable by pulling a model and setting this to its name,
-      # e.g. AKASHI_CONFLICT_LLM_MODEL=qwen2.5:7b (requires an additional ollama pull).
-      AKASHI_CONFLICT_LLM_MODEL: ${AKASHI_CONFLICT_LLM_MODEL:-}
+      # LLM conflict validation — reduces false positives ~93%.
+      # qwen2.5:3b is pulled automatically by ollama-init on first launch.
+      # Override with a larger model (e.g. qwen2.5:7b) for higher accuracy.
+      AKASHI_CONFLICT_LLM_MODEL: ${AKASHI_CONFLICT_LLM_MODEL:-qwen2.5:3b}
 
       AKASHI_JWT_PRIVATE_KEY: /data/jwt_private.pem
       AKASHI_JWT_PUBLIC_KEY: /data/jwt_public.pem

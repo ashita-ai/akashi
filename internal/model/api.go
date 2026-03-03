@@ -64,35 +64,56 @@ func ValidateTraceDecision(d TraceDecision) error {
 	return nil
 }
 
-// ValidateSourceURI ensures a source_uri is a safe, publicly-routable http/https URL.
-// Rejects javascript: and file: schemes (XSS via UI), credentials embedded in
-// the URL, and private/loopback addresses (future SSRF surface).
+// ValidateSourceURI validates a source_uri in evidence.
+// source_uri is stored metadata — the server never fetches it — so the only
+// security concern is XSS if the value is rendered as a hyperlink in the UI.
+//
+// Blocked: javascript:, data:, vbscript: (execute scripts when used as link href).
+// Allowed: no scheme (relative paths like "adrs/007.md"), file:, http:, https:, and
+// all other schemes.
+// For http/https: credentials and private/loopback addresses are also rejected as
+// defense-in-depth.
 func ValidateSourceURI(rawURI string) error {
 	u, err := url.Parse(rawURI)
 	if err != nil {
 		return fmt.Errorf("invalid URI: %w", err)
 	}
+
 	scheme := strings.ToLower(u.Scheme)
-	if scheme != "http" && scheme != "https" {
-		return fmt.Errorf("source_uri must use http or https scheme (got %q)", u.Scheme)
+
+	// Reject schemes that execute scripts when used as a hyperlink href.
+	switch scheme {
+	case "javascript", "data", "vbscript":
+		return fmt.Errorf("source_uri scheme %q is not allowed", u.Scheme)
 	}
-	if u.User != nil {
-		return fmt.Errorf("source_uri must not include credentials")
+
+	// No scheme — relative paths like "adrs/007.md" or bare filenames. Safe.
+	if scheme == "" {
+		return nil
 	}
-	host := u.Hostname()
-	if host == "" {
-		return fmt.Errorf("source_uri must include a host")
-	}
-	if strings.EqualFold(host, "localhost") {
-		return fmt.Errorf("source_uri must not point to localhost")
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		for _, r := range privateIPRanges {
-			if r.Contains(ip) {
-				return fmt.Errorf("source_uri must not point to a private or loopback address")
+
+	// For http/https apply additional checks: no embedded credentials, no
+	// private-network targets (defense-in-depth; the server never fetches URIs).
+	if scheme == "http" || scheme == "https" {
+		if u.User != nil {
+			return fmt.Errorf("source_uri must not include credentials")
+		}
+		host := u.Hostname()
+		if host == "" {
+			return fmt.Errorf("source_uri must include a host")
+		}
+		if strings.EqualFold(host, "localhost") {
+			return fmt.Errorf("source_uri must not point to localhost")
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			for _, r := range privateIPRanges {
+				if r.Contains(ip) {
+					return fmt.Errorf("source_uri must not point to a private or loopback address")
+				}
 			}
 		}
 	}
+
 	return nil
 }
 

@@ -84,15 +84,15 @@ Everything runs in Docker — TimescaleDB, Qdrant, Ollama, and the Akashi server
 docker compose -f docker-compose.complete.yml up -d
 ```
 
-**First launch builds the server image from source and downloads the Ollama embedding model (~670MB).** Expect 5–15 minutes on first run depending on your machine and network. Subsequent launches start in seconds.
+**First launch builds the server image from source and downloads two Ollama models: `mxbai-embed-large` (~670MB) for embeddings and `qwen2.5:3b` (~2GB) for LLM conflict validation.** Expect 10–20 minutes on first run depending on your machine and network. Subsequent launches start in seconds.
 
-Watch akashi come up:
+Watch model download progress:
 
 ```bash
-docker compose -f docker-compose.complete.yml logs -f akashi
+docker compose -f docker-compose.complete.yml logs -f ollama-init
 ```
 
-The server is ready when you see a `listening` log line. The Ollama model download continues in the background — embeddings activate automatically once it completes.
+The server is ready when you see a `listening` log line. Model downloads run in the background — embeddings and conflict validation activate automatically once complete.
 
 ```bash
 curl http://localhost:8080/health
@@ -214,10 +214,13 @@ The fastest way to use Akashi is through MCP. Your agent gains decision tracing 
 ### Claude Code (simplest)
 
 ```bash
-# Get a token first
+# Get a token first.
+# - docker-compose.complete.yml default: admin
+# - docker-compose.yml with docker/env.example default: changeme
+AKASHI_ADMIN_API_KEY="${AKASHI_ADMIN_API_KEY:-changeme}"
 TOKEN=$(curl -s -X POST http://localhost:8080/auth/token \
   -H 'Content-Type: application/json' \
-  -d '{"agent_id": "admin", "api_key": "admin"}' | jq -r '.data.token')
+  -d "{\"agent_id\":\"admin\",\"api_key\":\"$AKASHI_ADMIN_API_KEY\"}" | jq -r '.data.token')
 
 # Add globally (all projects on this machine)
 claude mcp add --transport http --scope user akashi http://localhost:8080/mcp \

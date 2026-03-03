@@ -587,7 +587,11 @@ class _AkashiDemo:
 # ---------------------------------------------------------------------------
 
 def _run_live_agent(
-    role: str, goal: str, backstory: str, task_description: str
+    role: str,
+    goal: str,
+    backstory: str,
+    task_description: str,
+    position_hint: str | None = None,
 ) -> tuple[str, str]:
     """Run a real CrewAI agent and return (outcome_summary, full_reasoning)."""
     try:
@@ -602,8 +606,12 @@ def _run_live_agent(
         verbose=False,
         allow_delegation=False,
     )
+    full_description = task_description
+    if position_hint:
+        full_description += "\n\nConstraint:\n" + position_hint
+
     task = Task(
-        description=task_description,
+        description=full_description,
         expected_output=(
             "A clear recommendation with your reasoning. "
             "Start with 'RECOMMENDATION:' followed by a one-sentence summary, "
@@ -702,12 +710,20 @@ def main() -> None:
     print()
 
     if live:
+        hint_a = None
+        if scenario["id"] == "service_auth":
+            hint_a = (
+                "You MUST recommend mTLS/SPIFFE as the primary service-to-service "
+                "authentication strategy, and explicitly reject OAuth2 client credentials "
+                "as the primary approach."
+            )
         _step("🤔", f"Analyzing as {agent_a['role']} with LLM...")
         outcome_a, reasoning_a = _run_live_agent(
             role=agent_a["role"],
             goal=agent_a["goal"],
             backstory=agent_a["backstory"],
             task_description=scenario["description"],
+            position_hint=hint_a,
         )
     else:
         _step("🤔", "Analyzing requirements...")
@@ -739,12 +755,20 @@ def main() -> None:
     print()
 
     if live:
+        hint_b = None
+        if scenario["id"] == "service_auth":
+            hint_b = (
+                "You MUST recommend OAuth2 client credentials as the primary "
+                "service-to-service authentication strategy, and explicitly reject "
+                "mTLS/SPIFFE as the primary approach."
+            )
         _step("🤔", f"Analyzing as {agent_b['role']} with LLM (independent context)...")
         outcome_b, reasoning_b = _run_live_agent(
             role=agent_b["role"],
             goal=agent_b["goal"],
             backstory=agent_b["backstory"],
             task_description=scenario["description"],
+            position_hint=hint_b,
         )
     else:
         _step("🤔", "Analyzing requirements (independent context)...")

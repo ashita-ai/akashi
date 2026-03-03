@@ -107,7 +107,7 @@ func TestValidateTraceDecision_SecondEvidenceItemFails(t *testing.T) {
 		Outcome:      "ok",
 		Evidence: []model.TraceEvidence{
 			{SourceType: "document", SourceURI: ptr("https://ok.example.com"), Content: "good"},
-			{SourceType: "document", SourceURI: ptr("file:///etc/passwd"), Content: "bad"},
+			{SourceType: "document", SourceURI: ptr("javascript:alert(1)"), Content: "bad"},
 		},
 	}
 	err := model.ValidateTraceDecision(d)
@@ -137,25 +137,38 @@ func TestValidateSourceURI_ValidPublicIP(t *testing.T) {
 func TestValidateSourceURI_JavascriptSchemeRejected(t *testing.T) {
 	err := model.ValidateSourceURI("javascript:alert(1)")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "http or https")
+	assert.Contains(t, err.Error(), "not allowed")
 }
 
-func TestValidateSourceURI_FileSchemeRejected(t *testing.T) {
-	err := model.ValidateSourceURI("file:///etc/passwd")
+func TestValidateSourceURI_DataSchemeRejected(t *testing.T) {
+	err := model.ValidateSourceURI("data:text/html,<script>alert(1)</script>")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "http or https")
+	assert.Contains(t, err.Error(), "not allowed")
 }
 
-func TestValidateSourceURI_NoSchemeRejected(t *testing.T) {
-	err := model.ValidateSourceURI("example.com/path")
+func TestValidateSourceURI_VBScriptSchemeRejected(t *testing.T) {
+	err := model.ValidateSourceURI("vbscript:msgbox(1)")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "http or https")
+	assert.Contains(t, err.Error(), "not allowed")
 }
 
-func TestValidateSourceURI_FTPSchemeRejected(t *testing.T) {
-	err := model.ValidateSourceURI("ftp://files.example.com/file.txt")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "http or https")
+func TestValidateSourceURI_FileSchemeAllowed(t *testing.T) {
+	// file: URIs are stored metadata; browsers block file: navigation from https pages.
+	assert.NoError(t, model.ValidateSourceURI("file:///home/user/docs/adr.md"))
+}
+
+func TestValidateSourceURI_RelativePathAllowed(t *testing.T) {
+	// Relative paths are the documented example in the MCP tool description.
+	assert.NoError(t, model.ValidateSourceURI("adrs/007.md"))
+}
+
+func TestValidateSourceURI_BareFilenameAllowed(t *testing.T) {
+	assert.NoError(t, model.ValidateSourceURI("example.com/path"))
+}
+
+func TestValidateSourceURI_FTPSchemeAllowed(t *testing.T) {
+	// Non-http schemes other than the dangerous set are permitted; source_uri is metadata only.
+	assert.NoError(t, model.ValidateSourceURI("ftp://files.example.com/file.txt"))
 }
 
 func TestValidateSourceURI_CredentialsRejected(t *testing.T) {
