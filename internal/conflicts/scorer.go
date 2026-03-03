@@ -304,20 +304,10 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		// close together because they share domain vocabulary). The LLM is the right
 		// classifier for this, regardless of whether the two decisions came from the
 		// same agent or different agents. See: NLI literature on bi-encoder limits.
-		//
-		// With NoopValidator, also bypass when topicSim >= 0.70 AND bestDiv >= 0.15:
-		// same-topic, different-outcome pairs (e.g. ClickHouse vs TimescaleDB for
-		// observability) should be flagged. The bestDiv >= 0.15 guard avoids false
-		// positives from two agreeing decisions (low outcome divergence).
 		hasScorer := s.pairwiseScorer != nil || !isNoop
-		noopBypass := isNoop && topicSim >= decisionTopicSimFloor && bestDiv >= claimDivFloor
-		directToScorer := (hasScorer && topicSim >= decisionTopicSimFloor) || noopBypass
+		directToScorer := hasScorer && topicSim >= decisionTopicSimFloor
 
 		if bestSig < s.threshold && !directToScorer {
-			s.logger.Debug("conflict scorer: significance below threshold, skipping",
-				"decision_a", decisionID, "decision_b", cand.ID,
-				"significance", bestSig, "threshold", s.threshold,
-				"topic_similarity", topicSim, "outcome_divergence", bestDiv)
 			continue
 		}
 

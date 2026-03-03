@@ -58,7 +58,7 @@ services:
         -c synchronous_commit=off
         -c max_connections=200
     healthcheck:
-      test: ["CMD-SHELL", "PGPASSWORD=$$POSTGRES_PASSWORD psql -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB -tAc \"SELECT COUNT(*) = 2 FROM pg_extension WHERE extname IN ('vector','timescaledb')\" 2>/dev/null | grep -q t"]
+      test: ["CMD-SHELL", "PGPASSWORD=$POSTGRES_PASSWORD psql -h 127.0.0.1 -U $POSTGRES_USER -d $POSTGRES_DB -tAc \"SELECT COUNT(*) = 2 FROM pg_extension WHERE extname IN ('vector','timescaledb')\" 2>/dev/null | grep -q t"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -88,16 +88,12 @@ services:
       retries: 6
       start_period: 20s
 
-  # One-shot: pull Ollama models into the Ollama volume.
-  # Waits for Ollama to be healthy, then pulls each model if not already present.
+  # One-shot: pull the embedding model into the Ollama volume.
+  # Waits for Ollama to be healthy, then pulls if not already present.
   #
-  # Pulls two models:
-  #   OLLAMA_MODEL      — embedding model for semantic search (mxbai-embed-large, ~670MB)
-  #   OLLAMA_CHAT_MODEL — generative/chat model for CrewAI demos and LLM features
-  #                       (qwen2.5:3b by default, ~2GB; change in .env)
-  #
-  # akashi does NOT depend on this service — it starts immediately after postgres and
-  # qdrant are ready. Embeddings activate automatically once the model pull completes.
+  # akashi does NOT depend on this service — it starts immediately after
+  # postgres and qdrant are ready. Ollama embeddings activate automatically
+  # once the model pull completes.
   ollama-init:
     image: alpine:3.21
     depends_on:
@@ -107,18 +103,16 @@ services:
       - sh
       - -c
       - |
-        apk add --no-cache --quiet curl
-        for model in ${OLLAMA_MODEL:-mxbai-embed-large} ${OLLAMA_CHAT_MODEL:-qwen2.5:3b}; do
-          if curl -sf http://ollama:11434/api/tags | grep -qF "$$model"; then
-            echo "$$model: already available"
-          else
-            printf '%s: pulling (first launch only)...\n' "$$model"
-            curl -sf -X POST http://ollama:11434/api/pull \
-              -H 'Content-Type: application/json' \
-              -d "{\"model\":\"$$model\",\"stream\":false}" > /dev/null &&
-            echo "$$model: ready"
-          fi
-        done
+        apk add --no-cache --quiet curl &&
+        if curl -sf http://ollama:11434/api/tags | grep -q 'mxbai-embed-large'; then
+          echo 'mxbai-embed-large already available'
+        else
+          echo 'Pulling mxbai-embed-large (first launch only)...' &&
+          curl -sf -X POST http://ollama:11434/api/pull \
+            -H 'Content-Type: application/json' \
+            -d '{"model":"mxbai-embed-large","stream":false}' > /dev/null &&
+          echo 'Embedding model ready'
+        fi
     restart: "no"
 
   akashi:
@@ -143,9 +137,10 @@ services:
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mxbai-embed-large}
 
-      # LLM conflict validation — uses the same model as CrewAI (qwen2.5:3b). Reduces
-      # false positives ~93%. Set empty to disable (embedding-only, noop validator).
-      AKASHI_CONFLICT_LLM_MODEL: ${AKASHI_CONFLICT_LLM_MODEL:-qwen2.5:3b}
+      # LLM conflict validation is off by default — running a full LLM on CPU is
+      # too slow without a GPU. Enable by pulling a model and setting this to its name,
+      # e.g. AKASHI_CONFLICT_LLM_MODEL=qwen2.5:7b (requires an additional ollama pull).
+      AKASHI_CONFLICT_LLM_MODEL: ${AKASHI_CONFLICT_LLM_MODEL:-}
 
       AKASHI_JWT_PRIVATE_KEY: /data/jwt_private.pem
       AKASHI_JWT_PUBLIC_KEY: /data/jwt_public.pem
