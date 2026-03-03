@@ -117,8 +117,6 @@ cp docker/env.example .env
 docker compose up -d
 ```
 
-**Why two env examples?** `docker/env.example` is a minimal template for the binary-only compose (you bring DB, Qdrant, etc.). `.env.example` at repo root is the full configuration reference with inline docs. Both default to `AKASHI_ADMIN_API_KEY=admin` for local dev. Use either as your `.env` source.
-
 First run builds the server image from source (~3–5 minutes). After that, `docker compose up -d` starts in seconds. To force a rebuild after updating the source: `docker compose up -d --build`.
 
 Required variables:
@@ -216,12 +214,10 @@ The fastest way to use Akashi is through MCP. Your agent gains decision tracing 
 ### Claude Code (simplest)
 
 ```bash
-# Get a token first (default admin key is "admin" for all local setups)
+# Get a token first
 TOKEN=$(curl -s -X POST http://localhost:8080/auth/token \
   -H 'Content-Type: application/json' \
-  -d '{"agent_id": "admin", "api_key": "changeme"}' | jq -r '.data.token')
-
-# If MCP fails: verify token is non-empty (echo $TOKEN). Empty = wrong api_key.
+  -d '{"agent_id": "admin", "api_key": "admin"}' | jq -r '.data.token')
 
 # Add globally (all projects on this machine)
 claude mcp add --transport http --scope user akashi http://localhost:8080/mcp \
@@ -233,8 +229,6 @@ claude mcp add --transport http --scope project akashi http://localhost:8080/mcp
 ```
 
 > **Token lifetime:** JWTs expire after 24 hours by default. With ephemeral signing keys (the default when `AKASHI_JWT_PRIVATE_KEY` is unset), tokens are also invalidated on every server restart. Configure persistent signing keys (see above) and you only need to re-mint a token when it genuinely expires.
-
-**MCP not connecting?** Debug auth: (1) `echo $TOKEN` — empty means token fetch failed (wrong `api_key`). (2) Test the token: `curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/v1/decisions/recent?limit=1` — 401 = bad/expired token. (3) Persistent keys: without `AKASHI_JWT_PRIVATE_KEY`, every server restart invalidates tokens; re-mint after restart.
 
 ### Cursor, Windsurf, and other MCP clients
 

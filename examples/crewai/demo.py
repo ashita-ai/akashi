@@ -832,7 +832,7 @@ def main() -> None:
         print()
         _step("ℹ", f"No conflict detected after {poll_timeout}s poll.", YELLOW)
         print()
-        print("  Both decisions were recorded. Check the dashboard:")
+        print("  Both decisions were recorded successfully. Check the dashboard:")
         print(f"  → {_c('http://localhost:8080/decisions', BOLD, CYAN)}")
         print()
         print(_c("  Why no conflict? Common causes:", BOLD))
