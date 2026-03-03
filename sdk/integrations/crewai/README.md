@@ -6,25 +6,6 @@ Three integration patterns are available, from lightweight per-task tracing to a
 
 **Requirements:** Python 3.10+, `crewai>=0.70,<2`, `akashi>=0.1.0`
 
-## LLM provider
-
-The `akashi-crewai` package is LLM-agnostic — it traces whatever your crew does, regardless of which model powers it.
-
-**CrewAI itself** requires a generative LLM. By default it looks for `OPENAI_API_KEY`. For a fully local setup with no API keys, point agents at the Ollama instance bundled in `docker-compose.complete.yml`:
-
-```python
-from crewai import Agent
-
-researcher = Agent(
-    role="researcher",
-    goal="...",
-    backstory="...",
-    llm="ollama/qwen2.5:3b",  # local Ollama, no API key required
-)
-```
-
-`docker-compose.complete.yml` pulls `qwen2.5:3b` automatically on first launch. Any [litellm-compatible](https://docs.litellm.ai/docs/providers) provider works: `"anthropic/claude-opus-4-6"`, `"openai/gpt-4o"`, etc.
-
 ## Install
 
 ```bash
@@ -51,10 +32,6 @@ client = AkashiSyncClient(
 )
 
 hooks = AkashiCrewCallbacks(client, decision_type="research_task")
-
-# Use llm="ollama/qwen2.5:3b" for the local stack; swap in any litellm provider.
-researcher = Agent(role="researcher", goal="...", backstory="...", llm="ollama/qwen2.5:3b")
-writer = Agent(role="writer", goal="...", backstory="...", llm="ollama/qwen2.5:3b")
 
 crew = Crew(
     agents=[researcher, writer],
