@@ -530,8 +530,8 @@ class _AkashiDemo:
         self,
         agent_ids: list[str],
         decision_type: str,
-        timeout: int = 60,
-        interval: float = 2.5,
+        timeout: int = 30,
+        interval: float = 2.0,
     ) -> list[dict]:
         deadline = time.time() + timeout
         spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -693,9 +693,10 @@ def main() -> None:
     )
     _step("✓", f"Recorded  decision_id={decision_a}", GREEN)
 
-    # Give the embedding pipeline time to index decision A before B arrives.
-    # The conflict detector needs A in the ANN index to find it when scoring B.
-    time.sleep(4.0)
+    # Give the outbox worker time to sync A to Qdrant before B is traced.
+    # Conflict detection queries Qdrant for similar decisions; A must be indexed.
+    # Outbox polls every 1s; 6s allows for batch processing and cold-start.
+    time.sleep(6.0)
 
     # ── Agent B ───────────────────────────────────────────────────────────
     _section(f"AGENT 2  ·  {agent_b['id']}")
@@ -739,8 +740,8 @@ def main() -> None:
     conflicts = akashi.poll_conflicts(
         agent_ids=[agent_a["id"], agent_b["id"]],
         decision_type=decision_type,
-        timeout=60,
-        interval=2.5,
+        timeout=30,
+        interval=2.0,
     )
 
     if conflicts:
@@ -792,17 +793,16 @@ def main() -> None:
 
     else:
         print()
-        _step(
-            "ℹ",
-            "Conflict not yet detected (LLM validator may still be processing).",
-            YELLOW,
-        )
+        _step("ℹ", "No conflict detected after 30s poll.", YELLOW)
         print()
-        print("  Both decisions were recorded successfully. Check the dashboard:")
+        print("  Both decisions were recorded. Check the dashboard:")
         print(f"  → {_c('http://localhost:8080/decisions', BOLD, CYAN)}")
         print()
-        print(_c("  Tip: conflict detection requires an embedding model.", DIM))
-        print(_c("  Set OLLAMA_HOST or OPENAI_API_KEY in akashi/.env to enable it.", DIM))
+        print(_c("  Why no conflict? Common causes:", BOLD))
+        print(_c("  • Embeddings disabled: need QDRANT_URL + OLLAMA or OPENAI_API_KEY", DIM))
+        print(_c("  • Live mode: LLM outputs may be too similar (low outcome divergence)", DIM))
+        print(_c("  • LLM validator: with OpenAI/Ollama, classifier may say 'complementary'", DIM))
+        print(_c("  • Try pre-scripted mode: python demo.py --scenario 2  (no --live)", DIM))
         print()
 
     akashi.close()

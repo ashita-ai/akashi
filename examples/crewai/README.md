@@ -59,8 +59,10 @@ OPENAI_API_KEY=sk-... python demo.py --live --scenario 2
 
 With `--live`, two CrewAI agents make real LLM calls. Each scenario
 defines role, goal, and backstory for both agents so their biases
-produce genuine disagreement. The conflict detection outcome is the
-same; the reasoning is generated on the fly.
+produce genuine disagreement. **Live outputs vary** — the conflict
+detector may not flag a pair if embeddings or the LLM classifier
+deem them too similar or complementary. Run without `--live` first to
+verify conflict detection (pre-scripted outcomes are tuned to trigger it).
 
 ## Scenarios
 
@@ -75,15 +77,14 @@ same; the reasoning is generated on the fly.
 
 1. Agent A analyzes the scenario → traces to Akashi using the admin JWT,
    with `agent_id` set to the scenario's first persona.
-2. A 4-second delay lets Qdrant index the first decision.
+2. A 6-second delay lets the outbox sync A to Qdrant before B arrives.
 3. Agent B analyzes the same scenario independently → traces to Akashi
    with `agent_id` set to the scenario's second persona.
-4. Akashi's conflict detector runs:
+4. Akashi's conflict detector runs (async):
    - Embeds both decisions, runs Qdrant ANN to find similar past decisions
    - Claim-level scoring (topic similarity ≥ 0.7 threshold)
    - LLM validator classifies the relationship as a contradiction
-5. The demo polls `GET /v1/conflicts?agent_id=<agent_a>` until the
-   conflict appears (typically 10–20 seconds).
+5. The demo polls `GET /v1/conflicts` until the conflict appears (up to 30s).
 6. View and resolve the conflict at `http://localhost:8080/conflicts`.
 
 ## Why the SDK isn't used for tracing
