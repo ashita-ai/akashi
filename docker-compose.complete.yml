@@ -143,9 +143,10 @@ services:
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mxbai-embed-large}
 
-      # LLM conflict validation — uses the same model as CrewAI (qwen2.5:3b). Reduces
-      # false positives ~93%. Set empty to disable (embedding-only, noop validator).
-      AKASHI_CONFLICT_LLM_MODEL: ${AKASHI_CONFLICT_LLM_MODEL:-qwen2.5:3b}
+      # LLM conflict validation is disabled by default in the complete stack so
+      # the CrewAI demo remains deterministic on CPU-only machines. Set this to
+      # an Ollama chat model (e.g. qwen2.5:3b) if you want stricter validation.
+      AKASHI_CONFLICT_LLM_MODEL: ${AKASHI_CONFLICT_LLM_MODEL:-}
 
       AKASHI_JWT_PRIVATE_KEY: /data/jwt_private.pem
       AKASHI_JWT_PUBLIC_KEY: /data/jwt_public.pem

@@ -299,13 +299,17 @@ func (s *Service) postTraceAsync(ctx context.Context, orgID uuid.UUID, input Tra
 					s.logger.Error("trace: claim generation panicked", "panic", rec, "decision_id", decision.ID)
 				}
 			}()
-			claimCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
+			claimCtx, cancelClaims := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancelClaims()
 			if err := s.generateClaims(claimCtx, decision.ID, orgID, input.Decision.Outcome); err != nil {
 				s.logger.Warn("trace: claim generation failed", "decision_id", decision.ID, "error", err)
 			}
 			if s.conflictScorer != nil {
-				s.conflictScorer.ScoreForDecision(claimCtx, decision.ID, orgID)
+				// Scoring can include local LLM validation (Ollama), which may take
+				// longer than claim generation on CPU-only machines.
+				scoreCtx, cancelScore := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancelScore()
+				s.conflictScorer.ScoreForDecision(scoreCtx, decision.ID, orgID)
 			}
 		}()
 	} else if s.conflictScorer != nil {
@@ -316,7 +320,7 @@ func (s *Service) postTraceAsync(ctx context.Context, orgID uuid.UUID, input Tra
 					s.logger.Error("trace: conflict scorer panicked", "panic", rec, "decision_id", decision.ID, "org_id", orgID)
 				}
 			}()
-			scoreCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			scoreCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			s.conflictScorer.ScoreForDecision(scoreCtx, decision.ID, orgID)
 		}()

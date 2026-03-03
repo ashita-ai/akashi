@@ -28,7 +28,7 @@ you see (and the agents involved) differ every time.
 ## Quick start
 
 **Requirements:** Akashi server running at `http://localhost:8080`.
-See the root `docker-compose.yml`.
+See the root `docker-compose.yml` or `docker-compose.complete.yml`.
 
 ```sh
 # 1. Create venv and install dependencies
@@ -41,6 +41,7 @@ pip install -e ../../sdk/python
 pip install -e ../../sdk/integrations/crewai
 
 # 2. Run the demo (no API key needed — random scenario, pre-scripted responses)
+# For docker-compose.complete: export AKASHI_ADMIN_API_KEY=admin (matches default)
 python demo.py
 
 # Force a specific scenario (0–3):
@@ -63,6 +64,26 @@ produce genuine disagreement. **Live outputs vary** — the conflict
 detector may not flag a pair if embeddings or the LLM classifier
 deem them too similar or complementary. Run without `--live` first to
 verify conflict detection (pre-scripted outcomes are tuned to trigger it).
+
+## Docker (docker-compose.complete.yml)
+
+For the all-in-one stack with Qdrant + Ollama:
+
+1. **First launch:** Models take 5–15 min to pull. Wait for `ollama-init`:
+   ```sh
+   docker compose -f docker-compose.complete.yml logs -f ollama-init
+   # Wait for "mxbai-embed-large: ready" and "qwen2.5:3b: ready"
+   ```
+
+2. **Run the demo:**
+   ```sh
+   export AKASHI_ADMIN_API_KEY=admin   # matches docker default
+   python demo.py --scenario 2         # pre-scripted (recommended first)
+   OPENAI_API_KEY=sk-... python demo.py --live --scenario 2
+   ```
+
+3. **"No conflict" or "search_enabled=false"?** Embeddings weren't ready. Re-check
+   step 1. The demo now fails fast with a clear message if semantic search is disabled.
 
 ## Scenarios
 
