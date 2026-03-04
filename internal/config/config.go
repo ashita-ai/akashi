@@ -60,7 +60,7 @@ type Config struct {
 	TrustProxy       bool    // When true, use X-Forwarded-For for rate limit keys (default: false).
 
 	// Conflict LLM validation.
-	ConflictLLMModel        string  // Text generation model for conflict validation (e.g. "qwen2.5:3b" for Ollama).
+	ConflictLLMModel        string  // Text generation model for conflict validation (e.g. "qwen3.5:9b" for Ollama).
 	ConflictLLMThreads      int     // CPU threads Ollama may use per inference call (default: floor(NumCPU/3), min 1). 0 = let Ollama decide.
 	ConflictBackfillWorkers int     // Parallel workers for conflict scoring backfill (default: 4).
 	ConflictDecayLambda     float64 // Temporal decay rate for conflict significance (default: 0.01, 0 disables).

@@ -135,7 +135,7 @@ The classifier also assigns a **category** and **severity**:
 
 | Provider | Configuration | Notes |
 |----------|--------------|-------|
-| `OllamaValidator` | `AKASHI_CONFLICT_LLM_MODEL` (e.g. `qwen2.5:3b`) | On-premises; warms up on startup to avoid cold-start delay. |
+| `OllamaValidator` | `AKASHI_CONFLICT_LLM_MODEL` (e.g. `qwen3.5:9b`) | On-premises; warms up on startup to avoid cold-start delay. |
 | `OpenAIValidator` | `OPENAI_API_KEY` | Uses `gpt-4o-mini` by default. |
 | `NoopValidator` | No LLM configured | Falls back to embedding-only detection; higher false positive rate. |
 

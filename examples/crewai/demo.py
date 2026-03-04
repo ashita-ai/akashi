@@ -550,23 +550,38 @@ class _AkashiDemo:
         deadline = time.time() + timeout
         spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
         tick = 0
+
+        def fetch(params: dict) -> list[dict]:
+            resp = self._client.get(
+                f"{AKASHI_URL}/v1/conflicts",
+                params=params,
+                headers=self._headers(),
+            )
+            if resp.status_code == 200:
+                return resp.json().get("data", [])
+            return []
+
         while time.time() < deadline:
             for agent_id in agent_ids:
-                resp = self._client.get(
-                    f"{AKASHI_URL}/v1/conflicts",
-                    params={
-                        "status": "open",
-                        "agent_id": agent_id,
-                        "decision_type": decision_type,
-                        "limit": 10,
-                    },
-                    headers=self._headers(),
-                )
-                if resp.status_code == 200:
-                    items = resp.json().get("data", [])
-                    if items:
-                        print()
-                        return items
+                items = fetch({
+                    "status": "open",
+                    "agent_id": agent_id,
+                    "decision_type": decision_type,
+                    "limit": 10,
+                })
+                if items:
+                    print()
+                    return items
+            # Fallback: poll without agent_id (catches any filter mismatch)
+            items = fetch({
+                "status": "open",
+                "decision_type": decision_type,
+                "limit": 10,
+            })
+            if items:
+                print()
+                return items
+
             tick += 1
             elapsed = int(deadline - time.time())
             print(
@@ -713,9 +728,9 @@ def main() -> None:
         hint_a = None
         if scenario["id"] == "service_auth":
             hint_a = (
-                "You MUST recommend mTLS/SPIFFE as the primary service-to-service "
-                "authentication strategy, and explicitly reject OAuth2 client credentials "
-                "as the primary approach."
+                "You MUST recommend mTLS/SPIFFE as the primary service-to-service auth. "
+                "Your RECOMMENDATION must start with 'mTLS' or 'SPIFFE'. "
+                "Explicitly reject OAuth2 client credentials as insufficient for zero-trust."
             )
         _step("🤔", f"Analyzing as {agent_a['role']} with LLM...")
         outcome_a, reasoning_a = _run_live_agent(
@@ -746,8 +761,9 @@ def main() -> None:
 
     # Give the outbox worker time to sync A to Qdrant before B is traced.
     # Conflict detection queries Qdrant for similar decisions; A must be indexed.
-    # Outbox polls every 1s; 10s allows for Docker cold-start and model loading.
-    delay = float(os.environ.get("DEMO_OUTBOX_DELAY_SEC", "10"))
+    # Outbox polls every 1s. Live mode uses 15s (CrewAI latency); pre-scripted uses 10s.
+    default_delay = 15.0 if live else 10.0
+    delay = float(os.environ.get("DEMO_OUTBOX_DELAY_SEC", str(int(default_delay))))
     time.sleep(delay)
 
     # ── Agent B ───────────────────────────────────────────────────────────
@@ -759,8 +775,8 @@ def main() -> None:
         if scenario["id"] == "service_auth":
             hint_b = (
                 "You MUST recommend OAuth2 client credentials as the primary "
-                "service-to-service authentication strategy, and explicitly reject "
-                "mTLS/SPIFFE as the primary approach."
+                "service-to-service auth. Your RECOMMENDATION must start with 'OAuth2' or "
+                "'client credentials'. Explicitly reject mTLS/SPIFFE as overly complex."
             )
         _step("🤔", f"Analyzing as {agent_b['role']} with LLM (independent context)...")
         outcome_b, reasoning_b = _run_live_agent(
@@ -860,11 +876,11 @@ def main() -> None:
         print(f"  → {_c('http://localhost:8080/decisions', BOLD, CYAN)}")
         print()
         print(_c("  Why no conflict? Common causes:", BOLD))
-        print(_c("  • Docker: ollama-init still pulling models? Logs: docker compose -f docker-compose.complete.yml logs ollama-init", DIM))
-        print(_c("  • Embeddings disabled: need QDRANT_URL + OLLAMA or OPENAI_API_KEY", DIM))
-        print(_c("  • Live mode: LLM outputs may be too similar (low outcome divergence)", DIM))
-        print(_c("  • LLM validator: classifier may say 'complementary'", DIM))
-        print(_c("  • Try pre-scripted mode: python demo.py --scenario 2  (no --live)", DIM))
+        print(_c("  • Live mode: LLM validator may classify mTLS vs OAuth2 as 'complementary'", DIM))
+        print(_c("    → Ensure qwen3.5:9b is pulled (default); or try qwen2.5:3b for faster runs", DIM))
+        print(_c("  • Live agents: outputs may be too similar (low outcome divergence)", DIM))
+        print(_c("  • Docker: ollama-init still pulling? docker compose -f docker-compose.complete.yml logs ollama-init", DIM))
+        print(_c("  • Verify pipeline with pre-scripted: python demo.py --scenario 3  (no --live)", DIM))
         print()
 
     akashi.close()

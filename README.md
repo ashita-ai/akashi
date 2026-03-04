@@ -84,7 +84,7 @@ Everything runs in Docker — TimescaleDB, Qdrant, Ollama, and the Akashi server
 docker compose -f docker-compose.complete.yml up -d
 ```
 
-**First launch builds the server image from source and downloads two Ollama models: `mxbai-embed-large` (~670MB) for embeddings and `qwen2.5:3b` (~2GB) for LLM conflict validation.** Expect 10–20 minutes on first run depending on your machine and network. Subsequent launches start in seconds.
+**First launch builds the server image from source and downloads two Ollama models: `mxbai-embed-large` (~670MB) for embeddings and `qwen3.5:9b` (~6.6GB) for LLM conflict validation.** Expect 15–25 minutes on first run depending on your machine and network. Subsequent launches start in seconds.
 
 Watch model download progress:
 
