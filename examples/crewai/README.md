@@ -70,7 +70,7 @@ For the all-in-one stack with Qdrant + Ollama:
 1. **First launch:** Models take 5–15 min to pull. Wait for `ollama-init`:
    ```sh
    docker compose -f docker-compose.complete.yml logs -f ollama-init
-   # Wait for "mxbai-embed-large: ready" and "qwen2.5:3b: ready"
+   # Wait for "mxbai-embed-large: ready" and "qwen3.5:9b: ready"
    ```
 
 2. **Run the demo:**
@@ -82,6 +82,11 @@ For the all-in-one stack with Qdrant + Ollama:
 
 3. **"No conflict" or "search_enabled=false"?** Embeddings weren't ready. Re-check
    step 1. The demo now fails fast with a clear message if semantic search is disabled.
+
+4. **Scenario 3 (service auth) with --live doesn't detect conflict?** The LLM validator
+   classifier may classify mTLS vs OAuth2 as "complementary". Use a smaller/faster
+   model: `AKASHI_CONFLICT_LLM_MODEL=qwen2.5:3b`. Or verify the
+   pipeline first: `python demo.py --scenario 3` (no --live).
 
 ## Scenarios
 

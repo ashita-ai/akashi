@@ -305,7 +305,7 @@ const ollamaPerCallTimeout = 90 * time.Second
 
 // OllamaValidator validates conflict candidates using a local Ollama chat model.
 // Reuses the existing OLLAMA_URL configuration. The model should be a text
-// generation model (e.g., qwen2.5:3b), not an embedding model.
+// generation model (e.g., qwen3.5:9b), not an embedding model.
 type OllamaValidator struct {
 	baseURL    string
 	model      string

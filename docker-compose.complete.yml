@@ -3,7 +3,7 @@
 # Requires nothing but Docker. No API keys, no external services.
 # Two Ollama models are downloaded on first launch:
 #   - mxbai-embed-large (~670MB): embeddings for semantic search and conflict detection
-#   - qwen2.5:3b (~2GB): LLM conflict validation (reduces false positives ~93%)
+#   - qwen3.5:9b (~6.6GB): LLM conflict validation (reduces false positives ~93%)
 #
 # Usage:
 #   docker compose -f docker-compose.complete.yml up -d
@@ -116,14 +116,14 @@ services:
             -d '{"model":"mxbai-embed-large","stream":false}' > /dev/null &&
           echo 'mxbai-embed-large ready'
         fi &&
-        if curl -sf http://ollama:11434/api/tags | grep -q 'qwen2.5:3b'; then
-          echo 'qwen2.5:3b already available'
+        if curl -sf http://ollama:11434/api/tags | grep -q 'qwen3.5:9b'; then
+          echo 'qwen3.5:9b already available'
         else
-          echo 'Pulling qwen2.5:3b (~2GB, first launch only)...' &&
+          echo 'Pulling qwen3.5:9b (~6.6GB, first launch only)...' &&
           curl -sf -X POST http://ollama:11434/api/pull \
             -H 'Content-Type: application/json' \
-            -d '{"model":"qwen2.5:3b","stream":false}' > /dev/null &&
-          echo 'qwen2.5:3b ready'
+            -d '{"model":"qwen3.5:9b","stream":false}' > /dev/null &&
+          echo 'qwen3.5:9b ready'
         fi
     restart: "no"
 
@@ -150,9 +150,9 @@ services:
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mxbai-embed-large}
 
       # LLM conflict validation — reduces false positives ~93%.
-      # qwen2.5:3b is pulled automatically by ollama-init on first launch.
-      # Override with a larger model (e.g. qwen2.5:7b) for higher accuracy.
-      AKASHI_CONFLICT_LLM_MODEL: ${AKASHI_CONFLICT_LLM_MODEL:-qwen2.5:3b}
+      # qwen3.5:9b is pulled automatically by ollama-init on first launch.
+      # Override with a smaller model (e.g. qwen2.5:3b) for faster inference.
+      AKASHI_CONFLICT_LLM_MODEL: ${AKASHI_CONFLICT_LLM_MODEL:-qwen3.5:9b}
 
       AKASHI_JWT_PRIVATE_KEY: /data/jwt_private.pem
       AKASHI_JWT_PUBLIC_KEY: /data/jwt_public.pem
