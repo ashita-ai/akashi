@@ -925,6 +925,21 @@ func (h *Handlers) HandleVerifyDecision(w http.ResponseWriter, r *http.Request) 
 
 	resp := map[string]any{"decision_id": id}
 
+	// Check for GDPR erasure first — takes priority over all other statuses.
+	erasure, erasureErr := h.db.GetDecisionErasure(r.Context(), orgID, id)
+	if erasureErr == nil {
+		resp["status"] = "erased"
+		resp["erased_at"] = erasure.ErasedAt.UTC().Format(time.RFC3339Nano)
+		resp["original_hash"] = erasure.OriginalHash
+		resp["message"] = "this decision has been erased under GDPR right-to-erasure; original content is no longer available"
+		// Verify the scrubbed content hash is consistent with the erased fields.
+		valid := integrity.VerifyContentHash(d.ContentHash, d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
+		resp["verified"] = valid
+		resp["content_hash"] = d.ContentHash
+		writeJSON(w, r, http.StatusOK, resp)
+		return
+	}
+
 	switch {
 	case d.ValidTo != nil:
 		// Decision was retracted — still verify hash integrity but report retracted status.
@@ -1256,6 +1271,62 @@ func (h *Handlers) HandleRetractDecision(w http.ResponseWriter, r *http.Request)
 	decision, err := h.db.GetDecision(r.Context(), orgID, id, storage.GetDecisionOpts{CurrentOnly: false})
 	if err != nil {
 		// Retraction succeeded but re-fetch failed — return 204 rather than error.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, decision)
+}
+
+// HandleEraseDecision handles POST /v1/decisions/{id}/erase.
+// Performs GDPR tombstone erasure: scrubs PII fields in-place while keeping
+// the decision row for audit chain integrity. Requires org_owner role minimum.
+func (h *Handlers) HandleEraseDecision(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+
+	idStr := r.PathValue("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid decision id")
+		return
+	}
+
+	var req model.EraseDecisionRequest
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+			handleDecodeError(w, r, err)
+			return
+		}
+	}
+
+	claims := ClaimsFromContext(r.Context())
+	erasedBy := claims.AgentID
+	if erasedBy == "" {
+		erasedBy = claims.Subject
+	}
+
+	audit := h.buildAuditEntry(r, orgID,
+		"decision_erased", "decision", id.String(),
+		nil, nil,
+		map[string]any{"erased_by": erasedBy, "reason": req.Reason},
+	)
+	if err := h.db.EraseDecision(r.Context(), orgID, id, req.Reason, erasedBy, &audit); err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "decision not found")
+			return
+		}
+		if errors.Is(err, storage.ErrAlreadyErased) {
+			writeError(w, r, http.StatusConflict, model.ErrCodeInvalidInput, "decision has already been erased")
+			return
+		}
+		h.writeInternalError(w, r, "failed to erase decision", err)
+		return
+	}
+
+	// Return the erased decision to confirm the operation.
+	decision, err := h.db.GetDecision(r.Context(), orgID, id, storage.GetDecisionOpts{})
+	if err != nil {
+		// Erasure succeeded but re-fetch failed — return 204 rather than error.
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}

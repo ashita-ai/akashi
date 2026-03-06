@@ -1,4 +1,4 @@
-h1:Lpo90eT6Xn4u8j5nK7D2ehcGKTBy/cz8AXfqJtrlWm0=
+h1:+czpZoDmMmvmzCeweWs/Gc9CmItGBJOVMF0O+TFPHUw=
 001_initial.sql h1:uhyGXto+QacAaGYb9ZTGjsBs5chlKi8O0eHz9aCQsrY=
 022_full_text_search.sql h1:9iwtA8MgCzAxDV9YkUBn0CLT9ePSmj3GcPoMGg8TXf0=
 023_fix_outbox_index.sql h1:OtMEFBcMRWej02+ghnBXlPr6BVq+LoA62Id9XUWfDNI=
@@ -33,3 +33,5 @@ h1:Lpo90eT6Xn4u8j5nK7D2ehcGKTBy/cz8AXfqJtrlWm0=
 052_rename_repo_to_project.sql h1:nM5KnntlNvhqBGdflCVA4dXCAd2Q1n5g6dDxW0La9Ws=
 053_data_retention.sql h1:O51+0VKDHGUjbIhoq6ma6kusSxLRfLgVAjkRXdy5DFM=
 054_conflict_groups.sql h1:vMi263BwaLtgwg+uiDZstvCrvQFchVhEgo73EvASfx0=
+055_decision_erasures.sql h1:rwaRSRcXKaIM3p+rywcK6l/nO35ouuR3ZgHOc5zwadA=
+056_erasure_immutability_bypass.sql h1:BLQ7EuPMbLWOQOmEeRJVfaKJUBR2qvnE+AQIk5MTlrk=

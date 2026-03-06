@@ -290,3 +290,26 @@ type AssessRequest struct {
 	Outcome AssessmentOutcome `json:"outcome"`
 	Notes   *string           `json:"notes,omitempty"`
 }
+
+// ErasedPlaceholder is the sentinel value used to replace PII fields during
+// GDPR tombstone erasure. The decision row is kept for audit chain integrity
+// but all content that could identify a person is replaced with this value.
+const ErasedPlaceholder = "[erased]"
+
+// DecisionErasure records the provenance of a GDPR erasure. The original
+// content hash is preserved so auditors can verify the chain was intact
+// before erasure occurred.
+type DecisionErasure struct {
+	ID           uuid.UUID `json:"id"`
+	OrgID        uuid.UUID `json:"org_id"`
+	DecisionID   uuid.UUID `json:"decision_id"`
+	ErasedBy     string    `json:"erased_by"`
+	ErasedAt     time.Time `json:"erased_at"`
+	OriginalHash string    `json:"original_hash"`
+	Reason       *string   `json:"reason,omitempty"`
+}
+
+// EraseDecisionRequest is the request body for POST /v1/decisions/{id}/erase.
+type EraseDecisionRequest struct {
+	Reason string `json:"reason"`
+}

@@ -3468,3 +3468,209 @@ func TestHandleResolveConflictGroup(t *testing.T) {
 		assert.Equal(t, 0, envelope.Data.Resolved, "no open conflicts to resolve on second call")
 	})
 }
+
+// ---- HandleEraseDecision (GDPR tombstone) --------------------------------
+
+func TestHandleEraseDecision(t *testing.T) {
+	// Create an org_owner agent directly in the DB — the admin role cannot
+	// create org_owner via the API because the caller must outrank the target.
+	ownerAgentID := "erasure-owner-" + uuid.NewString()[:8]
+	ownerAPIKey := "erasure-owner-key-" + uuid.NewString()[:8]
+	ownerHash, hashErr := auth.HashAPIKey(ownerAPIKey)
+	require.NoError(t, hashErr)
+	_, createErr := testDB.CreateAgent(context.Background(), model.Agent{
+		AgentID:    ownerAgentID,
+		OrgID:      uuid.Nil,
+		Name:       "Erasure Owner",
+		Role:       model.RoleOrgOwner,
+		APIKeyHash: &ownerHash,
+	})
+	require.NoError(t, createErr)
+	ownerToken := getToken(testSrv.URL, ownerAgentID, ownerAPIKey)
+
+	// Trace a decision to be erased.
+	dt := "erasure_test_" + uuid.NewString()[:8]
+	traceResp, err := authedRequest("POST", testSrv.URL+"/v1/trace", ownerToken,
+		model.TraceRequest{
+			AgentID: ownerAgentID,
+			Decision: model.TraceDecision{
+				DecisionType: dt,
+				Outcome:      "sensitive PII outcome that must be erased",
+				Confidence:   0.85,
+				Reasoning:    ptrStr("contains personal data for erasure test"),
+				Alternatives: []model.TraceAlternative{
+					{Label: "alt with PII", RejectionReason: ptrStr("contained user data")},
+				},
+				Evidence: []model.TraceEvidence{
+					{SourceType: "user_input", Content: "user email: test@example.com"},
+				},
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = traceResp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, traceResp.StatusCode)
+
+	var traceResult struct {
+		Data struct {
+			DecisionID uuid.UUID `json:"decision_id"`
+			RunID      uuid.UUID `json:"run_id"`
+		} `json:"data"`
+	}
+	traceBody, _ := io.ReadAll(traceResp.Body)
+	require.NoError(t, json.Unmarshal(traceBody, &traceResult))
+	decisionID := traceResult.Data.DecisionID
+	runID := traceResult.Data.RunID
+	require.NotEqual(t, uuid.Nil, decisionID)
+	require.NotEqual(t, uuid.Nil, runID)
+
+	// Capture the original content hash for later verification.
+	verifyBefore, err := authedRequest("GET", testSrv.URL+"/v1/verify/"+decisionID.String(), ownerToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = verifyBefore.Body.Close() }()
+	var verifyBeforeResult map[string]any
+	vbBody, _ := io.ReadAll(verifyBefore.Body)
+	require.NoError(t, json.Unmarshal(vbBody, &verifyBeforeResult))
+	vbData := verifyBeforeResult["data"].(map[string]any)
+	originalHash := vbData["content_hash"].(string)
+	require.NotEmpty(t, originalHash)
+
+	t.Run("admin role gets 403", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+decisionID.String()+"/erase", adminToken,
+			model.EraseDecisionRequest{Reason: "GDPR request"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode,
+			"admin role is insufficient for erasure; org_owner minimum required")
+	})
+
+	t.Run("agent role gets 403", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+decisionID.String()+"/erase", agentToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("invalid UUID returns 400", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/not-a-uuid/erase", ownerToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("nonexistent ID returns 404", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+uuid.New().String()+"/erase", ownerToken,
+			model.EraseDecisionRequest{Reason: "GDPR"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("successful erasure scrubs PII fields", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+decisionID.String()+"/erase", ownerToken,
+			model.EraseDecisionRequest{Reason: "GDPR right-to-erasure request #12345"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data model.Decision `json:"data"`
+		}
+		body, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(body, &result))
+		d := result.Data
+
+		assert.Equal(t, decisionID, d.ID, "decision ID must be preserved")
+		assert.Equal(t, model.ErasedPlaceholder, d.Outcome, "outcome must be scrubbed to [erased]")
+		require.NotNil(t, d.Reasoning, "reasoning pointer must still be set")
+		assert.Equal(t, model.ErasedPlaceholder, *d.Reasoning, "reasoning must be scrubbed to [erased]")
+		assert.Nil(t, d.ValidTo, "erasure must NOT set valid_to (erasure ≠ retraction)")
+		assert.NotEqual(t, originalHash, d.ContentHash, "content hash must be recomputed over scrubbed fields")
+	})
+
+	t.Run("decision still retrievable after erasure", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/"+decisionID.String(), ownerToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data model.Decision `json:"data"`
+		}
+		body, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(body, &result))
+		assert.Equal(t, model.ErasedPlaceholder, result.Data.Outcome,
+			"erased decision must show scrubbed outcome on retrieval")
+	})
+
+	t.Run("verify returns erased status with original hash", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/verify/"+decisionID.String(), ownerToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result map[string]any
+		body, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(body, &result))
+
+		data, ok := result["data"].(map[string]any)
+		require.True(t, ok, "expected data wrapper in response")
+		assert.Equal(t, "erased", data["status"], "verify must report erased status")
+		assert.NotEmpty(t, data["erased_at"], "must include erased_at timestamp")
+		assert.Equal(t, originalHash, data["original_hash"],
+			"original content hash must be preserved in erasure record")
+		assert.Equal(t, true, data["verified"],
+			"scrubbed content hash must verify against current fields")
+
+		// Confirm erased_at parses as a valid timestamp.
+		_, parseErr := time.Parse(time.RFC3339Nano, data["erased_at"].(string))
+		assert.NoError(t, parseErr, "erased_at must be a valid RFC3339Nano timestamp")
+	})
+
+	t.Run("DecisionErased event recorded", func(t *testing.T) {
+		orgID := uuid.Nil
+		events, err := testDB.GetEventsByRun(context.Background(), orgID, runID, 100)
+		require.NoError(t, err)
+
+		var found bool
+		for _, ev := range events {
+			if ev.EventType == model.EventDecisionErased {
+				found = true
+				assert.Equal(t, decisionID.String(), ev.Payload["decision_id"])
+				assert.Equal(t, "GDPR right-to-erasure request #12345", ev.Payload["reason"])
+				assert.NotEmpty(t, ev.Payload["erased_by"])
+				break
+			}
+		}
+		assert.True(t, found, "expected a DecisionErased event in the run's event log")
+	})
+
+	t.Run("double erasure returns 409 conflict", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+decisionID.String()+"/erase", ownerToken,
+			model.EraseDecisionRequest{Reason: "duplicate request"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusConflict, resp.StatusCode,
+			"re-erasing an already-erased decision must return 409")
+	})
+
+	t.Run("alternatives and evidence scrubbed", func(t *testing.T) {
+		// Fetch the decision with includes to check alternatives and evidence.
+		orgID := uuid.Nil
+		d, err := testDB.GetDecision(context.Background(), orgID, decisionID,
+			storage.GetDecisionOpts{IncludeAlts: true, IncludeEvidence: true})
+		require.NoError(t, err)
+
+		for _, alt := range d.Alternatives {
+			assert.Equal(t, model.ErasedPlaceholder, alt.Label,
+				"alternative label must be scrubbed")
+			assert.Nil(t, alt.RejectionReason,
+				"alternative rejection_reason must be cleared")
+		}
+		for _, ev := range d.Evidence {
+			assert.Equal(t, model.ErasedPlaceholder, ev.Content,
+				"evidence content must be scrubbed")
+			assert.Nil(t, ev.SourceURI,
+				"evidence source_uri must be cleared")
+		}
+	})
+}

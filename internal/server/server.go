@@ -187,6 +187,10 @@ func New(cfg ServerConfig) *Server {
 	mux.Handle("POST /v1/conflicts/{id}/adjudicate", writeRole(http.HandlerFunc(h.HandleAdjudicateConflict)))
 	mux.Handle("PATCH /v1/conflicts/{id}", writeRole(http.HandlerFunc(h.HandlePatchConflict)))
 
+	// GDPR erasure (org_owner+ — stronger than admin because erasure is irreversible).
+	orgOwnerOnly := requireRole(model.RoleOrgOwner)
+	mux.Handle("POST /v1/decisions/{id}/erase", orgOwnerOnly(http.HandlerFunc(h.HandleEraseDecision)))
+
 	// Retention policy and legal holds (admin for writes, reader+ for GET).
 	mux.Handle("GET /v1/retention", readRole(http.HandlerFunc(h.HandleGetRetention)))
 	mux.Handle("PUT /v1/retention", adminOnly(http.HandlerFunc(h.HandleSetRetention)))
