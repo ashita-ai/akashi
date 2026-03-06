@@ -1016,6 +1016,27 @@ func TestNewScorer_DefaultWorkers(t *testing.T) {
 	assert.Equal(t, 8, scorer.backfillWorkers, "explicit value should be respected")
 }
 
+func TestNewScorer_DefaultCandidateLimit(t *testing.T) {
+	scorer := NewScorer(nil, slog.Default(), 0.3, nil, 0, 0)
+	assert.Equal(t, 50, scorer.candidateLimit, "default should be 50")
+}
+
+func TestWithCandidateLimit(t *testing.T) {
+	scorer := NewScorer(nil, slog.Default(), 0.3, nil, 0, 0)
+
+	scorer = scorer.WithCandidateLimit(20)
+	assert.Equal(t, 20, scorer.candidateLimit, "should accept 20")
+
+	scorer = scorer.WithCandidateLimit(200)
+	assert.Equal(t, 200, scorer.candidateLimit, "should accept 200")
+
+	scorer = scorer.WithCandidateLimit(0)
+	assert.Equal(t, 200, scorer.candidateLimit, "0 should be ignored")
+
+	scorer = scorer.WithCandidateLimit(-5)
+	assert.Equal(t, 200, scorer.candidateLimit, "negative should be ignored")
+}
+
 func TestBackfillScoring_MarksDecisionsScored(t *testing.T) {
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))

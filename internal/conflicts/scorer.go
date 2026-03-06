@@ -64,10 +64,22 @@ type Scorer struct {
 	validator       Validator
 	backfillWorkers int
 	decayLambda     float64 // Temporal decay rate. 0 disables decay.
+	candidateLimit  int     // Max candidates retrieved from Qdrant per decision.
 	finder          search.CandidateFinder
 	// pairwiseScorer is an optional external override for the confirmation step.
 	// When non-nil, it replaces the built-in Validator-backed scoring for each candidate pair.
 	pairwiseScorer PairwiseScorer
+}
+
+// WithCandidateLimit overrides the maximum number of candidates retrieved from
+// Qdrant per decision (default: 50). Lower values reduce LLM cost when an
+// expensive validator is configured; higher values improve recall when using
+// embedding-only scoring.
+func (s *Scorer) WithCandidateLimit(n int) *Scorer {
+	if n > 0 {
+		s.candidateLimit = n
+	}
+	return s
 }
 
 // WithCandidateFinder wires a Qdrant-backed CandidateFinder for conflict candidate
@@ -109,6 +121,7 @@ func NewScorer(db *storage.DB, logger *slog.Logger, significanceThreshold float6
 		validator:       validator,
 		backfillWorkers: backfillWorkers,
 		decayLambda:     decayLambda,
+		candidateLimit:  50,
 	}
 }
 
@@ -186,7 +199,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		return
 	}
 
-	qdrantResults, err := s.finder.FindSimilar(ctx, orgID, d.Embedding.Slice(), decisionID, d.Project, 50)
+	qdrantResults, err := s.finder.FindSimilar(ctx, orgID, d.Embedding.Slice(), decisionID, d.Project, s.candidateLimit)
 	if err != nil {
 		s.logger.Warn("conflict scorer: qdrant find similar failed", "decision_id", decisionID, "error", err)
 		return

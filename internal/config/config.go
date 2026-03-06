@@ -62,6 +62,7 @@ type Config struct {
 	// Conflict LLM validation.
 	ConflictLLMModel        string  // Text generation model for conflict validation (e.g. "qwen3.5:9b" for Ollama).
 	ConflictLLMThreads      int     // CPU threads Ollama may use per inference call (default: floor(NumCPU/3), min 1). 0 = let Ollama decide.
+	ConflictCandidateLimit  int     // Max candidates retrieved from Qdrant per decision for conflict scoring (default: 50).
 	ConflictBackfillWorkers int     // Parallel workers for conflict scoring backfill (default: 4).
 	ConflictDecayLambda     float64 // Temporal decay rate for conflict significance (default: 0.01, 0 disables).
 	ForceConflictRescore    bool    // When true (and LLM validator configured), clear all conflicts and re-score at startup.
@@ -127,6 +128,7 @@ func Load() (Config, error) {
 	cfg.OutboxBatchSize, errs = collectInt(errs, "AKASHI_OUTBOX_BATCH_SIZE", 100)
 	cfg.EventBufferSize, errs = collectInt(errs, "AKASHI_EVENT_BUFFER_SIZE", 1000)
 	cfg.RateLimitBurst, errs = collectInt(errs, "AKASHI_RATE_LIMIT_BURST", 200)
+	cfg.ConflictCandidateLimit, errs = collectInt(errs, "AKASHI_CONFLICT_CANDIDATE_LIMIT", 50)
 	cfg.ConflictBackfillWorkers, errs = collectInt(errs, "AKASHI_CONFLICT_BACKFILL_WORKERS", 4)
 	defaultLLMThreads := max(1, runtime.NumCPU()/3)
 	cfg.ConflictLLMThreads, errs = collectInt(errs, "AKASHI_CONFLICT_LLM_THREADS", defaultLLMThreads)
