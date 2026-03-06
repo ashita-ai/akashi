@@ -50,17 +50,34 @@ No URL, no token, no auth. Same trust model as other local MCP servers.
 **Included in local-lite:**
 - All 6 MCP tools with identical signatures to the full server
 - SQLite storage — decisions, events, assessments, basic conflicts
-- Text search via SQLite FTS5
+- Text search via SQLite FTS5 (always available, zero config)
+- Semantic search via brute-force cosine similarity (available when an embedding provider is configured)
 
 **Excluded from local-lite:**
-- Semantic search (no embedding model)
 - LLM conflict validation
 - Conflict groups
 - Multi-tenancy
 - SSE / real-time notifications
 - Audit dashboard
 
-The tools are complete and useful without semantics. The workflow — check before deciding, trace after deciding — is identical; the intelligence is lower.
+The tools are complete and useful without semantics. The workflow — check before deciding, trace after deciding — is identical; the intelligence degrades gracefully based on what's configured.
+
+### Search design
+
+`akashi_check` needs to return relevant prior decisions. Local-lite supports two modes depending on whether an embedding provider is available:
+
+**Text search (default, zero config):** SQLite FTS5 with BM25 ranking. Finds decisions that share vocabulary with the query. Works immediately, no API keys, no running services. Misses semantic matches (a query for "caching strategy" won't find a decision about "Redis TTL configuration" unless those words appear), but is sufficient for the evaluation use case.
+
+**Semantic search (when an embedding provider is configured):** Uses the same embedding provider chain as the full server — Ollama if `AKASHI_OLLAMA_URL` is set, OpenAI if `AKASHI_OPENAI_API_KEY` is set, otherwise falls back to text. Embeddings are stored as BLOBs in SQLite. At query time, all vectors are loaded into memory and ranked by cosine similarity in Go.
+
+The brute-force in-memory approach was chosen over embedded vector libraries (FAISS, sqlite-vec) deliberately:
+
+- **Scale is not the problem local-lite is solving.** A single user accumulating enough decisions for brute-force cosine similarity to become slow (roughly 50k+ vectors) is long past the point where they should be on the full stack or cloud. Optimizing for that case would be optimizing for users who have outgrown the tool.
+- **FAISS** has no well-maintained Go bindings and stores its index as a separate file, breaking the single-file SQLite model.
+- **sqlite-vec** requires CGO and a SQLite extension, adding build complexity for a problem that doesn't exist at local-lite scale.
+- **Brute force in Go** requires no CGO, no extensions, no dependencies, and no separate index file. At <10k decisions it runs in single-digit milliseconds.
+
+If evidence emerges that local-lite users are hitting scale limits on search, the brute-force implementation can be replaced with sqlite-vec without changing the storage interface or the MCP tool handlers. That replacement is a follow-up, not a prerequisite.
 
 **Architecture constraints:**
 - New `storage/sqlite` package implementing the same storage interface as the Postgres backend. SQLite schema is created on first run; no Atlas migrations.
@@ -69,7 +86,7 @@ The tools are complete and useful without semantics. The workflow — check befo
 - `cmd/akashi-local` must not import Postgres, Qdrant, or Ollama packages. This is a hard dependency boundary enforced at compile time. Any capability added to the MCP tools must have a functional fallback for local-lite or must be gated behind feature detection.
 - No changes to the MCP tool handlers — local-lite plugs in at the storage layer only.
 
-**Upgrade path:** Users who need semantic search, conflict detection, or multi-agent sharing switch to the cloud tier (change `command` config to a URL + API key). Local-lite data does not migrate automatically; that is a follow-up.
+**Upgrade path:** Users who need LLM-validated conflict detection, conflict groups, or multi-agent sharing switch to the cloud tier (change `command` config to a URL + API key). Local-lite data does not migrate automatically; that is a follow-up.
 
 ### Cloud-hosted MCP
 
