@@ -207,6 +207,9 @@ func New(cfg ServerConfig) *Server {
 	// Health (no auth).
 	mux.HandleFunc("GET /health", h.HandleHealth)
 
+	// MCP info (no auth) — lets clients confirm connectivity and discover auth schemes.
+	mux.HandleFunc("GET /mcp/info", h.HandleMCPInfo)
+
 	// SPA: serve the embedded UI at the root path.
 	// Registered last so all API routes take priority via the mux's longest-match rule.
 	if cfg.UIFS != nil {

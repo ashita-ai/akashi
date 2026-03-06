@@ -284,6 +284,20 @@ type CreateGrantRequest struct {
 	ExpiresAt      *string `json:"expires_at,omitempty"`
 }
 
+// MCPInfoResponse is the response for GET /mcp/info (unauthenticated).
+type MCPInfoResponse struct {
+	Version   string      `json:"version"`
+	Transport string      `json:"transport"`
+	Auth      MCPAuthInfo `json:"auth"`
+}
+
+// MCPAuthInfo describes the auth schemes supported on the MCP endpoint.
+type MCPAuthInfo struct {
+	Schemes   []string `json:"schemes"`
+	Preferred string   `json:"preferred"`
+	Note      string   `json:"note"`
+}
+
 // HealthResponse is the response for GET /health.
 type HealthResponse struct {
 	Status       string `json:"status"`
