@@ -204,6 +204,14 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 		}
 	}
 
+	// Auto-resolve open conflicts involving the superseded decision. The revised
+	// decision replaces the old one, so stale conflicts should not persist.
+	// If the revision still conflicts, the scorer will create a new conflict.
+	autoResolved, err := AutoResolveSupersededConflictsTx(ctx, tx, revised.OrgID, originalID, revised.ID)
+	if err != nil {
+		return model.Decision{}, fmt.Errorf("storage: auto-resolve in revision tx: %w", err)
+	}
+
 	// Insert revision audit entry (same tx — atomic with the revision).
 	if audit != nil {
 		audit.Operation = "decision_revised"
@@ -211,8 +219,9 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 		audit.ResourceID = originalID.String()
 		audit.BeforeData = map[string]any{"valid_to": nil}
 		audit.AfterData = map[string]any{
-			"superseded_by": revised.ID.String(),
-			"valid_to":      now,
+			"superseded_by":           revised.ID.String(),
+			"valid_to":                now,
+			"conflicts_auto_resolved": autoResolved,
 		}
 		if err := InsertMutationAuditTx(ctx, tx, *audit); err != nil {
 			return model.Decision{}, fmt.Errorf("storage: audit in revision tx: %w", err)
