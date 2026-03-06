@@ -219,6 +219,9 @@ func New(cfg ServerConfig) *Server {
 	// Health (no auth).
 	mux.HandleFunc("GET /health", h.HandleHealth)
 
+	// MCP info (no auth) — lets clients confirm connectivity and discover auth schemes.
+	mux.HandleFunc("GET /mcp/info", h.HandleMCPInfo)
+
 	// IDE hook endpoints (no auth, localhost-only).
 	if cfg.HooksEnabled {
 		hookGuard := func(next http.Handler) http.Handler {

@@ -1,4 +1,33 @@
-# Akashi CrewAI Demo
+# Akashi CrewAI Examples
+
+Two examples: a **SDK example** showing the recommended `AkashiCrew` integration,
+and a **conflict demo** where two agents reach opposing conclusions and Akashi
+catches it automatically.
+
+## SDK example (`sdk_example.py`)
+
+The simplest way to add Akashi tracing to a CrewAI crew:
+
+```python
+from akashi import AkashiSyncClient
+from akashi_crewai import AkashiCrew
+
+crew = Crew(agents=[...], tasks=[...])
+traced = AkashiCrew(crew, client, decision_type="research")
+result = traced.kickoff(inputs={"topic": "AI"})
+```
+
+Run it:
+
+```sh
+python sdk_example.py             # pre-scripted (no LLM needed)
+OPENAI_API_KEY=sk-... python sdk_example.py --live  # real LLM
+```
+
+`AkashiCrew` installs task/step callbacks, calls `check()` before `kickoff()`,
+and `trace()` after. All other crew methods pass through unchanged.
+
+## Conflict demo (`demo.py`)
 
 Two AI agents independently reason about a shared problem. They reach
 conflicting conclusions on the same day. Akashi catches it automatically —
@@ -112,11 +141,13 @@ For the all-in-one stack with Qdrant + Ollama:
    conflict appears (typically 10–20 seconds).
 6. View and resolve the conflict at `http://localhost:8080/conflicts`.
 
-## Why the SDK isn't used for tracing
+## Why the conflict demo doesn't use the SDK
 
 The Python SDK (`AkashiSyncClient`) ties `agent_id` to the authenticated
-identity — you'd need a separate API key per agent. Instead, this demo
-uses raw `httpx` with the admin JWT, which allows tracing on behalf of
+identity — you'd need a separate API key per agent. Instead, the conflict
+demo uses raw `httpx` with the admin JWT, which allows tracing on behalf of
 any agent identity (`admin` role bypasses the agent_id match check).
 This is the right pattern for orchestration code that manages multiple
 AI agents from a single privileged context.
+
+For production single-agent use, see `sdk_example.py` which uses `AkashiCrew`.

@@ -376,6 +376,22 @@ func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, httpStatus, resp)
 }
 
+// HandleMCPInfo handles GET /mcp/info (unauthenticated).
+// Returns static metadata about the MCP endpoint so clients can confirm
+// connectivity and discover supported auth schemes before adding credentials
+// to their config.
+func (h *Handlers) HandleMCPInfo(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, r, http.StatusOK, model.MCPInfoResponse{
+		Version:   h.version,
+		Transport: "streamable-http",
+		Auth: model.MCPAuthInfo{
+			Schemes:   []string{"ApiKey", "Bearer"},
+			Preferred: "ApiKey",
+			Note:      `ApiKey credentials do not expire and are recommended for MCP config files. Format: "ApiKey <agent_id>:<api_key>"`,
+		},
+	})
+}
+
 // HandleOpenAPISpec serves the embedded OpenAPI specification.
 func (h *Handlers) HandleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 	if len(h.openapiSpec) == 0 {
