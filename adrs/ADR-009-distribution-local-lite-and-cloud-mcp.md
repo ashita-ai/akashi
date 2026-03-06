@@ -90,7 +90,7 @@ The README MCP section now leads with `ApiKey`. **Shipped in PR #315.** For self
 - `cmd/akashi-local` is a new binary target in this repo. It must stay dependency-clean — no Postgres, Qdrant, or Ollama imports.
 - The SQLite storage interface must stay in sync with the Postgres storage interface. Any new storage method needed by an MCP tool must be implemented in both backends, or the tool must degrade gracefully when the method is unavailable.
 - Local-lite and self-hosted are the evaluation and team funnel respectively. Cloud is the conversion target.
-- This ADR establishes the public ADR numbering sequence as independent of the internal ADR sequence, which continues from ADR-021 onward in the private strategy repository.
+- ADRs in this repo have their own numbering sequence starting from ADR-001. Next ADR: ADR-010.
 
 ## References
 
