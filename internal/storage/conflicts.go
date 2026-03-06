@@ -792,3 +792,85 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 
 	return groups, nil
 }
+
+// ResolveConflictGroup batch-resolves all open or acknowledged conflicts in a
+// conflict group. When winningAgent is non-nil, each conflict's winning_decision_id
+// is set to the decision from that agent (decision_a_id when agent_a matches,
+// decision_b_id when agent_b matches). Returns the number of conflicts updated.
+func (db *DB) ResolveConflictGroup(
+	ctx context.Context,
+	groupID, orgID uuid.UUID,
+	status, resolvedBy string,
+	resolutionNote *string,
+	winningAgent *string,
+	audit MutationAuditEntry,
+) (int, error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("storage: begin resolve group tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Verify the group exists and belongs to this org.
+	var exists bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM conflict_groups WHERE id = $1 AND org_id = $2)`,
+		groupID, orgID,
+	).Scan(&exists); err != nil {
+		return 0, fmt.Errorf("storage: check conflict group: %w", err)
+	}
+	if !exists {
+		return 0, fmt.Errorf("storage: conflict group not found")
+	}
+
+	// Build the UPDATE. When winning_agent is set, derive winning_decision_id
+	// per-row from the agent columns. Only "resolved" sets a winner;
+	// "wont_fix" intentionally leaves winning_decision_id NULL.
+	var tag pgconn.CommandTag
+	if winningAgent != nil && status == "resolved" {
+		tag, err = tx.Exec(ctx,
+			`UPDATE scored_conflicts
+			 SET status = $1,
+			     resolved_by = $2,
+			     resolved_at = now(),
+			     resolution_note = $3,
+			     winning_decision_id = CASE
+			         WHEN agent_a = $4 THEN decision_a_id
+			         WHEN agent_b = $4 THEN decision_b_id
+			         ELSE NULL
+			     END
+			 WHERE group_id = $5 AND org_id = $6
+			   AND status IN ('open', 'acknowledged')`,
+			status, resolvedBy, resolutionNote, *winningAgent, groupID, orgID)
+	} else {
+		tag, err = tx.Exec(ctx,
+			`UPDATE scored_conflicts
+			 SET status = $1,
+			     resolved_by = $2,
+			     resolved_at = now(),
+			     resolution_note = $3
+			 WHERE group_id = $4 AND org_id = $5
+			   AND status IN ('open', 'acknowledged')`,
+			status, resolvedBy, resolutionNote, groupID, orgID)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("storage: resolve conflict group: %w", err)
+	}
+
+	affected := int(tag.RowsAffected())
+
+	audit.BeforeData = map[string]any{"group_id": groupID.String(), "open_count": affected}
+	afterData := map[string]any{"status": status, "resolved_by": resolvedBy, "resolved_count": affected}
+	if winningAgent != nil {
+		afterData["winning_agent"] = *winningAgent
+	}
+	audit.AfterData = afterData
+	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+		return 0, fmt.Errorf("storage: audit in resolve group tx: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("storage: commit resolve group tx: %w", err)
+	}
+	return affected, nil
+}

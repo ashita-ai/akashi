@@ -682,6 +682,72 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, conflict)
 }
 
+// validGroupResolveStatuses defines the allowed values for batch conflict group resolution.
+// "acknowledged" is excluded because batch-acknowledging a group is not a resolution action.
+var validGroupResolveStatuses = map[string]bool{
+	"resolved": true,
+	"wont_fix": true,
+}
+
+// HandleResolveConflictGroup handles PATCH /v1/conflict-groups/{id}/resolve.
+// Batch-resolves all open or acknowledged conflicts in a conflict group.
+func (h *Handlers) HandleResolveConflictGroup(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
+
+	idStr := r.PathValue("id")
+	groupID, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid conflict group id")
+		return
+	}
+
+	var req model.ConflictGroupResolveRequest
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
+		return
+	}
+
+	if !validGroupResolveStatuses[req.Status] {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"status must be one of: resolved, wont_fix")
+		return
+	}
+
+	if req.WinningAgent != nil && req.Status != "resolved" {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"winning_agent can only be set when status is 'resolved'")
+		return
+	}
+
+	resolvedBy := claims.AgentID
+	if resolvedBy == "" {
+		resolvedBy = claims.Subject
+	}
+
+	audit := h.buildAuditEntry(r, orgID,
+		"conflict_group_resolved", "conflict_group", groupID.String(),
+		nil, nil,
+		map[string]any{"new_status": req.Status, "resolved_by": resolvedBy},
+	)
+
+	affected, err := h.db.ResolveConflictGroup(r.Context(), groupID, orgID, req.Status, resolvedBy, req.ResolutionNote, req.WinningAgent, audit)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict group not found")
+			return
+		}
+		h.writeInternalError(w, r, "failed to resolve conflict group", err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, model.ConflictGroupResolveResult{
+		GroupID:  groupID,
+		Status:   req.Status,
+		Resolved: affected,
+	})
+}
+
 // HandleAdjudicateConflict handles POST /v1/conflicts/{id}/adjudicate.
 // Creates an adjudication decision trace and links it to the conflict.
 func (h *Handlers) HandleAdjudicateConflict(w http.ResponseWriter, r *http.Request) {

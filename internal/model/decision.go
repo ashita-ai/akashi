@@ -234,6 +234,26 @@ type ConflictStatusUpdate struct {
 	WinningDecisionID *uuid.UUID `json:"winning_decision_id,omitempty"`
 }
 
+// ConflictGroupResolveRequest is the request body for
+// PATCH /v1/conflict-groups/{id}/resolve. It batch-resolves all open or
+// acknowledged conflicts in a conflict group.
+type ConflictGroupResolveRequest struct {
+	Status         string  `json:"status"` // resolved or wont_fix
+	ResolutionNote *string `json:"resolution_note,omitempty"`
+	// WinningAgent optionally declares the agent whose decisions prevail for
+	// every conflict in the group. When set, each conflict's winning_decision_id
+	// is set to the decision from this agent (decision_a or decision_b).
+	WinningAgent *string `json:"winning_agent,omitempty"`
+}
+
+// ConflictGroupResolveResult is the response body for
+// PATCH /v1/conflict-groups/{id}/resolve.
+type ConflictGroupResolveResult struct {
+	GroupID  uuid.UUID `json:"group_id"`
+	Status   string    `json:"status"`
+	Resolved int       `json:"resolved"`
+}
+
 // AssessmentOutcome enumerates valid values for DecisionAssessment.Outcome.
 type AssessmentOutcome string
 

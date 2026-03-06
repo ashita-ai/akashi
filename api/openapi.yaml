@@ -1120,6 +1120,42 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /v1/conflict-groups/{id}/resolve:
+    patch:
+      operationId: resolveConflictGroup
+      tags: [Query]
+      summary: Batch-resolve all open conflicts in a conflict group
+      description: |
+        Resolves all open or acknowledged conflicts in a conflict group at once.
+        When `winning_agent` is provided with status "resolved", each conflict's
+        `winning_decision_id` is set to the decision from that agent.
+        Requires `agent` role or higher.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The conflict group ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConflictGroupResolveRequest"
+      responses:
+        "200":
+          description: Batch resolution result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConflictGroupResolveResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /v1/check:
     post:
       operationId: checkPrecedent
@@ -2492,6 +2528,38 @@ components:
             Optional. The decision judged to be correct. Must be decision_a_id or
             decision_b_id of the conflict. Only valid when status is "resolved".
             When omitted, the conflict is resolved without declaring a winner.
+
+    ConflictGroupResolveRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [resolved, wont_fix]
+          description: Target status for all open/acknowledged conflicts in the group.
+        resolution_note:
+          type: string
+          description: Explanation applied to every conflict in the group.
+        winning_agent:
+          type: string
+          description: |
+            Optional. Resolve all conflicts in favor of decisions from this agent.
+            Only valid when status is "resolved". Each conflict's winning_decision_id
+            is set to the decision from this agent (decision_a or decision_b).
+
+    ConflictGroupResolveResult:
+      type: object
+      required: [group_id, status, resolved]
+      properties:
+        group_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [resolved, wont_fix]
+        resolved:
+          type: integer
+          description: Number of conflicts that were resolved.
 
     AdjudicateConflictRequest:
       type: object
