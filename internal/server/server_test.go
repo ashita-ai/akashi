@@ -3161,3 +3161,212 @@ func TestHandleRetractDecision(t *testing.T) {
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
 }
+
+// ---- HandleResolveConflictGroup ------------------------------------------
+
+// seedConflictGroup creates two decisions and two open conflicts sharing the
+// same conflict group. Returns the group ID, two conflict IDs, and the two
+// decision IDs (A1, B1 for the first pair; A2, B2 for the second). Agent
+// names are "alpha" (side A) and "beta" (side B).
+func seedConflictGroup(t *testing.T) (groupID uuid.UUID, conflictIDs [2]uuid.UUID, decisionIDs [4]uuid.UUID) {
+	t.Helper()
+	orgID := uuid.Nil
+
+	traceDecision := func(agentID, outcome string, confidence float32) uuid.UUID {
+		resp, tErr := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken, model.TraceRequest{
+			AgentID: agentID,
+			Decision: model.TraceDecision{
+				DecisionType: "architecture",
+				Outcome:      outcome,
+				Confidence:   confidence,
+			},
+		})
+		require.NoError(t, tErr)
+		defer func() { _ = resp.Body.Close() }()
+		require.Contains(t, []int{http.StatusOK, http.StatusCreated, http.StatusAccepted}, resp.StatusCode)
+		var result struct {
+			Data struct {
+				DecisionID uuid.UUID `json:"decision_id"`
+			} `json:"data"`
+		}
+		b, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(b, &result))
+		require.NotEqual(t, uuid.Nil, result.Data.DecisionID)
+		return result.Data.DecisionID
+	}
+
+	// Create 4 decisions: two per side
+	decisionIDs[0] = traceDecision("alpha", "use Redis for caching", 0.9)
+	decisionIDs[1] = traceDecision("beta", "use Memcached for caching", 0.8)
+	decisionIDs[2] = traceDecision("alpha", "Redis cluster mode", 0.85)
+	decisionIDs[3] = traceDecision("beta", "Memcached with mcrouter", 0.75)
+
+	require.NoError(t, testBuf.FlushNow(context.Background()))
+
+	// Insert two conflicts — InsertScoredConflict auto-creates and links the group.
+	for i, pair := range [][2]int{{0, 1}, {2, 3}} {
+		c := model.DecisionConflict{
+			OrgID:         orgID,
+			ConflictKind:  model.ConflictKindCrossAgent,
+			DecisionAID:   decisionIDs[pair[0]],
+			DecisionBID:   decisionIDs[pair[1]],
+			AgentA:        "alpha",
+			AgentB:        "beta",
+			DecisionTypeA: "architecture",
+			DecisionTypeB: "architecture",
+			OutcomeA:      "alpha outcome",
+			OutcomeB:      "beta outcome",
+			Status:        "open",
+		}
+		var err error
+		conflictIDs[i], err = testDB.InsertScoredConflict(context.Background(), c)
+		require.NoError(t, err)
+	}
+
+	// Retrieve the group_id that was auto-created.
+	conflict, err := testDB.GetConflict(context.Background(), conflictIDs[0], orgID)
+	require.NoError(t, err)
+	require.NotNil(t, conflict.GroupID, "InsertScoredConflict must set group_id")
+	groupID = *conflict.GroupID
+
+	return groupID, conflictIDs, decisionIDs
+}
+
+func TestHandleResolveConflictGroup(t *testing.T) {
+	t.Run("invalid UUID returns 400", func(t *testing.T) {
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/not-a-uuid/resolve", adminToken,
+			model.ConflictGroupResolveRequest{Status: "resolved"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("invalid status returns 400", func(t *testing.T) {
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+uuid.New().String()+"/resolve", adminToken,
+			model.ConflictGroupResolveRequest{Status: "acknowledged"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+		var errResp model.APIError
+		body, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(body, &errResp)
+		assert.Equal(t, model.ErrCodeInvalidInput, errResp.Error.Code)
+	})
+
+	t.Run("winning_agent with wont_fix returns 400", func(t *testing.T) {
+		agent := "alpha"
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+uuid.New().String()+"/resolve", adminToken,
+			model.ConflictGroupResolveRequest{Status: "wont_fix", WinningAgent: &agent})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("nonexistent group returns 404", func(t *testing.T) {
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+uuid.New().String()+"/resolve", adminToken,
+			model.ConflictGroupResolveRequest{Status: "resolved"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("resolved without winning_agent resolves all open conflicts", func(t *testing.T) {
+		groupID, _, _ := seedConflictGroup(t)
+		note := "all caching decisions settled"
+
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+groupID.String()+"/resolve", adminToken,
+			model.ConflictGroupResolveRequest{Status: "resolved", ResolutionNote: &note})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var envelope struct {
+			Data model.ConflictGroupResolveResult `json:"data"`
+		}
+		b, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(b, &envelope))
+		assert.Equal(t, groupID, envelope.Data.GroupID)
+		assert.Equal(t, "resolved", envelope.Data.Status)
+		assert.Equal(t, 2, envelope.Data.Resolved, "both open conflicts should be resolved")
+	})
+
+	t.Run("resolved with winning_agent sets winning_decision_id", func(t *testing.T) {
+		groupID, conflictIDs, _ := seedConflictGroup(t)
+		agent := "alpha"
+		note := "alpha is authoritative"
+
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+groupID.String()+"/resolve", adminToken,
+			model.ConflictGroupResolveRequest{Status: "resolved", WinningAgent: &agent, ResolutionNote: &note})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var envelope struct {
+			Data model.ConflictGroupResolveResult `json:"data"`
+		}
+		b, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(b, &envelope))
+		assert.Equal(t, 2, envelope.Data.Resolved)
+
+		// Verify winning_decision_id was set on each conflict.
+		for _, cid := range conflictIDs {
+			conflict, cErr := testDB.GetConflict(context.Background(), cid, uuid.Nil)
+			require.NoError(t, cErr)
+			require.NotNil(t, conflict)
+			assert.Equal(t, "resolved", conflict.Status)
+			require.NotNil(t, conflict.WinningDecisionID, "winning_decision_id should be set")
+		}
+	})
+
+	t.Run("wont_fix resolves without winner", func(t *testing.T) {
+		groupID, conflictIDs, _ := seedConflictGroup(t)
+
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+groupID.String()+"/resolve", adminToken,
+			model.ConflictGroupResolveRequest{Status: "wont_fix"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var envelope struct {
+			Data model.ConflictGroupResolveResult `json:"data"`
+		}
+		b, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(b, &envelope))
+		assert.Equal(t, "wont_fix", envelope.Data.Status)
+		assert.Equal(t, 2, envelope.Data.Resolved)
+
+		for _, cid := range conflictIDs {
+			conflict, cErr := testDB.GetConflict(context.Background(), cid, uuid.Nil)
+			require.NoError(t, cErr)
+			require.NotNil(t, conflict)
+			assert.Equal(t, "wont_fix", conflict.Status)
+			assert.Nil(t, conflict.WinningDecisionID, "wont_fix should not set winner")
+		}
+	})
+
+	t.Run("idempotent re-resolve returns 0 affected", func(t *testing.T) {
+		groupID, _, _ := seedConflictGroup(t)
+
+		// Resolve first time.
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+groupID.String()+"/resolve", adminToken,
+			model.ConflictGroupResolveRequest{Status: "resolved"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		// Resolve second time — no open conflicts remain.
+		resp2, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+groupID.String()+"/resolve", adminToken,
+			model.ConflictGroupResolveRequest{Status: "resolved"})
+		require.NoError(t, err)
+		defer func() { _ = resp2.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp2.StatusCode)
+
+		var envelope struct {
+			Data model.ConflictGroupResolveResult `json:"data"`
+		}
+		b, _ := io.ReadAll(resp2.Body)
+		require.NoError(t, json.Unmarshal(b, &envelope))
+		assert.Equal(t, 0, envelope.Data.Resolved, "no open conflicts to resolve on second call")
+	})
+}
