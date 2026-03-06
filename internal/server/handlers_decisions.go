@@ -943,14 +943,32 @@ func (h *Handlers) HandleVerifyDecision(w http.ResponseWriter, r *http.Request) 
 		resp["status"] = "no_hash"
 		resp["message"] = "this decision was created before content hashing was enabled"
 	default:
-		valid := integrity.VerifyContentHash(d.ContentHash, d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
-		resp["valid"] = valid
-		if valid {
-			resp["status"] = "verified"
-		} else {
-			resp["status"] = "tampered"
+		// Check for GDPR erasure before standard verification.
+		erasure, erasureErr := h.db.GetDecisionErasure(r.Context(), orgID, id)
+		switch {
+		case erasureErr == nil:
+			// Decision has been erased — verify the erased hash matches.
+			valid := integrity.VerifyContentHash(d.ContentHash, d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
+			resp["status"] = "erased"
+			resp["valid"] = valid
+			resp["content_hash"] = d.ContentHash
+			resp["original_hash"] = erasure.OriginalHash
+			resp["erased_at"] = erasure.ErasedAt
+			resp["erased_by"] = erasure.ErasedBy
+		case !isNotFoundError(erasureErr):
+			h.writeInternalError(w, r, "failed to check erasure status", erasureErr)
+			return
+		default:
+			// No erasure — standard verification.
+			valid := integrity.VerifyContentHash(d.ContentHash, d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
+			resp["valid"] = valid
+			if valid {
+				resp["status"] = "verified"
+			} else {
+				resp["status"] = "tampered"
+			}
+			resp["content_hash"] = d.ContentHash
 		}
-		resp["content_hash"] = d.ContentHash
 	}
 
 	writeJSON(w, r, http.StatusOK, resp)
@@ -1261,4 +1279,75 @@ func (h *Handlers) HandleRetractDecision(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, r, http.StatusOK, decision)
+}
+
+// HandleEraseDecision handles POST /v1/decisions/{id}/erase.
+// GDPR Art. 17 tombstone erasure: scrubs PII fields in-place without deleting
+// the decision row, preserving the audit chain. Requires org_owner role.
+func (h *Handlers) HandleEraseDecision(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+
+	idStr := r.PathValue("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid decision id")
+		return
+	}
+
+	// Decode optional body with reason.
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+			handleDecodeError(w, r, err)
+			return
+		}
+	}
+
+	// Block erasure if an active legal hold covers this decision.
+	holdActive, err := h.db.ActiveHoldsExistForDecision(r.Context(), orgID, id)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to check legal holds", err)
+		return
+	}
+	if holdActive {
+		writeError(w, r, http.StatusConflict, model.ErrCodeConflict,
+			"decision is covered by an active legal hold and cannot be erased")
+		return
+	}
+
+	claims := ClaimsFromContext(r.Context())
+	erasedBy := claims.AgentID
+	if erasedBy == "" {
+		erasedBy = claims.Subject
+	}
+
+	audit := h.buildAuditEntry(r, orgID,
+		"decision_erased", "decision", id.String(),
+		nil, nil,
+		map[string]any{"erased_by": erasedBy, "reason": req.Reason},
+	)
+	result, err := h.db.EraseDecision(r.Context(), orgID, id, req.Reason, erasedBy, &audit)
+	if err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "decision not found")
+			return
+		}
+		if errors.Is(err, storage.ErrAlreadyErased) {
+			writeError(w, r, http.StatusConflict, model.ErrCodeConflict, "decision has already been erased")
+			return
+		}
+		h.writeInternalError(w, r, "failed to erase decision", err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"decision_id":         id,
+		"erased_at":           result.Erasure.ErasedAt,
+		"original_hash":       result.Erasure.OriginalHash,
+		"erased_hash":         result.Erasure.ErasedHash,
+		"alternatives_erased": result.AlternativesErased,
+		"evidence_erased":     result.EvidenceErased,
+	})
 }

@@ -219,6 +219,28 @@ func (db *DB) ActiveHoldsExistForAgent(ctx context.Context, orgID uuid.UUID, age
 	return exists, nil
 }
 
+// ActiveHoldsExistForDecision reports whether any active hold covers the given
+// decision. Used to block GDPR erasure when a legal hold is active.
+func (db *DB) ActiveHoldsExistForDecision(ctx context.Context, orgID, decisionID uuid.UUID) (bool, error) {
+	var exists bool
+	err := db.pool.QueryRow(ctx,
+		`SELECT EXISTS (
+		     SELECT 1 FROM retention_holds rh
+		     JOIN decisions d ON d.org_id = rh.org_id AND d.id = $2
+		     WHERE rh.org_id = $1
+		       AND rh.released_at IS NULL
+		       AND d.created_at BETWEEN rh.hold_from AND rh.hold_to
+		       AND (rh.decision_types IS NULL OR d.decision_type = ANY(rh.decision_types))
+		       AND (rh.agent_ids IS NULL OR d.agent_id = ANY(rh.agent_ids))
+		 )`,
+		orgID, decisionID,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("storage: check holds for decision: %w", err)
+	}
+	return exists, nil
+}
+
 // StartDeletionLog inserts a deletion_log row and returns its ID.
 // Call CompleteDeletionLog after the run finishes to record counts and completion time.
 func (db *DB) StartDeletionLog(ctx context.Context, orgID uuid.UUID, trigger, initiatedBy string, criteria map[string]any) (uuid.UUID, error) {
