@@ -22,6 +22,7 @@ const (
 	EventReasoningStepCompleted EventType = "ReasoningStepCompleted"
 	EventDecisionMade           EventType = "DecisionMade"
 	EventDecisionRevised        EventType = "DecisionRevised"
+	EventDecisionRetracted      EventType = "DecisionRetracted"
 
 	// Tool events.
 	EventToolCallStarted   EventType = "ToolCallStarted"

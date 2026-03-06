@@ -1129,3 +1129,57 @@ func (h *Handlers) HandleListAssessments(w http.ResponseWriter, r *http.Request)
 		"count":       len(assessments),
 	})
 }
+
+// HandleRetractDecision handles DELETE /v1/decisions/{id}.
+// Soft-deletes a decision by setting valid_to and recording a DecisionRetracted event.
+func (h *Handlers) HandleRetractDecision(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+
+	idStr := r.PathValue("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid decision id")
+		return
+	}
+
+	// Decode optional body with reason.
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+			handleDecodeError(w, r, err)
+			return
+		}
+	}
+
+	claims := ClaimsFromContext(r.Context())
+	retractedBy := claims.AgentID
+	if retractedBy == "" {
+		retractedBy = claims.Subject
+	}
+
+	audit := h.buildAuditEntry(r, orgID,
+		"decision_retracted", "decision", id.String(),
+		nil, nil,
+		map[string]any{"retracted_by": retractedBy, "reason": req.Reason},
+	)
+	if err := h.db.RetractDecision(r.Context(), orgID, id, req.Reason, retractedBy, &audit); err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "decision not found")
+			return
+		}
+		h.writeInternalError(w, r, "failed to retract decision", err)
+		return
+	}
+
+	// Return the retracted decision (with valid_to set).
+	decision, err := h.db.GetDecision(r.Context(), orgID, id, storage.GetDecisionOpts{CurrentOnly: false})
+	if err != nil {
+		// Retraction succeeded but re-fetch failed — return 204 rather than error.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, decision)
+}
