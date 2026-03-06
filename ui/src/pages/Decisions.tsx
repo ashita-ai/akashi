@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate, truncate } from "@/lib/utils";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, FileText } from "lucide-react";
 
 const PAGE_SIZE = 25;
 const ALL_AGENTS = "__all__";
@@ -151,9 +151,15 @@ export default function Decisions() {
           ))}
         </div>
       ) : !data?.decisions?.length ? (
-        <p className="text-sm text-muted-foreground py-8 text-center">
-          No decisions found.
-        </p>
+        <div className="flex flex-col items-center py-12 text-center">
+          <FileText className="h-12 w-12 text-muted-foreground/20 mb-3" />
+          <p className="text-sm text-muted-foreground">No decisions found.</p>
+          {(agentFilter || typeFilter) && (
+            <p className="text-xs text-muted-foreground/60 mt-1">
+              Try adjusting your filters.
+            </p>
+          )}
+        </div>
       ) : (
         <>
           <Table>
@@ -195,19 +201,43 @@ export default function Decisions() {
                       {truncate(d.outcome, 60)}
                     </Link>
                   </TableCell>
-                  <TableCell className="text-right font-mono">
-                    {(d.confidence * 100).toFixed(0)}%
+                  <TableCell className="text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      <div className="h-1.5 w-12 rounded-full bg-muted overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-primary transition-all"
+                          style={{ width: `${(d.confidence * 100).toFixed(0)}%` }}
+                        />
+                      </div>
+                      <span className="font-mono text-xs tabular-nums w-8 text-right">
+                        {(d.confidence * 100).toFixed(0)}%
+                      </span>
+                    </div>
                   </TableCell>
-                  <TableCell className="text-right font-mono">
-                    <span className={
-                      d.completeness_score >= 0.7
-                        ? "text-emerald-600"
-                        : d.completeness_score >= 0.5
-                        ? "text-amber-600"
-                        : "text-red-600"
-                    }>
-                      {(d.completeness_score * 100).toFixed(0)}%
-                    </span>
+                  <TableCell className="text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      <div className="h-1.5 w-12 rounded-full bg-muted overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all ${
+                            d.completeness_score >= 0.7
+                              ? "bg-emerald-500"
+                              : d.completeness_score >= 0.5
+                              ? "bg-amber-500"
+                              : "bg-red-500"
+                          }`}
+                          style={{ width: `${(d.completeness_score * 100).toFixed(0)}%` }}
+                        />
+                      </div>
+                      <span className={`font-mono text-xs tabular-nums w-8 text-right ${
+                        d.completeness_score >= 0.7
+                          ? "text-emerald-600 dark:text-emerald-400"
+                          : d.completeness_score >= 0.5
+                          ? "text-amber-600 dark:text-amber-400"
+                          : "text-red-600 dark:text-red-400"
+                      }`}>
+                        {(d.completeness_score * 100).toFixed(0)}%
+                      </span>
+                    </div>
                   </TableCell>
                   <TableCell className="max-w-[240px] text-xs text-muted-foreground">
                     {d.reasoning ? truncate(d.reasoning, 80) : (
