@@ -290,3 +290,17 @@ type AssessRequest struct {
 	Outcome AssessmentOutcome `json:"outcome"`
 	Notes   *string           `json:"notes,omitempty"`
 }
+
+// DecisionErasure records that a decision's PII was scrubbed per GDPR Art. 17.
+// The original content hash is preserved for forensic verification that the
+// decision existed and was intentionally erased (vs. tampered with).
+type DecisionErasure struct {
+	ID           uuid.UUID `json:"id"`
+	DecisionID   uuid.UUID `json:"decision_id"`
+	OrgID        uuid.UUID `json:"org_id"`
+	ErasedBy     string    `json:"erased_by"`
+	OriginalHash string    `json:"original_hash"`
+	ErasedHash   string    `json:"erased_hash"`
+	Reason       string    `json:"reason"`
+	ErasedAt     time.Time `json:"erased_at"`
+}

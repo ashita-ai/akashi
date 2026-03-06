@@ -120,6 +120,10 @@ func New(cfg ServerConfig) *Server {
 	mux.Handle("DELETE /v1/decisions/{id}", adminOnly(http.HandlerFunc(h.HandleRetractDecision)))
 	mux.Handle("GET /v1/export/decisions", adminOnly(http.HandlerFunc(h.HandleExportDecisions)))
 
+	// GDPR erasure (org_owner+ — stronger than admin because erasure is irreversible).
+	orgOwnerOnly := requireRole(model.RoleOrgOwner)
+	mux.Handle("POST /v1/decisions/{id}/erase", orgOwnerOnly(http.HandlerFunc(h.HandleEraseDecision)))
+
 	// API key management (admin-only).
 	mux.Handle("POST /v1/keys", adminOnly(http.HandlerFunc(h.HandleCreateKey)))
 	mux.Handle("GET /v1/keys", adminOnly(http.HandlerFunc(h.HandleListKeys)))

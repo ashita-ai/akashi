@@ -23,6 +23,7 @@ const (
 	EventDecisionMade           EventType = "DecisionMade"
 	EventDecisionRevised        EventType = "DecisionRevised"
 	EventDecisionRetracted      EventType = "DecisionRetracted"
+	EventDecisionErased         EventType = "DecisionErased"
 
 	// Tool events.
 	EventToolCallStarted   EventType = "ToolCallStarted"
