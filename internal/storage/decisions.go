@@ -225,6 +225,95 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 	return revised, nil
 }
 
+// RetractDecision soft-deletes a decision by setting valid_to, recording a
+// DecisionRetracted event, queuing a search index deletion, and inserting a
+// mutation audit entry — all atomically in a single transaction.
+func (db *DB) RetractDecision(ctx context.Context, orgID, decisionID uuid.UUID, reason, retractedBy string, audit *MutationAuditEntry) error {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("storage: begin retract decision tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	now := time.Now().UTC()
+
+	// Fetch the decision's run_id and agent_id for the retraction event.
+	var runID uuid.UUID
+	var agentID string
+	err = tx.QueryRow(ctx,
+		`SELECT run_id, agent_id FROM decisions WHERE id = $1 AND org_id = $2 AND valid_to IS NULL`,
+		decisionID, orgID,
+	).Scan(&runID, &agentID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("storage: decision %s: %w", decisionID, ErrNotFound)
+		}
+		return fmt.Errorf("storage: fetch decision for retraction: %w", err)
+	}
+
+	// Soft-delete: set valid_to on the decision.
+	_, err = tx.Exec(ctx,
+		`UPDATE decisions SET valid_to = $1 WHERE id = $2 AND org_id = $3 AND valid_to IS NULL`,
+		now, decisionID, orgID,
+	)
+	if err != nil {
+		return fmt.Errorf("storage: retract decision: %w", err)
+	}
+
+	// Queue search index deletion.
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO search_outbox (decision_id, org_id, operation)
+		 VALUES ($1, $2, 'delete')
+		 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
+		decisionID, orgID); err != nil {
+		return fmt.Errorf("storage: queue search outbox delete in retraction: %w", err)
+	}
+
+	// Insert DecisionRetracted event.
+	payload := map[string]any{
+		"decision_id":  decisionID.String(),
+		"retracted_by": retractedBy,
+	}
+	if reason != "" {
+		payload["reason"] = reason
+	}
+	var seqNum int64
+	err = tx.QueryRow(ctx, `SELECT nextval('event_sequence_num_seq')`).Scan(&seqNum)
+	if err != nil {
+		return fmt.Errorf("storage: reserve sequence num for retraction event: %w", err)
+	}
+	_, err = tx.Exec(ctx,
+		`INSERT INTO agent_events (id, run_id, org_id, event_type, sequence_num, occurred_at, agent_id, payload, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		uuid.New(), runID, orgID, string(model.EventDecisionRetracted), seqNum,
+		now, agentID, payload, now,
+	)
+	if err != nil {
+		return fmt.Errorf("storage: insert retraction event: %w", err)
+	}
+
+	// Insert mutation audit entry.
+	if audit != nil {
+		audit.Operation = "decision_retracted"
+		audit.ResourceType = "decision"
+		audit.ResourceID = decisionID.String()
+		audit.BeforeData = map[string]any{"valid_to": nil}
+		audit.AfterData = map[string]any{
+			"valid_to":     now,
+			"retracted_by": retractedBy,
+			"reason":       reason,
+		}
+		if err := InsertMutationAuditTx(ctx, tx, *audit); err != nil {
+			return fmt.Errorf("storage: audit in retraction tx: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("storage: commit retraction: %w", err)
+	}
+	return nil
+}
+
 // QueryDecisions executes a structured query with filters, ordering, and pagination.
 // Only returns active decisions (valid_to IS NULL). Use QueryDecisionsTemporal for
 // point-in-time queries that include superseded decisions.

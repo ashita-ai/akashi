@@ -3050,3 +3050,114 @@ func TestHandlePatchConflict_WinningDecisionID(t *testing.T) {
 	// and exists to make conflict-side validation meaningful.
 	_ = decisionBID
 }
+
+// ---- HandleRetractDecision ------------------------------------------------
+
+func TestHandleRetractDecision(t *testing.T) {
+	// Trace a decision to retract.
+	dt := "retract_test_" + uuid.NewString()[:8]
+	traceResp, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken,
+		model.TraceRequest{
+			AgentID: "test-agent",
+			Decision: model.TraceDecision{
+				DecisionType: dt,
+				Outcome:      "will be retracted",
+				Confidence:   0.85,
+				Reasoning:    ptrStr("retraction test"),
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = traceResp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, traceResp.StatusCode)
+
+	var traceResult struct {
+		Data struct {
+			DecisionID uuid.UUID `json:"decision_id"`
+			RunID      uuid.UUID `json:"run_id"`
+		} `json:"data"`
+	}
+	traceBody, _ := io.ReadAll(traceResp.Body)
+	require.NoError(t, json.Unmarshal(traceBody, &traceResult))
+	decisionID := traceResult.Data.DecisionID
+	runID := traceResult.Data.RunID
+	require.NotEqual(t, uuid.Nil, decisionID)
+	require.NotEqual(t, uuid.Nil, runID)
+
+	t.Run("non-admin gets 403", func(t *testing.T) {
+		resp, err := authedRequest("DELETE", testSrv.URL+"/v1/decisions/"+decisionID.String(), agentToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("invalid UUID returns 400", func(t *testing.T) {
+		resp, err := authedRequest("DELETE", testSrv.URL+"/v1/decisions/not-a-uuid", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("nonexistent ID returns 404", func(t *testing.T) {
+		resp, err := authedRequest("DELETE", testSrv.URL+"/v1/decisions/"+uuid.New().String(), adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("successful retraction with reason", func(t *testing.T) {
+		resp, err := authedRequest("DELETE", testSrv.URL+"/v1/decisions/"+decisionID.String(), adminToken,
+			map[string]string{"reason": "inaccurate assessment"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data model.Decision `json:"data"`
+		}
+		body, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(body, &result))
+		assert.Equal(t, decisionID, result.Data.ID)
+		assert.NotNil(t, result.Data.ValidTo, "valid_to must be set after retraction")
+	})
+
+	t.Run("retracted decision hidden from current-only GET", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/"+decisionID.String(), agentToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		// HandleGetDecision does not use CurrentOnly by default, so the decision
+		// is still retrievable. But it should have valid_to set.
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		var result struct {
+			Data model.Decision `json:"data"`
+		}
+		body, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(body, &result))
+		assert.NotNil(t, result.Data.ValidTo, "retracted decision must have valid_to set")
+	})
+
+	t.Run("DecisionRetracted event recorded", func(t *testing.T) {
+		// Query events for the run that contained the retracted decision.
+		orgID := uuid.Nil // default org from SeedAdmin
+		events, err := testDB.GetEventsByRun(context.Background(), orgID, runID, 100)
+		require.NoError(t, err)
+
+		var found bool
+		for _, ev := range events {
+			if ev.EventType == model.EventDecisionRetracted {
+				found = true
+				assert.Equal(t, decisionID.String(), ev.Payload["decision_id"])
+				assert.Equal(t, "inaccurate assessment", ev.Payload["reason"])
+				assert.NotEmpty(t, ev.Payload["retracted_by"])
+				break
+			}
+		}
+		assert.True(t, found, "expected a DecisionRetracted event in the run's event log")
+	})
+
+	t.Run("double retract returns 404", func(t *testing.T) {
+		resp, err := authedRequest("DELETE", testSrv.URL+"/v1/decisions/"+decisionID.String(), adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+}
