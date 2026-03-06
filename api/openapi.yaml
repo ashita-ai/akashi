@@ -955,6 +955,61 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /v1/decisions/{id}/erase:
+    post:
+      operationId: eraseDecision
+      tags: [Decisions, GDPR]
+      summary: GDPR tombstone erasure
+      description: |
+        Scrubs PII fields (outcome, reasoning) from a decision in-place
+        without deleting the row, preserving the audit chain. Also scrubs
+        associated alternatives (label, rejection_reason) and evidence
+        (content, source_uri). Recomputes the content hash over the
+        scrubbed fields and records the original hash in a decision_erasures
+        row for forensic verification.
+
+        This operation is irreversible. Blocked if the decision is covered
+        by an active legal hold.
+
+        Requires `org_owner` role or higher.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The decision ID to erase.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: Optional reason for the erasure (e.g., "GDPR data subject request #1234").
+      responses:
+        "200":
+          description: Decision PII successfully erased.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_ErasureResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Decision is covered by an active legal hold, or has already been erased.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+
   /v1/verify/{id}:
     get:
       operationId: verifyDecision
@@ -3302,20 +3357,68 @@ components:
 
     VerifyResponse:
       type: object
-      required: [decision_id, valid, stored_hash, computed_hash]
+      required: [decision_id, status]
       properties:
         decision_id:
           type: string
           format: uuid
+        status:
+          type: string
+          enum: [verified, tampered, no_hash, erased]
+          description: |
+            Integrity status. "erased" means GDPR tombstone erasure
+            was applied; the hash covers the scrubbed content.
         valid:
           type: boolean
           description: Whether the stored content hash matches the recomputed hash.
-        stored_hash:
+        content_hash:
           type: string
           description: The hash stored in the database.
-        computed_hash:
+        original_hash:
           type: string
-          description: The hash recomputed from current field values.
+          description: Pre-erasure hash (only present when status is "erased").
+        erased_at:
+          type: string
+          format: date-time
+          description: When the erasure occurred (only present when status is "erased").
+        erased_by:
+          type: string
+          description: Agent that performed the erasure (only present when status is "erased").
+        message:
+          type: string
+          description: Explanation (only present when status is "no_hash").
+
+    ErasureResponse:
+      type: object
+      required: [decision_id, erased_at, original_hash, erased_hash, alternatives_erased, evidence_erased]
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+        erased_at:
+          type: string
+          format: date-time
+        original_hash:
+          type: string
+          description: The content hash before erasure.
+        erased_hash:
+          type: string
+          description: The content hash recomputed over scrubbed fields.
+        alternatives_erased:
+          type: integer
+          description: Number of alternatives rows scrubbed.
+        evidence_erased:
+          type: integer
+          description: Number of evidence rows scrubbed.
+
+    APIResponse_ErasureResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ErasureResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
 
     APIResponse_VerifyResponse:
       type: object

@@ -41,6 +41,7 @@ var (
 	testcontainer testcontainers.Container
 	adminToken    string
 	agentToken    string
+	orgOwnerToken string
 )
 
 func TestMain(m *testing.M) {
@@ -132,6 +133,29 @@ func TestMain(m *testing.M) {
 	// Create a test agent.
 	createAgent(testSrv.URL, adminToken, "test-agent", "Test Agent", "agent", "test-agent-key")
 	agentToken = getToken(testSrv.URL, "test-agent", "test-agent-key")
+
+	// Create an org_owner agent for GDPR erasure tests.
+	// The seeded admin (rank 3) cannot create org_owner (rank 4) via HTTP because
+	// HandleCreateAgent requires the caller to strictly outrank the requested role.
+	// Insert directly via the storage layer instead.
+	{
+		ownerKeyHash, hashErr := auth.HashAPIKey("test-org-owner-key")
+		if hashErr != nil {
+			fmt.Fprintf(os.Stderr, "failed to hash org owner key: %v\n", hashErr)
+			os.Exit(1)
+		}
+		if _, dbErr := db.CreateAgent(ctx, model.Agent{
+			AgentID:    "test-org-owner",
+			OrgID:      uuid.Nil,
+			Name:       "Test Org Owner",
+			Role:       model.RoleOrgOwner,
+			APIKeyHash: &ownerKeyHash,
+		}); dbErr != nil {
+			fmt.Fprintf(os.Stderr, "failed to create org owner agent: %v\n", dbErr)
+			os.Exit(1)
+		}
+		orgOwnerToken = getToken(testSrv.URL, "test-org-owner", "test-org-owner-key")
+	}
 
 	code := m.Run()
 
@@ -3466,5 +3490,166 @@ func TestHandleResolveConflictGroup(t *testing.T) {
 		b, _ := io.ReadAll(resp2.Body)
 		require.NoError(t, json.Unmarshal(b, &envelope))
 		assert.Equal(t, 0, envelope.Data.Resolved, "no open conflicts to resolve on second call")
+	})
+}
+
+// ---- HandleEraseDecision (GDPR tombstone erasure) -------------------------
+
+func TestHandleEraseDecision(t *testing.T) {
+	// Trace a decision with alternatives and evidence to erase.
+	dt := "erasure_test_" + uuid.NewString()[:8]
+	traceResp, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken,
+		model.TraceRequest{
+			AgentID: "test-agent",
+			Decision: model.TraceDecision{
+				DecisionType: dt,
+				Outcome:      "sensitive PII outcome",
+				Confidence:   0.85,
+				Reasoning:    ptrStr("contains PII reasoning"),
+				Alternatives: []model.TraceAlternative{
+					{Label: "alt with PII", RejectionReason: ptrStr("PII rejection reason")},
+				},
+				Evidence: []model.TraceEvidence{
+					{SourceType: "document", Content: "PII evidence content", SourceURI: ptrStr("https://example.com/pii")},
+				},
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = traceResp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, traceResp.StatusCode)
+
+	var traceResult struct {
+		Data struct {
+			DecisionID uuid.UUID `json:"decision_id"`
+			RunID      uuid.UUID `json:"run_id"`
+		} `json:"data"`
+	}
+	traceBody, _ := io.ReadAll(traceResp.Body)
+	require.NoError(t, json.Unmarshal(traceBody, &traceResult))
+	decisionID := traceResult.Data.DecisionID
+	runID := traceResult.Data.RunID
+	require.NotEqual(t, uuid.Nil, decisionID)
+
+	t.Run("pre-erasure verify returns verified", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/verify/"+decisionID.String(), adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		var result struct {
+			Data map[string]any `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(data, &result))
+		assert.Equal(t, "verified", result.Data["status"])
+	})
+
+	t.Run("agent role gets 403", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+decisionID.String()+"/erase", agentToken,
+			map[string]string{"reason": "GDPR request"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("admin role gets 403", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+decisionID.String()+"/erase", adminToken,
+			map[string]string{"reason": "GDPR request"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("invalid UUID returns 400", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/not-a-uuid/erase", orgOwnerToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("nonexistent ID returns 404", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+uuid.New().String()+"/erase", orgOwnerToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("successful erasure", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+decisionID.String()+"/erase", orgOwnerToken,
+			map[string]string{"reason": "GDPR data subject request #42"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data map[string]any `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(data, &result))
+		assert.Equal(t, decisionID.String(), result.Data["decision_id"])
+		assert.NotEmpty(t, result.Data["erased_at"])
+		assert.NotEmpty(t, result.Data["original_hash"])
+		assert.NotEmpty(t, result.Data["erased_hash"])
+		assert.NotEqual(t, result.Data["original_hash"], result.Data["erased_hash"])
+	})
+
+	t.Run("decision still retrievable but scrubbed", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/"+decisionID.String(), agentToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data model.Decision `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(data, &result))
+		assert.Equal(t, "[erased]", result.Data.Outcome)
+		assert.NotNil(t, result.Data.Reasoning)
+		assert.Equal(t, "[erased]", *result.Data.Reasoning)
+		assert.Nil(t, result.Data.ValidTo, "erasure must NOT set valid_to")
+	})
+
+	t.Run("verify returns erased status", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/verify/"+decisionID.String(), adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data map[string]any `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(data, &result))
+		assert.Equal(t, "erased", result.Data["status"])
+		assert.Equal(t, true, result.Data["valid"])
+		assert.NotEmpty(t, result.Data["original_hash"])
+		assert.NotEmpty(t, result.Data["erased_at"])
+		assert.NotEmpty(t, result.Data["erased_by"])
+	})
+
+	t.Run("double erasure returns 409", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+decisionID.String()+"/erase", orgOwnerToken,
+			map[string]string{"reason": "second attempt"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	})
+
+	t.Run("DecisionErased event recorded", func(t *testing.T) {
+		orgID := uuid.Nil // default org from SeedAdmin
+		events, err := testDB.GetEventsByRun(context.Background(), orgID, runID, 100)
+		require.NoError(t, err)
+
+		var found bool
+		for _, ev := range events {
+			if ev.EventType == model.EventDecisionErased {
+				found = true
+				assert.Equal(t, decisionID.String(), ev.Payload["decision_id"])
+				assert.NotEmpty(t, ev.Payload["erased_by"])
+				assert.NotEmpty(t, ev.Payload["original_hash"])
+				break
+			}
+		}
+		assert.True(t, found, "expected a DecisionErased event in the run's event log")
 	})
 }
