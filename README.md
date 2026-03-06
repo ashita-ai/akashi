@@ -211,27 +211,35 @@ curl -X POST http://localhost:8080/v1/search \
 
 The fastest way to use Akashi is through MCP. Your agent gains decision tracing with zero code changes.
 
-### Claude Code (simplest)
+The MCP endpoint supports two auth schemes. **`ApiKey` is recommended for config files** — it never expires and survives server restarts:
+
+| Scheme | Format | Expires? | Best for |
+|--------|--------|----------|----------|
+| `ApiKey` | `ApiKey <agent_id>:<api_key>` | Never | MCP config files |
+| `Bearer` | `Bearer <jwt>` | 24h (default) | Programmatic / short-lived access |
+
+Confirm the server is reachable before adding credentials to your config:
 
 ```bash
-# Get a token first.
-# - docker-compose.complete.yml default: admin
-# - docker-compose.yml with docker/env.example default: changeme
-AKASHI_ADMIN_API_KEY="${AKASHI_ADMIN_API_KEY:-changeme}"
-TOKEN=$(curl -s -X POST http://localhost:8080/auth/token \
-  -H 'Content-Type: application/json' \
-  -d "{\"agent_id\":\"admin\",\"api_key\":\"$AKASHI_ADMIN_API_KEY\"}" | jq -r '.data.token')
-
-# Add globally (all projects on this machine)
-claude mcp add --transport http --scope user akashi http://localhost:8080/mcp \
-  --header "Authorization: Bearer $TOKEN"
-
-# Or scope it to just the current project
-claude mcp add --transport http --scope project akashi http://localhost:8080/mcp \
-  --header "Authorization: Bearer $TOKEN"
+curl http://localhost:8080/mcp/info
 ```
 
-> **Token lifetime:** JWTs expire after 24 hours by default. With ephemeral signing keys (the default when `AKASHI_JWT_PRIVATE_KEY` is unset), tokens are also invalidated on every server restart. Configure persistent signing keys (see above) and you only need to re-mint a token when it genuinely expires.
+### Claude Code
+
+```bash
+# Default API keys:
+#   docker-compose.complete.yml → admin
+#   docker-compose.yml (binary-only) → changeme
+AKASHI_ADMIN_API_KEY="${AKASHI_ADMIN_API_KEY:-admin}"
+
+# Add globally (all projects on this machine) — never expires
+claude mcp add --transport http --scope user akashi http://localhost:8080/mcp \
+  --header "Authorization: ApiKey admin:$AKASHI_ADMIN_API_KEY"
+
+# Or scope to just the current project
+claude mcp add --transport http --scope project akashi http://localhost:8080/mcp \
+  --header "Authorization: ApiKey admin:$AKASHI_ADMIN_API_KEY"
+```
 
 ### Cursor, Windsurf, and other MCP clients
 
@@ -243,12 +251,28 @@ Add to your MCP configuration file (`~/.cursor/mcp.json`, `~/.windsurf/mcp.json`
     "akashi": {
       "url": "http://localhost:8080/mcp",
       "headers": {
-        "Authorization": "Bearer <your-jwt-token>"
+        "Authorization": "ApiKey admin:<your-api-key>"
       }
     }
   }
 }
 ```
+
+Replace `admin` with your agent ID and `<your-api-key>` with your `AKASHI_ADMIN_API_KEY` value.
+
+<details>
+<summary>Using JWT tokens instead</summary>
+
+```bash
+AKASHI_ADMIN_API_KEY="${AKASHI_ADMIN_API_KEY:-admin}"
+TOKEN=$(curl -s -X POST http://localhost:8080/auth/token \
+  -H 'Content-Type: application/json' \
+  -d "{\"agent_id\":\"admin\",\"api_key\":\"$AKASHI_ADMIN_API_KEY\"}" | jq -r '.data.token')
+```
+
+Then use `Authorization: Bearer $TOKEN`. JWTs expire after 24 hours (configurable via `AKASHI_JWT_EXPIRATION`). With ephemeral signing keys (the default when `AKASHI_JWT_PRIVATE_KEY` is unset), tokens are also invalidated on every server restart.
+
+</details>
 
 ### Available tools
 
