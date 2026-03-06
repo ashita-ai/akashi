@@ -10,7 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
+import { Badge, decisionTypeBadgeVariant } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -23,6 +23,19 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate, truncate } from "@/lib/utils";
 import { ChevronLeft, ChevronRight, FileText } from "lucide-react";
+
+function typeRowClass(decisionType: string): string {
+  const map: Record<string, string> = {
+    architecture: "type-border-architecture",
+    security: "type-border-security",
+    code_review: "type-border-code_review",
+    trade_off: "type-border-trade_off",
+    planning: "type-border-planning",
+    investigation: "type-border-investigation",
+    assessment: "type-border-assessment",
+  };
+  return map[decisionType] ?? "";
+}
 
 const PAGE_SIZE = 25;
 const ALL_AGENTS = "__all__";
@@ -92,7 +105,7 @@ export default function Decisions() {
   const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-page">
       <h1 className="text-2xl font-bold tracking-tight">Decisions</h1>
 
       {/* Filters */}
@@ -176,7 +189,7 @@ export default function Decisions() {
             </TableHeader>
             <TableBody>
               {data.decisions.map((d) => (
-                <TableRow key={d.id}>
+                <TableRow key={d.id} className={typeRowClass(d.decision_type)}>
                   <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                     <Link
                       to={`/decisions/${d.run_id}`}
@@ -191,7 +204,7 @@ export default function Decisions() {
                     </Badge>
                   </TableCell>
                   <TableCell>
-                    <Badge variant="secondary">{d.decision_type}</Badge>
+                    <Badge variant={decisionTypeBadgeVariant(d.decision_type)}>{d.decision_type}</Badge>
                   </TableCell>
                   <TableCell className="max-w-[200px]">
                     <Link
@@ -205,7 +218,7 @@ export default function Decisions() {
                     <div className="flex items-center justify-end gap-2">
                       <div className="h-1.5 w-12 rounded-full bg-muted overflow-hidden">
                         <div
-                          className="h-full rounded-full bg-primary transition-all"
+                          className="h-full rounded-full bg-gradient-to-r from-primary to-blue-400 progress-fill-animated shadow-[0_0_6px_-1px_hsl(var(--glow-blue)/0.4)]"
                           style={{ width: `${(d.confidence * 100).toFixed(0)}%` }}
                         />
                       </div>
@@ -218,12 +231,12 @@ export default function Decisions() {
                     <div className="flex items-center justify-end gap-2">
                       <div className="h-1.5 w-12 rounded-full bg-muted overflow-hidden">
                         <div
-                          className={`h-full rounded-full transition-all ${
+                          className={`h-full rounded-full progress-fill-animated ${
                             d.completeness_score >= 0.7
-                              ? "bg-emerald-500"
+                              ? "bg-gradient-to-r from-emerald-600 to-emerald-400 shadow-[0_0_6px_-1px_hsl(var(--glow-emerald)/0.4)]"
                               : d.completeness_score >= 0.5
-                              ? "bg-amber-500"
-                              : "bg-red-500"
+                              ? "bg-gradient-to-r from-amber-600 to-amber-400 shadow-[0_0_6px_-1px_hsl(var(--glow-amber)/0.4)]"
+                              : "bg-gradient-to-r from-red-600 to-red-400 shadow-[0_0_6px_-1px_hsl(var(--glow-red)/0.4)]"
                           }`}
                           style={{ width: `${(d.completeness_score * 100).toFixed(0)}%` }}
                         />

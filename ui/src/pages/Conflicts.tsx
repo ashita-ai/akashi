@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { listConflictGroups, patchConflict, listAgents, ApiError } from "@/lib/api";
 import type { ConflictGroup, DecisionConflict } from "@/types/api";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Badge, decisionTypeBadgeVariant } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -237,7 +237,7 @@ function ConflictGroupCard({
                   self
                 </Badge>
               )}
-              <Badge variant="outline" className="font-mono text-xs">
+              <Badge variant={decisionTypeBadgeVariant(group.decision_type)} className="font-mono text-xs">
                 {group.decision_type}
               </Badge>
             </div>
@@ -476,7 +476,7 @@ export default function Conflicts() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-page">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold tracking-tight">Conflicts</h1>
         {data?.total != null && data.total > 0 && (
@@ -547,11 +547,12 @@ export default function Conflicts() {
         <>
           <div className="space-y-3">
             {groups.map((group) => (
-              <ConflictGroupCard
-                key={group.id}
-                group={group}
-                onAdjudicate={openAdjudicateDialog}
-              />
+              <div key={group.id} className="animate-list-item">
+                <ConflictGroupCard
+                  group={group}
+                  onAdjudicate={openAdjudicateDialog}
+                />
+              </div>
             ))}
           </div>
 
