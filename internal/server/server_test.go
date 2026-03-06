@@ -1858,6 +1858,104 @@ func TestHandleVerifyDecision_NotFound(t *testing.T) {
 	assert.Equal(t, model.ErrCodeNotFound, errResp.Error.Code)
 }
 
+func TestHandleVerifyDecision_Active(t *testing.T) {
+	// Trace a decision so it gets a content hash.
+	dt := "verify_active_" + uuid.NewString()[:8]
+	traceResp, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken,
+		model.TraceRequest{
+			AgentID: "test-agent",
+			Decision: model.TraceDecision{
+				DecisionType: dt,
+				Outcome:      "active decision for verify test",
+				Confidence:   0.9,
+				Reasoning:    ptrStr("testing verify on active decision"),
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = traceResp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, traceResp.StatusCode)
+
+	var traceResult struct {
+		Data struct {
+			DecisionID uuid.UUID `json:"decision_id"`
+		} `json:"data"`
+	}
+	traceBody, _ := io.ReadAll(traceResp.Body)
+	require.NoError(t, json.Unmarshal(traceBody, &traceResult))
+	decisionID := traceResult.Data.DecisionID
+
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/verify/"+decisionID.String(), adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result map[string]any
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(body, &result))
+
+	data, ok := result["data"].(map[string]any)
+	require.True(t, ok, "expected data wrapper in response")
+	assert.Equal(t, "verified", data["status"])
+	assert.Equal(t, true, data["valid"])
+	assert.NotEmpty(t, data["content_hash"])
+	assert.Nil(t, data["retracted_at"], "active decision must not have retracted_at")
+}
+
+func TestHandleVerifyDecision_Retracted(t *testing.T) {
+	// Trace a decision, retract it, then verify it.
+	dt := "verify_retracted_" + uuid.NewString()[:8]
+	traceResp, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken,
+		model.TraceRequest{
+			AgentID: "test-agent",
+			Decision: model.TraceDecision{
+				DecisionType: dt,
+				Outcome:      "will be retracted then verified",
+				Confidence:   0.75,
+				Reasoning:    ptrStr("testing verify on retracted decision"),
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = traceResp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, traceResp.StatusCode)
+
+	var traceResult struct {
+		Data struct {
+			DecisionID uuid.UUID `json:"decision_id"`
+		} `json:"data"`
+	}
+	traceBody, _ := io.ReadAll(traceResp.Body)
+	require.NoError(t, json.Unmarshal(traceBody, &traceResult))
+	decisionID := traceResult.Data.DecisionID
+
+	// Retract the decision.
+	retractResp, err := authedRequest("DELETE", testSrv.URL+"/v1/decisions/"+decisionID.String(), adminToken,
+		map[string]string{"reason": "verify retraction test"})
+	require.NoError(t, err)
+	defer func() { _ = retractResp.Body.Close() }()
+	require.Equal(t, http.StatusOK, retractResp.StatusCode)
+
+	// Verify the retracted decision.
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/verify/"+decisionID.String(), adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result map[string]any
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(body, &result))
+
+	data, ok := result["data"].(map[string]any)
+	require.True(t, ok, "expected data wrapper in response")
+	assert.Equal(t, "retracted", data["status"])
+	assert.NotEmpty(t, data["retracted_at"], "retracted decision must have retracted_at")
+	assert.Equal(t, true, data["verified"], "hash should still verify for retracted decision")
+	assert.NotEmpty(t, data["content_hash"])
+
+	// Confirm retracted_at parses as a valid timestamp.
+	_, parseErr := time.Parse(time.RFC3339Nano, data["retracted_at"].(string))
+	assert.NoError(t, parseErr, "retracted_at must be a valid RFC3339Nano timestamp")
+}
+
 func TestHandleSessionView_EmptySession(t *testing.T) {
 	randomID := uuid.New().String()
 	resp, err := authedRequest("GET", testSrv.URL+"/v1/sessions/"+randomID, adminToken, nil)
