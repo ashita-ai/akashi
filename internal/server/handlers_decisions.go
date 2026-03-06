@@ -925,11 +925,24 @@ func (h *Handlers) HandleVerifyDecision(w http.ResponseWriter, r *http.Request) 
 
 	resp := map[string]any{"decision_id": id}
 
-	if d.ContentHash == "" {
+	switch {
+	case d.ValidTo != nil:
+		// Decision was retracted — still verify hash integrity but report retracted status.
+		resp["status"] = "retracted"
+		resp["retracted_at"] = d.ValidTo.UTC().Format(time.RFC3339Nano)
+		if d.ContentHash == "" {
+			resp["verified"] = false
+			resp["message"] = "this decision was created before content hashing was enabled"
+		} else {
+			valid := integrity.VerifyContentHash(d.ContentHash, d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
+			resp["verified"] = valid
+			resp["content_hash"] = d.ContentHash
+		}
+	case d.ContentHash == "":
 		// Pre-migration decisions have no hash — don't report them as tampered.
 		resp["status"] = "no_hash"
 		resp["message"] = "this decision was created before content hashing was enabled"
-	} else {
+	default:
 		valid := integrity.VerifyContentHash(d.ContentHash, d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
 		resp["valid"] = valid
 		if valid {
