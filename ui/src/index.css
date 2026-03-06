@@ -24,28 +24,30 @@
     --input: 220 13% 91%;
     --ring: 220 70% 50%;
     --radius: 0.5rem;
+    --sidebar: 220 16% 97%;
   }
 
   .dark {
-    --background: 224 71% 4%;
+    --background: 222 47% 6%;
     --foreground: 210 20% 98%;
-    --card: 224 71% 4%;
+    --card: 223 40% 8%;
     --card-foreground: 210 20% 98%;
-    --popover: 224 71% 4%;
+    --popover: 223 40% 8%;
     --popover-foreground: 210 20% 98%;
     --primary: 217 91% 60%;
-    --primary-foreground: 224 71% 4%;
-    --secondary: 215 28% 17%;
+    --primary-foreground: 222 47% 6%;
+    --secondary: 215 28% 14%;
     --secondary-foreground: 210 20% 98%;
-    --muted: 215 28% 17%;
-    --muted-foreground: 217 10% 64%;
-    --accent: 215 28% 17%;
+    --muted: 215 25% 13%;
+    --muted-foreground: 217 10% 55%;
+    --accent: 215 28% 14%;
     --accent-foreground: 210 20% 98%;
     --destructive: 0 63% 31%;
     --destructive-foreground: 210 20% 98%;
-    --border: 215 28% 17%;
-    --input: 215 28% 17%;
+    --border: 215 20% 14%;
+    --input: 215 20% 14%;
     --ring: 217 91% 60%;
+    --sidebar: 223 47% 5%;
   }
 }
 
@@ -54,6 +56,29 @@
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
+  }
+}
+
+/* Scrollbar styling for dark mode */
+.dark ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.dark ::-webkit-scrollbar-track {
+  background: hsl(var(--background));
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 4px;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
+}
+
+/* Subtle glow on primary interactive elements */
+@layer utilities {
+  .glow-primary {
+    box-shadow: 0 0 20px -4px hsl(var(--primary) / 0.3);
   }
 }
