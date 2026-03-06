@@ -2,7 +2,7 @@ import { useParams, Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { getSession } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Badge, decisionTypeBadgeVariant } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate, formatRelativeTime } from "@/lib/utils";
 import { ArrowLeft, Clock, FileText } from "lucide-react";
@@ -41,7 +41,7 @@ export default function SessionTimeline() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-page">
       <div className="flex items-center gap-4">
         <Link to="/" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="h-4 w-4" />
@@ -91,7 +91,7 @@ export default function SessionTimeline() {
           {data.summary?.decision_types && Object.keys(data.summary.decision_types).length > 0 && (
             <div className="mt-4 flex flex-wrap gap-2">
               {Object.entries(data.summary.decision_types).map(([type, count]) => (
-                <Badge key={type} variant="secondary" className="text-xs">
+                <Badge key={type} variant={decisionTypeBadgeVariant(type)} className="text-xs">
                   {type}: {count}
                 </Badge>
               ))}
@@ -114,12 +114,12 @@ export default function SessionTimeline() {
             <CardTitle className="text-sm font-medium">Decisions</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="relative space-y-4 pl-6 before:absolute before:left-[11px] before:top-2 before:h-[calc(100%-16px)] before:w-px before:bg-border">
+            <div className="relative space-y-4 pl-6 before:absolute before:left-[11px] before:top-2 before:h-[calc(100%-16px)] before:w-px before:bg-gradient-to-b before:from-primary/60 before:to-border">
               {data.decisions.map((decision) => (
                 <Link
                   key={decision.id}
                   to={`/decisions/${decision.run_id}`}
-                  className="relative block rounded-md border p-4 transition-colors hover:bg-accent"
+                  className="animate-list-item relative block rounded-md border p-4 transition-all duration-200 hover:bg-accent hover:shadow-glow-sm"
                 >
                   <div className="absolute -left-6 top-5 h-2.5 w-2.5 rounded-full border-2 border-background bg-primary" />
                   <div className="space-y-2">
@@ -128,7 +128,7 @@ export default function SessionTimeline() {
                         <Badge variant="outline" className="font-mono text-xs">
                           {decision.agent_id}
                         </Badge>
-                        <Badge variant="secondary" className="text-xs">
+                        <Badge variant={decisionTypeBadgeVariant(decision.decision_type)} className="text-xs">
                           {decision.decision_type}
                         </Badge>
                       </div>

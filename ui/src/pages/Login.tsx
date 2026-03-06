@@ -34,6 +34,7 @@ export default function Login() {
       {/* Subtle background gradient */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <div className="absolute -top-1/2 left-1/2 -translate-x-1/2 h-[800px] w-[800px] rounded-full bg-primary/5 blur-3xl" />
+        <div className="absolute -bottom-1/3 right-0 h-[600px] w-[600px] rounded-full bg-purple-500/[0.03] blur-3xl" />
       </div>
 
       {/* Theme toggle */}
@@ -50,7 +51,7 @@ export default function Login() {
       <div className="relative w-full max-w-sm space-y-8">
         {/* Logo + tagline */}
         <div className="flex flex-col items-center gap-4">
-          <AkashiLogo className="h-16 w-16 text-primary" />
+          <AkashiLogo className="h-16 w-16 text-primary drop-shadow-[0_0_12px_hsl(var(--glow-blue)/0.4)]" />
           <div className="text-center space-y-1">
             <h1 className="text-3xl font-bold tracking-tight">Akashi</h1>
             <p className="text-sm text-muted-foreground">
@@ -60,7 +61,7 @@ export default function Login() {
         </div>
 
         {/* Sign-in card */}
-        <Card className="border-border/50 shadow-lg dark:shadow-primary/5">
+        <Card className="gradient-border border-border/50 shadow-card-elevated">
           <CardHeader className="text-center pb-4">
             <CardTitle className="text-lg">Sign in</CardTitle>
             <CardDescription>

@@ -24,7 +24,7 @@ import { cn } from "@/lib/utils";
 
 function ConnectionDot({ status }: { status: SSEStatus }) {
   const colors: Record<SSEStatus, string> = {
-    connected: "bg-emerald-500 shadow-[0_0_6px_1px] shadow-emerald-500/40",
+    connected: "bg-emerald-500 shadow-[0_0_8px_2px] shadow-emerald-500/50 animate-pulse-glow text-emerald-500",
     connecting: "bg-amber-500 animate-pulse",
     disconnected: "bg-red-500",
   };
@@ -97,19 +97,19 @@ export default function Layout() {
               onClick={() => setSidebarOpen(false)}
               className={({ isActive }) =>
                 cn(
-                  "group relative flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                  "group relative flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-all duration-200",
                   isActive
-                    ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                    ? "bg-primary/10 text-primary shadow-[inset_0_0_20px_-8px_hsl(var(--glow-blue)/0.15)]"
+                    : "text-muted-foreground hover:bg-accent hover:text-accent-foreground hover:translate-x-0.5",
                 )
               }
             >
               {({ isActive }) => (
                 <>
                   {isActive && (
-                    <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full bg-primary" />
+                    <span className="absolute left-0 inset-y-1 w-[3px] rounded-r-full bg-gradient-to-b from-primary via-primary/80 to-purple-500/60" />
                   )}
-                  <Icon className="h-4 w-4" />
+                  <Icon className={cn("h-4 w-4 transition-all duration-200", isActive && "drop-shadow-[0_0_4px_hsl(var(--glow-blue)/0.5)]")} />
                   {label}
                 </>
               )}
@@ -118,7 +118,7 @@ export default function Layout() {
         </nav>
 
         {/* Footer */}
-        <div className="border-t p-4 space-y-3">
+        <div className="border-t border-t-border/50 p-4 space-y-3">
           <div className="flex items-center justify-between">
             <ConnectionDot status={sseStatus} />
             <Button
@@ -149,7 +149,7 @@ export default function Layout() {
       </aside>
 
       {/* Main content */}
-      <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex flex-1 flex-col overflow-hidden bg-atmosphere">
         <header className="flex h-14 items-center gap-4 border-b px-4 lg:hidden">
           <button onClick={() => setSidebarOpen(true)} aria-label="Open sidebar">
             <Menu className="h-5 w-5" />
