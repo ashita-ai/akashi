@@ -314,6 +314,219 @@ func (db *DB) RetractDecision(ctx context.Context, orgID, decisionID uuid.UUID, 
 	return nil
 }
 
+// ErasedSentinel is the placeholder text that replaces PII fields during GDPR erasure.
+const ErasedSentinel = "[erased]"
+
+// DecisionErasureResult contains the erasure record and affected row counts.
+type DecisionErasureResult struct {
+	Erasure            model.DecisionErasure
+	AlternativesErased int64
+	EvidenceErased     int64
+}
+
+// EraseDecision scrubs PII from a decision in-place (GDPR Art. 17 tombstone erasure).
+// Within a single transaction it:
+//  1. Activates the immutability trigger bypass via SET LOCAL
+//  2. Scrubs outcome/reasoning to "[erased]" and recomputes the content hash
+//  3. Scrubs alternatives (label, rejection_reason) and evidence (content, source_uri)
+//  4. Nulls out embeddings (contain semantic PII)
+//  5. Inserts a decision_erasures row with the original hash
+//  6. Records a DecisionErased event and mutation audit entry
+//  7. Queues a search index deletion
+//
+// Does NOT set valid_to — the decision remains "active" but scrubbed.
+func (db *DB) EraseDecision(
+	ctx context.Context,
+	orgID, decisionID uuid.UUID,
+	reason, erasedBy string,
+	audit *MutationAuditEntry,
+) (DecisionErasureResult, error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return DecisionErasureResult{}, fmt.Errorf("storage: begin erase decision tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Activate the erasure bypass for the immutability trigger.
+	// SET LOCAL is scoped to this transaction and auto-resets on commit/rollback.
+	if _, err := tx.Exec(ctx, `SET LOCAL akashi.erasure_in_progress = 'true'`); err != nil {
+		return DecisionErasureResult{}, fmt.Errorf("storage: set erasure session var: %w", err)
+	}
+
+	// Fetch the decision. Must exist and belong to org.
+	var runID uuid.UUID
+	var agentID, oldOutcome, oldContentHash string
+	var oldReasoning *string
+	var decisionType string
+	var confidence float32
+	var validFrom time.Time
+	err = tx.QueryRow(ctx,
+		`SELECT run_id, agent_id, outcome, reasoning, decision_type, confidence,
+		        content_hash, valid_from
+		 FROM decisions WHERE id = $1 AND org_id = $2`,
+		decisionID, orgID,
+	).Scan(&runID, &agentID, &oldOutcome, &oldReasoning, &decisionType,
+		&confidence, &oldContentHash, &validFrom)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return DecisionErasureResult{}, fmt.Errorf("storage: decision %s: %w", decisionID, ErrNotFound)
+		}
+		return DecisionErasureResult{}, fmt.Errorf("storage: fetch decision for erasure: %w", err)
+	}
+
+	// Check idempotency: if already erased, return error.
+	var alreadyErased bool
+	err = tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM decision_erasures WHERE decision_id = $1)`,
+		decisionID,
+	).Scan(&alreadyErased)
+	if err != nil {
+		return DecisionErasureResult{}, fmt.Errorf("storage: check existing erasure: %w", err)
+	}
+	if alreadyErased {
+		return DecisionErasureResult{}, fmt.Errorf("storage: decision %s: %w", decisionID, ErrAlreadyErased)
+	}
+
+	// Compute new content hash over scrubbed fields.
+	erasedReasoning := ErasedSentinel
+	newHash := integrity.ComputeContentHash(
+		decisionID, decisionType, ErasedSentinel, confidence, &erasedReasoning, validFrom,
+	)
+
+	// Scrub the decision row.
+	_, err = tx.Exec(ctx,
+		`UPDATE decisions
+		 SET outcome = $1, reasoning = $2, content_hash = $3,
+		     embedding = NULL, outcome_embedding = NULL
+		 WHERE id = $4 AND org_id = $5`,
+		ErasedSentinel, ErasedSentinel, newHash, decisionID, orgID,
+	)
+	if err != nil {
+		return DecisionErasureResult{}, fmt.Errorf("storage: scrub decision: %w", err)
+	}
+
+	// Scrub alternatives.
+	altTag, err := tx.Exec(ctx,
+		`UPDATE alternatives
+		 SET label = $1, rejection_reason = $1
+		 WHERE decision_id = $2
+		   AND decision_id IN (SELECT id FROM decisions WHERE org_id = $3)`,
+		ErasedSentinel, decisionID, orgID,
+	)
+	if err != nil {
+		return DecisionErasureResult{}, fmt.Errorf("storage: scrub alternatives: %w", err)
+	}
+
+	// Scrub evidence.
+	evTag, err := tx.Exec(ctx,
+		`UPDATE evidence
+		 SET content = $1, source_uri = NULL, embedding = NULL
+		 WHERE decision_id = $2 AND org_id = $3`,
+		ErasedSentinel, decisionID, orgID,
+	)
+	if err != nil {
+		return DecisionErasureResult{}, fmt.Errorf("storage: scrub evidence: %w", err)
+	}
+
+	// Queue search index deletion.
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO search_outbox (decision_id, org_id, operation)
+		 VALUES ($1, $2, 'delete')
+		 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
+		decisionID, orgID); err != nil {
+		return DecisionErasureResult{}, fmt.Errorf("storage: queue search outbox delete in erasure: %w", err)
+	}
+
+	// Insert decision_erasures row.
+	var erasure model.DecisionErasure
+	err = tx.QueryRow(ctx,
+		`INSERT INTO decision_erasures (decision_id, org_id, erased_by, original_hash, erased_hash, reason)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id, decision_id, org_id, erased_by, original_hash, erased_hash, reason, erased_at`,
+		decisionID, orgID, erasedBy, oldContentHash, newHash, reason,
+	).Scan(&erasure.ID, &erasure.DecisionID, &erasure.OrgID, &erasure.ErasedBy,
+		&erasure.OriginalHash, &erasure.ErasedHash, &erasure.Reason, &erasure.ErasedAt)
+	if err != nil {
+		return DecisionErasureResult{}, fmt.Errorf("storage: insert decision erasure: %w", err)
+	}
+
+	// Insert DecisionErased event.
+	now := time.Now().UTC()
+	payload := map[string]any{
+		"decision_id":   decisionID.String(),
+		"erased_by":     erasedBy,
+		"original_hash": oldContentHash,
+	}
+	if reason != "" {
+		payload["reason"] = reason
+	}
+	var seqNum int64
+	err = tx.QueryRow(ctx, `SELECT nextval('event_sequence_num_seq')`).Scan(&seqNum)
+	if err != nil {
+		return DecisionErasureResult{}, fmt.Errorf("storage: reserve sequence num for erasure event: %w", err)
+	}
+	_, err = tx.Exec(ctx,
+		`INSERT INTO agent_events (id, run_id, org_id, event_type, sequence_num, occurred_at, agent_id, payload, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		uuid.New(), runID, orgID, string(model.EventDecisionErased), seqNum,
+		now, agentID, payload, now,
+	)
+	if err != nil {
+		return DecisionErasureResult{}, fmt.Errorf("storage: insert erasure event: %w", err)
+	}
+
+	// Insert mutation audit entry.
+	if audit != nil {
+		audit.Operation = "decision_erased"
+		audit.ResourceType = "decision"
+		audit.ResourceID = decisionID.String()
+		audit.BeforeData = map[string]any{
+			"outcome":      oldOutcome,
+			"reasoning":    oldReasoning,
+			"content_hash": oldContentHash,
+		}
+		audit.AfterData = map[string]any{
+			"outcome":      ErasedSentinel,
+			"reasoning":    ErasedSentinel,
+			"content_hash": newHash,
+			"erased_by":    erasedBy,
+			"reason":       reason,
+		}
+		if err := InsertMutationAuditTx(ctx, tx, *audit); err != nil {
+			return DecisionErasureResult{}, fmt.Errorf("storage: audit in erasure tx: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return DecisionErasureResult{}, fmt.Errorf("storage: commit erasure: %w", err)
+	}
+
+	return DecisionErasureResult{
+		Erasure:            erasure,
+		AlternativesErased: altTag.RowsAffected(),
+		EvidenceErased:     evTag.RowsAffected(),
+	}, nil
+}
+
+// GetDecisionErasure retrieves the erasure record for a decision, if one exists.
+// Returns ErrNotFound if no erasure record exists for this decision.
+func (db *DB) GetDecisionErasure(ctx context.Context, orgID, decisionID uuid.UUID) (model.DecisionErasure, error) {
+	var e model.DecisionErasure
+	err := db.pool.QueryRow(ctx,
+		`SELECT id, decision_id, org_id, erased_by, original_hash, erased_hash, reason, erased_at
+		 FROM decision_erasures WHERE decision_id = $1 AND org_id = $2`,
+		decisionID, orgID,
+	).Scan(&e.ID, &e.DecisionID, &e.OrgID, &e.ErasedBy,
+		&e.OriginalHash, &e.ErasedHash, &e.Reason, &e.ErasedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.DecisionErasure{}, fmt.Errorf("storage: erasure for decision %s: %w", decisionID, ErrNotFound)
+		}
+		return model.DecisionErasure{}, fmt.Errorf("storage: get decision erasure: %w", err)
+	}
+	return e, nil
+}
+
 // QueryDecisions executes a structured query with filters, ordering, and pagination.
 // Only returns active decisions (valid_to IS NULL). Use QueryDecisionsTemporal for
 // point-in-time queries that include superseded decisions.

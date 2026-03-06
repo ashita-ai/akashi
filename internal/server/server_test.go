@@ -41,6 +41,7 @@ var (
 	testcontainer testcontainers.Container
 	adminToken    string
 	agentToken    string
+	orgOwnerToken string
 )
 
 func TestMain(m *testing.M) {
@@ -132,6 +133,29 @@ func TestMain(m *testing.M) {
 	// Create a test agent.
 	createAgent(testSrv.URL, adminToken, "test-agent", "Test Agent", "agent", "test-agent-key")
 	agentToken = getToken(testSrv.URL, "test-agent", "test-agent-key")
+
+	// Create an org_owner agent for GDPR erasure tests.
+	// The seeded admin (rank 3) cannot create org_owner (rank 4) via HTTP because
+	// HandleCreateAgent requires the caller to strictly outrank the requested role.
+	// Insert directly via the storage layer instead.
+	{
+		ownerKeyHash, hashErr := auth.HashAPIKey("test-org-owner-key")
+		if hashErr != nil {
+			fmt.Fprintf(os.Stderr, "failed to hash org owner key: %v\n", hashErr)
+			os.Exit(1)
+		}
+		if _, dbErr := db.CreateAgent(ctx, model.Agent{
+			AgentID:    "test-org-owner",
+			OrgID:      uuid.Nil,
+			Name:       "Test Org Owner",
+			Role:       model.RoleOrgOwner,
+			APIKeyHash: &ownerKeyHash,
+		}); dbErr != nil {
+			fmt.Fprintf(os.Stderr, "failed to create org owner agent: %v\n", dbErr)
+			os.Exit(1)
+		}
+		orgOwnerToken = getToken(testSrv.URL, "test-org-owner", "test-org-owner-key")
+	}
 
 	code := m.Run()
 
@@ -1858,6 +1882,104 @@ func TestHandleVerifyDecision_NotFound(t *testing.T) {
 	assert.Equal(t, model.ErrCodeNotFound, errResp.Error.Code)
 }
 
+func TestHandleVerifyDecision_Active(t *testing.T) {
+	// Trace a decision so it gets a content hash.
+	dt := "verify_active_" + uuid.NewString()[:8]
+	traceResp, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken,
+		model.TraceRequest{
+			AgentID: "test-agent",
+			Decision: model.TraceDecision{
+				DecisionType: dt,
+				Outcome:      "active decision for verify test",
+				Confidence:   0.9,
+				Reasoning:    ptrStr("testing verify on active decision"),
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = traceResp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, traceResp.StatusCode)
+
+	var traceResult struct {
+		Data struct {
+			DecisionID uuid.UUID `json:"decision_id"`
+		} `json:"data"`
+	}
+	traceBody, _ := io.ReadAll(traceResp.Body)
+	require.NoError(t, json.Unmarshal(traceBody, &traceResult))
+	decisionID := traceResult.Data.DecisionID
+
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/verify/"+decisionID.String(), adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result map[string]any
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(body, &result))
+
+	data, ok := result["data"].(map[string]any)
+	require.True(t, ok, "expected data wrapper in response")
+	assert.Equal(t, "verified", data["status"])
+	assert.Equal(t, true, data["valid"])
+	assert.NotEmpty(t, data["content_hash"])
+	assert.Nil(t, data["retracted_at"], "active decision must not have retracted_at")
+}
+
+func TestHandleVerifyDecision_Retracted(t *testing.T) {
+	// Trace a decision, retract it, then verify it.
+	dt := "verify_retracted_" + uuid.NewString()[:8]
+	traceResp, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken,
+		model.TraceRequest{
+			AgentID: "test-agent",
+			Decision: model.TraceDecision{
+				DecisionType: dt,
+				Outcome:      "will be retracted then verified",
+				Confidence:   0.75,
+				Reasoning:    ptrStr("testing verify on retracted decision"),
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = traceResp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, traceResp.StatusCode)
+
+	var traceResult struct {
+		Data struct {
+			DecisionID uuid.UUID `json:"decision_id"`
+		} `json:"data"`
+	}
+	traceBody, _ := io.ReadAll(traceResp.Body)
+	require.NoError(t, json.Unmarshal(traceBody, &traceResult))
+	decisionID := traceResult.Data.DecisionID
+
+	// Retract the decision.
+	retractResp, err := authedRequest("DELETE", testSrv.URL+"/v1/decisions/"+decisionID.String(), adminToken,
+		map[string]string{"reason": "verify retraction test"})
+	require.NoError(t, err)
+	defer func() { _ = retractResp.Body.Close() }()
+	require.Equal(t, http.StatusOK, retractResp.StatusCode)
+
+	// Verify the retracted decision.
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/verify/"+decisionID.String(), adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result map[string]any
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(body, &result))
+
+	data, ok := result["data"].(map[string]any)
+	require.True(t, ok, "expected data wrapper in response")
+	assert.Equal(t, "retracted", data["status"])
+	assert.NotEmpty(t, data["retracted_at"], "retracted decision must have retracted_at")
+	assert.Equal(t, true, data["verified"], "hash should still verify for retracted decision")
+	assert.NotEmpty(t, data["content_hash"])
+
+	// Confirm retracted_at parses as a valid timestamp.
+	_, parseErr := time.Parse(time.RFC3339Nano, data["retracted_at"].(string))
+	assert.NoError(t, parseErr, "retracted_at must be a valid RFC3339Nano timestamp")
+}
+
 func TestHandleSessionView_EmptySession(t *testing.T) {
 	randomID := uuid.New().String()
 	resp, err := authedRequest("GET", testSrv.URL+"/v1/sessions/"+randomID, adminToken, nil)
@@ -3159,5 +3281,375 @@ func TestHandleRetractDecision(t *testing.T) {
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+}
+
+// ---- HandleResolveConflictGroup ------------------------------------------
+
+// seedConflictGroup creates two decisions and two open conflicts sharing the
+// same conflict group. Returns the group ID, two conflict IDs, and the two
+// decision IDs (A1, B1 for the first pair; A2, B2 for the second). Agent
+// names are "alpha" (side A) and "beta" (side B).
+func seedConflictGroup(t *testing.T) (groupID uuid.UUID, conflictIDs [2]uuid.UUID, decisionIDs [4]uuid.UUID) {
+	t.Helper()
+	orgID := uuid.Nil
+
+	traceDecision := func(agentID, outcome string, confidence float32) uuid.UUID {
+		resp, tErr := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken, model.TraceRequest{
+			AgentID: agentID,
+			Decision: model.TraceDecision{
+				DecisionType: "architecture",
+				Outcome:      outcome,
+				Confidence:   confidence,
+			},
+		})
+		require.NoError(t, tErr)
+		defer func() { _ = resp.Body.Close() }()
+		require.Contains(t, []int{http.StatusOK, http.StatusCreated, http.StatusAccepted}, resp.StatusCode)
+		var result struct {
+			Data struct {
+				DecisionID uuid.UUID `json:"decision_id"`
+			} `json:"data"`
+		}
+		b, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(b, &result))
+		require.NotEqual(t, uuid.Nil, result.Data.DecisionID)
+		return result.Data.DecisionID
+	}
+
+	// Create 4 decisions: two per side
+	decisionIDs[0] = traceDecision("alpha", "use Redis for caching", 0.9)
+	decisionIDs[1] = traceDecision("beta", "use Memcached for caching", 0.8)
+	decisionIDs[2] = traceDecision("alpha", "Redis cluster mode", 0.85)
+	decisionIDs[3] = traceDecision("beta", "Memcached with mcrouter", 0.75)
+
+	require.NoError(t, testBuf.FlushNow(context.Background()))
+
+	// Insert two conflicts — InsertScoredConflict auto-creates and links the group.
+	for i, pair := range [][2]int{{0, 1}, {2, 3}} {
+		c := model.DecisionConflict{
+			OrgID:         orgID,
+			ConflictKind:  model.ConflictKindCrossAgent,
+			DecisionAID:   decisionIDs[pair[0]],
+			DecisionBID:   decisionIDs[pair[1]],
+			AgentA:        "alpha",
+			AgentB:        "beta",
+			DecisionTypeA: "architecture",
+			DecisionTypeB: "architecture",
+			OutcomeA:      "alpha outcome",
+			OutcomeB:      "beta outcome",
+			Status:        "open",
+		}
+		var err error
+		conflictIDs[i], err = testDB.InsertScoredConflict(context.Background(), c)
+		require.NoError(t, err)
+	}
+
+	// Retrieve the group_id that was auto-created.
+	conflict, err := testDB.GetConflict(context.Background(), conflictIDs[0], orgID)
+	require.NoError(t, err)
+	require.NotNil(t, conflict.GroupID, "InsertScoredConflict must set group_id")
+	groupID = *conflict.GroupID
+
+	return groupID, conflictIDs, decisionIDs
+}
+
+func TestHandleResolveConflictGroup(t *testing.T) {
+	t.Run("invalid UUID returns 400", func(t *testing.T) {
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/not-a-uuid/resolve", adminToken,
+			model.ConflictGroupResolveRequest{Status: "resolved"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("invalid status returns 400", func(t *testing.T) {
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+uuid.New().String()+"/resolve", adminToken,
+			model.ConflictGroupResolveRequest{Status: "acknowledged"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+		var errResp model.APIError
+		body, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(body, &errResp)
+		assert.Equal(t, model.ErrCodeInvalidInput, errResp.Error.Code)
+	})
+
+	t.Run("winning_agent with wont_fix returns 400", func(t *testing.T) {
+		agent := "alpha"
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+uuid.New().String()+"/resolve", adminToken,
+			model.ConflictGroupResolveRequest{Status: "wont_fix", WinningAgent: &agent})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("nonexistent group returns 404", func(t *testing.T) {
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+uuid.New().String()+"/resolve", adminToken,
+			model.ConflictGroupResolveRequest{Status: "resolved"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("resolved without winning_agent resolves all open conflicts", func(t *testing.T) {
+		groupID, _, _ := seedConflictGroup(t)
+		note := "all caching decisions settled"
+
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+groupID.String()+"/resolve", adminToken,
+			model.ConflictGroupResolveRequest{Status: "resolved", ResolutionNote: &note})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var envelope struct {
+			Data model.ConflictGroupResolveResult `json:"data"`
+		}
+		b, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(b, &envelope))
+		assert.Equal(t, groupID, envelope.Data.GroupID)
+		assert.Equal(t, "resolved", envelope.Data.Status)
+		assert.Equal(t, 2, envelope.Data.Resolved, "both open conflicts should be resolved")
+	})
+
+	t.Run("resolved with winning_agent sets winning_decision_id", func(t *testing.T) {
+		groupID, conflictIDs, _ := seedConflictGroup(t)
+		agent := "alpha"
+		note := "alpha is authoritative"
+
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+groupID.String()+"/resolve", adminToken,
+			model.ConflictGroupResolveRequest{Status: "resolved", WinningAgent: &agent, ResolutionNote: &note})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var envelope struct {
+			Data model.ConflictGroupResolveResult `json:"data"`
+		}
+		b, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(b, &envelope))
+		assert.Equal(t, 2, envelope.Data.Resolved)
+
+		// Verify winning_decision_id was set on each conflict.
+		for _, cid := range conflictIDs {
+			conflict, cErr := testDB.GetConflict(context.Background(), cid, uuid.Nil)
+			require.NoError(t, cErr)
+			require.NotNil(t, conflict)
+			assert.Equal(t, "resolved", conflict.Status)
+			require.NotNil(t, conflict.WinningDecisionID, "winning_decision_id should be set")
+		}
+	})
+
+	t.Run("wont_fix resolves without winner", func(t *testing.T) {
+		groupID, conflictIDs, _ := seedConflictGroup(t)
+
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+groupID.String()+"/resolve", adminToken,
+			model.ConflictGroupResolveRequest{Status: "wont_fix"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var envelope struct {
+			Data model.ConflictGroupResolveResult `json:"data"`
+		}
+		b, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(b, &envelope))
+		assert.Equal(t, "wont_fix", envelope.Data.Status)
+		assert.Equal(t, 2, envelope.Data.Resolved)
+
+		for _, cid := range conflictIDs {
+			conflict, cErr := testDB.GetConflict(context.Background(), cid, uuid.Nil)
+			require.NoError(t, cErr)
+			require.NotNil(t, conflict)
+			assert.Equal(t, "wont_fix", conflict.Status)
+			assert.Nil(t, conflict.WinningDecisionID, "wont_fix should not set winner")
+		}
+	})
+
+	t.Run("idempotent re-resolve returns 0 affected", func(t *testing.T) {
+		groupID, _, _ := seedConflictGroup(t)
+
+		// Resolve first time.
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+groupID.String()+"/resolve", adminToken,
+			model.ConflictGroupResolveRequest{Status: "resolved"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		// Resolve second time — no open conflicts remain.
+		resp2, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+groupID.String()+"/resolve", adminToken,
+			model.ConflictGroupResolveRequest{Status: "resolved"})
+		require.NoError(t, err)
+		defer func() { _ = resp2.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp2.StatusCode)
+
+		var envelope struct {
+			Data model.ConflictGroupResolveResult `json:"data"`
+		}
+		b, _ := io.ReadAll(resp2.Body)
+		require.NoError(t, json.Unmarshal(b, &envelope))
+		assert.Equal(t, 0, envelope.Data.Resolved, "no open conflicts to resolve on second call")
+	})
+}
+
+// ---- HandleEraseDecision (GDPR tombstone erasure) -------------------------
+
+func TestHandleEraseDecision(t *testing.T) {
+	// Trace a decision with alternatives and evidence to erase.
+	dt := "erasure_test_" + uuid.NewString()[:8]
+	traceResp, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken,
+		model.TraceRequest{
+			AgentID: "test-agent",
+			Decision: model.TraceDecision{
+				DecisionType: dt,
+				Outcome:      "sensitive PII outcome",
+				Confidence:   0.85,
+				Reasoning:    ptrStr("contains PII reasoning"),
+				Alternatives: []model.TraceAlternative{
+					{Label: "alt with PII", RejectionReason: ptrStr("PII rejection reason")},
+				},
+				Evidence: []model.TraceEvidence{
+					{SourceType: "document", Content: "PII evidence content", SourceURI: ptrStr("https://example.com/pii")},
+				},
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = traceResp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, traceResp.StatusCode)
+
+	var traceResult struct {
+		Data struct {
+			DecisionID uuid.UUID `json:"decision_id"`
+			RunID      uuid.UUID `json:"run_id"`
+		} `json:"data"`
+	}
+	traceBody, _ := io.ReadAll(traceResp.Body)
+	require.NoError(t, json.Unmarshal(traceBody, &traceResult))
+	decisionID := traceResult.Data.DecisionID
+	runID := traceResult.Data.RunID
+	require.NotEqual(t, uuid.Nil, decisionID)
+
+	t.Run("pre-erasure verify returns verified", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/verify/"+decisionID.String(), adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		var result struct {
+			Data map[string]any `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(data, &result))
+		assert.Equal(t, "verified", result.Data["status"])
+	})
+
+	t.Run("agent role gets 403", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+decisionID.String()+"/erase", agentToken,
+			map[string]string{"reason": "GDPR request"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("admin role gets 403", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+decisionID.String()+"/erase", adminToken,
+			map[string]string{"reason": "GDPR request"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("invalid UUID returns 400", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/not-a-uuid/erase", orgOwnerToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("nonexistent ID returns 404", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+uuid.New().String()+"/erase", orgOwnerToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("successful erasure", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+decisionID.String()+"/erase", orgOwnerToken,
+			map[string]string{"reason": "GDPR data subject request #42"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data map[string]any `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(data, &result))
+		assert.Equal(t, decisionID.String(), result.Data["decision_id"])
+		assert.NotEmpty(t, result.Data["erased_at"])
+		assert.NotEmpty(t, result.Data["original_hash"])
+		assert.NotEmpty(t, result.Data["erased_hash"])
+		assert.NotEqual(t, result.Data["original_hash"], result.Data["erased_hash"])
+	})
+
+	t.Run("decision still retrievable but scrubbed", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/"+decisionID.String(), agentToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data model.Decision `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(data, &result))
+		assert.Equal(t, "[erased]", result.Data.Outcome)
+		assert.NotNil(t, result.Data.Reasoning)
+		assert.Equal(t, "[erased]", *result.Data.Reasoning)
+		assert.Nil(t, result.Data.ValidTo, "erasure must NOT set valid_to")
+	})
+
+	t.Run("verify returns erased status", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/verify/"+decisionID.String(), adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data map[string]any `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(data, &result))
+		assert.Equal(t, "erased", result.Data["status"])
+		assert.Equal(t, true, result.Data["valid"])
+		assert.NotEmpty(t, result.Data["original_hash"])
+		assert.NotEmpty(t, result.Data["erased_at"])
+		assert.NotEmpty(t, result.Data["erased_by"])
+	})
+
+	t.Run("double erasure returns 409", func(t *testing.T) {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+decisionID.String()+"/erase", orgOwnerToken,
+			map[string]string{"reason": "second attempt"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	})
+
+	t.Run("DecisionErased event recorded", func(t *testing.T) {
+		orgID := uuid.Nil // default org from SeedAdmin
+		events, err := testDB.GetEventsByRun(context.Background(), orgID, runID, 100)
+		require.NoError(t, err)
+
+		var found bool
+		for _, ev := range events {
+			if ev.EventType == model.EventDecisionErased {
+				found = true
+				assert.Equal(t, decisionID.String(), ev.Payload["decision_id"])
+				assert.NotEmpty(t, ev.Payload["erased_by"])
+				assert.NotEmpty(t, ev.Payload["original_hash"])
+				break
+			}
+		}
+		assert.True(t, found, "expected a DecisionErased event in the run's event log")
 	})
 }

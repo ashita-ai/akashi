@@ -682,6 +682,72 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, conflict)
 }
 
+// validGroupResolveStatuses defines the allowed values for batch conflict group resolution.
+// "acknowledged" is excluded because batch-acknowledging a group is not a resolution action.
+var validGroupResolveStatuses = map[string]bool{
+	"resolved": true,
+	"wont_fix": true,
+}
+
+// HandleResolveConflictGroup handles PATCH /v1/conflict-groups/{id}/resolve.
+// Batch-resolves all open or acknowledged conflicts in a conflict group.
+func (h *Handlers) HandleResolveConflictGroup(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
+
+	idStr := r.PathValue("id")
+	groupID, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid conflict group id")
+		return
+	}
+
+	var req model.ConflictGroupResolveRequest
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
+		return
+	}
+
+	if !validGroupResolveStatuses[req.Status] {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"status must be one of: resolved, wont_fix")
+		return
+	}
+
+	if req.WinningAgent != nil && req.Status != "resolved" {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"winning_agent can only be set when status is 'resolved'")
+		return
+	}
+
+	resolvedBy := claims.AgentID
+	if resolvedBy == "" {
+		resolvedBy = claims.Subject
+	}
+
+	audit := h.buildAuditEntry(r, orgID,
+		"conflict_group_resolved", "conflict_group", groupID.String(),
+		nil, nil,
+		map[string]any{"new_status": req.Status, "resolved_by": resolvedBy},
+	)
+
+	affected, err := h.db.ResolveConflictGroup(r.Context(), groupID, orgID, req.Status, resolvedBy, req.ResolutionNote, req.WinningAgent, audit)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict group not found")
+			return
+		}
+		h.writeInternalError(w, r, "failed to resolve conflict group", err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, model.ConflictGroupResolveResult{
+		GroupID:  groupID,
+		Status:   req.Status,
+		Resolved: affected,
+	})
+}
+
 // HandleAdjudicateConflict handles POST /v1/conflicts/{id}/adjudicate.
 // Creates an adjudication decision trace and links it to the conflict.
 func (h *Handlers) HandleAdjudicateConflict(w http.ResponseWriter, r *http.Request) {
@@ -859,19 +925,50 @@ func (h *Handlers) HandleVerifyDecision(w http.ResponseWriter, r *http.Request) 
 
 	resp := map[string]any{"decision_id": id}
 
-	if d.ContentHash == "" {
+	switch {
+	case d.ValidTo != nil:
+		// Decision was retracted — still verify hash integrity but report retracted status.
+		resp["status"] = "retracted"
+		resp["retracted_at"] = d.ValidTo.UTC().Format(time.RFC3339Nano)
+		if d.ContentHash == "" {
+			resp["verified"] = false
+			resp["message"] = "this decision was created before content hashing was enabled"
+		} else {
+			valid := integrity.VerifyContentHash(d.ContentHash, d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
+			resp["verified"] = valid
+			resp["content_hash"] = d.ContentHash
+		}
+	case d.ContentHash == "":
 		// Pre-migration decisions have no hash — don't report them as tampered.
 		resp["status"] = "no_hash"
 		resp["message"] = "this decision was created before content hashing was enabled"
-	} else {
-		valid := integrity.VerifyContentHash(d.ContentHash, d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
-		resp["valid"] = valid
-		if valid {
-			resp["status"] = "verified"
-		} else {
-			resp["status"] = "tampered"
+	default:
+		// Check for GDPR erasure before standard verification.
+		erasure, erasureErr := h.db.GetDecisionErasure(r.Context(), orgID, id)
+		switch {
+		case erasureErr == nil:
+			// Decision has been erased — verify the erased hash matches.
+			valid := integrity.VerifyContentHash(d.ContentHash, d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
+			resp["status"] = "erased"
+			resp["valid"] = valid
+			resp["content_hash"] = d.ContentHash
+			resp["original_hash"] = erasure.OriginalHash
+			resp["erased_at"] = erasure.ErasedAt
+			resp["erased_by"] = erasure.ErasedBy
+		case !isNotFoundError(erasureErr):
+			h.writeInternalError(w, r, "failed to check erasure status", erasureErr)
+			return
+		default:
+			// No erasure — standard verification.
+			valid := integrity.VerifyContentHash(d.ContentHash, d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
+			resp["valid"] = valid
+			if valid {
+				resp["status"] = "verified"
+			} else {
+				resp["status"] = "tampered"
+			}
+			resp["content_hash"] = d.ContentHash
 		}
-		resp["content_hash"] = d.ContentHash
 	}
 
 	writeJSON(w, r, http.StatusOK, resp)
@@ -1182,4 +1279,75 @@ func (h *Handlers) HandleRetractDecision(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, r, http.StatusOK, decision)
+}
+
+// HandleEraseDecision handles POST /v1/decisions/{id}/erase.
+// GDPR Art. 17 tombstone erasure: scrubs PII fields in-place without deleting
+// the decision row, preserving the audit chain. Requires org_owner role.
+func (h *Handlers) HandleEraseDecision(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+
+	idStr := r.PathValue("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid decision id")
+		return
+	}
+
+	// Decode optional body with reason.
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+			handleDecodeError(w, r, err)
+			return
+		}
+	}
+
+	// Block erasure if an active legal hold covers this decision.
+	holdActive, err := h.db.ActiveHoldsExistForDecision(r.Context(), orgID, id)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to check legal holds", err)
+		return
+	}
+	if holdActive {
+		writeError(w, r, http.StatusConflict, model.ErrCodeConflict,
+			"decision is covered by an active legal hold and cannot be erased")
+		return
+	}
+
+	claims := ClaimsFromContext(r.Context())
+	erasedBy := claims.AgentID
+	if erasedBy == "" {
+		erasedBy = claims.Subject
+	}
+
+	audit := h.buildAuditEntry(r, orgID,
+		"decision_erased", "decision", id.String(),
+		nil, nil,
+		map[string]any{"erased_by": erasedBy, "reason": req.Reason},
+	)
+	result, err := h.db.EraseDecision(r.Context(), orgID, id, req.Reason, erasedBy, &audit)
+	if err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "decision not found")
+			return
+		}
+		if errors.Is(err, storage.ErrAlreadyErased) {
+			writeError(w, r, http.StatusConflict, model.ErrCodeConflict, "decision has already been erased")
+			return
+		}
+		h.writeInternalError(w, r, "failed to erase decision", err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"decision_id":         id,
+		"erased_at":           result.Erasure.ErasedAt,
+		"original_hash":       result.Erasure.OriginalHash,
+		"erased_hash":         result.Erasure.ErasedHash,
+		"alternatives_erased": result.AlternativesErased,
+		"evidence_erased":     result.EvidenceErased,
+	})
 }

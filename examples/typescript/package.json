@@ -1,0 +1,15 @@
+{
+  "name": "akashi-examples",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "quickstart": "npx tsx quickstart.ts",
+    "middleware": "npx tsx middleware.ts"
+  },
+  "dependencies": {
+    "akashi": "file:../../sdk/typescript"
+  },
+  "devDependencies": {
+    "tsx": "^4"
+  }
+}

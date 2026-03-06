@@ -1,109 +1,39 @@
 #!/usr/bin/env python3
-"""
-Akashi + CrewAI SDK Example
-============================
-Shows the recommended way to integrate Akashi tracing into a CrewAI crew
-using the ``AkashiCrew`` proxy.
+"""CrewAI + Akashi integration example — automatic per-task tracing.
 
-AkashiCrew wraps an existing Crew and:
-  1. Installs task/step callbacks (composing with any you already set)
-  2. Calls check() before kickoff() to surface precedents
-  3. Calls trace() after kickoff() to record the crew's output
+A two-agent research-then-write pipeline with the akashi-crewai integration
+wired in via ``AkashiCrew``. Each task completion is automatically traced,
+per-step tool selections trigger precedent checks, and the entire crew run
+gets a check-before / trace-after wrapper — all from a single proxy object.
 
-All other crew attributes and methods pass through unchanged.
+Prerequisites:
+    docker compose -f docker-compose.complete.yml up -d
+    pip install -e sdk/python
+    pip install -e sdk/integrations/crewai
 
-Usage:
-    # Requires a running Akashi server and an agent API key.
-    pip install crewai
-    pip install -e ../../sdk/python
-    pip install -e ../../sdk/integrations/crewai
-
+Run:
     # Pre-scripted (no LLM needed):
-    python sdk_example.py
+    python examples/crewai/sdk_example.py
 
-    # With a real LLM:
-    OPENAI_API_KEY=sk-... python sdk_example.py --live
+    # With real CrewAI agents:
+    OPENAI_API_KEY=sk-... python examples/crewai/sdk_example.py --live
 """
 from __future__ import annotations
 
 import os
 import sys
 
-from akashi import AkashiSyncClient
+from akashi import AkashiSyncClient, ConflictError, CreateAgentRequest
 from akashi_crewai import AkashiCrew
 
-AKASHI_URL = os.environ.get("AKASHI_URL", "http://localhost:8080")
-AKASHI_AGENT_ID = os.environ.get("AKASHI_AGENT_ID", "crewai-demo")
-AKASHI_API_KEY = os.environ.get("AKASHI_API_KEY", "")
+URL = os.environ.get("AKASHI_URL", "http://localhost:8080")
+ADMIN_KEY = os.environ.get("AKASHI_ADMIN_API_KEY", "admin")
+TOPIC = "the trade-offs between fine-tuning open-source LLMs vs using proprietary API providers"
 
 
-def _build_crew(live: bool):  # type: ignore[no-untyped-def]
-    """Build a simple two-agent crew.
-
-    With ``live=True``, agents use a real LLM (requires OPENAI_API_KEY).
-    With ``live=False``, a stub crew is returned that produces canned output.
-    """
-    if not live:
-        return _StubCrew()
-
-    try:
-        from crewai import Agent, Crew, Process, Task
-    except ImportError:
-        sys.exit("crewai is not installed. Run: pip install crewai")
-
-    researcher = Agent(
-        role="Research Analyst",
-        goal="Find accurate, concise answers to technical questions.",
-        backstory="You are a senior research analyst specializing in technology.",
-        verbose=False,
-        allow_delegation=False,
-    )
-    writer = Agent(
-        role="Technical Writer",
-        goal="Synthesize research into clear, actionable recommendations.",
-        backstory="You are a technical writer who turns research into decisions.",
-        verbose=False,
-        allow_delegation=False,
-    )
-    research_task = Task(
-        description="Research the trade-offs of using PostgreSQL vs. ClickHouse for a 1TB/day metrics pipeline.",
-        expected_output="A bullet-point summary of pros and cons for each option.",
-        agent=researcher,
-    )
-    write_task = Task(
-        description="Based on the research, recommend one database with a clear rationale.",
-        expected_output="A one-paragraph recommendation starting with the chosen database.",
-        agent=writer,
-    )
-    return Crew(
-        agents=[researcher, writer],
-        tasks=[research_task, write_task],
-        process=Process.sequential,
-        verbose=False,
-    )
-
-
-class _StubCrew:
-    """Minimal duck-typed Crew for running without an LLM."""
-
-    task_callback = None
-    step_callback = None
-
-    def kickoff(self, inputs: dict | None = None) -> str:
-        # Simulate CrewAI calling its callbacks
-        if self.task_callback:
-            self.task_callback(_StubTaskOutput(
-                raw="PostgreSQL with TimescaleDB: lower ops burden, SQL compatibility, 10-20x compression.",
-                agent="Research Analyst",
-                description="Research database trade-offs for metrics pipeline.",
-            ))
-        if self.task_callback:
-            self.task_callback(_StubTaskOutput(
-                raw="Recommend TimescaleDB. Operational simplicity wins for a small team.",
-                agent="Technical Writer",
-                description="Synthesize research into a recommendation.",
-            ))
-        return "Recommend TimescaleDB for the metrics pipeline. It extends PostgreSQL (which the team already operates), achieves 10-20x compression on time-series data, and avoids introducing a new database technology for a 4-engineer team."
+# ---------------------------------------------------------------------------
+# Stub crew (runs without an LLM)
+# ---------------------------------------------------------------------------
 
 
 class _StubTaskOutput:
@@ -113,35 +43,174 @@ class _StubTaskOutput:
         self.description = description
 
 
+class _StubCrew:
+    """Minimal duck-typed Crew for running without an LLM."""
+
+    task_callback = None
+    step_callback = None
+
+    def kickoff(self, inputs: dict | None = None) -> str:
+        if self.task_callback:
+            self.task_callback(_StubTaskOutput(
+                raw=(
+                    "Fine-tuning open-source LLMs offers better accuracy on domain tasks "
+                    "(94% vs 89% zero-shot), eliminates per-token API costs (~$180K/year "
+                    "savings at 50K conversations/day), and keeps data on-prem for compliance."
+                ),
+                agent="Technical Researcher",
+                description=f"Research {TOPIC}.",
+            ))
+        if self.task_callback:
+            self.task_callback(_StubTaskOutput(
+                raw=(
+                    "Recommend starting with a proprietary API (GPT-4o) for time-to-market, "
+                    "then migrating to a fine-tuned open-source model once you have enough "
+                    "domain data and the operational maturity to self-host."
+                ),
+                agent="Technical Writer",
+                description="Write an executive briefing based on the research.",
+            ))
+        return (
+            "Start with GPT-4o via API for initial launch (ships in 2 weeks), then "
+            "build a fine-tuning pipeline for Llama 3.1 70B as a 6-month milestone. "
+            "The hybrid approach captures time-to-market benefits while building toward "
+            "cost savings and data sovereignty at scale."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Live crew (real CrewAI agents)
+# ---------------------------------------------------------------------------
+
+
+def _build_live_crew():  # type: ignore[no-untyped-def]
+    try:
+        from crewai import Agent, Crew, Process, Task
+    except ImportError:
+        sys.exit("crewai is not installed. Run: pip install crewai")
+
+    researcher = Agent(
+        role="Technical Researcher",
+        goal="Produce a thorough analysis of the assigned topic with concrete data points",
+        backstory=(
+            "You are a senior ML engineer who has deployed models at scale. "
+            "You favor evidence-based reasoning and always cite trade-offs."
+        ),
+        verbose=True,
+        allow_delegation=False,
+    )
+    writer = Agent(
+        role="Technical Writer",
+        goal="Distill complex research into a clear, actionable briefing",
+        backstory=(
+            "You are a developer advocate who writes for engineering audiences. "
+            "You focus on clarity, structure, and practical recommendations."
+        ),
+        verbose=True,
+        allow_delegation=False,
+    )
+    research_task = Task(
+        description=(
+            f"Research {TOPIC}. "
+            "Cover cost, latency, data privacy, customization depth, and operational burden. "
+            "Include at least three specific examples of each approach."
+        ),
+        expected_output="A structured analysis with sections for each trade-off dimension.",
+        agent=researcher,
+    )
+    write_task = Task(
+        description=(
+            "Using the research provided, write a 300-word executive briefing. "
+            "Open with the key recommendation, then support it with the strongest "
+            "evidence from the research. End with caveats and when the opposite "
+            "approach might be better."
+        ),
+        expected_output="A concise executive briefing in markdown format.",
+        agent=writer,
+    )
+    return Crew(
+        agents=[researcher, writer],
+        tasks=[research_task, write_task],
+        process=Process.sequential,
+        verbose=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
 def main() -> None:
     live = "--live" in sys.argv
 
-    if not AKASHI_API_KEY:
-        print("NOTE: AKASHI_API_KEY not set. Tracing will fail (non-fatal).")
-        print("      Set it to see decisions in the Akashi dashboard.\n")
+    if live and not os.environ.get("OPENAI_API_KEY"):
+        print(
+            "Error: OPENAI_API_KEY is not set.\n"
+            "CrewAI requires an LLM provider. Set the env var and retry.\n"
+            "Or run without --live for the pre-scripted demo.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-    # Build the crew
-    crew = _build_crew(live)
+    print("=== CrewAI + Akashi Integration Example ===\n")
 
-    # Wrap it with AkashiCrew — one line for full tracing
+    # --- Akashi setup: provision an agent identity ---
+    admin = AkashiSyncClient(base_url=URL, agent_id="admin", api_key=ADMIN_KEY)
+    health = admin.health()
+    print(f"==> Connected to Akashi {health.version}")
+
+    try:
+        admin.create_agent(CreateAgentRequest(
+            agent_id="crewai-example-agent",
+            name="CrewAI Example Agent",
+            role="agent",
+            api_key="crewai-secret",
+        ))
+        print("==> Created agent 'crewai-example-agent'")
+    except ConflictError:
+        print("==> Agent 'crewai-example-agent' already exists")
+
     client = AkashiSyncClient(
-        base_url=AKASHI_URL,
-        agent_id=AKASHI_AGENT_ID,
-        api_key=AKASHI_API_KEY,
+        base_url=URL, agent_id="crewai-example-agent", api_key="crewai-secret",
     )
-    traced = AkashiCrew(crew, client, decision_type="database_selection")
+
+    # --- Build and wrap the crew ---
+    crew = _build_live_crew() if live else _StubCrew()
+
+    # AkashiCrew wraps the crew with full tracing in one line:
+    #   - Installs task_callback and step_callback (composing with existing ones)
+    #   - Calls check() before kickoff() to surface precedents
+    #   - Calls trace() after kickoff() to record the crew's output
+    traced = AkashiCrew(crew, client, decision_type="content_pipeline")
 
     # Use it exactly like a normal crew
-    print("Running crew...\n")
-    result = traced.kickoff(inputs={"scale": "1TB/day"})
+    print("\n==> Starting crew...\n")
+    result = traced.kickoff(inputs={"topic": TOPIC})
 
-    print(f"Result:\n  {result}\n")
+    # --- Show the output ---
+    print("\n" + "=" * 60)
+    print("CREW OUTPUT")
+    print("=" * 60)
+    print(result)
 
-    # You can still access crew attributes through the proxy
-    print(f"Crew type: {type(traced._crew).__name__}")
+    # --- Query the audit trail ---
+    print("\n==> Decisions recorded in Akashi:")
+    decisions = client.recent(decision_type="content_pipeline", limit=10)
+    for i, d in enumerate(decisions, 1):
+        outcome_preview = d.outcome[:100] + "..." if len(d.outcome) > 100 else d.outcome
+        print(f"    {i}. [{d.decision_type}] {outcome_preview}")
+        print(f"       confidence={d.confidence:.2f}, agent={d.agent_id}")
 
-    client.close()
+    print(f"\n==> {len(decisions)} decision(s) traced. View at {URL}")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+        sys.exit(130)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)

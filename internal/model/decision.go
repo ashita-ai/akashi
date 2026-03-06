@@ -234,6 +234,26 @@ type ConflictStatusUpdate struct {
 	WinningDecisionID *uuid.UUID `json:"winning_decision_id,omitempty"`
 }
 
+// ConflictGroupResolveRequest is the request body for
+// PATCH /v1/conflict-groups/{id}/resolve. It batch-resolves all open or
+// acknowledged conflicts in a conflict group.
+type ConflictGroupResolveRequest struct {
+	Status         string  `json:"status"` // resolved or wont_fix
+	ResolutionNote *string `json:"resolution_note,omitempty"`
+	// WinningAgent optionally declares the agent whose decisions prevail for
+	// every conflict in the group. When set, each conflict's winning_decision_id
+	// is set to the decision from this agent (decision_a or decision_b).
+	WinningAgent *string `json:"winning_agent,omitempty"`
+}
+
+// ConflictGroupResolveResult is the response body for
+// PATCH /v1/conflict-groups/{id}/resolve.
+type ConflictGroupResolveResult struct {
+	GroupID  uuid.UUID `json:"group_id"`
+	Status   string    `json:"status"`
+	Resolved int       `json:"resolved"`
+}
+
 // AssessmentOutcome enumerates valid values for DecisionAssessment.Outcome.
 type AssessmentOutcome string
 
@@ -269,4 +289,18 @@ type AssessmentSummary struct {
 type AssessRequest struct {
 	Outcome AssessmentOutcome `json:"outcome"`
 	Notes   *string           `json:"notes,omitempty"`
+}
+
+// DecisionErasure records that a decision's PII was scrubbed per GDPR Art. 17.
+// The original content hash is preserved for forensic verification that the
+// decision existed and was intentionally erased (vs. tampered with).
+type DecisionErasure struct {
+	ID           uuid.UUID `json:"id"`
+	DecisionID   uuid.UUID `json:"decision_id"`
+	OrgID        uuid.UUID `json:"org_id"`
+	ErasedBy     string    `json:"erased_by"`
+	OriginalHash string    `json:"original_hash"`
+	ErasedHash   string    `json:"erased_hash"`
+	Reason       string    `json:"reason"`
+	ErasedAt     time.Time `json:"erased_at"`
 }

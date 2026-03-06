@@ -120,6 +120,10 @@ func New(cfg ServerConfig) *Server {
 	mux.Handle("DELETE /v1/decisions/{id}", adminOnly(http.HandlerFunc(h.HandleRetractDecision)))
 	mux.Handle("GET /v1/export/decisions", adminOnly(http.HandlerFunc(h.HandleExportDecisions)))
 
+	// GDPR erasure (org_owner+ — stronger than admin because erasure is irreversible).
+	orgOwnerOnly := requireRole(model.RoleOrgOwner)
+	mux.Handle("POST /v1/decisions/{id}/erase", orgOwnerOnly(http.HandlerFunc(h.HandleEraseDecision)))
+
 	// API key management (admin-only).
 	mux.Handle("POST /v1/keys", adminOnly(http.HandlerFunc(h.HandleCreateKey)))
 	mux.Handle("GET /v1/keys", adminOnly(http.HandlerFunc(h.HandleListKeys)))
@@ -180,9 +184,10 @@ func New(cfg ServerConfig) *Server {
 	mux.Handle("POST /v1/grants", writeRole(http.HandlerFunc(h.HandleCreateGrant)))
 	mux.Handle("DELETE /v1/grants/{grant_id}", writeRole(http.HandlerFunc(h.HandleDeleteGrant)))
 
-	// Conflicts (reader+ for list, agent+ for adjudicate/patch).
+	// Conflicts (reader+ for list, agent+ for adjudicate/patch/resolve).
 	mux.Handle("GET /v1/conflicts", readRole(http.HandlerFunc(h.HandleListConflicts)))
 	mux.Handle("GET /v1/conflict-groups", readRole(http.HandlerFunc(h.HandleListConflictGroups)))
+	mux.Handle("PATCH /v1/conflict-groups/{id}/resolve", writeRole(http.HandlerFunc(h.HandleResolveConflictGroup)))
 	mux.Handle("POST /v1/conflicts/{id}/adjudicate", writeRole(http.HandlerFunc(h.HandleAdjudicateConflict)))
 	mux.Handle("PATCH /v1/conflicts/{id}", writeRole(http.HandlerFunc(h.HandlePatchConflict)))
 
