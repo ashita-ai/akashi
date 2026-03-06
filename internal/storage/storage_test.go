@@ -314,6 +314,93 @@ func TestReviseDecision(t *testing.T) {
 	assert.Nil(t, rev.ValidTo)
 }
 
+func TestReviseDecision_AutoResolvesConflicts(t *testing.T) {
+	ctx := context.Background()
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: "auto-resolve-test"})
+	require.NoError(t, err)
+
+	// Create two decisions that will conflict.
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: "auto-resolve-test",
+		DecisionType: "autoresolve_test", Outcome: "approach_A", Confidence: 0.8,
+	})
+	require.NoError(t, err)
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: "auto-resolve-counterpart",
+		DecisionType: "autoresolve_test", Outcome: "approach_B", Confidence: 0.7,
+	})
+	require.NoError(t, err)
+
+	// Insert a scored conflict between dA and dB.
+	topicSim := 0.90
+	outcomeDiv := 0.80
+	sig := topicSim * outcomeDiv
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind:      model.ConflictKindCrossAgent,
+		DecisionAID:       dA.ID,
+		DecisionBID:       dB.ID,
+		OrgID:             uuid.Nil,
+		AgentA:            "auto-resolve-test",
+		AgentB:            "auto-resolve-counterpart",
+		DecisionTypeA:     "autoresolve_test",
+		DecisionTypeB:     "autoresolve_test",
+		OutcomeA:          "approach_A",
+		OutcomeB:          "approach_B",
+		TopicSimilarity:   &topicSim,
+		OutcomeDivergence: &outcomeDiv,
+		Significance:      &sig,
+		ScoringMethod:     "text",
+	})
+	require.NoError(t, err)
+	require.NotEqual(t, uuid.Nil, conflictID)
+
+	// Verify conflict is open before revision.
+	conflicts, err := testDB.ListConflicts(ctx, uuid.Nil, storage.ConflictFilters{}, 50, 0)
+	require.NoError(t, err)
+	var foundOpen bool
+	for _, c := range conflicts {
+		if c.ID == conflictID {
+			assert.Equal(t, "open", c.Status, "conflict should be open before revision")
+			foundOpen = true
+			break
+		}
+	}
+	require.True(t, foundOpen, "should find the seeded conflict")
+
+	// Revise decision A — this should auto-resolve the conflict.
+	revised, err := testDB.ReviseDecision(ctx, dA.ID, model.Decision{
+		RunID: run.ID, AgentID: "auto-resolve-test",
+		DecisionType: "autoresolve_test", Outcome: "approach_A_v2", Confidence: 0.9,
+		Metadata: map[string]any{},
+	}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "approach_A_v2", revised.Outcome)
+
+	// Verify the conflict is now resolved.
+	resolvedStatus := "resolved"
+	allConflicts, err := testDB.ListConflicts(ctx, uuid.Nil, storage.ConflictFilters{
+		Status: &resolvedStatus,
+	}, 50, 0)
+	require.NoError(t, err)
+	var foundResolved bool
+	for _, c := range allConflicts {
+		if c.ID == conflictID {
+			assert.Equal(t, "resolved", c.Status, "conflict should be auto-resolved after revision")
+			require.NotNil(t, c.ResolvedBy, "resolved_by should be set")
+			assert.Equal(t, "system:revision", *c.ResolvedBy, "resolved_by should indicate system revision")
+			require.NotNil(t, c.ResolutionNote, "resolution_note should be set")
+			assert.Contains(t, *c.ResolutionNote, dA.ID.String(), "resolution_note should reference superseded decision")
+			assert.Contains(t, *c.ResolutionNote, revised.ID.String(), "resolution_note should reference new decision")
+			assert.NotNil(t, c.ResolutionDecisionID, "resolution_decision_id should be set to revised decision")
+			assert.Equal(t, revised.ID, *c.ResolutionDecisionID)
+			foundResolved = true
+			break
+		}
+	}
+	require.True(t, foundResolved, "should find the auto-resolved conflict")
+}
+
 func TestQueryDecisions(t *testing.T) {
 	ctx := context.Background()
 
