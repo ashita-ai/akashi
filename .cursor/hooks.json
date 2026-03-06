@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": ".cursor/hooks/akashi-hook.sh",
+        "timeout": 5
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": ".cursor/hooks/akashi-hook.sh",
+        "matcher": "Edit|Write|MultiEdit|Bash",
+        "timeout": 10
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": ".cursor/hooks/akashi-hook.sh",
+        "matcher": "Bash|mcp__akashi__.*",
+        "timeout": 15
+      }
+    ]
+  }
+}

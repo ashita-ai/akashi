@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/session-start-check.sh",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/akashi-hook.sh",
             "timeout": 5
           }
         ]
@@ -13,11 +13,11 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|Edit|Write|MultiEdit",
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/pre-commit-reminder.sh",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/akashi-hook.sh",
             "timeout": 10
           }
         ]
@@ -25,13 +25,12 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|mcp__akashi__.*",
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/hooks/post-commit-trace.sh",
-            "timeout": 15,
-            "async": true
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/akashi-hook.sh",
+            "timeout": 15
           }
         ]
       }

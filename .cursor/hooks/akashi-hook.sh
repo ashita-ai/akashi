@@ -1,0 +1,1 @@
+../../.claude/hooks/akashi-hook.sh

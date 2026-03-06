@@ -179,6 +179,16 @@ Operational idempotency settings:
 | `AKASHI_IDEMPOTENCY_COMPLETED_TTL` | `168h` (7d) | Retention for completed idempotency records |
 | `AKASHI_IDEMPOTENCY_ABANDONED_TTL` | `24h` | Retention for abandoned in-progress idempotency records |
 
+## IDE Hook Endpoints
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AKASHI_HOOKS_ENABLED` | `true` | Enable `/hooks/*` IDE integration endpoints for Claude Code and Cursor. When disabled, the routes are not registered |
+| `AKASHI_HOOKS_API_KEY` | _(empty)_ | Optional API key for non-localhost hook access. When set, remote clients can authenticate with `X-Akashi-Hook-Key` header. Empty = localhost-only (recommended for local dev) |
+| `AKASHI_AUTO_TRACE` | `true` | Automatically trace git commits detected in `PostToolUse` hooks as decisions with `confidence: 0.7`. Set to `false` to disable auto-tracing |
+
+Hook endpoints (`/hooks/session-start`, `/hooks/pre-tool-use`, `/hooks/post-tool-use`) are unauthenticated but restricted to localhost by default. They enable IDE agents to receive context injection, edit gating, and automatic decision tracing without shell-script marker files.
+
 ## Data retention
 
 Akashi supports per-org data retention policies that automatically delete decisions older than a configured threshold. Policies are set via `PUT /v1/retention` (admin-only). Legal holds (`POST /v1/retention/hold`) exempt matching decisions from both automated and GDPR deletion. All deletion operations are recorded in the `deletion_log` table.

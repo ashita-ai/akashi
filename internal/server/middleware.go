@@ -679,6 +679,24 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// localhostOnly restricts an endpoint to loopback addresses (127.0.0.1, ::1).
+// If AKASHI_HOOKS_API_KEY is configured, non-loopback requests are permitted when
+// the X-Akashi-Hook-Key header matches. Returns 403 otherwise.
+func localhostOnly(apiKey string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, _ := net.SplitHostPort(r.RemoteAddr)
+		if host == "127.0.0.1" || host == "::1" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if apiKey != "" && r.Header.Get("X-Akashi-Hook-Key") == apiKey {
+			next.ServeHTTP(w, r)
+			return
+		}
+		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "hook endpoints are localhost-only")
+	})
+}
+
 // errBodyTooLarge is returned by decodeJSON when the request body exceeds maxBytes.
 // Callers must respond with 413 Request Entity Too Large, not 400 Bad Request.
 var errBodyTooLarge = errors.New("request body too large")
