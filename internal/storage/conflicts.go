@@ -874,3 +874,35 @@ func (db *DB) ResolveConflictGroup(
 	}
 	return affected, nil
 }
+
+// AutoResolveSupersededConflictsTx resolves all open/acknowledged conflicts
+// involving the superseded decision, within the caller's transaction. This is
+// called from ReviseDecision so the auto-resolution is atomic with the
+// revision itself.
+//
+// Each resolved conflict gets:
+//   - status = "resolved"
+//   - resolved_by = "system:revision"
+//   - resolution_decision_id = revisedID (the new decision)
+//   - resolution_note explaining the supersession
+//
+// Returns the number of conflicts auto-resolved.
+func AutoResolveSupersededConflictsTx(ctx context.Context, tx pgx.Tx, orgID, supersededID, revisedID uuid.UUID) (int, error) {
+	note := fmt.Sprintf("Auto-resolved: decision %s superseded by revision %s", supersededID, revisedID)
+	tag, err := tx.Exec(ctx,
+		`UPDATE scored_conflicts
+		 SET status = 'resolved',
+		     resolved_by = 'system:revision',
+		     resolved_at = now(),
+		     resolution_note = $1,
+		     resolution_decision_id = $2
+		 WHERE org_id = $3
+		   AND (decision_a_id = $4 OR decision_b_id = $4)
+		   AND status IN ('open', 'acknowledged')`,
+		note, revisedID, orgID, supersededID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("storage: auto-resolve superseded conflicts: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
