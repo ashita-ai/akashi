@@ -80,6 +80,11 @@ type ServerConfig struct {
 	Middlewares []func(http.Handler) http.Handler
 	// DecisionHooks are fired asynchronously on decision lifecycle events.
 	DecisionHooks []DecisionHook
+
+	// IDE hook integration.
+	HooksEnabled bool   // Enable /hooks/* IDE integration endpoints.
+	HooksAPIKey  string // Optional API key for non-localhost hook access.
+	AutoTrace    bool   // Auto-trace git commits from PostToolUse hooks.
 }
 
 // New creates a new HTTP server with all routes configured.
@@ -99,6 +104,7 @@ func New(cfg ServerConfig) *Server {
 		EnableDestructiveDelete: cfg.EnableDestructiveDelete,
 		RetentionInterval:       cfg.RetentionInterval,
 		DecisionHooks:           cfg.DecisionHooks,
+		AutoTrace:               cfg.AutoTrace,
 	})
 
 	mux := http.NewServeMux()
@@ -212,6 +218,17 @@ func New(cfg ServerConfig) *Server {
 
 	// Health (no auth).
 	mux.HandleFunc("GET /health", h.HandleHealth)
+
+	// IDE hook endpoints (no auth, localhost-only).
+	if cfg.HooksEnabled {
+		hookGuard := func(next http.Handler) http.Handler {
+			return localhostOnly(cfg.HooksAPIKey, next)
+		}
+		mux.Handle("POST /hooks/session-start", hookGuard(http.HandlerFunc(h.HandleHookSessionStart)))
+		mux.Handle("POST /hooks/pre-tool-use", hookGuard(http.HandlerFunc(h.HandleHookPreToolUse)))
+		mux.Handle("POST /hooks/post-tool-use", hookGuard(http.HandlerFunc(h.HandleHookPostToolUse)))
+		cfg.Logger.Info("IDE hook endpoints enabled at /hooks/*")
+	}
 
 	// SPA: serve the embedded UI at the root path.
 	// Registered last so all API routes take priority via the mux's longest-match rule.

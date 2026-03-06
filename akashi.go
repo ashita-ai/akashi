@@ -393,6 +393,9 @@ func New(opts ...Option) (*App, error) {
 		ExtraRoutes:             extraRoutes,
 		Middlewares:             middlewares,
 		DecisionHooks:           decisionHooks,
+		HooksEnabled:            cfg.HooksEnabled,
+		HooksAPIKey:             cfg.HooksAPIKey,
+		AutoTrace:               cfg.AutoTrace,
 	})
 
 	// Seed admin agent.

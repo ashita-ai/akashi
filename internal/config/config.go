@@ -91,6 +91,11 @@ type Config struct {
 	IdempotencyAbandonedTTL       time.Duration // Hard TTL for abandoned in-progress idempotency records.
 	MaxRequestBodyBytes           int64         // Maximum request body size in bytes.
 	RetentionInterval             time.Duration // How often the background retention worker runs (default 24h).
+
+	// IDE hook endpoint settings.
+	HooksEnabled bool   // Enable /hooks/* IDE integration endpoints (default: true).
+	HooksAPIKey  string // Optional API key for non-localhost hook access (default: "" = localhost only).
+	AutoTrace    bool   // Auto-trace git commits from PostToolUse hooks (default: true).
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -119,6 +124,7 @@ func Load() (Config, error) {
 		WALSyncMode:        envStr("AKASHI_WAL_SYNC_MODE", "batch"),
 		LogLevel:           envStr("AKASHI_LOG_LEVEL", "info"),
 		CORSAllowedOrigins: envStrSlice("AKASHI_CORS_ALLOWED_ORIGINS", nil),
+		HooksAPIKey:        envStr("AKASHI_HOOKS_API_KEY", ""),
 	}
 
 	// Integer fields.
@@ -150,6 +156,8 @@ func Load() (Config, error) {
 	cfg.EnableDestructiveDelete, errs = collectBool(errs, "AKASHI_ENABLE_DESTRUCTIVE_DELETE", false)
 	cfg.WALDisable, errs = collectBool(errs, "AKASHI_WAL_DISABLE", false)
 	cfg.ForceConflictRescore, errs = collectBool(errs, "AKASHI_FORCE_CONFLICT_RESCORE", false)
+	cfg.HooksEnabled, errs = collectBool(errs, "AKASHI_HOOKS_ENABLED", true)
+	cfg.AutoTrace, errs = collectBool(errs, "AKASHI_AUTO_TRACE", true)
 
 	// Duration fields.
 	cfg.ReadTimeout, errs = collectDuration(errs, "AKASHI_READ_TIMEOUT", 30*time.Second)

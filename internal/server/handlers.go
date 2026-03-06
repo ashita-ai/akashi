@@ -39,6 +39,10 @@ type Handlers struct {
 	// decisionHooks are fired asynchronously after decision lifecycle events.
 	// Nil or empty slice means no hooks registered.
 	decisionHooks []DecisionHook
+	// hookChecks tracks when each IDE session last called akashi_check.
+	hookChecks *hookCheckStore
+	// autoTrace enables automatic decision tracing on git commits via IDE hooks.
+	autoTrace bool
 }
 
 // HandlersDeps holds all dependencies for constructing Handlers.
@@ -58,6 +62,7 @@ type HandlersDeps struct {
 	EnableDestructiveDelete bool
 	RetentionInterval       time.Duration
 	DecisionHooks           []DecisionHook
+	AutoTrace               bool
 }
 
 // NewHandlers creates a new Handlers with all dependencies.
@@ -78,6 +83,8 @@ func NewHandlers(d HandlersDeps) *Handlers {
 		enableDestructiveDelete: d.EnableDestructiveDelete,
 		retentionInterval:       d.RetentionInterval,
 		decisionHooks:           d.DecisionHooks,
+		hookChecks:              newHookCheckStore(),
+		autoTrace:               d.AutoTrace,
 	}
 }
 
