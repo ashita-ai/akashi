@@ -130,7 +130,7 @@ export default function GrantsPage() {
   const expiredGrants = grants.filter((g) => isExpired(g));
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-page">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold tracking-tight">Grants</h1>
         <Button onClick={() => setShowCreate(true)}>

@@ -65,7 +65,7 @@ export default function ExportPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-page">
       <h1 className="text-2xl font-bold tracking-tight">Export</h1>
 
       <Card>

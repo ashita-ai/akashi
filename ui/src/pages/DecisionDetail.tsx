@@ -3,7 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { getRun, getDecisionRevisions, getDecisionConflicts, verifyDecisionIntegrity } from "@/lib/api";
 import type { Decision, DecisionConflict } from "@/types/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Badge, decisionTypeBadgeVariant } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -26,6 +27,17 @@ import {
   ShieldX,
   XCircle,
 } from "lucide-react";
+
+const evidenceSourceColors: Record<string, string> = {
+  tool_output: "border-l-cyan-500/60",
+  api_response: "border-l-blue-500/60",
+  document: "border-l-purple-500/60",
+  agent_output: "border-l-emerald-500/60",
+  user_input: "border-l-amber-500/60",
+  search_result: "border-l-blue-400/60",
+  memory: "border-l-pink-500/60",
+  database_query: "border-l-cyan-600/60",
+};
 
 const statusIcon = {
   running: <Clock className="h-4 w-4 text-amber-500" />,
@@ -86,7 +98,7 @@ function RevisionChain({ decisionId }: { decisionId: string }) {
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="relative space-y-3 pl-6 before:absolute before:left-[11px] before:top-2 before:h-[calc(100%-16px)] before:w-px before:bg-border">
+        <div className="relative space-y-3 pl-6 before:absolute before:left-[11px] before:top-2 before:h-[calc(100%-16px)] before:w-px before:bg-gradient-to-b before:from-primary/60 before:to-border">
           {data.revisions.map((rev: Decision, idx: number) => (
             <div key={rev.id} className="relative">
               <div className="absolute -left-6 top-1 h-2.5 w-2.5 rounded-full border-2 border-background bg-primary" />
@@ -277,7 +289,7 @@ export default function DecisionDetail() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-page">
       <div className="flex items-center gap-4">
         <Link to="/decisions" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="h-4 w-4" />
@@ -340,7 +352,7 @@ export default function DecisionDetail() {
             <CardTitle className="text-sm font-medium">Event Timeline</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="relative space-y-4 pl-6 before:absolute before:left-[11px] before:top-2 before:h-[calc(100%-16px)] before:w-px before:bg-border">
+            <div className="relative space-y-4 pl-6 before:absolute before:left-[11px] before:top-2 before:h-[calc(100%-16px)] before:w-px before:bg-gradient-to-b before:from-primary/60 before:to-border">
               {run.events.map((event) => (
                 <div key={event.id} className="relative">
                   <div className="absolute -left-6 top-1 h-2.5 w-2.5 rounded-full border-2 border-background bg-primary" />
@@ -382,7 +394,7 @@ export default function DecisionDetail() {
                   </CardTitle>
                   <div className="flex items-center gap-2">
                     <IntegrityBadge decisionId={decision.id} />
-                    <Badge variant="secondary">
+                    <Badge variant={decisionTypeBadgeVariant(decision.decision_type)}>
                       {(decision.confidence * 100).toFixed(0)}% confidence
                     </Badge>
                   </div>
@@ -463,7 +475,7 @@ export default function DecisionDetail() {
                       {decision.evidence.map((ev) => (
                         <div
                           key={ev.id}
-                          className="rounded-md border p-3 text-sm"
+                          className={cn("rounded-md border border-l-[3px] p-3 text-sm", evidenceSourceColors[ev.source_type] ?? "border-l-border")}
                         >
                           <div className="flex items-center gap-2 mb-1">
                             <Badge variant="outline" className="text-xs">

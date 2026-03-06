@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { getRecentDecisions, listAgents, getTraceHealth } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Badge, decisionTypeBadgeVariant } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatRelativeTime } from "@/lib/utils";
 import {
@@ -27,6 +27,15 @@ function ProgressRing({ value, className }: { value: number; className?: string 
   const offset = circumference * (1 - Math.min(Math.max(value, 0), 1));
   return (
     <svg viewBox="0 0 40 40" className={className} aria-hidden="true">
+      <defs>
+        <filter id="ring-glow">
+          <feGaussianBlur stdDeviation="1.5" result="blur" />
+          <feMerge>
+            <feMergeNode in="blur" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+      </defs>
       <circle cx="20" cy="20" r={r} fill="none" strokeWidth="4" className="stroke-muted/40" />
       <circle
         cx="20"
@@ -39,6 +48,7 @@ function ProgressRing({ value, className }: { value: number; className?: string 
         strokeDashoffset={offset}
         className="transition-[stroke-dashoffset] duration-700 ease-out"
         transform="rotate(-90 20 20)"
+        filter="url(#ring-glow)"
       />
     </svg>
   );
@@ -63,15 +73,15 @@ export default function Dashboard() {
   const completeness = traceHealth.data?.completeness.avg_completeness ?? 0;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-page">
       <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
 
       {/* Metric cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Card>
+        <Card className="gradient-border">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Decisions</CardTitle>
-            <FileText className="h-4 w-4 text-muted-foreground" />
+            <FileText className="h-4 w-4 text-primary/60" />
           </CardHeader>
           <CardContent>
             {recent.isPending ? (
@@ -89,10 +99,10 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="gradient-border">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Active Agents</CardTitle>
-            <Users className="h-4 w-4 text-muted-foreground" />
+            <Users className="h-4 w-4 text-primary/60" />
           </CardHeader>
           <CardContent>
             {agents.isPending ? (
@@ -107,10 +117,10 @@ export default function Dashboard() {
         </Card>
 
         <Link to="/conflicts">
-          <Card className="transition-colors hover:border-primary/50">
+          <Card className="gradient-border">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">Open Conflicts</CardTitle>
-              <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+              <AlertTriangle className="h-4 w-4 text-amber-500/70" />
             </CardHeader>
             <CardContent>
               {traceHealth.isPending ? (
@@ -125,10 +135,10 @@ export default function Dashboard() {
           </Card>
         </Link>
 
-        <Card>
+        <Card className="gradient-border">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Trace Health</CardTitle>
-            <HeartPulse className="h-4 w-4 text-muted-foreground" />
+            <HeartPulse className="h-4 w-4 text-emerald-500/70" />
           </CardHeader>
           <CardContent>
             {traceHealth.isPending ? (
@@ -208,7 +218,7 @@ export default function Dashboard() {
                 <Link
                   key={d.id}
                   to={`/decisions/${d.run_id}`}
-                  className="flex items-center justify-between rounded-md border p-3 text-sm transition-colors hover:bg-accent"
+                  className="animate-list-item flex items-center justify-between rounded-md border p-3 text-sm transition-all duration-200 hover:bg-accent hover:shadow-glow-sm hover:border-primary/30"
                 >
                   <div className="flex items-center gap-3 min-w-0">
                     <Badge variant="outline" className="font-mono text-xs shrink-0">
@@ -219,7 +229,7 @@ export default function Dashboard() {
                     </span>
                   </div>
                   <div className="flex items-center gap-3 text-muted-foreground shrink-0">
-                    <Badge variant="secondary">{d.decision_type}</Badge>
+                    <Badge variant={decisionTypeBadgeVariant(d.decision_type)}>{d.decision_type}</Badge>
                     <span className="text-xs whitespace-nowrap">
                       {formatRelativeTime(d.created_at)}
                     </span>

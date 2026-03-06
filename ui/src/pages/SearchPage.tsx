@@ -4,7 +4,7 @@ import { Link } from "react-router";
 import { searchDecisions } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Badge, decisionTypeBadgeVariant } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate } from "@/lib/utils";
@@ -28,7 +28,7 @@ export default function SearchPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-page">
       <h1 className="text-2xl font-bold tracking-tight">Search</h1>
 
       <form onSubmit={handleSubmit} className="flex gap-3">
@@ -38,7 +38,7 @@ export default function SearchPage() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search decisions"
-            className="pl-10"
+            className="pl-10 dark:focus-visible:shadow-glow-sm"
             autoFocus
           />
         </div>
@@ -76,15 +76,16 @@ export default function SearchPage() {
             <Link
               key={result.decision.id}
               to={`/decisions/${result.decision.run_id}`}
+              className="animate-list-item block"
             >
-              <Card className="transition-colors hover:bg-accent/50">
+              <Card className="transition-all duration-200 hover:bg-accent/50 hover:shadow-glow-sm">
                 <CardContent className="p-4">
                   <div className="space-y-1.5 min-w-0">
                     <div className="flex items-center gap-2">
                       <Badge variant="outline" className="font-mono text-xs">
                         {result.decision.agent_id}
                       </Badge>
-                      <Badge variant="secondary">
+                      <Badge variant={decisionTypeBadgeVariant(result.decision.decision_type)}>
                         {result.decision.decision_type}
                       </Badge>
                     </div>
