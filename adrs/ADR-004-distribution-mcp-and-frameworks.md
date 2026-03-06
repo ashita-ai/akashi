@@ -1,7 +1,8 @@
 # ADR-004: MCP and framework integrations as primary distribution channels
 
-**Status:** Accepted
+**Status:** Accepted (amended in part by ADR-021)
 **Date:** 2026-02-08
+**Amended:** 2026-03-06 — ADR-021 adds two distribution tiers (local-lite via `npx @akashi/local` and cloud-hosted MCP) and corrects the claim that MCP is "one line of config" for self-hosted deployments.
 
 ## Context
 
