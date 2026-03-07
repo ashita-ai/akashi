@@ -108,7 +108,7 @@ func runEval(baseURL, token string) (conflicts.EvalMetrics, []conflicts.EvalResu
 	if err != nil {
 		return conflicts.EvalMetrics{}, nil, fmt.Errorf("build eval URL: %w", err)
 	}
-	req, err := http.NewRequest("POST", evalURL, bytes.NewReader([]byte("{}")))
+	req, err := http.NewRequest("POST", evalURL, bytes.NewReader([]byte("{}"))) //nolint:gosec // URL is operator-provided via AKASHI_URL env var
 	if err != nil {
 		return conflicts.EvalMetrics{}, nil, fmt.Errorf("create request: %w", err)
 	}
@@ -116,7 +116,7 @@ func runEval(baseURL, token string) (conflicts.EvalMetrics, []conflicts.EvalResu
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	client := &http.Client{Timeout: 10 * time.Minute} // LLM calls can be slow.
-	resp, err := client.Do(req)
+	resp, err := client.Do(req)                       //nolint:gosec // req uses operator-provided URL
 	if err != nil {
 		return conflicts.EvalMetrics{}, nil, fmt.Errorf("request: %w", err)
 	}
