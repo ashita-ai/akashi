@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -87,6 +88,12 @@ type Scorer struct {
 	// pairs before LLM validation. Pairs below crossEncoderThreshold are skipped.
 	crossEncoder          CrossEncoder
 	crossEncoderThreshold float64
+
+	// earlyExitFloor is the minimum pre-LLM significance score for a candidate
+	// to be worth examining. Candidates below this floor are skipped during
+	// sorted iteration (unless they qualify for the directToScorer bypass).
+	// 0 disables early exit. Default: 0.25.
+	earlyExitFloor float64
 }
 
 // WithCandidateFinder wires a Qdrant-backed CandidateFinder for conflict candidate
@@ -132,6 +139,18 @@ func (s *Scorer) WithPairwiseScorer(ps PairwiseScorer) *Scorer {
 	return s
 }
 
+// WithEarlyExitFloor overrides the minimum pre-LLM significance for the early
+// exit optimisation. Candidates are sorted by significance descending; once a
+// candidate drops below this floor (and does not qualify for the
+// directToScorer bypass), the remaining candidates are skipped. Set to 0 to
+// disable early exit. Default: 0.25.
+func (s *Scorer) WithEarlyExitFloor(floor float64) *Scorer {
+	if floor > 0 {
+		s.earlyExitFloor = floor
+	}
+	return s
+}
+
 // WithCrossEncoder configures a cross-encoder reranking step between significance
 // scoring and LLM validation. Pairs scoring below the threshold are skipped
 // without an LLM call, reducing validation cost. Only active when using the
@@ -165,7 +184,8 @@ func NewScorer(db *storage.DB, logger *slog.Logger, significanceThreshold float6
 		validatorLabel:        validatorTypeLabel(validator),
 		backfillWorkers:       backfillWorkers,
 		decayLambda:           decayLambda,
-		candidateLimit:        50,
+		candidateLimit:        20,
+		earlyExitFloor:        0.25,
 		claimTopicSimFloor:    claimTopicSimFloor,
 		claimDivFloor:         claimDivFloor,
 		decisionTopicSimFloor: decisionTopicSimFloor,
@@ -313,15 +333,30 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 	// Check once whether an LLM validator is active. Used both for the
 	// directToLLM bypass below and for the validation gate further down.
 	_, isNoop := s.validator.(NoopValidator)
+	hasScorer := s.pairwiseScorer != nil || !isNoop
 
-	inserted := 0
+	// --- Pre-computation pass: compute cheap significance for all candidates,
+	// then sort descending so the most promising pairs are examined first and
+	// early exit can prune the tail. ---
+	type candidateScore struct {
+		cand       model.Decision
+		topicSim   float64
+		bestSig    float64
+		bestDiv    float64
+		bestMethod string
+		bestOutA   string
+		bestOutB   string
+		claimFragA *string
+		claimFragB *string
+		confWeight float64
+		decay      float64
+	}
+
+	scored := make([]candidateScore, 0, len(candidates))
 	for _, cand := range candidates {
 		if cand.OutcomeEmbedding == nil {
 			continue
 		}
-
-		// Skip decisions in the same revision chain — intentional
-		// replacements should not be flagged as conflicts.
 		if revisionChain[cand.ID] {
 			continue
 		}
@@ -329,19 +364,18 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		topicSim := cosineSimilarity(d.Embedding.Slice(), cand.Embedding.Slice())
 		s.metrics.candidatesEvaluated.Add(ctx, 1)
 
-		// --- Pass 1: full-outcome scoring (existing behavior) ---
+		// Full-outcome scoring.
 		outcomeSim := cosineSimilarity(d.OutcomeEmbedding.Slice(), cand.OutcomeEmbedding.Slice())
 		outcomeDiv := math.Max(0, 1.0-outcomeSim)
 		outcomeSig := topicSim * outcomeDiv
 
-		// Track the best signal across both passes.
 		bestSig := outcomeSig
 		bestDiv := outcomeDiv
 		bestMethod := "embedding"
-		bestOutcomeA := d.Outcome
-		bestOutcomeB := cand.Outcome
+		bestOutA := d.Outcome
+		bestOutB := cand.Outcome
 
-		// --- Pass 2: claim-level scoring for high topic-similarity pairs ---
+		// Claim-level scoring for high topic-similarity pairs.
 		var claimFragA, claimFragB *string
 		if topicSim >= s.decisionTopicSimFloor {
 			claimSig, claimDiv, claimA, claimB := s.bestClaimConflict(ctx, d.ID, cand.ID, orgID, topicSim)
@@ -349,45 +383,89 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				bestSig = claimSig
 				bestDiv = claimDiv
 				bestMethod = "claim"
-				bestOutcomeA = claimA
-				bestOutcomeB = claimB
+				bestOutA = claimA
+				bestOutB = claimB
 				claimFragA = &claimA
 				claimFragB = &claimB
 				s.metrics.claimLevelWins.Add(ctx, 1)
 			}
 		}
 
-		// Confidence weighting: low-confidence decisions get lower significance.
+		// Confidence weighting.
 		confWeight := math.Sqrt(float64(d.Confidence) * float64(cand.Confidence))
 		bestSig *= confWeight
 
-		// Temporal decay: older decision pairs get lower significance.
-		var decay = 1.0
+		// Temporal decay.
+		decay := 1.0
 		if s.decayLambda > 0 {
 			daysBetween := math.Abs(d.ValidFrom.Sub(cand.ValidFrom).Hours() / 24)
 			decay = math.Exp(-s.decayLambda * daysBetween)
 			bestSig *= decay
 		}
 
-		// High-topic-similarity pairs bypass the cosine-divergence significance gate
-		// when an LLM validator or external pairwise scorer is active. This applies
-		// to both cross-agent and same-agent pairs: bi-encoders cannot detect stance
-		// opposition for same-topic decisions ("X is correct" vs "X is wrong" embed
-		// close together because they share domain vocabulary). The LLM is the right
-		// classifier for this, regardless of whether the two decisions came from the
-		// same agent or different agents. See: NLI literature on bi-encoder limits.
-		hasScorer := s.pairwiseScorer != nil || !isNoop
-		directToScorer := hasScorer && topicSim >= s.decisionTopicSimFloor
+		scored = append(scored, candidateScore{
+			cand:       cand,
+			topicSim:   topicSim,
+			bestSig:    bestSig,
+			bestDiv:    bestDiv,
+			bestMethod: bestMethod,
+			bestOutA:   bestOutA,
+			bestOutB:   bestOutB,
+			claimFragA: claimFragA,
+			claimFragB: claimFragB,
+			confWeight: confWeight,
+			decay:      decay,
+		})
+	}
 
-		if bestSig < s.threshold && !directToScorer {
+	// Sort candidates by pre-computed significance descending so the
+	// most promising pairs are examined first and early exit is effective.
+	sort.Slice(scored, func(i, j int) bool {
+		return scored[i].bestSig > scored[j].bestSig
+	})
+
+	// --- Sorted iteration with early exit ---
+	examined := 0
+	inserted := 0
+	for _, sc := range scored {
+		// High-topic-similarity pairs bypass the cosine-divergence significance
+		// gate when an LLM validator or external pairwise scorer is active.
+		// Bi-encoders cannot detect stance opposition for same-topic decisions
+		// ("X is correct" vs "X is wrong" embed close together). The LLM is the
+		// right classifier for this. See: NLI literature on bi-encoder limits.
+		directToScorer := hasScorer && sc.topicSim >= s.decisionTopicSimFloor
+
+		// Early exit: if significance is below the early-exit floor AND this
+		// candidate does not qualify for the directToScorer bypass, skip it.
+		// When no scorer is active, no candidate can bypass, so we can break
+		// immediately (all remaining candidates are worse). When a scorer IS
+		// active, later candidates with high topicSim might still qualify via
+		// the bypass, so we continue instead of break.
+		if s.earlyExitFloor > 0 && sc.bestSig < s.earlyExitFloor && !directToScorer {
+			if !hasScorer {
+				s.logger.Debug("conflict scorer: early exit (no scorer)",
+					"decision_id", decisionID,
+					"significance", sc.bestSig,
+					"floor", s.earlyExitFloor,
+					"remaining", len(scored)-examined)
+				break
+			}
 			continue
 		}
+
+		if sc.bestSig < s.threshold && !directToScorer {
+			continue
+		}
+
+		examined++
+
+		cand := sc.cand
 
 		// Cross-encoder reranking: pre-filter before expensive LLM validation.
 		// Only applies to the built-in LLM path — skipped when using the
 		// enterprise pairwise scorer or when no LLM validator is configured.
 		if s.crossEncoder != nil && s.pairwiseScorer == nil && !isNoop {
-			ceScore, ceErr := s.crossEncoder.ScoreContradiction(ctx, bestOutcomeA, bestOutcomeB)
+			ceScore, ceErr := s.crossEncoder.ScoreContradiction(ctx, sc.bestOutA, sc.bestOutB)
 			switch {
 			case ceErr != nil:
 				// Fail-open: cross-encoder failure means proceed to LLM as fallback.
@@ -408,6 +486,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		// Confirmation gate: classify the candidate pair as conflict or not.
 		// Priority: (1) external pairwise scorer, (2) built-in LLM validator, (3) noop.
 		// NoopValidator always returns "contradiction" (preserving legacy embedding-only behavior).
+		bestMethod := sc.bestMethod
 		var explanation *string
 		var category, severity, relationship *string
 
@@ -458,8 +537,8 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 
 			llmStart := time.Now()
 			result, err := s.validator.Validate(ctx, ValidateInput{
-				OutcomeA:        bestOutcomeA,
-				OutcomeB:        bestOutcomeB,
+				OutcomeA:        sc.bestOutA,
+				OutcomeB:        sc.bestOutB,
 				TypeA:           d.DecisionType,
 				TypeB:           cand.DecisionType,
 				AgentA:          d.AgentID,
@@ -476,7 +555,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				SessionIDB:      uuidString(cand.SessionID),
 				FullOutcomeA:    d.Outcome,
 				FullOutcomeB:    cand.Outcome,
-				TopicSimilarity: topicSim,
+				TopicSimilarity: sc.topicSim,
 			})
 			s.metrics.llmCallDuration.Record(ctx, float64(time.Since(llmStart).Milliseconds()))
 			if err != nil {
@@ -533,19 +612,19 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			DecisionTypeB:     cand.DecisionType,
 			OutcomeA:          d.Outcome,
 			OutcomeB:          cand.Outcome,
-			TopicSimilarity:   ptr(topicSim),
-			OutcomeDivergence: ptr(bestDiv),
-			Significance:      ptr(bestSig),
+			TopicSimilarity:   ptr(sc.topicSim),
+			OutcomeDivergence: ptr(sc.bestDiv),
+			Significance:      ptr(sc.bestSig),
 			ScoringMethod:     bestMethod,
 			Explanation:       explanation,
 			Category:          category,
 			Severity:          severity,
 			Relationship:      relationship,
-			ConfidenceWeight:  ptr(confWeight),
-			TemporalDecay:     ptr(decay),
+			ConfidenceWeight:  ptr(sc.confWeight),
+			TemporalDecay:     ptr(sc.decay),
 			Status:            "open",
-			ClaimTextA:        claimFragA,
-			ClaimTextB:        claimFragB,
+			ClaimTextA:        sc.claimFragA,
+			ClaimTextB:        sc.claimFragB,
 		}
 		if _, err := s.db.InsertScoredConflict(ctx, c); err != nil {
 			s.logger.Warn("conflict scorer: insert failed", "decision_a", decisionID, "decision_b", cand.ID, "error", err)
@@ -557,12 +636,13 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			attribute.String("conflict_kind", string(kind)),
 			attribute.String("severity", derefOrUnknown(severity)),
 		))
-		s.metrics.significanceDist.Record(ctx, bestSig)
+		s.metrics.significanceDist.Record(ctx, sc.bestSig)
 		inserted++
 		if err := s.db.Notify(ctx, storage.ChannelConflicts, `{"source":"scorer","org_id":"`+orgID.String()+`"}`); err != nil {
 			s.logger.Debug("conflict scorer: notify failed", "error", err)
 		}
 	}
+	s.metrics.candidatesExamined.Record(ctx, float64(examined))
 	if inserted > 0 {
 		s.logger.Info("conflict scorer: scored conflicts", "decision_id", decisionID, "inserted", inserted)
 	}

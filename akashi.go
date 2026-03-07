@@ -220,7 +220,8 @@ func New(opts ...Option) (*App, error) {
 	}
 	conflictScorer := conflicts.NewScorer(db, logger, cfg.ConflictSignificanceThreshold, conflictValidator, backfillWorkers, cfg.ConflictDecayLambda).
 		WithScoringThresholds(cfg.ConflictClaimTopicSimFloor, cfg.ConflictClaimDivFloor, cfg.ConflictDecisionTopicSimFloor).
-		WithCandidateLimit(cfg.ConflictCandidateLimit)
+		WithCandidateLimit(cfg.ConflictCandidateLimit).
+		WithEarlyExitFloor(cfg.ConflictEarlyExitFloor)
 	if qdrantIndex != nil {
 		conflictScorer = conflictScorer.WithCandidateFinder(qdrantIndex)
 	}
