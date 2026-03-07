@@ -66,7 +66,8 @@ func (db *DB) FindClaimsByDecision(ctx context.Context, decisionID, orgID uuid.U
 }
 
 // FindDecisionIDsMissingClaims returns IDs of decisions that have embeddings
-// but no claims yet. Used by the claims backfill.
+// but no claims yet AND have not been marked as failed (those are handled by
+// the retry loop). Used by the claims backfill.
 // SECURITY: Intentionally global — background backfill across all orgs. Each
 // returned row includes OrgID for downstream scoping (generateClaims).
 func (db *DB) FindDecisionIDsMissingClaims(ctx context.Context, limit int) ([]DecisionRef, error) {
@@ -80,6 +81,7 @@ func (db *DB) FindDecisionIDsMissingClaims(ctx context.Context, limit int) ([]De
 		 WHERE d.valid_to IS NULL
 		   AND d.embedding IS NOT NULL
 		   AND c.id IS NULL
+		   AND d.claim_embeddings_failed_at IS NULL
 		 ORDER BY d.valid_from ASC
 		 LIMIT $1`, limit)
 	if err != nil {
@@ -92,6 +94,86 @@ func (db *DB) FindDecisionIDsMissingClaims(ctx context.Context, limit int) ([]De
 		var r DecisionRef
 		if err := rows.Scan(&r.ID, &r.OrgID); err != nil {
 			return nil, fmt.Errorf("storage: scan decision ref: %w", err)
+		}
+		refs = append(refs, r)
+	}
+	return refs, rows.Err()
+}
+
+// MarkClaimEmbeddingFailed records that claim embedding generation failed for a
+// decision. Sets claim_embeddings_failed_at to NOW() and increments the attempt
+// counter. Safe to call multiple times (each call updates the timestamp and
+// increments attempts).
+func (db *DB) MarkClaimEmbeddingFailed(ctx context.Context, decisionID, orgID uuid.UUID) error {
+	_, err := db.pool.Exec(ctx,
+		`UPDATE decisions
+		 SET claim_embeddings_failed_at = NOW(),
+		     claim_embedding_attempts = claim_embedding_attempts + 1
+		 WHERE id = $1 AND org_id = $2`,
+		decisionID, orgID)
+	if err != nil {
+		return fmt.Errorf("storage: mark claim embedding failed: %w", err)
+	}
+	return nil
+}
+
+// ClearClaimEmbeddingFailure clears the failure state after a successful retry.
+// Resets both the timestamp and the attempt counter.
+func (db *DB) ClearClaimEmbeddingFailure(ctx context.Context, decisionID, orgID uuid.UUID) error {
+	_, err := db.pool.Exec(ctx,
+		`UPDATE decisions
+		 SET claim_embeddings_failed_at = NULL,
+		     claim_embedding_attempts = 0
+		 WHERE id = $1 AND org_id = $2`,
+		decisionID, orgID)
+	if err != nil {
+		return fmt.Errorf("storage: clear claim embedding failure: %w", err)
+	}
+	return nil
+}
+
+// ClaimRetryRef is a reference to a decision eligible for claim embedding retry,
+// including the current attempt count for backoff and metric attribution.
+type ClaimRetryRef struct {
+	ID       uuid.UUID
+	OrgID    uuid.UUID
+	Attempts int
+}
+
+// FindRetriableClaimFailures returns decisions that have failed claim embedding
+// generation and are eligible for retry based on exponential backoff.
+//
+// Backoff schedule: 5min * 4^(attempts-1) after each failure.
+//   - After attempt 1: wait 5 minutes
+//   - After attempt 2: wait 20 minutes
+//   - After attempt 3+: no retry (capped by maxAttempts)
+//
+// SECURITY: Intentionally global — background retry across all orgs. Each
+// returned row includes OrgID for downstream scoping.
+func (db *DB) FindRetriableClaimFailures(ctx context.Context, maxAttempts, limit int) ([]ClaimRetryRef, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := db.pool.Query(ctx,
+		`SELECT id, org_id, claim_embedding_attempts
+		 FROM decisions
+		 WHERE claim_embeddings_failed_at IS NOT NULL
+		   AND claim_embedding_attempts < $1
+		   AND valid_to IS NULL
+		   AND embedding IS NOT NULL
+		   AND claim_embeddings_failed_at + make_interval(secs => 300 * POWER(4, claim_embedding_attempts - 1)) <= NOW()
+		 ORDER BY claim_embeddings_failed_at ASC
+		 LIMIT $2`, maxAttempts, limit)
+	if err != nil {
+		return nil, fmt.Errorf("storage: find retriable claim failures: %w", err)
+	}
+	defer rows.Close()
+
+	var refs []ClaimRetryRef
+	for rows.Next() {
+		var r ClaimRetryRef
+		if err := rows.Scan(&r.ID, &r.OrgID, &r.Attempts); err != nil {
+			return nil, fmt.Errorf("storage: scan retriable claim ref: %w", err)
 		}
 		refs = append(refs, r)
 	}
