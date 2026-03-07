@@ -40,6 +40,7 @@ docker compose -f docker-compose.complete.yml logs -f ollama-init
 | `typescript/middleware.ts` | TypeScript | `withAkashi()` — automatic check/trace | No (Postgres only) |
 | `python/multi_agent_conflicts.py` | Python | Two agents, conflicting decisions, conflict detection | Yes (Qdrant + Ollama) |
 | `crewai/sdk_example.py` | Python | CrewAI integration with `make_hooks` + `run_with_akashi` | No (Postgres only) + `OPENAI_API_KEY` |
+| `vercel-ai/main.ts` | TypeScript | Vercel AI SDK middleware — automatic check/trace | No (Postgres only) + `OPENAI_API_KEY` |
 
 ## Setup by language
 
@@ -72,6 +73,14 @@ go run ./quickstart
 pip install -e sdk/python
 pip install -e sdk/integrations/crewai
 OPENAI_API_KEY=... python examples/crewai/sdk_example.py
+```
+
+### Vercel AI SDK
+
+```sh
+cd examples/vercel-ai
+npm install
+OPENAI_API_KEY=... npm start
 ```
 
 ## Framework integrations
