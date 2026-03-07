@@ -1,3 +1,5 @@
+//go:build !lite
+
 package storage
 
 import (
@@ -6,19 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/pgvector/pgvector-go"
 )
-
-// Claim is a sentence-level assertion extracted from a decision outcome,
-// stored with its own embedding for fine-grained conflict detection.
-type Claim struct {
-	ID         uuid.UUID
-	DecisionID uuid.UUID
-	OrgID      uuid.UUID
-	ClaimIdx   int
-	ClaimText  string
-	Embedding  *pgvector.Vector
-}
 
 // InsertClaims bulk-inserts claims for a decision. Uses COPY for efficiency.
 func (db *DB) InsertClaims(ctx context.Context, claims []Claim) error {
@@ -130,14 +120,6 @@ func (db *DB) ClearClaimEmbeddingFailure(ctx context.Context, decisionID, orgID 
 		return fmt.Errorf("storage: clear claim embedding failure: %w", err)
 	}
 	return nil
-}
-
-// ClaimRetryRef is a reference to a decision eligible for claim embedding retry,
-// including the current attempt count for backoff and metric attribution.
-type ClaimRetryRef struct {
-	ID       uuid.UUID
-	OrgID    uuid.UUID
-	Attempts int
 }
 
 // FindRetriableClaimFailures returns decisions that have failed claim embedding

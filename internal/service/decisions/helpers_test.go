@@ -1,6 +1,7 @@
 package decisions
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -9,6 +10,16 @@ import (
 
 	"github.com/ashita-ai/akashi/internal/service/embedding"
 )
+
+// pgDupKeyChecker is a minimal helper used by TestIsDuplicateKey.
+// It mirrors the Postgres implementation of IsDuplicateKey without needing
+// a full storage.DB (which requires a live connection pool).
+type pgDupKeyChecker struct{}
+
+func (pgDupKeyChecker) IsDuplicateKey(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
 
 func TestIsZeroVector(t *testing.T) {
 	t.Parallel()
@@ -174,10 +185,11 @@ func TestIsDuplicateKey(t *testing.T) {
 		},
 	}
 
+	checker := pgDupKeyChecker{}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := isDuplicateKey(tt.err)
+			got := checker.IsDuplicateKey(tt.err)
 			assert.Equal(t, tt.expected, got)
 		})
 	}

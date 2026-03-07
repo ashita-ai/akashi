@@ -1,3 +1,5 @@
+//go:build !lite
+
 package storage
 
 import (
@@ -130,16 +132,6 @@ func (db *DB) GetEvidenceByDecision(ctx context.Context, decisionID uuid.UUID, o
 		evs = append(evs, ev)
 	}
 	return evs, rows.Err()
-}
-
-// EvidenceCoverageStats holds evidence coverage metrics for an org.
-type EvidenceCoverageStats struct {
-	TotalDecisions       int
-	WithEvidence         int
-	WithoutEvidenceCount int
-	CoveragePercent      float64
-	TotalRecords         int     // total evidence rows
-	AvgPerDecision       float64 // average evidence records per decision
 }
 
 // GetEvidenceCoverageStats returns how many current decisions have at least one evidence record.

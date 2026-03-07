@@ -1,0 +1,135 @@
+package sqlite
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/google/uuid"
+
+	"github.com/ashita-ai/akashi/internal/storage"
+)
+
+// GetDecisionQualityStats returns aggregate quality metrics for an org's decisions.
+func (l *LiteDB) GetDecisionQualityStats(ctx context.Context, orgID uuid.UUID) (storage.DecisionQualityStats, error) {
+	var qs storage.DecisionQualityStats
+	err := l.db.QueryRowContext(ctx,
+		`SELECT
+		     COUNT(*),
+		     COALESCE(AVG(completeness_score), 0),
+		     COALESCE(SUM(CASE WHEN completeness_score < 0.5 THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN completeness_score < 0.33 THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN reasoning IS NOT NULL AND reasoning != '' THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN EXISTS (SELECT 1 FROM alternatives a WHERE a.decision_id = decisions.id) THEN 1 ELSE 0 END), 0)
+		 FROM decisions WHERE org_id = ? AND valid_to IS NULL`,
+		uuidStr(orgID),
+	).Scan(&qs.Total, &qs.AvgCompleteness, &qs.BelowHalf, &qs.BelowThird, &qs.WithReasoning, &qs.WithAlternatives)
+	if err != nil {
+		return storage.DecisionQualityStats{}, fmt.Errorf("sqlite: quality stats: %w", err)
+	}
+	return qs, nil
+}
+
+// GetEvidenceCoverageStats returns evidence coverage metrics for an org.
+func (l *LiteDB) GetEvidenceCoverageStats(ctx context.Context, orgID uuid.UUID) (storage.EvidenceCoverageStats, error) {
+	var (
+		totalDecisions int
+		withEvidence   int
+		totalRecords   int
+	)
+	err := l.db.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT d.id), COUNT(DISTINCT e.decision_id), COUNT(e.id)
+		 FROM decisions d
+		 LEFT JOIN evidence e ON d.id = e.decision_id AND e.org_id = d.org_id
+		 WHERE d.org_id = ? AND d.valid_to IS NULL`,
+		uuidStr(orgID),
+	).Scan(&totalDecisions, &withEvidence, &totalRecords)
+	if err != nil {
+		return storage.EvidenceCoverageStats{}, fmt.Errorf("sqlite: evidence coverage: %w", err)
+	}
+
+	without := totalDecisions - withEvidence
+	var coveragePct float64
+	var avgPerDecision float64
+	if totalDecisions > 0 {
+		coveragePct = float64(withEvidence) / float64(totalDecisions) * 100
+		avgPerDecision = float64(totalRecords) / float64(totalDecisions)
+	}
+
+	return storage.EvidenceCoverageStats{
+		TotalDecisions:       totalDecisions,
+		WithEvidence:         withEvidence,
+		WithoutEvidenceCount: without,
+		CoveragePercent:      coveragePct,
+		TotalRecords:         totalRecords,
+		AvgPerDecision:       avgPerDecision,
+	}, nil
+}
+
+// GetConflictStatusCounts returns conflict status breakdown for an org.
+func (l *LiteDB) GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID) (storage.ConflictStatusCounts, error) {
+	var cc storage.ConflictStatusCounts
+	err := l.db.QueryRowContext(ctx,
+		`SELECT
+		     COUNT(*),
+		     COALESCE(SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN status = 'acknowledged' THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN status = 'wont_fix' THEN 1 ELSE 0 END), 0)
+		 FROM scored_conflicts WHERE org_id = ?`,
+		uuidStr(orgID),
+	).Scan(&cc.Total, &cc.Open, &cc.Acknowledged, &cc.Resolved, &cc.WontFix)
+	if err != nil {
+		return storage.ConflictStatusCounts{}, fmt.Errorf("sqlite: conflict status counts: %w", err)
+	}
+	return cc, nil
+}
+
+// GetOutcomeSignalsSummary returns aggregate outcome signal metrics for an org.
+func (l *LiteDB) GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID) (storage.OutcomeSignalsSummary, error) {
+	var os storage.OutcomeSignalsSummary
+	err := l.db.QueryRowContext(ctx,
+		`SELECT
+		     COUNT(*),
+		     COALESCE(SUM(CASE WHEN NOT EXISTS (
+		         SELECT 1 FROM decisions sup WHERE sup.supersedes_id = d.id AND sup.org_id = d.org_id
+		     ) THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN EXISTS (
+		         SELECT 1 FROM decisions sup
+		         WHERE sup.supersedes_id = d.id AND sup.org_id = d.org_id
+		           AND (julianday(sup.valid_from) - julianday(d.valid_from)) * 24.0 < 48
+		     ) THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN NOT EXISTS (
+		         SELECT 1 FROM decisions cite
+		         WHERE cite.precedent_ref = d.id AND cite.org_id = d.org_id AND cite.valid_to IS NULL
+		     ) THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN EXISTS (
+		         SELECT 1 FROM decisions cite
+		         WHERE cite.precedent_ref = d.id AND cite.org_id = d.org_id AND cite.valid_to IS NULL
+		     ) THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN EXISTS (
+		         SELECT 1 FROM scored_conflicts sc
+		         WHERE (sc.decision_a_id = d.id OR sc.decision_b_id = d.id)
+		           AND sc.winning_decision_id = d.id
+		     ) THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN EXISTS (
+		         SELECT 1 FROM scored_conflicts sc
+		         WHERE (sc.decision_a_id = d.id OR sc.decision_b_id = d.id)
+		           AND sc.winning_decision_id IS NOT NULL AND sc.winning_decision_id != d.id
+		     ) THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN EXISTS (
+		         SELECT 1 FROM scored_conflicts sc
+		         WHERE (sc.decision_a_id = d.id OR sc.decision_b_id = d.id)
+		           AND sc.status = 'resolved' AND sc.winning_decision_id IS NULL
+		     ) THEN 1 ELSE 0 END), 0)
+		 FROM decisions d WHERE d.org_id = ? AND d.valid_to IS NULL`,
+		uuidStr(orgID),
+	).Scan(
+		&os.DecisionsTotal, &os.NeverSuperseded, &os.RevisedWithin48h,
+		&os.NeverCited, &os.CitedAtLeastOnce,
+		&os.ConflictsWon, &os.ConflictsLost, &os.ConflictsNoWinner,
+	)
+	if err != nil {
+		return storage.OutcomeSignalsSummary{}, fmt.Errorf("sqlite: outcome signals summary: %w", err)
+	}
+	return os, nil
+}

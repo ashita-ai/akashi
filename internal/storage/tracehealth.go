@@ -1,3 +1,5 @@
+//go:build !lite
+
 package storage
 
 import (
@@ -6,19 +8,6 @@ import (
 
 	"github.com/google/uuid"
 )
-
-// OutcomeSignalsSummary holds org-level aggregate outcome signal counts
-// for the trace-health endpoint (Spec 35).
-type OutcomeSignalsSummary struct {
-	DecisionsTotal    int `json:"decisions_total"`
-	NeverSuperseded   int `json:"never_superseded"`
-	RevisedWithin48h  int `json:"revised_within_48h"`
-	NeverCited        int `json:"never_cited"`
-	CitedAtLeastOnce  int `json:"cited_at_least_once"`
-	ConflictsWon      int `json:"conflicts_won"`
-	ConflictsLost     int `json:"conflicts_lost"`
-	ConflictsNoWinner int `json:"conflicts_no_winner"`
-}
 
 // GetOutcomeSignalsSummary returns org-level aggregate outcome signal counts
 // for use in GET /v1/trace-health.
