@@ -307,6 +307,13 @@ func (c Config) Validate() error {
 			errs = append(errs, errors.New("config: AKASHI_RATE_LIMIT_BURST must be positive when rate limiting is enabled"))
 		}
 	}
+	// Early-exit floor must not exceed the significance threshold, otherwise
+	// the early exit prunes candidates that would pass the threshold check.
+	if c.ConflictEarlyExitFloor > 0 && c.ConflictEarlyExitFloor > c.ConflictSignificanceThreshold {
+		errs = append(errs, fmt.Errorf("config: AKASHI_CONFLICT_EARLY_EXIT_FLOOR (%.2f) must not exceed AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD (%.2f)",
+			c.ConflictEarlyExitFloor, c.ConflictSignificanceThreshold))
+	}
+
 	// JWT keys must be both set or both empty (ephemeral mode). Mismatched config
 	// would cause token validation to fail for all clients.
 	privSet := c.JWTPrivateKeyPath != ""
