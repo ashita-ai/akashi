@@ -107,6 +107,36 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
 
+  /auth/signup:
+    post:
+      operationId: signup
+      tags: [Auth]
+      summary: Self-serve org signup with API key issuance
+      description: |
+        Creates an organization, its owner agent (org_owner role), and a managed
+        API key in one atomic operation. The raw key is returned exactly once.
+        Requires AKASHI_SIGNUP_ENABLED=true; returns 404 when disabled.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignupRequest"
+      responses:
+        "201":
+          description: Organization, agent, and API key created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_SignupResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
   /auth/refresh:
     post:
       operationId: refreshToken
@@ -1759,6 +1789,18 @@ components:
           schema:
             $ref: "#/components/schemas/APIError"
 
+    RateLimited:
+      description: Rate limit exceeded.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds to wait before retrying.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+
   schemas:
     # ── Response envelopes ───────────────────────────────────────────
     ResponseMeta:
@@ -1800,6 +1842,62 @@ components:
           description: Additional context about the error.
 
     # ── Auth schemas ─────────────────────────────────────────────────
+    SignupRequest:
+      type: object
+      required: [org_name, agent_id, email]
+      properties:
+        org_name:
+          type: string
+          description: Human-readable organization name. Slugified for the org_slug.
+          example: acme-ai
+        agent_id:
+          type: string
+          description: Identifier for the org owner agent.
+          example: alice
+        email:
+          type: string
+          format: email
+          description: Email address for the org owner (used for future verification).
+          example: alice@acme.com
+
+    SignupResponse:
+      type: object
+      required: [org_id, org_slug, agent_id, api_key, mcp_config]
+      properties:
+        org_id:
+          type: string
+          format: uuid
+        org_slug:
+          type: string
+        agent_id:
+          type: string
+        api_key:
+          type: string
+          description: Managed API key (ak_* format). Shown exactly once.
+        mcp_config:
+          $ref: "#/components/schemas/MCPConfigSnippet"
+
+    MCPConfigSnippet:
+      type: object
+      required: [url, header]
+      properties:
+        url:
+          type: string
+          description: MCP endpoint URL.
+          example: https://app.akashi.ai/mcp
+        header:
+          type: string
+          description: Ready-to-paste Authorization header value.
+          example: "ApiKey alice:ak_abc123_..."
+
+    APIResponse_SignupResponse:
+      type: object
+      properties:
+        data:
+          $ref: "#/components/schemas/SignupResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
     AuthTokenRequest:
       type: object
       required: [agent_id, api_key]

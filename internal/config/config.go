@@ -96,6 +96,9 @@ type Config struct {
 	RetentionInterval             time.Duration // How often the background retention worker runs (default 24h).
 	ClaimRetryInterval            time.Duration // How often to retry failed claim embeddings (default 2m).
 
+	// Self-serve signup.
+	SignupEnabled bool // Enable POST /auth/signup for self-serve org creation (default: false).
+
 	// IDE hook endpoint settings.
 	HooksEnabled bool   // Enable /hooks/* IDE integration endpoints (default: true).
 	HooksAPIKey  string // Optional API key for non-localhost hook access (default: "" = localhost only).
@@ -163,6 +166,7 @@ func Load() (Config, error) {
 	cfg.EnableDestructiveDelete, errs = collectBool(errs, "AKASHI_ENABLE_DESTRUCTIVE_DELETE", false)
 	cfg.WALDisable, errs = collectBool(errs, "AKASHI_WAL_DISABLE", false)
 	cfg.ForceConflictRescore, errs = collectBool(errs, "AKASHI_FORCE_CONFLICT_RESCORE", false)
+	cfg.SignupEnabled, errs = collectBool(errs, "AKASHI_SIGNUP_ENABLED", false)
 	cfg.HooksEnabled, errs = collectBool(errs, "AKASHI_HOOKS_ENABLED", true)
 	cfg.AutoTrace, errs = collectBool(errs, "AKASHI_AUTO_TRACE", true)
 

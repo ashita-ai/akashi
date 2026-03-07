@@ -404,6 +404,7 @@ func New(opts ...Option) (*App, error) {
 		HooksEnabled:            cfg.HooksEnabled,
 		HooksAPIKey:             cfg.HooksAPIKey,
 		AutoTrace:               cfg.AutoTrace,
+		SignupEnabled:           cfg.SignupEnabled,
 	})
 
 	// Seed admin agent.

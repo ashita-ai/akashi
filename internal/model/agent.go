@@ -2,10 +2,15 @@ package model
 
 import (
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// nonAlphaNum matches runs of characters that are not lowercase alphanumeric.
+var nonAlphaNum = regexp.MustCompile(`[^a-z0-9]+`)
 
 // AgentRole represents the RBAC role assigned to an agent.
 type AgentRole string
@@ -26,6 +31,7 @@ type Agent struct {
 	Name       string         `json:"name"`
 	Role       AgentRole      `json:"role"`
 	APIKeyHash *string        `json:"-"`
+	Email      *string        `json:"email,omitempty"`
 	Tags       []string       `json:"tags"`
 	Metadata   map[string]any `json:"metadata"`
 	CreatedAt  time.Time      `json:"created_at"`
@@ -132,6 +138,19 @@ var reservedAgentIDs = map[string]struct{}{
 func IsReservedAgentID(id string) bool {
 	_, ok := reservedAgentIDs[id]
 	return ok
+}
+
+// Slugify converts a human-readable name into a URL-safe slug.
+// Lowercase, non-alphanumeric runs replaced by a single hyphen, trimmed, max 63 chars.
+func Slugify(name string) string {
+	s := strings.ToLower(strings.TrimSpace(name))
+	s = nonAlphaNum.ReplaceAllString(s, "-")
+	s = strings.Trim(s, "-")
+	if len(s) > 63 {
+		s = s[:63]
+		s = strings.TrimRight(s, "-")
+	}
+	return s
 }
 
 // ValidateAgentID checks that an agent ID conforms to the allowed format.

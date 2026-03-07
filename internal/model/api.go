@@ -319,3 +319,25 @@ type Organization struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// SignupRequest is the request body for POST /auth/signup.
+type SignupRequest struct {
+	OrgName string `json:"org_name"`
+	AgentID string `json:"agent_id"`
+	Email   string `json:"email"`
+}
+
+// SignupResponse is the response body for POST /auth/signup.
+type SignupResponse struct {
+	OrgID     uuid.UUID        `json:"org_id"`
+	OrgSlug   string           `json:"org_slug"`
+	AgentID   string           `json:"agent_id"`
+	APIKey    string           `json:"api_key"`
+	MCPConfig MCPConfigSnippet `json:"mcp_config"`
+}
+
+// MCPConfigSnippet is a ready-to-paste MCP client configuration block.
+type MCPConfigSnippet struct {
+	URL    string `json:"url"`
+	Header string `json:"header"`
+}

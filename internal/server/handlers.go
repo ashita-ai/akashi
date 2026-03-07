@@ -14,6 +14,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/authz"
 	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/ratelimit"
 	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/trace"
@@ -43,6 +44,11 @@ type Handlers struct {
 	hookChecks *hookCheckStore
 	// autoTrace enables automatic decision tracing on git commits via IDE hooks.
 	autoTrace bool
+	// signupLimiter enforces a tight per-IP rate limit on POST /auth/signup.
+	// Set by server.New when signup is enabled; nil otherwise.
+	signupLimiter ratelimit.Limiter
+	// trustProxy controls whether to read client IP from X-Forwarded-For.
+	trustProxy bool
 }
 
 // HandlersDeps holds all dependencies for constructing Handlers.
@@ -63,6 +69,7 @@ type HandlersDeps struct {
 	RetentionInterval       time.Duration
 	DecisionHooks           []DecisionHook
 	AutoTrace               bool
+	TrustProxy              bool
 }
 
 // NewHandlers creates a new Handlers with all dependencies.
@@ -85,6 +92,7 @@ func NewHandlers(d HandlersDeps) *Handlers {
 		decisionHooks:           d.DecisionHooks,
 		hookChecks:              newHookCheckStore(),
 		autoTrace:               d.AutoTrace,
+		trustProxy:              d.TrustProxy,
 	}
 }
 
