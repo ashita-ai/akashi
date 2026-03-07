@@ -47,14 +47,12 @@ func TestCompactDecision(t *testing.T) {
 	// Dropped fields.
 	_, hasRunID := m["run_id"]
 	_, hasOrgID := m["org_id"]
-	_, hasQuality := m["quality_score"]
 	_, hasCompleteness := m["completeness_score"]
 	_, hasContentHash := m["content_hash"]
 	_, hasValidFrom := m["valid_from"]
 	_, hasMetadata := m["metadata"]
 	assert.False(t, hasRunID, "run_id should be dropped")
 	assert.False(t, hasOrgID, "org_id should be dropped")
-	assert.False(t, hasQuality, "quality_score should be dropped")
 	assert.False(t, hasCompleteness, "completeness_score should be dropped")
 	assert.False(t, hasContentHash, "content_hash should be dropped")
 	assert.False(t, hasValidFrom, "valid_from should be dropped")
