@@ -3807,3 +3807,331 @@ func TestConflictAnalytics(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Retention & Legal Hold endpoint tests (issue #265)
+// ---------------------------------------------------------------------------
+
+func TestHandleGetRetention_Default(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/retention", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Data struct {
+			RetentionDays         *int            `json:"retention_days"`
+			RetentionExcludeTypes []string        `json:"retention_exclude_types"`
+			LastRun               *time.Time      `json:"last_run"`
+			LastRunDeleted        *int            `json:"last_run_deleted"`
+			NextRun               *time.Time      `json:"next_run"`
+			Holds                 json.RawMessage `json:"holds"`
+		} `json:"data"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(body, &result))
+
+	// Default org has no retention policy set, so retention_days should be nil.
+	assert.Nil(t, result.Data.RetentionDays, "default org should have nil retention_days")
+	assert.Nil(t, result.Data.LastRun, "no prior run expected")
+}
+
+func TestHandleGetRetention_ForbiddenUnauthenticated(t *testing.T) {
+	// Unauthenticated request should be rejected.
+	resp, err := http.Get(testSrv.URL + "/v1/retention")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestHandleSetRetention_Valid(t *testing.T) {
+	days := 30
+	resp, err := authedRequest("PUT", testSrv.URL+"/v1/retention", adminToken, map[string]any{
+		"retention_days":          days,
+		"retention_exclude_types": []string{"security", "compliance"},
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Data struct {
+			RetentionDays         *int     `json:"retention_days"`
+			RetentionExcludeTypes []string `json:"retention_exclude_types"`
+		} `json:"data"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(body, &result))
+	require.NotNil(t, result.Data.RetentionDays)
+	assert.Equal(t, 30, *result.Data.RetentionDays)
+	assert.Equal(t, []string{"security", "compliance"}, result.Data.RetentionExcludeTypes)
+
+	// Clean up: reset to nil so we don't affect other tests.
+	resetResp, err := authedRequest("PUT", testSrv.URL+"/v1/retention", adminToken, map[string]any{
+		"retention_days":          nil,
+		"retention_exclude_types": nil,
+	})
+	require.NoError(t, err)
+	defer func() { _ = resetResp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resetResp.StatusCode)
+}
+
+func TestHandleSetRetention_InvalidDays(t *testing.T) {
+	// Zero days should fail validation (must be >= 1).
+	resp, err := authedRequest("PUT", testSrv.URL+"/v1/retention", adminToken, map[string]any{
+		"retention_days": 0,
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	// Negative days should also fail.
+	resp2, err := authedRequest("PUT", testSrv.URL+"/v1/retention", adminToken, map[string]any{
+		"retention_days": -5,
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp2.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp2.StatusCode)
+}
+
+func TestHandleSetRetention_ForbiddenForAgent(t *testing.T) {
+	resp, err := authedRequest("PUT", testSrv.URL+"/v1/retention", agentToken, map[string]any{
+		"retention_days": 60,
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
+func TestHandleCreateHold_Valid(t *testing.T) {
+	from := time.Now().Add(-24 * time.Hour).UTC().Truncate(time.Second)
+	to := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Second)
+
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/retention/hold", adminToken, map[string]any{
+		"reason": "Legal review Q1",
+		"from":   from.Format(time.RFC3339),
+		"to":     to.Format(time.RFC3339),
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var result struct {
+		Data struct {
+			ID        string `json:"id"`
+			Reason    string `json:"reason"`
+			CreatedBy string `json:"created_by"`
+		} `json:"data"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(body, &result))
+	assert.NotEmpty(t, result.Data.ID, "hold should have an ID")
+	assert.Equal(t, "Legal review Q1", result.Data.Reason)
+	assert.NotEmpty(t, result.Data.CreatedBy)
+}
+
+func TestHandleCreateHold_MissingReason(t *testing.T) {
+	from := time.Now().Add(-24 * time.Hour).UTC()
+	to := time.Now().Add(24 * time.Hour).UTC()
+
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/retention/hold", adminToken, map[string]any{
+		"reason": "",
+		"from":   from.Format(time.RFC3339),
+		"to":     to.Format(time.RFC3339),
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandleCreateHold_MissingTimeRange(t *testing.T) {
+	// Missing both from and to.
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/retention/hold", adminToken, map[string]any{
+		"reason": "Missing times",
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandleCreateHold_ToBeforeFrom(t *testing.T) {
+	from := time.Now().Add(24 * time.Hour).UTC()
+	to := time.Now().Add(-24 * time.Hour).UTC()
+
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/retention/hold", adminToken, map[string]any{
+		"reason": "Backwards range",
+		"from":   from.Format(time.RFC3339),
+		"to":     to.Format(time.RFC3339),
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandleCreateHold_ForbiddenForAgent(t *testing.T) {
+	from := time.Now().Add(-24 * time.Hour).UTC()
+	to := time.Now().Add(24 * time.Hour).UTC()
+
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/retention/hold", agentToken, map[string]any{
+		"reason": "Should fail",
+		"from":   from.Format(time.RFC3339),
+		"to":     to.Format(time.RFC3339),
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
+func TestHandleReleaseHold_Valid(t *testing.T) {
+	from := time.Now().Add(-48 * time.Hour).UTC().Truncate(time.Second)
+	to := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second)
+
+	// Create a hold to release.
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/retention/hold", adminToken, map[string]any{
+		"reason": "To be released",
+		"from":   from.Format(time.RFC3339),
+		"to":     to.Format(time.RFC3339),
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var createResult struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(body, &createResult))
+	holdID := createResult.Data.ID
+	require.NotEmpty(t, holdID)
+
+	// Release the hold.
+	resp2, err := authedRequest("DELETE", testSrv.URL+"/v1/retention/hold/"+holdID, adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp2.Body.Close() }()
+	assert.Equal(t, http.StatusNoContent, resp2.StatusCode)
+
+	// Releasing the same hold again should return 404.
+	resp3, err := authedRequest("DELETE", testSrv.URL+"/v1/retention/hold/"+holdID, adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp3.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp3.StatusCode)
+}
+
+func TestHandleReleaseHold_NotFound(t *testing.T) {
+	unknownID := uuid.New().String()
+	resp, err := authedRequest("DELETE", testSrv.URL+"/v1/retention/hold/"+unknownID, adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestHandleReleaseHold_InvalidID(t *testing.T) {
+	resp, err := authedRequest("DELETE", testSrv.URL+"/v1/retention/hold/not-a-uuid", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandlePurge_DryRun(t *testing.T) {
+	before := time.Now().Add(-365 * 24 * time.Hour).UTC()
+
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/retention/purge", adminToken, map[string]any{
+		"before":  before.Format(time.RFC3339),
+		"dry_run": true,
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Data struct {
+			DryRun      bool `json:"dry_run"`
+			WouldDelete struct {
+				Decisions    int64 `json:"decisions"`
+				Alternatives int64 `json:"alternatives"`
+				Evidence     int64 `json:"evidence"`
+				Claims       int64 `json:"claims"`
+				Events       int64 `json:"events"`
+			} `json:"would_delete"`
+		} `json:"data"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(body, &result))
+	assert.True(t, result.Data.DryRun, "response should indicate dry_run=true")
+	// Count should be >= 0 (we don't care about exact value, just valid response).
+	assert.GreaterOrEqual(t, result.Data.WouldDelete.Decisions, int64(0))
+}
+
+func TestHandlePurge_MissingBefore(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/retention/purge", adminToken, map[string]any{
+		"dry_run": true,
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandlePurge_ForbiddenForAgent(t *testing.T) {
+	before := time.Now().Add(-365 * 24 * time.Hour).UTC()
+
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/retention/purge", agentToken, map[string]any{
+		"before":  before.Format(time.RFC3339),
+		"dry_run": true,
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
+func TestHandleGetRetention_ShowsHoldsAfterCreate(t *testing.T) {
+	from := time.Now().Add(-12 * time.Hour).UTC().Truncate(time.Second)
+	to := time.Now().Add(12 * time.Hour).UTC().Truncate(time.Second)
+
+	// Create a hold.
+	createResp, err := authedRequest("POST", testSrv.URL+"/v1/retention/hold", adminToken, map[string]any{
+		"reason": "Visible in GET",
+		"from":   from.Format(time.RFC3339),
+		"to":     to.Format(time.RFC3339),
+	})
+	require.NoError(t, err)
+	defer func() { _ = createResp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+
+	var created struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	createBody, _ := io.ReadAll(createResp.Body)
+	require.NoError(t, json.Unmarshal(createBody, &created))
+	holdID := created.Data.ID
+
+	// GET /v1/retention should include the hold we just created.
+	getResp, err := authedRequest("GET", testSrv.URL+"/v1/retention", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = getResp.Body.Close() }()
+	require.Equal(t, http.StatusOK, getResp.StatusCode)
+
+	var getResult struct {
+		Data struct {
+			Holds []struct {
+				ID     string `json:"id"`
+				Reason string `json:"reason"`
+			} `json:"holds"`
+		} `json:"data"`
+	}
+	getBody, _ := io.ReadAll(getResp.Body)
+	require.NoError(t, json.Unmarshal(getBody, &getResult))
+
+	found := false
+	for _, h := range getResult.Data.Holds {
+		if h.ID == holdID {
+			found = true
+			assert.Equal(t, "Visible in GET", h.Reason)
+			break
+		}
+	}
+	assert.True(t, found, "newly created hold should appear in GET /v1/retention holds list")
+}
