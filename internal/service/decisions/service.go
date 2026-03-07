@@ -47,7 +47,17 @@ type Service struct {
 	embeddingDuration      metric.Float64Histogram
 	searchDuration         metric.Float64Histogram
 	claimEmbeddingFailures metric.Int64Counter
+
+	percentileCache *search.PercentileCache // nil = use log fallback in ReScore.
+	rescoreMetrics  *search.ReScoreMetrics  // nil = skip signal contribution recording.
 }
+
+// SetPercentileCache configures the percentile cache used by ReScore for
+// distribution-aware citation normalization. Safe to call before Run().
+func (s *Service) SetPercentileCache(c *search.PercentileCache) { s.percentileCache = c }
+
+// SetReScoreMetrics configures per-signal contribution metrics for ReScore.
+func (s *Service) SetReScoreMetrics(m *search.ReScoreMetrics) { s.rescoreMetrics = m }
 
 // New creates a new decision Service.
 // searcher may be nil if Qdrant is not configured (falls back to text search).
@@ -523,7 +533,19 @@ func (s *Service) hydrateAndReScore(ctx context.Context, orgID uuid.UUID, result
 		}
 	}
 
-	return search.ReScore(results, decisions, limit), nil
+	// Build ReScore options: percentile normalization + signal contribution metrics.
+	var opts *search.ReScoreOpts
+	if s.percentileCache != nil || s.rescoreMetrics != nil {
+		opts = &search.ReScoreOpts{Ctx: ctx}
+		if s.percentileCache != nil {
+			opts.Percentiles = s.percentileCache.Get(orgID)
+		}
+		if s.rescoreMetrics != nil {
+			opts.Metrics = s.rescoreMetrics
+		}
+	}
+
+	return search.ReScore(results, decisions, limit, opts), nil
 }
 
 // validateEmbeddingDims checks that the vector has the expected number of dimensions.

@@ -3153,6 +3153,11 @@ components:
         similarity_score:
           type: number
           format: float
+        qdrant_rank:
+          type: integer
+          description: >
+            1-based position in the original Qdrant ANN results. Used as tie-breaker
+            when adjusted scores are equal. Zero or absent for text-search fallback results.
 
     # ── Check schemas ────────────────────────────────────────────────
     CheckRequest:

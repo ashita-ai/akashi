@@ -1782,3 +1782,29 @@ func (db *DB) GetDecisionOutcomeSignalsBatch(ctx context.Context, ids []uuid.UUI
 
 	return result, nil
 }
+
+// GetCitationPercentilesForOrg computes percentile breakpoints [p25, p50, p75, p90]
+// for precedent citation counts within an org's active decisions. Returns nil if
+// no decisions have citations. Used by the percentile refresh loop to populate the
+// in-memory PercentileCache for distribution-aware ReScore normalization (issue #264).
+func (db *DB) GetCitationPercentilesForOrg(ctx context.Context, orgID uuid.UUID) ([]float64, error) {
+	row := db.pool.QueryRow(ctx, `
+		SELECT percentile_cont(ARRAY[0.25, 0.50, 0.75, 0.90])
+		       WITHIN GROUP (ORDER BY cnt)
+		FROM (
+			SELECT precedent_ref, COUNT(*)::int AS cnt
+			FROM decisions
+			WHERE org_id = $1 AND valid_to IS NULL AND precedent_ref IS NOT NULL
+			GROUP BY precedent_ref
+		) citation_counts`, orgID)
+
+	var breakpoints []float64
+	if err := row.Scan(&breakpoints); err != nil {
+		// No rows = no citations in this org → return nil (cache miss → log fallback).
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("storage: citation percentiles for org %s: %w", orgID, err)
+	}
+	return breakpoints, nil
+}

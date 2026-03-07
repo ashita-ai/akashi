@@ -116,7 +116,7 @@ func TestReScore(t *testing.T) {
 		{DecisionID: uuid.MustParse("00000000-0000-0000-0000-000000000099"), Score: 0.99}, // missing from decisions
 	}
 
-	scored := ReScore(results, decisions, 10)
+	scored := ReScore(results, decisions, 10, nil)
 
 	// Missing decision should be filtered out.
 	require.Len(t, scored, 3)
@@ -159,7 +159,7 @@ func TestReScoreTruncatesAtLimit(t *testing.T) {
 		{DecisionID: id2, Score: 0.8},
 	}
 
-	scored := ReScore(results, decisions, 1)
+	scored := ReScore(results, decisions, 1, nil)
 	require.Len(t, scored, 1)
 	assert.Equal(t, id1, scored[0].Decision.ID)
 }
@@ -263,10 +263,10 @@ func buildFilterConditions(filters model.QueryFilters) []string {
 }
 
 func TestReScore_EmptyInput(t *testing.T) {
-	scored := ReScore(nil, map[uuid.UUID]model.Decision{}, 10)
+	scored := ReScore(nil, map[uuid.UUID]model.Decision{}, 10, nil)
 	assert.Empty(t, scored)
 
-	scored = ReScore([]Result{}, map[uuid.UUID]model.Decision{}, 10)
+	scored = ReScore([]Result{}, map[uuid.UUID]model.Decision{}, 10, nil)
 	assert.Empty(t, scored)
 }
 
@@ -278,7 +278,7 @@ func TestReScore_AllMissing(t *testing.T) {
 		{DecisionID: uuid.New(), Score: 0.70},
 	}
 
-	scored := ReScore(results, map[uuid.UUID]model.Decision{}, 10)
+	scored := ReScore(results, map[uuid.UUID]model.Decision{}, 10, nil)
 	assert.Empty(t, scored)
 }
 
@@ -366,7 +366,7 @@ func TestReScore_WithMatchingResults(t *testing.T) {
 		{DecisionID: id3, Score: 0.75},
 	}
 
-	scored := ReScore(results, decisions, 10)
+	scored := ReScore(results, decisions, 10, nil)
 	require.Len(t, scored, 3, "all results should match decisions")
 
 	// Verify the first result (sorted descending by adjusted score).
@@ -407,7 +407,7 @@ func TestReScore_ScoreCappedAtOne(t *testing.T) {
 	// cold-start outcomeWeight = 0.15 (stability=1.0 only); multiplier = 0.575
 	// relevance = 1.0 * 0.575 * 1.0 = 0.575 (below cap)
 	results := []Result{{DecisionID: id, Score: 1.0}}
-	scored := ReScore(results, decisions, 10)
+	scored := ReScore(results, decisions, 10, nil)
 	require.Len(t, scored, 1)
 	assert.InDelta(t, 0.575, scored[0].SimilarityScore, 0.01)
 	assert.LessOrEqual(t, scored[0].SimilarityScore, float32(1.0))
@@ -433,7 +433,7 @@ func TestReScore_PreservesDecisionMetadata(t *testing.T) {
 	}
 
 	results := []Result{{DecisionID: id, Score: 0.85}}
-	scored := ReScore(results, decisions, 10)
+	scored := ReScore(results, decisions, 10, nil)
 
 	require.Len(t, scored, 1)
 	assert.Equal(t, id, scored[0].Decision.ID)

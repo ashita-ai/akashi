@@ -56,6 +56,7 @@ type SearchRequest struct {
 type SearchResult struct {
 	Decision        Decision `json:"decision"`
 	SimilarityScore float32  `json:"similarity_score"`
+	QdrantRank      int      `json:"qdrant_rank,omitempty"` // 1-based position in Qdrant's ANN results; 0 for text-fallback results.
 }
 
 // CheckRequest is the request body for POST /v1/check.

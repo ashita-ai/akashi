@@ -56,20 +56,21 @@ import (
 // App is the Akashi server lifecycle. Construct with New(), run with Run().
 // App has no public fields — use New() options to configure it.
 type App struct {
-	cfg            config.Config
-	db             *storage.DB
-	srv            *server.Server
-	buf            *trace.Buffer
-	outbox         *search.OutboxWorker
-	qdrantIndex    *search.QdrantIndex // nil when Qdrant is not configured
-	grantCache     *authz.GrantCache
-	conflictScorer *conflicts.Scorer
-	decisionSvc    *decisions.Service
-	broker         *server.Broker // nil when no notify connection
-	otelShutdown   func(context.Context) error
-	decisionHooks  []server.DecisionHook
-	logger         *slog.Logger
-	version        string
+	cfg             config.Config
+	db              *storage.DB
+	srv             *server.Server
+	buf             *trace.Buffer
+	outbox          *search.OutboxWorker
+	qdrantIndex     *search.QdrantIndex // nil when Qdrant is not configured
+	grantCache      *authz.GrantCache
+	conflictScorer  *conflicts.Scorer
+	decisionSvc     *decisions.Service
+	percentileCache *search.PercentileCache
+	broker          *server.Broker // nil when no notify connection
+	otelShutdown    func(context.Context) error
+	decisionHooks   []server.DecisionHook
+	logger          *slog.Logger
+	version         string
 }
 
 // New initialises the Akashi server. It connects to the database, runs
@@ -237,6 +238,12 @@ func New(opts ...Option) (*App, error) {
 
 	// Create decision service.
 	decisionSvc := decisions.New(db, embedder, searcher, logger, conflictScorer)
+	rescoreMetrics := search.RegisterReScoreMetrics(logger)
+	decisionSvc.SetReScoreMetrics(rescoreMetrics)
+	// PercentileCache is wired after App construction in Run() since it needs
+	// the cache instance stored on App. Set here so it's available from the first search.
+	pctCache := search.NewPercentileCache()
+	decisionSvc.SetPercentileCache(pctCache)
 
 	// Embedding backfills (non-fatal).
 	if n, err := decisionSvc.BackfillEmbeddings(context.Background(), 500); err != nil {
@@ -424,20 +431,21 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	return &App{
-		cfg:            cfg,
-		db:             db,
-		srv:            srv,
-		buf:            buf,
-		outbox:         outboxWorker,
-		qdrantIndex:    qdrantIndex,
-		grantCache:     grantCache,
-		conflictScorer: conflictScorer,
-		decisionSvc:    decisionSvc,
-		broker:         broker,
-		otelShutdown:   otelShutdown,
-		decisionHooks:  decisionHooks,
-		logger:         logger,
-		version:        version,
+		cfg:             cfg,
+		db:              db,
+		srv:             srv,
+		buf:             buf,
+		outbox:          outboxWorker,
+		qdrantIndex:     qdrantIndex,
+		grantCache:      grantCache,
+		conflictScorer:  conflictScorer,
+		decisionSvc:     decisionSvc,
+		percentileCache: pctCache,
+		broker:          broker,
+		otelShutdown:    otelShutdown,
+		decisionHooks:   decisionHooks,
+		logger:          logger,
+		version:         version,
 	}, nil
 }
 
@@ -461,6 +469,7 @@ func (a *App) Run(ctx context.Context) error {
 	go a.idempotencyCleanupLoop(ctx)
 	go a.retentionLoop(ctx)
 	go a.claimEmbeddingRetryLoop(ctx)
+	go a.percentileRefreshLoop(ctx)
 
 	// Start HTTP server.
 	errCh := make(chan error, 1)
@@ -718,6 +727,59 @@ func (a *App) claimEmbeddingRetryLoop(ctx context.Context) {
 				a.logger.Info("claim embedding retry complete", "retried", n)
 			}
 		}
+	}
+}
+
+// percentileRefreshLoop periodically recomputes signal percentile breakpoints for all orgs
+// and stores them in the in-memory cache. ReScore uses these to normalize citation counts
+// into distribution-aware [0,1] scores instead of using the hardcoded log saturation formula.
+func (a *App) percentileRefreshLoop(ctx context.Context) {
+	if a.cfg.PercentileRefreshInterval <= 0 {
+		return
+	}
+
+	// Refresh immediately on startup to populate the cache before the first search.
+	a.refreshPercentiles(ctx)
+
+	ticker := time.NewTicker(a.cfg.PercentileRefreshInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.refreshPercentiles(ctx)
+		}
+	}
+}
+
+func (a *App) refreshPercentiles(ctx context.Context) {
+	opCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	orgIDs, err := a.db.ListOrganizationIDs(opCtx)
+	if err != nil {
+		a.logger.Warn("percentile refresh: list orgs", "error", err)
+		return
+	}
+
+	refreshed := 0
+	for _, orgID := range orgIDs {
+		bp, err := a.db.GetCitationPercentilesForOrg(opCtx, orgID)
+		if err != nil {
+			a.logger.Warn("percentile refresh: org query failed", "org_id", orgID, "error", err)
+			continue
+		}
+		a.percentileCache.Set(orgID, search.OrgPercentiles{
+			CitationBreakpoints: bp,
+			RefreshedAt:         time.Now(),
+		})
+		refreshed++
+	}
+
+	if refreshed > 0 {
+		a.logger.Debug("percentile refresh complete", "orgs", refreshed)
 	}
 }
 
