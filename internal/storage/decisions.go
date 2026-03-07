@@ -1188,6 +1188,31 @@ func (db *DB) GetRevisionChainIDs(ctx context.Context, id, orgID uuid.UUID) ([]u
 	return ids, rows.Err()
 }
 
+// GetRevisionDepth returns how many preceding revisions exist for a decision
+// by walking backward through the supersedes_id chain. A decision with no
+// supersedes_id has depth 0. Capped at 100 hops to prevent infinite loops.
+func (db *DB) GetRevisionDepth(ctx context.Context, id, orgID uuid.UUID) (int, error) {
+	var depth int
+	err := db.pool.QueryRow(ctx, `
+		WITH RECURSIVE chain AS (
+			SELECT supersedes_id, 0 AS depth
+			FROM decisions
+			WHERE id = $1 AND org_id = $2
+			UNION ALL
+			SELECT d.supersedes_id, c.depth + 1
+			FROM decisions d
+			INNER JOIN chain c ON c.supersedes_id = d.id
+			WHERE d.org_id = $2 AND c.depth < 100
+		)
+		SELECT COALESCE(MAX(depth), 0) FROM chain`,
+		id, orgID,
+	).Scan(&depth)
+	if err != nil {
+		return 0, fmt.Errorf("storage: get revision depth: %w", err)
+	}
+	return depth, nil
+}
+
 // sortDecisionsByValidFrom sorts a slice of decisions by valid_from ascending.
 func sortDecisionsByValidFrom(decisions []model.Decision) {
 	sort.Slice(decisions, func(i, j int) bool {

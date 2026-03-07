@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ashita-ai/akashi/internal/auth"
+	"github.com/ashita-ai/akashi/internal/conflicts"
 	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
@@ -859,6 +860,82 @@ func (h *Handlers) HandleAdjudicateConflict(w http.ResponseWriter, r *http.Reque
 	}
 
 	writeJSON(w, r, http.StatusOK, updated)
+}
+
+// HandleGetConflict handles GET /v1/conflicts/{id}.
+// Returns a single conflict with a lazily-computed resolution recommendation.
+func (h *Handlers) HandleGetConflict(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
+
+	idStr := r.PathValue("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid conflict id")
+		return
+	}
+
+	conflict, err := h.db.GetConflict(r.Context(), id, orgID)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to get conflict", err)
+		return
+	}
+	if conflict == nil {
+		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
+		return
+	}
+
+	// RBAC: verify the caller can see both decisions in this conflict.
+	filtered, err := filterConflictsByAccess(r.Context(), h.db, claims, []model.DecisionConflict{*conflict}, h.grantCache)
+	if err != nil {
+		h.writeInternalError(w, r, "authorization check failed", err)
+		return
+	}
+	if len(filtered) == 0 {
+		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
+		return
+	}
+
+	detail := model.ConflictDetail{DecisionConflict: *conflict}
+
+	// Compute recommendation for unresolved conflicts only.
+	if conflict.Status == "open" || conflict.Status == "acknowledged" {
+		detail.Recommendation = h.computeRecommendation(r.Context(), *conflict, orgID)
+	}
+
+	writeJSON(w, r, http.StatusOK, detail)
+}
+
+// computeRecommendation gathers signals and computes a resolution recommendation.
+// Errors from signal queries are logged and treated as zero-signal rather than
+// failing the request — a partial recommendation is better than none.
+func (h *Handlers) computeRecommendation(ctx context.Context, c model.DecisionConflict, orgID uuid.UUID) *model.Recommendation {
+	agents := []string{c.AgentA, c.AgentB}
+	winRates, err := h.db.GetAgentWinRates(ctx, orgID, agents, c.DecisionType)
+	if err != nil {
+		h.logger.Warn("recommendation: failed to get agent win rates", "error", err)
+		winRates = map[string]storage.AgentWinRate{}
+	}
+
+	depthA, err := h.db.GetRevisionDepth(ctx, c.DecisionAID, orgID)
+	if err != nil {
+		h.logger.Warn("recommendation: failed to get revision depth for decision A", "error", err)
+	}
+
+	depthB, err := h.db.GetRevisionDepth(ctx, c.DecisionBID, orgID)
+	if err != nil {
+		h.logger.Warn("recommendation: failed to get revision depth for decision B", "error", err)
+	}
+
+	return conflicts.Recommend(conflicts.RecommendationInput{
+		Conflict:       c,
+		WinRateA:       winRates[c.AgentA].WinRate,
+		WinRateB:       winRates[c.AgentB].WinRate,
+		WinCountA:      winRates[c.AgentA].Total,
+		WinCountB:      winRates[c.AgentB].Total,
+		RevisionDepthA: depthA,
+		RevisionDepthB: depthB,
+	})
 }
 
 // HandleDecisionRevisions handles GET /v1/decisions/{id}/revisions.

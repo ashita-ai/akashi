@@ -225,6 +225,22 @@ type ConflictGroup struct {
 	OpenConflicts []DecisionConflict `json:"open_conflicts,omitempty"`
 }
 
+// Recommendation is a lazily-computed suggestion for which decision should
+// prevail in a conflict. Not stored; computed per-request from heuristic signals
+// (confidence delta, recency, agent win rate, revision depth).
+type Recommendation struct {
+	SuggestedWinner uuid.UUID `json:"suggested_winner"`
+	Reasons         []string  `json:"reasons"`
+	Confidence      float64   `json:"confidence"`
+}
+
+// ConflictDetail extends DecisionConflict with computed fields that are too
+// expensive for list views. Returned by GET /v1/conflicts/{id}.
+type ConflictDetail struct {
+	DecisionConflict
+	Recommendation *Recommendation `json:"recommendation,omitempty"`
+}
+
 // ConflictStatusUpdate is the request body for PATCH /v1/conflicts/{id}.
 type ConflictStatusUpdate struct {
 	Status         string  `json:"status"` // acknowledged, resolved, wont_fix
