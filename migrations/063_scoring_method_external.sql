@@ -1,4 +1,4 @@
--- 061: Add 'external' to scoring_method constraint for enterprise pairwise scorer.
+-- 063: Add 'external' to scoring_method constraint for enterprise pairwise scorer.
 -- The WithPairwiseScorer path sets scoring_method = 'external' but the constraint
 -- from migration 038 only allowed embedding, text, claim, llm, llm_v2.
 
