@@ -365,11 +365,28 @@ func authMiddleware(jwtMgr *auth.JWTManager, db *storage.DB, next http.Handler) 
 // For managed-format keys (ak_<prefix>_<secret>), uses a prefix index lookup to
 // load at most one key before running Argon2, avoiding O(N·hash) cost on agents
 // with many keys. Non-ak_ keys fall back to the full scan (legacy handling).
+//
+// Timing-attack resistance: every code path through this function must spend
+// at least one Argon2id hash-duration of wall time, regardless of whether the
+// agent_id exists, the key format is valid, or the credentials match. This
+// prevents attackers from using response-time differences to enumerate valid
+// key prefixes or agent IDs. The mechanism has two parts:
+//
+//  1. auth.DummyVerify() calls on early-return error paths that would otherwise
+//     skip the real Argon2 comparison (e.g., malformed credential, missing agent).
+//  2. A "verified" flag that tracks whether any real Argon2 comparison ran
+//     during the managed-key or legacy-key loops. If the function reaches the
+//     end without having called auth.VerifyAPIKey at least once, it calls
+//     auth.DummyVerify() before returning.
+//
+// DO NOT add early returns that bypass both the Argon2 loops and DummyVerify —
+// doing so reintroduces a timing oracle. See also: crypto/subtle.ConstantTimeCompare
+// for the general principle of constant-time comparison.
 func verifyAPIKey(ctx context.Context, db *storage.DB, credential, orgHeader string) (*auth.Claims, error) {
 	// Parse "agent_id:api_key" — agent_ids cannot contain colons (validated on creation).
 	colonIdx := strings.IndexByte(credential, ':')
 	if colonIdx < 1 || colonIdx == len(credential)-1 {
-		auth.DummyVerify()
+		auth.DummyVerify() // Timing: burn Argon2 time so format errors aren't faster than auth failures.
 		return nil, fmt.Errorf("invalid api key format")
 	}
 	agentID := credential[:colonIdx]
@@ -379,7 +396,7 @@ func verifyAPIKey(ctx context.Context, db *storage.DB, credential, orgHeader str
 	if strings.TrimSpace(orgHeader) != "" {
 		orgID, parseErr := uuid.Parse(strings.TrimSpace(orgHeader))
 		if parseErr != nil {
-			auth.DummyVerify()
+			auth.DummyVerify() // Timing: burn Argon2 time so org-parse errors aren't faster than auth failures.
 			return nil, fmt.Errorf("invalid org header")
 		}
 		requestedOrg = &orgID
@@ -428,7 +445,7 @@ func verifyAPIKey(ctx context.Context, db *storage.DB, credential, orgHeader str
 	// Phase 2: fall back to legacy agents.api_key_hash.
 	agents, err := db.GetAgentsByAgentIDGlobal(ctx, agentID)
 	if err != nil {
-		// If no managed keys were checked, we need a dummy verify.
+		// Timing: if no managed-key Argon2 ran, burn Argon2 time before returning.
 		if len(managedKeys) == 0 {
 			auth.DummyVerify()
 		}
@@ -436,11 +453,14 @@ func verifyAPIKey(ctx context.Context, db *storage.DB, credential, orgHeader str
 	}
 
 	if requestedOrg == nil && len(agents) > 1 && len(managedKeys) == 0 {
-		auth.DummyVerify()
+		auth.DummyVerify() // Timing: no Argon2 ran yet, burn time before returning.
 		return nil, fmt.Errorf("org header required for ambiguous agent_id")
 	}
 
-	verified := len(managedKeys) > 0 // managed key checks count as verified
+	// Timing: track whether any real Argon2 comparison has run across both phases.
+	// If we reach the end of the function with verified == false, DummyVerify
+	// fills the timing gap. DO NOT remove this flag or the final DummyVerify call.
+	verified := len(managedKeys) > 0 // Phase 1 loops already called auth.VerifyAPIKey.
 	for _, a := range agents {
 		if requestedOrg != nil && a.OrgID != *requestedOrg {
 			continue
@@ -462,6 +482,7 @@ func verifyAPIKey(ctx context.Context, db *storage.DB, credential, orgHeader str
 		return claims, nil
 	}
 
+	// Timing: if neither phase ran a real Argon2 comparison, burn time now.
 	if !verified {
 		auth.DummyVerify()
 	}
