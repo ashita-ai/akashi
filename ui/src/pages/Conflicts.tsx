@@ -376,7 +376,9 @@ export default function Conflicts() {
 
   const page = Math.max(0, parseInt(searchParams.get("page") ?? "0", 10));
   const agentFilter = searchParams.get("agent") ?? "";
-  const statusFilter = searchParams.get("status") ?? "";
+  // Default to "open" so the page loads showing actionable conflicts.
+  // "all" is an explicit param value; absence of the param means "open".
+  const statusFilter = searchParams.get("status") ?? "open";
 
   const { data: agentsData } = useQuery({
     queryKey: ["agents"],
@@ -399,7 +401,8 @@ export default function Conflicts() {
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
         ...(agentFilter ? { agent_id: agentFilter } : {}),
-        ...(statusFilter ? { status: statusFilter } : {}),
+        // "all" is the UI sentinel for no filter; don't forward it to the API.
+        ...(statusFilter && statusFilter !== "all" ? { status: statusFilter } : {}),
       }),
   });
 
@@ -443,7 +446,9 @@ export default function Conflicts() {
   function setStatus(value: string) {
     const params: Record<string, string> = {};
     if (agentFilter) params.agent = agentFilter;
-    if (value && value !== "all") params.status = value;
+    // Always write status to the URL so "all" can be distinguished from the
+    // default "open" (absence of the param means open, not all).
+    params.status = value;
     setSearchParams(params);
   }
 
@@ -511,12 +516,15 @@ export default function Conflicts() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All</SelectItem>
               <SelectItem value="open">Open</SelectItem>
+              <SelectItem value="acknowledged">Acknowledged</SelectItem>
+              <SelectItem value="resolved">Resolved</SelectItem>
+              <SelectItem value="wont_fix">Won&apos;t Fix</SelectItem>
+              <SelectItem value="all">All statuses</SelectItem>
             </SelectContent>
           </Select>
         </div>
-        {(agentFilter || statusFilter) && (
+        {(agentFilter || statusFilter !== "open") && (
           <Button
             variant="ghost"
             size="sm"
