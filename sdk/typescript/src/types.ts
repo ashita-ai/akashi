@@ -224,6 +224,28 @@ export interface CreateGrantRequest {
   expiresAt?: string;
 }
 
+/** Response from GET /v1/runs/{run_id} — includes run, events, and decisions. */
+export interface GetRunResponse {
+  run: AgentRun;
+  events: AgentEvent[];
+  decisions: Decision[];
+}
+
+/** Response from GET /v1/verify/{decisionId} — integrity verification. */
+export interface VerifyResponse {
+  decision_id: string;
+  valid: boolean;
+  stored_hash: string;
+  computed_hash: string;
+}
+
+/** Response from GET /v1/decisions/{decisionId}/revisions — revision chain. */
+export interface RevisionsResponse {
+  decision_id: string;
+  revisions: Decision[];
+  count: number;
+}
+
 // --- Response types ---
 
 export interface TraceResponse {

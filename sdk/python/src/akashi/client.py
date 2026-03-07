@@ -23,6 +23,7 @@ from akashi.exceptions import (
 )
 from akashi.types import (
     Agent,
+    AgentEvent,
     AgentRun,
     AssessRequest,
     AssessResponse,
@@ -33,14 +34,17 @@ from akashi.types import (
     Decision,
     DecisionConflict,
     EventInput,
+    GetRunResponse,
     Grant,
     HealthResponse,
     QueryFilters,
     QueryResponse,
+    RevisionsResponse,
     SearchResponse,
     SearchResult,
     TraceRequest,
     TraceResponse,
+    VerifyResponse,
 )
 
 
@@ -111,8 +115,8 @@ def _build_query_body(
     }
 
 
-def _build_search_body(query: str, limit: int) -> dict[str, Any]:
-    return {"query": query, "limit": limit}
+def _build_search_body(query: str, limit: int, semantic: bool = False) -> dict[str, Any]:
+    return {"query": query, "limit": limit, "semantic": semantic}
 
 
 def _build_recent_params(
@@ -393,9 +397,9 @@ class AkashiClient:
             offset=meta.get("offset", 0),
         )
 
-    async def search(self, query: str, *, limit: int = 5) -> SearchResponse:
+    async def search(self, query: str, *, limit: int = 5, semantic: bool = False) -> SearchResponse:
         """Search decision history by semantic similarity."""
-        items, meta = await self._post_list("/v1/search", _build_search_body(query, limit))
+        items, meta = await self._post_list("/v1/search", _build_search_body(query, limit, semantic))
         return SearchResponse(
             results=[SearchResult.model_validate(r) for r in items],
             total=meta.get("total") or len(items),
@@ -448,9 +452,14 @@ class AkashiClient:
         data = await self._post(f"/v1/runs/{run_id}/complete", _build_complete_run_body(req))
         return AgentRun.model_validate(data)
 
-    async def get_run(self, run_id: UUID) -> dict[str, Any]:
+    async def get_run(self, run_id: UUID) -> GetRunResponse:
         """Get a run with its events and decisions."""
-        return await self._get(f"/v1/runs/{run_id}")
+        data = await self._get(f"/v1/runs/{run_id}")
+        return GetRunResponse(
+            run=AgentRun.model_validate(data["run"]),
+            events=[AgentEvent.model_validate(e) for e in data.get("events", [])],
+            decisions=[Decision.model_validate(d) for d in data.get("decisions", [])],
+        )
 
     # --- Agents (admin-only) ---
 
@@ -467,6 +476,23 @@ class AkashiClient:
     async def delete_agent(self, agent_id: str) -> None:
         """Delete an agent and all associated data (admin-only)."""
         await self._delete(f"/v1/agents/{agent_id}")
+
+    async def update_agent_tags(self, agent_id: str, tags: list[str]) -> Agent:
+        """Replace an agent's tags (admin-only)."""
+        data = await self._patch(f"/v1/agents/{agent_id}/tags", {"tags": tags})
+        return Agent.model_validate(data)
+
+    # --- Integrity ---
+
+    async def verify_decision(self, decision_id: UUID) -> VerifyResponse:
+        """Verify the integrity of a decision by recomputing its content hash."""
+        data = await self._get(f"/v1/verify/{decision_id}")
+        return VerifyResponse.model_validate(data)
+
+    async def get_decision_revisions(self, decision_id: UUID) -> RevisionsResponse:
+        """Get the full revision chain for a decision."""
+        data = await self._get(f"/v1/decisions/{decision_id}/revisions")
+        return RevisionsResponse.model_validate(data)
 
     # --- Temporal query ---
 
@@ -582,6 +608,15 @@ class AkashiClient:
         )
         return _handle_list_body(resp)
 
+    async def _patch(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        token = await self._token_mgr.get_token(self._client)
+        resp = await self._client.patch(
+            f"{self.base_url}{path}",
+            json=body,
+            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
+        )
+        return _handle_response(resp)
+
     async def _delete(self, path: str) -> None:
         token = await self._token_mgr.get_token(self._client)
         resp = await self._client.delete(
@@ -689,9 +724,9 @@ class AkashiSyncClient:
             offset=meta.get("offset", 0),
         )
 
-    def search(self, query: str, *, limit: int = 5) -> SearchResponse:
+    def search(self, query: str, *, limit: int = 5, semantic: bool = False) -> SearchResponse:
         """Search decision history by semantic similarity."""
-        items, meta = self._post_list("/v1/search", _build_search_body(query, limit))
+        items, meta = self._post_list("/v1/search", _build_search_body(query, limit, semantic))
         return SearchResponse(
             results=[SearchResult.model_validate(r) for r in items],
             total=meta.get("total") or len(items),
@@ -744,9 +779,14 @@ class AkashiSyncClient:
         data = self._post(f"/v1/runs/{run_id}/complete", _build_complete_run_body(req))
         return AgentRun.model_validate(data)
 
-    def get_run(self, run_id: UUID) -> dict[str, Any]:
+    def get_run(self, run_id: UUID) -> GetRunResponse:
         """Get a run with its events and decisions."""
-        return self._get(f"/v1/runs/{run_id}")
+        data = self._get(f"/v1/runs/{run_id}")
+        return GetRunResponse(
+            run=AgentRun.model_validate(data["run"]),
+            events=[AgentEvent.model_validate(e) for e in data.get("events", [])],
+            decisions=[Decision.model_validate(d) for d in data.get("decisions", [])],
+        )
 
     # --- Agents (admin-only) ---
 
@@ -763,6 +803,23 @@ class AkashiSyncClient:
     def delete_agent(self, agent_id: str) -> None:
         """Delete an agent and all associated data (admin-only)."""
         self._delete(f"/v1/agents/{agent_id}")
+
+    def update_agent_tags(self, agent_id: str, tags: list[str]) -> Agent:
+        """Replace an agent's tags (admin-only)."""
+        data = self._patch(f"/v1/agents/{agent_id}/tags", {"tags": tags})
+        return Agent.model_validate(data)
+
+    # --- Integrity ---
+
+    def verify_decision(self, decision_id: UUID) -> VerifyResponse:
+        """Verify the integrity of a decision by recomputing its content hash."""
+        data = self._get(f"/v1/verify/{decision_id}")
+        return VerifyResponse.model_validate(data)
+
+    def get_decision_revisions(self, decision_id: UUID) -> RevisionsResponse:
+        """Get the full revision chain for a decision."""
+        data = self._get(f"/v1/decisions/{decision_id}/revisions")
+        return RevisionsResponse.model_validate(data)
 
     # --- Temporal query ---
 
@@ -877,6 +934,15 @@ class AkashiSyncClient:
             headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
         )
         return _handle_list_body(resp)
+
+    def _patch(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        token = self._token_mgr.get_token_sync(self._client)
+        resp = self._client.patch(
+            f"{self.base_url}{path}",
+            json=body,
+            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
+        )
+        return _handle_response(resp)
 
     def _delete(self, path: str) -> None:
         token = self._token_mgr.get_token_sync(self._client)

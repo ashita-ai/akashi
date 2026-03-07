@@ -22,15 +22,18 @@ import type {
   Decision,
   DecisionConflict,
   EventInput,
+  GetRunResponse,
   Grant,
   HealthResponse,
   AkashiConfig,
   QueryFilters,
   QueryResponse,
+  RevisionsResponse,
   SearchResponse,
   SearchResult,
   TraceRequest,
   TraceResponse,
+  VerifyResponse,
 } from "./types.js";
 
 const USER_AGENT = "akashi-typescript/0.2.0";
@@ -493,9 +496,9 @@ export class AkashiClient {
     );
   }
 
-  /** Get a run by ID. */
-  async getRun(runId: string): Promise<AgentRun> {
-    return this.get<AgentRun>(`/v1/runs/${encodeURIComponent(runId)}`);
+  /** Get a run by ID, including its events and decisions. */
+  async getRun(runId: string): Promise<GetRunResponse> {
+    return this.get<GetRunResponse>(`/v1/runs/${encodeURIComponent(runId)}`);
   }
 
   // --- Agent management (admin-only) ---
@@ -513,6 +516,32 @@ export class AkashiClient {
   /** Delete an agent by agent_id. Requires admin or higher role. */
   async deleteAgent(agentId: string): Promise<void> {
     await this.del(`/v1/agents/${encodeURIComponent(agentId)}`);
+  }
+
+  /** Replace an agent's tags. Requires admin or higher role. */
+  async updateAgentTags(agentId: string, tags: string[]): Promise<Agent> {
+    return this.patch<Agent>(
+      `/v1/agents/${encodeURIComponent(agentId)}/tags`,
+      { tags },
+    );
+  }
+
+  // --- Integrity ---
+
+  /** Verify the integrity of a decision by recomputing its content hash. */
+  async verifyDecision(decisionId: string): Promise<VerifyResponse> {
+    return this.get<VerifyResponse>(
+      `/v1/verify/${encodeURIComponent(decisionId)}`,
+    );
+  }
+
+  /** Get the full revision chain for a decision. */
+  async getDecisionRevisions(
+    decisionId: string,
+  ): Promise<RevisionsResponse> {
+    return this.get<RevisionsResponse>(
+      `/v1/decisions/${encodeURIComponent(decisionId)}/revisions`,
+    );
   }
 
   // --- Temporal query ---
@@ -645,6 +674,21 @@ export class AkashiClient {
       signal: AbortSignal.timeout(this.timeoutMs),
     });
     return handleListResponse<T>(resp);
+  }
+
+  private async patch<T>(path: string, body: unknown): Promise<T> {
+    const token = await this.tokenManager.getToken();
+    const resp = await fetch(`${this.baseUrl}${path}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        "User-Agent": USER_AGENT,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    return handleResponse<T>(resp);
   }
 
   private async get<T>(path: string): Promise<T> {
