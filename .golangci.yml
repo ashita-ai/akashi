@@ -13,6 +13,15 @@ linters:
     - errcheck
     - gosec
     - gocritic
+  settings:
+    gosec:
+      excludes:
+        - G101 # hardcoded credentials — false positives on test DSNs and struct field names
+        - G117 # marshaled secret patterns — false positives on API key response structs
+        - G118 # goroutine context — intentional background goroutines with dedicated contexts
+        - G204 # subprocess with variable — sandboxed MCP/hook subprocess execution
+        - G703 # path traversal taint — false positives in test helpers
+        - G706 # log injection taint — structured slog fields are not injectable
 
 formatters:
   enable:
