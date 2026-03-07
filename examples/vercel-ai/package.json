@@ -1,0 +1,19 @@
+{
+  "name": "akashi-vercel-ai-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "npx tsx main.ts"
+  },
+  "dependencies": {
+    "akashi": "file:../../sdk/typescript",
+    "akashi-vercel-ai": "file:../../sdk/integrations/vercel-ai"
+  },
+  "devDependencies": {
+    "@ai-sdk/openai": "^1.0.0",
+    "@types/node": "^25.3.5",
+    "ai": "^4.0.0",
+    "tsx": "^4",
+    "typescript": "^5.9.3"
+  }
+}
