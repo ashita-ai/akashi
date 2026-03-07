@@ -1328,6 +1328,62 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /v1/admin/conflicts/validate-pair:
+    post:
+      operationId: validateConflictPair
+      tags: [Admin]
+      summary: Validate a single decision pair for conflicts
+      description: |
+        Runs the configured LLM conflict validator against a single decision pair
+        and returns the classified relationship (contradiction, complementary,
+        refinement, supersession, or unrelated).
+        Returns 501 if no LLM validator is configured.
+        Requires `platform_admin` role.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ValidatePairRequest"
+      responses:
+        "200":
+          description: Validation result with classified relationship.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidatePairResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "501":
+          description: No LLM conflict validator configured.
+
+  /v1/admin/conflicts/eval:
+    post:
+      operationId: evalConflictValidator
+      tags: [Admin]
+      summary: Run the conflict validator evaluation dataset
+      description: |
+        Runs the default labeled evaluation dataset against the configured
+        LLM conflict validator and returns precision, recall, F1, and
+        per-pair results. Used to measure validator accuracy.
+        Returns 501 if no LLM validator is configured.
+        Requires `platform_admin` role.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Evaluation metrics and per-pair results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConflictEvalResponse"
+        "501":
+          description: No LLM conflict validator configured.
+
   /v1/check:
     post:
       operationId: checkPrecedent
@@ -3869,3 +3925,140 @@ components:
           type: number
           format: double
           description: Percentage of conflicts that have been resolved (0–100).
+
+    ValidatePairRequest:
+      type: object
+      required: [outcome_a, outcome_b]
+      properties:
+        outcome_a:
+          type: string
+          description: Outcome text of decision A.
+        outcome_b:
+          type: string
+          description: Outcome text of decision B.
+        type_a:
+          type: string
+          description: Decision type for A (e.g. architecture, code_review).
+        type_b:
+          type: string
+          description: Decision type for B.
+        agent_a:
+          type: string
+          description: Agent ID for decision A.
+        agent_b:
+          type: string
+          description: Agent ID for decision B.
+        reasoning_a:
+          type: string
+          description: Reasoning text for decision A.
+        reasoning_b:
+          type: string
+          description: Reasoning text for decision B.
+        project_a:
+          type: string
+          description: Project name for decision A.
+        project_b:
+          type: string
+          description: Project name for decision B.
+        topic_similarity:
+          type: number
+          format: double
+          description: Pre-computed topic similarity score (0–1).
+
+    ValidatePairResponse:
+      type: object
+      required: [relationship, category, severity, explanation]
+      properties:
+        relationship:
+          type: string
+          enum: [contradiction, supersession, complementary, refinement, unrelated]
+          description: Classified relationship between the two decisions.
+        category:
+          type: string
+          enum: [factual, assessment, strategic, temporal]
+          description: Category of the relationship.
+        severity:
+          type: string
+          enum: [critical, high, medium, low]
+          description: Severity if the relationship is a conflict.
+        explanation:
+          type: string
+          description: Brief explanation of the classification.
+
+    ConflictEvalResponse:
+      type: object
+      required: [metrics, results]
+      properties:
+        metrics:
+          $ref: "#/components/schemas/ConflictEvalMetrics"
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConflictEvalResult"
+
+    ConflictEvalMetrics:
+      type: object
+      required: [total_pairs, errors, relationship_accuracy, conflict_precision, conflict_recall, conflict_f1, true_positives, false_positives, true_negatives, false_negatives, relationship_hits]
+      properties:
+        total_pairs:
+          type: integer
+          description: Total number of eval pairs run.
+        errors:
+          type: integer
+          description: Number of pairs that errored during validation.
+        relationship_accuracy:
+          type: number
+          format: double
+          description: Fraction of pairs with exact relationship match.
+        conflict_precision:
+          type: number
+          format: double
+          description: Precision for binary conflict detection.
+        conflict_recall:
+          type: number
+          format: double
+          description: Recall for binary conflict detection.
+        conflict_f1:
+          type: number
+          format: double
+          description: F1 score for binary conflict detection.
+        true_positives:
+          type: integer
+        false_positives:
+          type: integer
+        true_negatives:
+          type: integer
+        false_negatives:
+          type: integer
+        relationship_hits:
+          type: integer
+          description: Number of exact relationship matches.
+
+    ConflictEvalResult:
+      type: object
+      required: [label, expected_relationship, actual_relationship, correct, conflict_expected, conflict_actual, explanation]
+      properties:
+        label:
+          type: string
+          description: Human-readable label for this eval pair.
+        expected_relationship:
+          type: string
+          description: Ground truth relationship label.
+        actual_relationship:
+          type: string
+          description: Relationship returned by the validator.
+        correct:
+          type: boolean
+          description: Whether actual matched expected.
+        conflict_expected:
+          type: boolean
+          description: Whether the expected relationship is a conflict.
+        conflict_actual:
+          type: boolean
+          description: Whether the validator classified it as a conflict.
+        explanation:
+          type: string
+          description: Validator's explanation for its classification.
+        error:
+          type: string
+          description: Error message if the validation failed.

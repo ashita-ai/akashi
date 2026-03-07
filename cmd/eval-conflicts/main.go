@@ -3,12 +3,13 @@
 //
 // Usage:
 //
-//	AKASHI_URL=http://localhost:8081 AKASHI_API_KEY=ak_... go run ./cmd/eval-conflicts
+//	AKASHI_URL=http://localhost:8081 AKASHI_AGENT_ID=admin AKASHI_API_KEY=ak_... go run ./cmd/eval-conflicts
 //
 // Environment variables:
 //
-//	AKASHI_URL      Base URL of the akashi server (default: http://localhost:8081)
-//	AKASHI_API_KEY  API key for admin authentication (required)
+//	AKASHI_URL       Base URL of the akashi server (default: http://localhost:8081)
+//	AKASHI_AGENT_ID  Agent ID for authentication (required)
+//	AKASHI_API_KEY   API key for admin authentication (required)
 package main
 
 import (
@@ -33,6 +34,11 @@ func run() int {
 	if baseURL == "" {
 		baseURL = "http://localhost:8081"
 	}
+	agentID := os.Getenv("AKASHI_AGENT_ID")
+	if agentID == "" {
+		fmt.Fprintln(os.Stderr, "AKASHI_AGENT_ID is required")
+		return 1
+	}
 	apiKey := os.Getenv("AKASHI_API_KEY")
 	if apiKey == "" {
 		fmt.Fprintln(os.Stderr, "AKASHI_API_KEY is required")
@@ -40,7 +46,7 @@ func run() int {
 	}
 
 	// Authenticate to get a JWT.
-	token, err := authenticate(baseURL, apiKey)
+	token, err := authenticate(baseURL, agentID, apiKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "auth failed: %v\n", err)
 		return 1
@@ -72,12 +78,12 @@ func run() int {
 	return 0
 }
 
-func authenticate(baseURL, apiKey string) (string, error) {
+func authenticate(baseURL, agentID, apiKey string) (string, error) {
 	authURL, err := url.JoinPath(baseURL, "/auth/token")
 	if err != nil {
 		return "", fmt.Errorf("build auth URL: %w", err)
 	}
-	body, _ := json.Marshal(map[string]string{"api_key": apiKey})
+	body, _ := json.Marshal(map[string]string{"agent_id": agentID, "api_key": apiKey})
 	resp, err := http.Post(authURL, "application/json", bytes.NewReader(body)) //nolint:gosec // URL is operator-provided via AKASHI_URL env var
 	if err != nil {
 		return "", fmt.Errorf("request: %w", err)
