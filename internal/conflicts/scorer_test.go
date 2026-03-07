@@ -969,11 +969,21 @@ func TestScoreForDecision_ClaimMethodWinsOverEmbedding(t *testing.T) {
 			found = true
 			assert.Equal(t, "claim", c.ScoringMethod,
 				"claim method should win when it produces higher significance than embedding")
-			// Verify the outcomes are the claim texts, not the full outcomes.
+			// Full outcomes are always stored in outcome_a/outcome_b.
 			assert.Contains(t, c.OutcomeA, "ReScore",
-				"claim-level conflict should use claim text as outcome")
+				"full outcomes should still be present")
 			assert.Contains(t, c.OutcomeB, "ReScore",
-				"claim-level conflict should use claim text as outcome")
+				"full outcomes should still be present")
+			// Claim fragments should be persisted in dedicated fields.
+			require.NotNil(t, c.ClaimTextA, "claim_text_a should be populated when claim method wins")
+			require.NotNil(t, c.ClaimTextB, "claim_text_b should be populated when claim method wins")
+			// The canonical pair ordering may swap A/B, so check both claim texts
+			// contain the expected fragments regardless of order.
+			claims := []string{*c.ClaimTextA, *c.ClaimTextB}
+			assert.Contains(t, claims, "ReScore formula can exceed 1.0 bounds.",
+				"claim_text should contain the exact claim fragment from decision A")
+			assert.Contains(t, claims, "ReScore is correctly bounded within [0,1].",
+				"claim_text should contain the exact claim fragment from decision B")
 			break
 		}
 	}
