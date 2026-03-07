@@ -69,6 +69,10 @@ type Scorer struct {
 	// pairwiseScorer is an optional external override for the confirmation step.
 	// When non-nil, it replaces the built-in Validator-backed scoring for each candidate pair.
 	pairwiseScorer PairwiseScorer
+	// crossEncoder is an optional cross-encoder reranker that pre-filters candidate
+	// pairs before LLM validation. Pairs below crossEncoderThreshold are skipped.
+	crossEncoder          CrossEncoder
+	crossEncoderThreshold float64
 }
 
 // WithCandidateLimit overrides the maximum number of candidates retrieved from
@@ -96,6 +100,16 @@ func (s *Scorer) WithCandidateFinder(cf search.CandidateFinder) *Scorer {
 // via Qdrant still runs in OSS. Must be called before any scoring starts.
 func (s *Scorer) WithPairwiseScorer(ps PairwiseScorer) *Scorer {
 	s.pairwiseScorer = ps
+	return s
+}
+
+// WithCrossEncoder configures a cross-encoder reranking step between significance
+// scoring and LLM validation. Pairs scoring below the threshold are skipped
+// without an LLM call, reducing validation cost. Only active when using the
+// built-in LLM validator (not the enterprise pairwise scorer override or noop).
+func (s *Scorer) WithCrossEncoder(ce CrossEncoder, threshold float64) *Scorer {
+	s.crossEncoder = ce
+	s.crossEncoderThreshold = threshold
 	return s
 }
 
@@ -322,6 +336,28 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 
 		if bestSig < s.threshold && !directToScorer {
 			continue
+		}
+
+		// Cross-encoder reranking: pre-filter before expensive LLM validation.
+		// Only applies to the built-in LLM path — skipped when using the
+		// enterprise pairwise scorer or when no LLM validator is configured.
+		if s.crossEncoder != nil && s.pairwiseScorer == nil && !isNoop {
+			ceScore, ceErr := s.crossEncoder.ScoreContradiction(ctx, bestOutcomeA, bestOutcomeB)
+			switch {
+			case ceErr != nil:
+				// Fail-open: cross-encoder failure means proceed to LLM as fallback.
+				s.logger.Warn("conflict scorer: cross-encoder failed, falling back to LLM",
+					"error", ceErr, "decision_a", decisionID, "decision_b", cand.ID)
+			case ceScore < s.crossEncoderThreshold:
+				s.logger.Debug("conflict scorer: cross-encoder filtered out pair",
+					"score", ceScore, "threshold", s.crossEncoderThreshold,
+					"decision_a", decisionID, "decision_b", cand.ID)
+				continue
+			default:
+				s.logger.Debug("conflict scorer: cross-encoder passed pair to LLM",
+					"score", ceScore, "threshold", s.crossEncoderThreshold,
+					"decision_a", decisionID, "decision_b", cand.ID)
+			}
 		}
 
 		// Confirmation gate: classify the candidate pair as conflict or not.

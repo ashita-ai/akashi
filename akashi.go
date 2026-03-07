@@ -222,6 +222,12 @@ func New(opts ...Option) (*App, error) {
 	if qdrantIndex != nil {
 		conflictScorer = conflictScorer.WithCandidateFinder(qdrantIndex)
 	}
+	// Cross-encoder reranking (optional, reduces LLM calls).
+	if cfg.CrossEncoderURL != "" {
+		crossEnc := conflicts.NewHTTPCrossEncoder(cfg.CrossEncoderURL)
+		conflictScorer = conflictScorer.WithCrossEncoder(crossEnc, cfg.CrossEncoderThreshold)
+		logger.Info("conflict cross-encoder: enabled", "url", cfg.CrossEncoderURL, "threshold", cfg.CrossEncoderThreshold)
+	}
 	// External pairwise scorer override.
 	if o.conflictScorer != nil {
 		conflictScorer = conflictScorer.WithPairwiseScorer(&externalScorerAdapter{scorer: o.conflictScorer})
