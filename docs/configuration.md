@@ -105,8 +105,9 @@ The OSS distribution uses an in-memory token bucket. Enterprise deployments can 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AKASHI_CONFLICT_CANDIDATE_LIMIT` | `50` | Max candidates retrieved from Qdrant per decision. Lower values reduce LLM cost; higher values improve recall for embedding-only scoring |
+| `AKASHI_CONFLICT_CANDIDATE_LIMIT` | `20` | Max candidates retrieved from Qdrant per decision. Lower values reduce LLM cost; higher values improve recall for embedding-only scoring |
 | `AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD` | `0.30` | Min significance (topic_sim × outcome_div) to store a conflict |
+| `AKASHI_CONFLICT_EARLY_EXIT_FLOOR` | `0.25` | Min pre-LLM significance for early exit pruning. Candidates are sorted by significance descending; once significance drops below this floor (and the candidate doesn't qualify for the bi-encoder bypass), remaining candidates are skipped. Set to `0` to disable early exit |
 | `AKASHI_CONFLICT_CLAIM_TOPIC_SIM_FLOOR` | `0.60` | Min cosine similarity for two claims to be considered "about the same thing." Below this, claims are too unrelated to constitute a conflict |
 | `AKASHI_CONFLICT_CLAIM_DIV_FLOOR` | `0.15` | Min outcome divergence between two claims to count as a genuine disagreement. Below this, claims effectively agree |
 | `AKASHI_CONFLICT_DECISION_TOPIC_SIM_FLOOR` | `0.70` | Min decision-level topic similarity to activate claim-level scoring. Below this, decisions are about different enough topics that claim analysis adds noise |

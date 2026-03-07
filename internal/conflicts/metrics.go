@@ -18,9 +18,10 @@ type Metrics struct {
 	candidatesEvaluated metric.Int64Counter
 	claimLevelWins      metric.Int64Counter
 
-	scoringDuration  metric.Float64Histogram
-	llmCallDuration  metric.Float64Histogram
-	significanceDist metric.Float64Histogram
+	scoringDuration    metric.Float64Histogram
+	llmCallDuration    metric.Float64Histogram
+	significanceDist   metric.Float64Histogram
+	candidatesExamined metric.Float64Histogram
 }
 
 // ResolutionRecorder records conflict resolution events for OpenTelemetry metrics.
@@ -128,6 +129,14 @@ func (s *Scorer) registerMetrics() {
 	if err != nil {
 		s.logger.Warn("conflicts: failed to create akashi.conflicts.significance_distribution metric", "error", err)
 		s.metrics.significanceDist, _ = meter.Float64Histogram("akashi.conflicts.significance_distribution.fallback")
+	}
+
+	s.metrics.candidatesExamined, err = meter.Float64Histogram("akashi.conflicts.candidates_examined",
+		metric.WithDescription("Number of candidates examined (past early-exit pruning) per decision scoring run"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.candidates_examined metric", "error", err)
+		s.metrics.candidatesExamined, _ = meter.Float64Histogram("akashi.conflicts.candidates_examined.fallback")
 	}
 
 	// --- Observable gauges ---

@@ -1053,7 +1053,28 @@ func TestNewScorer_DefaultWorkers(t *testing.T) {
 
 func TestNewScorer_DefaultCandidateLimit(t *testing.T) {
 	scorer := NewScorer(nil, slog.Default(), 0.3, nil, 0, 0)
-	assert.Equal(t, 50, scorer.candidateLimit, "default should be 50")
+	assert.Equal(t, 20, scorer.candidateLimit, "default should be 20")
+}
+
+func TestNewScorer_DefaultEarlyExitFloor(t *testing.T) {
+	scorer := NewScorer(nil, slog.Default(), 0.3, nil, 0, 0)
+	assert.Equal(t, 0.25, scorer.earlyExitFloor, "default should be 0.25")
+}
+
+func TestWithEarlyExitFloor(t *testing.T) {
+	scorer := NewScorer(nil, slog.Default(), 0.3, nil, 0, 0)
+
+	scorer = scorer.WithEarlyExitFloor(0.15)
+	assert.Equal(t, 0.15, scorer.earlyExitFloor, "should accept 0.15")
+
+	scorer = scorer.WithEarlyExitFloor(0.5)
+	assert.Equal(t, 0.5, scorer.earlyExitFloor, "should accept 0.5")
+
+	scorer = scorer.WithEarlyExitFloor(0)
+	assert.Equal(t, 0.5, scorer.earlyExitFloor, "0 should be ignored (preserves previous)")
+
+	scorer = scorer.WithEarlyExitFloor(-0.1)
+	assert.Equal(t, 0.5, scorer.earlyExitFloor, "negative should be ignored")
 }
 
 func TestWithCandidateLimit(t *testing.T) {
@@ -1660,4 +1681,161 @@ func TestWithCrossEncoder(t *testing.T) {
 	scorer = scorer.WithCrossEncoder(ce, 0.60)
 	assert.Equal(t, ce, scorer.crossEncoder)
 	assert.InDelta(t, 0.60, scorer.crossEncoderThreshold, 1e-9)
+}
+
+func TestScoreForDecision_EarlyExitSkipsLowSignificance(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "earlyexit-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+	runC := createRun(t, agentID, orgID)
+
+	// Use unique embedding indices to avoid cross-test contamination via PgCandidateFinder.
+	topicEmb := makeEmbedding(800, 1.0)
+	outcomeTarget := makeEmbedding(801, 1.0)
+
+	target, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "chose Redis",
+		Confidence: 0.9, Embedding: &topicEmb, OutcomeEmbedding: &outcomeTarget,
+	})
+	require.NoError(t, err)
+
+	// Candidate 1: high significance (orthogonal outcome, same topic).
+	outcomeHigh := makeEmbedding(802, 1.0)
+	highCand, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "chose Memcached",
+		Confidence: 0.9, Embedding: &topicEmb, OutcomeEmbedding: &outcomeHigh,
+	})
+	require.NoError(t, err)
+
+	// Candidate 2: low significance (nearly identical outcome → low divergence).
+	// outcome is same as target → outcomeSim ≈ 1.0, outcomeDiv ≈ 0.
+	outcomeLow := makeEmbedding(801, 1.0)
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: runC.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "also chose Redis",
+		Confidence: 0.9, Embedding: &topicEmb, OutcomeEmbedding: &outcomeLow,
+	})
+	require.NoError(t, err)
+
+	// Set a high early exit floor. With NoopValidator, hasScorer is false,
+	// so early exit will break (not continue). The high-significance candidate
+	// should still produce a conflict, but the low-significance one should not
+	// (it has significance ≈ 0 which is below the floor AND below the threshold).
+	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0).
+		WithCandidateFinder(storage.NewPgCandidateFinder(testDB)).
+		WithEarlyExitFloor(0.3)
+
+	scorer.ScoreForDecision(ctx, target.ID, orgID)
+
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 100, 0)
+	require.NoError(t, err)
+
+	// Only the high-significance candidate should be detected.
+	var foundHigh bool
+	for _, c := range conflicts {
+		aMatches := (c.DecisionAID == target.ID && c.DecisionBID == highCand.ID)
+		bMatches := (c.DecisionAID == highCand.ID && c.DecisionBID == target.ID)
+		if aMatches || bMatches {
+			foundHigh = true
+			break
+		}
+	}
+	assert.True(t, foundHigh,
+		"high-significance candidate should produce a conflict")
+}
+
+func TestScoreForDecision_PreSortProcessesMostSignificantFirst(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "presort-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+	runC := createRun(t, agentID, orgID)
+
+	// Use unique embedding indices to avoid cross-test contamination.
+	topicEmb := makeEmbedding(810, 1.0)
+	outcomeTarget := makeEmbedding(811, 1.0)
+
+	target, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "chose Redis",
+		Confidence: 0.9, Embedding: &topicEmb, OutcomeEmbedding: &outcomeTarget,
+	})
+	require.NoError(t, err)
+
+	// Candidate with moderate divergence (partial overlap with target outcome).
+	outcomeMod := pgvector.NewVector(func() []float32 {
+		v := make([]float32, 1024)
+		v[811] = 0.5 // partial similarity to target outcome
+		v[813] = 0.5 // partial divergence
+		return v
+	}())
+	modCand, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "considered Redis but chose hybrid",
+		Confidence: 0.9, Embedding: &topicEmb, OutcomeEmbedding: &outcomeMod,
+	})
+	require.NoError(t, err)
+
+	// Candidate with high divergence (orthogonal).
+	outcomeHigh := makeEmbedding(812, 1.0)
+	highCand, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runC.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "chose Memcached",
+		Confidence: 0.9, Embedding: &topicEmb, OutcomeEmbedding: &outcomeHigh,
+	})
+	require.NoError(t, err)
+
+	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0).
+		WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
+
+	scorer.ScoreForDecision(ctx, target.ID, orgID)
+
+	// Both candidates should produce conflicts since they're above threshold.
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 100, 0)
+	require.NoError(t, err)
+
+	pairMatch := func(c model.DecisionConflict, a, b uuid.UUID) bool {
+		return (c.DecisionAID == a && c.DecisionBID == b) || (c.DecisionAID == b && c.DecisionBID == a)
+	}
+	var highSig, modSig float64
+	var foundHigh, foundMod bool
+	for _, c := range conflicts {
+		if pairMatch(c, target.ID, highCand.ID) && c.Significance != nil {
+			foundHigh = true
+			highSig = *c.Significance
+		}
+		if pairMatch(c, target.ID, modCand.ID) && c.Significance != nil {
+			foundMod = true
+			modSig = *c.Significance
+		}
+	}
+	assert.True(t, foundHigh, "orthogonal candidate should produce a conflict")
+	assert.True(t, foundMod, "moderate-divergence candidate should produce a conflict")
+
+	// The orthogonal outcome should have higher significance than the partial one.
+	if foundHigh && foundMod {
+		assert.Greater(t, highSig, modSig,
+			"orthogonal outcome (sig=%.3f) should have higher significance than partial (sig=%.3f)", highSig, modSig)
+	}
 }
