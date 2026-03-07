@@ -141,10 +141,10 @@ func createTraceInTx(ctx context.Context, tx *sql.Tx, p storage.CreateTraceParam
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO decisions
 		 (id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		  embedding, outcome_embedding, metadata, completeness_score, precedent_ref,
+		  embedding, outcome_embedding, metadata, completeness_score, outcome_score, precedent_ref,
 		  supersedes_id, content_hash, valid_from, valid_to, transaction_time, created_at,
 		  session_id, agent_context, api_key_id, tool, model, project)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		uuidStr(d.ID),
 		uuidStr(d.RunID),
 		d.AgentID,
@@ -157,6 +157,7 @@ func createTraceInTx(ctx context.Context, tx *sql.Tx, p storage.CreateTraceParam
 		vectorToBlob(d.OutcomeEmbedding),
 		jsonStr(d.Metadata),
 		d.CompletenessScore,
+		d.OutcomeScore,
 		nullUUIDStr(d.PrecedentRef),
 		nullUUIDStr(d.SupersedesID),
 		d.ContentHash,
@@ -260,7 +261,7 @@ func createTraceInTx(ctx context.Context, tx *sql.Tx, p storage.CreateTraceParam
 
 // decisionCols is the SELECT column list used by all decision queries.
 const decisionCols = `id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-	metadata, completeness_score, precedent_ref, supersedes_id, content_hash,
+	metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
 	valid_from, valid_to, transaction_time, created_at, session_id, agent_context,
 	api_key_id, tool, model, project`
 
@@ -469,7 +470,7 @@ func (l *LiteDB) SearchDecisionsByText(ctx context.Context, orgID uuid.UUID, que
 	q := fmt.Sprintf( //nolint:gosec // G201
 		`SELECT d.id, d.run_id, d.agent_id, d.org_id, d.decision_type, d.outcome,
 		        d.confidence, d.reasoning, d.metadata, d.completeness_score,
-		        d.precedent_ref, d.supersedes_id, d.content_hash,
+		        d.outcome_score, d.precedent_ref, d.supersedes_id, d.content_hash,
 		        d.valid_from, d.valid_to, d.transaction_time, d.created_at,
 		        d.session_id, d.agent_context, d.api_key_id, d.tool, d.model, d.project,
 		        -rank AS relevance
@@ -518,7 +519,7 @@ func (l *LiteDB) SearchDecisionsByText(ctx context.Context, orgID uuid.UUID, que
 		)
 		err := rows.Scan(&idStr, &runIDStr, &d.AgentID, &orgIDStr, &d.DecisionType,
 			&d.Outcome, &d.Confidence, &d.Reasoning, &metaJSON, &d.CompletenessScore,
-			&precedent, &supersedes, &d.ContentHash,
+			&d.OutcomeScore, &precedent, &supersedes, &d.ContentHash,
 			&validFromStr, &validToStr, &txTimeStr, &createdStr,
 			&sessionStr, &ctxJSON, &apiKeyStr, &tool, &modelStr, &project,
 			&relevance)
@@ -572,7 +573,7 @@ func (l *LiteDB) searchDecisionsByLike(ctx context.Context, orgID uuid.UUID, que
 	q := fmt.Sprintf( //nolint:gosec // G201
 		`SELECT d.id, d.run_id, d.agent_id, d.org_id, d.decision_type, d.outcome,
 		        d.confidence, d.reasoning, d.metadata, d.completeness_score,
-		        d.precedent_ref, d.supersedes_id, d.content_hash,
+		        d.outcome_score, d.precedent_ref, d.supersedes_id, d.content_hash,
 		        d.valid_from, d.valid_to, d.transaction_time, d.created_at,
 		        d.session_id, d.agent_context, d.api_key_id, d.tool, d.model, d.project,
 		        1.0 AS relevance
@@ -619,7 +620,7 @@ func (l *LiteDB) searchDecisionsByLike(ctx context.Context, orgID uuid.UUID, que
 		)
 		err := rows.Scan(&idStr, &runIDStr, &d.AgentID, &orgIDStr, &d.DecisionType,
 			&d.Outcome, &d.Confidence, &d.Reasoning, &metaJSON, &d.CompletenessScore,
-			&precedent, &supersedes, &d.ContentHash,
+			&d.OutcomeScore, &precedent, &supersedes, &d.ContentHash,
 			&validFromStr, &validToStr, &txTimeStr, &createdStr,
 			&sessionStr, &ctxJSON, &apiKeyStr, &tool, &modelStr, &project,
 			&relevance)
@@ -776,7 +777,7 @@ func buildDecisionFilterWhere(alias string, orgID uuid.UUID, f model.QueryFilter
 // sanitizeOrderCol restricts order columns to known-safe values.
 func sanitizeOrderCol(col string) string {
 	switch strings.ToLower(col) {
-	case "valid_from", "created_at", "confidence", "completeness_score", "decision_type":
+	case "valid_from", "created_at", "confidence", "completeness_score", "outcome_score", "decision_type":
 		return col
 	default:
 		return "valid_from"
@@ -809,7 +810,7 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-// scanOneDecision scans the 23-column decisionCols from a row.
+// scanOneDecision scans the 24-column decisionCols from a row.
 func scanOneDecision(row rowScanner) (model.Decision, error) {
 	var (
 		d            model.Decision
@@ -832,7 +833,7 @@ func scanOneDecision(row rowScanner) (model.Decision, error) {
 	)
 	err := row.Scan(&idStr, &runIDStr, &d.AgentID, &orgIDStr, &d.DecisionType,
 		&d.Outcome, &d.Confidence, &d.Reasoning, &metaJSON, &d.CompletenessScore,
-		&precedent, &supersedes, &d.ContentHash,
+		&d.OutcomeScore, &precedent, &supersedes, &d.ContentHash,
 		&validFromStr, &validToStr, &txTimeStr, &createdStr,
 		&sessionStr, &ctxJSON, &apiKeyStr, &tool, &modelStr, &project)
 	if err != nil {

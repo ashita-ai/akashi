@@ -23,6 +23,7 @@ class Decision(BaseModel):
     reasoning: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     completeness_score: float = 0.0
+    outcome_score: float | None = None
     precedent_ref: UUID | None = None
     supersedes_id: UUID | None = None
     content_hash: str = ""

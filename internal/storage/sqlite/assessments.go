@@ -51,6 +51,18 @@ func (l *LiteDB) CreateAssessment(ctx context.Context, orgID uuid.UUID, a model.
 	return a, nil
 }
 
+// UpdateOutcomeScore sets the outcome_score on a decision row.
+func (l *LiteDB) UpdateOutcomeScore(ctx context.Context, orgID, decisionID uuid.UUID, score *float32) error {
+	_, err := l.db.ExecContext(ctx,
+		`UPDATE decisions SET outcome_score = ? WHERE id = ? AND org_id = ? AND valid_to IS NULL`,
+		score, uuidStr(decisionID), uuidStr(orgID),
+	)
+	if err != nil {
+		return fmt.Errorf("sqlite: update outcome score: %w", err)
+	}
+	return nil
+}
+
 // GetAssessmentSummaryBatch returns assessment counts per decision.
 func (l *LiteDB) GetAssessmentSummaryBatch(ctx context.Context, orgID uuid.UUID, decisionIDs []uuid.UUID) (map[uuid.UUID]model.AssessmentSummary, error) {
 	if len(decisionIDs) == 0 {

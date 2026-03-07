@@ -81,6 +81,7 @@ type Store interface {
 	GetDecisionOutcomeSignalsBatch(ctx context.Context, ids []uuid.UUID, orgID uuid.UUID) (map[uuid.UUID]model.OutcomeSignals, error)
 	GetAssessmentSummaryBatch(ctx context.Context, orgID uuid.UUID, decisionIDs []uuid.UUID) (map[uuid.UUID]model.AssessmentSummary, error)
 	CreateAssessment(ctx context.Context, orgID uuid.UUID, a model.DecisionAssessment) (model.DecisionAssessment, error)
+	UpdateOutcomeScore(ctx context.Context, orgID, decisionID uuid.UUID, score *float32) error
 
 	// ---- Claims ----
 

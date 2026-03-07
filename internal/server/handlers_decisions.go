@@ -14,6 +14,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
+	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/service/tracehealth"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
@@ -1334,6 +1335,17 @@ func (h *Handlers) HandleAssessDecision(w http.ResponseWriter, r *http.Request) 
 		}
 		h.writeInternalError(w, r, "failed to save assessment", err)
 		return
+	}
+
+	// Recompute outcome_score from the latest assessment summary.
+	summary, err := h.db.GetAssessmentSummaryBatch(r.Context(), orgID, []uuid.UUID{decisionID})
+	if err == nil {
+		if s, ok := summary[decisionID]; ok {
+			outcomeScore := quality.ComputeOutcomeScore(s)
+			if updateErr := h.db.UpdateOutcomeScore(r.Context(), orgID, decisionID, outcomeScore); updateErr != nil {
+				h.logger.Error("failed to update outcome score", "decision_id", decisionID, "err", updateErr)
+			}
+		}
 	}
 
 	_ = h.db.Notify(r.Context(), storage.ChannelDecisions,

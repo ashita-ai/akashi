@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     outcome_embedding  BLOB,
     metadata           TEXT NOT NULL DEFAULT '{}',
     completeness_score REAL NOT NULL DEFAULT 0,
+    outcome_score REAL,
     precedent_ref      TEXT,
     supersedes_id      TEXT,
     content_hash       TEXT,

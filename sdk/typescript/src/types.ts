@@ -10,6 +10,7 @@ export interface Decision {
   reasoning?: string;
   metadata: Record<string, unknown>;
   completeness_score: number;
+  outcome_score?: number | null;
   precedent_ref?: string;
   supersedes_id?: string;
   content_hash?: string;
