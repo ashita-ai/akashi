@@ -4,13 +4,17 @@ package conflicts
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/ashita-ai/akashi/internal/model"
@@ -62,6 +66,7 @@ type Scorer struct {
 	logger          *slog.Logger
 	threshold       float64
 	validator       Validator
+	validatorLabel  string // low-cardinality label for OTel attributes
 	backfillWorkers int
 	decayLambda     float64 // Temporal decay rate. 0 disables decay.
 	candidateLimit  int     // Max candidates retrieved from Qdrant per decision.
@@ -69,6 +74,7 @@ type Scorer struct {
 	// pairwiseScorer is an optional external override for the confirmation step.
 	// When non-nil, it replaces the built-in Validator-backed scoring for each candidate pair.
 	pairwiseScorer PairwiseScorer
+	metrics        Metrics
 
 	// Scoring thresholds (configurable via env vars, defaults match package constants).
 	claimTopicSimFloor    float64
@@ -149,11 +155,12 @@ func NewScorer(db *storage.DB, logger *slog.Logger, significanceThreshold float6
 	if backfillWorkers <= 0 {
 		backfillWorkers = 4
 	}
-	return &Scorer{
+	s := &Scorer{
 		db:                    db,
 		logger:                logger,
 		threshold:             significanceThreshold,
 		validator:             validator,
+		validatorLabel:        validatorTypeLabel(validator),
 		backfillWorkers:       backfillWorkers,
 		decayLambda:           decayLambda,
 		candidateLimit:        50,
@@ -161,6 +168,8 @@ func NewScorer(db *storage.DB, logger *slog.Logger, significanceThreshold float6
 		claimDivFloor:         claimDivFloor,
 		decisionTopicSimFloor: decisionTopicSimFloor,
 	}
+	s.registerMetrics()
+	return s
 }
 
 // claimTopicSimFloor is the minimum cosine similarity for two claims to be
@@ -222,6 +231,11 @@ func (s *Scorer) ScoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 // prevents duplicate LLM calls during backfill when multiple goroutines
 // process different decisions that find each other as candidates.
 func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UUID, cache *pairCache) {
+	start := time.Now()
+	defer func() {
+		s.metrics.scoringDuration.Record(ctx, float64(time.Since(start).Milliseconds()))
+	}()
+
 	d, err := s.db.GetDecisionForScoring(ctx, decisionID, orgID)
 	if err != nil {
 		s.logger.Debug("conflict scorer: skip decision", "decision_id", decisionID, "error", err)
@@ -311,6 +325,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		}
 
 		topicSim := cosineSimilarity(d.Embedding.Slice(), cand.Embedding.Slice())
+		s.metrics.candidatesEvaluated.Add(ctx, 1)
 
 		// --- Pass 1: full-outcome scoring (existing behavior) ---
 		outcomeSim := cosineSimilarity(d.OutcomeEmbedding.Slice(), cand.OutcomeEmbedding.Slice())
@@ -333,6 +348,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				bestMethod = "claim"
 				bestOutcomeA = claimA
 				bestOutcomeB = claimB
+				s.metrics.claimLevelWins.Add(ctx, 1)
 			}
 		}
 
@@ -397,12 +413,26 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 					"decision_a", decisionID, "decision_b", cand.ID)
 				continue
 			}
+			llmStart := time.Now()
 			extScore, extExpl, err := s.pairwiseScorer.ScorePair(ctx, d, cand)
+			s.metrics.llmCallDuration.Record(ctx, float64(time.Since(llmStart).Milliseconds()))
 			if err != nil {
+				result := "error"
+				if errors.Is(err, context.DeadlineExceeded) {
+					result = "timeout"
+				}
+				s.metrics.llmCalls.Add(ctx, 1, metric.WithAttributes(
+					attribute.String("result", result),
+					attribute.String("validator", "external"),
+				))
 				s.logger.Warn("conflict scorer: external pairwise scorer failed, skipping candidate",
 					"error", err, "decision_a", decisionID, "decision_b", cand.ID)
 				continue // fail-safe: don't insert unscored conflicts
 			}
+			s.metrics.llmCalls.Add(ctx, 1, metric.WithAttributes(
+				attribute.String("result", "success"),
+				attribute.String("validator", "external"),
+			))
 			if extScore <= 0 {
 				s.logger.Debug("conflict scorer: external scorer classified as non-conflict",
 					"decision_a", decisionID, "decision_b", cand.ID)
@@ -421,6 +451,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				continue
 			}
 
+			llmStart := time.Now()
 			result, err := s.validator.Validate(ctx, ValidateInput{
 				OutcomeA:        bestOutcomeA,
 				OutcomeB:        bestOutcomeB,
@@ -442,11 +473,24 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				FullOutcomeB:    cand.Outcome,
 				TopicSimilarity: topicSim,
 			})
+			s.metrics.llmCallDuration.Record(ctx, float64(time.Since(llmStart).Milliseconds()))
 			if err != nil {
+				llmResult := "error"
+				if errors.Is(err, context.DeadlineExceeded) {
+					llmResult = "timeout"
+				}
+				s.metrics.llmCalls.Add(ctx, 1, metric.WithAttributes(
+					attribute.String("result", llmResult),
+					attribute.String("validator", s.validatorLabel),
+				))
 				s.logger.Warn("conflict scorer: LLM validation failed, skipping candidate",
 					"error", err, "decision_a", decisionID, "decision_b", cand.ID)
 				continue // fail-safe: don't insert unvalidated conflicts
 			}
+			s.metrics.llmCalls.Add(ctx, 1, metric.WithAttributes(
+				attribute.String("result", "success"),
+				attribute.String("validator", s.validatorLabel),
+			))
 			if !result.IsConflict() {
 				s.logger.Debug("conflict scorer: LLM classified as non-conflict",
 					"decision_a", decisionID, "decision_b", cand.ID,
@@ -500,6 +544,13 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			s.logger.Warn("conflict scorer: insert failed", "decision_a", decisionID, "decision_b", cand.ID, "error", err)
 			continue
 		}
+		s.metrics.detected.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("scoring_method", bestMethod),
+			attribute.String("relationship", derefOrUnknown(relationship)),
+			attribute.String("conflict_kind", string(kind)),
+			attribute.String("severity", derefOrUnknown(severity)),
+		))
+		s.metrics.significanceDist.Record(ctx, bestSig)
 		inserted++
 		if err := s.db.Notify(ctx, storage.ChannelConflicts, `{"source":"scorer","org_id":"`+orgID.String()+`"}`); err != nil {
 			s.logger.Debug("conflict scorer: notify failed", "error", err)
@@ -682,3 +733,11 @@ func derefString(s *string) string {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// derefOrUnknown returns the dereferenced string, or "unknown" if nil.
+func derefOrUnknown(s *string) string {
+	if s == nil {
+		return "unknown"
+	}
+	return *s
+}
