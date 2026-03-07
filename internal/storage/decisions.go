@@ -67,14 +67,16 @@ func (db *DB) CreateDecision(ctx context.Context, d model.Decision) (model.Decis
 	}
 
 	// Queue search index update inside the same transaction.
-	if d.Embedding != nil {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO search_outbox (decision_id, org_id, operation)
-			 VALUES ($1, $2, 'upsert')
-			 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
-			d.ID, d.OrgID); err != nil {
-			return model.Decision{}, fmt.Errorf("storage: queue search outbox in create decision: %w", err)
-		}
+	// Always queue regardless of embedding status — the outbox worker will
+	// generate embeddings asynchronously if needed. Without this, decisions
+	// created without an embedding (e.g. via the REST API) are permanently
+	// invisible to search.
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO search_outbox (decision_id, org_id, operation)
+		 VALUES ($1, $2, 'upsert')
+		 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
+		d.ID, d.OrgID); err != nil {
+		return model.Decision{}, fmt.Errorf("storage: queue search outbox in create decision: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -196,14 +198,12 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 		originalID, revised.OrgID); err != nil {
 		return model.Decision{}, fmt.Errorf("storage: queue search outbox delete in revision: %w", err)
 	}
-	if revised.Embedding != nil {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO search_outbox (decision_id, org_id, operation)
-			 VALUES ($1, $2, 'upsert')
-			 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
-			revised.ID, revised.OrgID); err != nil {
-			return model.Decision{}, fmt.Errorf("storage: queue search outbox upsert in revision: %w", err)
-		}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO search_outbox (decision_id, org_id, operation)
+		 VALUES ($1, $2, 'upsert')
+		 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
+		revised.ID, revised.OrgID); err != nil {
+		return model.Decision{}, fmt.Errorf("storage: queue search outbox upsert in revision: %w", err)
 	}
 
 	// Auto-resolve open conflicts involving the superseded decision. The revised

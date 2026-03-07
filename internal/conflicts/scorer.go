@@ -765,7 +765,13 @@ func (s *Scorer) Validator() Validator {
 // Only open/acknowledged conflicts are removed; resolved and wont_fix conflicts
 // represent explicit human decisions and are preserved.
 func (s *Scorer) ClearUnvalidatedConflicts(ctx context.Context) (int, error) {
-	tag, err := s.db.Pool().Exec(ctx,
+	tx, err := s.db.Pool().Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("conflicts: begin clear unvalidated tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx,
 		`DELETE FROM scored_conflicts
 		 WHERE scoring_method NOT IN ('llm_v2')
 		   AND status IN ('open', 'acknowledged')`)
@@ -773,6 +779,24 @@ func (s *Scorer) ClearUnvalidatedConflicts(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("conflicts: clear unvalidated: %w", err)
 	}
 	n := int(tag.RowsAffected())
+
+	if n > 0 {
+		if err := storage.InsertMutationAuditTx(ctx, tx, storage.MutationAuditEntry{
+			ActorAgentID: "system",
+			ActorRole:    "platform_admin",
+			Operation:    "clear_unvalidated_conflicts",
+			ResourceType: "scored_conflicts",
+			BeforeData:   map[string]any{"count": n},
+			AfterData:    map[string]any{"deleted": n},
+			Metadata:     map[string]any{"reason": "scoring_method_migration_to_llm_v2"},
+		}); err != nil {
+			return 0, fmt.Errorf("conflicts: audit clear unvalidated: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("conflicts: commit clear unvalidated: %w", err)
+	}
 	s.logger.Warn("startup: cleared unvalidated conflicts", "deleted", n, "reason", "scoring_method_migration_to_llm_v2")
 	return n, nil
 }
@@ -802,12 +826,36 @@ func cosineSimilarity(a, b []float32) float64 {
 // SECURITY: Intentionally global — one-time startup operation across all orgs.
 // Set AKASHI_FORCE_CONFLICT_RESCORE=true to trigger.
 func (s *Scorer) ClearAllConflicts(ctx context.Context) (int, error) {
-	tag, err := s.db.Pool().Exec(ctx,
+	tx, err := s.db.Pool().Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("conflicts: begin clear all tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx,
 		`DELETE FROM scored_conflicts WHERE status IN ('open', 'acknowledged')`)
 	if err != nil {
 		return 0, fmt.Errorf("conflicts: clear all: %w", err)
 	}
 	n := int(tag.RowsAffected())
+
+	if n > 0 {
+		if err := storage.InsertMutationAuditTx(ctx, tx, storage.MutationAuditEntry{
+			ActorAgentID: "system",
+			ActorRole:    "platform_admin",
+			Operation:    "clear_all_conflicts",
+			ResourceType: "scored_conflicts",
+			BeforeData:   map[string]any{"count": n},
+			AfterData:    map[string]any{"deleted": n},
+			Metadata:     map[string]any{"reason": "AKASHI_FORCE_CONFLICT_RESCORE"},
+		}); err != nil {
+			return 0, fmt.Errorf("conflicts: audit clear all: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("conflicts: commit clear all: %w", err)
+	}
 	s.logger.Warn("startup: cleared all open/acknowledged conflicts", "deleted", n, "reason", "AKASHI_FORCE_CONFLICT_RESCORE")
 	return n, nil
 }

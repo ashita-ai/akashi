@@ -40,8 +40,9 @@ type Buffer struct {
 	flushTimeout time.Duration
 	wal          *WAL // nil when WAL is disabled
 
-	mu     sync.Mutex
-	events []model.AgentEvent
+	mu        sync.Mutex
+	events    []model.AgentEvent
+	walMaxLSN uint64 // highest WAL LSN for buffered events (valid only when wal != nil)
 
 	droppedEvents atomic.Int64 // total events rejected (capacity or drain in progress)
 	draining      atomic.Bool  // true after Drain is initiated; rejects new appends
@@ -80,7 +81,7 @@ func (b *Buffer) Start(ctx context.Context) {
 
 	// Recover un-flushed events from WAL before accepting new traffic.
 	if b.wal != nil {
-		recovered, err := b.wal.Recover()
+		recovered, maxLSN, err := b.wal.Recover()
 		if err != nil {
 			b.logger.Error("trace: wal recovery failed", "error", err)
 			// Continue without recovered events. They are not lost — the WAL
@@ -97,7 +98,7 @@ func (b *Buffer) Start(ctx context.Context) {
 					"recovered", len(recovered), "new_inserts", inserted,
 					"duplicates_skipped", int64(len(recovered))-inserted)
 				// Advance the WAL checkpoint now that events are in Postgres.
-				if err := b.wal.Checkpoint(recovered); err != nil {
+				if err := b.wal.CheckpointLSN(maxLSN); err != nil {
 					b.logger.Warn("trace: wal checkpoint after recovery failed (events are safe in postgres)",
 						"error", err)
 				}
@@ -161,9 +162,11 @@ func (b *Buffer) Append(ctx context.Context, runID uuid.UUID, agentID string, or
 
 	// Write to WAL before buffering in memory for crash durability.
 	if b.wal != nil {
-		if err := b.wal.Write(events); err != nil {
+		maxLSN, err := b.wal.Write(events)
+		if err != nil {
 			return nil, fmt.Errorf("trace: wal write: %w", err)
 		}
+		b.walMaxLSN = maxLSN
 	}
 
 	b.events = append(b.events, events...)
@@ -273,6 +276,7 @@ func (b *Buffer) flushOnce(ctx context.Context) (bool, error) {
 	// This avoids data loss on transient flush failures.
 	batch := make([]model.AgentEvent, len(b.events))
 	copy(batch, b.events)
+	batchWALLSN := b.walMaxLSN // snapshot the highest LSN for this batch
 	b.mu.Unlock()
 
 	start := time.Now()
@@ -296,8 +300,8 @@ func (b *Buffer) flushOnce(ctx context.Context) (bool, error) {
 	b.mu.Unlock()
 
 	// Advance WAL checkpoint after successful COPY.
-	if b.wal != nil {
-		if err := b.wal.Checkpoint(batch); err != nil {
+	if b.wal != nil && batchWALLSN > 0 {
+		if err := b.wal.CheckpointLSN(batchWALLSN); err != nil {
 			// Non-fatal: events are in Postgres. The WAL will replay them on
 			// next startup, and the idempotent recovery path handles duplicates.
 			b.logger.Warn("trace: wal checkpoint failed (events are durable in postgres)", "error", err)
