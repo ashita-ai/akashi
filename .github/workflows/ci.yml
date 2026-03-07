@@ -55,6 +55,14 @@ jobs:
       - name: Security scan
         run: govulncheck ./...
 
+      - name: Fuzz (crash detection)
+        run: |
+          go test -run='^$' -fuzz=FuzzComputeContentHash -fuzztime=10s ./internal/integrity/
+          go test -run='^$' -fuzz=FuzzBuildMerkleRoot    -fuzztime=10s ./internal/integrity/
+          go test -run='^$' -fuzz=FuzzValidateToken      -fuzztime=10s ./internal/auth/
+          go test -run='^$' -fuzz=FuzzValidateAgentID    -fuzztime=10s ./internal/model/
+          go test -run='^$' -fuzz=FuzzDecodeJSON         -fuzztime=10s ./internal/server/
+
       - name: Test
         run: go test -race -count=1 -coverprofile=coverage.out ./...
 
