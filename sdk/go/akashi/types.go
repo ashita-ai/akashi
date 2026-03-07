@@ -308,6 +308,9 @@ type HealthResponse struct {
 	Version       string `json:"version"`
 	Postgres      string `json:"postgres"`
 	Qdrant        string `json:"qdrant,omitempty"`
+	BufferDepth   int    `json:"buffer_depth"`
+	BufferStatus  string `json:"buffer_status"`
+	SSEBroker     string `json:"sse_broker,omitempty"`
 	UptimeSeconds int64  `json:"uptime_seconds"`
 }
 

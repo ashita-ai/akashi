@@ -543,8 +543,10 @@ class TestCompleteRun:
 
 class TestGetRun:
     @respx.mock
-    def test_get_run_returns_dict(self) -> None:
+    def test_get_run_returns_typed_response(self) -> None:
         _mock_auth(respx)
+        from akashi.types import GetRunResponse
+
         run_id = uuid.UUID(RUN_ID)
         respx.get(f"{BASE_URL}/v1/runs/{run_id}").respond(
             200,
@@ -552,16 +554,18 @@ class TestGetRun:
                 "data": {
                     "run": _run_json(),
                     "events": [],
-                    "decisions": [],
+                    "decisions": [_decision_json()],
                 }
             },
         )
 
         with _make_client() as client:
-            data = client.get_run(run_id)
+            resp = client.get_run(run_id)
 
-        assert "run" in data
-        assert data["run"]["status"] == "running"
+        assert isinstance(resp, GetRunResponse)
+        assert resp.run.status == "running"
+        assert len(resp.events) == 0
+        assert len(resp.decisions) == 1
 
 
 class TestCreateAgent:
@@ -1235,3 +1239,133 @@ class TestDecisionTypeNormalization:
                 ))
                 got = captured_body["decision"]["decision_type"]
                 assert got == want, f"expected {want!r} for input {raw!r}, got {got!r}"
+
+
+class TestVerifyDecision:
+    @respx.mock
+    def test_verify_returns_verify_response(self) -> None:
+        from akashi.types import VerifyResponse
+
+        _mock_auth(respx)
+        decision_id = uuid.UUID(DECISION_ID)
+        respx.get(f"{BASE_URL}/v1/verify/{decision_id}").respond(
+            200,
+            json={
+                "data": {
+                    "decision_id": DECISION_ID,
+                    "valid": True,
+                    "stored_hash": "sha256:abc123",
+                    "computed_hash": "sha256:abc123",
+                }
+            },
+        )
+
+        with _make_client() as client:
+            resp = client.verify_decision(decision_id)
+
+        assert isinstance(resp, VerifyResponse)
+        assert resp.valid is True
+        assert resp.stored_hash == "sha256:abc123"
+
+
+class TestGetDecisionRevisions:
+    @respx.mock
+    def test_revisions_returns_typed_response(self) -> None:
+        from akashi.types import RevisionsResponse
+
+        _mock_auth(respx)
+        decision_id = uuid.UUID(DECISION_ID)
+        d2_id = str(uuid.uuid4())
+        respx.get(f"{BASE_URL}/v1/decisions/{decision_id}/revisions").respond(
+            200,
+            json={
+                "data": {
+                    "decision_id": DECISION_ID,
+                    "revisions": [
+                        _decision_json(),
+                        _decision_json(decision_id=d2_id),
+                    ],
+                    "count": 2,
+                }
+            },
+        )
+
+        with _make_client() as client:
+            resp = client.get_decision_revisions(decision_id)
+
+        assert isinstance(resp, RevisionsResponse)
+        assert resp.count == 2
+        assert len(resp.revisions) == 2
+
+
+class TestUpdateAgentTags:
+    @respx.mock
+    def test_update_tags_returns_agent(self) -> None:
+        _mock_auth(respx)
+        agent_data = _agent_json("tagger")
+        agent_data["tags"] = ["backend", "infra"]
+        respx.patch(f"{BASE_URL}/v1/agents/tagger/tags").respond(
+            200,
+            json={"data": agent_data},
+        )
+
+        with _make_client() as client:
+            agent = client.update_agent_tags("tagger", ["backend", "infra"])
+
+        assert isinstance(agent, Agent)
+        assert agent.tags == ["backend", "infra"]
+
+
+class TestSearchSemantic:
+    @respx.mock
+    def test_search_sends_semantic_flag(self) -> None:
+        _mock_auth(respx)
+        captured_body: dict = {}
+
+        def _capture(request: httpx.Request) -> httpx.Response:
+            captured_body.update(json.loads(request.content.decode()))
+            return httpx.Response(
+                200,
+                json={
+                    "data": [],
+                    "total": 0,
+                    "has_more": False,
+                    "limit": 5,
+                    "offset": 0,
+                },
+            )
+
+        respx.post(f"{BASE_URL}/v1/search").mock(side_effect=_capture)
+
+        with _make_client() as client:
+            client.search("test query", semantic=True)
+
+        assert captured_body["semantic"] is True
+
+
+class TestQueryFiltersProject:
+    @respx.mock
+    def test_query_sends_project_not_repo(self) -> None:
+        _mock_auth(respx)
+        captured_body: dict = {}
+
+        def _capture(request: httpx.Request) -> httpx.Response:
+            captured_body.update(json.loads(request.content.decode()))
+            return httpx.Response(
+                200,
+                json={
+                    "data": [],
+                    "total": 0,
+                    "has_more": False,
+                    "limit": 50,
+                    "offset": 0,
+                },
+            )
+
+        respx.post(f"{BASE_URL}/v1/query").mock(side_effect=_capture)
+
+        with _make_client() as client:
+            client.query(QueryFilters(project="ashita-ai/akashi"))
+
+        assert captured_body["filters"]["project"] == "ashita-ai/akashi"
+        assert "repo" not in captured_body["filters"]

@@ -162,6 +162,9 @@ class HealthResponse(BaseModel):
     version: str
     postgres: str
     qdrant: str = ""
+    buffer_depth: int = 0
+    buffer_status: str = ""
+    sse_broker: str = ""
     uptime_seconds: int
 
 
@@ -209,7 +212,7 @@ class QueryFilters(BaseModel):
     session_id: str | None = None
     tool: str | None = None
     model: str | None = None
-    repo: str | None = None
+    project: str | None = None
 
 
 class CheckRequest(BaseModel):
@@ -312,6 +315,31 @@ class SearchResponse(BaseModel):
 
     results: list[SearchResult]
     total: int
+
+
+class GetRunResponse(BaseModel):
+    """Response from GET /v1/runs/{run_id} — includes run, events, and decisions."""
+
+    run: AgentRun
+    events: list[AgentEvent] = Field(default_factory=list)
+    decisions: list[Decision] = Field(default_factory=list)
+
+
+class VerifyResponse(BaseModel):
+    """Response from GET /v1/verify/{decision_id} — integrity verification."""
+
+    decision_id: UUID
+    valid: bool
+    stored_hash: str
+    computed_hash: str
+
+
+class RevisionsResponse(BaseModel):
+    """Response from GET /v1/decisions/{decision_id}/revisions — revision chain."""
+
+    decision_id: UUID
+    revisions: list[Decision]
+    count: int
 
 
 # --- Assessment types (spec 29) ---

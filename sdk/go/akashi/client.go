@@ -149,12 +149,14 @@ func (c *Client) Query(ctx context.Context, filters *QueryFilters, opts *QueryOp
 	}, nil
 }
 
-// Search performs a semantic similarity search over decision history.
-func (c *Client) Search(ctx context.Context, query string, limit int) (*SearchResponse, error) {
+// Search performs a similarity search over decision history.
+// When semantic is true, vector similarity search is used (requires Qdrant);
+// when false, PostgreSQL text search is used as a fallback.
+func (c *Client) Search(ctx context.Context, query string, limit int, semantic bool) (*SearchResponse, error) {
 	if limit <= 0 {
 		limit = 5
 	}
-	body := map[string]any{"query": query, "limit": limit}
+	body := map[string]any{"query": query, "limit": limit, "semantic": semantic}
 	var items []SearchResult
 	env, err := c.doPostList(ctx, "/v1/search", body, &items)
 	if err != nil {

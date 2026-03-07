@@ -695,21 +695,43 @@ describe("AkashiClient", () => {
       mockFetch.mockResolvedValueOnce(mockResponse(200, TOKEN_RESPONSE));
     });
 
-    it("gets a run by ID", async () => {
-      const run: AgentRun = {
-        id: "run-1",
-        agent_id: "test-agent",
-        org_id: "org-1",
-        status: "running",
-        metadata: {},
-        started_at: "2024-01-01T00:00:00Z",
-        created_at: "2024-01-01T00:00:00Z",
+    it("gets a run with events and decisions", async () => {
+      const runResponse = {
+        run: {
+          id: "run-1",
+          agent_id: "test-agent",
+          org_id: "org-1",
+          status: "running",
+          metadata: {},
+          started_at: "2024-01-01T00:00:00Z",
+          created_at: "2024-01-01T00:00:00Z",
+        },
+        events: [],
+        decisions: [
+          {
+            id: "dec-1",
+            run_id: "run-1",
+            agent_id: "test-agent",
+            org_id: "org-1",
+            decision_type: "model",
+            outcome: "gpt-4o",
+            confidence: 0.9,
+            metadata: {},
+            valid_from: "2024-01-01T00:00:00Z",
+            transaction_time: "2024-01-01T00:00:00Z",
+            created_at: "2024-01-01T00:00:00Z",
+          },
+        ],
       };
-      mockFetch.mockResolvedValueOnce(mockResponse(200, { data: run }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse(200, { data: runResponse }),
+      );
 
       const result = await client.getRun("run-1");
 
-      expect(result).toEqual(run);
+      expect(result.run.status).toBe("running");
+      expect(result.events).toEqual([]);
+      expect(result.decisions).toHaveLength(1);
       const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
       expect(lastCall[0]).toBe("http://localhost:8080/v1/runs/run-1");
       expect(lastCall[1].method).toBe("GET");
@@ -1109,6 +1131,123 @@ describe("AkashiClient", () => {
       expect(url).toContain("decision_type=model");
       expect(url).toContain("limit=10");
       expect(url).toContain("offset=5");
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Integrity
+  // -----------------------------------------------------------------------
+
+  describe("verifyDecision", () => {
+    beforeEach(() => {
+      mockFetch.mockResolvedValueOnce(mockResponse(200, TOKEN_RESPONSE));
+    });
+
+    it("verifies a decision and returns VerifyResponse", async () => {
+      const verifyResp = {
+        decision_id: "dec-1",
+        valid: true,
+        stored_hash: "sha256:abc123",
+        computed_hash: "sha256:abc123",
+      };
+      mockFetch.mockResolvedValueOnce(
+        mockResponse(200, { data: verifyResp }),
+      );
+
+      const result = await client.verifyDecision("dec-1");
+
+      expect(result.valid).toBe(true);
+      expect(result.stored_hash).toBe("sha256:abc123");
+      const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+      expect(lastCall[0]).toBe("http://localhost:8080/v1/verify/dec-1");
+      expect(lastCall[1].method).toBe("GET");
+    });
+  });
+
+  describe("getDecisionRevisions", () => {
+    beforeEach(() => {
+      mockFetch.mockResolvedValueOnce(mockResponse(200, TOKEN_RESPONSE));
+    });
+
+    it("returns revision chain", async () => {
+      const revisionsResp = {
+        decision_id: "dec-1",
+        revisions: [
+          {
+            id: "dec-1",
+            run_id: "run-1",
+            agent_id: "test",
+            decision_type: "arch",
+            outcome: "v1",
+            confidence: 0.8,
+            metadata: {},
+            valid_from: "2024-01-01T00:00:00Z",
+            transaction_time: "2024-01-01T00:00:00Z",
+            created_at: "2024-01-01T00:00:00Z",
+          },
+          {
+            id: "dec-2",
+            run_id: "run-1",
+            agent_id: "test",
+            decision_type: "arch",
+            outcome: "v2",
+            confidence: 0.9,
+            supersedes_id: "dec-1",
+            metadata: {},
+            valid_from: "2024-01-02T00:00:00Z",
+            transaction_time: "2024-01-02T00:00:00Z",
+            created_at: "2024-01-02T00:00:00Z",
+          },
+        ],
+        count: 2,
+      };
+      mockFetch.mockResolvedValueOnce(
+        mockResponse(200, { data: revisionsResp }),
+      );
+
+      const result = await client.getDecisionRevisions("dec-1");
+
+      expect(result.count).toBe(2);
+      expect(result.revisions).toHaveLength(2);
+      const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+      expect(lastCall[0]).toBe(
+        "http://localhost:8080/v1/decisions/dec-1/revisions",
+      );
+    });
+  });
+
+  describe("updateAgentTags", () => {
+    beforeEach(() => {
+      mockFetch.mockResolvedValueOnce(mockResponse(200, TOKEN_RESPONSE));
+    });
+
+    it("replaces agent tags and returns Agent", async () => {
+      const agent: Agent = {
+        id: "uuid-1",
+        agent_id: "tagger",
+        org_id: "org-1",
+        name: "Tagger Agent",
+        role: "agent",
+        tags: ["backend", "infra"],
+        metadata: {},
+        created_at: "2024-01-01T00:00:00Z",
+        updated_at: "2024-01-01T00:00:00Z",
+      };
+      mockFetch.mockResolvedValueOnce(mockResponse(200, { data: agent }));
+
+      const result = await client.updateAgentTags("tagger", [
+        "backend",
+        "infra",
+      ]);
+
+      expect(result.tags).toEqual(["backend", "infra"]);
+      const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+      expect(lastCall[0]).toBe(
+        "http://localhost:8080/v1/agents/tagger/tags",
+      );
+      expect(lastCall[1].method).toBe("PATCH");
+      const body = JSON.parse(lastCall[1].body);
+      expect(body).toEqual({ tags: ["backend", "infra"] });
     });
   });
 

@@ -31,10 +31,12 @@ from akashi.types import (
     DecisionConflict,
     EventInput,
     Evidence,
+    GetRunResponse,
     Grant,
     HealthResponse,
     QueryFilters,
     QueryResponse,
+    RevisionsResponse,
     SearchResponse,
     SearchResult,
     TemporalQueryRequest,
@@ -42,6 +44,7 @@ from akashi.types import (
     TraceEvidence,
     TraceRequest,
     TraceResponse,
+    VerifyResponse,
 )
 
 __all__ = [
@@ -79,6 +82,9 @@ __all__ = [
     "QueryResponse",
     "SearchResult",
     "SearchResponse",
+    "GetRunResponse",
+    "VerifyResponse",
+    "RevisionsResponse",
     "HealthResponse",
     "AssessResponse",
     # OTEL helpers

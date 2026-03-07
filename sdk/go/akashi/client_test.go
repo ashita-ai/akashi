@@ -599,7 +599,7 @@ func TestSearchReturnsResults(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(t, srv.URL)
-	resp, err := client.Search(context.Background(), "architecture decisions", 10)
+	resp, err := client.Search(context.Background(), "architecture decisions", 10, true)
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
 	}
