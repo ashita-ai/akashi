@@ -218,11 +218,7 @@ func (db *DB) createTraceInTx(ctx context.Context, tx pgx.Tx, params CreateTrace
 	// 4b. Queue search index update (inside same tx — if decision commits, outbox commits).
 	// Always queue regardless of embedding status — the outbox worker defers entries
 	// whose decisions lack embeddings until a backfill provides one (issue #60).
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO search_outbox (decision_id, org_id, operation)
-		 VALUES ($1, $2, 'upsert')
-		 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
-		d.ID, params.OrgID); err != nil {
+	if err := queueSearchOutbox(ctx, tx, d.ID, params.OrgID, "upsert"); err != nil {
 		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: queue search outbox in trace tx: %w", err)
 	}
 

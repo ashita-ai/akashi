@@ -32,13 +32,6 @@ type Decision struct {
 	// nil when no assessments exist. Updated on each new assessment.
 	OutcomeScore *float32 `json:"outcome_score,omitempty"`
 
-	// QualityScore is a deprecated alias for CompletenessScore. It is emitted
-	// alongside completeness_score for one release cycle to give API clients
-	// time to migrate. Do not use in new code.
-	//
-	// Deprecated: use CompletenessScore.
-	QualityScore float32 `json:"quality_score"`
-
 	// Precedent reference: decision that influenced this one.
 	PrecedentRef *uuid.UUID `json:"precedent_ref,omitempty"`
 

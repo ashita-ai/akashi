@@ -12,12 +12,57 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pgvector/pgvector-go"
 
 	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/search"
 )
+
+// decisionCols is the SELECT column list for the standard 24-column decision query.
+// Every function that scans into model.Decision via scanOneDecision must SELECT
+// exactly these columns in this order.
+const decisionCols = `id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
+	metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
+	valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id, tool, model, project`
+
+// pgxRowScanner is satisfied by both pgx.Row (single-row) and pgx.Rows (multi-row).
+type pgxRowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanOneDecision scans the 24-column decisionCols from a single row.
+func scanOneDecision(row pgxRowScanner) (model.Decision, error) {
+	var d model.Decision
+	if err := row.Scan(
+		&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence,
+		&d.Reasoning, &d.Metadata, &d.CompletenessScore, &d.OutcomeScore, &d.PrecedentRef,
+		&d.SupersedesID, &d.ContentHash,
+		&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
+		&d.SessionID, &d.AgentContext, &d.APIKeyID,
+		&d.Tool, &d.Model, &d.Project,
+	); err != nil {
+		return model.Decision{}, fmt.Errorf("storage: scan decision: %w", err)
+	}
+	return d, nil
+}
+
+// txExecer is satisfied by both pgx.Tx and *pgxpool.Pool.
+type txExecer interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+// queueSearchOutbox inserts or resets a search outbox entry for a decision.
+// operation must be "upsert" or "delete".
+func queueSearchOutbox(ctx context.Context, exec txExecer, decisionID, orgID uuid.UUID, operation string) error {
+	_, err := exec.Exec(ctx,
+		`INSERT INTO search_outbox (decision_id, org_id, operation)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
+		decisionID, orgID, operation)
+	return err
+}
 
 // CreateDecision inserts a decision and queues a search outbox entry if the
 // decision has an embedding. Both writes happen atomically in a single transaction.
@@ -71,11 +116,7 @@ func (db *DB) CreateDecision(ctx context.Context, d model.Decision) (model.Decis
 	// generate embeddings asynchronously if needed. Without this, decisions
 	// created without an embedding (e.g. via the REST API) are permanently
 	// invisible to search.
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO search_outbox (decision_id, org_id, operation)
-		 VALUES ($1, $2, 'upsert')
-		 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
-		d.ID, d.OrgID); err != nil {
+	if err := queueSearchOutbox(ctx, tx, d.ID, d.OrgID, "upsert"); err != nil {
 		return model.Decision{}, fmt.Errorf("storage: queue search outbox in create decision: %w", err)
 	}
 
@@ -94,23 +135,12 @@ type GetDecisionOpts struct {
 
 // GetDecision retrieves a decision by ID with configurable includes and filtering.
 func (db *DB) GetDecision(ctx context.Context, orgID, id uuid.UUID, opts GetDecisionOpts) (model.Decision, error) {
-	query := `SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id, tool, model, project
-		 FROM decisions WHERE id = $1 AND org_id = $2`
+	query := `SELECT ` + decisionCols + ` FROM decisions WHERE id = $1 AND org_id = $2`
 	if opts.CurrentOnly {
 		query += ` AND valid_to IS NULL`
 	}
 
-	var d model.Decision
-	err := db.pool.QueryRow(ctx, query, id, orgID).Scan(
-		&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence,
-		&d.Reasoning, &d.Metadata, &d.CompletenessScore, &d.OutcomeScore, &d.PrecedentRef,
-		&d.SupersedesID, &d.ContentHash,
-		&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
-		&d.SessionID, &d.AgentContext, &d.APIKeyID,
-		&d.Tool, &d.Model, &d.Project,
-	)
+	d, err := scanOneDecision(db.pool.QueryRow(ctx, query, id, orgID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return model.Decision{}, fmt.Errorf("storage: decision %s: %w", id, ErrNotFound)
@@ -191,18 +221,10 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 	}
 
 	// Queue search index updates: delete the old decision, upsert the new one.
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO search_outbox (decision_id, org_id, operation)
-		 VALUES ($1, $2, 'delete')
-		 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
-		originalID, revised.OrgID); err != nil {
+	if err := queueSearchOutbox(ctx, tx, originalID, revised.OrgID, "delete"); err != nil {
 		return model.Decision{}, fmt.Errorf("storage: queue search outbox delete in revision: %w", err)
 	}
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO search_outbox (decision_id, org_id, operation)
-		 VALUES ($1, $2, 'upsert')
-		 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
-		revised.ID, revised.OrgID); err != nil {
+	if err := queueSearchOutbox(ctx, tx, revised.ID, revised.OrgID, "upsert"); err != nil {
 		return model.Decision{}, fmt.Errorf("storage: queue search outbox upsert in revision: %w", err)
 	}
 
@@ -272,11 +294,7 @@ func (db *DB) RetractDecision(ctx context.Context, orgID, decisionID uuid.UUID, 
 	}
 
 	// Queue search index deletion.
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO search_outbox (decision_id, org_id, operation)
-		 VALUES ($1, $2, 'delete')
-		 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
-		decisionID, orgID); err != nil {
+	if err := queueSearchOutbox(ctx, tx, decisionID, orgID, "delete"); err != nil {
 		return fmt.Errorf("storage: queue search outbox delete in retraction: %w", err)
 	}
 
@@ -440,11 +458,7 @@ func (db *DB) EraseDecision(
 	}
 
 	// Queue search index deletion.
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO search_outbox (decision_id, org_id, operation)
-		 VALUES ($1, $2, 'delete')
-		 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
-		decisionID, orgID); err != nil {
+	if err := queueSearchOutbox(ctx, tx, decisionID, orgID, "delete"); err != nil {
 		return DecisionErasureResult{}, fmt.Errorf("storage: queue search outbox delete in erasure: %w", err)
 	}
 
@@ -588,11 +602,8 @@ func (db *DB) QueryDecisions(ctx context.Context, orgID uuid.UUID, req model.Que
 	}
 
 	selectQuery := fmt.Sprintf(
-		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id, tool, model, project
-		 FROM decisions%s ORDER BY %s %s LIMIT %d OFFSET %d`,
-		where, orderBy, orderDir, limit, offset,
+		`SELECT %s FROM decisions%s ORDER BY %s %s LIMIT %d OFFSET %d`,
+		decisionCols, where, orderBy, orderDir, limit, offset,
 	)
 
 	rows, err := db.pool.Query(ctx, selectQuery, args...)
@@ -662,10 +673,7 @@ func (db *DB) QueryDecisionsTemporal(ctx context.Context, orgID uuid.UUID, req m
 	limitClause := fmt.Sprintf(" LIMIT $%d", argIdx)
 	args = append(args, limit)
 
-	query := `SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id, tool, model, project
-		 FROM decisions` + where + ` ORDER BY valid_from DESC` + limitClause
+	query := `SELECT ` + decisionCols + ` FROM decisions` + where + ` ORDER BY valid_from DESC` + limitClause
 
 	rows, err := db.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -818,7 +826,6 @@ func (db *DB) execSearchQuery(ctx context.Context, sql string, args []any) ([]mo
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan text search result: %w", err)
 		}
-		d.QualityScore = d.CompletenessScore //nolint:staticcheck // deprecated alias emitted for one release cycle
 		results = append(results, model.SearchResult{Decision: d, SimilarityScore: relevance})
 	}
 	return results, rows.Err()
@@ -852,11 +859,8 @@ func (db *DB) GetDecisionsByAgent(ctx context.Context, orgID uuid.UUID, agentID 
 	}
 
 	query := fmt.Sprintf(
-		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id, tool, model, project
-		 FROM decisions%s ORDER BY valid_from DESC LIMIT %d OFFSET %d`,
-		where, limit, offset,
+		`SELECT %s FROM decisions%s ORDER BY valid_from DESC LIMIT %d OFFSET %d`,
+		decisionCols, where, limit, offset,
 	)
 
 	rows, err := db.pool.Query(ctx, query, args...)
@@ -957,11 +961,8 @@ func (db *DB) ExportDecisionsCursor(ctx context.Context, orgID uuid.UUID, filter
 	}
 
 	query := fmt.Sprintf(
-		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id, tool, model, project
-		 FROM decisions%s ORDER BY valid_from ASC, id ASC LIMIT %d`,
-		where, limit,
+		`SELECT %s FROM decisions%s ORDER BY valid_from ASC, id ASC LIMIT %d`,
+		decisionCols, where, limit,
 	)
 
 	rows, err := db.pool.Query(ctx, query, args...)
@@ -1008,18 +1009,10 @@ type ExportCursor struct {
 func scanDecisions(rows pgx.Rows) ([]model.Decision, error) {
 	var decisions []model.Decision
 	for rows.Next() {
-		var d model.Decision
-		if err := rows.Scan(
-			&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence,
-			&d.Reasoning, &d.Metadata, &d.CompletenessScore, &d.OutcomeScore, &d.PrecedentRef,
-			&d.SupersedesID, &d.ContentHash,
-			&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
-			&d.SessionID, &d.AgentContext, &d.APIKeyID,
-			&d.Tool, &d.Model, &d.Project,
-		); err != nil {
-			return nil, fmt.Errorf("storage: scan decision: %w", err)
+		d, err := scanOneDecision(rows)
+		if err != nil {
+			return nil, err
 		}
-		d.QualityScore = d.CompletenessScore //nolint:staticcheck // deprecated alias emitted for one release cycle
 		decisions = append(decisions, d)
 	}
 	return decisions, rows.Err()
@@ -1034,10 +1027,7 @@ func (db *DB) GetDecisionsByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid
 	}
 
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id, tool, model, project
-		 FROM decisions
+		`SELECT `+decisionCols+` FROM decisions
 		 WHERE org_id = $1 AND id = ANY($2) AND valid_to IS NULL`,
 		orgID, ids,
 	)
@@ -1280,11 +1270,7 @@ func (db *DB) BackfillEmbedding(ctx context.Context, id, orgID uuid.UUID, emb pg
 		return nil // Decision was revised or deleted — skip silently.
 	}
 
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO search_outbox (decision_id, org_id, operation)
-		 VALUES ($1, $2, 'upsert')
-		 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
-		id, orgID); err != nil {
+	if err := queueSearchOutbox(ctx, tx, id, orgID, "upsert"); err != nil {
 		return fmt.Errorf("storage: queue backfill outbox: %w", err)
 	}
 

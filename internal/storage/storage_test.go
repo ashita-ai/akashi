@@ -5,101 +5,37 @@ package storage_test
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/pgvector/pgvector-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/storage"
-	"github.com/ashita-ai/akashi/migrations"
+	"github.com/ashita-ai/akashi/internal/testutil"
 )
 
 // testDB holds a shared test database connection for all tests in this package.
 var testDB *storage.DB
 
 func TestMain(m *testing.M) {
+	tc := testutil.MustStartTimescaleDB()
+
 	ctx := context.Background()
-
-	// Start a TimescaleDB container with pgvector.
-	req := testcontainers.ContainerRequest{
-		Image:        "timescale/timescaledb:latest-pg18",
-		ExposedPorts: []string{"5432/tcp"},
-		Env: map[string]string{
-			"POSTGRES_USER":     "akashi",
-			"POSTGRES_PASSWORD": "akashi",
-			"POSTGRES_DB":       "akashi",
-		},
-		WaitingFor: wait.ForLog("database system is ready to accept connections").
-			WithOccurrence(2).
-			WithStartupTimeout(60 * time.Second),
-	}
-
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
+	var err error
+	testDB, err = tc.NewTestDB(ctx, testutil.TestLogger())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to start container: %v\n", err)
-		os.Exit(1)
-	}
-
-	host, err := container.Host(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to get container host: %v\n", err)
-		os.Exit(1)
-	}
-
-	port, err := container.MappedPort(ctx, "5432")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to get container port: %v\n", err)
-		os.Exit(1)
-	}
-
-	dsn := fmt.Sprintf("postgres://akashi:akashi@%s:%s/akashi?sslmode=disable", host, port.Port())
-
-	// Enable extensions before creating the storage layer so pgvector types
-	// get registered on the pool's AfterConnect hook.
-	bootstrapConn, err := pgx.Connect(ctx, dsn)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to bootstrap connection: %v\n", err)
-		os.Exit(1)
-	}
-	if _, err := bootstrapConn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS vector"); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create vector extension: %v\n", err)
-		os.Exit(1)
-	}
-	if _, err := bootstrapConn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS timescaledb"); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create timescaledb extension: %v\n", err)
-		os.Exit(1)
-	}
-	_ = bootstrapConn.Close(ctx)
-
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	testDB, err = storage.New(ctx, dsn, "", logger)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create DB: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Run migrations.
-	if err := testDB.RunMigrations(ctx, migrations.FS); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to run migrations: %v\n", err)
+		tc.Terminate()
+		fmt.Fprintf(os.Stderr, "test db: %v\n", err)
 		os.Exit(1)
 	}
 
 	code := m.Run()
-
-	testDB.Close(ctx)
-	_ = container.Terminate(ctx)
+	tc.Terminate()
 	os.Exit(code)
 }
 

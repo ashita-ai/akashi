@@ -14,6 +14,33 @@ import (
 	"github.com/ashita-ai/akashi/internal/model"
 )
 
+// apiKeyCols is the SELECT column list for the standard 11-column API key query.
+const apiKeyCols = `id, prefix, key_hash, agent_id, org_id, label, created_by, created_at, last_used_at, expires_at, revoked_at`
+
+// scanOneAPIKey scans the 11-column apiKeyCols from a single row.
+func scanOneAPIKey(row pgxRowScanner) (model.APIKey, error) {
+	var k model.APIKey
+	if err := row.Scan(
+		&k.ID, &k.Prefix, &k.KeyHash, &k.AgentID, &k.OrgID,
+		&k.Label, &k.CreatedBy, &k.CreatedAt, &k.LastUsedAt, &k.ExpiresAt, &k.RevokedAt,
+	); err != nil {
+		return model.APIKey{}, fmt.Errorf("storage: scan api key: %w", err)
+	}
+	return k, nil
+}
+
+func scanAPIKeys(rows pgx.Rows) ([]model.APIKey, error) {
+	var keys []model.APIKey
+	for rows.Next() {
+		k, err := scanOneAPIKey(rows)
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
 // CreateAPIKeyWithAudit inserts a new API key and a mutation audit entry
 // atomically within a single transaction.
 func (db *DB) CreateAPIKeyWithAudit(ctx context.Context, key model.APIKey, audit MutationAuditEntry) (model.APIKey, error) {
@@ -57,9 +84,8 @@ func (db *DB) CreateAPIKeyWithAudit(ctx context.Context, key model.APIKey, audit
 // Returns ErrNotFound if no matching active key exists.
 // Global (no org_id) because this is called during auth before org is known.
 func (db *DB) GetAPIKeyByPrefixAndAgent(ctx context.Context, agentID, prefix string) (model.APIKey, error) {
-	var k model.APIKey
-	err := db.pool.QueryRow(ctx,
-		`SELECT id, prefix, key_hash, agent_id, org_id, label, created_by, created_at, last_used_at, expires_at, revoked_at
+	row := db.pool.QueryRow(ctx,
+		`SELECT `+apiKeyCols+`
 		 FROM api_keys
 		 WHERE agent_id = $1
 		   AND prefix = $2
@@ -67,10 +93,8 @@ func (db *DB) GetAPIKeyByPrefixAndAgent(ctx context.Context, agentID, prefix str
 		   AND (expires_at IS NULL OR expires_at > now())
 		 LIMIT 1`,
 		agentID, prefix,
-	).Scan(
-		&k.ID, &k.Prefix, &k.KeyHash, &k.AgentID, &k.OrgID,
-		&k.Label, &k.CreatedBy, &k.CreatedAt, &k.LastUsedAt, &k.ExpiresAt, &k.RevokedAt,
 	)
+	k, err := scanOneAPIKey(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return model.APIKey{}, ErrNotFound
@@ -87,8 +111,7 @@ func (db *DB) GetAPIKeysByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid.U
 		return nil, nil
 	}
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, prefix, key_hash, agent_id, org_id, label, created_by, created_at, last_used_at, expires_at, revoked_at
-		 FROM api_keys WHERE id = ANY($1) AND org_id = $2`,
+		`SELECT `+apiKeyCols+` FROM api_keys WHERE id = ANY($1) AND org_id = $2`,
 		ids, orgID,
 	)
 	if err != nil {
@@ -96,31 +119,16 @@ func (db *DB) GetAPIKeysByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid.U
 	}
 	defer rows.Close()
 
-	var keys []model.APIKey
-	for rows.Next() {
-		var k model.APIKey
-		if err := rows.Scan(
-			&k.ID, &k.Prefix, &k.KeyHash, &k.AgentID, &k.OrgID,
-			&k.Label, &k.CreatedBy, &k.CreatedAt, &k.LastUsedAt, &k.ExpiresAt, &k.RevokedAt,
-		); err != nil {
-			return nil, fmt.Errorf("storage: scan api key: %w", err)
-		}
-		keys = append(keys, k)
-	}
-	return keys, rows.Err()
+	return scanAPIKeys(rows)
 }
 
 // GetAPIKeyByID retrieves a single API key by its UUID, scoped to an org.
 func (db *DB) GetAPIKeyByID(ctx context.Context, orgID uuid.UUID, keyID uuid.UUID) (model.APIKey, error) {
-	var k model.APIKey
-	err := db.pool.QueryRow(ctx,
-		`SELECT id, prefix, key_hash, agent_id, org_id, label, created_by, created_at, last_used_at, expires_at, revoked_at
-		 FROM api_keys WHERE id = $1 AND org_id = $2`,
+	row := db.pool.QueryRow(ctx,
+		`SELECT `+apiKeyCols+` FROM api_keys WHERE id = $1 AND org_id = $2`,
 		keyID, orgID,
-	).Scan(
-		&k.ID, &k.Prefix, &k.KeyHash, &k.AgentID, &k.OrgID,
-		&k.Label, &k.CreatedBy, &k.CreatedAt, &k.LastUsedAt, &k.ExpiresAt, &k.RevokedAt,
 	)
+	k, err := scanOneAPIKey(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return model.APIKey{}, fmt.Errorf("storage: api key %s: %w", keyID, ErrNotFound)
@@ -135,7 +143,7 @@ func (db *DB) GetAPIKeyByID(ctx context.Context, orgID uuid.UUID, keyID uuid.UUI
 // isn't known yet. Similar to GetAgentsByAgentIDGlobal.
 func (db *DB) GetActiveAPIKeysByAgentIDGlobal(ctx context.Context, agentID string) ([]model.APIKey, error) {
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, prefix, key_hash, agent_id, org_id, label, created_by, created_at, last_used_at, expires_at, revoked_at
+		`SELECT `+apiKeyCols+`
 		 FROM api_keys
 		 WHERE agent_id = $1
 		   AND revoked_at IS NULL
@@ -148,18 +156,7 @@ func (db *DB) GetActiveAPIKeysByAgentIDGlobal(ctx context.Context, agentID strin
 	}
 	defer rows.Close()
 
-	var keys []model.APIKey
-	for rows.Next() {
-		var k model.APIKey
-		if err := rows.Scan(
-			&k.ID, &k.Prefix, &k.KeyHash, &k.AgentID, &k.OrgID,
-			&k.Label, &k.CreatedBy, &k.CreatedAt, &k.LastUsedAt, &k.ExpiresAt, &k.RevokedAt,
-		); err != nil {
-			return nil, fmt.Errorf("storage: scan api key: %w", err)
-		}
-		keys = append(keys, k)
-	}
-	return keys, rows.Err()
+	return scanAPIKeys(rows)
 }
 
 // ListAPIKeys returns API keys for an org with pagination.
@@ -184,7 +181,7 @@ func (db *DB) ListAPIKeys(ctx context.Context, orgID uuid.UUID, limit, offset in
 	}
 
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, prefix, key_hash, agent_id, org_id, label, created_by, created_at, last_used_at, expires_at, revoked_at
+		`SELECT `+apiKeyCols+`
 		 FROM api_keys WHERE org_id = $1
 		 ORDER BY created_at DESC
 		 LIMIT $2 OFFSET $3`,
@@ -195,19 +192,9 @@ func (db *DB) ListAPIKeys(ctx context.Context, orgID uuid.UUID, limit, offset in
 	}
 	defer rows.Close()
 
-	var keys []model.APIKey
-	for rows.Next() {
-		var k model.APIKey
-		if err := rows.Scan(
-			&k.ID, &k.Prefix, &k.KeyHash, &k.AgentID, &k.OrgID,
-			&k.Label, &k.CreatedBy, &k.CreatedAt, &k.LastUsedAt, &k.ExpiresAt, &k.RevokedAt,
-		); err != nil {
-			return nil, 0, fmt.Errorf("storage: scan api key: %w", err)
-		}
-		keys = append(keys, k)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("storage: list api keys: %w", err)
+	keys, err := scanAPIKeys(rows)
+	if err != nil {
+		return nil, 0, err
 	}
 	return keys, total, nil
 }
@@ -222,15 +209,10 @@ func (db *DB) RevokeAPIKeyWithAudit(ctx context.Context, orgID uuid.UUID, keyID 
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Fetch the key before revoking for audit.
-	var before model.APIKey
-	err = tx.QueryRow(ctx,
-		`SELECT id, prefix, key_hash, agent_id, org_id, label, created_by, created_at, last_used_at, expires_at, revoked_at
-		 FROM api_keys WHERE id = $1 AND org_id = $2`,
+	before, err := scanOneAPIKey(tx.QueryRow(ctx,
+		`SELECT `+apiKeyCols+` FROM api_keys WHERE id = $1 AND org_id = $2`,
 		keyID, orgID,
-	).Scan(
-		&before.ID, &before.Prefix, &before.KeyHash, &before.AgentID, &before.OrgID,
-		&before.Label, &before.CreatedBy, &before.CreatedAt, &before.LastUsedAt, &before.ExpiresAt, &before.RevokedAt,
-	)
+	))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("storage: api key %s: %w", keyID, ErrNotFound)
