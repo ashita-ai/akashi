@@ -906,3 +906,67 @@ func AutoResolveSupersededConflictsTx(ctx context.Context, tx pgx.Tx, orgID, sup
 	}
 	return int(tag.RowsAffected()), nil
 }
+
+// AgentWinRate holds an agent's historical resolution win rate for a decision type.
+type AgentWinRate struct {
+	AgentID  string
+	WinRate  float64
+	WinCount int
+	Total    int
+}
+
+// GetAgentWinRates returns resolution win rates for the given agents within a
+// decision type. Only counts resolved conflicts with a declared winner.
+// Results are keyed by agent ID; agents with no history are absent from the map.
+func (db *DB) GetAgentWinRates(ctx context.Context, orgID uuid.UUID, agentIDs []string, decisionType string) (map[string]AgentWinRate, error) {
+	if len(agentIDs) == 0 {
+		return map[string]AgentWinRate{}, nil
+	}
+
+	rows, err := db.pool.Query(ctx, `
+		WITH agent_conflicts AS (
+			SELECT
+				unnest(ARRAY[
+					CASE WHEN agent_a = ANY($2) THEN agent_a END,
+					CASE WHEN agent_b = ANY($2) THEN agent_b END
+				]) AS agent_id,
+				winning_decision_id,
+				decision_a_id, decision_b_id,
+				agent_a, agent_b
+			FROM scored_conflicts
+			WHERE org_id = $1
+			  AND status = 'resolved'
+			  AND winning_decision_id IS NOT NULL
+			  AND (decision_type_a = $3 OR decision_type_b = $3)
+			  AND (agent_a = ANY($2) OR agent_b = ANY($2))
+		)
+		SELECT
+			agent_id,
+			COUNT(*)::int AS total,
+			COUNT(*) FILTER (WHERE
+				(agent_id = agent_a AND winning_decision_id = decision_a_id) OR
+				(agent_id = agent_b AND winning_decision_id = decision_b_id)
+			)::int AS wins
+		FROM agent_conflicts
+		WHERE agent_id IS NOT NULL
+		GROUP BY agent_id`,
+		orgID, agentIDs, decisionType,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("storage: get agent win rates: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]AgentWinRate)
+	for rows.Next() {
+		var r AgentWinRate
+		if err := rows.Scan(&r.AgentID, &r.Total, &r.WinCount); err != nil {
+			return nil, fmt.Errorf("storage: scan agent win rate: %w", err)
+		}
+		if r.Total > 0 {
+			r.WinRate = float64(r.WinCount) / float64(r.Total)
+		}
+		result[r.AgentID] = r
+	}
+	return result, rows.Err()
+}

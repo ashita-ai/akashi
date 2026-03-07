@@ -1105,6 +1105,33 @@ paths:
                 $ref: "#/components/schemas/APIResponse_ConflictsResponse"
 
   /v1/conflicts/{id}:
+    get:
+      operationId: getConflict
+      tags: [Query]
+      summary: Get a single conflict with resolution recommendation
+      description: |
+        Returns the full conflict detail including a lazily-computed resolution
+        recommendation based on confidence, recency, agent track record, and
+        revision depth. The recommendation is only present for unresolved conflicts
+        (status `open` or `acknowledged`).
+        Requires `reader` role or higher.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The conflict ID.
+      responses:
+        "200":
+          description: Conflict detail with optional recommendation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConflictDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
     patch:
       operationId: patchConflict
       tags: [Query]
@@ -2566,6 +2593,44 @@ components:
             ID of the decision judged to be correct when this conflict was adjudicated.
             Must be either decision_a_id or decision_b_id. Optional — resolution is
             valid without declaring a winner.
+
+    ConflictDetail:
+      description: |
+        Extended conflict view returned by GET /v1/conflicts/{id}. Includes all
+        DecisionConflict fields plus a lazily-computed resolution recommendation.
+      allOf:
+        - $ref: "#/components/schemas/DecisionConflict"
+        - type: object
+          properties:
+            recommendation:
+              $ref: "#/components/schemas/Recommendation"
+
+    Recommendation:
+      type: object
+      description: |
+        Lazily-computed suggestion for which decision should prevail in a conflict.
+        Based on confidence delta, recency, agent win rate, and revision depth.
+        Absent when the conflict is already resolved or signal strength is insufficient.
+      required:
+        - suggested_winner
+        - reasons
+        - confidence
+      properties:
+        suggested_winner:
+          type: string
+          format: uuid
+          description: ID of the decision the system recommends as the winner.
+        reasons:
+          type: array
+          items:
+            type: string
+          description: Human-readable explanations ordered by signal strength.
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Confidence in the recommendation (0.0–1.0).
 
     ConflictStatusUpdate:
       type: object
