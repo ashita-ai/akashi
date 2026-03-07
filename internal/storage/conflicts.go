@@ -970,3 +970,224 @@ func (db *DB) GetAgentWinRates(ctx context.Context, orgID uuid.UUID, agentIDs []
 	}
 	return result, rows.Err()
 }
+
+// ConflictAnalyticsFilters holds the time range and optional filters
+// for the conflict analytics aggregation queries.
+type ConflictAnalyticsFilters struct {
+	From         time.Time
+	To           time.Time
+	AgentID      *string
+	DecisionType *string
+	ConflictKind *string
+}
+
+// analyticsWhere appends WHERE conditions for analytics filters.
+// argOffset is the next positional parameter ($N) to use.
+func analyticsWhere(f ConflictAnalyticsFilters, argOffset int) (string, []any) {
+	var clause string
+	var args []any
+	if f.AgentID != nil {
+		clause += fmt.Sprintf(" AND (sc.agent_a = $%d OR sc.agent_b = $%d)", argOffset, argOffset)
+		args = append(args, *f.AgentID)
+		argOffset++
+	}
+	if f.DecisionType != nil {
+		clause += fmt.Sprintf(" AND (LOWER(TRIM(sc.decision_type_a)) = LOWER(TRIM($%d)) OR LOWER(TRIM(sc.decision_type_b)) = LOWER(TRIM($%d)))", argOffset, argOffset)
+		args = append(args, *f.DecisionType)
+		argOffset++
+	}
+	if f.ConflictKind != nil {
+		clause += fmt.Sprintf(" AND sc.conflict_kind = $%d", argOffset)
+		args = append(args, *f.ConflictKind)
+	}
+	return clause, args
+}
+
+// GetConflictAnalytics computes aggregate conflict metrics for the given
+// org and time window. It returns summary stats, breakdowns by agent pair /
+// decision type / severity, and a daily detected-vs-resolved trend.
+func (db *DB) GetConflictAnalytics(ctx context.Context, orgID uuid.UUID, filters ConflictAnalyticsFilters) (model.ConflictAnalytics, error) {
+	var result model.ConflictAnalytics
+	result.Period = model.TimePeriod{Start: filters.From, End: filters.To}
+
+	baseWhere := "sc.org_id = $1 AND sc.detected_at >= $2 AND sc.detected_at < $3"
+	extraClause, extraArgs := analyticsWhere(filters, 4)
+	where := baseWhere + extraClause
+
+	// Build args slice without mutating a shared base (gocritic: appendAssign).
+	args := make([]any, 0, 3+len(extraArgs))
+	args = append(args, orgID, filters.From, filters.To)
+	args = append(args, extraArgs...)
+
+	// 1. Summary: total detected, resolved, MTTR, false-positive rate.
+	summaryQuery := fmt.Sprintf(`
+		SELECT
+			count(*),
+			count(*) FILTER (WHERE sc.status IN ('resolved', 'wont_fix')),
+			avg(EXTRACT(EPOCH FROM (sc.resolved_at - sc.detected_at)) / 3600)
+				FILTER (WHERE sc.resolved_at IS NOT NULL),
+			COALESCE(
+				count(*) FILTER (WHERE sc.status = 'wont_fix')::double precision
+				/ NULLIF(count(*) FILTER (WHERE sc.status IN ('resolved', 'wont_fix')), 0),
+				0
+			)
+		FROM scored_conflicts sc
+		WHERE %s`, where)
+
+	if err := db.pool.QueryRow(ctx, summaryQuery, args...).Scan(
+		&result.Summary.TotalDetected,
+		&result.Summary.TotalResolved,
+		&result.Summary.MeanTimeToResolutionHours,
+		&result.Summary.FalsePositiveRate,
+	); err != nil {
+		return result, fmt.Errorf("storage: conflict analytics summary: %w", err)
+	}
+
+	// 2. By agent pair (top 50).
+	pairQuery := fmt.Sprintf(`
+		SELECT sc.agent_a, sc.agent_b,
+			count(*),
+			count(*) FILTER (WHERE sc.status IN ('open', 'acknowledged')),
+			count(*) FILTER (WHERE sc.status IN ('resolved', 'wont_fix'))
+		FROM scored_conflicts sc
+		WHERE %s
+		GROUP BY sc.agent_a, sc.agent_b
+		ORDER BY count(*) DESC
+		LIMIT 50`, where)
+
+	pairRows, err := db.pool.Query(ctx, pairQuery, args...)
+	if err != nil {
+		return result, fmt.Errorf("storage: conflict analytics by agent pair: %w", err)
+	}
+	defer pairRows.Close()
+
+	result.ByAgentPair = []model.AgentPairConflictStats{}
+	for pairRows.Next() {
+		var s model.AgentPairConflictStats
+		if err := pairRows.Scan(&s.AgentA, &s.AgentB, &s.Count, &s.Open, &s.Resolved); err != nil {
+			return result, fmt.Errorf("storage: scan conflict analytics agent pair: %w", err)
+		}
+		result.ByAgentPair = append(result.ByAgentPair, s)
+	}
+	if err := pairRows.Err(); err != nil {
+		return result, fmt.Errorf("storage: conflict analytics agent pair rows: %w", err)
+	}
+
+	// 3. By decision type (top 50, using decision_type_a as canonical).
+	typeQuery := fmt.Sprintf(`
+		SELECT sc.decision_type_a,
+			count(*),
+			COALESCE(avg(sc.significance), 0)
+		FROM scored_conflicts sc
+		WHERE %s
+		GROUP BY sc.decision_type_a
+		ORDER BY count(*) DESC
+		LIMIT 50`, where)
+
+	typeRows, err := db.pool.Query(ctx, typeQuery, args...)
+	if err != nil {
+		return result, fmt.Errorf("storage: conflict analytics by decision type: %w", err)
+	}
+	defer typeRows.Close()
+
+	result.ByDecisionType = []model.DecisionTypeConflictStats{}
+	for typeRows.Next() {
+		var s model.DecisionTypeConflictStats
+		if err := typeRows.Scan(&s.DecisionType, &s.Count, &s.AvgSignificance); err != nil {
+			return result, fmt.Errorf("storage: scan conflict analytics decision type: %w", err)
+		}
+		result.ByDecisionType = append(result.ByDecisionType, s)
+	}
+	if err := typeRows.Err(); err != nil {
+		return result, fmt.Errorf("storage: conflict analytics decision type rows: %w", err)
+	}
+
+	// 4. By severity (ordered by rank).
+	sevQuery := fmt.Sprintf(`
+		SELECT sc.severity, count(*)
+		FROM scored_conflicts sc
+		WHERE %s AND sc.severity IS NOT NULL
+		GROUP BY sc.severity
+		ORDER BY CASE sc.severity
+			WHEN 'critical' THEN 1
+			WHEN 'high'     THEN 2
+			WHEN 'medium'   THEN 3
+			WHEN 'low'      THEN 4
+		END`, where)
+
+	sevRows, err := db.pool.Query(ctx, sevQuery, args...)
+	if err != nil {
+		return result, fmt.Errorf("storage: conflict analytics by severity: %w", err)
+	}
+	defer sevRows.Close()
+
+	result.BySeverity = []model.SeverityConflictStats{}
+	for sevRows.Next() {
+		var s model.SeverityConflictStats
+		if err := sevRows.Scan(&s.Severity, &s.Count); err != nil {
+			return result, fmt.Errorf("storage: scan conflict analytics severity: %w", err)
+		}
+		result.BySeverity = append(result.BySeverity, s)
+	}
+	if err := sevRows.Err(); err != nil {
+		return result, fmt.Errorf("storage: conflict analytics severity rows: %w", err)
+	}
+
+	// 5. Daily trend: detected and resolved counts per day.
+	// Uses generate_series to produce a row for every day in the range,
+	// then left-joins detected (by detected_at) and resolved (by resolved_at).
+	// The resolved subquery matches on resolved_at within the period,
+	// regardless of when the conflict was detected.
+	nextArg := 4 + len(extraArgs)
+	resolvedWhere := "sc.org_id = $1 AND sc.resolved_at >= $2 AND sc.resolved_at < $3"
+	resolvedWhere += extraClause // same agent/type/kind filters apply
+	// We need a second copy of from/to for the resolved subquery's generate_series args.
+	trendQuery := fmt.Sprintf(`
+		WITH days AS (
+			SELECT d::date AS date
+			FROM generate_series($%d::date, ($%d::date - interval '1 day')::date, '1 day') d
+		),
+		detected AS (
+			SELECT date_trunc('day', sc.detected_at)::date AS date, count(*) AS cnt
+			FROM scored_conflicts sc
+			WHERE %s
+			GROUP BY 1
+		),
+		resolved AS (
+			SELECT date_trunc('day', sc.resolved_at)::date AS date, count(*) AS cnt
+			FROM scored_conflicts sc
+			WHERE %s
+			GROUP BY 1
+		)
+		SELECT days.date, COALESCE(det.cnt, 0), COALESCE(res.cnt, 0)
+		FROM days
+		LEFT JOIN detected det ON days.date = det.date
+		LEFT JOIN resolved res ON days.date = res.date
+		ORDER BY days.date`,
+		nextArg, nextArg+1, where, resolvedWhere)
+
+	// Args: base args (orgID, from, to, extraArgs...) + from, to for generate_series.
+	trendArgs := append(args, filters.From, filters.To) //nolint:gocritic // intentional append to new slice
+
+	trendRows, err := db.pool.Query(ctx, trendQuery, trendArgs...)
+	if err != nil {
+		return result, fmt.Errorf("storage: conflict analytics trend: %w", err)
+	}
+	defer trendRows.Close()
+
+	result.Trend = []model.ConflictTrendPoint{}
+	for trendRows.Next() {
+		var s model.ConflictTrendPoint
+		var d time.Time
+		if err := trendRows.Scan(&d, &s.Detected, &s.Resolved); err != nil {
+			return result, fmt.Errorf("storage: scan conflict analytics trend: %w", err)
+		}
+		s.Date = d.Format("2006-01-02")
+		result.Trend = append(result.Trend, s)
+	}
+	if err := trendRows.Err(); err != nil {
+		return result, fmt.Errorf("storage: conflict analytics trend rows: %w", err)
+	}
+
+	return result, nil
+}

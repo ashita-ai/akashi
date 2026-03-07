@@ -190,7 +190,8 @@ func New(cfg ServerConfig) *Server {
 	mux.Handle("POST /v1/grants", writeRole(http.HandlerFunc(h.HandleCreateGrant)))
 	mux.Handle("DELETE /v1/grants/{grant_id}", writeRole(http.HandlerFunc(h.HandleDeleteGrant)))
 
-	// Conflicts (reader+ for list/detail, agent+ for adjudicate/patch/resolve).
+	// Conflicts (reader+ for list/detail/analytics, agent+ for adjudicate/patch/resolve).
+	mux.Handle("GET /v1/conflicts/analytics", readRole(http.HandlerFunc(h.HandleConflictAnalytics)))
 	mux.Handle("GET /v1/conflicts", readRole(http.HandlerFunc(h.HandleListConflicts)))
 	mux.Handle("GET /v1/conflicts/{id}", readRole(http.HandlerFunc(h.HandleGetConflict)))
 	mux.Handle("GET /v1/conflict-groups", readRole(http.HandlerFunc(h.HandleListConflictGroups)))
