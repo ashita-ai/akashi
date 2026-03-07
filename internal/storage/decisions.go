@@ -1353,8 +1353,10 @@ func NewPgCandidateFinder(db *DB) *PgCandidateFinder {
 }
 
 // FindSimilar returns the top-limit decisions ordered by cosine distance to embedding,
-// scoped to the org. excludeID is filtered in SQL. project, when non-nil, restricts to
-// decisions with the same project value or no project.
+// scoped to the org. excludeID is filtered in SQL. project scoping is strict: a non-nil
+// project matches only decisions with that exact project value; a nil project matches only
+// decisions with no project set. This mirrors the Qdrant path and prevents cross-project
+// conflict contamination.
 func (f *PgCandidateFinder) FindSimilar(ctx context.Context, orgID uuid.UUID, embedding []float32, excludeID uuid.UUID, project *string, limit int) ([]search.Result, error) {
 	if limit <= 0 {
 		limit = 50
@@ -1364,7 +1366,7 @@ func (f *PgCandidateFinder) FindSimilar(ctx context.Context, orgID uuid.UUID, em
 		`SELECT id, 1 - (embedding <=> $3) AS score
 		 FROM decisions
 		 WHERE org_id = $1 AND id != $2 AND embedding IS NOT NULL AND outcome_embedding IS NOT NULL AND valid_to IS NULL
-		   AND ($5::text IS NULL OR project IS NULL OR project = $5)
+		   AND ($5::text IS NULL AND project IS NULL OR project = $5)
 		 ORDER BY embedding <=> $3
 		 LIMIT $4`, orgID, excludeID, emb, limit, project)
 	if err != nil {

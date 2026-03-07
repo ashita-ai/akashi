@@ -39,8 +39,10 @@ type Searcher interface {
 // can type-assert to CandidateFinder when they need internal ANN access.
 type CandidateFinder interface {
 	// FindSimilar returns decision IDs similar to the given embedding within an org.
-	// excludeID is removed from results (the source decision). project, when non-nil,
-	// restricts results to decisions with the same project value or no project.
+	// excludeID is removed from results (the source decision). Scoping is strict:
+	// a non-empty project matches only decisions with that project; a nil/empty
+	// project matches only decisions with no project set. This prevents cross-project
+	// conflict contamination when multiple codebases share an org.
 	FindSimilar(ctx context.Context, orgID uuid.UUID, embedding []float32, excludeID uuid.UUID, project *string, limit int) ([]Result, error)
 }
 
