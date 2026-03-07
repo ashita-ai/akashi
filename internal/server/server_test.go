@@ -3653,3 +3653,157 @@ func TestHandleEraseDecision(t *testing.T) {
 		assert.True(t, found, "expected a DecisionErased event in the run's event log")
 	})
 }
+
+func TestConflictAnalytics(t *testing.T) {
+	orgID := uuid.Nil
+
+	// Trace four decisions so we can create conflicts referencing them.
+	traceDecision := func(agentID, outcome string, confidence float32) uuid.UUID {
+		t.Helper()
+		resp, tErr := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken, model.TraceRequest{
+			AgentID: agentID,
+			Decision: model.TraceDecision{
+				DecisionType: "architecture",
+				Outcome:      outcome,
+				Confidence:   confidence,
+			},
+		})
+		require.NoError(t, tErr)
+		defer func() { _ = resp.Body.Close() }()
+		require.Contains(t, []int{http.StatusOK, http.StatusCreated, http.StatusAccepted}, resp.StatusCode)
+		var result struct {
+			Data struct {
+				DecisionID uuid.UUID `json:"decision_id"`
+			} `json:"data"`
+		}
+		b, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(b, &result))
+		return result.Data.DecisionID
+	}
+
+	d1 := traceDecision("alpha", "analytics-test: use Postgres", 0.9)
+	d2 := traceDecision("beta", "analytics-test: use MySQL", 0.8)
+	d3 := traceDecision("alpha", "analytics-test: use Redis", 0.7)
+	d4 := traceDecision("gamma", "analytics-test: use Memcached", 0.6)
+	require.NoError(t, testBuf.FlushNow(context.Background()))
+
+	now := time.Now().UTC()
+	threeDaysAgo := now.Add(-3 * 24 * time.Hour)
+	fiveDaysAgo := now.Add(-5 * 24 * time.Hour)
+
+	severity := func(s string) *string { return &s }
+
+	// Insert two conflicts with different agents, severities, and dates.
+	c1 := model.DecisionConflict{
+		OrgID:         orgID,
+		ConflictKind:  model.ConflictKindCrossAgent,
+		DecisionAID:   d1,
+		DecisionBID:   d2,
+		AgentA:        "alpha",
+		AgentB:        "beta",
+		DecisionTypeA: "architecture",
+		DecisionTypeB: "architecture",
+		OutcomeA:      "analytics-test: use Postgres",
+		OutcomeB:      "analytics-test: use MySQL",
+		Status:        "open",
+		Severity:      severity("high"),
+	}
+	id1, err := testDB.InsertScoredConflict(context.Background(), c1)
+	require.NoError(t, err)
+
+	c2 := model.DecisionConflict{
+		OrgID:         orgID,
+		ConflictKind:  model.ConflictKindCrossAgent,
+		DecisionAID:   d3,
+		DecisionBID:   d4,
+		AgentA:        "alpha",
+		AgentB:        "gamma",
+		DecisionTypeA: "architecture",
+		DecisionTypeB: "architecture",
+		OutcomeA:      "analytics-test: use Redis",
+		OutcomeB:      "analytics-test: use Memcached",
+		Status:        "resolved",
+		Severity:      severity("medium"),
+	}
+	id2, err := testDB.InsertScoredConflict(context.Background(), c2)
+	require.NoError(t, err)
+
+	// Backdate detected_at and set resolved_at for the second conflict.
+	_, err = testDB.Pool().Exec(context.Background(),
+		`UPDATE scored_conflicts SET detected_at = $1 WHERE id = $2`, fiveDaysAgo, id1)
+	require.NoError(t, err)
+	_, err = testDB.Pool().Exec(context.Background(),
+		`UPDATE scored_conflicts SET detected_at = $1, resolved_at = $2, resolved_by = 'test', status = 'resolved' WHERE id = $3`,
+		threeDaysAgo, now, id2)
+	require.NoError(t, err)
+
+	t.Run("default period returns analytics", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/conflicts/analytics", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data model.ConflictAnalytics `json:"data"`
+		}
+		body, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(body, &result))
+		analytics := result.Data
+
+		assert.False(t, analytics.Period.Start.IsZero())
+		assert.False(t, analytics.Period.End.IsZero())
+		// Both conflicts are within the default 7d window.
+		assert.GreaterOrEqual(t, analytics.Summary.TotalDetected, 2)
+		assert.GreaterOrEqual(t, analytics.Summary.TotalResolved, 1)
+		assert.NotNil(t, analytics.ByAgentPair)
+		assert.NotNil(t, analytics.BySeverity)
+		assert.NotNil(t, analytics.ByDecisionType)
+		assert.NotNil(t, analytics.Trend)
+		// Trend should have 7 entries for a 7d period (one per day).
+		assert.Len(t, analytics.Trend, 7)
+	})
+
+	t.Run("explicit from/to", func(t *testing.T) {
+		from := fiveDaysAgo.Add(-1 * time.Hour).Format(time.RFC3339)
+		to := now.Add(1 * time.Hour).Format(time.RFC3339)
+		resp, err := authedRequest("GET",
+			testSrv.URL+"/v1/conflicts/analytics?from="+from+"&to="+to, adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+
+	t.Run("agent_id filter", func(t *testing.T) {
+		resp, err := authedRequest("GET",
+			testSrv.URL+"/v1/conflicts/analytics?agent_id=alpha", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data model.ConflictAnalytics `json:"data"`
+		}
+		body, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(body, &result))
+		// alpha appears in both conflicts.
+		assert.GreaterOrEqual(t, result.Data.Summary.TotalDetected, 2)
+	})
+
+	t.Run("invalid period returns 400", func(t *testing.T) {
+		resp, err := authedRequest("GET",
+			testSrv.URL+"/v1/conflicts/analytics?period=999d", adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("from after to returns 400", func(t *testing.T) {
+		from := now.Format(time.RFC3339)
+		to := fiveDaysAgo.Format(time.RFC3339)
+		resp, err := authedRequest("GET",
+			testSrv.URL+"/v1/conflicts/analytics?from="+from+"&to="+to, adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+}

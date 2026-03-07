@@ -1040,6 +1040,66 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /v1/conflicts/analytics:
+    get:
+      operationId: getConflictAnalytics
+      tags: [Query]
+      summary: Conflict trend analytics
+      description: |
+        Returns aggregated conflict metrics over a time window: summary stats,
+        breakdowns by agent pair / decision type / severity, and a daily
+        detected-vs-resolved trend.
+        Requires `reader` role or higher.
+      parameters:
+        - name: period
+          in: query
+          schema:
+            type: string
+            enum: [7d, 30d, 90d]
+            default: "7d"
+          description: |
+            Convenience period relative to now. Ignored when both `from` and
+            `to` are provided.
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Start of time range (RFC 3339). Requires `to`.
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: End of time range (RFC 3339). Requires `from`.
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+          description: Filter to conflicts involving this agent.
+        - name: decision_type
+          in: query
+          schema:
+            type: string
+          description: Filter to conflicts involving this decision type.
+        - name: conflict_kind
+          in: query
+          schema:
+            type: string
+            enum: [cross_agent, self_contradiction]
+          description: Filter by conflict kind.
+      responses:
+        "200":
+          description: Conflict analytics.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_ConflictAnalytics"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
   /v1/conflicts:
     get:
       operationId: listConflicts
@@ -3331,6 +3391,95 @@ components:
           $ref: "#/components/schemas/RecentDecisionsResponse"
         meta:
           $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_ConflictAnalytics:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ConflictAnalytics"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    ConflictAnalytics:
+      type: object
+      required: [period, summary, by_agent_pair, by_decision_type, by_severity, trend]
+      properties:
+        period:
+          type: object
+          required: [start, end]
+          properties:
+            start:
+              type: string
+              format: date-time
+            end:
+              type: string
+              format: date-time
+        summary:
+          type: object
+          required: [total_detected, total_resolved, mean_time_to_resolution_hours, false_positive_rate]
+          properties:
+            total_detected:
+              type: integer
+            total_resolved:
+              type: integer
+            mean_time_to_resolution_hours:
+              type: number
+              nullable: true
+            false_positive_rate:
+              type: number
+        by_agent_pair:
+          type: array
+          items:
+            type: object
+            required: [agent_a, agent_b, count, open, resolved]
+            properties:
+              agent_a:
+                type: string
+              agent_b:
+                type: string
+              count:
+                type: integer
+              open:
+                type: integer
+              resolved:
+                type: integer
+        by_decision_type:
+          type: array
+          items:
+            type: object
+            required: [decision_type, count, avg_significance]
+            properties:
+              decision_type:
+                type: string
+              count:
+                type: integer
+              avg_significance:
+                type: number
+        by_severity:
+          type: array
+          items:
+            type: object
+            required: [severity, count]
+            properties:
+              severity:
+                type: string
+                enum: [critical, high, medium, low]
+              count:
+                type: integer
+        trend:
+          type: array
+          items:
+            type: object
+            required: [date, detected, resolved]
+            properties:
+              date:
+                type: string
+                format: date
+              detected:
+                type: integer
+              resolved:
+                type: integer
 
     APIResponse_ConflictsResponse:
       type: object

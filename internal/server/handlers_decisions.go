@@ -938,6 +938,86 @@ func (h *Handlers) computeRecommendation(ctx context.Context, c model.DecisionCo
 	})
 }
 
+// validAnalyticsPeriods maps convenience period strings to durations.
+var validAnalyticsPeriods = map[string]time.Duration{
+	"7d":  7 * 24 * time.Hour,
+	"30d": 30 * 24 * time.Hour,
+	"90d": 90 * 24 * time.Hour,
+}
+
+const maxAnalyticsRangeDays = 365
+
+// HandleConflictAnalytics handles GET /v1/conflicts/analytics.
+// Returns aggregated conflict metrics over a time window: summary stats,
+// breakdowns by agent pair / decision type / severity, and a daily trend.
+func (h *Handlers) HandleConflictAnalytics(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+
+	// Determine time range from query parameters.
+	var from, to time.Time
+	now := time.Now().UTC()
+
+	fromParam, err := queryTime(r, "from")
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
+	toParam, err := queryTime(r, "to")
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
+
+	if fromParam != nil && toParam != nil {
+		from = *fromParam
+		to = *toParam
+	} else {
+		period := r.URL.Query().Get("period")
+		if period == "" {
+			period = "7d"
+		}
+		dur, ok := validAnalyticsPeriods[period]
+		if !ok {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+				"invalid period: must be one of 7d, 30d, 90d")
+			return
+		}
+		from = now.Add(-dur)
+		to = now
+	}
+
+	if !from.Before(to) {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"from must be before to")
+		return
+	}
+	if to.Sub(from).Hours() > float64(maxAnalyticsRangeDays*24) {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"time range must not exceed 365 days")
+		return
+	}
+
+	// Build filters.
+	filters := storage.ConflictAnalyticsFilters{From: from, To: to}
+	if v := r.URL.Query().Get("agent_id"); v != "" {
+		filters.AgentID = &v
+	}
+	if v := r.URL.Query().Get("decision_type"); v != "" {
+		filters.DecisionType = &v
+	}
+	if v := r.URL.Query().Get("conflict_kind"); v != "" {
+		filters.ConflictKind = &v
+	}
+
+	analytics, err := h.db.GetConflictAnalytics(r.Context(), orgID, filters)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to get conflict analytics", err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, analytics)
+}
+
 // HandleDecisionRevisions handles GET /v1/decisions/{id}/revisions.
 // Returns the full revision chain for a decision (all versions, ordered by valid_from).
 func (h *Handlers) HandleDecisionRevisions(w http.ResponseWriter, r *http.Request) {
