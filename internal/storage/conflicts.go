@@ -1191,3 +1191,30 @@ func (db *DB) GetConflictAnalytics(ctx context.Context, orgID uuid.UUID, filters
 
 	return result, nil
 }
+
+// GetGlobalOpenConflictCount returns the total number of open and acknowledged
+// conflicts across all organizations. Used by the OpenTelemetry observable
+// gauge callback (runs every ~15s).
+// SECURITY: Intentionally global — aggregate metric with no tenant data exposed.
+func (db *DB) GetGlobalOpenConflictCount(ctx context.Context) (int64, error) {
+	var count int64
+	err := db.pool.QueryRow(ctx,
+		`SELECT count(*) FROM scored_conflicts WHERE status IN ('open', 'acknowledged')`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("storage: global open conflict count: %w", err)
+	}
+	return count, nil
+}
+
+// GetConflictGroupKind returns the conflict_kind for a conflict group.
+// Used by HTTP handlers that need the kind label for resolution metrics.
+func (db *DB) GetConflictGroupKind(ctx context.Context, groupID, orgID uuid.UUID) (string, error) {
+	var kind string
+	err := db.pool.QueryRow(ctx,
+		`SELECT conflict_kind FROM conflict_groups WHERE id = $1 AND org_id = $2`,
+		groupID, orgID).Scan(&kind)
+	if err != nil {
+		return "", fmt.Errorf("storage: get conflict group kind: %w", err)
+	}
+	return kind, nil
+}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/authz"
+	"github.com/ashita-ai/akashi/internal/conflicts"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/ratelimit"
 	"github.com/ashita-ai/akashi/internal/search"
@@ -49,6 +50,9 @@ type Handlers struct {
 	signupLimiter ratelimit.Limiter
 	// trustProxy controls whether to read client IP from X-Forwarded-For.
 	trustProxy bool
+	// resolutionRecorder records conflict resolution events for OTel metrics.
+	// Nil-safe: callers check before use.
+	resolutionRecorder conflicts.ResolutionRecorder
 }
 
 // HandlersDeps holds all dependencies for constructing Handlers.
@@ -70,6 +74,7 @@ type HandlersDeps struct {
 	DecisionHooks           []DecisionHook
 	AutoTrace               bool
 	TrustProxy              bool
+	ResolutionRecorder      conflicts.ResolutionRecorder
 }
 
 // NewHandlers creates a new Handlers with all dependencies.
@@ -93,6 +98,7 @@ func NewHandlers(d HandlersDeps) *Handlers {
 		hookChecks:              newHookCheckStore(),
 		autoTrace:               d.AutoTrace,
 		trustProxy:              d.TrustProxy,
+		resolutionRecorder:      d.ResolutionRecorder,
 	}
 }
 

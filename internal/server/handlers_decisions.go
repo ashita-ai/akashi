@@ -680,6 +680,10 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.resolutionRecorder != nil {
+		h.resolutionRecorder.RecordResolution(r.Context(), req.Status, string(conflict.ConflictKind), 1)
+	}
+
 	writeJSON(w, r, http.StatusOK, conflict)
 }
 
@@ -740,6 +744,13 @@ func (h *Handlers) HandleResolveConflictGroup(w http.ResponseWriter, r *http.Req
 		}
 		h.writeInternalError(w, r, "failed to resolve conflict group", err)
 		return
+	}
+
+	if h.resolutionRecorder != nil && affected > 0 {
+		groupKind, kindErr := h.db.GetConflictGroupKind(r.Context(), groupID, orgID)
+		if kindErr == nil {
+			h.resolutionRecorder.RecordResolution(r.Context(), req.Status, groupKind, affected)
+		}
 	}
 
 	writeJSON(w, r, http.StatusOK, model.ConflictGroupResolveResult{
@@ -845,6 +856,10 @@ func (h *Handlers) HandleAdjudicateConflict(w http.ResponseWriter, r *http.Reque
 		}
 		h.writeInternalError(w, r, "failed to adjudicate conflict", err)
 		return
+	}
+
+	if h.resolutionRecorder != nil {
+		h.resolutionRecorder.RecordResolution(r.Context(), "resolved", string(conflict.ConflictKind), 1)
 	}
 
 	// Return the updated conflict.

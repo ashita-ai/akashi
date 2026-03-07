@@ -1525,6 +1525,24 @@ func (db *DB) MarkDecisionConflictScored(ctx context.Context, id, orgID uuid.UUI
 	return nil
 }
 
+// CountUnscoredDecisions returns the number of decisions that have embeddings
+// but have not yet been conflict-scored. Used by the OpenTelemetry observable
+// gauge callback to report backfill progress.
+// SECURITY: Intentionally global — aggregate metric with no tenant data exposed.
+func (db *DB) CountUnscoredDecisions(ctx context.Context) (int64, error) {
+	var count int64
+	err := db.pool.QueryRow(ctx,
+		`SELECT count(*) FROM decisions
+		 WHERE valid_to IS NULL
+		   AND embedding IS NOT NULL
+		   AND outcome_embedding IS NOT NULL
+		   AND conflict_scored_at IS NULL`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("storage: count unscored decisions: %w", err)
+	}
+	return count, nil
+}
+
 // ResetConflictScoredAt clears conflict_scored_at for all decisions, forcing
 // the next backfill to re-score everything. Used when transitioning from
 // embedding-only to LLM-validated scoring so all pairs get re-evaluated.
