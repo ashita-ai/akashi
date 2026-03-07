@@ -71,6 +71,7 @@ type Config struct {
 	ConflictEarlyExitFloor        float64 // Min pre-LLM significance for early exit pruning (default: 0.25, 0 disables).
 	CrossEncoderURL               string  // URL of the cross-encoder reranking service (empty = disabled).
 	CrossEncoderThreshold         float64 // Min cross-encoder score to proceed to LLM validation (default: 0.50).
+	ClaimExtractionLLM            bool    // Use the conflict LLM model for structured claim extraction (default: false).
 	ForceConflictRescore          bool    // When true (and LLM validator configured), clear all conflicts and re-score at startup.
 
 	// Event WAL (write-ahead log) for crash-durable event buffering.
@@ -174,6 +175,7 @@ func Load() (Config, error) {
 	cfg.SkipEmbeddedMigrations, errs = collectBool(errs, "AKASHI_SKIP_EMBEDDED_MIGRATIONS", false)
 	cfg.EnableDestructiveDelete, errs = collectBool(errs, "AKASHI_ENABLE_DESTRUCTIVE_DELETE", false)
 	cfg.WALDisable, errs = collectBool(errs, "AKASHI_WAL_DISABLE", false)
+	cfg.ClaimExtractionLLM, errs = collectBool(errs, "AKASHI_CLAIM_EXTRACTION_LLM", false)
 	cfg.ForceConflictRescore, errs = collectBool(errs, "AKASHI_FORCE_CONFLICT_RESCORE", false)
 	cfg.SignupEnabled, errs = collectBool(errs, "AKASHI_SIGNUP_ENABLED", false)
 	cfg.HooksEnabled, errs = collectBool(errs, "AKASHI_HOOKS_ENABLED", true)

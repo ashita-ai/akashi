@@ -239,6 +239,9 @@ func New(opts ...Option) (*App, error) {
 
 	// Create decision service.
 	decisionSvc := decisions.New(db, embedder, searcher, logger, conflictScorer)
+	if extractor := newClaimExtractor(cfg, logger); extractor != nil {
+		decisionSvc.SetClaimExtractor(extractor)
+	}
 	rescoreMetrics := search.RegisterReScoreMetrics(logger)
 	decisionSvc.SetReScoreMetrics(rescoreMetrics)
 	// PercentileCache is wired after App construction in Run() since it needs
@@ -1024,6 +1027,24 @@ func newConflictValidator(cfg config.Config, logger *slog.Logger) conflicts.Vali
 	}
 	logger.Info("conflict validator: noop (no LLM configured, embedding-only conflicts)")
 	return conflicts.NoopValidator{}
+}
+
+// newClaimExtractor creates an LLM-backed claim extractor when configured.
+// Returns nil when LLM claim extraction is disabled or no LLM is available.
+func newClaimExtractor(cfg config.Config, logger *slog.Logger) conflicts.ClaimExtractor {
+	if !cfg.ClaimExtractionLLM {
+		return nil
+	}
+	if cfg.ConflictLLMModel != "" {
+		logger.Info("claim extractor: ollama", "model", cfg.ConflictLLMModel, "url", cfg.OllamaURL)
+		return conflicts.NewOllamaExtractor(cfg.OllamaURL, cfg.ConflictLLMModel, cfg.ConflictLLMThreads)
+	}
+	if cfg.OpenAIAPIKey != "" {
+		logger.Info("claim extractor: openai (gpt-4o-mini)")
+		return conflicts.NewOpenAIExtractor(cfg.OpenAIAPIKey, "gpt-4o-mini")
+	}
+	logger.Warn("claim extraction LLM requested but no LLM configured, using regex fallback")
+	return nil
 }
 
 func ollamaReachable(baseURL string) bool {
