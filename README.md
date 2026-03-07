@@ -263,14 +263,46 @@ Replace `admin` with your agent ID and `<your-api-key>` with your `AKASHI_ADMIN_
 <details>
 <summary>Using JWT tokens instead</summary>
 
+JWTs work fine for MCP config files if you configure a long enough expiration. The default is 24 hours — set `AKASHI_JWT_EXPIRATION=8760h` in your `.env` for 1-year tokens that won't need refreshing.
+
+**Requirements for long-lived JWTs:**
+
+1. Persistent signing keys — without them, every server restart invalidates all tokens regardless of expiration. Generate them once:
+
+```bash
+mkdir -p data
+openssl genpkey -algorithm ed25519 -out data/jwt_private.pem
+openssl pkey -in data/jwt_private.pem -pubout -out data/jwt_public.pem
+chmod 600 data/jwt_private.pem data/jwt_public.pem
+```
+
+Then set in `.env`:
+```
+AKASHI_JWT_PRIVATE_KEY=/data/jwt_private.pem
+AKASHI_JWT_PUBLIC_KEY=/data/jwt_public.pem
+AKASHI_JWT_EXPIRATION=8760h
+```
+
+2. Issue a token:
+
 ```bash
 AKASHI_ADMIN_API_KEY="${AKASHI_ADMIN_API_KEY:-admin}"
 TOKEN=$(curl -s -X POST http://localhost:8080/auth/token \
   -H 'Content-Type: application/json' \
-  -d "{\"agent_id\":\"admin\",\"api_key\":\"$AKASHI_ADMIN_API_KEY\"}" | jq -r '.data.token')
+  -d "{\"agent_id\":\"admin\",\"api_key\":\"$AKASHI_ADMIN_API_KEY\"}" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['token'])")
 ```
 
-Then use `Authorization: Bearer $TOKEN`. JWTs expire after 24 hours (configurable via `AKASHI_JWT_EXPIRATION`). With ephemeral signing keys (the default when `AKASHI_JWT_PRIVATE_KEY` is unset), tokens are also invalidated on every server restart.
+3. Wire Claude Code:
+
+```bash
+claude mcp add --transport http --scope user akashi http://localhost:8080/mcp \
+  --header "Authorization: Bearer $TOKEN"
+```
+
+The token is valid for 1 year from issuance. If you restart the server with the same key files, existing tokens remain valid.
+
+> **Simpler alternative:** `ApiKey admin:<your-api-key>` never expires at all and requires no token issuance step. See the examples above.
 
 </details>
 
