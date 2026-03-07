@@ -10,19 +10,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/pgvector/pgvector-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
 	"github.com/ashita-ai/akashi/internal/storage"
-	"github.com/ashita-ai/akashi/migrations"
+	"github.com/ashita-ai/akashi/internal/testutil"
 )
 
 var (
@@ -31,56 +28,19 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	tc := testutil.MustStartTimescaleDB()
+
 	ctx := context.Background()
-
-	req := testcontainers.ContainerRequest{
-		Image:        "timescale/timescaledb:latest-pg18",
-		ExposedPorts: []string{"5432/tcp"},
-		Env: map[string]string{
-			"POSTGRES_USER":     "akashi",
-			"POSTGRES_PASSWORD": "akashi",
-			"POSTGRES_DB":       "akashi",
-		},
-		WaitingFor: wait.ForLog("database system is ready to accept connections").
-			WithOccurrence(2).
-			WithStartupTimeout(60 * time.Second),
-	}
-
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
+	logger := testutil.TestLogger()
+	var err error
+	testDB, err = tc.NewTestDB(ctx, logger)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to start container: %v\n", err)
+		tc.Terminate()
+		fmt.Fprintf(os.Stderr, "test db: %v\n", err)
 		os.Exit(1)
 	}
-
-	host, _ := container.Host(ctx)
-	port, _ := container.MappedPort(ctx, "5432")
-	dsn := fmt.Sprintf("postgres://akashi:akashi@%s:%s/akashi?sslmode=disable", host, port.Port())
-
-	bootstrapConn, err := pgx.Connect(ctx, dsn)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to bootstrap: %v\n", err)
-		os.Exit(1)
-	}
-	_, _ = bootstrapConn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS vector")
-	_, _ = bootstrapConn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS timescaledb")
-	_ = bootstrapConn.Close(ctx)
-
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	testDB, err = storage.New(ctx, dsn, "", logger)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create DB: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := testDB.RunMigrations(ctx, migrations.FS); err != nil {
-		fmt.Fprintf(os.Stderr, "migrations failed: %v\n", err)
-		os.Exit(1)
-	}
-
 	if err := testDB.EnsureDefaultOrg(ctx); err != nil {
+		tc.Terminate()
 		fmt.Fprintf(os.Stderr, "ensure default org: %v\n", err)
 		os.Exit(1)
 	}
@@ -89,8 +49,7 @@ func TestMain(m *testing.M) {
 	testSvc = decisions.New(testDB, embedder, nil, logger, nil)
 
 	code := m.Run()
-	testDB.Close(ctx)
-	_ = container.Terminate(ctx)
+	tc.Terminate()
 	os.Exit(code)
 }
 

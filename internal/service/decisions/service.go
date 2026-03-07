@@ -843,62 +843,54 @@ func (s *Service) ResolveOrCreateAgent(ctx context.Context, orgID uuid.UUID, age
 // Returns the number of decisions backfilled. Skips silently if the embedding
 // provider is noop (returns 0, nil).
 func (s *Service) BackfillEmbeddings(ctx context.Context, batchSize int) (int, error) {
-	// Probe the provider — skip entirely if noop.
-	if _, err := s.embedder.Embed(ctx, "probe"); errors.Is(err, embedding.ErrNoProvider) {
-		return 0, nil
-	}
-
-	decs, err := s.db.FindUnembeddedDecisions(ctx, batchSize)
-	if err != nil {
-		return 0, fmt.Errorf("backfill: find unembedded: %w", err)
-	}
-	if len(decs) == 0 {
-		return 0, nil
-	}
-
-	// Build embedding texts (same format as Trace).
-	texts := make([]string, len(decs))
-	for i, d := range decs {
-		texts[i] = d.DecisionType + ": " + d.Outcome
-		if d.Reasoning != nil {
-			texts[i] += " " + *d.Reasoning
-		}
-	}
-
-	vecs, err := s.embedder.EmbedBatch(ctx, texts)
-	if err != nil {
-		return 0, fmt.Errorf("backfill: embed batch: %w", err)
-	}
-
-	var backfilled int
-	for i, d := range decs {
-		if err := s.validateEmbeddingDims(vecs[i]); err != nil {
-			s.logger.Warn("backfill: dimension mismatch, skipping", "decision_id", d.ID, "error", err)
-			continue
-		}
-		if err := s.db.BackfillEmbedding(ctx, d.ID, d.OrgID, vecs[i]); err != nil {
-			s.logger.Warn("backfill: update failed", "decision_id", d.ID, "error", err)
-			continue
-		}
-		backfilled++
-	}
-
-	if backfilled > 0 {
-		s.logger.Info("backfill: embedded decisions", "count", backfilled, "batch", len(decs))
-	}
-	return backfilled, nil
+	return s.backfillBatch(ctx, batchSize, backfillSpec{
+		find:  s.db.FindUnembeddedDecisions,
+		text:  embeddingText,
+		write: s.db.BackfillEmbedding,
+		label: "backfill: embedded decisions",
+	})
 }
 
 // BackfillOutcomeEmbeddings populates outcome_embedding for decisions that have
 // embedding but no outcome_embedding (Option B). Returns the number backfilled.
 func (s *Service) BackfillOutcomeEmbeddings(ctx context.Context, batchSize int) (int, error) {
+	return s.backfillBatch(ctx, batchSize, backfillSpec{
+		find:  s.db.FindDecisionsMissingOutcomeEmbedding,
+		text:  func(d storage.UnembeddedDecision) string { return d.Outcome },
+		write: s.db.BackfillOutcomeEmbedding,
+		label: "backfill: outcome embeddings",
+	})
+}
+
+// embeddingText builds the canonical embedding input for a decision (same
+// format used by prepareTrace).
+func embeddingText(d storage.UnembeddedDecision) string {
+	s := d.DecisionType + ": " + d.Outcome
+	if d.Reasoning != nil {
+		s += " " + *d.Reasoning
+	}
+	return s
+}
+
+// backfillSpec parameterizes the shared backfill loop.
+type backfillSpec struct {
+	find  func(ctx context.Context, limit int) ([]storage.UnembeddedDecision, error)
+	text  func(d storage.UnembeddedDecision) string
+	write func(ctx context.Context, id uuid.UUID, orgID uuid.UUID, vec pgvector.Vector) error
+	label string
+}
+
+// backfillBatch probes the embedding provider, finds records needing backfill,
+// embeds them in a single batch, and writes each vector back. Shared by
+// BackfillEmbeddings and BackfillOutcomeEmbeddings.
+func (s *Service) backfillBatch(ctx context.Context, batchSize int, spec backfillSpec) (int, error) {
 	if _, err := s.embedder.Embed(ctx, "probe"); errors.Is(err, embedding.ErrNoProvider) {
 		return 0, nil
 	}
 
-	decs, err := s.db.FindDecisionsMissingOutcomeEmbedding(ctx, batchSize)
+	decs, err := spec.find(ctx, batchSize)
 	if err != nil {
-		return 0, fmt.Errorf("backfill outcome: find: %w", err)
+		return 0, fmt.Errorf("%s: find: %w", spec.label, err)
 	}
 	if len(decs) == 0 {
 		return 0, nil
@@ -906,29 +898,29 @@ func (s *Service) BackfillOutcomeEmbeddings(ctx context.Context, batchSize int) 
 
 	texts := make([]string, len(decs))
 	for i, d := range decs {
-		texts[i] = d.Outcome
+		texts[i] = spec.text(d)
 	}
 
 	vecs, err := s.embedder.EmbedBatch(ctx, texts)
 	if err != nil {
-		return 0, fmt.Errorf("backfill outcome: embed: %w", err)
+		return 0, fmt.Errorf("%s: embed batch: %w", spec.label, err)
 	}
 
 	var backfilled int
 	for i, d := range decs {
 		if err := s.validateEmbeddingDims(vecs[i]); err != nil {
-			s.logger.Warn("backfill outcome: dimension mismatch", "decision_id", d.ID, "error", err)
+			s.logger.Warn(spec.label+": dimension mismatch, skipping", "decision_id", d.ID, "error", err)
 			continue
 		}
-		if err := s.db.BackfillOutcomeEmbedding(ctx, d.ID, d.OrgID, vecs[i]); err != nil {
-			s.logger.Warn("backfill outcome: update failed", "decision_id", d.ID, "error", err)
+		if err := spec.write(ctx, d.ID, d.OrgID, vecs[i]); err != nil {
+			s.logger.Warn(spec.label+": update failed", "decision_id", d.ID, "error", err)
 			continue
 		}
 		backfilled++
 	}
 
 	if backfilled > 0 {
-		s.logger.Info("backfill: outcome embeddings", "count", backfilled, "batch", len(decs))
+		s.logger.Info(spec.label, "count", backfilled, "batch", len(decs))
 	}
 	return backfilled, nil
 }

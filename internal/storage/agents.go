@@ -14,6 +14,33 @@ import (
 	"github.com/ashita-ai/akashi/internal/model"
 )
 
+// agentCols is the SELECT column list for the standard 12-column agent query.
+const agentCols = `id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at, last_seen`
+
+// scanOneAgent scans the 12-column agentCols from a single row.
+func scanOneAgent(row pgxRowScanner) (model.Agent, error) {
+	var a model.Agent
+	if err := row.Scan(
+		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
+		&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt, &a.LastSeen,
+	); err != nil {
+		return model.Agent{}, fmt.Errorf("storage: scan agent: %w", err)
+	}
+	return a, nil
+}
+
+func scanAgents(rows pgx.Rows) ([]model.Agent, error) {
+	var agents []model.Agent
+	for rows.Next() {
+		a, err := scanOneAgent(rows)
+		if err != nil {
+			return nil, err
+		}
+		agents = append(agents, a)
+	}
+	return agents, rows.Err()
+}
+
 // CreateAgent inserts a new agent.
 func (db *DB) CreateAgent(ctx context.Context, agent model.Agent) (model.Agent, error) {
 	if agent.ID == uuid.Nil {
@@ -170,27 +197,16 @@ func (db *DB) CreateAgentAndKeyTx(
 // preventing cross-tenant confusion when agent_ids collide across orgs.
 func (db *DB) GetAgentsByAgentIDGlobal(ctx context.Context, agentID string) ([]model.Agent, error) {
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at, last_seen
-		 FROM agents WHERE agent_id = $1 ORDER BY created_at ASC`, agentID,
+		`SELECT `+agentCols+` FROM agents WHERE agent_id = $1 ORDER BY created_at ASC`, agentID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("storage: get agents by agent_id: %w", err)
 	}
 	defer rows.Close()
 
-	var agents []model.Agent
-	for rows.Next() {
-		var a model.Agent
-		if err := rows.Scan(
-			&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
-			&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt, &a.LastSeen,
-		); err != nil {
-			return nil, fmt.Errorf("storage: scan agent: %w", err)
-		}
-		agents = append(agents, a)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("storage: get agents by agent_id: %w", err)
+	agents, err := scanAgents(rows)
+	if err != nil {
+		return nil, err
 	}
 	if len(agents) == 0 {
 		return nil, fmt.Errorf("storage: agent %s: %w", agentID, ErrNotFound)
@@ -200,14 +216,10 @@ func (db *DB) GetAgentsByAgentIDGlobal(ctx context.Context, agentID string) ([]m
 
 // GetAgentByAgentID retrieves an agent by agent_id within an org.
 func (db *DB) GetAgentByAgentID(ctx context.Context, orgID uuid.UUID, agentID string) (model.Agent, error) {
-	var a model.Agent
-	err := db.pool.QueryRow(ctx,
-		`SELECT id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at, last_seen
-		 FROM agents WHERE org_id = $1 AND agent_id = $2`, orgID, agentID,
-	).Scan(
-		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
-		&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt, &a.LastSeen,
+	row := db.pool.QueryRow(ctx,
+		`SELECT `+agentCols+` FROM agents WHERE org_id = $1 AND agent_id = $2`, orgID, agentID,
 	)
+	a, err := scanOneAgent(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return model.Agent{}, fmt.Errorf("storage: agent %s: %w", agentID, ErrNotFound)
@@ -220,14 +232,10 @@ func (db *DB) GetAgentByAgentID(ctx context.Context, orgID uuid.UUID, agentID st
 // GetAgentByID retrieves an agent by its internal UUID, scoped to an org for
 // defense-in-depth tenant isolation.
 func (db *DB) GetAgentByID(ctx context.Context, id uuid.UUID, orgID uuid.UUID) (model.Agent, error) {
-	var a model.Agent
-	err := db.pool.QueryRow(ctx,
-		`SELECT id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at, last_seen
-		 FROM agents WHERE id = $1 AND org_id = $2`, id, orgID,
-	).Scan(
-		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
-		&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt, &a.LastSeen,
+	row := db.pool.QueryRow(ctx,
+		`SELECT `+agentCols+` FROM agents WHERE id = $1 AND org_id = $2`, id, orgID,
 	)
+	a, err := scanOneAgent(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return model.Agent{}, fmt.Errorf("storage: agent %s: %w", id, ErrNotFound)
@@ -250,8 +258,7 @@ func (db *DB) ListAgents(ctx context.Context, orgID uuid.UUID, limit, offset int
 		offset = 0
 	}
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at, last_seen
-		 FROM agents WHERE org_id = $1 ORDER BY created_at ASC LIMIT $2 OFFSET $3`,
+		`SELECT `+agentCols+` FROM agents WHERE org_id = $1 ORDER BY created_at ASC LIMIT $2 OFFSET $3`,
 		orgID, limit, offset,
 	)
 	if err != nil {
@@ -259,18 +266,7 @@ func (db *DB) ListAgents(ctx context.Context, orgID uuid.UUID, limit, offset int
 	}
 	defer rows.Close()
 
-	var agents []model.Agent
-	for rows.Next() {
-		var a model.Agent
-		if err := rows.Scan(
-			&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
-			&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt, &a.LastSeen,
-		); err != nil {
-			return nil, fmt.Errorf("storage: scan agent: %w", err)
-		}
-		agents = append(agents, a)
-	}
-	return agents, rows.Err()
+	return scanAgents(rows)
 }
 
 // CountAgents returns the number of registered agents in an org.
