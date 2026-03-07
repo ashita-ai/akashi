@@ -171,7 +171,9 @@ func (q *QdrantIndex) EnsureCollection(ctx context.Context) error {
 // FindSimilar returns decision IDs with embeddings similar to the given embedding
 // within an org. Used internally for conflict detection and consensus scoring.
 // excludeID is stripped from results in Go (simpler than a Qdrant filter for one ID).
-// project, when non-nil, restricts results to decisions with a matching project payload field.
+// project scoping is strict: a non-empty project matches only that project's points;
+// a nil/empty project matches only points where the project payload field is absent.
+// This prevents cross-project conflict contamination when decisions share an org.
 func (q *QdrantIndex) FindSimilar(ctx context.Context, orgID uuid.UUID, embedding []float32, excludeID uuid.UUID, project *string, limit int) ([]Result, error) {
 	if limit <= 0 {
 		limit = 50
@@ -182,6 +184,11 @@ func (q *QdrantIndex) FindSimilar(ctx context.Context, orgID uuid.UUID, embeddin
 	}
 	if project != nil && *project != "" {
 		must = append(must, qdrant.NewMatch("project", *project))
+	} else {
+		// No project set: only match other untagged decisions. Without this,
+		// nil-project decisions would match the entire org corpus and generate
+		// spurious cross-project conflicts.
+		must = append(must, qdrant.NewIsNull("project"))
 	}
 
 	// Over-fetch by 1 to absorb the excludeID removal.
