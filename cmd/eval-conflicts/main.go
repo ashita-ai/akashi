@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -72,8 +73,12 @@ func run() int {
 }
 
 func authenticate(baseURL, apiKey string) (string, error) {
+	authURL, err := url.JoinPath(baseURL, "/auth/token")
+	if err != nil {
+		return "", fmt.Errorf("build auth URL: %w", err)
+	}
 	body, _ := json.Marshal(map[string]string{"api_key": apiKey})
-	resp, err := http.Post(baseURL+"/auth/token", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(authURL, "application/json", bytes.NewReader(body)) //nolint:gosec // URL is operator-provided via AKASHI_URL env var
 	if err != nil {
 		return "", fmt.Errorf("request: %w", err)
 	}
@@ -99,7 +104,11 @@ type evalResponse struct {
 }
 
 func runEval(baseURL, token string) (conflicts.EvalMetrics, []conflicts.EvalResult, error) {
-	req, err := http.NewRequest("POST", baseURL+"/v1/admin/conflicts/eval", bytes.NewReader([]byte("{}")))
+	evalURL, err := url.JoinPath(baseURL, "/v1/admin/conflicts/eval")
+	if err != nil {
+		return conflicts.EvalMetrics{}, nil, fmt.Errorf("build eval URL: %w", err)
+	}
+	req, err := http.NewRequest("POST", evalURL, bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return conflicts.EvalMetrics{}, nil, fmt.Errorf("create request: %w", err)
 	}
