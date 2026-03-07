@@ -207,7 +207,6 @@ func (q *QdrantIndex) FindSimilar(ctx context.Context, orgID uuid.UUID, embeddin
 	}
 
 	results := make([]Result, 0, len(scored))
-	qdrantPos := 0
 	for _, sp := range scored {
 		idStr := sp.Id.GetUuid()
 		if idStr == "" {
@@ -218,12 +217,10 @@ func (q *QdrantIndex) FindSimilar(ctx context.Context, orgID uuid.UUID, embeddin
 			q.logger.Warn("qdrant: invalid UUID in point ID", "id", idStr)
 			continue
 		}
-		rank := qdrantPos
-		qdrantPos++
 		if decisionID == excludeID {
 			continue // Strip the source decision from its own neighbor list.
 		}
-		results = append(results, Result{DecisionID: decisionID, Score: sp.Score, QdrantRank: rank})
+		results = append(results, Result{DecisionID: decisionID, Score: sp.Score, QdrantRank: len(results)})
 		if len(results) == limit {
 			break
 		}

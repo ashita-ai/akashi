@@ -344,6 +344,33 @@ func TestLoad_ConflictScoringThresholdInvalid(t *testing.T) {
 	}
 }
 
+func TestLoad_EarlyExitFloorExceedsThreshold(t *testing.T) {
+	t.Setenv("AKASHI_CONFLICT_EARLY_EXIT_FLOOR", "0.50")
+	t.Setenv("AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD", "0.30")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected Load() to fail when early exit floor exceeds significance threshold")
+	}
+	got := err.Error()
+	if !contains(got, "AKASHI_CONFLICT_EARLY_EXIT_FLOOR") {
+		t.Fatalf("error should mention AKASHI_CONFLICT_EARLY_EXIT_FLOOR, got: %s", got)
+	}
+	if !contains(got, "AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD") {
+		t.Fatalf("error should mention AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD, got: %s", got)
+	}
+}
+
+func TestLoad_EarlyExitFloorEqualsThreshold(t *testing.T) {
+	t.Setenv("AKASHI_CONFLICT_EARLY_EXIT_FLOOR", "0.30")
+	t.Setenv("AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD", "0.30")
+
+	_, err := Load()
+	if err != nil {
+		t.Fatalf("expected Load() to succeed when floor equals threshold, got: %v", err)
+	}
+}
+
 func TestLoad_AllEnvVarsHonored(t *testing.T) {
 	t.Setenv("AKASHI_PORT", "9090")
 	t.Setenv("DATABASE_URL", "postgres://test:test@db:5432/testdb")

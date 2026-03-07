@@ -1028,10 +1028,10 @@ func TestWithEarlyExitFloor(t *testing.T) {
 	assert.Equal(t, 0.5, scorer.earlyExitFloor, "should accept 0.5")
 
 	scorer = scorer.WithEarlyExitFloor(0)
-	assert.Equal(t, 0.5, scorer.earlyExitFloor, "0 should be ignored (preserves previous)")
+	assert.Equal(t, 0.0, scorer.earlyExitFloor, "0 should disable early exit")
 
 	scorer = scorer.WithEarlyExitFloor(-0.1)
-	assert.Equal(t, 0.5, scorer.earlyExitFloor, "negative should be ignored")
+	assert.Equal(t, 0.0, scorer.earlyExitFloor, "negative should be ignored")
 }
 
 func TestWithCandidateLimit(t *testing.T) {
