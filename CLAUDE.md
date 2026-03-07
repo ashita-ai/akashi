@@ -4,13 +4,13 @@ Decision trace layer for multi-agent AI systems ("git blame for AI decisions").
 
 ## Tech stack
 
-- **Server:** Go 1.25, stdlib `net/http` (Go 1.22+ routing), no framework
+- **Server:** Go 1.26, stdlib `net/http` (Go 1.22+ routing), no framework
 - **Database:** PostgreSQL 18 + pgvector + TimescaleDB, Atlas for migrations
 - **Auth:** Ed25519 JWT + Argon2id API keys, RBAC (platform_admin > org_owner > admin > agent > reader)
 - **UI:** React 19, TypeScript, Vite, Tailwind CSS (embedded via `go:embed` with `ui` build tag)
 - **SDKs:** Go, Python, TypeScript (in `sdk/`)
 - **Testing:** `testing` + testify assertions, testcontainers-go for integration tests
-- **Lint:** golangci-lint v2.8.0, Atlas migrate validate
+- **Lint:** golangci-lint v2.9.0, Atlas migrate validate
 
 ## First-time setup
 
@@ -46,7 +46,7 @@ make ci                                  # full local CI mirror
 
 **If go mod tidy changes go.mod/go.sum**, stage them in the commit.
 **If atlas validate fails**, run `atlas migrate hash --dir file://migrations` and stage `migrations/atlas.sum`.
-**golangci-lint location:** `~/go/bin/golangci-lint` (install: `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.8.0`).
+**golangci-lint location:** `~/go/bin/golangci-lint` (install: `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0`).
 
 ## Project structure
 
