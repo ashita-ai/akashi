@@ -38,6 +38,7 @@ See [ADR-007](../adrs/ADR-007-dual-postgres-connections.md) for why two connecti
 | `AKASHI_JWT_PRIVATE_KEY` | _(empty)_ | Path to Ed25519 private key PEM file. **Empty = ephemeral key generated on every startup** — all tokens are invalidated on each restart. Use persistent keys for any real use. |
 | `AKASHI_JWT_PUBLIC_KEY` | _(empty)_ | Path to Ed25519 public key PEM file (must be set alongside the private key) |
 | `AKASHI_JWT_EXPIRATION` | `24h` | JWT token lifetime |
+| `AKASHI_SIGNUP_ENABLED` | `false` | Enable unauthenticated `POST /auth/signup` for self-serve org creation. Keep `false` for self-hosted; set `true` for cloud deployments |
 
 Both key files must have `0600` permissions. The server rejects looser modes at startup.
 
