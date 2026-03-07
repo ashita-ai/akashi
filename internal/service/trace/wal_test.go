@@ -298,9 +298,7 @@ func TestWAL_BatchSyncMode(t *testing.T) {
 	events := testEvents(3)
 	require.NoError(t, w.Write(events))
 
-	// Let the sync goroutine fire at least once.
-	time.Sleep(100 * time.Millisecond)
-
+	// Close flushes pending syncs and stops the sync goroutine.
 	require.NoError(t, w.Close())
 
 	// Verify events are recoverable.

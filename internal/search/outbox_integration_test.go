@@ -775,10 +775,7 @@ func TestOutboxWorker_FullCycle(t *testing.T) {
 	w.Start(bgCtx)
 	assert.True(t, w.started.Load())
 
-	// Let the worker tick a couple of times.
-	time.Sleep(200 * time.Millisecond)
-
-	// Drain should complete cleanly.
+	// Drain triggers a final poll and blocks until complete — no sleep needed.
 	drainCtx, drainCancel := context.WithTimeout(ctx, 3*time.Second)
 	defer drainCancel()
 	w.Drain(drainCtx)
@@ -1082,9 +1079,7 @@ func TestOutboxWorker_FullCycleWithIndex(t *testing.T) {
 	w.Start(bgCtx)
 	assert.True(t, w.started.Load())
 
-	// Let the worker tick a couple of times.
-	time.Sleep(300 * time.Millisecond)
-
+	// Drain triggers a final poll and blocks until complete — no sleep needed.
 	drainCtx, drainCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer drainCancel()
 	w.Drain(drainCtx)
