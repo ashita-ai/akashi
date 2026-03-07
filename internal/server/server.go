@@ -12,6 +12,7 @@ import (
 
 	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/authz"
+	"github.com/ashita-ai/akashi/internal/conflicts"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/ratelimit"
 	"github.com/ashita-ai/akashi/internal/search"
@@ -89,6 +90,9 @@ type ServerConfig struct {
 	HooksEnabled bool   // Enable /hooks/* IDE integration endpoints.
 	HooksAPIKey  string // Optional API key for non-localhost hook access.
 	AutoTrace    bool   // Auto-trace git commits from PostToolUse hooks.
+
+	// Conflict metrics.
+	ResolutionRecorder conflicts.ResolutionRecorder
 }
 
 // New creates a new HTTP server with all routes configured.
@@ -110,6 +114,7 @@ func New(cfg ServerConfig) *Server {
 		DecisionHooks:           cfg.DecisionHooks,
 		AutoTrace:               cfg.AutoTrace,
 		TrustProxy:              cfg.TrustProxy,
+		ResolutionRecorder:      cfg.ResolutionRecorder,
 	})
 
 	mux := http.NewServeMux()
