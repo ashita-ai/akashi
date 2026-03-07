@@ -1299,3 +1299,330 @@ func TestScoreForDecision_SameRepoAllowsConflict(t *testing.T) {
 	}
 	assert.True(t, found, "same-repo decisions with conflicting embeddings should produce a conflict")
 }
+
+// ---------------------------------------------------------------------------
+// Cross-encoder reranking tests
+// ---------------------------------------------------------------------------
+
+// mockCrossEncoder records calls and returns a fixed score or error.
+type mockCrossEncoder struct {
+	score float64
+	err   error
+	calls int
+}
+
+func (m *mockCrossEncoder) ScoreContradiction(_ context.Context, _, _ string) (float64, error) {
+	m.calls++
+	return m.score, m.err
+}
+
+// scorerMockValidator records calls and returns a fixed result or error.
+// Named differently from mockValidator in validator_test.go to avoid redeclaration.
+type scorerMockValidator struct {
+	result ValidationResult
+	err    error
+	calls  int
+}
+
+func (m *scorerMockValidator) Validate(_ context.Context, _ ValidateInput) (ValidationResult, error) {
+	m.calls++
+	return m.result, m.err
+}
+
+func TestScoreForDecision_CrossEncoderFilters(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "ce-filter-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+
+	topicEmb := makeEmbedding(600, 1.0)
+	outcomeEmbA := makeEmbedding(601, 1.0)
+	outcomeEmbB := makeEmbedding(602, 1.0) // orthogonal to A
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use Redis CE filter test",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use Memcached CE filter test",
+		Confidence: 0.7, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+	})
+	require.NoError(t, err)
+
+	// Cross-encoder returns LOW score (below threshold) — pair should be filtered.
+	ce := &mockCrossEncoder{score: 0.20}
+	// LLM validator that should NOT be called.
+	validator := &scorerMockValidator{
+		result: ValidationResult{Relationship: "contradiction", Severity: "high"},
+	}
+
+	scorer := NewScorer(testDB, logger, 0.1, validator, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
+	scorer = scorer.WithCrossEncoder(ce, 0.50)
+	scorer.ScoreForDecision(ctx, dB.ID, orgID)
+
+	// Cross-encoder should have been called.
+	assert.Greater(t, ce.calls, 0, "cross-encoder should be called for candidate pairs")
+	// LLM validator should NOT have been called (cross-encoder filtered the pair).
+	assert.Equal(t, 0, validator.calls, "LLM validator should not be called when cross-encoder filters the pair")
+
+	// No conflict should be inserted.
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 1000, 0)
+	require.NoError(t, err)
+	for _, c := range conflicts {
+		aMatch := c.DecisionAID == dA.ID || c.DecisionBID == dA.ID
+		bMatch := c.DecisionAID == dB.ID || c.DecisionBID == dB.ID
+		assert.False(t, aMatch && bMatch,
+			"cross-encoder filtered pair should NOT produce a conflict")
+	}
+}
+
+func TestScoreForDecision_CrossEncoderPasses(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "ce-pass-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+
+	topicEmb := makeEmbedding(610, 1.0)
+	outcomeEmbA := makeEmbedding(611, 1.0)
+	outcomeEmbB := makeEmbedding(612, 1.0)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use Redis CE pass test",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use Memcached CE pass test",
+		Confidence: 0.7, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+	})
+	require.NoError(t, err)
+
+	// Cross-encoder returns HIGH score (above threshold) — pair passes to LLM.
+	ce := &mockCrossEncoder{score: 0.85}
+	validator := &scorerMockValidator{
+		result: ValidationResult{Relationship: "contradiction", Severity: "high", Category: "strategic"},
+	}
+
+	scorer := NewScorer(testDB, logger, 0.1, validator, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
+	scorer = scorer.WithCrossEncoder(ce, 0.50)
+	scorer.ScoreForDecision(ctx, dB.ID, orgID)
+
+	// Both cross-encoder and LLM should have been called.
+	assert.Greater(t, ce.calls, 0, "cross-encoder should be called")
+	assert.Greater(t, validator.calls, 0, "LLM validator should be called when cross-encoder passes the pair")
+
+	// A conflict should be inserted with scoring_method "llm_v2".
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 1000, 0)
+	require.NoError(t, err)
+
+	var found bool
+	for _, c := range conflicts {
+		aMatch := c.DecisionAID == dA.ID || c.DecisionBID == dA.ID
+		bMatch := c.DecisionAID == dB.ID || c.DecisionBID == dB.ID
+		if aMatch && bMatch {
+			found = true
+			assert.Equal(t, "llm_v2", c.ScoringMethod,
+				"scoring method should be llm_v2 when cross-encoder passes to LLM")
+			break
+		}
+	}
+	assert.True(t, found, "cross-encoder-passed pair should produce a conflict")
+}
+
+func TestScoreForDecision_CrossEncoderFailOpen(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "ce-failopen-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+
+	topicEmb := makeEmbedding(620, 1.0)
+	outcomeEmbA := makeEmbedding(621, 1.0)
+	outcomeEmbB := makeEmbedding(622, 1.0)
+
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use Redis CE failopen test",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use Memcached CE failopen test",
+		Confidence: 0.7, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+	})
+	require.NoError(t, err)
+
+	// Cross-encoder returns an error — should fail open and proceed to LLM.
+	ce := &mockCrossEncoder{err: fmt.Errorf("connection refused")}
+	validator := &scorerMockValidator{
+		result: ValidationResult{Relationship: "contradiction", Severity: "medium"},
+	}
+
+	scorer := NewScorer(testDB, logger, 0.1, validator, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
+	scorer = scorer.WithCrossEncoder(ce, 0.50)
+	scorer.ScoreForDecision(ctx, dB.ID, orgID)
+
+	// Cross-encoder was attempted.
+	assert.Greater(t, ce.calls, 0, "cross-encoder should be attempted even when it errors")
+	// LLM should be called as fallback (fail-open).
+	assert.Greater(t, validator.calls, 0,
+		"LLM validator should be called when cross-encoder fails (fail-open)")
+}
+
+func TestScoreForDecision_CrossEncoderSkippedWithPairwiseScorer(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "ce-skip-ps-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+
+	topicEmb := makeEmbedding(630, 1.0)
+	outcomeEmbA := makeEmbedding(631, 1.0)
+	outcomeEmbB := makeEmbedding(632, 1.0)
+
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use Redis CE skip ps test",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use Memcached CE skip ps test",
+		Confidence: 0.7, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+	})
+	require.NoError(t, err)
+
+	// Cross-encoder should NOT be called when pairwise scorer is active.
+	ce := &mockCrossEncoder{score: 0.20}
+
+	// Enterprise pairwise scorer that overrides the confirmation step.
+	ps := &mockPairwiseScorer{score: 1.0, explanation: "enterprise says conflict"}
+
+	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
+	scorer = scorer.WithCrossEncoder(ce, 0.50)
+	scorer = scorer.WithPairwiseScorer(ps)
+	scorer.ScoreForDecision(ctx, dB.ID, orgID)
+
+	// Cross-encoder should NOT have been called.
+	assert.Equal(t, 0, ce.calls,
+		"cross-encoder should not be called when enterprise pairwise scorer is active")
+}
+
+// mockPairwiseScorer for testing cross-encoder + pairwise scorer interaction.
+type mockPairwiseScorer struct {
+	score       float32
+	explanation string
+	err         error
+	calls       int
+}
+
+func (m *mockPairwiseScorer) ScorePair(_ context.Context, _, _ model.Decision) (float32, string, error) {
+	m.calls++
+	return m.score, m.explanation, m.err
+}
+
+func TestScoreForDecision_CrossEncoderSkippedWithNoopValidator(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "ce-skip-noop-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+
+	topicEmb := makeEmbedding(640, 1.0)
+	outcomeEmbA := makeEmbedding(641, 1.0)
+	outcomeEmbB := makeEmbedding(642, 1.0)
+
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use Redis CE skip noop test",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use Memcached CE skip noop test",
+		Confidence: 0.7, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+	})
+	require.NoError(t, err)
+
+	// Cross-encoder should NOT be called when using NoopValidator.
+	ce := &mockCrossEncoder{score: 0.20}
+
+	// NoopValidator (nil validator defaults to NoopValidator).
+	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
+	scorer = scorer.WithCrossEncoder(ce, 0.50)
+	scorer.ScoreForDecision(ctx, dB.ID, orgID)
+
+	// Cross-encoder should NOT have been called (NoopValidator = no LLM to save).
+	assert.Equal(t, 0, ce.calls,
+		"cross-encoder should not be called when using NoopValidator (nothing to save)")
+}
+
+func TestWithCrossEncoder(t *testing.T) {
+	scorer := NewScorer(nil, slog.Default(), 0.3, nil, 0, 0)
+	assert.Nil(t, scorer.crossEncoder, "cross-encoder should be nil by default")
+
+	ce := &mockCrossEncoder{score: 0.5}
+	scorer = scorer.WithCrossEncoder(ce, 0.60)
+	assert.Equal(t, ce, scorer.crossEncoder)
+	assert.InDelta(t, 0.60, scorer.crossEncoderThreshold, 1e-9)
+}

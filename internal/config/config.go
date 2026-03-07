@@ -65,6 +65,8 @@ type Config struct {
 	ConflictCandidateLimit  int     // Max candidates retrieved from Qdrant per decision for conflict scoring (default: 50).
 	ConflictBackfillWorkers int     // Parallel workers for conflict scoring backfill (default: 4).
 	ConflictDecayLambda     float64 // Temporal decay rate for conflict significance (default: 0.01, 0 disables).
+	CrossEncoderURL         string  // URL of the cross-encoder reranking service (empty = disabled).
+	CrossEncoderThreshold   float64 // Min cross-encoder score to proceed to LLM validation (default: 0.50).
 	ForceConflictRescore    bool    // When true (and LLM validator configured), clear all conflicts and re-score at startup.
 
 	// Event WAL (write-ahead log) for crash-durable event buffering.
@@ -121,6 +123,7 @@ func Load() (Config, error) {
 		QdrantAPIKey:       envStr("QDRANT_API_KEY", ""),
 		QdrantCollection:   envStr("QDRANT_COLLECTION", "akashi_decisions"),
 		ConflictLLMModel:   envStr("AKASHI_CONFLICT_LLM_MODEL", ""),
+		CrossEncoderURL:    envStr("AKASHI_CONFLICT_CROSS_ENCODER_URL", ""),
 		WALDir:             envStr("AKASHI_WAL_DIR", "./data/wal"),
 		WALSyncMode:        envStr("AKASHI_WAL_SYNC_MODE", "batch"),
 		LogLevel:           envStr("AKASHI_LOG_LEVEL", "info"),
@@ -149,6 +152,7 @@ func Load() (Config, error) {
 	cfg.RateLimitRPS, errs = collectFloat64(errs, "AKASHI_RATE_LIMIT_RPS", 100.0)
 	cfg.ConflictSignificanceThreshold, errs = collectFloat64(errs, "AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD", 0.30)
 	cfg.ConflictDecayLambda, errs = collectFloat64(errs, "AKASHI_CONFLICT_DECAY_LAMBDA", 0.01)
+	cfg.CrossEncoderThreshold, errs = collectFloat64(errs, "AKASHI_CONFLICT_CROSS_ENCODER_THRESHOLD", 0.50)
 
 	// Boolean fields.
 	cfg.RateLimitEnabled, errs = collectBool(errs, "AKASHI_RATE_LIMIT_ENABLED", true)
