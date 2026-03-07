@@ -185,20 +185,24 @@ func NewWAL(logger *slog.Logger, cfg WALConfig) (*WAL, error) {
 
 // Write appends events to the WAL. In "full" sync mode, the segment is synced
 // before returning. In "batch" or "none" mode, writes go to the OS page cache.
-func (w *WAL) Write(events []model.AgentEvent) error {
+// Returns the highest LSN assigned to the written events. The caller should
+// track this value and pass it to CheckpointLSN after a successful flush.
+func (w *WAL) Write(events []model.AgentEvent) (uint64, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	var maxLSN uint64
 	for i := range events {
 		payload, err := json.Marshal(&events[i])
 		if err != nil {
-			return fmt.Errorf("wal: marshal event: %w", err)
+			return 0, fmt.Errorf("wal: marshal event: %w", err)
 		}
 		if len(payload) > walMaxPayload {
-			return fmt.Errorf("wal: event payload too large (%d bytes, max %d)", len(payload), walMaxPayload)
+			return 0, fmt.Errorf("wal: event payload too large (%d bytes, max %d)", len(payload), walMaxPayload)
 		}
 
 		lsn := w.nextLSN.Add(1) - 1
+		maxLSN = lsn
 
 		// Write record: [LSN(8) | payloadLen(4) | payload(N) | CRC32C(4)]
 		var head [walRecordHead]byte
@@ -214,13 +218,13 @@ func (w *WAL) Write(events []model.AgentEvent) error {
 		binary.BigEndian.PutUint32(crcBuf[:], crc)
 
 		if _, err := w.current.Write(head[:]); err != nil {
-			return fmt.Errorf("wal: write record head: %w", err)
+			return 0, fmt.Errorf("wal: write record head: %w", err)
 		}
 		if _, err := w.current.Write(payload); err != nil {
-			return fmt.Errorf("wal: write payload: %w", err)
+			return 0, fmt.Errorf("wal: write payload: %w", err)
 		}
 		if _, err := w.current.Write(crcBuf[:]); err != nil {
-			return fmt.Errorf("wal: write crc: %w", err)
+			return 0, fmt.Errorf("wal: write crc: %w", err)
 		}
 
 		recordSize := int64(walRecordHead + len(payload) + walCRCSize)
@@ -230,38 +234,30 @@ func (w *WAL) Write(events []model.AgentEvent) error {
 		// Rotate if needed.
 		if w.segmentSize >= w.maxSegSize || w.segmentRecs >= w.maxSegRecs {
 			if err := w.rotateSegment(); err != nil {
-				return fmt.Errorf("wal: rotate segment: %w", err)
+				return 0, fmt.Errorf("wal: rotate segment: %w", err)
 			}
 		}
 	}
 
 	if w.syncMode == "full" {
 		if err := w.current.Sync(); err != nil {
-			return fmt.Errorf("wal: fsync: %w", err)
+			return 0, fmt.Errorf("wal: fsync: %w", err)
 		}
 	}
 
-	return nil
+	return maxLSN, nil
 }
 
-// Checkpoint advances the flushed position and deletes old segments.
-// Call after a successful COPY flush to Postgres.
-func (w *WAL) Checkpoint(flushedEvents []model.AgentEvent) error {
-	if len(flushedEvents) == 0 {
+// CheckpointLSN advances the flushed position to the given LSN and deletes
+// old segments. Call after a successful COPY flush to Postgres, passing the
+// max LSN returned by Write for the flushed batch.
+func (w *WAL) CheckpointLSN(flushedLSN uint64) error {
+	if flushedLSN == 0 {
 		return nil
 	}
 
-	// Determine the highest LSN among flushed events by scanning WAL records.
-	// Since we don't store LSN on AgentEvent, we track by count: the checkpoint
-	// advances by len(flushedEvents) records past the last checkpoint.
-	cp, err := w.loadCheckpoint()
-	if err != nil {
-		return fmt.Errorf("wal: load checkpoint for advance: %w", err)
-	}
-
-	newLSN := cp.FlushedLSN + uint64(len(flushedEvents))
 	newCP := checkpoint{
-		FlushedLSN: newLSN,
+		FlushedLSN: flushedLSN,
 		FlushedAt:  time.Now().UTC(),
 		Segment:    w.segmentNum,
 	}
@@ -271,39 +267,43 @@ func (w *WAL) Checkpoint(flushedEvents []model.AgentEvent) error {
 	}
 
 	// Delete segments whose records are all below the flushed LSN.
-	return w.cleanupSegments(newLSN)
+	return w.cleanupSegments(flushedLSN)
 }
 
 // Recover reads un-flushed events from WAL files. Returns events that were
-// written to the WAL but not yet confirmed flushed to Postgres.
-func (w *WAL) Recover() ([]model.AgentEvent, error) {
+// written to the WAL but not yet confirmed flushed to Postgres, along with
+// the highest LSN among recovered events (for passing to CheckpointLSN).
+func (w *WAL) Recover() ([]model.AgentEvent, uint64, error) {
 	cp, err := w.loadCheckpoint()
 	if err != nil {
-		return nil, fmt.Errorf("wal: load checkpoint for recovery: %w", err)
+		return nil, 0, fmt.Errorf("wal: load checkpoint for recovery: %w", err)
 	}
 
 	segments, err := w.listSegments()
 	if err != nil {
-		return nil, fmt.Errorf("wal: list segments for recovery: %w", err)
+		return nil, 0, fmt.Errorf("wal: list segments for recovery: %w", err)
 	}
 
 	var recovered []model.AgentEvent
+	var maxLSN uint64
 	for _, seg := range segments {
-		events, highLSN, err := w.readSegment(seg)
+		events, _, err := w.readSegment(seg)
 		if err != nil {
 			w.logger.Warn("wal: recovery: error reading segment, skipping remainder",
 				"segment", seg, "error", err, "recovered_so_far", len(recovered))
 			break
 		}
-		_ = highLSN
 		for _, e := range events {
 			if e.lsn > cp.FlushedLSN {
 				recovered = append(recovered, e.event)
+				if e.lsn > maxLSN {
+					maxLSN = e.lsn
+				}
 			}
 		}
 	}
 
-	return recovered, nil
+	return recovered, maxLSN, nil
 }
 
 // Close syncs and closes the current segment file. Stops the batch sync goroutine.
@@ -406,6 +406,17 @@ func (w *WAL) saveCheckpoint(cp checkpoint) error {
 	if err := os.Rename(tmp, w.checkpointPath()); err != nil {
 		return fmt.Errorf("wal: rename checkpoint: %w", err)
 	}
+
+	// Fsync the parent directory to ensure the rename is durable across crashes.
+	dir, err := os.Open(w.dir) //nolint:gosec // path is the WAL directory configured at startup
+	if err != nil {
+		return fmt.Errorf("wal: open dir for fsync: %w", err)
+	}
+	if err := dir.Sync(); err != nil {
+		_ = dir.Close()
+		return fmt.Errorf("wal: fsync dir after checkpoint rename: %w", err)
+	}
+	_ = dir.Close()
 	return nil
 }
 
