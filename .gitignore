@@ -33,6 +33,7 @@ coverage.html
 .env
 .env.local
 .env.*.local
+.env.cloud
 
 # OS
 .DS_Store
