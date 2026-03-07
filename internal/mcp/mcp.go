@@ -53,7 +53,7 @@ Be honest about confidence. Reference precedents when they influence you.`
 // Server wraps the MCP server with Akashi's service layer.
 type Server struct {
 	mcpServer   *mcpserver.MCPServer
-	db          *storage.DB        // for resources (read-only queries)
+	db          storage.Store      // for resources (read-only queries)
 	decisionSvc *decisions.Service // for tools (shared business logic)
 	grantCache  *authz.GrantCache  // optional cache for LoadGrantedSet
 	logger      *slog.Logger
@@ -61,7 +61,7 @@ type Server struct {
 }
 
 // New creates and configures a new MCP server with all resources, tools, and prompts.
-func New(db *storage.DB, decisionSvc *decisions.Service, grantCache *authz.GrantCache, logger *slog.Logger, version string) *Server {
+func New(db storage.Store, decisionSvc *decisions.Service, grantCache *authz.GrantCache, logger *slog.Logger, version string) *Server {
 	s := &Server{
 		db:          db,
 		decisionSvc: decisionSvc,

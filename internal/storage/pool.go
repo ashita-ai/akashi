@@ -1,3 +1,5 @@
+//go:build !lite
+
 // Package storage provides the PostgreSQL storage layer for Akashi.
 //
 // It manages connection pooling (via pgxpool through PgBouncer),
@@ -7,6 +9,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
@@ -14,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	pgxvector "github.com/pgvector/pgvector-go/pgx"
 	"go.opentelemetry.io/otel/metric"
@@ -33,6 +37,9 @@ type DB struct {
 	listenChannels []string
 	logger         *slog.Logger
 }
+
+// Compile-time assertion: *DB satisfies Store.
+var _ Store = (*DB)(nil)
 
 // New creates a new DB with a connection pool.
 // poolDSN should point to PgBouncer (or directly to Postgres in dev).
@@ -99,6 +106,12 @@ func (db *DB) HasNotifyConn() bool {
 // Ping checks connectivity to the database.
 func (db *DB) Ping(ctx context.Context) error {
 	return db.pool.Ping(ctx)
+}
+
+// IsDuplicateKey returns true if the error is a PostgreSQL unique_violation (23505).
+func (db *DB) IsDuplicateKey(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 // Close shuts down the connection pool and notify connection.

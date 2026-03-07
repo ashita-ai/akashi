@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pgvector/pgvector-go"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -38,7 +37,7 @@ type ConflictScorer interface {
 
 // Service encapsulates decision business logic shared by HTTP and MCP handlers.
 type Service struct {
-	db             *storage.DB
+	db             storage.Store
 	embedder       embedding.Provider
 	searcher       search.Searcher
 	conflictScorer ConflictScorer
@@ -52,7 +51,7 @@ type Service struct {
 // New creates a new decision Service.
 // searcher may be nil if Qdrant is not configured (falls back to text search).
 // conflictScorer may be nil to disable semantic conflict detection.
-func New(db *storage.DB, embedder embedding.Provider, searcher search.Searcher, logger *slog.Logger, conflictScorer ConflictScorer) *Service {
+func New(db storage.Store, embedder embedding.Provider, searcher search.Searcher, logger *slog.Logger, conflictScorer ConflictScorer) *Service {
 	meter := telemetry.Meter("akashi/decisions")
 	embDur, _ := meter.Float64Histogram("akashi.embedding.duration",
 		metric.WithDescription("Time to generate embeddings (ms)"),
@@ -804,7 +803,7 @@ func (s *Service) ResolveOrCreateAgent(ctx context.Context, orgID uuid.UUID, age
 		// duplicate key constraint as success. Return zero agent; the caller
 		// will skip any Name-based enrichment, which is acceptable for this
 		// rare race condition.
-		if isDuplicateKey(createErr) {
+		if s.isDuplicateKey(createErr) {
 			return model.Agent{}, nil
 		}
 		return model.Agent{}, fmt.Errorf("auto-register agent: %w", createErr)
@@ -1067,8 +1066,8 @@ func (s *Service) RetryFailedClaimEmbeddings(ctx context.Context, batchSize, max
 	return retried, nil
 }
 
-// isDuplicateKey checks if a Postgres error is a unique_violation (23505).
-func isDuplicateKey(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+// isDuplicateKey delegates to the storage backend to check for unique constraint
+// violations (Postgres 23505, SQLite CONSTRAINT_UNIQUE, etc.).
+func (s *Service) isDuplicateKey(err error) bool {
+	return s.db.IsDuplicateKey(err)
 }
