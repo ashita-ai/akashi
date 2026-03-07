@@ -1,3 +1,5 @@
+//go:build !lite
+
 package storage
 
 import (
@@ -11,26 +13,6 @@ import (
 	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/model"
 )
-
-// CreateTraceParams holds all data needed to create a complete decision trace
-// within a single database transaction.
-type CreateTraceParams struct {
-	AgentID      string
-	OrgID        uuid.UUID
-	TraceID      *string
-	Metadata     map[string]any
-	Decision     model.Decision
-	Alternatives []model.Alternative
-	Evidence     []model.Evidence
-	SessionID    *uuid.UUID
-	AgentContext map[string]any
-
-	// AuditEntry, when non-nil, is inserted into mutation_audit_log inside the
-	// same transaction. ResourceID is populated automatically from the generated
-	// decision ID. This ensures the audit record is atomic with the trace —
-	// if the tx rolls back, the audit entry never persists.
-	AuditEntry *MutationAuditEntry
-}
 
 // CreateTraceTx creates a run, decision, alternatives, evidence, and completes
 // the run atomically within a single database transaction. This prevents partial
@@ -51,16 +33,6 @@ func (db *DB) CreateTraceTx(ctx context.Context, params CreateTraceParams) (mode
 		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: commit trace tx: %w", err)
 	}
 	return run, d, nil
-}
-
-// AdjudicateConflictInTraceParams holds data needed for the conflict adjudication
-// that should be committed atomically with the trace.
-type AdjudicateConflictInTraceParams struct {
-	ConflictID        uuid.UUID
-	ResolvedBy        string
-	ResNote           *string
-	Audit             MutationAuditEntry
-	WinningDecisionID *uuid.UUID // optional; must be decision_a_id or decision_b_id if set
 }
 
 // CreateTraceAndAdjudicateConflictTx creates a decision trace AND adjudicates a

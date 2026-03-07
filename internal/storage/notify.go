@@ -1,3 +1,5 @@
+//go:build !lite
+
 package storage
 
 import (
@@ -5,12 +7,6 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-)
-
-// NotifyChannel is a Postgres LISTEN/NOTIFY channel name.
-const (
-	ChannelDecisions = "akashi_decisions"
-	ChannelConflicts = "akashi_conflicts"
 )
 
 // Listen starts listening on the specified channel using the dedicated notify connection.

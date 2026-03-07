@@ -1,3 +1,5 @@
+//go:build !lite
+
 package storage
 
 import (
@@ -1229,15 +1231,6 @@ func containsStr(slice []string, s string) bool {
 	return false
 }
 
-// UnembeddedDecision holds the minimal fields needed to backfill an embedding.
-type UnembeddedDecision struct {
-	ID           uuid.UUID
-	OrgID        uuid.UUID
-	DecisionType string
-	Outcome      string
-	Reasoning    *string
-}
-
 // FindUnembeddedDecisions returns active decisions that have no embedding vector,
 // ordered oldest-first so the backfill processes them chronologically.
 // SECURITY: Intentionally global — background backfill across all orgs. Each
@@ -1473,12 +1466,6 @@ func (db *DB) GetConflictCountsBatch(ctx context.Context, ids []uuid.UUID, orgID
 	return result, rows.Err()
 }
 
-// DecisionRef is a lightweight reference to a decision for batch operations.
-type DecisionRef struct {
-	ID    uuid.UUID
-	OrgID uuid.UUID
-}
-
 // FindEmbeddedDecisionIDs returns IDs of current decisions that have both
 // embedding and outcome_embedding populated but have NOT yet been scored for
 // conflicts (conflict_scored_at IS NULL). Used by conflict scoring backfill
@@ -1576,16 +1563,6 @@ func (db *DB) CountUnvalidatedConflicts(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("storage: count unvalidated conflicts: %w", err)
 	}
 	return count, nil
-}
-
-// DecisionQualityStats holds aggregate completeness metrics for an org's decisions.
-type DecisionQualityStats struct {
-	Total            int
-	AvgCompleteness  float64
-	BelowHalf        int // completeness_score < 0.5
-	BelowThird       int // completeness_score < 0.33
-	WithReasoning    int // reasoning IS NOT NULL AND reasoning != ''
-	WithAlternatives int // decisions that have at least one alternative
 }
 
 // GetDecisionQualityStats returns aggregate quality metrics for current decisions in an org.

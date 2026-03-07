@@ -1,29 +1,15 @@
+//go:build !lite
+
 package storage
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 )
-
-var (
-	// ErrIdempotencyPayloadMismatch is returned when the same idempotency key is reused
-	// with a different request payload hash for the same (org, agent, endpoint).
-	ErrIdempotencyPayloadMismatch = errors.New("idempotency key reused with different payload")
-	// ErrIdempotencyInProgress indicates a matching idempotency key is currently being processed.
-	ErrIdempotencyInProgress = errors.New("idempotency key request already in progress")
-)
-
-// IdempotencyLookup describes the current state of an idempotency key lookup.
-type IdempotencyLookup struct {
-	Completed    bool
-	StatusCode   int
-	ResponseData json.RawMessage
-}
 
 // BeginIdempotency reserves a key for processing.
 //

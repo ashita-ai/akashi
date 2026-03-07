@@ -1,3 +1,5 @@
+//go:build !lite
+
 // Package conflicts provides semantic conflict detection and scoring.
 package conflicts
 

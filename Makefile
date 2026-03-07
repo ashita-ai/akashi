@@ -1,4 +1,4 @@
-.PHONY: all build build-ui build-with-ui test lint fmt vet clean docker-up docker-down ci security tidy \
+.PHONY: all build build-local build-ui build-with-ui test lint fmt vet clean docker-up docker-down ci security tidy \
        dev-ui migrate-apply migrate-lint migrate-hash migrate-diff migrate-status migrate-validate \
        check-doc-consistency verify-restore reconcile-qdrant reconcile-qdrant-repair \
        archive-events-dry-run archive-events verify-exit-criteria install-hooks
@@ -20,6 +20,9 @@ check-doc-consistency:
 
 build:
 	$(GO) build $(LDFLAGS) -o $(BINARY) ./cmd/akashi
+
+build-local: ## Build the zero-infra SQLite MCP server (ADR-009)
+	$(GO) build -tags lite $(LDFLAGS) -o bin/akashi-local ./cmd/akashi-local
 
 # Build the frontend (produces ui/dist/).
 build-ui:

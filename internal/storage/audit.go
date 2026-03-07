@@ -1,3 +1,5 @@
+//go:build !lite
+
 package storage
 
 import (
@@ -5,26 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
-
-// MutationAuditEntry is an append-only audit event for a state-changing API call.
-type MutationAuditEntry struct {
-	RequestID    string
-	OrgID        uuid.UUID
-	ActorAgentID string
-	ActorRole    string
-	HTTPMethod   string
-	Endpoint     string
-	Operation    string
-	ResourceType string
-	ResourceID   string
-	BeforeData   any
-	AfterData    any
-	Metadata     map[string]any
-}
 
 // pgxExecer is the subset of pgx.Tx / pgxpool.Pool used for INSERT execution.
 // Both *pgxpool.Pool and pgx.Tx satisfy this interface.

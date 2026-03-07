@@ -1,3 +1,5 @@
+//go:build !lite
+
 package storage_test
 
 import (

@@ -1,3 +1,5 @@
+//go:build !lite
+
 package storage
 
 import (
@@ -28,17 +30,6 @@ func (db *DB) RefreshAgentState(ctx context.Context) error {
 		return fmt.Errorf("storage: refresh agent state: %w", err)
 	}
 	return nil
-}
-
-// ConflictFilters holds optional filters for conflict queries.
-type ConflictFilters struct {
-	DecisionType *string
-	AgentID      *string
-	ConflictKind *string    // "cross_agent" or "self_contradiction"
-	Status       *string    // "open", "acknowledged", "resolved", "wont_fix"
-	Severity     *string    // "critical", "high", "medium", "low"
-	Category     *string    // "factual", "assessment", "strategic", "temporal"
-	DecisionID   *uuid.UUID // conflicts involving this decision (A or B side)
 }
 
 // conflictWhere appends WHERE conditions for the common filter set.
@@ -98,15 +89,6 @@ func (db *DB) CountConflicts(ctx context.Context, orgID uuid.UUID, filters Confl
 		return 0, fmt.Errorf("storage: count conflicts: %w", err)
 	}
 	return count, nil
-}
-
-// ConflictStatusCounts holds the number of conflicts in each resolution status.
-type ConflictStatusCounts struct {
-	Total        int
-	Open         int
-	Acknowledged int
-	Resolved     int
-	WontFix      int
 }
 
 // GetConflictStatusCounts returns the number of conflicts per resolution status for an org.
@@ -479,16 +461,6 @@ func (db *DB) listOpenConflictsByGroupIDs(ctx context.Context, orgID uuid.UUID, 
 	}
 	defer rows.Close()
 	return scanConflictRows(rows)
-}
-
-// ConflictGroupFilters holds optional filters for conflict group queries.
-type ConflictGroupFilters struct {
-	DecisionType *string
-	AgentID      *string
-	ConflictKind *string
-	// OpenOnly restricts results to groups that have at least one open or
-	// acknowledged member conflict. When false, all groups are returned.
-	OpenOnly bool
 }
 
 // conflictGroupWhere builds the WHERE clause suffix and args for ConflictGroupFilters.

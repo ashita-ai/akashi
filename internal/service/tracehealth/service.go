@@ -57,11 +57,11 @@ type ConflictMetrics struct {
 
 // Service computes trace health metrics.
 type Service struct {
-	db *storage.DB
+	db storage.Store
 }
 
 // New creates a trace health service.
-func New(db *storage.DB) *Service {
+func New(db storage.Store) *Service {
 	return &Service{db: db}
 }
 
