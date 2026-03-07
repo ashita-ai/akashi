@@ -296,6 +296,54 @@ func TestLoad_QdrantURLValidation(t *testing.T) {
 	})
 }
 
+func TestLoad_ConflictScoringThresholdDefaults(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected Load() to succeed, got: %v", err)
+	}
+	if cfg.ConflictClaimTopicSimFloor != 0.60 {
+		t.Fatalf("expected ConflictClaimTopicSimFloor 0.60, got %f", cfg.ConflictClaimTopicSimFloor)
+	}
+	if cfg.ConflictClaimDivFloor != 0.15 {
+		t.Fatalf("expected ConflictClaimDivFloor 0.15, got %f", cfg.ConflictClaimDivFloor)
+	}
+	if cfg.ConflictDecisionTopicSimFloor != 0.70 {
+		t.Fatalf("expected ConflictDecisionTopicSimFloor 0.70, got %f", cfg.ConflictDecisionTopicSimFloor)
+	}
+}
+
+func TestLoad_ConflictScoringThresholdOverrides(t *testing.T) {
+	t.Setenv("AKASHI_CONFLICT_CLAIM_TOPIC_SIM_FLOOR", "0.55")
+	t.Setenv("AKASHI_CONFLICT_CLAIM_DIV_FLOOR", "0.20")
+	t.Setenv("AKASHI_CONFLICT_DECISION_TOPIC_SIM_FLOOR", "0.65")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected Load() to succeed, got: %v", err)
+	}
+	if cfg.ConflictClaimTopicSimFloor != 0.55 {
+		t.Fatalf("expected ConflictClaimTopicSimFloor 0.55, got %f", cfg.ConflictClaimTopicSimFloor)
+	}
+	if cfg.ConflictClaimDivFloor != 0.20 {
+		t.Fatalf("expected ConflictClaimDivFloor 0.20, got %f", cfg.ConflictClaimDivFloor)
+	}
+	if cfg.ConflictDecisionTopicSimFloor != 0.65 {
+		t.Fatalf("expected ConflictDecisionTopicSimFloor 0.65, got %f", cfg.ConflictDecisionTopicSimFloor)
+	}
+}
+
+func TestLoad_ConflictScoringThresholdInvalid(t *testing.T) {
+	t.Setenv("AKASHI_CONFLICT_CLAIM_TOPIC_SIM_FLOOR", "not-a-number")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected Load() to fail with invalid float")
+	}
+	if !contains(err.Error(), "AKASHI_CONFLICT_CLAIM_TOPIC_SIM_FLOOR") {
+		t.Fatalf("error should mention the variable, got: %s", err.Error())
+	}
+}
+
 func TestLoad_AllEnvVarsHonored(t *testing.T) {
 	t.Setenv("AKASHI_PORT", "9090")
 	t.Setenv("DATABASE_URL", "postgres://test:test@db:5432/testdb")

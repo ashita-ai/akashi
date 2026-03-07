@@ -60,14 +60,17 @@ type Config struct {
 	TrustProxy       bool    // When true, use X-Forwarded-For for rate limit keys (default: false).
 
 	// Conflict LLM validation.
-	ConflictLLMModel        string  // Text generation model for conflict validation (e.g. "qwen3.5:9b" for Ollama).
-	ConflictLLMThreads      int     // CPU threads Ollama may use per inference call (default: floor(NumCPU/3), min 1). 0 = let Ollama decide.
-	ConflictCandidateLimit  int     // Max candidates retrieved from Qdrant per decision for conflict scoring (default: 50).
-	ConflictBackfillWorkers int     // Parallel workers for conflict scoring backfill (default: 4).
-	ConflictDecayLambda     float64 // Temporal decay rate for conflict significance (default: 0.01, 0 disables).
-	CrossEncoderURL         string  // URL of the cross-encoder reranking service (empty = disabled).
-	CrossEncoderThreshold   float64 // Min cross-encoder score to proceed to LLM validation (default: 0.50).
-	ForceConflictRescore    bool    // When true (and LLM validator configured), clear all conflicts and re-score at startup.
+	ConflictLLMModel              string  // Text generation model for conflict validation (e.g. "qwen3.5:9b" for Ollama).
+	ConflictLLMThreads            int     // CPU threads Ollama may use per inference call (default: floor(NumCPU/3), min 1). 0 = let Ollama decide.
+	ConflictCandidateLimit        int     // Max candidates retrieved from Qdrant per decision for conflict scoring (default: 50).
+	ConflictBackfillWorkers       int     // Parallel workers for conflict scoring backfill (default: 4).
+	ConflictDecayLambda           float64 // Temporal decay rate for conflict significance (default: 0.01, 0 disables).
+	ConflictClaimTopicSimFloor    float64 // Min cosine similarity for two claims to be "about the same thing" (default: 0.60).
+	ConflictClaimDivFloor         float64 // Min outcome divergence for claims to count as disagreeing (default: 0.15).
+	ConflictDecisionTopicSimFloor float64 // Min decision-level topic similarity to activate claim-level scoring (default: 0.70).
+	CrossEncoderURL               string  // URL of the cross-encoder reranking service (empty = disabled).
+	CrossEncoderThreshold         float64 // Min cross-encoder score to proceed to LLM validation (default: 0.50).
+	ForceConflictRescore          bool    // When true (and LLM validator configured), clear all conflicts and re-score at startup.
 
 	// Event WAL (write-ahead log) for crash-durable event buffering.
 	WALDir            string        // Directory for WAL files. Default: "./data/wal". Set AKASHI_WAL_DISABLE=true to disable.
@@ -153,6 +156,9 @@ func Load() (Config, error) {
 	cfg.RateLimitRPS, errs = collectFloat64(errs, "AKASHI_RATE_LIMIT_RPS", 100.0)
 	cfg.ConflictSignificanceThreshold, errs = collectFloat64(errs, "AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD", 0.30)
 	cfg.ConflictDecayLambda, errs = collectFloat64(errs, "AKASHI_CONFLICT_DECAY_LAMBDA", 0.01)
+	cfg.ConflictClaimTopicSimFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_CLAIM_TOPIC_SIM_FLOOR", 0.60)
+	cfg.ConflictClaimDivFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_CLAIM_DIV_FLOOR", 0.15)
+	cfg.ConflictDecisionTopicSimFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_DECISION_TOPIC_SIM_FLOOR", 0.70)
 	cfg.CrossEncoderThreshold, errs = collectFloat64(errs, "AKASHI_CONFLICT_CROSS_ENCODER_THRESHOLD", 0.50)
 
 	// Boolean fields.
