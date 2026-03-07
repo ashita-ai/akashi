@@ -342,6 +342,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		bestOutcomeB := cand.Outcome
 
 		// --- Pass 2: claim-level scoring for high topic-similarity pairs ---
+		var claimFragA, claimFragB *string
 		if topicSim >= s.decisionTopicSimFloor {
 			claimSig, claimDiv, claimA, claimB := s.bestClaimConflict(ctx, d.ID, cand.ID, orgID, topicSim)
 			if claimSig > bestSig {
@@ -350,6 +351,8 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				bestMethod = "claim"
 				bestOutcomeA = claimA
 				bestOutcomeB = claimB
+				claimFragA = &claimA
+				claimFragB = &claimB
 				s.metrics.claimLevelWins.Add(ctx, 1)
 			}
 		}
@@ -541,6 +544,8 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			ConfidenceWeight:  ptr(confWeight),
 			TemporalDecay:     ptr(decay),
 			Status:            "open",
+			ClaimTextA:        claimFragA,
+			ClaimTextB:        claimFragB,
 		}
 		if _, err := s.db.InsertScoredConflict(ctx, c); err != nil {
 			s.logger.Warn("conflict scorer: insert failed", "decision_a", decisionID, "decision_b", cand.ID, "error", err)

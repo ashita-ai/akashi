@@ -151,6 +151,7 @@ const conflictSelectBase = `SELECT sc.id, sc.conflict_kind, sc.decision_a_id, sc
 		 sc.resolved_by, sc.resolved_at, sc.resolution_note,
 		 sc.relationship, sc.confidence_weight, sc.temporal_decay, sc.resolution_decision_id,
 		 sc.winning_decision_id, sc.group_id,
+		 sc.claim_text_a, sc.claim_text_b,
 		 da.run_id, db.run_id, da.confidence, db.confidence, da.reasoning, db.reasoning, da.valid_from, db.valid_from
 		 FROM scored_conflicts sc
 		 LEFT JOIN decisions da ON da.id = sc.decision_a_id
@@ -173,6 +174,7 @@ func scanConflictRows(rows pgx.Rows) ([]model.DecisionConflict, error) {
 			&c.ResolvedBy, &c.ResolvedAt, &c.ResolutionNote,
 			&c.Relationship, &c.ConfidenceWeight, &c.TemporalDecay, &c.ResolutionDecisionID,
 			&c.WinningDecisionID, &c.GroupID,
+			&c.ClaimTextA, &c.ClaimTextB,
 			&runA, &runB, &confA, &confB, &reasonA, &reasonB, &validA, &validB,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan conflict: %w", err)
@@ -349,11 +351,13 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 	agentA, agentB := c.AgentA, c.AgentB
 	typeA, typeB := c.DecisionTypeA, c.DecisionTypeB
 	outcomeA, outcomeB := c.OutcomeA, c.OutcomeB
+	claimTextA, claimTextB := c.ClaimTextA, c.ClaimTextB
 	if bytes.Compare(da[:], dbID[:]) > 0 {
 		da, dbID = dbID, da
 		agentA, agentB = agentB, agentA
 		typeA, typeB = typeB, typeA
 		outcomeA, outcomeB = outcomeB, outcomeA
+		claimTextA, claimTextB = claimTextB, claimTextA
 	}
 	// Normalize the agent pair for the group key: LEAST first.
 	grpAgentA, grpAgentB := agentA, agentB
@@ -400,10 +404,11 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 		     (decision_a_id, decision_b_id, org_id, conflict_kind,
 		      agent_a, agent_b, decision_type_a, decision_type_b, outcome_a, outcome_b,
 		      topic_similarity, outcome_divergence, significance, scoring_method, explanation,
-		      category, severity, relationship, confidence_weight, temporal_decay, group_id)
+		      category, severity, relationship, confidence_weight, temporal_decay,
+		      claim_text_a, claim_text_b, group_id)
 		 SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 		        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-		        grp.id
+		        $21, $22, grp.id
 		 FROM grp
 		 ON CONFLICT (decision_a_id, decision_b_id) DO UPDATE SET
 		     topic_similarity    = EXCLUDED.topic_similarity,
@@ -416,6 +421,8 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 		     relationship        = EXCLUDED.relationship,
 		     confidence_weight   = EXCLUDED.confidence_weight,
 		     temporal_decay      = EXCLUDED.temporal_decay,
+		     claim_text_a        = EXCLUDED.claim_text_a,
+		     claim_text_b        = EXCLUDED.claim_text_b,
 		     group_id            = EXCLUDED.group_id,
 		     detected_at         = now(),
 		     -- Re-open previously resolved conflicts: re-detection falsifies the
@@ -434,6 +441,7 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 		grpAgentA, grpAgentB, typeA, typeB, outcomeA, outcomeB,
 		topicSim, outcomeDiv, sig, method, c.Explanation,
 		c.Category, c.Severity, c.Relationship, c.ConfidenceWeight, c.TemporalDecay,
+		claimTextA, claimTextB,
 	).Scan(&id)
 	if err != nil {
 		return uuid.Nil, err
@@ -553,6 +561,7 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 		    rep.resolved_by, rep.resolved_at, rep.resolution_note,
 		    rep.relationship, rep.confidence_weight, rep.temporal_decay,
 		    rep.resolution_decision_id, rep.winning_decision_id, rep.group_id,
+		    rep.claim_text_a, rep.claim_text_b,
 		    rep_da.run_id, rep_db.run_id,
 		    rep_da.confidence, rep_db.confidence,
 		    rep_da.reasoning, rep_db.reasoning,
@@ -593,6 +602,7 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 		    rep.resolved_by, rep.resolved_at, rep.resolution_note,
 		    rep.relationship, rep.confidence_weight, rep.temporal_decay,
 		    rep.resolution_decision_id, rep.winning_decision_id, rep.group_id,
+		    rep.claim_text_a, rep.claim_text_b,
 		    rep_da.run_id, rep_db.run_id,
 		    rep_da.confidence, rep_db.confidence,
 		    rep_da.reasoning, rep_db.reasoning,
@@ -631,6 +641,7 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 		var repRelationship *string
 		var repConfWeight, repTempDecay *float64
 		var repResDecID, repWinDecID, repGroupID *uuid.UUID
+		var repClaimTextA, repClaimTextB *string
 
 		if err := rows.Scan(
 			&g.ID, &g.OrgID, &g.AgentA, &g.AgentB, &g.ConflictKind, &g.DecisionType,
@@ -646,6 +657,7 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 			&repResolvedBy, &repResolvedAt, &repResolutionNote,
 			&repRelationship, &repConfWeight, &repTempDecay,
 			&repResDecID, &repWinDecID, &repGroupID,
+			&repClaimTextA, &repClaimTextB,
 			&repRunA, &repRunB,
 			&repConfA, &repConfB,
 			&repReasonA, &repReasonB,
@@ -709,6 +721,8 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 			rep.ResolutionDecisionID = repResDecID
 			rep.WinningDecisionID = repWinDecID
 			rep.GroupID = repGroupID
+			rep.ClaimTextA = repClaimTextA
+			rep.ClaimTextB = repClaimTextB
 			if repRunA != nil {
 				rep.RunA = *repRunA
 			}

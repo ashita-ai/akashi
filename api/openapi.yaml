@@ -2751,6 +2751,20 @@ components:
             ID of the decision judged to be correct when this conflict was adjudicated.
             Must be either decision_a_id or decision_b_id. Optional — resolution is
             valid without declaring a winner.
+        claim_text_a:
+          type: string
+          description: |
+            The specific claim fragment from decision A that produced the highest
+            significance during claim-level scoring. Present only when scoring_method
+            originated from claim-level analysis. NULL when the winning scoring
+            method was not "claim".
+        claim_text_b:
+          type: string
+          description: |
+            The specific claim fragment from decision B that produced the highest
+            significance during claim-level scoring. Present only when scoring_method
+            originated from claim-level analysis. NULL when the winning scoring
+            method was not "claim".
 
     ConflictDetail:
       description: |

@@ -198,6 +198,12 @@ type DecisionConflict struct {
 	// GroupID (migration 054): canonical conflict group this pair belongs to.
 	// All pairwise conflicts between the same agents on the same decision_type share a group.
 	GroupID *uuid.UUID `json:"group_id,omitempty"`
+
+	// Claim fragments (migration 058): the specific claim texts that produced
+	// the highest significance when claim-level scoring won. NULL when the
+	// winning scoring method was not "claim".
+	ClaimTextA *string `json:"claim_text_a,omitempty"`
+	ClaimTextB *string `json:"claim_text_b,omitempty"`
 }
 
 // ConflictGroup is a canonical conflict cluster: one row per
