@@ -30,15 +30,16 @@ func TestScore_MaximumScore(t *testing.T) {
 		Reasoning:    strPtr(repeat('x', 101)),              // >100 chars → 0.25
 		Alternatives: []model.TraceAlternative{
 			{Label: "a", Selected: true},
-			{Label: "b", Selected: false, RejectionReason: strPtr("not viable because of latency overhead")}, // >10 chars → 0.10
-			{Label: "c", Selected: false},
-		}, // >=3 alts → 0.20
+			{Label: "b", Selected: false, RejectionReason: strPtr("not viable because of latency overhead issues")},
+			{Label: "c", Selected: false, RejectionReason: strPtr("rejected due to licensing incompatibility")},
+			{Label: "d", Selected: false, RejectionReason: strPtr("does not meet security requirements for production")},
+		}, // >=3 substantive rejections → 0.20
 		Evidence: []model.TraceEvidence{
 			{SourceType: "document", Content: "evidence one"},
 			{SourceType: "api_response", Content: "evidence two"},
 		}, // >=2 evidence → 0.15
 	}
-	assert.InDelta(t, float32(1.0), Score(d), 0.001, "fully populated decision should score 1.0")
+	assert.InDelta(t, float32(0.90), Score(d), 0.001, "fully populated decision should score 0.90")
 }
 
 // ---------------------------------------------------------------------------
@@ -63,28 +64,45 @@ func TestScore_Factor2_ReasoningLong(t *testing.T) {
 	assert.InDelta(t, float32(0.25), Score(d), 0.001)
 }
 
-func TestScore_Factor3_ThreeAlternatives(t *testing.T) {
+func TestScore_Factor3_SubstantiveRejections(t *testing.T) {
+	// Three non-selected alternatives with substantive rejection reasons (>20 chars).
 	d := model.TraceDecision{
 		Alternatives: []model.TraceAlternative{
-			{Label: "a"}, {Label: "b"}, {Label: "c"},
+			{Label: "a", Selected: true},
+			{Label: "b", Selected: false, RejectionReason: strPtr("this option was rejected for good reason")},
+			{Label: "c", Selected: false, RejectionReason: strPtr("too slow for production usage patterns")},
+			{Label: "d", Selected: false, RejectionReason: strPtr("licensing issues prevent adoption here")},
 		},
 	}
 	assert.InDelta(t, float32(0.20), Score(d), 0.001)
 }
 
-func TestScore_Factor4_RejectionReason(t *testing.T) {
-	// One alternative with a substantive (>10 char) rejection reason.
-	// Also includes 1 alternative → factor 3 contributes 0.05.
+func TestScore_Factor3_AlternativesWithoutRejections_NoCredit(t *testing.T) {
+	// Three alternatives but no rejection reasons → no credit (anti-gaming).
 	d := model.TraceDecision{
 		Alternatives: []model.TraceAlternative{
-			{Label: "x", RejectionReason: strPtr("this option is too slow for production use")},
+			{Label: "a", Selected: true},
+			{Label: "b", Selected: false},
+			{Label: "c", Selected: false},
 		},
 	}
-	// factor 3: 1 alt → 0.05, factor 4: rejection reason → 0.10
-	assert.InDelta(t, float32(0.15), Score(d), 0.001)
+	assert.InDelta(t, float32(0.0), Score(d), 0.001,
+		"alternatives without rejection reasons should not contribute to score")
 }
 
-func TestScore_Factor5_TwoEvidence(t *testing.T) {
+func TestScore_Factor3_SelectedAlternativeIgnored(t *testing.T) {
+	// Selected alternatives are ignored — only non-selected with rejections count.
+	d := model.TraceDecision{
+		Alternatives: []model.TraceAlternative{
+			{Label: "a", Selected: true, RejectionReason: strPtr("this was selected so rejection is irrelevant")},
+			{Label: "b", Selected: false, RejectionReason: strPtr("this option was rejected for good reason")},
+		},
+	}
+	// 1 substantive rejection → 0.10
+	assert.InDelta(t, float32(0.10), Score(d), 0.001)
+}
+
+func TestScore_Factor4_TwoEvidence(t *testing.T) {
 	d := model.TraceDecision{
 		Evidence: []model.TraceEvidence{
 			{SourceType: "document", Content: "a"},
@@ -94,12 +112,12 @@ func TestScore_Factor5_TwoEvidence(t *testing.T) {
 	assert.InDelta(t, float32(0.15), Score(d), 0.001)
 }
 
-func TestScore_Factor6_StandardType(t *testing.T) {
+func TestScore_Factor5_StandardType(t *testing.T) {
 	d := model.TraceDecision{DecisionType: "security"}
 	assert.InDelta(t, float32(0.10), Score(d), 0.001)
 }
 
-func TestScore_Factor7_SubstantiveOutcome(t *testing.T) {
+func TestScore_Factor6_SubstantiveOutcome(t *testing.T) {
 	d := model.TraceDecision{Outcome: "chose Redis for session caching now"} // >20 chars
 	assert.InDelta(t, float32(0.05), Score(d), 0.001)
 }
@@ -174,14 +192,18 @@ func TestScore_ReasoningWhitespaceOnly(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Alternatives count boundary tests
+// Substantive rejection tests (replaces old alternatives count tests)
 // ---------------------------------------------------------------------------
 
-func TestScore_AlternativesCount(t *testing.T) {
-	makeAlts := func(n int) []model.TraceAlternative {
-		alts := make([]model.TraceAlternative, n)
-		for i := range alts {
-			alts[i] = model.TraceAlternative{Label: repeat('a'+byte(i%26), 1)}
+func TestScore_SubstantiveRejectionCount(t *testing.T) {
+	makeAltsWithRejections := func(n int) []model.TraceAlternative {
+		alts := []model.TraceAlternative{{Label: "selected", Selected: true}}
+		for i := range n {
+			alts = append(alts, model.TraceAlternative{
+				Label:           repeat('a'+byte(i%26), 1),
+				Selected:        false,
+				RejectionReason: strPtr("this alternative was rejected because of reason " + repeat('x', 10)),
+			})
 		}
 		return alts
 	}
@@ -191,15 +213,15 @@ func TestScore_AlternativesCount(t *testing.T) {
 		count int
 		want  float32
 	}{
-		{"0 alternatives", 0, 0.0},
-		{"1 alternative", 1, 0.05},
-		{"2 alternatives", 2, 0.15},
-		{"3 alternatives", 3, 0.20},
-		{"5 alternatives", 5, 0.20},
+		{"0 substantive rejections", 0, 0.0},
+		{"1 substantive rejection", 1, 0.10},
+		{"2 substantive rejections", 2, 0.15},
+		{"3 substantive rejections", 3, 0.20},
+		{"5 substantive rejections", 5, 0.20},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := model.TraceDecision{Alternatives: makeAlts(tt.count)}
+			d := model.TraceDecision{Alternatives: makeAltsWithRejections(tt.count)}
 			assert.InDelta(t, tt.want, Score(d), 0.001)
 		})
 	}
@@ -212,65 +234,62 @@ func TestScore_AlternativesCount(t *testing.T) {
 func TestScore_RejectionReasonTooShort(t *testing.T) {
 	d := model.TraceDecision{
 		Alternatives: []model.TraceAlternative{
-			{Label: "a", RejectionReason: strPtr("too short")}, // 9 chars, not > 10
+			{Label: "a", Selected: false, RejectionReason: strPtr("too short")}, // 9 chars, not > 20
 		},
 	}
-	// factor 3: 1 alt → 0.05, factor 4: rejection too short → 0
-	assert.InDelta(t, float32(0.05), Score(d), 0.001)
+	// rejection too short → 0
+	assert.InDelta(t, float32(0.0), Score(d), 0.001)
 }
 
-func TestScore_RejectionReasonExactly10(t *testing.T) {
+func TestScore_RejectionReasonExactly20(t *testing.T) {
 	d := model.TraceDecision{
 		Alternatives: []model.TraceAlternative{
-			{Label: "a", RejectionReason: strPtr("exactly 10")}, // 10 chars, not > 10
+			{Label: "a", Selected: false, RejectionReason: strPtr(repeat('x', 20))}, // 20 chars, not > 20
 		},
 	}
-	// factor 3: 1 alt → 0.05, factor 4: len == 10 not > 10 → 0
-	assert.InDelta(t, float32(0.05), Score(d), 0.001)
+	assert.InDelta(t, float32(0.0), Score(d), 0.001)
 }
 
-func TestScore_RejectionReasonExactly11(t *testing.T) {
+func TestScore_RejectionReasonExactly21(t *testing.T) {
 	d := model.TraceDecision{
 		Alternatives: []model.TraceAlternative{
-			{Label: "a", RejectionReason: strPtr("exactly 11!")}, // 11 chars, > 10 → credit
+			{Label: "a", Selected: false, RejectionReason: strPtr(repeat('x', 21))}, // 21 chars, > 20 → credit
 		},
 	}
-	// factor 3: 1 alt → 0.05, factor 4: rejection → 0.10
-	assert.InDelta(t, float32(0.15), Score(d), 0.001)
+	// 1 substantive rejection → 0.10
+	assert.InDelta(t, float32(0.10), Score(d), 0.001)
 }
 
 func TestScore_RejectionReasonNil(t *testing.T) {
 	d := model.TraceDecision{
 		Alternatives: []model.TraceAlternative{
-			{Label: "a", RejectionReason: nil},
+			{Label: "a", Selected: false, RejectionReason: nil},
 		},
 	}
-	// factor 3: 1 alt → 0.05, factor 4: nil → 0
-	assert.InDelta(t, float32(0.05), Score(d), 0.001)
+	assert.InDelta(t, float32(0.0), Score(d), 0.001)
 }
 
 func TestScore_RejectionReasonWhitespace(t *testing.T) {
-	// 15 chars of whitespace trims to 0 → no credit.
-	ws := strings.Repeat(" ", 15)
+	// 25 chars of whitespace trims to 0 → no credit.
+	ws := strings.Repeat(" ", 25)
 	d := model.TraceDecision{
 		Alternatives: []model.TraceAlternative{
-			{Label: "a", RejectionReason: &ws},
+			{Label: "a", Selected: false, RejectionReason: &ws},
 		},
 	}
-	// factor 3: 1 alt → 0.05, factor 4: trimmed len 0 → 0
-	assert.InDelta(t, float32(0.05), Score(d), 0.001)
+	assert.InDelta(t, float32(0.0), Score(d), 0.001)
 }
 
-func TestScore_RejectionReasonOnlyOneNeeded(t *testing.T) {
-	// Two alternatives: one without rejection, one with. Factor 4 should fire once.
+func TestScore_RejectionReasonMixed(t *testing.T) {
+	// Two non-selected alternatives: one without rejection, one with substantive rejection.
 	d := model.TraceDecision{
 		Alternatives: []model.TraceAlternative{
-			{Label: "a", RejectionReason: nil},
-			{Label: "b", RejectionReason: strPtr("this option was rejected for good reason")},
+			{Label: "a", Selected: false, RejectionReason: nil},
+			{Label: "b", Selected: false, RejectionReason: strPtr("this option was rejected for good reason")},
 		},
 	}
-	// factor 3: 2 alts → 0.15, factor 4: rejection → 0.10
-	assert.InDelta(t, float32(0.25), Score(d), 0.001)
+	// 1 substantive rejection → 0.10
+	assert.InDelta(t, float32(0.10), Score(d), 0.001)
 }
 
 // ---------------------------------------------------------------------------
@@ -394,4 +413,43 @@ func TestStandardDecisionTypes_ExcludesUnknown(t *testing.T) {
 	for _, dt := range bogus {
 		assert.False(t, StandardDecisionTypes[dt], "%q should not be a standard decision type", dt)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// ComputeOutcomeScore tests
+// ---------------------------------------------------------------------------
+
+func TestComputeOutcomeScore_NoAssessments(t *testing.T) {
+	s := model.AssessmentSummary{Total: 0}
+	assert.Nil(t, ComputeOutcomeScore(s), "no assessments should return nil")
+}
+
+func TestComputeOutcomeScore_AllCorrect(t *testing.T) {
+	s := model.AssessmentSummary{Total: 3, Correct: 3}
+	score := ComputeOutcomeScore(s)
+	assert.NotNil(t, score)
+	assert.InDelta(t, float32(1.0), *score, 0.001)
+}
+
+func TestComputeOutcomeScore_AllIncorrect(t *testing.T) {
+	s := model.AssessmentSummary{Total: 2, Incorrect: 2}
+	score := ComputeOutcomeScore(s)
+	assert.NotNil(t, score)
+	assert.InDelta(t, float32(0.0), *score, 0.001)
+}
+
+func TestComputeOutcomeScore_Mixed(t *testing.T) {
+	// 1 correct + 1 partial + 1 incorrect = (1 + 0.5) / 3 = 0.5
+	s := model.AssessmentSummary{Total: 3, Correct: 1, PartiallyCorrect: 1, Incorrect: 1}
+	score := ComputeOutcomeScore(s)
+	assert.NotNil(t, score)
+	assert.InDelta(t, float32(0.5), *score, 0.001)
+}
+
+func TestComputeOutcomeScore_AllPartial(t *testing.T) {
+	// 4 partial = (0 + 0.5*4) / 4 = 0.5
+	s := model.AssessmentSummary{Total: 4, PartiallyCorrect: 4}
+	score := ComputeOutcomeScore(s)
+	assert.NotNil(t, score)
+	assert.InDelta(t, float32(0.5), *score, 0.001)
 }

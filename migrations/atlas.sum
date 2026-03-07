@@ -1,4 +1,4 @@
-h1:CxNYE/bQIVAL9G480t6E9FLeoS8sSqdx9qnnIuEzTiU=
+h1:GuyNVb1CfZT8sy5heyJ4sN9JJp1IQ596t9cKxsAVXiM=
 001_initial.sql h1:uhyGXto+QacAaGYb9ZTGjsBs5chlKi8O0eHz9aCQsrY=
 022_full_text_search.sql h1:9iwtA8MgCzAxDV9YkUBn0CLT9ePSmj3GcPoMGg8TXf0=
 023_fix_outbox_index.sql h1:OtMEFBcMRWej02+ghnBXlPr6BVq+LoA62Id9XUWfDNI=
@@ -37,4 +37,5 @@ h1:CxNYE/bQIVAL9G480t6E9FLeoS8sSqdx9qnnIuEzTiU=
 056_claim_embedding_retries.sql h1:8bwFdN/QTzh7k2YnebWjplmgeNNLsDw4+pmkmkBwkUc=
 057_signup.sql h1:iLBroAU9X37qpUQrq5STsZTKOh6yb9ZNDtrAfXgH2nM=
 058_claim_text_on_conflicts.sql h1:EU/RrSMkAkTYbdGySaqoEw0w1BCtJWyi6/QXIDSfd4k=
-059_conflict_labels.sql h1:cgGvxZMRtpTNOWGipF0hb3GY9cJX8g3oljnG8qoFGNY=
+059_outcome_score.sql h1:/wqeIHuBxscT6mFa+JxFga9lzsmVYxMd0RuoMQYp9rs=
+060_conflict_labels.sql h1:vhF3MiZN4nHhqMsqCpAfqvyOyzd6ZFx85AXTckFk7zQ=

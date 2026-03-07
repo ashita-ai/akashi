@@ -2395,6 +2395,15 @@ components:
             Completeness score (0.0–1.0) measuring how thoroughly the trace was filled in at
             write time (reasoning length, alternatives, evidence, etc.). Does not measure
             whether the decision was correct or adopted.
+        outcome_score:
+          type: number
+          format: float
+          nullable: true
+          description: >
+            Outcome score (0.0–1.0) reflecting ground-truth assessment feedback.
+            Computed as (correct + 0.5 * partially_correct) / total from the
+            decision_assessments table. Null when no assessments exist. Updated
+            on each new assessment via POST /v1/decisions/{id}/assess.
         quality_score:
           type: number
           format: float

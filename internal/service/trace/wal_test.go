@@ -59,7 +59,9 @@ func TestWAL_WriteAndRecover(t *testing.T) {
 	require.NoError(t, err)
 
 	events := testEvents(5)
-	require.NoError(t, w.Write(events))
+	maxLSN, err := w.Write(events)
+	require.NoError(t, err)
+	assert.Greater(t, maxLSN, uint64(0), "Write should return a positive LSN")
 	require.NoError(t, w.Close())
 
 	// Reopen and recover — all 5 should come back.
@@ -67,9 +69,10 @@ func TestWAL_WriteAndRecover(t *testing.T) {
 	require.NoError(t, err)
 	defer closeWAL(t, w2)
 
-	recovered, err := w2.Recover()
+	recovered, recoveredLSN, err := w2.Recover()
 	require.NoError(t, err)
 	assert.Len(t, recovered, 5)
+	assert.Equal(t, maxLSN, recoveredLSN, "recovered max LSN should match written max LSN")
 	for i, r := range recovered {
 		assert.Equal(t, events[i].ID, r.ID, "event %d ID mismatch", i)
 		assert.Equal(t, events[i].AgentID, r.AgentID, "event %d AgentID mismatch", i)
@@ -82,10 +85,14 @@ func TestWAL_CheckpointAdvancesRecovery(t *testing.T) {
 	require.NoError(t, err)
 
 	events := testEvents(10)
-	require.NoError(t, w.Write(events))
+	maxLSN, err := w.Write(events)
+	require.NoError(t, err)
 
-	// Checkpoint first 6 events.
-	require.NoError(t, w.Checkpoint(events[:6]))
+	// Checkpoint first 6 events by LSN. LSNs are 1-based and sequential,
+	// so the 6th event has LSN = baseLSN + 5. With a fresh WAL (baseLSN=1),
+	// that's LSN 6. We compute it as maxLSN - (total - checkpointed).
+	checkpointLSN := maxLSN - uint64(len(events)-6) //nolint:gosec // test values are small and well-bounded
+	require.NoError(t, w.CheckpointLSN(checkpointLSN))
 	require.NoError(t, w.Close())
 
 	// Recover — should get only the last 4.
@@ -93,7 +100,7 @@ func TestWAL_CheckpointAdvancesRecovery(t *testing.T) {
 	require.NoError(t, err)
 	defer closeWAL(t, w2)
 
-	recovered, err := w2.Recover()
+	recovered, _, err := w2.Recover()
 	require.NoError(t, err)
 	assert.Len(t, recovered, 4, "should recover only un-checkpointed events")
 	for i, r := range recovered {
@@ -107,15 +114,16 @@ func TestWAL_CheckpointAll_EmptyRecovery(t *testing.T) {
 	require.NoError(t, err)
 
 	events := testEvents(3)
-	require.NoError(t, w.Write(events))
-	require.NoError(t, w.Checkpoint(events))
+	maxLSN, err := w.Write(events)
+	require.NoError(t, err)
+	require.NoError(t, w.CheckpointLSN(maxLSN))
 	require.NoError(t, w.Close())
 
 	w2, err := NewWAL(testLogger(), cfg)
 	require.NoError(t, err)
 	defer closeWAL(t, w2)
 
-	recovered, err := w2.Recover()
+	recovered, _, err := w2.Recover()
 	require.NoError(t, err)
 	assert.Empty(t, recovered, "all events checkpointed, nothing to recover")
 }
@@ -126,9 +134,10 @@ func TestWAL_EmptyRecovery(t *testing.T) {
 	require.NoError(t, err)
 	defer closeWAL(t, w)
 
-	recovered, err := w.Recover()
+	recovered, maxLSN, err := w.Recover()
 	require.NoError(t, err)
 	assert.Empty(t, recovered, "fresh WAL should have nothing to recover")
+	assert.Equal(t, uint64(0), maxLSN, "no recovered events means zero LSN")
 }
 
 func TestWAL_SegmentRotation(t *testing.T) {
@@ -140,7 +149,8 @@ func TestWAL_SegmentRotation(t *testing.T) {
 
 	// Write 250 events — should span at least 2 segments.
 	events := testEvents(250)
-	require.NoError(t, w.Write(events))
+	_, err = w.Write(events)
+	require.NoError(t, err)
 	require.NoError(t, w.Close())
 
 	segCount := countWALFiles(t, cfg.Dir)
@@ -151,7 +161,7 @@ func TestWAL_SegmentRotation(t *testing.T) {
 	require.NoError(t, err)
 	defer closeWAL(t, w2)
 
-	recovered, err := w2.Recover()
+	recovered, _, err := w2.Recover()
 	require.NoError(t, err)
 	assert.Len(t, recovered, 250, "all events should be recoverable across segments")
 }
@@ -164,13 +174,14 @@ func TestWAL_SegmentCleanup(t *testing.T) {
 	require.NoError(t, err)
 
 	events := testEvents(250)
-	require.NoError(t, w.Write(events))
+	maxLSN, err := w.Write(events)
+	require.NoError(t, err)
 
 	beforeCleanup := countWALFiles(t, cfg.Dir)
 	require.GreaterOrEqual(t, beforeCleanup, 2)
 
 	// Checkpoint all events — old segments should be cleaned.
-	require.NoError(t, w.Checkpoint(events))
+	require.NoError(t, w.CheckpointLSN(maxLSN))
 
 	afterCleanup := countWALFiles(t, cfg.Dir)
 	assert.Less(t, afterCleanup, beforeCleanup,
@@ -185,7 +196,8 @@ func TestWAL_CorruptedRecord(t *testing.T) {
 	require.NoError(t, err)
 
 	events := testEvents(5)
-	require.NoError(t, w.Write(events))
+	_, err = w.Write(events)
+	require.NoError(t, err)
 	require.NoError(t, w.Close())
 
 	// Corrupt a byte in the last segment file. This should cause
@@ -208,7 +220,7 @@ func TestWAL_CorruptedRecord(t *testing.T) {
 	require.NoError(t, err)
 	defer closeWAL(t, w2)
 
-	recovered, err := w2.Recover()
+	recovered, _, err := w2.Recover()
 	require.NoError(t, err)
 	assert.Less(t, len(recovered), 5, "corrupted record should truncate recovery")
 }
@@ -229,7 +241,7 @@ func TestWAL_ConcurrentWrites(t *testing.T) {
 		go func(g int) {
 			defer wg.Done()
 			events := testEvents(eventsPerGo)
-			if err := w.Write(events); err != nil {
+			if _, err := w.Write(events); err != nil {
 				errCh <- err
 			}
 		}(g)
@@ -248,7 +260,7 @@ func TestWAL_ConcurrentWrites(t *testing.T) {
 	require.NoError(t, err)
 	defer closeWAL(t, w2)
 
-	recovered, err := w2.Recover()
+	recovered, _, err := w2.Recover()
 	require.NoError(t, err)
 	assert.Equal(t, goroutines*eventsPerGo, len(recovered),
 		"all concurrently-written events should be recoverable")
@@ -296,11 +308,10 @@ func TestWAL_BatchSyncMode(t *testing.T) {
 	require.NoError(t, err)
 
 	events := testEvents(3)
-	require.NoError(t, w.Write(events))
+	_, err = w.Write(events)
+	require.NoError(t, err)
 
-	// Let the sync goroutine fire at least once.
-	time.Sleep(100 * time.Millisecond)
-
+	// Close flushes pending syncs and stops the sync goroutine.
 	require.NoError(t, w.Close())
 
 	// Verify events are recoverable.
@@ -308,7 +319,7 @@ func TestWAL_BatchSyncMode(t *testing.T) {
 	require.NoError(t, err)
 	defer closeWAL(t, w2)
 
-	recovered, err := w2.Recover()
+	recovered, _, err := w2.Recover()
 	require.NoError(t, err)
 	assert.Len(t, recovered, 3)
 }
@@ -321,14 +332,15 @@ func TestWAL_FullSyncMode(t *testing.T) {
 	require.NoError(t, err)
 
 	events := testEvents(3)
-	require.NoError(t, w.Write(events))
+	_, err = w.Write(events)
+	require.NoError(t, err)
 	require.NoError(t, w.Close())
 
 	w2, err := NewWAL(testLogger(), cfg)
 	require.NoError(t, err)
 	defer closeWAL(t, w2)
 
-	recovered, err := w2.Recover()
+	recovered, _, err := w2.Recover()
 	require.NoError(t, err)
 	assert.Len(t, recovered, 3)
 }
@@ -342,7 +354,8 @@ func TestWAL_PendingBytesAndSegmentCount(t *testing.T) {
 	assert.GreaterOrEqual(t, w.SegmentCount(), 1, "should have at least the initial segment")
 
 	events := testEvents(10)
-	require.NoError(t, w.Write(events))
+	_, err = w.Write(events)
+	require.NoError(t, err)
 	assert.Greater(t, w.PendingBytes(), int64(0), "pending bytes should be > 0 after writes")
 }
 
@@ -352,9 +365,8 @@ func TestWAL_CheckpointEmptyIsNoop(t *testing.T) {
 	require.NoError(t, err)
 	defer closeWAL(t, w)
 
-	// Checkpointing an empty slice should be a no-op, not an error.
-	require.NoError(t, w.Checkpoint(nil))
-	require.NoError(t, w.Checkpoint([]model.AgentEvent{}))
+	// Checkpointing LSN 0 should be a no-op, not an error.
+	require.NoError(t, w.CheckpointLSN(0))
 }
 
 func TestWAL_BadMagicRejected(t *testing.T) {
@@ -363,7 +375,8 @@ func TestWAL_BadMagicRejected(t *testing.T) {
 	require.NoError(t, err)
 
 	events := testEvents(3)
-	require.NoError(t, w.Write(events))
+	_, err = w.Write(events)
+	require.NoError(t, err)
 	require.NoError(t, w.Close())
 
 	// Corrupt the magic bytes of the first segment.
@@ -379,7 +392,7 @@ func TestWAL_BadMagicRejected(t *testing.T) {
 	require.NoError(t, err)
 	defer closeWAL(t, w2)
 
-	recovered, err := w2.Recover()
+	recovered, _, err := w2.Recover()
 	require.NoError(t, err)
 	// The corrupted segment should be skipped; recovery stops.
 	assert.Empty(t, recovered, "bad magic should prevent recovery from that segment")
@@ -391,7 +404,8 @@ func TestWAL_TruncatedRecord(t *testing.T) {
 	require.NoError(t, err)
 
 	events := testEvents(5)
-	require.NoError(t, w.Write(events))
+	_, err = w.Write(events)
+	require.NoError(t, err)
 	require.NoError(t, w.Close())
 
 	// Truncate the last segment mid-record.
@@ -411,7 +425,7 @@ func TestWAL_TruncatedRecord(t *testing.T) {
 	require.NoError(t, err)
 	defer closeWAL(t, w2)
 
-	recovered, err := w2.Recover()
+	recovered, _, err := w2.Recover()
 	require.NoError(t, err)
 	// Should recover some but not all events.
 	assert.Less(t, len(recovered), 5, "truncated segment should lose at least the last record")

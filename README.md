@@ -392,6 +392,7 @@ flowchart TD
 
 | Document | Description |
 |----------|-------------|
+| [Self-Hosting Guide](docs/self-hosting.md) | Step-by-step deployment: Postgres-only through full stack with Qdrant and Ollama |
 | [Configuration](docs/configuration.md) | All environment variables with defaults and descriptions |
 | [Subsystems](docs/subsystems.md) | Embedding provider, rate limiting, and Qdrant search pipeline internals |
 | [Technical Deep Dive](docs/technical-deep-dive.md) | Architecture walkthrough, data model, code organization |

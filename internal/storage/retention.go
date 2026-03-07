@@ -425,22 +425,22 @@ func (db *DB) deleteBatch(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID)
 
 	var cnt PurgeCount
 
-	// 1. Delete evidence.
-	tag, err := tx.Exec(ctx, `DELETE FROM evidence WHERE decision_id = ANY($1)`, ids)
+	// 1. Delete evidence (scoped by org_id for defense in depth).
+	tag, err := tx.Exec(ctx, `DELETE FROM evidence WHERE decision_id = ANY($1) AND org_id = $2`, ids, orgID)
 	if err != nil {
 		return cnt, fmt.Errorf("storage: delete evidence batch: %w", err)
 	}
 	cnt.Evidence = tag.RowsAffected()
 
-	// 2. Delete alternatives.
+	// 2. Delete alternatives (no org_id column; decision_id FK provides scoping).
 	tag, err = tx.Exec(ctx, `DELETE FROM alternatives WHERE decision_id = ANY($1)`, ids)
 	if err != nil {
 		return cnt, fmt.Errorf("storage: delete alternatives batch: %w", err)
 	}
 	cnt.Alternatives = tag.RowsAffected()
 
-	// 3. Delete decision_claims.
-	tag, err = tx.Exec(ctx, `DELETE FROM decision_claims WHERE decision_id = ANY($1)`, ids)
+	// 3. Delete decision_claims (scoped by org_id for defense in depth).
+	tag, err = tx.Exec(ctx, `DELETE FROM decision_claims WHERE decision_id = ANY($1) AND org_id = $2`, ids, orgID)
 	if err != nil {
 		return cnt, fmt.Errorf("storage: delete claims batch: %w", err)
 	}
