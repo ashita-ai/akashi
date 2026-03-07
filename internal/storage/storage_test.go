@@ -1471,7 +1471,7 @@ func TestExportDecisionsCursor_PaginationOrder(t *testing.T) {
 	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
 	require.NoError(t, err)
 
-	// Create 5 decisions with slight delays so valid_from values differ.
+	// Create 5 decisions. The keyset cursor (valid_from, id) handles ties.
 	const count = 5
 	createdIDs := make([]uuid.UUID, 0, count)
 	for i := range count {
@@ -1485,8 +1485,6 @@ func TestExportDecisionsCursor_PaginationOrder(t *testing.T) {
 		})
 		require.NoError(t, err)
 		createdIDs = append(createdIDs, d.ID)
-		// Small sleep to ensure distinct valid_from timestamps.
-		time.Sleep(5 * time.Millisecond)
 	}
 
 	// Paginate with limit=2, collecting all pages.

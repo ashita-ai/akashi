@@ -349,8 +349,10 @@ func TestCreateRunAndAppendEvents(t *testing.T) {
 	defer func() { _ = resp2.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp2.StatusCode)
 
-	// Wait for buffer flush.
-	time.Sleep(200 * time.Millisecond)
+	// Flush the event buffer so events are visible in the database.
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer flushCancel()
+	require.NoError(t, testBuf.FlushNow(flushCtx))
 
 	// Get run with events.
 	resp3, err := authedRequest("GET", testSrv.URL+"/v1/runs/"+runID.String(), agentToken, nil)

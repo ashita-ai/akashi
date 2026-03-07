@@ -120,13 +120,11 @@ func TestBuffer_AppendAndFlush(t *testing.T) {
 		assert.Equal(t, model.EventToolCallCompleted, e.EventType)
 	}
 
-	// Wait for the flush interval to fire (buffer flushTimeout is 100ms).
-	time.Sleep(300 * time.Millisecond)
-
-	// Verify events landed in the database.
-	got, err := testDB.GetEventsByRun(context.Background(), run.OrgID, run.ID, 0)
-	require.NoError(t, err)
-	assert.Len(t, got, 3, "all 3 events should be flushed to DB")
+	// Poll until the flush interval fires and events land in the database.
+	require.Eventually(t, func() bool {
+		got, err := testDB.GetEventsByRun(context.Background(), run.OrgID, run.ID, 0)
+		return err == nil && len(got) == 3
+	}, 2*time.Second, 25*time.Millisecond, "all 3 events should be flushed to DB")
 
 	// Clean shutdown.
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -242,10 +240,14 @@ func TestBuffer_DrainTimeout(t *testing.T) {
 	assert.Less(t, elapsed, 500*time.Millisecond,
 		"drain with an already-cancelled context should return immediately")
 
-	// Give the background flush loop time to finish its final flush
-	// so we don't leak the goroutine (the loop has a 10s fallback timeout
-	// if the drain context is cancelled, but in practice the flush is fast).
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the flush loop goroutine to exit so we don't leak it.
+	// Drain already cancelled the loop; the goroutine closes buf.done
+	// after its final (failed) flush attempt.
+	select {
+	case <-buf.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("flush loop goroutine did not exit within 5s")
+	}
 }
 
 func TestBuffer_AppendAfterDrain(t *testing.T) {
