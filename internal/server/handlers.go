@@ -53,6 +53,9 @@ type Handlers struct {
 	// resolutionRecorder records conflict resolution events for OTel metrics.
 	// Nil-safe: callers check before use.
 	resolutionRecorder conflicts.ResolutionRecorder
+	// conflictValidator classifies relationships between decision pairs.
+	// Nil-safe: eval endpoint returns 501 when not configured.
+	conflictValidator conflicts.Validator
 }
 
 // HandlersDeps holds all dependencies for constructing Handlers.
@@ -75,6 +78,7 @@ type HandlersDeps struct {
 	AutoTrace               bool
 	TrustProxy              bool
 	ResolutionRecorder      conflicts.ResolutionRecorder
+	ConflictValidator       conflicts.Validator
 }
 
 // NewHandlers creates a new Handlers with all dependencies.
@@ -99,6 +103,7 @@ func NewHandlers(d HandlersDeps) *Handlers {
 		autoTrace:               d.AutoTrace,
 		trustProxy:              d.TrustProxy,
 		resolutionRecorder:      d.ResolutionRecorder,
+		conflictValidator:       d.ConflictValidator,
 	}
 }
 

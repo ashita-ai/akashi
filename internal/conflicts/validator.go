@@ -147,6 +147,17 @@ func formatPrompt(input ValidateInput) string {
 			input.TopicSimilarity*100)
 	}
 
+	// --- Decision type workflow hint ---
+	// When decision types suggest a sequential workflow (e.g., a review followed
+	// by a fix), inject a strong hint to reduce false positives from the LLM
+	// misclassifying cause-and-effect pairs as contradictions.
+	if isWorkflowPair(input.TypeA, input.TypeB) {
+		fmt.Fprintf(&b, "WORKFLOW PATTERN: Decision types %q → %q suggest a sequential workflow (analysis/review followed by implementation/fix). "+
+			"These are almost always REFINEMENT or COMPLEMENTARY — one decision identifies issues, the other resolves them. "+
+			"Only classify as CONTRADICTION if they make genuinely incompatible claims about the same question.\n",
+			input.TypeA, input.TypeB)
+	}
+
 	// --- Classification instructions ---
 	b.WriteString(`
 Classify the RELATIONSHIP between these two decisions:
@@ -168,6 +179,16 @@ IMPORTANT for assessments and code reviews:
 - Two reviews finding different issues in the same codebase are complementary, not contradictory.
 - Two reviews of DIFFERENT codebases or products are UNRELATED — they cannot contradict each other.
 - For assessments to contradict, they must make OPPOSITE claims about the SAME specific finding in the SAME system.
+- A review at one scope (e.g. a single PR) finding "no issues" does NOT contradict a broader review (e.g. full codebase) finding issues. They examined different code.
+
+IMPORTANT for sequential workflow (identify → fix):
+- When one decision identifies a problem and a later decision implements a fix or improvement for that problem, classify as REFINEMENT — the fix builds on the finding.
+- "X is naive/broken/missing" followed by "implemented improvements to X" is REFINEMENT, not CONTRADICTION. The second decision addresses the first.
+- A code review finding issues followed by a bug fix resolving those issues is REFINEMENT or COMPLEMENTARY — never CONTRADICTION.
+
+IMPORTANT for agreement detection:
+- If both decisions recommend the SAME approach, technology, or tool — even with different framing or emphasis — they AGREE. Classify as COMPLEMENTARY.
+- "Use X for purpose A" and "Use X for purpose B" is COMPLEMENTARY (both chose X), not CONTRADICTION.
 
 RELATIONSHIP: one of [contradiction, supersession, complementary, refinement, unrelated]
 CATEGORY: factual, assessment, strategic, or temporal
@@ -175,6 +196,41 @@ SEVERITY: critical, high, medium, or low
 EXPLANATION: one sentence`)
 
 	return b.String()
+}
+
+// workflowPairs maps decision type pairs that represent sequential workflows
+// (analysis/review followed by implementation/fix). When both types in a pair
+// appear, the decisions are almost certainly cause-and-effect rather than
+// contradictions. The key is the "earlier" type, the values are the "later" types.
+var workflowPairs = map[string][]string{
+	"code_review": {"bug_fix", "fix", "implementation", "refactor"},
+	"assessment":  {"bug_fix", "fix", "implementation", "refactor", "architecture"},
+	"review":      {"bug_fix", "fix", "implementation", "refactor"},
+	"analysis":    {"bug_fix", "fix", "implementation", "architecture"},
+	"audit":       {"bug_fix", "fix", "implementation", "refactor"},
+}
+
+// isWorkflowPair returns true if the two decision types suggest a sequential
+// workflow (e.g., code_review → bug_fix) in either direction. This is used
+// to inject a strong hint into the LLM prompt to reduce false positives.
+func isWorkflowPair(typeA, typeB string) bool {
+	a := strings.ToLower(typeA)
+	b := strings.ToLower(typeB)
+	if followers, ok := workflowPairs[a]; ok {
+		for _, f := range followers {
+			if b == f {
+				return true
+			}
+		}
+	}
+	if followers, ok := workflowPairs[b]; ok {
+		for _, f := range followers {
+			if a == f {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // truncateRunes truncates a string to maxLen runes, appending "..." if truncated.
