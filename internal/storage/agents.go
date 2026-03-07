@@ -30,10 +30,10 @@ func (db *DB) CreateAgent(ctx context.Context, agent model.Agent) (model.Agent, 
 	}
 
 	_, err := db.pool.Exec(ctx,
-		`INSERT INTO agents (id, agent_id, org_id, name, role, api_key_hash, tags, metadata, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		`INSERT INTO agents (id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		agent.ID, agent.AgentID, agent.OrgID, agent.Name, string(agent.Role),
-		agent.APIKeyHash, agent.Tags, agent.Metadata, agent.CreatedAt, agent.UpdatedAt,
+		agent.APIKeyHash, agent.Email, agent.Tags, agent.Metadata, agent.CreatedAt, agent.UpdatedAt,
 	)
 	if err != nil {
 		return model.Agent{}, fmt.Errorf("storage: create agent: %w", err)
@@ -66,10 +66,10 @@ func (db *DB) CreateAgentWithAudit(ctx context.Context, agent model.Agent, audit
 	}
 
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO agents (id, agent_id, org_id, name, role, api_key_hash, tags, metadata, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		`INSERT INTO agents (id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		agent.ID, agent.AgentID, agent.OrgID, agent.Name, string(agent.Role),
-		agent.APIKeyHash, agent.Tags, agent.Metadata, agent.CreatedAt, agent.UpdatedAt,
+		agent.APIKeyHash, agent.Email, agent.Tags, agent.Metadata, agent.CreatedAt, agent.UpdatedAt,
 	); err != nil {
 		return model.Agent{}, fmt.Errorf("storage: create agent: %w", err)
 	}
@@ -120,10 +120,10 @@ func (db *DB) CreateAgentAndKeyTx(
 	agent.APIKeyHash = nil
 
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO agents (id, agent_id, org_id, name, role, api_key_hash, tags, metadata, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		`INSERT INTO agents (id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		agent.ID, agent.AgentID, agent.OrgID, agent.Name, string(agent.Role),
-		agent.APIKeyHash, agent.Tags, agent.Metadata, agent.CreatedAt, agent.UpdatedAt,
+		agent.APIKeyHash, agent.Email, agent.Tags, agent.Metadata, agent.CreatedAt, agent.UpdatedAt,
 	); err != nil {
 		return model.Agent{}, model.APIKey{}, fmt.Errorf("storage: create agent: %w", err)
 	}
@@ -168,7 +168,7 @@ func (db *DB) CreateAgentAndKeyTx(
 // preventing cross-tenant confusion when agent_ids collide across orgs.
 func (db *DB) GetAgentsByAgentIDGlobal(ctx context.Context, agentID string) ([]model.Agent, error) {
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, agent_id, org_id, name, role, api_key_hash, tags, metadata, created_at, updated_at, last_seen
+		`SELECT id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at, last_seen
 		 FROM agents WHERE agent_id = $1 ORDER BY created_at ASC`, agentID,
 	)
 	if err != nil {
@@ -180,7 +180,7 @@ func (db *DB) GetAgentsByAgentIDGlobal(ctx context.Context, agentID string) ([]m
 	for rows.Next() {
 		var a model.Agent
 		if err := rows.Scan(
-			&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash,
+			&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
 			&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt, &a.LastSeen,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan agent: %w", err)
@@ -200,10 +200,10 @@ func (db *DB) GetAgentsByAgentIDGlobal(ctx context.Context, agentID string) ([]m
 func (db *DB) GetAgentByAgentID(ctx context.Context, orgID uuid.UUID, agentID string) (model.Agent, error) {
 	var a model.Agent
 	err := db.pool.QueryRow(ctx,
-		`SELECT id, agent_id, org_id, name, role, api_key_hash, tags, metadata, created_at, updated_at, last_seen
+		`SELECT id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at, last_seen
 		 FROM agents WHERE org_id = $1 AND agent_id = $2`, orgID, agentID,
 	).Scan(
-		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash,
+		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
 		&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt, &a.LastSeen,
 	)
 	if err != nil {
@@ -220,10 +220,10 @@ func (db *DB) GetAgentByAgentID(ctx context.Context, orgID uuid.UUID, agentID st
 func (db *DB) GetAgentByID(ctx context.Context, id uuid.UUID, orgID uuid.UUID) (model.Agent, error) {
 	var a model.Agent
 	err := db.pool.QueryRow(ctx,
-		`SELECT id, agent_id, org_id, name, role, api_key_hash, tags, metadata, created_at, updated_at, last_seen
+		`SELECT id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at, last_seen
 		 FROM agents WHERE id = $1 AND org_id = $2`, id, orgID,
 	).Scan(
-		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash,
+		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
 		&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt, &a.LastSeen,
 	)
 	if err != nil {
@@ -248,7 +248,7 @@ func (db *DB) ListAgents(ctx context.Context, orgID uuid.UUID, limit, offset int
 		offset = 0
 	}
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, agent_id, org_id, name, role, api_key_hash, tags, metadata, created_at, updated_at, last_seen
+		`SELECT id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at, last_seen
 		 FROM agents WHERE org_id = $1 ORDER BY created_at ASC LIMIT $2 OFFSET $3`,
 		orgID, limit, offset,
 	)
@@ -261,7 +261,7 @@ func (db *DB) ListAgents(ctx context.Context, orgID uuid.UUID, limit, offset int
 	for rows.Next() {
 		var a model.Agent
 		if err := rows.Scan(
-			&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash,
+			&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
 			&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt, &a.LastSeen,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan agent: %w", err)
@@ -325,10 +325,10 @@ func (db *DB) UpdateAgent(ctx context.Context, orgID uuid.UUID, agentID string, 
 		     metadata = CASE WHEN $2::jsonb IS NOT NULL THEN metadata || $2::jsonb ELSE metadata END,
 		     updated_at = now()
 		 WHERE org_id = $3 AND agent_id = $4
-		 RETURNING id, agent_id, org_id, name, role, api_key_hash, tags, metadata, created_at, updated_at`,
+		 RETURNING id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at`,
 		name, metadata, orgID, agentID,
 	).Scan(
-		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash,
+		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
 		&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt,
 	)
 	if err != nil {
@@ -356,10 +356,10 @@ func (db *DB) UpdateAgentWithAudit(ctx context.Context, orgID uuid.UUID, agentID
 		     metadata = CASE WHEN $2::jsonb IS NOT NULL THEN metadata || $2::jsonb ELSE metadata END,
 		     updated_at = now()
 		 WHERE org_id = $3 AND agent_id = $4
-		 RETURNING id, agent_id, org_id, name, role, api_key_hash, tags, metadata, created_at, updated_at`,
+		 RETURNING id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at`,
 		name, metadata, orgID, agentID,
 	).Scan(
-		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash,
+		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
 		&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt,
 	)
 	if err != nil {
@@ -474,10 +474,10 @@ func (db *DB) UpdateAgentTags(ctx context.Context, orgID uuid.UUID, agentID stri
 	err := db.pool.QueryRow(ctx,
 		`UPDATE agents SET tags = $1, updated_at = now()
 		 WHERE org_id = $2 AND agent_id = $3
-		 RETURNING id, agent_id, org_id, name, role, api_key_hash, tags, metadata, created_at, updated_at, last_seen`,
+		 RETURNING id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at, last_seen`,
 		tags, orgID, agentID,
 	).Scan(
-		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash,
+		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
 		&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt, &a.LastSeen,
 	)
 	if err != nil {
@@ -506,10 +506,10 @@ func (db *DB) UpdateAgentTagsWithAudit(ctx context.Context, orgID uuid.UUID, age
 	err = tx.QueryRow(ctx,
 		`UPDATE agents SET tags = $1, updated_at = now()
 		 WHERE org_id = $2 AND agent_id = $3
-		 RETURNING id, agent_id, org_id, name, role, api_key_hash, tags, metadata, created_at, updated_at, last_seen`,
+		 RETURNING id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at, last_seen`,
 		tags, orgID, agentID,
 	).Scan(
-		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash,
+		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
 		&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt, &a.LastSeen,
 	)
 	if err != nil {

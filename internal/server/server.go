@@ -81,6 +81,10 @@ type ServerConfig struct {
 	// DecisionHooks are fired asynchronously on decision lifecycle events.
 	DecisionHooks []DecisionHook
 
+	// Self-serve signup.
+	SignupEnabled     bool              // Enable POST /auth/signup for self-serve org creation.
+	SignupRateLimiter ratelimit.Limiter // Per-IP signup rate limiter; nil = use default (1 RPS, burst 5).
+
 	// IDE hook integration.
 	HooksEnabled bool   // Enable /hooks/* IDE integration endpoints.
 	HooksAPIKey  string // Optional API key for non-localhost hook access.
@@ -105,6 +109,7 @@ func New(cfg ServerConfig) *Server {
 		RetentionInterval:       cfg.RetentionInterval,
 		DecisionHooks:           cfg.DecisionHooks,
 		AutoTrace:               cfg.AutoTrace,
+		TrustProxy:              cfg.TrustProxy,
 	})
 
 	mux := http.NewServeMux()
@@ -112,6 +117,16 @@ func New(cfg ServerConfig) *Server {
 	// Auth endpoints (no auth required).
 	mux.Handle("POST /auth/token", http.HandlerFunc(h.HandleAuthToken))
 	mux.Handle("POST /auth/refresh", http.HandlerFunc(h.HandleAuthToken))
+
+	// Self-serve signup (no auth required, gated by config flag).
+	if cfg.SignupEnabled {
+		if cfg.SignupRateLimiter != nil {
+			h.signupLimiter = cfg.SignupRateLimiter
+		} else {
+			h.signupLimiter = ratelimit.NewMemoryLimiter(1.0, 5) // 1 RPS, burst 5 per IP
+		}
+		mux.Handle("POST /auth/signup", http.HandlerFunc(h.HandleSignup))
+	}
 
 	// Agent management (admin-only).
 	adminOnly := requireRole(model.RoleAdmin)
