@@ -18,12 +18,12 @@ func (db *DB) InsertClaims(ctx context.Context, claims []Claim) error {
 
 	rows := make([][]any, len(claims))
 	for i, c := range claims {
-		rows[i] = []any{c.DecisionID, c.OrgID, c.ClaimIdx, c.ClaimText, c.Embedding}
+		rows[i] = []any{c.DecisionID, c.OrgID, c.ClaimIdx, c.ClaimText, c.Category, c.Embedding}
 	}
 
 	_, err := db.pool.CopyFrom(ctx,
 		pgx.Identifier{"decision_claims"},
-		[]string{"decision_id", "org_id", "claim_idx", "claim_text", "embedding"},
+		[]string{"decision_id", "org_id", "claim_idx", "claim_text", "category", "embedding"},
 		pgx.CopyFromRows(rows),
 	)
 	if err != nil {
@@ -35,7 +35,7 @@ func (db *DB) InsertClaims(ctx context.Context, claims []Claim) error {
 // FindClaimsByDecision returns all claims for a decision, ordered by claim_idx.
 func (db *DB) FindClaimsByDecision(ctx context.Context, decisionID, orgID uuid.UUID) ([]Claim, error) {
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, decision_id, org_id, claim_idx, claim_text, embedding
+		`SELECT id, decision_id, org_id, claim_idx, claim_text, category, embedding
 		 FROM decision_claims
 		 WHERE decision_id = $1 AND org_id = $2
 		 ORDER BY claim_idx`, decisionID, orgID)
@@ -47,7 +47,7 @@ func (db *DB) FindClaimsByDecision(ctx context.Context, decisionID, orgID uuid.U
 	var claims []Claim
 	for rows.Next() {
 		var c Claim
-		if err := rows.Scan(&c.ID, &c.DecisionID, &c.OrgID, &c.ClaimIdx, &c.ClaimText, &c.Embedding); err != nil {
+		if err := rows.Scan(&c.ID, &c.DecisionID, &c.OrgID, &c.ClaimIdx, &c.ClaimText, &c.Category, &c.Embedding); err != nil {
 			return nil, fmt.Errorf("storage: scan claim: %w", err)
 		}
 		claims = append(claims, c)

@@ -670,11 +670,11 @@ func (s *Scorer) bestClaimConflict(ctx context.Context, decisionAID, decisionBID
 	var bestClaimA, bestClaimB string
 
 	for _, ca := range claimsA {
-		if ca.Embedding == nil {
+		if ca.Embedding == nil || !ConflictRelevantCategory(ca.Category) {
 			continue
 		}
 		for _, cb := range claimsB {
-			if cb.Embedding == nil {
+			if cb.Embedding == nil || !ConflictRelevantCategory(cb.Category) {
 				continue
 			}
 			claimSim := cosineSimilarity(ca.Embedding.Slice(), cb.Embedding.Slice())

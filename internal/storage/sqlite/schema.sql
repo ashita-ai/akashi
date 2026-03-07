@@ -207,6 +207,7 @@ CREATE TABLE IF NOT EXISTS decision_claims (
     org_id      TEXT NOT NULL,
     claim_idx   INTEGER NOT NULL,
     claim_text  TEXT NOT NULL,
+    category    TEXT,
     embedding   BLOB
 );
 CREATE INDEX IF NOT EXISTS idx_claims_decision ON decision_claims(decision_id, org_id);

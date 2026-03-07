@@ -34,8 +34,8 @@ func (l *LiteDB) InsertClaims(ctx context.Context, claims []storage.Claim) error
 	defer tx.Rollback() //nolint:errcheck
 
 	stmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO decision_claims (decision_id, org_id, claim_idx, claim_text, embedding)
-		 VALUES (?, ?, ?, ?, ?)`)
+		`INSERT INTO decision_claims (decision_id, org_id, claim_idx, claim_text, category, embedding)
+		 VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("sqlite: prepare claims: %w", err)
 	}
@@ -43,7 +43,7 @@ func (l *LiteDB) InsertClaims(ctx context.Context, claims []storage.Claim) error
 
 	for _, c := range claims {
 		_, err := stmt.ExecContext(ctx,
-			uuidStr(c.DecisionID), uuidStr(c.OrgID), c.ClaimIdx, c.ClaimText, vectorToBlob(c.Embedding))
+			uuidStr(c.DecisionID), uuidStr(c.OrgID), c.ClaimIdx, c.ClaimText, c.Category, vectorToBlob(c.Embedding))
 		if err != nil {
 			return fmt.Errorf("sqlite: insert claim: %w", err)
 		}

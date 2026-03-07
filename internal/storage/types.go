@@ -159,6 +159,7 @@ type Claim struct {
 	OrgID      uuid.UUID
 	ClaimIdx   int
 	ClaimText  string
+	Category   *string // finding, recommendation, assessment, status (nil = uncategorized/regex-extracted)
 	Embedding  *pgvector.Vector
 }
 
