@@ -147,6 +147,7 @@ Existing deployments that set `AKASHI_WAL_DIR` explicitly will continue to work 
 | `AKASHI_SHUTDOWN_HTTP_TIMEOUT` | `10s` | HTTP shutdown grace timeout (`0` = wait indefinitely) |
 | `AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT` | `0` | Maximum time to flush in-memory events to Postgres during shutdown. `0` = wait indefinitely (default, durability-first). Non-zero values bound the drain but risk losing unflushed events — process exits non-zero if events remain. |
 | `AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT` | `0` | Outbox drain timeout (`0` = wait indefinitely) |
+| `AKASHI_PERCENTILE_REFRESH_INTERVAL` | `1h` | How often to refresh per-org signal percentile caches used for distribution-aware ReScore normalization. Set to `0` to disable |
 
 ## Write Idempotency
 
