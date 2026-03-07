@@ -587,6 +587,61 @@ func TestFormatPrompt_NullRepoSameAgent(t *testing.T) {
 	assert.NotContains(t, prompt, "DIFFERENT PROJECTS")
 }
 
+func TestIsWorkflowPair(t *testing.T) {
+	// Positive cases: review/analysis types followed by fix/implementation types.
+	assert.True(t, isWorkflowPair("code_review", "bug_fix"))
+	assert.True(t, isWorkflowPair("code_review", "fix"))
+	assert.True(t, isWorkflowPair("assessment", "bug_fix"))
+	assert.True(t, isWorkflowPair("assessment", "implementation"))
+	assert.True(t, isWorkflowPair("audit", "refactor"))
+	assert.True(t, isWorkflowPair("analysis", "architecture"))
+
+	// Symmetric: order doesn't matter (the function checks both directions).
+	assert.True(t, isWorkflowPair("bug_fix", "code_review"))
+	assert.True(t, isWorkflowPair("fix", "assessment"))
+
+	// Case insensitive.
+	assert.True(t, isWorkflowPair("Code_Review", "Bug_Fix"))
+
+	// Negative cases: same type, or unrelated pairs.
+	assert.False(t, isWorkflowPair("architecture", "architecture"))
+	assert.False(t, isWorkflowPair("code_review", "code_review"))
+	assert.False(t, isWorkflowPair("architecture", "security"))
+	assert.False(t, isWorkflowPair("trade_off", "deployment"))
+}
+
+func TestFormatPrompt_WorkflowPair(t *testing.T) {
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA: "Found 3 bugs in the codebase",
+		OutcomeB: "Fixed the 3 bugs from the review",
+		TypeA:    "code_review",
+		TypeB:    "bug_fix",
+		AgentA:   "reviewer",
+		AgentB:   "coder",
+		CreatedA: now,
+		CreatedB: now.Add(1 * time.Hour),
+	})
+	assert.Contains(t, prompt, "WORKFLOW PATTERN")
+	assert.Contains(t, prompt, "code_review")
+	assert.Contains(t, prompt, "bug_fix")
+}
+
+func TestFormatPrompt_NonWorkflowPair(t *testing.T) {
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA: "Use PostgreSQL",
+		OutcomeB: "Use MySQL",
+		TypeA:    "architecture",
+		TypeB:    "architecture",
+		AgentA:   "planner-a",
+		AgentB:   "planner-b",
+		CreatedA: now,
+		CreatedB: now.Add(1 * time.Hour),
+	})
+	assert.NotContains(t, prompt, "WORKFLOW PATTERN")
+}
+
 func TestTruncateRunes(t *testing.T) {
 	// Below limit: unchanged.
 	assert.Equal(t, "hello", truncateRunes("hello", 10))

@@ -93,6 +93,9 @@ type ServerConfig struct {
 
 	// Conflict metrics.
 	ResolutionRecorder conflicts.ResolutionRecorder
+
+	// Conflict validator for the eval endpoint. Nil = eval returns 501.
+	ConflictValidator conflicts.Validator
 }
 
 // New creates a new HTTP server with all routes configured.
@@ -115,6 +118,7 @@ func New(cfg ServerConfig) *Server {
 		AutoTrace:               cfg.AutoTrace,
 		TrustProxy:              cfg.TrustProxy,
 		ResolutionRecorder:      cfg.ResolutionRecorder,
+		ConflictValidator:       cfg.ConflictValidator,
 	})
 
 	mux := http.NewServeMux()
@@ -218,6 +222,10 @@ func New(cfg ServerConfig) *Server {
 	mux.Handle("PATCH /v1/conflict-groups/{id}/resolve", writeRole(http.HandlerFunc(h.HandleResolveConflictGroup)))
 	mux.Handle("POST /v1/conflicts/{id}/adjudicate", writeRole(http.HandlerFunc(h.HandleAdjudicateConflict)))
 	mux.Handle("PATCH /v1/conflicts/{id}", writeRole(http.HandlerFunc(h.HandlePatchConflict)))
+
+	// Conflict eval (admin-only).
+	mux.Handle("POST /v1/admin/conflicts/validate-pair", adminOnly(http.HandlerFunc(h.HandleValidatePair)))
+	mux.Handle("POST /v1/admin/conflicts/eval", adminOnly(http.HandlerFunc(h.HandleConflictEval)))
 
 	// Retention policy and legal holds (admin for writes, reader+ for GET).
 	mux.Handle("GET /v1/retention", readRole(http.HandlerFunc(h.HandleGetRetention)))

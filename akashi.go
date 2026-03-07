@@ -415,6 +415,7 @@ func New(opts ...Option) (*App, error) {
 		AutoTrace:               cfg.AutoTrace,
 		SignupEnabled:           cfg.SignupEnabled,
 		ResolutionRecorder:      conflictScorer,
+		ConflictValidator:       conflictValidator,
 	})
 
 	// Seed admin agent.
