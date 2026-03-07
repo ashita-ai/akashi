@@ -219,6 +219,7 @@ func New(opts ...Option) (*App, error) {
 		logger.Info("conflict backfill: capped workers to 1 (Ollama is serial)")
 	}
 	conflictScorer := conflicts.NewScorer(db, logger, cfg.ConflictSignificanceThreshold, conflictValidator, backfillWorkers, cfg.ConflictDecayLambda).
+		WithScoringThresholds(cfg.ConflictClaimTopicSimFloor, cfg.ConflictClaimDivFloor, cfg.ConflictDecisionTopicSimFloor).
 		WithCandidateLimit(cfg.ConflictCandidateLimit)
 	if qdrantIndex != nil {
 		conflictScorer = conflictScorer.WithCandidateFinder(qdrantIndex)

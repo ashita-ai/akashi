@@ -159,6 +159,29 @@ func TestNewScorer_DefaultThreshold(t *testing.T) {
 	assert.Equal(t, 0.5, scorer.threshold)
 }
 
+func TestNewScorer_DefaultScoringThresholds(t *testing.T) {
+	scorer := NewScorer(nil, slog.Default(), 0.3, nil, 0, 0)
+	assert.Equal(t, 0.60, scorer.claimTopicSimFloor, "default claimTopicSimFloor")
+	assert.Equal(t, 0.15, scorer.claimDivFloor, "default claimDivFloor")
+	assert.Equal(t, 0.7, scorer.decisionTopicSimFloor, "default decisionTopicSimFloor")
+}
+
+func TestWithScoringThresholds(t *testing.T) {
+	scorer := NewScorer(nil, slog.Default(), 0.3, nil, 0, 0).
+		WithScoringThresholds(0.55, 0.20, 0.65)
+	assert.Equal(t, 0.55, scorer.claimTopicSimFloor)
+	assert.Equal(t, 0.20, scorer.claimDivFloor)
+	assert.Equal(t, 0.65, scorer.decisionTopicSimFloor)
+}
+
+func TestWithScoringThresholds_ZeroPreservesDefaults(t *testing.T) {
+	scorer := NewScorer(nil, slog.Default(), 0.3, nil, 0, 0).
+		WithScoringThresholds(0, 0, 0)
+	assert.Equal(t, 0.60, scorer.claimTopicSimFloor, "zero should preserve default")
+	assert.Equal(t, 0.15, scorer.claimDivFloor, "zero should preserve default")
+	assert.Equal(t, 0.7, scorer.decisionTopicSimFloor, "zero should preserve default")
+}
+
 func TestNewScorer_NotNil(t *testing.T) {
 	scorer := NewScorer(testDB, slog.Default(), 0.4, nil, 0, 0)
 	require.NotNil(t, scorer)

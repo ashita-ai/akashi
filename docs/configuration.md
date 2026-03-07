@@ -106,6 +106,9 @@ The OSS distribution uses an in-memory token bucket. Enterprise deployments can 
 |----------|---------|-------------|
 | `AKASHI_CONFLICT_CANDIDATE_LIMIT` | `50` | Max candidates retrieved from Qdrant per decision. Lower values reduce LLM cost; higher values improve recall for embedding-only scoring |
 | `AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD` | `0.30` | Min significance (topic_sim × outcome_div) to store a conflict |
+| `AKASHI_CONFLICT_CLAIM_TOPIC_SIM_FLOOR` | `0.60` | Min cosine similarity for two claims to be considered "about the same thing." Below this, claims are too unrelated to constitute a conflict |
+| `AKASHI_CONFLICT_CLAIM_DIV_FLOOR` | `0.15` | Min outcome divergence between two claims to count as a genuine disagreement. Below this, claims effectively agree |
+| `AKASHI_CONFLICT_DECISION_TOPIC_SIM_FLOOR` | `0.70` | Min decision-level topic similarity to activate claim-level scoring. Below this, decisions are about different enough topics that claim analysis adds noise |
 | `AKASHI_CONFLICT_REFRESH_INTERVAL` | `30s` | Interval for broker to poll new conflicts (SSE push). Conflicts are populated event-driven on trace. |
 | `AKASHI_CONFLICT_LLM_MODEL` | _(empty)_ | LLM model for conflict validation. Set to an Ollama model name (e.g. `qwen3.5:9b`) to use local validation, or leave empty to auto-detect (OpenAI if `OPENAI_API_KEY` is set, otherwise noop). |
 | `AKASHI_CONFLICT_LLM_THREADS` | `floor(NumCPU/3)`, min 1 | CPU threads Ollama may use per inference call. Caps Ollama thread usage so conflict validation does not starve the main request-handling goroutines. Set to `0` to let Ollama decide (uses all available cores). |

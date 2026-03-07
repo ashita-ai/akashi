@@ -69,10 +69,24 @@ type Scorer struct {
 	// pairwiseScorer is an optional external override for the confirmation step.
 	// When non-nil, it replaces the built-in Validator-backed scoring for each candidate pair.
 	pairwiseScorer PairwiseScorer
+
+	// Scoring thresholds (configurable via env vars, defaults match package constants).
+	claimTopicSimFloor    float64
+	claimDivFloor         float64
+	decisionTopicSimFloor float64
+
 	// crossEncoder is an optional cross-encoder reranker that pre-filters candidate
 	// pairs before LLM validation. Pairs below crossEncoderThreshold are skipped.
 	crossEncoder          CrossEncoder
 	crossEncoderThreshold float64
+}
+
+// WithCandidateFinder wires a Qdrant-backed CandidateFinder for conflict candidate
+// discovery. Without one, ScoreForDecision skips candidate retrieval and inserts
+// no conflicts. Must be called before any scoring starts.
+func (s *Scorer) WithCandidateFinder(cf search.CandidateFinder) *Scorer {
+	s.finder = cf
+	return s
 }
 
 // WithCandidateLimit overrides the maximum number of candidates retrieved from
@@ -86,11 +100,18 @@ func (s *Scorer) WithCandidateLimit(n int) *Scorer {
 	return s
 }
 
-// WithCandidateFinder wires a Qdrant-backed CandidateFinder for conflict candidate
-// discovery. Without one, ScoreForDecision skips candidate retrieval and inserts
-// no conflicts. Must be called before any scoring starts.
-func (s *Scorer) WithCandidateFinder(cf search.CandidateFinder) *Scorer {
-	s.finder = cf
+// WithScoringThresholds overrides the default claim-level scoring thresholds.
+// Zero values are ignored (the default is preserved).
+func (s *Scorer) WithScoringThresholds(claimTopicSimFloor, claimDivFloor, decisionTopicSimFloor float64) *Scorer {
+	if claimTopicSimFloor > 0 {
+		s.claimTopicSimFloor = claimTopicSimFloor
+	}
+	if claimDivFloor > 0 {
+		s.claimDivFloor = claimDivFloor
+	}
+	if decisionTopicSimFloor > 0 {
+		s.decisionTopicSimFloor = decisionTopicSimFloor
+	}
 	return s
 }
 
@@ -129,13 +150,16 @@ func NewScorer(db *storage.DB, logger *slog.Logger, significanceThreshold float6
 		backfillWorkers = 4
 	}
 	return &Scorer{
-		db:              db,
-		logger:          logger,
-		threshold:       significanceThreshold,
-		validator:       validator,
-		backfillWorkers: backfillWorkers,
-		decayLambda:     decayLambda,
-		candidateLimit:  50,
+		db:                    db,
+		logger:                logger,
+		threshold:             significanceThreshold,
+		validator:             validator,
+		backfillWorkers:       backfillWorkers,
+		decayLambda:           decayLambda,
+		candidateLimit:        50,
+		claimTopicSimFloor:    claimTopicSimFloor,
+		claimDivFloor:         claimDivFloor,
+		decisionTopicSimFloor: decisionTopicSimFloor,
 	}
 }
 
@@ -301,7 +325,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		bestOutcomeB := cand.Outcome
 
 		// --- Pass 2: claim-level scoring for high topic-similarity pairs ---
-		if topicSim >= decisionTopicSimFloor {
+		if topicSim >= s.decisionTopicSimFloor {
 			claimSig, claimDiv, claimA, claimB := s.bestClaimConflict(ctx, d.ID, cand.ID, orgID, topicSim)
 			if claimSig > bestSig {
 				bestSig = claimSig
@@ -332,7 +356,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		// classifier for this, regardless of whether the two decisions came from the
 		// same agent or different agents. See: NLI literature on bi-encoder limits.
 		hasScorer := s.pairwiseScorer != nil || !isNoop
-		directToScorer := hasScorer && topicSim >= decisionTopicSimFloor
+		directToScorer := hasScorer && topicSim >= s.decisionTopicSimFloor
 
 		if bestSig < s.threshold && !directToScorer {
 			continue
@@ -516,11 +540,11 @@ func (s *Scorer) bestClaimConflict(ctx context.Context, decisionAID, decisionBID
 				continue
 			}
 			claimSim := cosineSimilarity(ca.Embedding.Slice(), cb.Embedding.Slice())
-			if claimSim < claimTopicSimFloor {
+			if claimSim < s.claimTopicSimFloor {
 				continue // Claims are about different things.
 			}
 			claimDiv := 1.0 - claimSim
-			if claimDiv < claimDivFloor {
+			if claimDiv < s.claimDivFloor {
 				continue // Claims effectively agree.
 			}
 			// Use decision-level topic similarity scaled by claim divergence.
