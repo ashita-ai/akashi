@@ -196,3 +196,11 @@ Akashi supports per-org data retention policies that automatically delete decisi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AKASHI_RETENTION_INTERVAL` | `24h` | How often the background retention worker runs. Set to `0` to disable. |
+
+## Claim embedding retry
+
+When claim embedding generation fails during tracing (network issues, provider downtime), Akashi records the failure and retries with exponential backoff (5min, 20min, capped at 3 attempts). Successful retries automatically trigger conflict scoring.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AKASHI_CLAIM_RETRY_INTERVAL` | `2m` | How often the background claim embedding retry loop runs. Set to `0` to disable. |
