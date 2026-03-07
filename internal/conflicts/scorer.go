@@ -143,9 +143,9 @@ func (s *Scorer) WithPairwiseScorer(ps PairwiseScorer) *Scorer {
 // exit optimisation. Candidates are sorted by significance descending; once a
 // candidate drops below this floor (and does not qualify for the
 // directToScorer bypass), the remaining candidates are skipped. Set to 0 to
-// disable early exit. Default: 0.25.
+// disable early exit. Negative values are ignored. Default: 0.25.
 func (s *Scorer) WithEarlyExitFloor(floor float64) *Scorer {
-	if floor > 0 {
+	if floor >= 0 {
 		s.earlyExitFloor = floor
 	}
 	return s
