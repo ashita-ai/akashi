@@ -46,6 +46,19 @@ func (db *DB) CreateAssessment(ctx context.Context, orgID uuid.UUID, a model.Dec
 	return out, nil
 }
 
+// UpdateOutcomeScore sets the outcome_score on a decision row.
+// Called after recording an assessment to reflect the latest ground-truth feedback.
+func (db *DB) UpdateOutcomeScore(ctx context.Context, orgID, decisionID uuid.UUID, score *float32) error {
+	_, err := db.pool.Exec(ctx,
+		`UPDATE decisions SET outcome_score = $1 WHERE id = $2 AND org_id = $3 AND valid_to IS NULL`,
+		score, decisionID, orgID,
+	)
+	if err != nil {
+		return fmt.Errorf("storage: update outcome score: %w", err)
+	}
+	return nil
+}
+
 // ListAssessments returns the full assessment history for a decision, newest first.
 // Multiple rows from the same assessor reflect verdict changes over time.
 // Returns ErrNotFound if the decision does not exist in the org.

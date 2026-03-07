@@ -27,6 +27,11 @@ type Decision struct {
 	// It does NOT measure whether the decision was correct or adopted.
 	CompletenessScore float32 `json:"completeness_score"`
 
+	// OutcomeScore (0.0-1.0) reflects ground-truth assessment feedback.
+	// Computed from decision_assessments: (correct + 0.5*partial) / total.
+	// nil when no assessments exist. Updated on each new assessment.
+	OutcomeScore *float32 `json:"outcome_score,omitempty"`
+
 	// QualityScore is a deprecated alias for CompletenessScore. It is emitted
 	// alongside completeness_score for one release cycle to give API clients
 	// time to migrate. Do not use in new code.
