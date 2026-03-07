@@ -44,8 +44,9 @@ type Service struct {
 	conflictScorer ConflictScorer
 	logger         *slog.Logger
 
-	embeddingDuration metric.Float64Histogram
-	searchDuration    metric.Float64Histogram
+	embeddingDuration      metric.Float64Histogram
+	searchDuration         metric.Float64Histogram
+	claimEmbeddingFailures metric.Int64Counter
 }
 
 // New creates a new decision Service.
@@ -61,14 +62,18 @@ func New(db *storage.DB, embedder embedding.Provider, searcher search.Searcher, 
 		metric.WithDescription("Time to execute search queries (ms)"),
 		metric.WithUnit("ms"),
 	)
+	claimFail, _ := meter.Int64Counter("akashi.claims.embedding_failures",
+		metric.WithDescription("Claim embedding generation failures"),
+	)
 	return &Service{
-		db:                db,
-		embedder:          embedder,
-		searcher:          searcher,
-		conflictScorer:    conflictScorer,
-		logger:            logger,
-		embeddingDuration: embDur,
-		searchDuration:    searchDur,
+		db:                     db,
+		embedder:               embedder,
+		searcher:               searcher,
+		conflictScorer:         conflictScorer,
+		logger:                 logger,
+		embeddingDuration:      embDur,
+		searchDuration:         searchDur,
+		claimEmbeddingFailures: claimFail,
 	}
 }
 
@@ -303,6 +308,14 @@ func (s *Service) postTraceAsync(ctx context.Context, orgID uuid.UUID, input Tra
 			defer cancelClaims()
 			if err := s.generateClaims(claimCtx, decision.ID, orgID, input.Decision.Outcome); err != nil {
 				s.logger.Warn("trace: claim generation failed", "decision_id", decision.ID, "error", err)
+				s.claimEmbeddingFailures.Add(claimCtx, 1, metric.WithAttributes(
+					attribute.Int("attempt_number", 1),
+				))
+				markCtx, markCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if markErr := s.db.MarkClaimEmbeddingFailed(markCtx, decision.ID, orgID); markErr != nil {
+					s.logger.Error("trace: failed to mark claim embedding failure", "decision_id", decision.ID, "error", markErr)
+				}
+				markCancel()
 			}
 			if s.conflictScorer != nil {
 				// Scoring can include local LLM validation (Ollama), which may take
@@ -993,6 +1006,65 @@ func (s *Service) BackfillClaims(ctx context.Context, batchSize int) (int, error
 		s.logger.Info("backfill: claims generated", "count", backfilled, "batch", len(refs))
 	}
 	return backfilled, nil
+}
+
+// RetryFailedClaimEmbeddings re-attempts claim embedding generation for decisions
+// that failed previously and are eligible for retry (exponential backoff, capped
+// at maxAttempts). On success, clears the failure state and triggers conflict
+// scoring. On failure, increments the attempt counter for longer backoff.
+// Returns the number of decisions successfully retried.
+func (s *Service) RetryFailedClaimEmbeddings(ctx context.Context, batchSize, maxAttempts int) (int, error) {
+	if _, err := s.embedder.Embed(ctx, "probe"); errors.Is(err, embedding.ErrNoProvider) {
+		return 0, nil
+	}
+
+	refs, err := s.db.FindRetriableClaimFailures(ctx, maxAttempts, batchSize)
+	if err != nil {
+		return 0, fmt.Errorf("retry claims: find: %w", err)
+	}
+	if len(refs) == 0 {
+		return 0, nil
+	}
+
+	var retried int
+	for _, ref := range refs {
+		select {
+		case <-ctx.Done():
+			return retried, ctx.Err()
+		default:
+		}
+
+		d, err := s.db.GetDecisionForScoring(ctx, ref.ID, ref.OrgID)
+		if err != nil {
+			s.logger.Warn("retry claims: get decision failed", "decision_id", ref.ID, "error", err)
+			continue
+		}
+
+		if err := s.generateClaims(ctx, ref.ID, ref.OrgID, d.Outcome); err != nil {
+			s.logger.Warn("retry claims: generate failed", "decision_id", ref.ID, "error", err)
+			s.claimEmbeddingFailures.Add(ctx, 1, metric.WithAttributes(
+				attribute.Int("attempt_number", ref.Attempts+1),
+			))
+			if markErr := s.db.MarkClaimEmbeddingFailed(ctx, ref.ID, ref.OrgID); markErr != nil {
+				s.logger.Error("retry claims: failed to mark failure", "decision_id", ref.ID, "error", markErr)
+			}
+			continue
+		}
+
+		if err := s.db.ClearClaimEmbeddingFailure(ctx, ref.ID, ref.OrgID); err != nil {
+			s.logger.Error("retry claims: failed to clear failure state", "decision_id", ref.ID, "error", err)
+		}
+
+		if s.conflictScorer != nil {
+			s.conflictScorer.ScoreForDecision(ctx, ref.ID, ref.OrgID)
+		}
+		retried++
+	}
+
+	if retried > 0 {
+		s.logger.Info("retry claims: succeeded", "count", retried, "batch", len(refs))
+	}
+	return retried, nil
 }
 
 // isDuplicateKey checks if a Postgres error is a unique_violation (23505).

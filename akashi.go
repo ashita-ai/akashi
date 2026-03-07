@@ -64,6 +64,7 @@ type App struct {
 	qdrantIndex    *search.QdrantIndex // nil when Qdrant is not configured
 	grantCache     *authz.GrantCache
 	conflictScorer *conflicts.Scorer
+	decisionSvc    *decisions.Service
 	broker         *server.Broker // nil when no notify connection
 	otelShutdown   func(context.Context) error
 	decisionHooks  []server.DecisionHook
@@ -422,6 +423,7 @@ func New(opts ...Option) (*App, error) {
 		qdrantIndex:    qdrantIndex,
 		grantCache:     grantCache,
 		conflictScorer: conflictScorer,
+		decisionSvc:    decisionSvc,
 		broker:         broker,
 		otelShutdown:   otelShutdown,
 		decisionHooks:  decisionHooks,
@@ -449,6 +451,7 @@ func (a *App) Run(ctx context.Context) error {
 	go a.integrityProofLoop(ctx)
 	go a.idempotencyCleanupLoop(ctx)
 	go a.retentionLoop(ctx)
+	go a.claimEmbeddingRetryLoop(ctx)
 
 	// Start HTTP server.
 	errCh := make(chan error, 1)
@@ -681,6 +684,30 @@ func (a *App) retentionLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			a.runRetention(ctx)
+		}
+	}
+}
+
+func (a *App) claimEmbeddingRetryLoop(ctx context.Context) {
+	if a.cfg.ClaimRetryInterval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(a.cfg.ClaimRetryInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			opCtx, cancel := context.WithTimeout(ctx, a.cfg.ClaimRetryInterval)
+			n, err := a.decisionSvc.RetryFailedClaimEmbeddings(opCtx, 50, 3)
+			cancel()
+			if err != nil {
+				a.logger.Warn("claim embedding retry failed", "error", err)
+			} else if n > 0 {
+				a.logger.Info("claim embedding retry complete", "retried", n)
+			}
 		}
 	}
 }
