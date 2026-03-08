@@ -704,3 +704,155 @@ psql "$DATABASE_URL" -c "
   UPDATE search_outbox SET attempts = 0, locked_until = NULL WHERE attempts >= 10;
 "
 ```
+
+---
+
+## 10. Conflict Detection Evaluation
+
+Akashi detects conflicts between agent decisions using an embedding-based scorer followed by an optional LLM validator. Two evaluation modes let you measure detection quality against ground truth.
+
+### Concepts
+
+| Term | Meaning |
+|------|---------|
+| **Scorer** | Embedding similarity pipeline that flags candidate conflicts. Fast, cheap, always on. |
+| **Validator** | LLM-based second pass that confirms or rejects scorer candidates. Slower, costs API tokens. |
+| **Ground truth label** | Human judgment on a detected conflict: was it real? |
+
+### Label Types
+
+Every detected conflict (in `scored_conflicts`) can be labeled with one of three values:
+
+| Label | Meaning | Scorer eval role |
+|-------|---------|-----------------|
+| `genuine` | Real conflict — the decisions truly contradict each other | True positive |
+| `related_not_contradicting` | Same topic but not actually contradictory (e.g. paraphrases) | False positive |
+| `unrelated_false_positive` | Different topics entirely — should not have been flagged | False positive |
+
+### Labeling Conflicts via API
+
+All label endpoints require admin authentication.
+
+```sh
+# Authenticate
+TOKEN=$(curl -s http://localhost:8081/auth/token \
+  -d '{"agent_id":"admin","api_key":"ak_..."}' | jq -r .token)
+
+# List detected conflicts to find IDs to label
+curl -s http://localhost:8081/v1/admin/conflicts \
+  -H "Authorization: Bearer $TOKEN" | jq '.conflicts[:5]'
+
+# Label a conflict as genuine
+curl -X PUT http://localhost:8081/v1/admin/conflicts/{id}/label \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"label": "genuine", "notes": "clearly opposite caching strategies"}'
+
+# Label a conflict as false positive
+curl -X PUT http://localhost:8081/v1/admin/conflicts/{id}/label \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"label": "related_not_contradicting", "notes": "same decision, different wording"}'
+
+# View a label
+curl -s http://localhost:8081/v1/admin/conflicts/{id}/label \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# List all labels with counts
+curl -s http://localhost:8081/v1/admin/conflict-labels \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# Delete a label (to re-label)
+curl -X DELETE http://localhost:8081/v1/admin/conflicts/{id}/label \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Running Scorer Eval (Precision from Labels)
+
+Once you have labeled conflicts, compute scorer precision. This measures what fraction of the scorer's detections are genuine conflicts.
+
+**Precision = genuine / (genuine + related_not_contradicting + unrelated_false_positive)**
+
+Note: recall cannot be computed from labels alone because labels only cover *detected* conflicts. Measuring recall requires a separate dataset of known conflicts that should have been detected.
+
+```sh
+# Via CLI (recommended)
+export AKASHI_URL=http://localhost:8081
+export AKASHI_AGENT_ID=admin
+export AKASHI_API_KEY=ak_...
+
+go run ./cmd/eval-conflicts --mode=scorer
+
+# Save results to ./eval-results/
+go run ./cmd/eval-conflicts --mode=scorer --save
+
+# Via API directly
+curl -X POST http://localhost:8081/v1/admin/scorer-eval \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}' | jq .
+```
+
+Example output:
+
+```
+Scorer Precision: 85.7% (6 TP, 1 FP, 7 labeled)
+```
+
+### Running Validator Eval (LLM Accuracy)
+
+The validator eval runs a hardcoded dataset of 27 decision pairs through the LLM validator and measures precision and recall of the LLM's conflict/no-conflict judgments.
+
+```sh
+export AKASHI_URL=http://localhost:8081
+export AKASHI_AGENT_ID=admin
+export AKASHI_API_KEY=ak_...
+
+# Run validator eval (requires LLM API access — costs tokens)
+go run ./cmd/eval-conflicts --mode=validator
+
+# Save results
+go run ./cmd/eval-conflicts --mode=validator --save
+```
+
+The validator eval requires the akashi server to have a working embedding/LLM provider configured.
+
+### Saving and Reviewing Results
+
+The `--save` flag writes JSON results to `./eval-results/`:
+
+```
+eval-results/
+  scorer_2026-03-07T14-30-00.json
+  validator_2026-03-07T14-35-00.json
+```
+
+This directory is gitignored. Results accumulate locally so you can track precision over time as you tune scorer thresholds or retrain embeddings.
+
+### Synthetic Benchmark (Development Only)
+
+A 300-pair synthetic dataset tests the scorer's embedding math in isolation (not real detection quality). This is gated behind an environment variable and requires a running TimescaleDB with testcontainers:
+
+```sh
+AKASHI_BENCH=1 go test -run TestScorerPrecisionRecall ./internal/conflicts/ -v
+```
+
+This is useful for verifying that threshold changes don't break the scorer's ability to distinguish orthogonal embeddings. It does not test real-world detection quality — use the label-based eval for that.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AKASHI_URL` | `http://localhost:8081` | Base URL of the akashi instance to evaluate |
+| `AKASHI_AGENT_ID` | (required) | Agent ID for authentication |
+| `AKASHI_API_KEY` | (required) | API key for admin authentication |
+
+### Recommended Workflow
+
+1. Run your akashi instance locally on port 8081.
+2. Exercise the system — trace decisions, let the scorer detect conflicts.
+3. Review detected conflicts via the UI or `GET /v1/admin/conflicts`.
+4. Label 20+ conflicts across all three categories for a meaningful precision measurement.
+5. Run `go run ./cmd/eval-conflicts --mode=scorer --save` to compute precision.
+6. Tune scorer thresholds (`AKASHI_CONFLICT_THRESHOLD`, early exit floor) and re-evaluate.
+7. Repeat after model or embedding changes to catch regressions.
