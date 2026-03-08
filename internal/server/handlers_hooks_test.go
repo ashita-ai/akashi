@@ -512,3 +512,114 @@ func TestHookCheckStore_CleanupEmpty(t *testing.T) {
 	s.Cleanup()
 	assert.False(t, s.IsRecent("anything"))
 }
+
+func TestHandlePostCommit_NonAutoTrace(t *testing.T) {
+	h := &Handlers{
+		hookChecks: newHookCheckStore(),
+		autoTrace:  false,
+	}
+
+	body := `{"session_id":"sess-commit","tool_name":"Bash","tool_input":{"command":"git commit -m 'test commit'"},"cwd":"/tmp"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/hooks/post-tool-use", strings.NewReader(body))
+	h.HandleHookPostToolUse(rec, req)
+
+	var resp hookResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	assert.True(t, resp.Continue)
+	require.NotNil(t, resp.HookSpecificOutput)
+	assert.Contains(t, resp.HookSpecificOutput.Message, "akashi_trace")
+}
+
+func TestHandlePostCommit_NoMessageParsed(t *testing.T) {
+	h := &Handlers{
+		hookChecks: newHookCheckStore(),
+		autoTrace:  false,
+	}
+
+	// git commit without -m flag
+	body := `{"session_id":"sess-noparsed","tool_name":"Bash","tool_input":{"command":"git commit"},"cwd":"/tmp"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/hooks/post-tool-use", strings.NewReader(body))
+	h.HandleHookPostToolUse(rec, req)
+
+	var resp hookResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	assert.True(t, resp.Continue)
+	require.NotNil(t, resp.HookSpecificOutput)
+	// Should include a generic commit message since parsing failed
+	assert.Contains(t, resp.HookSpecificOutput.Message, "akashi_trace")
+}
+
+func TestGitRepoNameFromPath_ValidRepo(t *testing.T) {
+	// Test with the current repo (should return a non-empty name)
+	name := gitRepoNameFromPath(".")
+	// This may or may not work depending on the test environment
+	// At minimum, it should not panic
+	_ = name
+}
+
+func TestGitRepoNameFromPath_InvalidPath(t *testing.T) {
+	name := gitRepoNameFromPath("/nonexistent/path/that/does/not/exist")
+	assert.Empty(t, name)
+}
+
+func TestInferProjectFromCWD_Empty(t *testing.T) {
+	assert.Empty(t, inferProjectFromCWD(""))
+}
+
+func TestInferProjectFromCWD_NonGitDir(t *testing.T) {
+	result := inferProjectFromCWD("/tmp")
+	// Falls back to filepath.Base
+	assert.Equal(t, "tmp", result)
+}
+
+func TestWriteHookJSON_Success(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeHookJSON(rec, hookResponse{Continue: true, SuppressOutput: true})
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+
+	var resp hookResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	assert.True(t, resp.Continue)
+	assert.True(t, resp.SuppressOutput)
+}
+
+func TestHandleHookPreToolUse_GitCommit(t *testing.T) {
+	h := &Handlers{
+		hookChecks: newHookCheckStore(),
+	}
+
+	body := `{"session_id":"sess-precommit","tool_name":"Bash","tool_input":{"command":"git commit -m 'test'"},"cwd":"/tmp"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/hooks/pre-tool-use", strings.NewReader(body))
+	h.HandleHookPreToolUse(rec, req)
+
+	var resp hookResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	assert.True(t, resp.Continue)
+	require.NotNil(t, resp.HookSpecificOutput)
+	assert.Contains(t, resp.HookSpecificOutput.AdditionalContext, "akashi_check")
+}
+
+func TestHandleHookPreToolUse_EditAfterCheck(t *testing.T) {
+	h := &Handlers{
+		hookChecks: newHookCheckStore(),
+	}
+
+	// Record a check first
+	h.hookChecks.Record("sess-edit-ok")
+
+	// Now Edit should be allowed
+	body := `{"session_id":"sess-edit-ok","tool_name":"Edit","tool_input":{},"cwd":"/tmp"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/hooks/pre-tool-use", strings.NewReader(body))
+	h.HandleHookPreToolUse(rec, req)
+
+	var resp hookResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	assert.True(t, resp.Continue)
+	assert.True(t, resp.SuppressOutput)
+}

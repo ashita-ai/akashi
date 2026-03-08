@@ -4932,3 +4932,1011 @@ func TestHandleMCPInfo_ResponseStructure(t *testing.T) {
 	assert.Contains(t, authMap, "preferred")
 	assert.Contains(t, authMap, "note")
 }
+
+// ---- Coverage push: conflict handlers with real data ----
+
+func TestHandleGetConflict_WithRealConflict(t *testing.T) {
+	_, _, conflictID := seedConflict(t)
+
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflicts/"+conflictID.String(), adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Data map[string]any `json:"data"`
+	}
+	b, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(b, &result))
+
+	assert.Equal(t, conflictID.String(), result.Data["id"])
+	assert.Equal(t, "open", result.Data["status"])
+	// computeRecommendation is invoked for open conflicts. It may or may not
+	// produce a recommendation depending on signal strength (same agent, similar
+	// confidence means insufficient signal), but the code path is exercised.
+}
+
+func TestHandleGetConflict_AcknowledgedConflict(t *testing.T) {
+	_, _, conflictID := seedConflict(t)
+
+	// Acknowledge the conflict.
+	resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflicts/"+conflictID.String(), adminToken,
+		map[string]any{"status": "acknowledged"})
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// GET should still exercise computeRecommendation for acknowledged conflicts.
+	resp, err = authedRequest("GET", testSrv.URL+"/v1/conflicts/"+conflictID.String(), adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleAdjudicateConflict_SuccessfulResolution(t *testing.T) {
+	decisionAID, _, conflictID := seedConflict(t)
+
+	resp, err := authedRequest("POST",
+		testSrv.URL+"/v1/conflicts/"+conflictID.String()+"/adjudicate",
+		adminToken,
+		map[string]any{
+			"outcome":             "Use Redis for caching layer",
+			"reasoning":           "Redis has better support for our use case",
+			"winning_decision_id": decisionAID.String(),
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Data map[string]any `json:"data"`
+	}
+	b, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(b, &result))
+	assert.Equal(t, "resolved", result.Data["status"])
+}
+
+func TestHandleAdjudicateConflict_InvalidWinningDecisionID(t *testing.T) {
+	_, _, conflictID := seedConflict(t)
+
+	resp, err := authedRequest("POST",
+		testSrv.URL+"/v1/conflicts/"+conflictID.String()+"/adjudicate",
+		adminToken,
+		map[string]any{
+			"outcome":             "Use Redis",
+			"winning_decision_id": uuid.New().String(),
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	b, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(b), "winning_decision_id must be one of the two decisions")
+}
+
+func TestHandleAdjudicateConflict_EmptyOutcome(t *testing.T) {
+	_, _, conflictID := seedConflict(t)
+
+	resp, err := authedRequest("POST",
+		testSrv.URL+"/v1/conflicts/"+conflictID.String()+"/adjudicate",
+		adminToken,
+		map[string]any{"outcome": ""})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandleAdjudicateConflict_WithCustomDecisionType(t *testing.T) {
+	_, _, conflictID := seedConflict(t)
+
+	resp, err := authedRequest("POST",
+		testSrv.URL+"/v1/conflicts/"+conflictID.String()+"/adjudicate",
+		adminToken,
+		map[string]any{
+			"outcome":       "Chose Redis for performance reasons",
+			"decision_type": "trade_off",
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// ---- Coverage push: admin handler deeper paths ----
+
+func TestHandleCreateGrant_ValidGrant(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/grants", adminToken,
+		map[string]any{
+			"grantee_agent_id": "test-agent",
+			"resource_type":    "agent_traces",
+			"resource_id":      "admin",
+			"permission":       "read",
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Contains(t, []int{http.StatusOK, http.StatusCreated}, resp.StatusCode)
+}
+
+func TestHandleCreateGrant_InvalidResourceType(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/grants", adminToken,
+		map[string]any{
+			"grantee_agent_id": "test-agent",
+			"resource_type":    "invalid_type",
+			"resource_id":      "admin",
+			"permission":       "read",
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandleCreateGrant_InvalidPermission(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/grants", adminToken,
+		map[string]any{
+			"grantee_agent_id": "test-agent",
+			"resource_type":    "agent_traces",
+			"resource_id":      "admin",
+			"permission":       "write",
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandleCreateGrant_NonexistentGrantee(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/grants", adminToken,
+		map[string]any{
+			"grantee_agent_id": "nonexistent-agent-xyz",
+			"resource_type":    "agent_traces",
+			"resource_id":      "admin",
+			"permission":       "read",
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestHandleDeleteGrant_NonexistentGrant(t *testing.T) {
+	resp, err := authedRequest("DELETE", testSrv.URL+"/v1/grants/"+uuid.New().String(), adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestHandleUpdateAgent_MetadataUpdate(t *testing.T) {
+	resp, err := authedRequest("PATCH", testSrv.URL+"/v1/agents/test-agent", adminToken,
+		map[string]any{
+			"metadata": map[string]any{"team": "backend", "env": "production"},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Data map[string]any `json:"data"`
+	}
+	b, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(b, &result))
+	metadata, ok := result.Data["metadata"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "backend", metadata["team"])
+}
+
+func TestHandleUpdateAgent_NonexistentAgent(t *testing.T) {
+	resp, err := authedRequest("PATCH", testSrv.URL+"/v1/agents/does-not-exist", adminToken,
+		map[string]any{"name": "new name"})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestHandleUpdateAgentTags_EmptyTags(t *testing.T) {
+	resp, err := authedRequest("PATCH", testSrv.URL+"/v1/agents/test-agent/tags", adminToken,
+		map[string]any{"tags": []string{}})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleUpdateAgentTags_InvalidChars(t *testing.T) {
+	resp, err := authedRequest("PATCH", testSrv.URL+"/v1/agents/test-agent/tags", adminToken,
+		map[string]any{"tags": []string{"valid-tag", "INVALID:TAG"}})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandleUpdateAgentTags_ValidMultiple(t *testing.T) {
+	resp, err := authedRequest("PATCH", testSrv.URL+"/v1/agents/test-agent/tags", adminToken,
+		map[string]any{"tags": []string{"backend", "production", "team-alpha"}})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Data map[string]any `json:"data"`
+	}
+	b, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(b, &result))
+	tags, ok := result.Data["tags"].([]any)
+	require.True(t, ok)
+	assert.Len(t, tags, 3)
+}
+
+func TestHandleUpdateAgentTags_NonexistentAgent(t *testing.T) {
+	resp, err := authedRequest("PATCH", testSrv.URL+"/v1/agents/nonexistent-agent/tags", adminToken,
+		map[string]any{"tags": []string{"tag1"}})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// ---- Coverage push: health deeper assertions ----
+
+func TestHandleHealth_Fields(t *testing.T) {
+	resp, err := http.Get(testSrv.URL + "/health")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Data model.HealthResponse `json:"data"`
+	}
+	b, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(b, &result))
+
+	assert.Equal(t, "healthy", result.Data.Status)
+	assert.Equal(t, "connected", result.Data.Postgres)
+	assert.NotEmpty(t, result.Data.Version)
+	assert.GreaterOrEqual(t, result.Data.Uptime, int64(0))
+	assert.Equal(t, "ok", result.Data.BufferStatus)
+}
+
+// ---- Coverage push: scoped token deeper paths ----
+
+func TestHandleScopedToken_ValidRequest(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/auth/scoped-token", adminToken,
+		map[string]any{
+			"as_agent_id": "test-agent",
+			"expires_in":  3600,
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	b, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(b, &result))
+	assert.NotEmpty(t, result.Data.Token, "scoped token should be returned")
+}
+
+func TestHandleScopedToken_NonexistentAgent(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/auth/scoped-token", adminToken,
+		map[string]any{
+			"as_agent_id": "nonexistent-agent-123",
+			"expires_in":  3600,
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// ---- Coverage push: run handlers deeper paths ----
+
+func TestHandleCreateRun_WithMetadata(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/runs", agentToken,
+		map[string]any{
+			"agent_id": "test-agent",
+			"metadata": map[string]any{"source": "test", "env": "ci"},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+}
+
+func TestHandleGetRun_Nonexistent(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/runs/"+uuid.New().String(), agentToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestHandleCompleteRun_Nonexistent(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/runs/"+uuid.New().String()+"/complete", agentToken,
+		map[string]any{"status": "completed"})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestHandleCompleteRun_InvalidStatus(t *testing.T) {
+	// Create a run first.
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/runs", agentToken,
+		map[string]any{"agent_id": "test-agent"})
+	require.NoError(t, err)
+	var runResult struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	b, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode, "run creation body: %s", string(b))
+	require.NoError(t, json.Unmarshal(b, &runResult))
+	require.NotEmpty(t, runResult.Data.ID)
+
+	resp, err = authedRequest("POST", testSrv.URL+"/v1/runs/"+runResult.Data.ID+"/complete", agentToken,
+		map[string]any{"status": "invalid_status"})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandleAppendEvents_Nonexistent(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/runs/"+uuid.New().String()+"/events", agentToken,
+		map[string]any{
+			"events": []map[string]any{
+				{"type": "test_event", "data": map[string]any{"key": "value"}},
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// ---- Coverage push: retention deeper paths ----
+
+func TestHandleGetRetention_Valid(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/retention", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleSetRetention_ValidDays(t *testing.T) {
+	resp, err := authedRequest("PUT", testSrv.URL+"/v1/retention", adminToken,
+		map[string]any{"retention_days": 90})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleSetRetention_NegativeDays(t *testing.T) {
+	resp, err := authedRequest("PUT", testSrv.URL+"/v1/retention", adminToken,
+		map[string]any{"retention_days": -1})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ---- Coverage push: key management deeper paths ----
+
+func TestHandleRotateKey_Nonexistent(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/keys/"+uuid.New().String()+"/rotate", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestHandleCreateKey_ForAgent(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/keys", adminToken,
+		map[string]any{
+			"agent_id": "test-agent",
+			"name":     "coverage-test-key",
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Contains(t, []int{http.StatusOK, http.StatusCreated}, resp.StatusCode)
+}
+
+func TestHandleListKeys_ForAgent(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/keys?agent_id=test-agent", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// ---- Coverage push: trace with session header ----
+
+func TestHandleTrace_WithSessionHeader(t *testing.T) {
+	resp, err := authedRequestWithHeaders("POST", testSrv.URL+"/v1/trace", adminToken,
+		model.TraceRequest{
+			AgentID: "admin",
+			Decision: model.TraceDecision{
+				DecisionType: "implementation",
+				Outcome:      "use structured logging everywhere",
+				Confidence:   0.9,
+			},
+		},
+		map[string]string{"X-Session-ID": "test-session-abc"})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Contains(t, []int{http.StatusOK, http.StatusCreated, http.StatusAccepted}, resp.StatusCode)
+}
+
+// ---- Coverage push: assessment deeper paths ----
+
+func TestHandleListAssessments_NonexistentDecision(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/"+uuid.New().String()+"/assessments", agentToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// ---- Coverage push: validate-pair (integration - nil validator returns 501) ----
+
+func TestHandleValidatePair_NoValidator(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/admin/conflicts/validate-pair", adminToken,
+		map[string]any{
+			"outcome_a": "Use Redis",
+			"outcome_b": "Use Memcached",
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+}
+
+func TestHandleConflictEval_NoValidator(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/admin/conflicts/eval", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+}
+
+// ---- Coverage push: grant listing ----
+
+func TestHandleListGrants_ForAgent(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/grants?agent_id=test-agent", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// ---- Coverage push: decision conflicts & revisions ----
+
+func TestHandleDecisionConflicts_Valid(t *testing.T) {
+	// Trace a decision to get a valid ID.
+	traceResp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken, model.TraceRequest{
+		AgentID: "admin",
+		Decision: model.TraceDecision{
+			DecisionType: "architecture",
+			Outcome:      "use gRPC for internal services",
+			Confidence:   0.85,
+		},
+	})
+	require.NoError(t, err)
+	var traceResult struct {
+		Data struct {
+			DecisionID uuid.UUID `json:"decision_id"`
+		} `json:"data"`
+	}
+	b, _ := io.ReadAll(traceResp.Body)
+	_ = traceResp.Body.Close()
+	require.NoError(t, json.Unmarshal(b, &traceResult))
+
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/"+traceResult.Data.DecisionID.String()+"/conflicts", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleDecisionRevisions_Valid(t *testing.T) {
+	// Trace a decision.
+	traceResp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken, model.TraceRequest{
+		AgentID: "admin",
+		Decision: model.TraceDecision{
+			DecisionType: "architecture",
+			Outcome:      "use REST for public API",
+			Confidence:   0.8,
+		},
+	})
+	require.NoError(t, err)
+	var traceResult struct {
+		Data struct {
+			DecisionID uuid.UUID `json:"decision_id"`
+		} `json:"data"`
+	}
+	b, _ := io.ReadAll(traceResp.Body)
+	_ = traceResp.Body.Close()
+	require.NoError(t, json.Unmarshal(b, &traceResult))
+
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/"+traceResult.Data.DecisionID.String()+"/revisions", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleDecisionRevisions_BadUUID(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/not-a-uuid/revisions", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ---- Coverage push: temporal query ----
+
+func TestHandleTemporalQuery_FutureAsOf(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/query/temporal", adminToken,
+		map[string]any{"as_of": time.Now().Add(24 * time.Hour).Format(time.RFC3339)})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandleTemporalQuery_PastAsOf(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/query/temporal", adminToken,
+		map[string]any{"as_of": time.Now().Add(-1 * time.Hour).Format(time.RFC3339)})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// ---- Coverage push: export handler ----
+
+func TestHandleExportDecisions_NDJSON(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/export/decisions", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "application/x-ndjson", resp.Header.Get("Content-Type"))
+}
+
+func TestHandleExportDecisions_WithTypeFilter(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/export/decisions?decision_type=architecture", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// ---- Coverage push: purge deeper paths ----
+
+func TestHandlePurge_DryRunBasic(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/retention/purge", adminToken,
+		map[string]any{
+			"before":  time.Now().Add(-365 * 24 * time.Hour).UTC().Format(time.RFC3339),
+			"dry_run": true,
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandlePurge_MissingBeforeField(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/retention/purge", adminToken,
+		map[string]any{"dry_run": true})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandlePurge_WithDecisionTypeFilter(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/retention/purge", adminToken,
+		map[string]any{
+			"before":        time.Now().Add(-365 * 24 * time.Hour).UTC().Format(time.RFC3339),
+			"decision_type": "architecture",
+			"dry_run":       true,
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandlePurge_WithAgentFilter(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/retention/purge", adminToken,
+		map[string]any{
+			"before":   time.Now().Add(-365 * 24 * time.Hour).UTC().Format(time.RFC3339),
+			"agent_id": "test-agent",
+			"dry_run":  true,
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// ---- Coverage push: key management deeper paths ----
+
+func TestHandleCreateKey_MissingAgentID(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/keys", adminToken,
+		map[string]any{"name": "orphan-key"})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandleGetUsage_ForAgent(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/usage?agent_id=test-agent", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// ---- Coverage push: assess decision deeper paths ----
+
+func TestHandleAssessDecision_InvalidDecisionID(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/not-a-uuid/assess", adminToken,
+		map[string]any{"outcome": "correct"})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandleAssessDecision_NonexistentDecision(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+uuid.New().String()+"/assess", adminToken,
+		map[string]any{"outcome": "correct"})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestHandleAssessDecision_InvalidOutcome(t *testing.T) {
+	// Trace a decision first.
+	traceResp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken, model.TraceRequest{
+		AgentID: "admin",
+		Decision: model.TraceDecision{
+			DecisionType: "architecture",
+			Outcome:      "use DynamoDB for sessions",
+			Confidence:   0.7,
+		},
+	})
+	require.NoError(t, err)
+	var traceResult struct {
+		Data struct {
+			DecisionID uuid.UUID `json:"decision_id"`
+		} `json:"data"`
+	}
+	b, _ := io.ReadAll(traceResp.Body)
+	_ = traceResp.Body.Close()
+	require.NoError(t, json.Unmarshal(b, &traceResult))
+
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+traceResult.Data.DecisionID.String()+"/assess", adminToken,
+		map[string]any{"outcome": "invalid_outcome_value"})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ---- Coverage push: check endpoint ----
+
+func TestHandleCheck_MissingDecisionTypeField(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/check", agentToken,
+		map[string]any{"query": "test"})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandleCheck_ValidQuery(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/check", agentToken,
+		map[string]any{"query": "caching strategy", "decision_type": "architecture"})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Data map[string]any `json:"data"`
+	}
+	b, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(b, &result))
+	_, hasDecisions := result.Data["decisions"]
+	assert.True(t, hasDecisions, "check should return decisions field")
+}
+
+// ---- Coverage push: conflict list filters ----
+
+func TestHandleListConflicts_WithSeverityFilter(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflicts?severity=high", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleListConflicts_WithStatusFilter(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflicts?status=open", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleListConflicts_WithConflictKindFilter(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflicts?conflict_kind=cross_agent", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleListConflicts_WithDecisionTypeFilter(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflicts?decision_type=architecture", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleListConflicts_WithAgentFilter(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflicts?agent=admin", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleListConflicts_WithPagination(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflicts?limit=5&offset=0", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// ---- Coverage push: conflict analytics ----
+
+func TestHandleConflictAnalytics_ValidPeriod(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflicts/analytics?period=7d", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleConflictAnalytics_InvalidPeriod(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflicts/analytics?period=invalid", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ---- Coverage push: agent history with time range ----
+
+func TestHandleAgentHistory_TimeRangeFilter(t *testing.T) {
+	from := time.Now().Add(-24 * time.Hour).Format(time.RFC3339)
+	to := time.Now().Format(time.RFC3339)
+	resp, err := authedRequest("GET",
+		testSrv.URL+"/v1/agents/admin/history?from="+from+"&to="+to,
+		adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// ---- Coverage push: decisions recent ----
+
+func TestHandleDecisionsRecent_WithDecisionType(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/recent?decision_type=architecture", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// ---- Coverage push: session view ----
+
+func TestHandleSessionView_NewSessionUUID(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/sessions/"+uuid.New().String(), adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// ---- Coverage push: API key authentication (covers verifyAPIKey) ----
+
+func TestAPIKeyAuth_Valid(t *testing.T) {
+	req, _ := http.NewRequest("GET", testSrv.URL+"/v1/agents", nil)
+	req.Header.Set("Authorization", "ApiKey admin:test-admin-key")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestAPIKeyAuth_InvalidFormat(t *testing.T) {
+	req, _ := http.NewRequest("GET", testSrv.URL+"/v1/agents", nil)
+	req.Header.Set("Authorization", "ApiKey no-colon-here")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestAPIKeyAuth_WrongKey(t *testing.T) {
+	req, _ := http.NewRequest("GET", testSrv.URL+"/v1/agents", nil)
+	req.Header.Set("Authorization", "ApiKey admin:wrong-key")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestAPIKeyAuth_NonexistentAgent(t *testing.T) {
+	req, _ := http.NewRequest("GET", testSrv.URL+"/v1/agents", nil)
+	req.Header.Set("Authorization", "ApiKey nonexistent:some-key")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+// ---- Coverage push: query with various filters ----
+
+func TestHandleQuery_WithAgentFilter(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/query", adminToken,
+		map[string]any{"filters": map[string]any{"agent_ids": []string{"admin"}}})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleQuery_WithDecisionTypeFilter(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/query", adminToken,
+		map[string]any{"filters": map[string]any{"decision_type": "architecture"}})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleQuery_WithTimeRange(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/query", adminToken,
+		map[string]any{
+			"filters": map[string]any{
+				"time_range": map[string]any{
+					"from": time.Now().Add(-24 * time.Hour).Format(time.RFC3339),
+					"to":   time.Now().Format(time.RFC3339),
+				},
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleQuery_WithPagination(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/query", adminToken,
+		map[string]any{"limit": 2, "offset": 0})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// ---- Coverage push: trace with alternatives and evidence ----
+
+func TestHandleTrace_WithAlternatives(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken,
+		model.TraceRequest{
+			AgentID: "admin",
+			Decision: model.TraceDecision{
+				DecisionType: "trade_off",
+				Outcome:      "use connection pooling",
+				Confidence:   0.85,
+				Alternatives: []model.TraceAlternative{
+					{Label: "no pooling"}, {Label: "pgbouncer"},
+				},
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Contains(t, []int{http.StatusOK, http.StatusCreated, http.StatusAccepted}, resp.StatusCode)
+}
+
+// ---- Coverage push: retract and erase ----
+
+func TestHandleRetractDecision_NonexistentDecision(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+uuid.New().String()+"/retract", adminToken,
+		map[string]any{"reason": "test retraction"})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestHandleEraseDecision_NonexistentDecision(t *testing.T) {
+	resp, err := authedRequest("DELETE", testSrv.URL+"/v1/decisions/"+uuid.New().String(), orgOwnerToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// ---- Coverage push: get single decision ----
+
+func TestHandleGetDecision_NonexistentDecision(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/"+uuid.New().String(), adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestHandleGetDecision_InvalidID(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/not-a-uuid", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ---- Coverage push: search ----
+
+func TestHandleSearch_BlankQuery(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/search", adminToken,
+		map[string]any{"query": ""})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandleSearch_TextQuery(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/search", adminToken,
+		map[string]any{"query": "database caching"})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// ---- Coverage push: conflict groups ----
+
+func TestHandleListConflictGroups_Valid(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflict-groups", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleListConflictGroups_WithPagination(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflict-groups?limit=5&offset=0", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// ---- Coverage push: agent stats ----
+
+func TestHandleAgentStats_Valid(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/agents/admin/stats", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleAgentStats_NonexistentAgent(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/agents/nonexistent-agent/stats", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// ---- Coverage push: trace missing fields ----
+
+func TestHandleTrace_NoDecisionType(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken,
+		model.TraceRequest{
+			AgentID: "admin",
+			Decision: model.TraceDecision{
+				Outcome:    "some outcome",
+				Confidence: 0.9,
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandleTrace_NoOutcome(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken,
+		model.TraceRequest{
+			AgentID: "admin",
+			Decision: model.TraceDecision{
+				DecisionType: "architecture",
+				Confidence:   0.9,
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestHandleTrace_MissingAgentID(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken,
+		model.TraceRequest{
+			Decision: model.TraceDecision{
+				DecisionType: "architecture",
+				Outcome:      "some outcome",
+				Confidence:   0.9,
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}

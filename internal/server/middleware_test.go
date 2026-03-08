@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -1409,4 +1410,122 @@ func TestDecodeJSON_ExactlyAtLimit(t *testing.T) {
 	err := decodeJSON(rec, req, &s, int64(len(body)))
 	require.NoError(t, err)
 	assert.Equal(t, "b", s.A)
+}
+
+// --- writeInternalError ---
+
+func TestWriteInternalError(t *testing.T) {
+	logger := quietLogger()
+	h := &Handlers{logger: logger}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/v1/test", nil)
+
+	h.writeInternalError(rec, req, "database connection failed", fmt.Errorf("connection refused"))
+
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+
+	var errResp model.APIError
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&errResp))
+	assert.Equal(t, model.ErrCodeInternalError, errResp.Error.Code)
+	assert.Equal(t, "database connection failed", errResp.Error.Message)
+}
+
+// --- HandleSubscribe ---
+
+func TestHandleSubscribe_NoBroker(t *testing.T) {
+	// When no broker is configured, HandleSubscribe should return 503.
+	h := &Handlers{
+		logger: quietLogger(),
+		broker: nil,
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/v1/subscribe", nil)
+	h.HandleSubscribe(rec, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+
+	var errResp model.APIError
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&errResp))
+	assert.Equal(t, model.ErrCodeInternalError, errResp.Error.Code)
+	assert.Contains(t, errResp.Error.Message, "SSE not available")
+}
+
+func TestHandleSubscribe_WithBroker(t *testing.T) {
+	orgID := uuid.New()
+	broker := &Broker{
+		subscribers: make(map[chan []byte]subscriber),
+		logger:      quietLogger(),
+	}
+	h := &Handlers{
+		logger: quietLogger(),
+		broker: broker,
+	}
+
+	// Use a context with cancel to simulate client disconnect.
+	ctx, cancel := context.WithCancel(context.Background())
+	claims := &auth.Claims{
+		AgentID: "test-agent",
+		OrgID:   orgID,
+		Role:    model.RoleReader,
+	}
+	ctx = ctxutil.WithClaims(ctx, claims)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/v1/subscribe", nil).WithContext(ctx)
+
+	// Run HandleSubscribe in a goroutine since it blocks.
+	done := make(chan struct{})
+	go func() {
+		h.HandleSubscribe(rec, req)
+		close(done)
+	}()
+
+	// Wait for the subscriber to be registered. This is a reliable
+	// synchronization point: Subscribe() is called after WriteHeader+Flush,
+	// so once a subscriber exists the headers are guaranteed to be set.
+	require.Eventually(t, func() bool {
+		broker.mu.RLock()
+		defer broker.mu.RUnlock()
+		return len(broker.subscribers) == 1
+	}, 2*time.Second, 5*time.Millisecond, "subscriber should be registered")
+
+	// Send an event through the broker.
+	event := formatSSE("akashi_decisions", `{"id":"test-123"}`)
+	broker.broadcastToOrg(event, orgID, true)
+
+	// Small delay for the event to be written to the recorder body.
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel the context to end the SSE connection, then wait for the
+	// handler goroutine to exit. Once it returns, the recorder is no longer
+	// being written to and we can safely inspect it without a data race.
+	cancel()
+
+	select {
+	case <-done:
+		// Handler returned cleanly.
+	case <-time.After(2 * time.Second):
+		t.Fatal("HandleSubscribe did not return after context cancel")
+	}
+
+	// All assertions below are safe: the handler goroutine has exited.
+
+	// Verify headers were set correctly.
+	assert.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+	assert.Equal(t, "no-cache", rec.Header().Get("Cache-Control"))
+	assert.Equal(t, "keep-alive", rec.Header().Get("Connection"))
+
+	// Verify the subscriber was cleaned up.
+	broker.mu.RLock()
+	subCount := len(broker.subscribers)
+	broker.mu.RUnlock()
+	assert.Equal(t, 0, subCount)
+
+	// Verify the event was written to the response body.
+	body := rec.Body.String()
+	assert.Contains(t, body, "event: akashi_decisions")
+	assert.Contains(t, body, `"id":"test-123"`)
 }
