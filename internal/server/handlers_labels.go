@@ -73,6 +73,10 @@ func (h *Handlers) HandleUpsertConflictLabel(w http.ResponseWriter, r *http.Requ
 		Notes:            req.Notes,
 	}
 	if err := h.db.UpsertConflictLabel(r.Context(), cl); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSON(w, r, http.StatusConflict, map[string]string{"error": "conflict belongs to a different organization"})
+			return
+		}
 		h.writeInternalError(w, r, "failed to upsert conflict label", err)
 		return
 	}
