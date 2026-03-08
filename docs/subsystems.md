@@ -220,19 +220,6 @@ When `QDRANT_URL` is empty, the outbox worker is not started and `POST /v1/searc
 
 ---
 
-## Semantic Conflict Detection
+## Conflict Detection
 
-Conflicts are detected by **semantic similarity**, not by exact `decision_type` matching. See [decisions.md](decisions.md).
-
-### Flow
-
-1. On each trace, after commit, an async goroutine calls `conflicts.Scorer.ScoreForDecision`.
-2. Load the new decision's `embedding` and `outcome_embedding`.
-3. pgvector KNN: find top 50 similar decisions (same org) by full embedding.
-4. For each candidate with `outcome_embedding`: compute `topic_similarity` and `outcome_divergence`, then `significance = topic_similarity × outcome_divergence`.
-5. If significance ≥ `AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD`, insert into `scored_conflicts`.
-6. pg_notify on `akashi_conflicts` for SSE subscribers.
-
-### decision_type
-
-`decision_type` is **not** used in detection. It is an optional filter when querying conflicts (`GET /v1/conflicts?decision_type=architecture`).
+For the full conflict detection pipeline (candidate retrieval, significance scoring, LLM validation, claim-level analysis, resolution, analytics, and observability), see [conflicts.md](conflicts.md).

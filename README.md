@@ -458,7 +458,6 @@ flowchart TD
 | [Quality Scoring](docs/quality-scoring.md) | Completeness scores, outcome scores, and anti-gaming measures |
 | [IDE Hooks](docs/hooks.md) | Claude Code and Cursor integration via hook endpoints |
 | [Subsystems](docs/subsystems.md) | Embedding provider, rate limiting, and Qdrant search pipeline internals |
-| [Technical Deep Dive](docs/technical-deep-dive.md) | Architecture walkthrough, data model, code organization |
 | [Runbook](docs/runbook.md) | Production operations: health checks, monitoring, troubleshooting |
 | [Diagrams](docs/diagrams.md) | Mermaid diagrams of write path, read path, auth flow, schema |
 | [ADRs](adrs/) | Architecture decision records (10 technical decisions) |
@@ -507,7 +506,7 @@ go test -race ./...    # Go tests with race detection
 
 ## Requirements
 
-- Go 1.25+
+- Go 1.26+
 - Docker (for testcontainers and local stack)
 
 ## License

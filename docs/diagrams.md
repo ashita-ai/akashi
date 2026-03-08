@@ -1,7 +1,7 @@
 # Akashi System Diagrams
 
 Mermaid diagrams documenting the core data flows, authentication model, and schema
-of the Akashi decision trace layer. These render natively on GitHub.
+of the Akashi decision trace layer.
 
 ---
 
@@ -12,8 +12,8 @@ the middleware chain (request ID, security headers, CORS, tracing, logging, JWT
 auth, panic recovery), then through `requireRole(agent)` authorization before
 reaching the handler. The handler delegates to the shared `decisions.Service`,
 which orchestrates embedding generation, quality scoring, and
-an atomic transactional write. Notification happens after the
-transaction commits and is non-fatal on failure.
+an atomic transactional write. Notification and conflict scoring happen after the
+transaction commits and are non-fatal on failure.
 
 ```mermaid
 sequenceDiagram
@@ -37,8 +37,10 @@ sequenceDiagram
     H->>H: decodeJSON (MaxBytesReader), validate fields
     H->>H: verify agent_id exists in caller's org
     H->>DS: Trace(ctx, orgID, TraceInput)
-    DS->>E: Embed(decisionType + outcome + reasoning)
-    E-->>DS: vector(1024) or warning
+    DS->>E: Embed(decisionType + ": " + outcome + reasoning)
+    E-->>DS: full embedding vector(1024) or warning
+    DS->>E: Embed(outcome)
+    E-->>DS: outcome embedding vector(1024) or warning
     DS->>E: Embed(evidence[i].content) for each evidence
     E-->>DS: evidence vectors
     DS->>Q: Score(decision)
@@ -48,10 +50,10 @@ sequenceDiagram
     rect rgb(235, 245, 255)
         Note over DB: Single PostgreSQL Transaction
         DB->>DB: INSERT INTO agent_runs (status=running)
-        DB->>DB: INSERT INTO decisions (embedding, completeness_score)
+        DB->>DB: INSERT INTO decisions (embedding, outcome_embedding, completeness_score)
         DB->>DB: COPY INTO alternatives
         DB->>DB: COPY INTO evidence
-        DB->>DB: INSERT INTO search_outbox (if embedding present)
+        DB->>DB: INSERT INTO search_outbox (always, regardless of embedding)
         DB->>DB: UPDATE agent_runs SET status=completed
         DB->>DB: COMMIT
     end
@@ -112,7 +114,8 @@ decision, so the two are atomically consistent. A background worker polls the
 outbox on a configurable interval, processes entries in batches using
 `SELECT ... FOR UPDATE SKIP LOCKED` for concurrency safety, and uses exponential
 backoff on failure. Entries that exceed 10 attempts are logged as dead letters
-and cleaned up after 7 days.
+and cleaned up after 7 days. Decisions without embeddings are deferred (not
+upserted) until a backfill provides an embedding.
 
 ```mermaid
 sequenceDiagram
@@ -133,8 +136,9 @@ sequenceDiagram
         W->>PG: UPDATE search_outbox SET locked_until = now() + 60s<br/>WHERE id = ANY(batch_ids)
         W->>PG: COMMIT (lock acquired)
 
-        W->>PG: SELECT id, org_id, agent_id, decision_type,<br/>confidence, completeness_score, valid_from, embedding<br/>FROM decisions WHERE id = ANY(decision_ids)<br/>AND valid_to IS NULL AND embedding IS NOT NULL
-        PG-->>W: DecisionForIndex rows
+        W->>PG: SELECT id, org_id, agent_id, decision_type,<br/>confidence, completeness_score, valid_from, embedding<br/>FROM decisions WHERE id = ANY(decision_ids)<br/>AND valid_to IS NULL
+        PG-->>W: DecisionForIndex rows (embedding may be NULL)
+        Note over W: Partition: decisions with embedding → upsert to Qdrant.<br/>Decisions without embedding → defer (delete outbox entry,<br/>re-queue when backfill provides embedding).
 
         alt Qdrant upsert succeeds
             W->>QD: Upsert points (id, vector, payload:{org_id, agent_id, ...})
@@ -155,13 +159,14 @@ sequenceDiagram
 
 ## 4. Authentication Flow
 
-Two authentication paths serve different use cases. **Path A** exchanges long-lived
-API key credentials for a short-lived JWT. The server iterates over all agents
-matching the `agent_id` (which is unique per org, not globally) and uses
-timing-safe Argon2id comparison. A dummy verify runs when no hash is found to
-prevent timing side-channels. **Path B** validates the JWT on every API request
-via the `authMiddleware`, which checks the Ed25519 signature, expiry, issuer
-(`akashi`), and subject (must be a valid UUID).
+Two authentication paths serve different use cases. **Path A** exchanges
+API key credentials for a short-lived JWT. The server first checks the
+managed `api_keys` table (supporting key rotation), then falls back to the
+legacy `agents.api_key_hash` column. Both use timing-safe Argon2id comparison.
+A dummy verify runs when no hash is found to prevent timing side-channels.
+**Path B** validates the JWT on every API request via the `authMiddleware`,
+which checks the Ed25519 signature, expiry, issuer (`akashi`), and subject
+(must be a valid UUID).
 
 ```mermaid
 sequenceDiagram
@@ -174,30 +179,38 @@ sequenceDiagram
     rect rgb(240, 248, 255)
         Note over C, JWT: Path A: API Key to JWT Exchange
         C->>S: POST /auth/token {agent_id, api_key}
-        S->>DB: GetAgentsByAgentIDGlobal(agent_id)
-        alt No agents found
-            S->>S: DummyVerify() (timing-safe)
-            S-->>C: 401 Unauthorized
-        else Agents found
-            loop For each agent with matching agent_id
-                S->>S: Argon2id VerifyAPIKey(api_key, agent.api_key_hash)
-                Note over S: First successful match wins
-            end
-            alt No match (or no agent had a hash)
-                S->>S: DummyVerify() if no hash checked
+
+        Note over S, DB: Phase 1: Managed api_keys table
+        S->>DB: GetActiveAPIKeysByAgentIDGlobal(agent_id)
+        loop For each managed key
+            S->>S: Argon2id VerifyAPIKey(api_key, key.key_hash)
+            Note over S: First successful match wins
+        end
+
+        alt No match from managed keys
+            Note over S, DB: Phase 2: Legacy agents.api_key_hash
+            S->>DB: GetAgentsByAgentIDGlobal(agent_id)
+            alt No agents found
+                S->>S: DummyVerify() (timing-safe)
                 S-->>C: 401 Unauthorized
-            else Match found
-                S->>DB: GetOrganization(agent.org_id)
-                alt Org email not verified
-                    S-->>C: 403 Forbidden
-                else Org verified
-                    S->>JWT: IssueToken(agent)
-                    JWT->>JWT: Build claims: agent_id, role, org_id,<br/>issuer=akashi, subject=agent.ID (UUID),<br/>jti=random UUID, exp=now+expiration
-                    JWT->>JWT: Sign with Ed25519 (EdDSA)
-                    JWT-->>S: signed JWT + expiresAt
-                    S-->>C: 200 {token, expires_at}
+            else Agents found
+                loop For each agent with api_key_hash
+                    S->>S: Argon2id VerifyAPIKey(api_key, agent.api_key_hash)
+                    Note over S: First successful match wins
+                end
+                alt No match (or no agent had a hash)
+                    S->>S: DummyVerify() if no hash checked
+                    S-->>C: 401 Unauthorized
                 end
             end
+        end
+
+        alt Match found (either phase)
+            S->>JWT: IssueToken(agent)
+            JWT->>JWT: Build claims: agent_id, role, org_id,<br/>issuer=akashi, subject=agent.ID (UUID),<br/>jti=random UUID, exp=now+expiration
+            JWT->>JWT: Sign with Ed25519 (EdDSA)
+            JWT-->>S: signed JWT + expiresAt
+            S-->>C: 200 {token, expires_at}
         end
     end
 
@@ -291,8 +304,6 @@ bi-temporal modeling (`valid_from`/`valid_to` for business time,
 `transaction_time` for system time). The `search_outbox` table drives
 asynchronous sync to Qdrant. The `agent_events` table is a TimescaleDB
 hypertable partitioned by `occurred_at`, which does not support foreign keys.
-The `alternatives` table tracks the options considered for each decision, and
-the `evidence` table records supporting information with provenance tracking.
 
 ```mermaid
 erDiagram
@@ -311,10 +322,20 @@ erDiagram
         text agent_id "unique per org"
         text name
         text role "platform_admin | org_owner | admin | agent | reader"
-        text api_key_hash "nullable, Argon2id"
+        text api_key_hash "nullable, Argon2id (legacy)"
         jsonb metadata
         timestamptz created_at
         timestamptz updated_at
+    }
+
+    api_keys {
+        uuid id PK
+        uuid org_id FK
+        text agent_id
+        text key_hash "Argon2id"
+        text label "nullable"
+        timestamptz expires_at "nullable"
+        timestamptz created_at
     }
 
     agent_runs {
@@ -339,9 +360,17 @@ erDiagram
         text outcome
         real confidence "0.0 to 1.0"
         text reasoning "nullable"
-        vector_1024 embedding "nullable"
+        vector_1024 embedding "nullable, full text"
+        vector_1024 outcome_embedding "nullable, outcome only"
         real completeness_score "0.0 to 1.0"
+        real outcome_score "nullable, from assessments"
+        text content_hash "SHA-256"
         uuid precedent_ref FK "nullable, self-ref"
+        uuid supersedes_id FK "nullable, revision chain"
+        text session_id "nullable"
+        jsonb agent_context "nullable"
+        uuid api_key_id FK "nullable"
+        text project "nullable"
         jsonb metadata
         timestamptz valid_from "business time start"
         timestamptz valid_to "nullable, business time end"
@@ -371,6 +400,60 @@ erDiagram
         vector_1024 embedding "nullable"
         jsonb metadata
         timestamptz created_at
+    }
+
+    decision_assessments {
+        uuid id PK
+        uuid decision_id FK
+        uuid org_id FK
+        text agent_id
+        text correctness "correct | incorrect | partially_correct"
+        text note "nullable"
+        timestamptz created_at
+    }
+
+    decision_claims {
+        uuid id PK
+        uuid decision_id FK
+        uuid org_id FK
+        text claim_text
+        vector_1024 embedding "nullable"
+        text category "nullable"
+        timestamptz created_at
+    }
+
+    scored_conflicts {
+        uuid id PK
+        uuid org_id FK
+        uuid decision_a_id FK
+        uuid decision_b_id FK
+        text conflict_kind "cross_agent | self_contradiction"
+        real topic_similarity
+        real outcome_divergence
+        real significance
+        text scoring_method "embedding | claim"
+        text relationship "nullable, from LLM"
+        text category "nullable"
+        text severity "nullable"
+        text status "open | acknowledged | resolved | wont_fix"
+        uuid winning_decision_id FK "nullable"
+        uuid resolution_decision_id FK "nullable"
+        text resolution_note "nullable"
+        timestamptz detected_at
+    }
+
+    conflict_groups {
+        uuid id PK
+        uuid org_id FK
+        text agent_a
+        text agent_b
+        text conflict_kind
+        text decision_type "nullable"
+        int conflict_count
+        int open_count
+        uuid representative_id FK "references scored_conflicts"
+        timestamptz created_at
+        timestamptz updated_at
     }
 
     agent_events {
@@ -409,10 +492,14 @@ erDiagram
     }
 
     organizations ||--o{ agents : "has"
+    organizations ||--o{ api_keys : "has"
     organizations ||--o{ agent_runs : "has"
     organizations ||--o{ decisions : "has"
     organizations ||--o{ evidence : "has"
     organizations ||--o{ access_grants : "has"
+    organizations ||--o{ scored_conflicts : "has"
+    organizations ||--o{ conflict_groups : "has"
+    agents ||--o{ api_keys : "authenticates via"
     agents ||--o{ access_grants : "grantor"
     agents ||--o{ access_grants : "grantee"
     agent_runs ||--o{ decisions : "produces"
@@ -420,6 +507,12 @@ erDiagram
     agent_runs ||--o| agent_runs : "parent (self-ref)"
     decisions ||--o{ alternatives : "considered"
     decisions ||--o{ evidence : "supported by"
+    decisions ||--o{ decision_assessments : "assessed by"
+    decisions ||--o{ decision_claims : "decomposed into"
     decisions ||--o| decisions : "precedent (self-ref)"
+    decisions ||--o| decisions : "supersedes (revision chain)"
+    decisions ||--o{ scored_conflicts : "decision_a"
+    decisions ||--o{ scored_conflicts : "decision_b"
     decisions ||--o{ search_outbox : "queues sync"
+    scored_conflicts }o--|| conflict_groups : "grouped into"
 ```

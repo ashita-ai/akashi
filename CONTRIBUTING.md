@@ -158,45 +158,12 @@ Tests that exercise conflict detection or semantic search need an embedding prov
 
 To enable embeddings locally, set the appropriate environment variables (e.g., `AKASHI_EMBEDDING_PROVIDER=ollama`, `OLLAMA_URL=http://localhost:11434`). The complete docker-compose stack handles this automatically.
 
-## Request path overview
+## Architecture reference
 
-Akashi follows a layered flow:
+For deeper context on the codebase, see:
 
-1. `cmd/akashi` wires dependencies and starts background loops.
-2. `internal/server` handles HTTP concerns (auth, middleware, request parsing).
-3. `internal/service` contains business logic shared by HTTP and MCP.
-4. `internal/storage` handles SQL and transactional persistence.
-
-Keep domain decisions in service/storage layers, not handlers.
-
-## Core data model concepts
-
-- **Bi-temporal decisions:**
-  - `valid_from` / `valid_to` track business validity.
-  - `transaction_time` tracks write-time history.
-- **Revision chain:**
-  - New revisions link via `supersedes_id`.
-  - Historical rows remain queryable.
-- **Evidence + alternatives:**
-  - Stored separately but written atomically with decisions in trace paths.
-
-## Search pipeline
-
-- PostgreSQL is source of truth.
-- Qdrant is an optional accelerator.
-- `search_outbox` provides eventual-consistency sync:
-  - Decision writes enqueue outbox rows in the same transaction.
-  - Outbox worker upserts/deletes in Qdrant.
-  - Text search fallback keeps queries functional if Qdrant is down.
-
-## Multi-tenancy rules
-
-- Every query must scope by `org_id`.
-- Admin/platform actions should still preserve tenant isolation unless explicitly global.
-- Cross-org behavior must be justified and tested.
-
-## Operational safety expectations
-
-- Avoid startup with partial schema state.
-- Prefer bounded loops and context-aware shutdown.
-- Treat audit durability regressions as high priority.
+- [decisions.md](docs/decisions.md) — Decision model, trace flow, bi-temporal data, embeddings
+- [conflicts.md](docs/conflicts.md) — Conflict detection pipeline, scoring, resolution
+- [subsystems.md](docs/subsystems.md) — Embedding providers, rate limiting, search pipeline
+- [diagrams.md](docs/diagrams.md) — Mermaid diagrams of all major data flows
+- [configuration.md](docs/configuration.md) — Full environment variable reference
