@@ -13,31 +13,31 @@ import (
 )
 
 func TestHookCheckStore(t *testing.T) {
-	store := newHookCheckStore()
-
 	t.Run("empty store returns false", func(t *testing.T) {
-		assert.False(t, store.IsRecent("session-1"))
+		s := newHookCheckStore()
+		assert.False(t, s.IsRecent("any-session"))
 	})
 
-	t.Run("recorded session returns true", func(t *testing.T) {
-		store.Record("session-1")
-		assert.True(t, store.IsRecent("session-1"))
+	t.Run("record makes IsRecent true for any session id", func(t *testing.T) {
+		// Claude Code uses different session IDs for MCP tool calls vs built-in
+		// tool calls, so the store is global — any recorded check unblocks any
+		// session within the TTL window.
+		s := newHookCheckStore()
+		s.Record("mcp-session-id")
+		assert.True(t, s.IsRecent("editor-session-id"))
 	})
 
-	t.Run("different session returns false", func(t *testing.T) {
-		assert.False(t, store.IsRecent("session-2"))
+	t.Run("expired check returns false", func(t *testing.T) {
+		s := newHookCheckStore()
+		s.lastCheck = time.Now().Add(-(hookCheckTTL + time.Second))
+		assert.False(t, s.IsRecent("any-session"))
 	})
 
-	t.Run("cleanup removes stale entries", func(t *testing.T) {
-		s := &hookCheckStore{
-			entries: map[string]time.Time{
-				"old":    time.Now().Add(-3 * time.Hour),
-				"recent": time.Now().Add(-1 * time.Hour),
-			},
-		}
-		s.Cleanup()
-		assert.False(t, s.IsRecent("old"))
-		assert.True(t, s.IsRecent("recent"))
+	t.Run("cleanup is safe to call", func(t *testing.T) {
+		s := newHookCheckStore()
+		s.Record("session-1")
+		s.Cleanup() // no-op, must not panic
+		assert.True(t, s.IsRecent("session-1"))
 	})
 }
 

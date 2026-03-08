@@ -20,46 +20,40 @@ import (
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
-// hookCheckStore tracks when each session last called akashi_check.
-// Replaces the file-based /tmp marker approach with an in-memory store
-// that works reliably across platforms.
+// hookCheckStore tracks when akashi_check was last called from this machine.
+//
+// Claude Code assigns different session IDs to MCP tool calls (e.g.
+// mcp__akashi__akashi_check) and to built-in tool calls (e.g. Edit, Bash).
+// Per-session tracking therefore cannot work — the session_id in the
+// PostToolUse for akashi_check will never match the session_id in the
+// PreToolUse for Edit. We use a single machine-global timestamp instead:
+// "was any akashi tool called recently?" with a 10-minute TTL. That covers
+// the normal call-check-then-edit flow without being permissively open for hours.
 type hookCheckStore struct {
-	mu      sync.RWMutex
-	entries map[string]time.Time // session_id -> last check time
+	mu        sync.RWMutex
+	lastCheck time.Time
 }
 
-const hookCheckTTL = 2 * time.Hour
+const hookCheckTTL = 10 * time.Minute
 
 func newHookCheckStore() *hookCheckStore {
-	return &hookCheckStore{
-		entries: make(map[string]time.Time),
-	}
+	return &hookCheckStore{}
 }
 
-func (s *hookCheckStore) Record(sessionID string) {
+func (s *hookCheckStore) Record(_ string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.entries[sessionID] = time.Now()
+	s.lastCheck = time.Now()
 }
 
-func (s *hookCheckStore) IsRecent(sessionID string) bool {
+func (s *hookCheckStore) IsRecent(_ string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	t, ok := s.entries[sessionID]
-	return ok && time.Since(t) < hookCheckTTL
+	return !s.lastCheck.IsZero() && time.Since(s.lastCheck) < hookCheckTTL
 }
 
-// Cleanup removes entries older than the TTL. Called periodically.
-func (s *hookCheckStore) Cleanup() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cutoff := time.Now().Add(-hookCheckTTL)
-	for k, v := range s.entries {
-		if v.Before(cutoff) {
-			delete(s.entries, k)
-		}
-	}
-}
+// Cleanup is a no-op — no map to clean with the global timestamp design.
+func (s *hookCheckStore) Cleanup() {}
 
 // hookSessionStartInput is the JSON body sent by Claude Code / Cursor on SessionStart.
 type hookSessionStartInput struct {

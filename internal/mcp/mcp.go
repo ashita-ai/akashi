@@ -58,6 +58,14 @@ type Server struct {
 	grantCache  *authz.GrantCache  // optional cache for LoadGrantedSet
 	logger      *slog.Logger
 	rootsCache  *rootsCache // caches MCP roots per session (one request per session)
+	onCheck     func()      // called when akashi_check is invoked; wires IDE hook gate
+}
+
+// SetCheckNotify registers a callback that fires whenever akashi_check is called.
+// Used to signal the IDE hook gate (PreToolUse for Edit/Write) that a check
+// has been performed, without creating a circular import between mcp and server.
+func (s *Server) SetCheckNotify(f func()) {
+	s.onCheck = f
 }
 
 // New creates and configures a new MCP server with all resources, tools, and prompts.

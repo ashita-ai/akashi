@@ -4,6 +4,13 @@
 # Copies the unified akashi-hook.sh to ~/.claude/hooks/ and registers it in
 # ~/.claude/settings.json. Also reports Cursor configuration status.
 #
+# Generates an AKASHI_HOOKS_API_KEY on first run and writes it to:
+#   ~/.akashi/hooks.key  (read by the hook script — no env var needed)
+#   .env                 (read by the Docker server)
+# This key is required when akashi runs in Docker because Docker's network
+# translation means the server sees the gateway IP, not 127.0.0.1, so the
+# localhostOnly guard would otherwise reject all hook requests with 403.
+#
 # Safe to run multiple times (idempotent).
 #
 # Usage: make install-hooks
@@ -15,8 +22,57 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 HOOKS_SRC="$PROJECT_DIR/.claude/hooks"
 HOOKS_DST="$HOME/.claude/hooks"
 SETTINGS="$HOME/.claude/settings.json"
+KEY_DIR="$HOME/.akashi"
+KEY_FILE="$KEY_DIR/hooks.key"
 
 echo "Installing akashi IDE hooks..."
+
+# -- 0. Generate hooks API key ------------------------------------------------
+#
+# The server's /hooks/* endpoints are protected by localhostOnly. When akashi
+# runs in Docker, the hook script calls localhost:8080 from the host but Docker
+# translates it — the server sees the Docker bridge gateway IP, not 127.0.0.1.
+# The localhostOnly middleware rejects that with 403. A shared key in
+# ~/.akashi/hooks.key (hook script) + .env (server) solves this without
+# requiring any manual env var configuration.
+
+mkdir -p "$KEY_DIR"
+chmod 700 "$KEY_DIR"
+
+if [ -f "$KEY_FILE" ]; then
+  HOOKS_KEY=$(cat "$KEY_FILE")
+  echo "  [akashi] hooks key exists -> $KEY_FILE"
+else
+  if command -v openssl >/dev/null 2>&1; then
+    HOOKS_KEY=$(openssl rand -hex 32)
+  else
+    HOOKS_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+  fi
+  printf '%s' "$HOOKS_KEY" > "$KEY_FILE"
+  chmod 600 "$KEY_FILE"
+  echo "  [akashi] generated hooks key -> $KEY_FILE"
+fi
+
+# Write / update AKASHI_HOOKS_API_KEY in .env so the server picks it up on the
+# next `docker compose up`. Skip if .env doesn't exist (e.g. CI / bare binary).
+ENV_FILE="$PROJECT_DIR/.env"
+if [ -f "$ENV_FILE" ]; then
+  if grep -q "^AKASHI_HOOKS_API_KEY=" "$ENV_FILE"; then
+    if [ "$(uname)" = "Darwin" ]; then
+      sed -i '' "s|^AKASHI_HOOKS_API_KEY=.*|AKASHI_HOOKS_API_KEY=${HOOKS_KEY}|" "$ENV_FILE"
+    else
+      sed -i "s|^AKASHI_HOOKS_API_KEY=.*|AKASHI_HOOKS_API_KEY=${HOOKS_KEY}|" "$ENV_FILE"
+    fi
+    echo "  [akashi] updated .env -> AKASHI_HOOKS_API_KEY"
+  else
+    printf '\n# Added by make install-hooks — do not edit manually\nAKASHI_HOOKS_API_KEY=%s\n' "$HOOKS_KEY" >> "$ENV_FILE"
+    echo "  [akashi] appended to .env -> AKASHI_HOOKS_API_KEY"
+  fi
+else
+  echo "  [akashi] no .env found — skipping server-side key sync"
+  echo "           Add the following line to your .env manually, then restart the server:"
+  echo "           AKASHI_HOOKS_API_KEY=$(cat "$KEY_FILE")"
+fi
 
 # -- 1. Claude Code setup -----------------------------------------------------
 
@@ -96,4 +152,7 @@ fi
 
 echo ""
 echo "Done. Hooks will be active in the next IDE session."
-echo "Ensure the akashi server is running at \${AKASHI_URL:-http://localhost:8080} for full functionality."
+if [ -f "$ENV_FILE" ]; then
+  echo "If the akashi server is already running, restart it to pick up the new key:"
+  echo "  docker compose restart akashi"
+fi
