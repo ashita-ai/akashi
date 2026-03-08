@@ -30,12 +30,27 @@ func (db *DB) UpsertConflictLabel(ctx context.Context, cl ConflictLabel) error {
 		DO UPDATE SET label = EXCLUDED.label,
 		              labeled_by = EXCLUDED.labeled_by,
 		              labeled_at = EXCLUDED.labeled_at,
-		              notes = EXCLUDED.notes`,
+		              notes = EXCLUDED.notes
+		WHERE conflict_labels.org_id = EXCLUDED.org_id`,
 		cl.ScoredConflictID, cl.OrgID, cl.Label, cl.LabeledBy, cl.LabeledAt, cl.Notes)
 	if err != nil {
 		return fmt.Errorf("storage: upsert conflict label: %w", err)
 	}
 	return nil
+}
+
+// GetConflictLabel returns the label for a single scored conflict.
+func (db *DB) GetConflictLabel(ctx context.Context, conflictID, orgID uuid.UUID) (ConflictLabel, error) {
+	var cl ConflictLabel
+	err := db.pool.QueryRow(ctx, `
+		SELECT scored_conflict_id, org_id, label, labeled_by, labeled_at, notes
+		FROM conflict_labels
+		WHERE scored_conflict_id = $1 AND org_id = $2`, conflictID, orgID).
+		Scan(&cl.ScoredConflictID, &cl.OrgID, &cl.Label, &cl.LabeledBy, &cl.LabeledAt, &cl.Notes)
+	if err != nil {
+		return cl, fmt.Errorf("storage: get conflict label: %w", err)
+	}
+	return cl, nil
 }
 
 // ListConflictLabels returns all ground truth labels for an org.

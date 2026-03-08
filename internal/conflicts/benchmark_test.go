@@ -181,8 +181,15 @@ func generateSyntheticDataset() []syntheticPair {
 
 // TestScorerPrecisionRecall is an integration test that inserts 300 synthetic
 // decision pairs into a real TimescaleDB, runs the embedding-only scorer
-// (NoopValidator), and asserts precision >= 0.80 and recall >= 0.95.
+// (NoopValidator), and logs precision/recall metrics.
+//
+// Skipped by default — set AKASHI_BENCH=1 to run. This tests scorer math
+// with synthetic embeddings; for real evaluation against production data,
+// use the scorer-eval API endpoint or: go run ./cmd/eval-conflicts --mode=scorer
 func TestScorerPrecisionRecall(t *testing.T) {
+	if os.Getenv("AKASHI_BENCH") == "" {
+		t.Skip("set AKASHI_BENCH=1 to run synthetic scorer benchmark")
+	}
 	if testDB == nil {
 		t.Skip("testDB not initialized (requires testcontainers)")
 	}

@@ -1,8 +1,14 @@
-// eval-conflicts runs the conflict validator evaluation dataset against a
-// running akashi instance and reports precision/recall metrics.
+// eval-conflicts runs conflict detection evaluation against a running akashi instance.
+//
+// Two modes:
+//
+//	--mode=validator  (default) Runs the hardcoded eval dataset through the LLM validator.
+//	--mode=scorer     Computes scorer precision from ground truth labels.
 //
 // Usage:
 //
+//	AKASHI_AGENT_ID=admin AKASHI_API_KEY=ak_... go run ./cmd/eval-conflicts
+//	AKASHI_AGENT_ID=admin AKASHI_API_KEY=ak_... go run ./cmd/eval-conflicts --mode=scorer
 //	AKASHI_URL=http://localhost:8081 AKASHI_AGENT_ID=admin AKASHI_API_KEY=ak_... go run ./cmd/eval-conflicts
 //
 // Environment variables:
@@ -10,16 +16,20 @@
 //	AKASHI_URL       Base URL of the akashi server (default: http://localhost:8081)
 //	AKASHI_AGENT_ID  Agent ID for authentication (required)
 //	AKASHI_API_KEY   API key for admin authentication (required)
+//
+// Use --save to persist results as JSON files in ./eval-results/.
 package main
 
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/ashita-ai/akashi/internal/conflicts"
@@ -30,6 +40,10 @@ func main() {
 }
 
 func run() int {
+	mode := flag.String("mode", "validator", "evaluation mode: validator or scorer")
+	save := flag.Bool("save", false, "save results to ./eval-results/{timestamp}.json")
+	flag.Parse()
+
 	baseURL := os.Getenv("AKASHI_URL")
 	if baseURL == "" {
 		baseURL = "http://localhost:8081"
@@ -45,27 +59,45 @@ func run() int {
 		return 1
 	}
 
-	// Authenticate to get a JWT.
 	token, err := authenticate(baseURL, agentID, apiKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "auth failed: %v\n", err)
 		return 1
 	}
 
-	fmt.Fprintf(os.Stderr, "targeting %s\n", baseURL)
-	fmt.Fprintf(os.Stderr, "running eval dataset (%d pairs)...\n", len(conflicts.DefaultEvalDataset()))
+	fmt.Fprintf(os.Stderr, "targeting %s (mode=%s)\n", baseURL, *mode)
 
-	// Call the eval endpoint.
-	metrics, results, err := runEval(baseURL, token)
+	switch *mode {
+	case "validator":
+		return runValidatorEval(baseURL, token, *save)
+	case "scorer":
+		return runScorerEval(baseURL, token, *save)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown mode: %s (use 'validator' or 'scorer')\n", *mode)
+		return 1
+	}
+}
+
+func runValidatorEval(baseURL, token string, save bool) int {
+	fmt.Fprintf(os.Stderr, "running validator eval dataset (%d pairs)...\n", len(conflicts.DefaultEvalDataset()))
+
+	metrics, results, err := callValidatorEval(baseURL, token)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "eval failed: %v\n", err)
 		return 1
 	}
 
-	// Print results.
 	fmt.Print(conflicts.FormatMetrics(metrics, results))
 
-	// Exit non-zero if precision or recall is below threshold.
+	if save {
+		if err := saveResults("validator", map[string]any{
+			"metrics": metrics,
+			"results": results,
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to save results: %v\n", err)
+		}
+	}
+
 	if metrics.ConflictPrec < 0.80 {
 		fmt.Fprintf(os.Stderr, "\nFAIL: conflict precision %.1f%% < 80%%\n", metrics.ConflictPrec*100)
 		return 1
@@ -76,6 +108,64 @@ func run() int {
 	}
 	fmt.Fprintf(os.Stderr, "\nPASS: precision=%.1f%% recall=%.1f%%\n", metrics.ConflictPrec*100, metrics.ConflictRecall*100)
 	return 0
+}
+
+type scorerEvalResult struct {
+	Precision      float64 `json:"precision"`
+	TruePositives  int     `json:"true_positives"`
+	FalsePositives int     `json:"false_positives"`
+	TotalLabeled   int     `json:"total_labeled"`
+	Message        string  `json:"message,omitempty"`
+}
+
+func runScorerEval(baseURL, token string, save bool) int {
+	fmt.Fprintln(os.Stderr, "running scorer precision eval from ground truth labels...")
+
+	result, err := callScorerEval(baseURL, token)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "eval failed: %v\n", err)
+		return 1
+	}
+
+	if result.TotalLabeled == 0 {
+		fmt.Fprintln(os.Stderr, "no labeled conflicts found — label some first:")
+		fmt.Fprintln(os.Stderr, "  curl -X PUT http://localhost:8081/v1/admin/conflicts/{id}/label \\")
+		fmt.Fprintln(os.Stderr, "    -H 'Authorization: Bearer ...' \\")
+		fmt.Fprintln(os.Stderr, "    -d '{\"label\": \"genuine\"}'")
+		return 0
+	}
+
+	fmt.Printf("Scorer Precision: %.1f%% (%d TP, %d FP, %d labeled)\n",
+		result.Precision*100, result.TruePositives, result.FalsePositives, result.TotalLabeled)
+
+	if save {
+		if err := saveResults("scorer", result); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to save results: %v\n", err)
+		}
+	}
+
+	return 0
+}
+
+func saveResults(mode string, data any) error {
+	dir := "eval-results"
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("create dir: %w", err)
+	}
+
+	filename := fmt.Sprintf("%s_%s.json", mode, time.Now().Format("2006-01-02T15-04-05"))
+	path := filepath.Join(dir, filename)
+
+	out, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "results saved to %s\n", path)
+	return nil
 }
 
 func authenticate(baseURL, agentID, apiKey string) (string, error) {
@@ -104,12 +194,12 @@ func authenticate(baseURL, agentID, apiKey string) (string, error) {
 	return result.Token, nil
 }
 
-type evalResponse struct {
+type validatorEvalResponse struct {
 	Metrics conflicts.EvalMetrics  `json:"metrics"`
 	Results []conflicts.EvalResult `json:"results"`
 }
 
-func runEval(baseURL, token string) (conflicts.EvalMetrics, []conflicts.EvalResult, error) {
+func callValidatorEval(baseURL, token string) (conflicts.EvalMetrics, []conflicts.EvalResult, error) {
 	evalURL, err := url.JoinPath(baseURL, "/v1/admin/conflicts/eval")
 	if err != nil {
 		return conflicts.EvalMetrics{}, nil, fmt.Errorf("build eval URL: %w", err)
@@ -133,9 +223,40 @@ func runEval(baseURL, token string) (conflicts.EvalMetrics, []conflicts.EvalResu
 		return conflicts.EvalMetrics{}, nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	var result evalResponse
+	var result validatorEvalResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return conflicts.EvalMetrics{}, nil, fmt.Errorf("decode: %w", err)
 	}
 	return result.Metrics, result.Results, nil
+}
+
+func callScorerEval(baseURL, token string) (scorerEvalResult, error) {
+	evalURL, err := url.JoinPath(baseURL, "/v1/admin/scorer-eval")
+	if err != nil {
+		return scorerEvalResult{}, fmt.Errorf("build eval URL: %w", err)
+	}
+	req, err := http.NewRequest("POST", evalURL, bytes.NewReader([]byte("{}"))) //nolint:gosec // URL is operator-provided via AKASHI_URL env var
+	if err != nil {
+		return scorerEvalResult{}, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req) //nolint:gosec // req uses operator-provided URL
+	if err != nil {
+		return scorerEvalResult{}, fmt.Errorf("request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return scorerEvalResult{}, fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result scorerEvalResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return scorerEvalResult{}, fmt.Errorf("decode: %w", err)
+	}
+	return result, nil
 }

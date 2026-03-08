@@ -4,7 +4,7 @@
 
 CREATE TABLE conflict_labels (
     scored_conflict_id uuid NOT NULL REFERENCES scored_conflicts(id) ON DELETE CASCADE,
-    org_id             uuid NOT NULL,
+    org_id             uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     label              text NOT NULL CHECK (label IN ('genuine', 'related_not_contradicting', 'unrelated_false_positive')),
     labeled_by         text NOT NULL,
     labeled_at         timestamptz NOT NULL DEFAULT now(),

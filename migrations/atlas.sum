@@ -1,4 +1,4 @@
-h1:PJy67F3ki7dDnzwVjy98RJw3YQneBmXOSQt9AJU0TbU=
+h1:AqHFp5daM0p9HHVc4x0ChuO/iHPq+34HgFb7suQf/MQ=
 001_initial.sql h1:uhyGXto+QacAaGYb9ZTGjsBs5chlKi8O0eHz9aCQsrY=
 022_full_text_search.sql h1:9iwtA8MgCzAxDV9YkUBn0CLT9ePSmj3GcPoMGg8TXf0=
 023_fix_outbox_index.sql h1:OtMEFBcMRWej02+ghnBXlPr6BVq+LoA62Id9XUWfDNI=
@@ -39,5 +39,5 @@ h1:PJy67F3ki7dDnzwVjy98RJw3YQneBmXOSQt9AJU0TbU=
 058_claim_text_on_conflicts.sql h1:EU/RrSMkAkTYbdGySaqoEw0w1BCtJWyi6/QXIDSfd4k=
 059_outcome_score.sql h1:/wqeIHuBxscT6mFa+JxFga9lzsmVYxMd0RuoMQYp9rs=
 060_claim_categories.sql h1:Y8ZnUf/d3q3Vky4QnqXdEUeWeORMW+RA19HHXSsF2ss=
-062_conflict_labels.sql h1:doaigJBuTrHG+ygARH1pjuXX0ca+gSh3c0DmZ1LiRGw=
-063_scoring_method_external.sql h1:JIVdYUTdFgE7pt5eYPP75hsMsBZ1DVUR0fZzYSQnrEk=
+062_conflict_labels.sql h1:T9ScN/7ze8pGMAQ8TW8Q8cDx8cWuzMSM0yLE/7vc3G0=
+063_scoring_method_external.sql h1:Xsq/X/69zAeff6Pct71h1rsTq2o5IWBp7GsH+v0mlAk=
