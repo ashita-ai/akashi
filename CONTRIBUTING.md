@@ -116,6 +116,42 @@ Or run the full CI mirror locally:
 make ci
 ```
 
+## Running UI tests
+
+The audit dashboard has unit tests (Vitest) and end-to-end tests (Playwright).
+
+```sh
+cd ui
+
+# Unit tests
+npm ci
+npm test
+
+# End-to-end tests (requires a running Akashi server)
+npx playwright install   # first time only
+npm run test:e2e
+```
+
+Vitest runs component-level tests against the React SPA. Playwright tests exercise the
+full browser workflow against a live server. When adding new UI features, add at least a
+Vitest unit test for any non-trivial logic.
+
+## Running fuzz tests
+
+Go native fuzz tests cover critical input parsing paths (content hashing, Merkle tree
+construction, token validation, agent ID validation, JSON decoding):
+
+```sh
+# Run all fuzz targets for 30 seconds each
+go test -fuzz=Fuzz -fuzztime=30s ./internal/integrity/...
+go test -fuzz=Fuzz -fuzztime=30s ./internal/auth/...
+go test -fuzz=Fuzz -fuzztime=30s ./internal/model/...
+go test -fuzz=Fuzz -fuzztime=30s ./internal/server/...
+```
+
+Fuzz tests are not part of the normal `go test ./...` run — they require the `-fuzz` flag.
+Run them when modifying parsing or validation logic.
+
 ## Embedding provider note
 
 Tests that exercise conflict detection or semantic search need an embedding provider. When none is configured (the default for local development), the noop embedder is used and vector similarity is disabled. Tests that assert on semantic results will produce low recall in this mode. **This is expected behavior, not a bug.**
