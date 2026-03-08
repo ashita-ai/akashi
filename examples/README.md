@@ -39,6 +39,7 @@ docker compose -f docker-compose.complete.yml logs -f ollama-init
 | `python/middleware.py` | Python | `AkashiSyncMiddleware.wrap()` — automatic check/trace | No (Postgres only) |
 | `typescript/middleware.ts` | TypeScript | `withAkashi()` — automatic check/trace | No (Postgres only) |
 | `python/multi_agent_conflicts.py` | Python | Two agents, conflicting decisions, conflict detection | Yes (Qdrant + Ollama) |
+| `langchain/main.py` | Python | LangChain `AkashiCallbackHandler` — automatic check/trace | No (Postgres only) + `OPENAI_API_KEY` (live mode) |
 | `crewai/sdk_example.py` | Python | CrewAI integration with `make_hooks` + `run_with_akashi` | No (Postgres only) + `OPENAI_API_KEY` |
 | `vercel-ai/main.ts` | TypeScript | Vercel AI SDK middleware — automatic check/trace | No (Postgres only) + `OPENAI_API_KEY` |
 
@@ -67,6 +68,15 @@ go mod tidy
 go run ./quickstart
 ```
 
+### LangChain
+
+```sh
+pip install -e sdk/python
+pip install -e sdk/integrations/langchain
+python examples/langchain/main.py                          # pre-scripted
+OPENAI_API_KEY=... python examples/langchain/main.py --live # real LLM
+```
+
 ### CrewAI
 
 ```sh
@@ -86,4 +96,5 @@ OPENAI_API_KEY=... npm start
 ## Framework integrations
 
 For LangChain and Vercel AI SDK integrations, see `sdk/integrations/`.
+The `examples/langchain/` directory demonstrates `AkashiCallbackHandler` end-to-end.
 The existing `examples/crewai/demo.py` demonstrates a conflict detection scenario with live LLM agents.
