@@ -103,8 +103,21 @@ The OSS distribution uses an in-memory token bucket. Enterprise deployments can 
 
 ## Conflict Detection
 
+### Profiles
+
+Set `AKASHI_CONFLICT_PROFILE` to apply a coherent set of threshold defaults. Individual env var overrides always take precedence over the profile.
+
+| Profile | Significance | Early Exit | Claim Topic Sim | Claim Div | Decision Topic Sim | Cross-Encoder | Decay Lambda | Use case |
+|---------|-------------|------------|-----------------|-----------|-------------------|--------------|-------------|----------|
+| `balanced` | 0.30 | 0.25 | 0.60 | 0.15 | 0.70 | 0.50 | 0.01 | General-purpose (default) |
+| `high_precision` | 0.40 | 0.35 | 0.65 | 0.20 | 0.75 | 0.60 | 0.01 | Fewer false positives, may miss marginal real conflicts |
+| `high_recall` | 0.20 | 0.15 | 0.55 | 0.10 | 0.65 | 0.35 | 0.005 | Catches more real conflicts, accepts more noise |
+
+### Thresholds
+
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `AKASHI_CONFLICT_PROFILE` | `balanced` | Named profile: `balanced`, `high_precision`, or `high_recall`. Sets coherent defaults for all thresholds below. Individual overrides take precedence |
 | `AKASHI_CONFLICT_CANDIDATE_LIMIT` | `20` | Max candidates retrieved from Qdrant per decision. Lower values reduce LLM cost; higher values improve recall for embedding-only scoring |
 | `AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD` | `0.30` | Min significance (topic_sim × outcome_div) to store a conflict |
 | `AKASHI_CONFLICT_EARLY_EXIT_FLOOR` | `0.25` | Min pre-LLM significance for early exit pruning. Candidates are sorted by significance descending; once significance drops below this floor (and the candidate doesn't qualify for the bi-encoder bypass), remaining candidates are skipped. Set to `0` to disable early exit |
