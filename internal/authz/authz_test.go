@@ -248,3 +248,47 @@ func TestFilterSearchResults_Filtered(t *testing.T) {
 	assert.Len(t, filtered, 1)
 	assert.Equal(t, agent.AgentID, filtered[0].Decision.AgentID)
 }
+
+func TestCanAccessAgent_NilClaims(t *testing.T) {
+	ok, err := authz.CanAccessAgent(context.Background(), testDB, nil, "any-agent")
+	require.NoError(t, err)
+	assert.False(t, ok, "nil claims should deny access")
+}
+
+func TestCanAccessAgent_MalformedSubject(t *testing.T) {
+	claims := &auth.Claims{
+		AgentID: "agent-x",
+		OrgID:   uuid.Nil,
+		Role:    model.RoleAgent,
+	}
+	claims.Subject = "not-a-uuid"
+
+	ok, err := authz.CanAccessAgent(context.Background(), testDB, claims, "other-agent")
+	require.NoError(t, err)
+	assert.False(t, ok, "malformed subject should deny access")
+}
+
+func TestCanAccessAgent_TagOverlap(t *testing.T) {
+	suffix := uuid.New().String()[:8]
+	tags := []string{"team-a"}
+
+	caller := createTestAgent(t, "tag-caller-"+suffix, model.RoleAgent, tags)
+	target := createTestAgent(t, "tag-target-"+suffix, model.RoleAgent, tags)
+	claims := makeClaims(caller.AgentID, caller.ID, model.RoleAgent)
+
+	ok, err := authz.CanAccessAgent(context.Background(), testDB, claims, target.AgentID)
+	require.NoError(t, err)
+	assert.True(t, ok, "agents sharing a tag should have access")
+}
+
+func TestCanAccessAgent_NoTagOverlap(t *testing.T) {
+	suffix := uuid.New().String()[:8]
+
+	caller := createTestAgent(t, "notag-caller-"+suffix, model.RoleAgent, []string{"team-a"})
+	_ = createTestAgent(t, "notag-target-"+suffix, model.RoleAgent, []string{"team-b"})
+	claims := makeClaims(caller.AgentID, caller.ID, model.RoleAgent)
+
+	ok, err := authz.CanAccessAgent(context.Background(), testDB, claims, "notag-target-"+suffix)
+	require.NoError(t, err)
+	assert.False(t, ok, "agents with different tags and no grants should be denied")
+}

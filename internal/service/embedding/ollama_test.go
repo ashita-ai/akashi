@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestOllamaProvider(t *testing.T) {
@@ -511,4 +515,463 @@ func TestOllamaProvider_EmbedBatch_MockServer(t *testing.T) {
 			}
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// PublicProviderAdapter tests
+// ---------------------------------------------------------------------------
+
+// fakeExternalProvider is a minimal external embedding provider for testing
+// PublicProviderAdapter without importing the root akashi package.
+type fakeExternalProvider struct {
+	dims     int
+	embedErr error
+	batchErr error
+}
+
+func (f *fakeExternalProvider) Embed(_ context.Context, text string) ([]float32, error) {
+	if f.embedErr != nil {
+		return nil, f.embedErr
+	}
+	vec := make([]float32, f.dims)
+	// Use text length as a distinguishing marker in the first element.
+	vec[0] = float32(len(text))
+	return vec, nil
+}
+
+func (f *fakeExternalProvider) EmbedBatch(_ context.Context, texts []string) ([][]float32, error) {
+	if f.batchErr != nil {
+		return nil, f.batchErr
+	}
+	out := make([][]float32, len(texts))
+	for i, t := range texts {
+		vec := make([]float32, f.dims)
+		vec[0] = float32(len(t))
+		out[i] = vec
+	}
+	return out, nil
+}
+
+func (f *fakeExternalProvider) Dimensions() int { return f.dims }
+
+func TestPublicProviderAdapter_Embed(t *testing.T) {
+	ext := &fakeExternalProvider{dims: 256}
+	adapter := NewPublicProviderAdapter(ext)
+
+	vec, err := adapter.Embed(context.Background(), "hello")
+	require.NoError(t, err)
+	slice := vec.Slice()
+	assert.Len(t, slice, 256)
+	assert.InDelta(t, 5.0, slice[0], 0.001, "first element should encode text length")
+}
+
+func TestPublicProviderAdapter_EmbedError(t *testing.T) {
+	ext := &fakeExternalProvider{dims: 256, embedErr: errors.New("provider down")}
+	adapter := NewPublicProviderAdapter(ext)
+
+	_, err := adapter.Embed(context.Background(), "hello")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provider down")
+}
+
+func TestPublicProviderAdapter_EmbedBatch(t *testing.T) {
+	ext := &fakeExternalProvider{dims: 128}
+	adapter := NewPublicProviderAdapter(ext)
+
+	texts := []string{"ab", "abc", "abcd"}
+	vecs, err := adapter.EmbedBatch(context.Background(), texts)
+	require.NoError(t, err)
+	require.Len(t, vecs, 3)
+
+	for i, vec := range vecs {
+		slice := vec.Slice()
+		assert.Len(t, slice, 128, "vector %d should have 128 dimensions", i)
+		assert.InDelta(t, float32(len(texts[i])), slice[0], 0.001,
+			"vector %d first element should encode text length", i)
+	}
+}
+
+func TestPublicProviderAdapter_EmbedBatchError(t *testing.T) {
+	ext := &fakeExternalProvider{dims: 128, batchErr: errors.New("rate limited")}
+	adapter := NewPublicProviderAdapter(ext)
+
+	_, err := adapter.EmbedBatch(context.Background(), []string{"a"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rate limited")
+}
+
+func TestPublicProviderAdapter_Dimensions(t *testing.T) {
+	tests := []struct {
+		dims int
+	}{
+		{256},
+		{512},
+		{1024},
+		{1536},
+	}
+	for _, tc := range tests {
+		t.Run(fmt.Sprintf("%d", tc.dims), func(t *testing.T) {
+			ext := &fakeExternalProvider{dims: tc.dims}
+			adapter := NewPublicProviderAdapter(ext)
+			assert.Equal(t, tc.dims, adapter.Dimensions())
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// OpenAIProvider mock server tests
+// ---------------------------------------------------------------------------
+
+// newMockOpenAIServer creates an httptest server that mimics the OpenAI
+// embeddings API. It returns vectors where the first element of each
+// embedding is set to the input index for ordering verification.
+func newMockOpenAIServer(t *testing.T, dims int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req openAIRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		data := make([]struct {
+			Embedding []float32 `json:"embedding"`
+			Index     int       `json:"index"`
+		}, len(req.Input))
+
+		for i := range req.Input {
+			vec := make([]float32, dims)
+			vec[0] = float32(i)
+			data[i] = struct {
+				Embedding []float32 `json:"embedding"`
+				Index     int       `json:"index"`
+			}{Embedding: vec, Index: i}
+		}
+
+		resp := openAIResponse{Data: data}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+}
+
+func TestOpenAIProvider_EmbedBatch_MockServer(t *testing.T) {
+	dims := 256
+	server := newMockOpenAIServer(t, dims)
+	defer server.Close()
+
+	p, err := NewOpenAIProvider("sk-test", "text-embedding-3-small", dims)
+	require.NoError(t, err)
+	// Override the HTTP client to point at our mock server.
+	p.httpClient = server.Client()
+	// We need to redirect the URL. Since OpenAIProvider hardcodes the URL,
+	// we'll use a custom transport to rewrite URLs.
+	p.httpClient.Transport = &urlRewriter{target: server.URL, wrapped: server.Client().Transport}
+
+	t.Run("single text via EmbedBatch", func(t *testing.T) {
+		vecs, err := p.EmbedBatch(context.Background(), []string{"hello"})
+		require.NoError(t, err)
+		require.Len(t, vecs, 1)
+		assert.Len(t, vecs[0].Slice(), dims)
+	})
+
+	t.Run("multiple texts", func(t *testing.T) {
+		texts := []string{"alpha", "bravo", "charlie"}
+		vecs, err := p.EmbedBatch(context.Background(), texts)
+		require.NoError(t, err)
+		require.Len(t, vecs, len(texts))
+		for i, vec := range vecs {
+			slice := vec.Slice()
+			assert.Len(t, slice, dims)
+			assert.InDelta(t, float32(i), slice[0], 0.001,
+				"embedding %d should have index %d as first element", i, i)
+		}
+	})
+
+	t.Run("empty input returns nil", func(t *testing.T) {
+		vecs, err := p.EmbedBatch(context.Background(), nil)
+		require.NoError(t, err)
+		assert.Nil(t, vecs)
+	})
+
+	t.Run("Embed delegates to EmbedBatch", func(t *testing.T) {
+		vec, err := p.Embed(context.Background(), "test")
+		require.NoError(t, err)
+		assert.Len(t, vec.Slice(), dims)
+	})
+}
+
+func TestOpenAIProvider_EmbedBatch_ServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("internal error"))
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAIProvider("sk-test", "text-embedding-3-small", 256)
+	require.NoError(t, err)
+	p.httpClient.Transport = &urlRewriter{target: server.URL, wrapped: server.Client().Transport}
+
+	_, err = p.EmbedBatch(context.Background(), []string{"test"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected status 500")
+}
+
+func TestOpenAIProvider_EmbedBatch_StructuredError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(openAIResponse{
+			Error: &struct {
+				Message string `json:"message"`
+				Type    string `json:"type"`
+			}{
+				Message: "Rate limit exceeded",
+				Type:    "rate_limit_error",
+			},
+		})
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAIProvider("sk-test", "text-embedding-3-small", 256)
+	require.NoError(t, err)
+	p.httpClient.Transport = &urlRewriter{target: server.URL, wrapped: server.Client().Transport}
+
+	_, err = p.EmbedBatch(context.Background(), []string{"test"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rate_limit_error")
+	assert.Contains(t, err.Error(), "Rate limit exceeded")
+}
+
+func TestOpenAIProvider_EmbedBatch_CountMismatch(t *testing.T) {
+	// Server returns fewer embeddings than requested.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		resp := openAIResponse{
+			Data: []struct {
+				Embedding []float32 `json:"embedding"`
+				Index     int       `json:"index"`
+			}{
+				{Embedding: []float32{0.1, 0.2}, Index: 0},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAIProvider("sk-test", "text-embedding-3-small", 2)
+	require.NoError(t, err)
+	p.httpClient.Transport = &urlRewriter{target: server.URL, wrapped: server.Client().Transport}
+
+	_, err = p.EmbedBatch(context.Background(), []string{"a", "b", "c"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expected 3 embeddings but got 1")
+}
+
+func TestOpenAIProvider_EmbedBatch_InvalidIndex(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		resp := openAIResponse{
+			Data: []struct {
+				Embedding []float32 `json:"embedding"`
+				Index     int       `json:"index"`
+			}{
+				{Embedding: []float32{0.1}, Index: 99}, // out of bounds
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAIProvider("sk-test", "text-embedding-3-small", 1)
+	require.NoError(t, err)
+	p.httpClient.Transport = &urlRewriter{target: server.URL, wrapped: server.Client().Transport}
+
+	_, err = p.EmbedBatch(context.Background(), []string{"a"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid index 99")
+}
+
+func TestOpenAIProvider_EmbedBatch_InvalidJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{not valid json"))
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAIProvider("sk-test", "text-embedding-3-small", 256)
+	require.NoError(t, err)
+	p.httpClient.Transport = &urlRewriter{target: server.URL, wrapped: server.Client().Transport}
+
+	_, err = p.EmbedBatch(context.Background(), []string{"test"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unmarshal response")
+}
+
+func TestOpenAIProvider_EmbedBatch_ErrorInSuccessBody(t *testing.T) {
+	// Server returns 200 but includes an error field in the response body.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(openAIResponse{
+			Error: &struct {
+				Message string `json:"message"`
+				Type    string `json:"type"`
+			}{
+				Message: "model not found",
+				Type:    "invalid_request_error",
+			},
+		})
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAIProvider("sk-test", "text-embedding-3-small", 256)
+	require.NoError(t, err)
+	p.httpClient.Transport = &urlRewriter{target: server.URL, wrapped: server.Client().Transport}
+
+	_, err = p.EmbedBatch(context.Background(), []string{"test"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "model not found")
+}
+
+func TestOpenAIProvider_TruncatesLongInput(t *testing.T) {
+	// Verify that text exceeding maxInputChars is truncated before sending.
+	var receivedInput []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req openAIRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		receivedInput = req.Input
+
+		data := make([]struct {
+			Embedding []float32 `json:"embedding"`
+			Index     int       `json:"index"`
+		}, len(req.Input))
+		for i := range req.Input {
+			data[i] = struct {
+				Embedding []float32 `json:"embedding"`
+				Index     int       `json:"index"`
+			}{Embedding: make([]float32, 4), Index: i}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(openAIResponse{Data: data})
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAIProvider("sk-test", "text-embedding-3-small", 4)
+	require.NoError(t, err)
+	p.httpClient.Transport = &urlRewriter{target: server.URL, wrapped: server.Client().Transport}
+	p.maxInputChars = 20 // Override for testing
+
+	longText := strings.Repeat("word ", 10) // 50 chars
+	_, err = p.EmbedBatch(context.Background(), []string{longText})
+	require.NoError(t, err)
+	require.Len(t, receivedInput, 1)
+	assert.LessOrEqual(t, len([]rune(receivedInput[0])), 20,
+		"input should be truncated to maxInputChars")
+}
+
+// urlRewriter is an http.RoundTripper that rewrites request URLs to point
+// at a local test server, allowing us to test OpenAIProvider (which hardcodes
+// the OpenAI API URL) without making real network calls.
+type urlRewriter struct {
+	target  string
+	wrapped http.RoundTripper
+}
+
+func (u *urlRewriter) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.URL.Scheme = "http"
+	req.URL.Host = strings.TrimPrefix(u.target, "http://")
+	if u.wrapped != nil {
+		return u.wrapped.RoundTrip(req)
+	}
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// ---------------------------------------------------------------------------
+// OllamaProvider default URL tests
+// ---------------------------------------------------------------------------
+
+func TestOllamaProvider_DefaultBaseURL(t *testing.T) {
+	p := NewOllamaProvider("", "test-model", 512)
+	assert.Equal(t, "http://localhost:11434", p.baseURL)
+	assert.Equal(t, 512, p.dimensions)
+	assert.Equal(t, "test-model", p.model)
+}
+
+// ---------------------------------------------------------------------------
+// OllamaProvider batch with mismatched count
+// ---------------------------------------------------------------------------
+
+func TestOllamaProvider_EmbedBatchNative_CountMismatch(t *testing.T) {
+	// Server returns wrong number of embeddings.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ollamaEmbedResponse{
+			Embeddings: [][]float32{{0.1, 0.2}}, // only 1 embedding for 3 inputs
+		})
+	}))
+	defer server.Close()
+
+	p := NewOllamaProvider(server.URL, "test-model", 2)
+	// embedBatchNative is called internally with >1 texts, so use 3 texts.
+	// But EmbedBatch tries native first and falls back. To test the mismatch
+	// error directly, we need both native and concurrent to fail. The simplest
+	// approach: the server always returns 1 embedding regardless of input count.
+	// Native batch fails with count mismatch, concurrent individual calls succeed
+	// with 1 embedding each. So this actually exercises the fallback path.
+	vecs, err := p.EmbedBatch(context.Background(), []string{"a", "b", "c"})
+	// Native fails (count mismatch), falls back to concurrent single calls.
+	// Each single call returns 1 embedding of dim 2, which succeeds.
+	require.NoError(t, err)
+	assert.Len(t, vecs, 3)
+}
+
+// ---------------------------------------------------------------------------
+// OllamaProvider concurrent batch with all-failing server
+// ---------------------------------------------------------------------------
+
+func TestOllamaProvider_EmbedBatchConcurrent_AllFail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "gpu busy", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	p := NewOllamaProvider(server.URL, "test-model", 128)
+	_, err := p.EmbedBatch(context.Background(), []string{"x", "y"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "503")
+}
+
+func TestOllamaProvider_EmbedBatch_EmptyEmbeddingInBatch(t *testing.T) {
+	// Native batch returns an empty embedding at one index.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req ollamaEmbedRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		switch req.Input.(type) {
+		case []any:
+			// Return 2 embeddings, but second is empty.
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(ollamaEmbedResponse{
+				Embeddings: [][]float32{{0.1, 0.2}, {}},
+			})
+		case string:
+			// Single embed for fallback: always succeed.
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(ollamaEmbedResponse{
+				Embeddings: [][]float32{{0.3, 0.4}},
+			})
+		}
+	}))
+	defer server.Close()
+
+	p := NewOllamaProvider(server.URL, "test-model", 2)
+	// Native batch fails (empty embedding at index 1), falls back to concurrent.
+	vecs, err := p.EmbedBatch(context.Background(), []string{"a", "b"})
+	require.NoError(t, err)
+	assert.Len(t, vecs, 2)
 }

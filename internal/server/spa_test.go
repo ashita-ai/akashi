@@ -1,8 +1,15 @@
 package server
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/fstest"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIsAPIPath(t *testing.T) {
@@ -100,4 +107,149 @@ func TestSetCacheHeaders(t *testing.T) {
 			}
 		})
 	}
+}
+
+// testSPAFS returns a minimal in-memory filesystem for SPA handler tests.
+// Contains index.html at the root and a hashed asset in the assets/ directory.
+func testSPAFS() fstest.MapFS {
+	return fstest.MapFS{
+		"index.html":              {Data: []byte("<!doctype html><html><body>SPA</body></html>")},
+		"assets/index-abc123.js":  {Data: []byte("console.log('app')")},
+		"assets/style-def456.css": {Data: []byte("body{margin:0}")},
+		"favicon.ico":             {Data: []byte("icon-data")},
+	}
+}
+
+func TestSPAHandler_ServesExistingFile(t *testing.T) {
+	handler := newSPAHandler(testSPAFS())
+
+	tests := []struct {
+		name       string
+		path       string
+		wantStatus int
+		wantBody   string
+		wantCC     string
+	}{
+		{
+			name:       "serves hashed JS asset with immutable cache",
+			path:       "/assets/index-abc123.js",
+			wantStatus: http.StatusOK,
+			wantBody:   "console.log('app')",
+			wantCC:     "public, max-age=31536000, immutable",
+		},
+		{
+			name:       "serves hashed CSS asset with immutable cache",
+			path:       "/assets/style-def456.css",
+			wantStatus: http.StatusOK,
+			wantBody:   "body{margin:0}",
+			wantCC:     "public, max-age=31536000, immutable",
+		},
+		{
+			name:       "serves favicon with standard cache",
+			path:       "/favicon.ico",
+			wantStatus: http.StatusOK,
+			wantBody:   "icon-data",
+			wantCC:     "public, max-age=3600",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tt.path, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			assert.Equal(t, tt.wantStatus, rec.Code)
+			assert.Contains(t, rec.Body.String(), tt.wantBody)
+			assert.Equal(t, tt.wantCC, rec.Header().Get("Cache-Control"))
+		})
+	}
+}
+
+func TestSPAHandler_FallsBackToIndex(t *testing.T) {
+	handler := newSPAHandler(testSPAFS())
+
+	// Client-side routes that don't correspond to real files should serve index.html.
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"root path", "/"},
+		{"SPA route /decisions", "/decisions"},
+		{"SPA route /agents/foo", "/agents/foo"},
+		{"SPA route /settings", "/settings"},
+		{"nonexistent file", "/does-not-exist.txt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tt.path, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			assert.Equal(t, http.StatusOK, rec.Code)
+			assert.Equal(t, "text/html; charset=utf-8", rec.Header().Get("Content-Type"))
+			assert.Equal(t, "no-cache, no-store, must-revalidate", rec.Header().Get("Cache-Control"))
+		})
+	}
+}
+
+func TestSPAHandler_APIPathReturnsJSON404(t *testing.T) {
+	handler := newSPAHandler(testSPAFS())
+
+	// API paths that reach the SPA handler (not matched by any mux route) should
+	// return a proper JSON 404 instead of serving index.html.
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"v1 API path", "/v1/nonexistent"},
+		{"auth path", "/auth/nonexistent"},
+		{"mcp path", "/mcp"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tt.path, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			assert.Equal(t, http.StatusNotFound, rec.Code)
+			assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+
+			body, err := io.ReadAll(rec.Body)
+			require.NoError(t, err)
+
+			var errResp map[string]map[string]string
+			require.NoError(t, json.Unmarshal(body, &errResp))
+			assert.Equal(t, "not_found", errResp["error"]["code"])
+			assert.Equal(t, "endpoint not found", errResp["error"]["message"])
+		})
+	}
+}
+
+func TestSPAHandler_PathTraversal(t *testing.T) {
+	handler := newSPAHandler(testSPAFS())
+
+	// Directory traversal attempts should be cleaned and fall back to index.html.
+	req := httptest.NewRequest("GET", "/../../../etc/passwd", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	// path.Clean("/../../../etc/passwd") => "/etc/passwd" which is not an API path
+	// and doesn't exist in the FS, so it falls back to index.html.
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "text/html; charset=utf-8", rec.Header().Get("Content-Type"))
+}
+
+func TestSPAHandler_DotPath(t *testing.T) {
+	handler := newSPAHandler(testSPAFS())
+
+	// A request to "." (after cleaning) should be treated as root and serve index.html.
+	req := httptest.NewRequest("GET", "/.", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "no-cache, no-store, must-revalidate", rec.Header().Get("Cache-Control"))
 }

@@ -332,6 +332,430 @@ func TestLoad_ConflictScoringThresholdOverrides(t *testing.T) {
 	}
 }
 
+func TestEnvFloat64Valid(t *testing.T) {
+	t.Setenv("TEST_FLOAT", "3.14")
+	v, err := envFloat64("TEST_FLOAT", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v != 3.14 {
+		t.Fatalf("expected 3.14, got %f", v)
+	}
+}
+
+func TestEnvFloat64Fallback(t *testing.T) {
+	v, err := envFloat64("TEST_FLOAT_MISSING", 2.71)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v != 2.71 {
+		t.Fatalf("expected fallback 2.71, got %f", v)
+	}
+}
+
+func TestEnvFloat64Invalid(t *testing.T) {
+	t.Setenv("TEST_FLOAT_BAD", "notanumber")
+	_, err := envFloat64("TEST_FLOAT_BAD", 0)
+	if err == nil {
+		t.Fatal("expected error for non-float value, got nil")
+	}
+	if !contains(err.Error(), "TEST_FLOAT_BAD") {
+		t.Fatalf("error should mention the key, got: %s", err.Error())
+	}
+}
+
+func TestEnvBoolFallback(t *testing.T) {
+	v, err := envBool("TEST_BOOL_MISSING", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !v {
+		t.Fatal("expected fallback true")
+	}
+}
+
+func TestEnvDurationFallback(t *testing.T) {
+	v, err := envDuration("TEST_DUR_MISSING", 10*time.Second)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v != 10*time.Second {
+		t.Fatalf("expected fallback 10s, got %s", v)
+	}
+}
+
+func TestEnvStr(t *testing.T) {
+	t.Run("with value", func(t *testing.T) {
+		t.Setenv("TEST_STR", "hello")
+		v := envStr("TEST_STR", "default")
+		if v != "hello" {
+			t.Fatalf("expected 'hello', got %q", v)
+		}
+	})
+
+	t.Run("fallback", func(t *testing.T) {
+		v := envStr("TEST_STR_MISSING", "default")
+		if v != "default" {
+			t.Fatalf("expected 'default', got %q", v)
+		}
+	})
+}
+
+func TestEnvStrSlice(t *testing.T) {
+	t.Run("with values", func(t *testing.T) {
+		t.Setenv("TEST_SLICE", "a, b, c")
+		v := envStrSlice("TEST_SLICE", nil)
+		if len(v) != 3 {
+			t.Fatalf("expected 3 items, got %d", len(v))
+		}
+		if v[0] != "a" || v[1] != "b" || v[2] != "c" {
+			t.Fatalf("unexpected values: %v", v)
+		}
+	})
+
+	t.Run("fallback on empty", func(t *testing.T) {
+		fallback := []string{"x"}
+		v := envStrSlice("TEST_SLICE_MISSING", fallback)
+		if len(v) != 1 || v[0] != "x" {
+			t.Fatalf("expected fallback, got %v", v)
+		}
+	})
+
+	t.Run("whitespace-only entries filtered", func(t *testing.T) {
+		t.Setenv("TEST_SLICE_EMPTY", "  , , ")
+		v := envStrSlice("TEST_SLICE_EMPTY", []string{"fallback"})
+		if len(v) != 1 || v[0] != "fallback" {
+			t.Fatalf("expected fallback for whitespace-only entries, got %v", v)
+		}
+	})
+
+	t.Run("single value", func(t *testing.T) {
+		t.Setenv("TEST_SLICE_SINGLE", "only-one")
+		v := envStrSlice("TEST_SLICE_SINGLE", nil)
+		if len(v) != 1 || v[0] != "only-one" {
+			t.Fatalf("expected single value, got %v", v)
+		}
+	})
+}
+
+func TestValidate_NegativeEmbeddingDimensions(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.EmbeddingDimensions = -1
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for negative embedding dimensions")
+	}
+	if !contains(err.Error(), "AKASHI_EMBEDDING_DIMENSIONS") {
+		t.Fatalf("error should mention AKASHI_EMBEDDING_DIMENSIONS, got: %s", err.Error())
+	}
+}
+
+func TestValidate_ZeroMaxRequestBodyBytes(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.MaxRequestBodyBytes = 0
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for zero MaxRequestBodyBytes")
+	}
+	if !contains(err.Error(), "AKASHI_MAX_REQUEST_BODY_BYTES") {
+		t.Fatalf("error should mention AKASHI_MAX_REQUEST_BODY_BYTES, got: %s", err.Error())
+	}
+}
+
+func TestValidate_InvalidPort(t *testing.T) {
+	tests := []struct {
+		name string
+		port int
+	}{
+		{"zero", 0},
+		{"negative", -1},
+		{"too large", 70000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validBaseConfig()
+			cfg.Port = tt.port
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected validation error for invalid port")
+			}
+			if !contains(err.Error(), "AKASHI_PORT") {
+				t.Fatalf("error should mention AKASHI_PORT, got: %s", err.Error())
+			}
+		})
+	}
+}
+
+func TestValidate_NegativeTimeouts(t *testing.T) {
+	tests := []struct {
+		name   string
+		setter func(*Config)
+		errStr string
+	}{
+		{
+			name:   "negative read timeout",
+			setter: func(c *Config) { c.ReadTimeout = -1 * time.Second },
+			errStr: "AKASHI_READ_TIMEOUT",
+		},
+		{
+			name:   "negative write timeout",
+			setter: func(c *Config) { c.WriteTimeout = -1 * time.Second },
+			errStr: "AKASHI_WRITE_TIMEOUT",
+		},
+		{
+			name:   "negative event flush timeout",
+			setter: func(c *Config) { c.EventFlushTimeout = -1 * time.Millisecond },
+			errStr: "AKASHI_EVENT_FLUSH_TIMEOUT",
+		},
+		{
+			name:   "negative shutdown HTTP timeout",
+			setter: func(c *Config) { c.ShutdownHTTPTimeout = -1 * time.Second },
+			errStr: "AKASHI_SHUTDOWN_HTTP_TIMEOUT",
+		},
+		{
+			name:   "negative shutdown buffer drain timeout",
+			setter: func(c *Config) { c.ShutdownBufferDrainTimeout = -1 * time.Second },
+			errStr: "AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT",
+		},
+		{
+			name:   "negative shutdown outbox drain timeout",
+			setter: func(c *Config) { c.ShutdownOutboxDrainTimeout = -1 * time.Second },
+			errStr: "AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validBaseConfig()
+			tt.setter(&cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !contains(err.Error(), tt.errStr) {
+				t.Fatalf("error should mention %s, got: %s", tt.errStr, err.Error())
+			}
+		})
+	}
+}
+
+func TestValidate_ZeroEventBufferSize(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.EventBufferSize = 0
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for zero EventBufferSize")
+	}
+	if !contains(err.Error(), "AKASHI_EVENT_BUFFER_SIZE") {
+		t.Fatalf("error should mention AKASHI_EVENT_BUFFER_SIZE, got: %s", err.Error())
+	}
+}
+
+func TestValidate_EmptyDatabaseURL(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.DatabaseURL = ""
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for empty DatabaseURL")
+	}
+	if !contains(err.Error(), "DATABASE_URL") {
+		t.Fatalf("error should mention DATABASE_URL, got: %s", err.Error())
+	}
+}
+
+func TestValidate_RateLimitEnabledRequiresPositiveValues(t *testing.T) {
+	t.Run("zero RPS", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.RateLimitEnabled = true
+		cfg.RateLimitRPS = 0
+
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected validation error for zero RateLimitRPS")
+		}
+		if !contains(err.Error(), "AKASHI_RATE_LIMIT_RPS") {
+			t.Fatalf("error should mention AKASHI_RATE_LIMIT_RPS, got: %s", err.Error())
+		}
+	})
+
+	t.Run("zero burst", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.RateLimitEnabled = true
+		cfg.RateLimitBurst = 0
+
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected validation error for zero RateLimitBurst")
+		}
+		if !contains(err.Error(), "AKASHI_RATE_LIMIT_BURST") {
+			t.Fatalf("error should mention AKASHI_RATE_LIMIT_BURST, got: %s", err.Error())
+		}
+	})
+
+	t.Run("disabled rate limit does not validate RPS/burst", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.RateLimitEnabled = false
+		cfg.RateLimitRPS = 0
+		cfg.RateLimitBurst = 0
+
+		err := cfg.Validate()
+		if err != nil {
+			t.Fatalf("expected no validation error when rate limiting is disabled, got: %v", err)
+		}
+	})
+}
+
+func TestValidate_KeyFileValidation(t *testing.T) {
+	t.Run("directory instead of file", func(t *testing.T) {
+		dir := t.TempDir()
+		err := validateKeyFile(dir, "TEST_KEY")
+		if err == nil {
+			t.Fatal("expected error for directory")
+		}
+		if !contains(err.Error(), "is a directory") {
+			t.Fatalf("error should mention 'is a directory', got: %s", err.Error())
+		}
+	})
+}
+
+func TestValidate_ZeroIdempotencyIntervals(t *testing.T) {
+	tests := []struct {
+		name   string
+		setter func(*Config)
+		errStr string
+	}{
+		{
+			name:   "zero cleanup interval",
+			setter: func(c *Config) { c.IdempotencyCleanupInterval = 0 },
+			errStr: "AKASHI_IDEMPOTENCY_CLEANUP_INTERVAL",
+		},
+		{
+			name:   "zero completed TTL",
+			setter: func(c *Config) { c.IdempotencyCompletedTTL = 0 },
+			errStr: "AKASHI_IDEMPOTENCY_COMPLETED_TTL",
+		},
+		{
+			name:   "zero abandoned TTL",
+			setter: func(c *Config) { c.IdempotencyAbandonedTTL = 0 },
+			errStr: "AKASHI_IDEMPOTENCY_ABANDONED_TTL",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validBaseConfig()
+			tt.setter(&cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !contains(err.Error(), tt.errStr) {
+				t.Fatalf("error should mention %s, got: %s", tt.errStr, err.Error())
+			}
+		})
+	}
+}
+
+func TestValidate_ZeroIntervals(t *testing.T) {
+	tests := []struct {
+		name   string
+		setter func(*Config)
+		errStr string
+	}{
+		{
+			name:   "zero outbox poll interval",
+			setter: func(c *Config) { c.OutboxPollInterval = 0 },
+			errStr: "AKASHI_OUTBOX_POLL_INTERVAL",
+		},
+		{
+			name:   "zero conflict refresh interval",
+			setter: func(c *Config) { c.ConflictRefreshInterval = 0 },
+			errStr: "AKASHI_CONFLICT_REFRESH_INTERVAL",
+		},
+		{
+			name:   "zero integrity proof interval",
+			setter: func(c *Config) { c.IntegrityProofInterval = 0 },
+			errStr: "AKASHI_INTEGRITY_PROOF_INTERVAL",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validBaseConfig()
+			tt.setter(&cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !contains(err.Error(), tt.errStr) {
+				t.Fatalf("error should mention %s, got: %s", tt.errStr, err.Error())
+			}
+		})
+	}
+}
+
+func TestLoad_InvalidBooleanEnvVar(t *testing.T) {
+	t.Setenv("AKASHI_RATE_LIMIT_ENABLED", "notabool")
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected Load() to fail with invalid boolean")
+	}
+	if !contains(err.Error(), "AKASHI_RATE_LIMIT_ENABLED") {
+		t.Fatalf("error should mention the variable, got: %s", err.Error())
+	}
+}
+
+func TestLoad_InvalidDurationEnvVar(t *testing.T) {
+	t.Setenv("AKASHI_READ_TIMEOUT", "notaduration")
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected Load() to fail with invalid duration")
+	}
+	if !contains(err.Error(), "AKASHI_READ_TIMEOUT") {
+		t.Fatalf("error should mention the variable, got: %s", err.Error())
+	}
+}
+
+func TestLoad_InvalidFloatEnvVar(t *testing.T) {
+	t.Setenv("AKASHI_RATE_LIMIT_RPS", "notafloat")
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected Load() to fail with invalid float")
+	}
+	if !contains(err.Error(), "AKASHI_RATE_LIMIT_RPS") {
+		t.Fatalf("error should mention the variable, got: %s", err.Error())
+	}
+}
+
+// validBaseConfig returns a Config with all required fields set to valid values.
+// Use this as a starting point for Validate() tests that want to test one field at a time.
+func validBaseConfig() Config {
+	return Config{
+		Port:                       8080,
+		ReadTimeout:                30 * time.Second,
+		WriteTimeout:               30 * time.Second,
+		DatabaseURL:                "postgres://localhost/test",
+		EmbeddingDimensions:        1024,
+		MaxRequestBodyBytes:        1024 * 1024,
+		EventBufferSize:            1000,
+		EventFlushTimeout:          100 * time.Millisecond,
+		ShutdownHTTPTimeout:        10 * time.Second,
+		ShutdownBufferDrainTimeout: 0,
+		ShutdownOutboxDrainTimeout: 0,
+		OutboxPollInterval:         1 * time.Second,
+		ConflictRefreshInterval:    30 * time.Second,
+		IntegrityProofInterval:     5 * time.Minute,
+		IdempotencyCleanupInterval: 1 * time.Hour,
+		IdempotencyCompletedTTL:    7 * 24 * time.Hour,
+		IdempotencyAbandonedTTL:    24 * time.Hour,
+		RateLimitEnabled:           true,
+		RateLimitRPS:               100,
+		RateLimitBurst:             200,
+	}
+}
+
 func TestLoad_ConflictScoringThresholdInvalid(t *testing.T) {
 	t.Setenv("AKASHI_CONFLICT_CLAIM_TOPIC_SIM_FLOOR", "not-a-number")
 

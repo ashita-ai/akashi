@@ -452,6 +452,43 @@ func TestBuffer_DrainIdempotent(t *testing.T) {
 	assert.Len(t, got, 3)
 }
 
+func TestBuffer_HasWAL(t *testing.T) {
+	t.Run("without WAL", func(t *testing.T) {
+		buf := NewBuffer(nil, testLogger(), 100, 50*time.Millisecond, nil)
+		assert.False(t, buf.HasWAL())
+	})
+
+	t.Run("with WAL", func(t *testing.T) {
+		cfg := WALConfig{
+			Dir:            t.TempDir(),
+			SyncMode:       "none",
+			MaxSegmentSize: minSegmentSize,
+			MaxSegmentRecs: minSegmentRecords,
+		}
+		wal, err := NewWAL(testLogger(), cfg)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = wal.Close() })
+
+		buf := NewBuffer(nil, testLogger(), 100, 50*time.Millisecond, wal)
+		assert.True(t, buf.HasWAL())
+	})
+}
+
+func TestBuffer_Capacity(t *testing.T) {
+	buf := NewBuffer(nil, testLogger(), 100, 50*time.Millisecond, nil)
+	assert.Equal(t, maxBufferCapacity, buf.Capacity())
+}
+
+func TestBuffer_LenInitiallyZero(t *testing.T) {
+	buf := NewBuffer(nil, testLogger(), 100, 50*time.Millisecond, nil)
+	assert.Equal(t, 0, buf.Len())
+}
+
+func TestBuffer_DroppedEventsInitiallyZero(t *testing.T) {
+	buf := NewBuffer(nil, testLogger(), 100, 50*time.Millisecond, nil)
+	assert.EqualValues(t, 0, buf.DroppedEvents())
+}
+
 func TestBuffer_AtCapacity(t *testing.T) {
 	run := createTestRun(t)
 

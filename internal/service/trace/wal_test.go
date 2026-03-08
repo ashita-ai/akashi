@@ -432,6 +432,144 @@ func TestWAL_TruncatedRecord(t *testing.T) {
 	assert.Greater(t, len(recovered), 0, "should still recover records before the truncation point")
 }
 
+func TestWAL_NoneSyncModeWarning(t *testing.T) {
+	cfg := testWALConfig(t)
+	cfg.SyncMode = "none"
+
+	w, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+	defer closeWAL(t, w)
+
+	// Just verify it creates successfully with none mode.
+	assert.NotNil(t, w)
+	assert.Equal(t, "none", w.syncMode)
+}
+
+func TestWAL_WriteMultipleBatches(t *testing.T) {
+	cfg := testWALConfig(t)
+	w, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	// Write two separate batches.
+	events1 := testEvents(3)
+	lsn1, err := w.Write(events1)
+	require.NoError(t, err)
+
+	events2 := testEvents(4)
+	lsn2, err := w.Write(events2)
+	require.NoError(t, err)
+
+	assert.Greater(t, lsn2, lsn1, "second batch should have higher LSN")
+	require.NoError(t, w.Close())
+
+	// Recover all 7 events.
+	w2, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+	defer closeWAL(t, w2)
+
+	recovered, maxLSN, err := w2.Recover()
+	require.NoError(t, err)
+	assert.Len(t, recovered, 7)
+	assert.Equal(t, lsn2, maxLSN)
+}
+
+func TestWAL_CheckpointPartialThenRecover(t *testing.T) {
+	cfg := testWALConfig(t)
+	w, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	events := testEvents(5)
+	maxLSN, err := w.Write(events)
+	require.NoError(t, err)
+
+	// Checkpoint just the first 2 events (LSNs 1 and 2 with base at 1).
+	partialLSN := maxLSN - 3 // checkpoint first 2 out of 5
+	require.NoError(t, w.CheckpointLSN(partialLSN))
+	require.NoError(t, w.Close())
+
+	// Recover should get 3 remaining events.
+	w2, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+	defer closeWAL(t, w2)
+
+	recovered, _, err := w2.Recover()
+	require.NoError(t, err)
+	assert.Len(t, recovered, 3, "should recover only un-checkpointed events")
+}
+
+func TestWAL_SegmentPathFormat(t *testing.T) {
+	cfg := testWALConfig(t)
+	w, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+	defer closeWAL(t, w)
+
+	// Verify segment count is at least 1 (the initial segment).
+	assert.GreaterOrEqual(t, w.SegmentCount(), 1)
+
+	// Verify pending bytes includes at least the header.
+	assert.GreaterOrEqual(t, w.PendingBytes(), int64(walHeaderSize))
+}
+
+func TestWAL_CorruptedPayloadLength(t *testing.T) {
+	cfg := testWALConfig(t)
+	w, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	events := testEvents(3)
+	_, err = w.Write(events)
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	// Corrupt the payload length field to exceed walMaxPayload.
+	segs := listWALFiles(t, cfg.Dir)
+	require.NotEmpty(t, segs)
+
+	data, err := os.ReadFile(segs[0])
+	require.NoError(t, err)
+	require.Greater(t, len(data), walHeaderSize+walRecordHead)
+
+	// Set payload length to a huge value in the first record.
+	binary.BigEndian.PutUint32(data[walHeaderSize+8:walHeaderSize+12], walMaxPayload+1)
+	require.NoError(t, os.WriteFile(segs[0], data, 0o600))
+
+	w2, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+	defer closeWAL(t, w2)
+
+	recovered, _, err := w2.Recover()
+	require.NoError(t, err)
+	assert.Empty(t, recovered, "corrupted payload length should stop recovery")
+}
+
+func TestWAL_UnsupportedVersion(t *testing.T) {
+	cfg := testWALConfig(t)
+	w, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	events := testEvents(2)
+	_, err = w.Write(events)
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	// Change the version byte in the first segment.
+	segs := listWALFiles(t, cfg.Dir)
+	require.NotEmpty(t, segs)
+
+	data, err := os.ReadFile(segs[0])
+	require.NoError(t, err)
+	binary.BigEndian.PutUint16(data[4:6], 99) // unsupported version
+	require.NoError(t, os.WriteFile(segs[0], data, 0o600))
+
+	w2, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+	defer closeWAL(t, w2)
+
+	recovered, _, err := w2.Recover()
+	require.NoError(t, err)
+	// The segment with bad version should be skipped.
+	assert.Empty(t, recovered)
+}
+
 // --- helpers ---
 
 func countWALFiles(t *testing.T, dir string) int {

@@ -218,7 +218,7 @@ func (db *DB) GetResolvedConflictsByType(ctx context.Context, orgID uuid.UUID, d
 	rows, err := db.pool.Query(ctx, `
 		SELECT
 			sc.id,
-			sc.decision_type,
+			sc.decision_type_a,
 			sc.winning_decision_id,
 			CASE WHEN sc.winning_decision_id = sc.decision_a_id THEN sc.outcome_a ELSE sc.outcome_b END AS winning_outcome,
 			CASE WHEN sc.winning_decision_id = sc.decision_a_id THEN sc.outcome_b ELSE sc.outcome_a END AS losing_outcome,
@@ -231,7 +231,7 @@ func (db *DB) GetResolvedConflictsByType(ctx context.Context, orgID uuid.UUID, d
 		WHERE sc.org_id = $1
 		  AND sc.status = 'resolved'
 		  AND sc.winning_decision_id IS NOT NULL
-		  AND sc.decision_type = $2
+		  AND sc.decision_type_a = $2
 		ORDER BY sc.resolved_at DESC NULLS LAST
 		LIMIT $3`,
 		orgID, decisionType, limit,

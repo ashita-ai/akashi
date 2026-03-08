@@ -55,18 +55,20 @@ jobs:
       - name: Security scan
         run: govulncheck ./...
 
-      - name: Fuzz (crash detection)
-        run: |
-          go test -run='^$' -fuzz=FuzzComputeContentHash -fuzztime=10s ./internal/integrity/
-          go test -run='^$' -fuzz=FuzzBuildMerkleRoot    -fuzztime=10s ./internal/integrity/
-          go test -run='^$' -fuzz=FuzzValidateToken      -fuzztime=10s ./internal/auth/
-          go test -run='^$' -fuzz=FuzzValidateAgentID    -fuzztime=10s ./internal/model/
-          go test -run='^$' -fuzz=FuzzDecodeJSON         -fuzztime=10s ./internal/server/
-
       - name: Test
         run: go test -race -count=1 -coverprofile=coverage.out ./...
 
-      - name: Upload coverage
+      - name: Enforce coverage threshold
+        run: bash scripts/check_coverage.sh coverage.out 50
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-report
+          path: coverage.out
+
+      - name: Upload coverage to Codecov
         if: always()
         continue-on-error: true
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4

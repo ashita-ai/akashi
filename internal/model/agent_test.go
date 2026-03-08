@@ -160,6 +160,56 @@ func TestIsReservedAgentID(t *testing.T) {
 	}
 }
 
+// ---------- Slugify tests ----------
+
+func TestSlugify(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"simple lowercase", "hello", "hello"},
+		{"mixed case", "Hello World", "hello-world"},
+		{"leading/trailing spaces", "  Hello  ", "hello"},
+		{"multiple spaces", "hello   world", "hello-world"},
+		{"special characters", "Hello, World! How are you?", "hello-world-how-are-you"},
+		{"underscores and hyphens", "my_agent-name", "my-agent-name"},
+		{"numbers preserved", "agent42v2", "agent42v2"},
+		{"leading non-alpha", "---hello", "hello"},
+		{"trailing non-alpha", "hello---", "hello"},
+		{"all non-alpha", "!@#$%", ""},
+		{"empty string", "", ""},
+		{"just spaces", "   ", ""},
+		{"unicode characters", "café résumé", "caf-r-sum"},
+		{"max length truncation", strings.Repeat("a", 100), strings.Repeat("a", 63)},
+		{
+			"truncation trims trailing hyphens",
+			strings.Repeat("ab-", 30), // "ab-ab-ab-..." = 90 chars, truncated at 63
+			strings.TrimRight(strings.Repeat("ab-", 30)[:63], "-"),
+		},
+		{"consecutive special chars collapse", "a!!b@@c##d", "a-b-c-d"},
+		{"dots become hyphens", "agent.v2.final", "agent-v2-final"},
+		{"slashes become hyphens", "path/to/agent", "path-to-agent"},
+		{"tabs and newlines", "hello\tworld\n", "hello-world"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := model.Slugify(tt.input)
+			assert.Equal(t, tt.want, got)
+
+			// Invariant: result never exceeds 63 characters.
+			assert.LessOrEqual(t, len(got), 63, "slug must be at most 63 characters")
+
+			// Invariant: result never starts or ends with a hyphen.
+			if got != "" {
+				assert.NotEqual(t, '-', rune(got[0]), "slug must not start with hyphen")
+				assert.NotEqual(t, '-', rune(got[len(got)-1]), "slug must not end with hyphen")
+			}
+		})
+	}
+}
+
 func TestValidateAgentID_Invalid(t *testing.T) {
 	tests := []struct {
 		name string

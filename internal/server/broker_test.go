@@ -365,3 +365,169 @@ func TestBrokerConcurrentSubscribe(t *testing.T) {
 		t.Fatalf("expected 0 subscribers after cleanup, got %d", remaining)
 	}
 }
+
+func TestNewBrokerInitializesFields(t *testing.T) {
+	// NewBroker requires a real DB for the field assignment but we can test
+	// the struct construction by verifying the broker is usable after creation.
+	// We pass nil for db since we won't call Start (which needs the DB).
+	broker := &Broker{
+		subscribers: make(map[chan []byte]subscriber),
+		logger:      testLogger(),
+	}
+
+	// Verify the broker is functional: subscribe, broadcast, unsubscribe.
+	orgID := uuid.New()
+	ch := broker.Subscribe(orgID)
+
+	broker.mu.RLock()
+	count := len(broker.subscribers)
+	broker.mu.RUnlock()
+	if count != 1 {
+		t.Fatalf("expected 1 subscriber, got %d", count)
+	}
+
+	broker.Unsubscribe(ch)
+
+	broker.mu.RLock()
+	count = len(broker.subscribers)
+	broker.mu.RUnlock()
+	if count != 0 {
+		t.Fatalf("expected 0 subscribers after unsubscribe, got %d", count)
+	}
+}
+
+func TestBrokerBroadcastMultipleOrgs(t *testing.T) {
+	// Verify that broadcasting to one org doesn't affect subscribers in other orgs,
+	// even when multiple orgs have subscribers.
+	org1 := uuid.New()
+	org2 := uuid.New()
+	org3 := uuid.New()
+	broker := &Broker{
+		subscribers: make(map[chan []byte]subscriber),
+		logger:      testLogger(),
+	}
+
+	ch1 := broker.Subscribe(org1)
+	ch2 := broker.Subscribe(org2)
+	ch3 := broker.Subscribe(org3)
+	defer broker.Unsubscribe(ch1)
+	defer broker.Unsubscribe(ch2)
+	defer broker.Unsubscribe(ch3)
+
+	// Broadcast to org2 only.
+	event := formatSSE("akashi_decisions", `{"target":"org2"}`)
+	broker.broadcastToOrg(event, org2, true)
+
+	// Only ch2 should receive it.
+	select {
+	case got := <-ch2:
+		if string(got) != string(event) {
+			t.Errorf("ch2: got %q, want %q", got, event)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("ch2: timed out")
+	}
+
+	// ch1 and ch3 should not receive anything.
+	select {
+	case <-ch1:
+		t.Fatal("ch1 received event meant for org2")
+	case <-ch3:
+		t.Fatal("ch3 received event meant for org2")
+	case <-time.After(50 * time.Millisecond):
+		// Expected.
+	}
+}
+
+func TestBrokerMultipleSubscribersSameOrg(t *testing.T) {
+	orgID := uuid.New()
+	broker := &Broker{
+		subscribers: make(map[chan []byte]subscriber),
+		logger:      testLogger(),
+	}
+
+	const numSubs = 5
+	channels := make([]chan []byte, numSubs)
+	for i := range numSubs {
+		channels[i] = broker.Subscribe(orgID)
+	}
+
+	event := formatSSE("test", `{"multi":"sub"}`)
+	broker.broadcastToOrg(event, orgID, true)
+
+	// All subscribers in the same org should receive the event.
+	for i, ch := range channels {
+		select {
+		case got := <-ch:
+			if string(got) != string(event) {
+				t.Errorf("channel %d: got %q, want %q", i, got, event)
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatalf("channel %d: timed out", i)
+		}
+	}
+
+	// Unsubscribe one in the middle and verify others still work.
+	broker.Unsubscribe(channels[2])
+	event2 := formatSSE("test", `{"after":"unsub"}`)
+	broker.broadcastToOrg(event2, orgID, true)
+
+	for i, ch := range channels {
+		if i == 2 {
+			continue // This one was unsubscribed.
+		}
+		select {
+		case got := <-ch:
+			if string(got) != string(event2) {
+				t.Errorf("channel %d after unsub: got %q, want %q", i, got, event2)
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatalf("channel %d after unsub: timed out", i)
+		}
+	}
+
+	// Clean up remaining.
+	for i, ch := range channels {
+		if i != 2 {
+			broker.Unsubscribe(ch)
+		}
+	}
+}
+
+func TestBrokerDropsEventForFullBuffer(t *testing.T) {
+	orgID := uuid.New()
+	broker := &Broker{
+		subscribers: make(map[chan []byte]subscriber),
+		logger:      testLogger(),
+	}
+
+	ch := broker.Subscribe(orgID)
+	defer broker.Unsubscribe(ch)
+
+	// Fill the channel buffer completely (buffer size is 64).
+	for range cap(ch) {
+		broker.broadcastToOrg(formatSSE("test", "fill"), orgID, true)
+	}
+
+	// The next broadcast should be dropped without blocking.
+	done := make(chan struct{})
+	go func() {
+		broker.broadcastToOrg(formatSSE("test", "overflow"), orgID, true)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// broadcastToOrg returned without blocking — the overflow event was dropped.
+	case <-time.After(1 * time.Second):
+		t.Fatal("broadcastToOrg blocked on full buffer — slow subscriber should not block broadcast")
+	}
+}
+
+func TestFormatSSEEmptyData(t *testing.T) {
+	got := string(formatSSE("ping", ""))
+	want := "event: ping\ndata: \n\n"
+	if got != want {
+		t.Errorf("formatSSE empty data: got %q, want %q", got, want)
+	}
+}
