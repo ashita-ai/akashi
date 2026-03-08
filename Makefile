@@ -1,7 +1,7 @@
 .PHONY: all build build-local build-ui build-with-ui test lint fmt vet clean docker-up docker-down ci security tidy \
        dev-ui migrate-apply migrate-lint migrate-hash migrate-diff migrate-status migrate-validate \
        check-doc-consistency verify-restore reconcile-qdrant reconcile-qdrant-repair \
-       archive-events-dry-run archive-events verify-exit-criteria install-hooks
+       archive-events-dry-run archive-events verify-exit-criteria install-hooks coverage
 
 BINARY := bin/akashi
 GO := go
@@ -38,6 +38,10 @@ dev-ui:
 
 test:
 	$(GO) test $(GOFLAGS) ./... -v
+
+coverage: ## Run tests with coverage and enforce 50% threshold
+	$(GO) test $(GOFLAGS) -coverprofile=coverage.out ./...
+	bash scripts/check_coverage.sh coverage.out 50
 
 # NOTE: CI uses golangci-lint v2.8.0. Install locally with:
 #   go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.8.0
