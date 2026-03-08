@@ -22,11 +22,13 @@ type ConflictLabel struct {
 }
 
 // UpsertConflictLabel inserts or updates a ground truth label for a scored conflict.
-// Returns pgx.ErrNoRows if the scored_conflict_id exists but belongs to a different org.
+// Returns pgx.ErrNoRows if the scored_conflict_id does not exist or belongs to a different org.
 func (db *DB) UpsertConflictLabel(ctx context.Context, cl ConflictLabel) error {
 	tag, err := db.pool.Exec(ctx, `
 		INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at, notes)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		SELECT $1, $2, $3, $4, $5, $6
+		FROM scored_conflicts
+		WHERE id = $1 AND org_id = $2
 		ON CONFLICT (scored_conflict_id)
 		DO UPDATE SET label = EXCLUDED.label,
 		              labeled_by = EXCLUDED.labeled_by,
