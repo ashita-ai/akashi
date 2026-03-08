@@ -542,3 +542,69 @@ func TestPercentileCache_ConcurrentAccess(t *testing.T) {
 		assert.NotNil(t, got, "every org should have been written to at least once")
 	}
 }
+
+// TestPercentileScore_AdditionalEdgeCases covers additional edge cases for PercentileScore.
+func TestPercentileScore_AdditionalEdgeCases(t *testing.T) {
+	tests := []struct {
+		name        string
+		value       float64
+		breakpoints []float64
+		want        float64
+		delta       float64
+	}{
+		{
+			name:        "negative value returns 0",
+			value:       -5,
+			breakpoints: []float64{1, 3, 7, 15},
+			want:        0.0,
+			delta:       0.001,
+		},
+		{
+			name:        "too few breakpoints returns 0",
+			value:       5,
+			breakpoints: []float64{1, 3},
+			want:        0.0,
+			delta:       0.001,
+		},
+		{
+			name:        "value in p25-p50 band",
+			value:       2,
+			breakpoints: []float64{1, 3, 7, 15},
+			want:        0.25 + 0.25*((2.0-1.0)/(3.0-1.0)),
+			delta:       0.001,
+		},
+		{
+			name:        "value way beyond p90 caps at 1.0",
+			value:       1000,
+			breakpoints: []float64{1, 3, 7, 15},
+			want:        1.0,
+			delta:       0.001,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := PercentileScore(tc.value, tc.breakpoints)
+			assert.InDelta(t, tc.want, got, tc.delta,
+				"PercentileScore(%v, %v) = %v, want %v", tc.value, tc.breakpoints, got, tc.want)
+		})
+	}
+}
+
+// TestInterpolatedPercentile_EdgeCases covers the empty-input and single-element paths.
+func TestInterpolatedPercentile_EdgeCases(t *testing.T) {
+	t.Run("empty slice returns 0", func(t *testing.T) {
+		got := interpolatedPercentile(nil, 0.5)
+		assert.Equal(t, 0.0, got)
+	})
+
+	t.Run("single element returns that element", func(t *testing.T) {
+		got := interpolatedPercentile([]float64{42}, 0.5)
+		assert.Equal(t, 42.0, got)
+	})
+
+	t.Run("hi beyond bounds returns last element", func(t *testing.T) {
+		// With p=1.0, rank = 1*(n-1) = 1 for n=2, lo=1, hi=2 >= n=2
+		got := interpolatedPercentile([]float64{10, 20}, 1.0)
+		assert.Equal(t, 20.0, got)
+	})
+}

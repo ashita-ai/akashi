@@ -262,3 +262,223 @@ func TestBlobToFloat32(t *testing.T) {
 		assert.Nil(t, blobToFloat32([]byte{1, 2, 3}))
 	})
 }
+
+func strPtr(s string) *string { return &s }
+
+// insertDecisionFull inserts a decision with all optional filter columns populated.
+func insertDecisionFull(t *testing.T, db *sql.DB, id, orgID uuid.UUID, agentID, decType string, confidence float64, embedding []float32, validFrom time.Time, sessionID, tool, mdl, project *string) {
+	t.Helper()
+	_, err := db.Exec(
+		`INSERT INTO decisions (id, org_id, agent_id, decision_type, outcome, confidence, embedding, valid_from, session_id, tool, model, project)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id.String(), orgID.String(), agentID, decType, "outcome",
+		confidence, float32ToBlob(embedding), validFrom.UTC().Format(time.RFC3339Nano),
+		sessionID, tool, mdl, project,
+	)
+	require.NoError(t, err)
+}
+
+func TestLocalSearcher_FilterByAgentIDs(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+
+	insertDecision(t, db, uuid.New(), orgID, "agent-keep", "arch", []float32{1, 0, 0})
+	insertDecision(t, db, uuid.New(), orgID, "agent-drop", "arch", []float32{1, 0, 0})
+
+	results, err := s.Search(ctx, orgID, []float32{1, 0, 0}, model.QueryFilters{AgentIDs: []string{"agent-keep"}}, 10)
+	require.NoError(t, err)
+	assert.Len(t, results, 1, "only the matching agent_id should be returned")
+}
+
+func TestLocalSearcher_FilterByAgentIDs_Multiple(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+
+	insertDecision(t, db, uuid.New(), orgID, "agent-a", "arch", []float32{1, 0, 0})
+	insertDecision(t, db, uuid.New(), orgID, "agent-b", "arch", []float32{1, 0, 0})
+	insertDecision(t, db, uuid.New(), orgID, "agent-c", "arch", []float32{1, 0, 0})
+
+	results, err := s.Search(ctx, orgID, []float32{1, 0, 0}, model.QueryFilters{AgentIDs: []string{"agent-a", "agent-b"}}, 10)
+	require.NoError(t, err)
+	assert.Len(t, results, 2, "two agents should match the IN filter")
+}
+
+func TestLocalSearcher_FilterByConfidenceMin(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+	now := time.Now()
+
+	insertDecisionFull(t, db, uuid.New(), orgID, "a", "arch", 0.5, []float32{1, 0, 0}, now, nil, nil, nil, nil)
+	insertDecisionFull(t, db, uuid.New(), orgID, "b", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, nil, nil)
+
+	minConf := float32(0.8)
+	results, err := s.Search(ctx, orgID, []float32{1, 0, 0}, model.QueryFilters{ConfidenceMin: &minConf}, 10)
+	require.NoError(t, err)
+	assert.Len(t, results, 1, "only the high-confidence decision should pass the filter")
+}
+
+func TestLocalSearcher_FilterBySessionID(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+	now := time.Now()
+	sid := uuid.New()
+	sidStr := sid.String()
+
+	insertDecisionFull(t, db, uuid.New(), orgID, "a", "arch", 0.9, []float32{1, 0, 0}, now, &sidStr, nil, nil, nil)
+	insertDecisionFull(t, db, uuid.New(), orgID, "b", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, nil, nil)
+
+	results, err := s.Search(ctx, orgID, []float32{1, 0, 0}, model.QueryFilters{SessionID: &sid}, 10)
+	require.NoError(t, err)
+	assert.Len(t, results, 1, "only the matching session_id should be returned")
+}
+
+func TestLocalSearcher_FilterByTool(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+	now := time.Now()
+
+	insertDecisionFull(t, db, uuid.New(), orgID, "a", "arch", 0.9, []float32{1, 0, 0}, now, nil, strPtr("vim"), nil, nil)
+	insertDecisionFull(t, db, uuid.New(), orgID, "b", "arch", 0.9, []float32{1, 0, 0}, now, nil, strPtr("emacs"), nil, nil)
+
+	results, err := s.Search(ctx, orgID, []float32{1, 0, 0}, model.QueryFilters{Tool: strPtr("vim")}, 10)
+	require.NoError(t, err)
+	assert.Len(t, results, 1, "only the matching tool should be returned")
+}
+
+func TestLocalSearcher_FilterByModel(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+	now := time.Now()
+
+	insertDecisionFull(t, db, uuid.New(), orgID, "a", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, strPtr("gpt-4"), nil)
+	insertDecisionFull(t, db, uuid.New(), orgID, "b", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, strPtr("claude"), nil)
+
+	results, err := s.Search(ctx, orgID, []float32{1, 0, 0}, model.QueryFilters{Model: strPtr("claude")}, 10)
+	require.NoError(t, err)
+	assert.Len(t, results, 1, "only the matching model should be returned")
+}
+
+func TestLocalSearcher_FilterByProject(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+	now := time.Now()
+
+	insertDecisionFull(t, db, uuid.New(), orgID, "a", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, nil, strPtr("akashi"))
+	insertDecisionFull(t, db, uuid.New(), orgID, "b", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, nil, strPtr("other"))
+
+	results, err := s.Search(ctx, orgID, []float32{1, 0, 0}, model.QueryFilters{Project: strPtr("akashi")}, 10)
+	require.NoError(t, err)
+	assert.Len(t, results, 1, "only the matching project should be returned")
+}
+
+func TestLocalSearcher_FilterByTimeRange(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+
+	now := time.Now()
+	old := now.Add(-48 * time.Hour)
+	recent := now.Add(-1 * time.Hour)
+
+	insertDecisionFull(t, db, uuid.New(), orgID, "a", "arch", 0.9, []float32{1, 0, 0}, old, nil, nil, nil, nil)
+	insertDecisionFull(t, db, uuid.New(), orgID, "b", "arch", 0.9, []float32{1, 0, 0}, recent, nil, nil, nil, nil)
+
+	from := now.Add(-2 * time.Hour)
+	results, err := s.Search(ctx, orgID, []float32{1, 0, 0}, model.QueryFilters{
+		TimeRange: &model.TimeRange{From: &from},
+	}, 10)
+	require.NoError(t, err)
+	assert.Len(t, results, 1, "only the recent decision should pass the time-from filter")
+
+	to := now.Add(-24 * time.Hour)
+	results2, err := s.Search(ctx, orgID, []float32{1, 0, 0}, model.QueryFilters{
+		TimeRange: &model.TimeRange{To: &to},
+	}, 10)
+	require.NoError(t, err)
+	assert.Len(t, results2, 1, "only the old decision should pass the time-to filter")
+}
+
+func TestLocalSearcher_FindSimilar_EmptyEmbedding(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	results, err := s.FindSimilar(context.Background(), uuid.New(), nil, uuid.New(), nil, 10)
+	require.NoError(t, err)
+	assert.Nil(t, results, "empty embedding should return nil")
+}
+
+func TestLocalSearcher_FindSimilar_WithProject(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+	now := time.Now()
+
+	// One decision in the target project, one in a different project, one with NULL project.
+	d1 := uuid.New()
+	d2 := uuid.New()
+	d3 := uuid.New()
+	insertDecisionFull(t, db, d1, orgID, "a", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, nil, strPtr("myproj"))
+	insertDecisionFull(t, db, d2, orgID, "b", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, nil, strPtr("other"))
+	insertDecisionFull(t, db, d3, orgID, "c", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, nil, nil) // NULL project
+
+	proj := "myproj"
+	results, err := s.FindSimilar(ctx, orgID, []float32{1, 0, 0}, uuid.Nil, &proj, 10)
+	require.NoError(t, err)
+	// Should match d1 (project = myproj) and d3 (project IS NULL), but not d2 (project = other).
+	assert.Len(t, results, 2, "FindSimilar project filter should include matching project and NULL project")
+}
+
+func TestLocalSearcher_DefaultLimit(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+
+	for range 15 {
+		insertDecision(t, db, uuid.New(), orgID, "agent", "arch", []float32{0.5, 0.5, 0.5})
+	}
+
+	// Passing limit=0 should default to 10.
+	results, err := s.Search(ctx, orgID, []float32{1, 0, 0}, model.QueryFilters{}, 0)
+	require.NoError(t, err)
+	assert.Len(t, results, 10, "limit <= 0 should default to 10")
+}
+
+func TestLocalSearcher_CombinedFilters(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+	now := time.Now()
+
+	// Insert decisions with various attributes.
+	insertDecisionFull(t, db, uuid.New(), orgID, "agent-a", "arch", 0.95, []float32{1, 0, 0}, now, nil, strPtr("vim"), strPtr("gpt-4"), strPtr("akashi"))
+	insertDecisionFull(t, db, uuid.New(), orgID, "agent-a", "security", 0.95, []float32{1, 0, 0}, now, nil, strPtr("vim"), strPtr("gpt-4"), strPtr("akashi"))
+	insertDecisionFull(t, db, uuid.New(), orgID, "agent-b", "arch", 0.95, []float32{1, 0, 0}, now, nil, strPtr("vim"), strPtr("gpt-4"), strPtr("akashi"))
+
+	dt := "arch"
+	results, err := s.Search(ctx, orgID, []float32{1, 0, 0}, model.QueryFilters{
+		AgentIDs:     []string{"agent-a"},
+		DecisionType: &dt,
+		Tool:         strPtr("vim"),
+		Model:        strPtr("gpt-4"),
+		Project:      strPtr("akashi"),
+	}, 10)
+	require.NoError(t, err)
+	assert.Len(t, results, 1, "combined filters should narrow to exactly one decision")
+}

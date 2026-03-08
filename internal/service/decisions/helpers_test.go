@@ -940,3 +940,152 @@ func (f fakeEmbedder) EmbedBatch(_ context.Context, texts []string) ([]pgvector.
 }
 
 func (f fakeEmbedder) Dimensions() int { return f.dims }
+
+// ---------------------------------------------------------------------------
+// isDuplicateKey (Service method — delegates to db.IsDuplicateKey)
+// ---------------------------------------------------------------------------
+
+func TestServiceIsDuplicateKey(t *testing.T) {
+	t.Parallel()
+
+	t.Run("delegates to store returning true", func(t *testing.T) {
+		t.Parallel()
+		ms := &mockStoreWithDupKey{isDup: true}
+		svc := &Service{db: ms}
+		assert.True(t, svc.isDuplicateKey(errors.New("some error")))
+	})
+
+	t.Run("delegates to store returning false", func(t *testing.T) {
+		t.Parallel()
+		ms := &mockStoreWithDupKey{isDup: false}
+		svc := &Service{db: ms}
+		assert.False(t, svc.isDuplicateKey(errors.New("some error")))
+	})
+}
+
+// mockStoreWithDupKey overrides IsDuplicateKey to return a controlled value.
+type mockStoreWithDupKey struct {
+	mockStore
+	isDup bool
+}
+
+func (m *mockStoreWithDupKey) IsDuplicateKey(_ error) bool { return m.isDup }
+
+// ---------------------------------------------------------------------------
+// ResolveOrCreateAgent — error paths
+// ---------------------------------------------------------------------------
+
+// mockAgentStore extends mockStore with agent-related methods for ResolveOrCreateAgent tests.
+type mockAgentStore struct {
+	mockStore
+
+	getAgentErr   error
+	getAgentAgent model.Agent
+
+	createAgentErr   error
+	createAgentAgent model.Agent
+
+	createAgentWithAuditErr   error
+	createAgentWithAuditAgent model.Agent
+
+	isDup bool
+}
+
+func (m *mockAgentStore) GetAgentByAgentID(_ context.Context, _ uuid.UUID, _ string) (model.Agent, error) {
+	return m.getAgentAgent, m.getAgentErr
+}
+
+func (m *mockAgentStore) CreateAgent(_ context.Context, agent model.Agent) (model.Agent, error) {
+	return m.createAgentAgent, m.createAgentErr
+}
+
+func (m *mockAgentStore) CreateAgentWithAudit(_ context.Context, agent model.Agent, _ storage.MutationAuditEntry) (model.Agent, error) {
+	return m.createAgentWithAuditAgent, m.createAgentWithAuditErr
+}
+
+func (m *mockAgentStore) IsDuplicateKey(_ error) bool { return m.isDup }
+
+func TestResolveOrCreateAgent_DBLookupFailure(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	ms := &mockAgentStore{
+		getAgentErr: fmt.Errorf("connection refused"),
+	}
+	svc := &Service{db: ms, logger: testLogger()}
+
+	_, err := svc.ResolveOrCreateAgent(ctx, uuid.Nil, "agent-x", model.RoleAdmin, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "connection refused",
+		"non-ErrNotFound lookup errors should propagate directly")
+}
+
+func TestResolveOrCreateAgent_AutoRegisterFailure(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	ms := &mockAgentStore{
+		getAgentErr:    storage.ErrNotFound,
+		createAgentErr: fmt.Errorf("disk full"),
+		isDup:          false,
+	}
+	svc := &Service{db: ms, logger: testLogger()}
+
+	_, err := svc.ResolveOrCreateAgent(ctx, uuid.Nil, "agent-x", model.RoleAdmin, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "auto-register agent")
+	assert.Contains(t, err.Error(), "disk full")
+}
+
+func TestResolveOrCreateAgent_DuplicateKeyRace(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	ms := &mockAgentStore{
+		getAgentErr:    storage.ErrNotFound,
+		createAgentErr: fmt.Errorf("unique constraint violation"),
+		isDup:          true, // simulate concurrent creation race
+	}
+	svc := &Service{db: ms, logger: testLogger()}
+
+	agent, err := svc.ResolveOrCreateAgent(ctx, uuid.Nil, "agent-x", model.RoleAdmin, nil)
+	require.NoError(t, err, "duplicate key race should not return an error")
+	assert.Equal(t, "", agent.AgentID, "should return zero-value agent on dup key race")
+}
+
+func TestResolveOrCreateAgent_WithAudit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	created := model.Agent{AgentID: "agent-new", OrgID: uuid.Nil, Name: "agent-new", Role: model.RoleAgent}
+	ms := &mockAgentStore{
+		getAgentErr:               storage.ErrNotFound,
+		createAgentWithAuditAgent: created,
+	}
+	svc := &Service{db: ms, logger: testLogger()}
+
+	audit := &storage.MutationAuditEntry{}
+	agent, err := svc.ResolveOrCreateAgent(ctx, uuid.Nil, "agent-new", model.RolePlatformAdmin, audit)
+	require.NoError(t, err)
+	assert.Equal(t, "agent-new", agent.AgentID)
+	assert.Equal(t, "agent_auto_registered", audit.Operation,
+		"audit entry should be populated with auto-registration metadata")
+	assert.Equal(t, "agent", audit.ResourceType)
+}
+
+func TestResolveOrCreateAgent_WithAuditFailureDupKey(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	ms := &mockAgentStore{
+		getAgentErr:             storage.ErrNotFound,
+		createAgentWithAuditErr: fmt.Errorf("unique constraint"),
+		isDup:                   true,
+	}
+	svc := &Service{db: ms, logger: testLogger()}
+
+	audit := &storage.MutationAuditEntry{}
+	agent, err := svc.ResolveOrCreateAgent(ctx, uuid.Nil, "agent-dup", model.RoleAdmin, audit)
+	require.NoError(t, err, "dup key via audit path should be treated as success")
+	assert.Equal(t, "", agent.AgentID, "zero-value agent on dup key race")
+}
