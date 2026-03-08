@@ -1043,3 +1043,86 @@ func TestHandleAgentHistory_InvalidAgentID(t *testing.T) {
 	require.Error(t, err, "should error for invalid agent_id in URI")
 	assert.Contains(t, err.Error(), "invalid agent_id")
 }
+
+// ---------- mcpTraceHash tests ----------
+
+func TestMcpTraceHash(t *testing.T) {
+	t.Run("deterministic", func(t *testing.T) {
+		h1, err := mcpTraceHash("agent-1", "architecture", "chose Redis", 0.85, "good cache", nil, nil, nil)
+		require.NoError(t, err)
+		h2, err := mcpTraceHash("agent-1", "architecture", "chose Redis", 0.85, "good cache", nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, h1, h2, "same inputs must produce the same hash")
+	})
+
+	t.Run("valid hex output", func(t *testing.T) {
+		h, err := mcpTraceHash("agent-1", "architecture", "chose Redis", 0.85, "", nil, nil, nil)
+		require.NoError(t, err)
+		assert.Len(t, h, 64, "SHA-256 hex digest is 64 characters")
+		assert.Regexp(t, `^[0-9a-f]{64}$`, h)
+	})
+
+	t.Run("different outcome produces different hash", func(t *testing.T) {
+		h1, err := mcpTraceHash("a", "t", "outcome-1", 0.5, "", nil, nil, nil)
+		require.NoError(t, err)
+		h2, err := mcpTraceHash("a", "t", "outcome-2", 0.5, "", nil, nil, nil)
+		require.NoError(t, err)
+		assert.NotEqual(t, h1, h2)
+	})
+
+	t.Run("different agent produces different hash", func(t *testing.T) {
+		h1, err := mcpTraceHash("agent-a", "t", "o", 0.5, "", nil, nil, nil)
+		require.NoError(t, err)
+		h2, err := mcpTraceHash("agent-b", "t", "o", 0.5, "", nil, nil, nil)
+		require.NoError(t, err)
+		assert.NotEqual(t, h1, h2)
+	})
+
+	t.Run("different confidence produces different hash", func(t *testing.T) {
+		h1, err := mcpTraceHash("a", "t", "o", 0.5, "", nil, nil, nil)
+		require.NoError(t, err)
+		h2, err := mcpTraceHash("a", "t", "o", 0.9, "", nil, nil, nil)
+		require.NoError(t, err)
+		assert.NotEqual(t, h1, h2)
+	})
+
+	t.Run("with precedent_ref", func(t *testing.T) {
+		ref := uuid.New()
+		h1, err := mcpTraceHash("a", "t", "o", 0.5, "", nil, nil, nil)
+		require.NoError(t, err)
+		h2, err := mcpTraceHash("a", "t", "o", 0.5, "", nil, nil, &ref)
+		require.NoError(t, err)
+		assert.NotEqual(t, h1, h2, "precedent_ref should affect the hash")
+	})
+
+	t.Run("with evidence", func(t *testing.T) {
+		ev := []model.TraceEvidence{
+			{SourceType: "document", Content: "RFC 9110"},
+		}
+		h1, err := mcpTraceHash("a", "t", "o", 0.5, "", nil, nil, nil)
+		require.NoError(t, err)
+		h2, err := mcpTraceHash("a", "t", "o", 0.5, "", ev, nil, nil)
+		require.NoError(t, err)
+		assert.NotEqual(t, h1, h2, "evidence should affect the hash")
+	})
+
+	t.Run("with alternatives", func(t *testing.T) {
+		alts := []model.TraceAlternative{
+			{Label: "Redis", Selected: true},
+			{Label: "Memcached", Selected: false},
+		}
+		h1, err := mcpTraceHash("a", "t", "o", 0.5, "", nil, nil, nil)
+		require.NoError(t, err)
+		h2, err := mcpTraceHash("a", "t", "o", 0.5, "", nil, alts, nil)
+		require.NoError(t, err)
+		assert.NotEqual(t, h1, h2, "alternatives should affect the hash")
+	})
+
+	t.Run("empty reasoning vs non-empty", func(t *testing.T) {
+		h1, err := mcpTraceHash("a", "t", "o", 0.5, "", nil, nil, nil)
+		require.NoError(t, err)
+		h2, err := mcpTraceHash("a", "t", "o", 0.5, "some reasoning", nil, nil, nil)
+		require.NoError(t, err)
+		assert.NotEqual(t, h1, h2)
+	})
+}
