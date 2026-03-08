@@ -107,11 +107,11 @@ The OSS distribution uses an in-memory token bucket. Enterprise deployments can 
 
 Set `AKASHI_CONFLICT_PROFILE` to apply a coherent set of threshold defaults. Individual env var overrides always take precedence over the profile.
 
-| Profile | Significance | Early Exit | Claim Topic Sim | Claim Div | Decision Topic Sim | Cross-Encoder | Use case |
-|---------|-------------|------------|-----------------|-----------|-------------------|--------------|----------|
-| `balanced` | 0.30 | 0.25 | 0.60 | 0.15 | 0.70 | 0.50 | General-purpose (default) |
-| `high_precision` | 0.40 | 0.35 | 0.65 | 0.20 | 0.75 | 0.60 | Fewer false positives, may miss marginal real conflicts |
-| `high_recall` | 0.20 | 0.15 | 0.55 | 0.10 | 0.65 | 0.35 | Catches more real conflicts, accepts more noise |
+| Profile | Significance | Early Exit | Claim Topic Sim | Claim Div | Decision Topic Sim | Cross-Encoder | Decay Lambda | Use case |
+|---------|-------------|------------|-----------------|-----------|-------------------|--------------|-------------|----------|
+| `balanced` | 0.30 | 0.25 | 0.60 | 0.15 | 0.70 | 0.50 | 0.01 | General-purpose (default) |
+| `high_precision` | 0.40 | 0.35 | 0.65 | 0.20 | 0.75 | 0.60 | 0.01 | Fewer false positives, may miss marginal real conflicts |
+| `high_recall` | 0.20 | 0.15 | 0.55 | 0.10 | 0.65 | 0.35 | 0.005 | Catches more real conflicts, accepts more noise |
 
 ### Thresholds
 
