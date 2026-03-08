@@ -48,7 +48,7 @@ finishing a task that involved choices, making security or access judgments.
 SKIP: pure execution (formatting, typo fixes), reading/exploring code,
 asking the user a question (no decision yet).
 
-Be honest about confidence. Reference precedents when they influence you.`
+Be honest about confidence — most decisions warrant 0.4-0.8, not 0.9+. Reference precedents when they influence you.`
 
 // Server wraps the MCP server with Akashi's service layer.
 type Server struct {
