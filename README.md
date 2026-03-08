@@ -74,7 +74,49 @@ Assessments feed back into search re-ranking — decisions assessed as correct s
 
 ## Quick start
 
-Two modes. Pick one.
+Three modes. Pick the one that matches your setup.
+
+### Local-lite mode (fastest — no infrastructure needed)
+
+Zero-dependency mode backed by SQLite. Starts in under 3 seconds with no Docker, Postgres,
+Qdrant, or Ollama. All 6 MCP tools work identically to the full server.
+
+```bash
+# Build the local-lite binary
+go build -o bin/akashi-local ./cmd/akashi-local
+
+# Start — creates ~/.akashi/local.db on first run
+./bin/akashi-local
+```
+
+The binary serves MCP over stdio. Add it to Claude Code:
+
+```bash
+claude mcp add akashi-local -- ./bin/akashi-local
+```
+
+Or to Cursor/Windsurf (`~/.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "akashi": {
+      "command": "/path/to/bin/akashi-local"
+    }
+  }
+}
+```
+
+**Limitations:** No multi-tenancy, no SSE subscriptions, no LLM conflict validation
+(uses text-based conflict detection instead), no audit dashboard UI. Ideal for individual
+developers and small teams. When you outgrow it, migrate to the full server — the decision
+data is portable.
+
+**Custom database path:**
+
+```bash
+AKASHI_DB_PATH=/path/to/decisions.db ./bin/akashi-local
+```
 
 ### Complete local stack (recommended for trying Akashi)
 
@@ -154,6 +196,23 @@ AKASHI_JWT_PUBLIC_KEY=/data/jwt_public.pem
 The `docker-compose.yml` already mounts `./data` as `/data` inside the container — no other changes needed. Both PEM files must have `0600` permissions; the server rejects looser modes at startup.
 
 See [Configuration](docs/configuration.md) for all variables.
+
+### Self-serve signup (cloud / shared deployments)
+
+When `AKASHI_SIGNUP_ENABLED=true`, new organizations can register without admin intervention:
+
+```bash
+curl -X POST http://localhost:8080/auth/signup \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "org_name": "My Team",
+    "agent_id": "planner",
+    "email": "team@example.com"
+  }'
+```
+
+Returns an org ID, API key, and a ready-to-paste MCP config snippet. The API key is shown
+**exactly once** — save it immediately. Rate limited to 1 request/second per IP (burst 5).
 
 ### Record your first decision
 
@@ -394,11 +453,15 @@ flowchart TD
 |----------|-------------|
 | [Self-Hosting Guide](docs/self-hosting.md) | Step-by-step deployment: Postgres-only through full stack with Qdrant and Ollama |
 | [Configuration](docs/configuration.md) | All environment variables with defaults and descriptions |
+| [Conflict Detection](docs/conflicts.md) | How conflicts are found, scored, validated, and resolved |
+| [GDPR Erasure](docs/erasure.md) | Tombstone erasure for right-to-be-forgotten compliance |
+| [Quality Scoring](docs/quality-scoring.md) | Completeness scores, outcome scores, and anti-gaming measures |
+| [IDE Hooks](docs/hooks.md) | Claude Code and Cursor integration via hook endpoints |
 | [Subsystems](docs/subsystems.md) | Embedding provider, rate limiting, and Qdrant search pipeline internals |
 | [Technical Deep Dive](docs/technical-deep-dive.md) | Architecture walkthrough, data model, code organization |
 | [Runbook](docs/runbook.md) | Production operations: health checks, monitoring, troubleshooting |
 | [Diagrams](docs/diagrams.md) | Mermaid diagrams of write path, read path, auth flow, schema |
-| [ADRs](adrs/) | Architecture decision records (8 technical decisions) |
+| [ADRs](adrs/) | Architecture decision records (10 technical decisions) |
 | [OpenAPI Spec](api/openapi.yaml) | Full API specification (also served at `GET /openapi.yaml`) |
 
 ## Building from source
