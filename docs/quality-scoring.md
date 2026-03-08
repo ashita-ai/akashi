@@ -12,7 +12,7 @@ It is computed when the decision is created and does not change afterward.
 
 | Factor | Max contribution | Scoring tiers |
 |--------|-----------------|---------------|
-| **Confidence** | 0.15 | 0.15 if mid-range (0.05 < c < 0.95); 0.10 at boundaries (exactly 0.05 or 0.95); 0.0 outside |
+| **Confidence** | 0.15 | 0.15 if mid-range (0.05 < c < 0.95); 0.10 at edges (0 < c ≤ 0.05 or 0.95 ≤ c < 1); 0.0 if exactly 0 or 1 |
 | **Reasoning** | 0.25 | 0.25 if > 100 chars; 0.20 if > 50; 0.10 if > 20; 0.0 otherwise |
 | **Alternatives** | 0.20 | Counts non-selected alternatives with substantive rejection reasons (> 20 chars). 0.20 for ≥ 3; 0.15 for 2; 0.10 for 1; 0.0 for none |
 | **Evidence** | 0.15 | 0.15 for ≥ 2 items; 0.10 for 1; 0.0 for none |
