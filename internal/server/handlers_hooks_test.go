@@ -125,13 +125,17 @@ func TestHandleHookPreToolUse_EditGate(t *testing.T) {
 	})
 
 	t.Run("Write tool also gated", func(t *testing.T) {
+		// Use a fresh handler — the store is global, so a prior Record() in a
+		// sibling subtest would make IsRecent return true for any session ID.
+		fresh := &Handlers{hookChecks: newHookCheckStore()}
 		body := `{"session_id":"sess-new","tool_name":"Write","tool_input":{},"cwd":"/tmp"}`
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/hooks/pre-tool-use", strings.NewReader(body))
-		h.HandleHookPreToolUse(rec, req)
+		fresh.HandleHookPreToolUse(rec, req)
 
 		var resp hookResponse
 		require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+		require.NotNil(t, resp.HookSpecificOutput)
 		assert.Equal(t, "deny", resp.HookSpecificOutput.PermissionDecision)
 	})
 
