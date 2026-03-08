@@ -865,7 +865,7 @@ func computeMissingFields(decisionType, outcome string, confidence float32, reas
 	}
 
 	// Confidence calibration nudge.
-	if confidence >= 0.95 || confidence <= 0 || confidence >= 1 {
+	if confidence >= 0.95 || confidence <= 0.05 {
 		tips = append(tips, "Confidence is at an extreme — values between 0.4 and 0.8 are more informative")
 	}
 
