@@ -214,7 +214,7 @@ func (h *Handlers) handlePostCommit(w http.ResponseWriter, input hookPostToolUse
 		HookSpecificOutput: &hookSpecific{
 			HookEventName: "PostToolUse",
 			Message: fmt.Sprintf(
-				"[akashi] Call akashi_trace with decision_type=\"implementation\", outcome=%q, confidence=0.8",
+				"[akashi] Call akashi_trace with decision_type=\"implementation\", outcome=%q, confidence=0.6",
 				truncateHook(commitMsg, 100),
 			),
 		},

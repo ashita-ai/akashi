@@ -18,6 +18,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/ctxutil"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
+	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/service/tracehealth"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
@@ -100,28 +101,39 @@ TWO REQUIRED FIELDS — everything else is optional:
 - decision_type: A short category (see enum for standard types)
 - outcome: What you decided, stated as a fact ("chose gpt-4o for summarization")
 
-OPTIONAL FIELDS (each improves quality score and future usefulness):
-- confidence: How certain you are (0.0-1.0). Be honest — 0.6 is fine.
+OPTIONAL FIELDS (each improves completeness score and future usefulness):
+- confidence: How certain you are (0.0-1.0). Use this calibration guide:
+    0.3-0.4 = educated guess, limited information, could easily be wrong
+    0.5-0.6 = reasonable choice but real uncertainty remains
+    0.7      = solid decision with good supporting evidence
+    0.8      = strong conviction, have considered alternatives carefully
+    0.9+     = near-certain, would be surprised if this is wrong
+  Most decisions should land between 0.4 and 0.8. If you find yourself
+  always above 0.8, you are probably not being honest about uncertainty.
 - reasoning: Your chain of thought. Why this choice over alternatives?
-- project: The project or app this belongs to (e.g. "akashi", "my-langchain-app").
-  Enables project-scoped queries. Auto-detected from working directory if omitted.
-- precedent_ref: Copy the value of precedent_ref_hint from akashi_check's response.
-  Wires the attribution graph so the audit trail shows how decisions evolved.
-- alternatives: JSON array of options considered and rejected.
+  More detail = higher completeness score. Aim for >100 characters.
+- alternatives: JSON array of options you considered and rejected.
   Format: [{"label":"option description","rejection_reason":"why not chosen"}]
+  Include 2-3 alternatives with substantive rejection reasons (>20 chars each).
+  This is the single biggest driver of completeness after reasoning.
 - evidence: JSON array of supporting facts.
   Format: [{"source_type":"tool_output","content":"test suite passed with 0 failures"},
            {"source_type":"document","content":"ADR-007 requires event sourcing","source_uri":"adrs/007.md"}]
   source_type values: document, api_response, agent_output, user_input, search_result,
                       tool_output, memory, database_query
+  Include at least 2 pieces of evidence to maximize completeness.
+- project: The project or app this belongs to (e.g. "akashi", "my-langchain-app").
+  Enables project-scoped queries. Auto-detected from working directory if omitted.
+- precedent_ref: Copy the value of precedent_ref_hint from akashi_check's response.
+  Wires the attribution graph so the audit trail shows how decisions evolved.
 
 EXAMPLE: After choosing a caching strategy, record decision_type="architecture",
-outcome="chose Redis with 5min TTL for session cache", confidence=0.85,
-reasoning="Redis handles our expected QPS, TTL prevents stale reads",
+outcome="chose Redis with 5min TTL for session cache", confidence=0.7,
+reasoning="Redis handles our expected QPS, TTL prevents stale reads. Memcached lacks native clustering in our stack. In-memory cache won't share across instances.",
 project="my-service",
 precedent_ref="<paste precedent_ref_hint from akashi_check here, if applicable>",
-alternatives='[{"label":"in-memory cache","rejection_reason":"not shared across instances"},{"label":"Memcached","rejection_reason":"no native clustering in our stack"}]',
-evidence='[{"source_type":"tool_output","content":"load test showed 8k req/s with Redis, 2k with DB"}]'
+alternatives='[{"label":"in-memory cache","rejection_reason":"not shared across instances, would require sticky sessions"},{"label":"Memcached","rejection_reason":"no native clustering in our stack, adds operational overhead"}]',
+evidence='[{"source_type":"tool_output","content":"load test showed 8k req/s with Redis, 2k with DB"},{"source_type":"document","content":"ADR-003 mandates shared-nothing architecture"}]'
 
 TRACE AFTER: completing a review, choosing an approach, creating issues/PRs,
 finishing a task with choices, making security or access judgments.
@@ -141,7 +153,7 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 				mcplib.Required(),
 			),
 			mcplib.WithNumber("confidence",
-				mcplib.Description("How certain you are about this decision (0.0 = guessing, 1.0 = certain). Defaults to 0.7 if omitted."),
+				mcplib.Description("How certain you are (0.0-1.0). Most decisions should be 0.4-0.8. See calibration guide above. Defaults to 0.5 if omitted."),
 				mcplib.Min(0),
 				mcplib.Max(1),
 			),
@@ -522,7 +534,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	// Normalize decision_type to lowercase for consistent storage and retrieval.
 	decisionType := strings.ToLower(strings.TrimSpace(request.GetString("decision_type", "")))
 	outcome := request.GetString("outcome", "")
-	confidence := float32(request.GetFloat("confidence", 0.7))
+	confidence := float32(request.GetFloat("confidence", 0.5))
 	reasoning := request.GetString("reasoning", "")
 
 	// Default agent_id to the caller's authenticated identity.
@@ -772,11 +784,28 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		return errorResult(fmt.Sprintf("failed to record decision: %v", err)), nil
 	}
 
-	resultData, _ := json.Marshal(map[string]any{
-		"run_id":      result.RunID,
-		"decision_id": result.DecisionID,
-		"status":      "recorded",
+	// Compute completeness score and missing-field hints for agent feedback.
+	completenessScore := quality.Score(model.TraceDecision{
+		DecisionType: decisionType,
+		Outcome:      outcome,
+		Confidence:   confidence,
+		Reasoning:    reasoningPtr,
+		Alternatives: alternatives,
+		Evidence:     evidence,
 	})
+	missing := computeMissingFields(decisionType, outcome, confidence, reasoningPtr, alternatives, evidence)
+
+	responseMap := map[string]any{
+		"run_id":             result.RunID,
+		"decision_id":        result.DecisionID,
+		"status":             "recorded",
+		"completeness_score": fmt.Sprintf("%.0f%%", completenessScore*100),
+	}
+	if len(missing) > 0 {
+		responseMap["completeness_tips"] = missing
+	}
+
+	resultData, _ := json.Marshal(responseMap)
 
 	if idemOwned {
 		if compErr := s.db.CompleteIdempotency(ctx, orgID, agentID, "MCP:akashi_trace", idemKey, 200, json.RawMessage(resultData)); compErr != nil {
@@ -798,6 +827,59 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 			mcplib.TextContent{Type: "text", Text: string(resultData)},
 		},
 	}, nil
+}
+
+// computeMissingFields returns actionable tips for improving trace completeness.
+// Each tip tells the agent exactly what to add next time. Tips are ordered by
+// completeness score impact (highest first).
+func computeMissingFields(decisionType, outcome string, confidence float32, reasoning *string, alternatives []model.TraceAlternative, evidence []model.TraceEvidence) []string {
+	var tips []string
+
+	// Reasoning: biggest single factor (up to 0.25).
+	if reasoning == nil || len(strings.TrimSpace(*reasoning)) <= 100 {
+		if reasoning == nil || len(strings.TrimSpace(*reasoning)) <= 20 {
+			tips = append(tips, "Add reasoning (>100 chars) explaining why you chose this over alternatives (+25%)")
+		} else {
+			tips = append(tips, "Expand reasoning to >100 chars for full credit (+5-15%)")
+		}
+	}
+
+	// Alternatives with substantive rejection reasons (up to 0.20).
+	substantive := 0
+	for _, alt := range alternatives {
+		if !alt.Selected && alt.RejectionReason != nil && len(strings.TrimSpace(*alt.RejectionReason)) > 20 {
+			substantive++
+		}
+	}
+	if substantive < 3 {
+		tips = append(tips, fmt.Sprintf("Add %d more rejected alternatives with rejection_reason >20 chars (+%d%%)", 3-substantive, (3-substantive)*5))
+	}
+
+	// Evidence (up to 0.15).
+	if len(evidence) < 2 {
+		if len(evidence) == 0 {
+			tips = append(tips, "Add 2+ evidence items (source_type + content) to support your decision (+15%)")
+		} else {
+			tips = append(tips, "Add 1 more evidence item for full credit (+5%)")
+		}
+	}
+
+	// Confidence calibration nudge.
+	if confidence >= 0.95 || confidence <= 0.05 {
+		tips = append(tips, "Confidence is at an extreme — values between 0.4 and 0.8 are more informative")
+	}
+
+	// Standard decision type (0.10).
+	if !quality.StandardDecisionTypes[decisionType] {
+		tips = append(tips, "Use a standard decision_type (architecture, security, trade_off, etc.) for +10%")
+	}
+
+	// Substantive outcome (0.05).
+	if len(strings.TrimSpace(outcome)) <= 20 {
+		tips = append(tips, "Make outcome more specific (>20 chars) for +5%")
+	}
+
+	return tips
 }
 
 // mcpTraceHash computes a deterministic SHA-256 hash of the trace parameters
