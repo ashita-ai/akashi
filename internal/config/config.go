@@ -422,6 +422,7 @@ func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 
 // envStrSlice reads a comma-separated env var into a string slice.
 // Returns fallback if the env var is empty or unset.
+
 // conflictProfileValues holds the default threshold values for a conflict
 // detection profile. Individual env var overrides always take precedence.
 type conflictProfileValues struct {
