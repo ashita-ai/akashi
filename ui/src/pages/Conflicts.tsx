@@ -1,6 +1,6 @@
 import { Link, useSearchParams } from "react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { listConflictGroups, patchConflict, listAgents, ApiError } from "@/lib/api";
+import { listConflictGroups, patchConflict, getConflictDetail, listAgents, ApiError } from "@/lib/api";
 import type { ConflictGroup, DecisionConflict } from "@/types/api";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge, decisionTypeBadgeVariant } from "@/components/ui/badge";
@@ -31,6 +31,7 @@ import {
   ChevronRight,
   ChevronUp,
   Eye,
+  Lightbulb,
   Swords,
   XCircle,
 } from "lucide-react";
@@ -116,6 +117,8 @@ function ConflictPairRow({
   repeatedRight: boolean;
   onAdjudicate: (c: DecisionConflict) => void;
 }) {
+  const [showReasoning, setShowReasoning] = useState(false);
+
   // Normalise: always show groupAgentA on the left.
   const flip = c.agent_a !== groupAgentA;
   const left = {
@@ -123,6 +126,7 @@ function ConflictPairRow({
     decidedAt: flip ? c.decided_at_b : c.decided_at_a,
     confidence: flip ? c.confidence_b : c.confidence_a,
     outcome: flip ? c.outcome_b : c.outcome_a,
+    reasoning: flip ? c.reasoning_b : c.reasoning_a,
     runId: flip ? c.run_b : c.run_a,
   };
   const right = {
@@ -130,8 +134,11 @@ function ConflictPairRow({
     decidedAt: flip ? c.decided_at_a : c.decided_at_b,
     confidence: flip ? c.confidence_a : c.confidence_b,
     outcome: flip ? c.outcome_a : c.outcome_b,
+    reasoning: flip ? c.reasoning_a : c.reasoning_b,
     runId: flip ? c.run_a : c.run_b,
   };
+
+  const hasReasoning = !!(left.reasoning || right.reasoning);
 
   const canAdjudicate = c.status === "open" || c.status === "acknowledged";
 
@@ -166,6 +173,11 @@ function ConflictPairRow({
         <p className={`leading-snug ${repeated ? "text-muted-foreground" : "text-foreground/80"}`}>
           {truncate(side.outcome, 120)}
         </p>
+        {showReasoning && side.reasoning && (
+          <p className="mt-1.5 text-[11px] text-muted-foreground leading-snug italic border-l-2 border-muted pl-2">
+            {truncate(side.reasoning, 200)}
+          </p>
+        )}
       </Link>
     );
   }
@@ -180,17 +192,38 @@ function ConflictPairRow({
         <Side side={right} repeated={repeatedRight} />
       </div>
 
-      {canAdjudicate && (
-        <div className="flex justify-end border-t px-3 py-1.5 bg-muted/20">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 text-[10px]"
-            onClick={() => onAdjudicate(c)}
-          >
-            <Eye className="h-3 w-3 mr-1" />
-            Adjudicate this pair
-          </Button>
+      {(canAdjudicate || hasReasoning) && (
+        <div className="flex justify-between border-t px-3 py-1.5 bg-muted/20">
+          <div>
+            {hasReasoning && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 text-[10px]"
+                onClick={() => setShowReasoning(!showReasoning)}
+              >
+                {showReasoning ? (
+                  <ChevronUp className="h-3 w-3 mr-1" />
+                ) : (
+                  <ChevronDown className="h-3 w-3 mr-1" />
+                )}
+                {showReasoning ? "Hide reasoning" : "Show reasoning"}
+              </Button>
+            )}
+          </div>
+          <div>
+            {canAdjudicate && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 text-[10px]"
+                onClick={() => onAdjudicate(c)}
+              >
+                <Eye className="h-3 w-3 mr-1" />
+                Adjudicate this pair
+              </Button>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -393,6 +426,14 @@ export default function Conflicts() {
   const [adjudicateNote, setAdjudicateNote] = useState("");
   const [adjudicateWinner, setAdjudicateWinner] = useState<string | null>(null);
   const [adjudicateError, setAdjudicateError] = useState<string | null>(null);
+
+  const { data: conflictDetail, isFetching: isLoadingDetail } = useQuery({
+    queryKey: ["conflict-detail", adjudicateTarget?.id],
+    queryFn: () => getConflictDetail(adjudicateTarget!.id),
+    enabled: adjudicateTarget !== null,
+    staleTime: 30_000,
+  });
+  const recommendation = conflictDetail?.recommendation ?? null;
 
   const { data, isPending } = useQuery({
     queryKey: ["conflict-groups", page, agentFilter, statusFilter],
@@ -617,6 +658,78 @@ export default function Conflicts() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
+            {/* Recommendation */}
+            {isLoadingDetail && (
+              <div className="rounded-md border border-dashed p-3">
+                <Skeleton className="h-4 w-48 mb-2" />
+                <Skeleton className="h-3 w-full" />
+              </div>
+            )}
+            {recommendation && (
+              <div className="rounded-md border bg-primary/5 p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Lightbulb className="h-4 w-4 text-primary shrink-0" />
+                  <span className="text-sm font-medium">Recommendation</span>
+                  <Badge variant="secondary" className="text-[10px] ml-auto">
+                    {(recommendation.confidence * 100).toFixed(0)}% confidence
+                  </Badge>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Suggested winner:{" "}
+                  <Badge variant="outline" className="font-mono text-[10px]">
+                    {recommendation.suggested_winner === adjudicateTarget?.decision_a_id
+                      ? adjudicateTarget?.agent_a
+                      : adjudicateTarget?.agent_b}
+                  </Badge>
+                </p>
+                <ul className="text-xs text-muted-foreground space-y-0.5 list-disc pl-4">
+                  {recommendation.reasons.map((reason, i) => (
+                    <li key={i}>{reason}</li>
+                  ))}
+                </ul>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-6 text-[10px] mt-1"
+                  onClick={() => {
+                    setAdjudicateWinner(recommendation.suggested_winner);
+                    setAdjudicateStatus("resolved");
+                  }}
+                >
+                  <Check className="h-3 w-3 mr-1" />
+                  Accept recommendation
+                </Button>
+              </div>
+            )}
+
+            {/* Reasoning context */}
+            {adjudicateTarget &&
+              (adjudicateTarget.reasoning_a || adjudicateTarget.reasoning_b) && (
+                <div className="rounded-md border p-3 space-y-2">
+                  <span className="text-xs font-medium text-muted-foreground">Reasoning context</span>
+                  {adjudicateTarget.reasoning_a && (
+                    <div>
+                      <Badge variant="outline" className="font-mono text-[10px] mb-1">
+                        {adjudicateTarget.agent_a}
+                      </Badge>
+                      <p className="text-xs text-muted-foreground italic leading-snug border-l-2 border-muted pl-2">
+                        {truncate(adjudicateTarget.reasoning_a, 300)}
+                      </p>
+                    </div>
+                  )}
+                  {adjudicateTarget.reasoning_b && (
+                    <div>
+                      <Badge variant="outline" className="font-mono text-[10px] mb-1">
+                        {adjudicateTarget.agent_b}
+                      </Badge>
+                      <p className="text-xs text-muted-foreground italic leading-snug border-l-2 border-muted pl-2">
+                        {truncate(adjudicateTarget.reasoning_b, 300)}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
             <div className="space-y-2">
               <label className="text-sm font-medium">Action</label>
               <div className="flex gap-2">
