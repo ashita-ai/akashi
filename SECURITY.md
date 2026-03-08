@@ -4,7 +4,7 @@
 
 If you discover a security vulnerability in Akashi, please report it responsibly.
 
-**Email:** security@ashita.ai
+**Email:** evan.volgas@gmail.com
 
 Do not file public GitHub issues for security vulnerabilities. Include a description of the vulnerability, steps to reproduce, and the potential impact. We will acknowledge receipt within 48 hours and provide an initial assessment within 5 business days.
 
