@@ -178,6 +178,18 @@ export interface DecisionConflict {
   resolution_note: string | null;
 }
 
+// Recommendation (computed by GET /v1/conflicts/{id})
+export interface Recommendation {
+  suggested_winner: string;
+  reasons: string[];
+  confidence: number;
+}
+
+// ConflictDetail extends DecisionConflict with lazily-computed fields.
+export interface ConflictDetail extends DecisionConflict {
+  recommendation?: Recommendation;
+}
+
 // Search
 export interface SearchResult {
   decision: Decision;

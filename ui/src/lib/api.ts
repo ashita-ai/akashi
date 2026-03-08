@@ -7,6 +7,7 @@ import type {
   AgentEvent,
   AgentsList,
   AgentStats,
+  ConflictDetail,
   CreateAgentRequest,
   CreateGrantRequest,
   Decision,
@@ -339,6 +340,11 @@ export async function getDecisionConflicts(
 ): Promise<{ conflicts: DecisionConflict[]; total: number }> {
   const env = await requestListEnvelope<DecisionConflict>(`/v1/decisions/${id}/conflicts`);
   return { conflicts: env.data, total: env.total };
+}
+
+// Single conflict with recommendation
+export async function getConflictDetail(id: string): Promise<ConflictDetail> {
+  return request<ConflictDetail>(`/v1/conflicts/${id}`);
 }
 
 // Patch conflict status
