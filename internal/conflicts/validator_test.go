@@ -1283,3 +1283,262 @@ func TestHasLLMValidator(t *testing.T) {
 	scorer = NewScorer(nil, slog.Default(), 0.3, &mockValidator{}, 0, 0)
 	assert.True(t, scorer.HasLLMValidator(), "mock validator is not noop")
 }
+
+// ---------- Scorer.Validator accessor ----------
+
+func TestScorerValidatorAccessor(t *testing.T) {
+	t.Run("returns noop when nil validator passed", func(t *testing.T) {
+		scorer := NewScorer(nil, slog.Default(), 0.3, nil, 0, 0)
+		v := scorer.Validator()
+		require.NotNil(t, v)
+		_, isNoop := v.(NoopValidator)
+		assert.True(t, isNoop, "nil validator should default to NoopValidator")
+	})
+
+	t.Run("returns the configured validator", func(t *testing.T) {
+		mv := &mockValidator{}
+		scorer := NewScorer(nil, slog.Default(), 0.3, mv, 0, 0)
+		v := scorer.Validator()
+		assert.Equal(t, mv, v, "should return the same validator instance")
+	})
+}
+
+// ---------- validatorTypeLabel ----------
+
+func TestValidatorTypeLabel(t *testing.T) {
+	tests := []struct {
+		name     string
+		v        Validator
+		expected string
+	}{
+		{"noop", NoopValidator{}, "noop"},
+		{"ollama", NewOllamaValidator("http://localhost:11434", "test-model", 0), "ollama"},
+		{"openai", NewOpenAIValidator("fake-key", "gpt-4o-mini"), "openai"},
+		{"custom mock", &mockValidator{}, "custom"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, validatorTypeLabel(tt.v))
+		})
+	}
+}
+
+// ---------- OllamaValidator.Warmup ----------
+
+func TestOllamaValidator_Warmup_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/api/chat", r.URL.Path)
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ollamaChatResponse{
+			Message: struct {
+				Content string `json:"content"`
+			}{Content: "hi"},
+		})
+	}))
+	defer srv.Close()
+
+	v := NewOllamaValidator(srv.URL, "test-model", 0)
+	err := v.Warmup(context.Background())
+	require.NoError(t, err)
+}
+
+func TestOllamaValidator_Warmup_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "model not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	v := NewOllamaValidator(srv.URL, "nonexistent-model", 0)
+	err := v.Warmup(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "status 404")
+}
+
+func TestOllamaValidator_Warmup_ConnectionRefused(t *testing.T) {
+	v := NewOllamaValidator("http://127.0.0.1:1", "test-model", 0)
+	err := v.Warmup(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "request")
+}
+
+// ---------- OllamaValidator.ollamaOpts ----------
+
+func TestOllamaValidator_OllamaOpts(t *testing.T) {
+	t.Run("zero threads returns nil", func(t *testing.T) {
+		v := NewOllamaValidator("http://localhost:11434", "test", 0)
+		assert.Nil(t, v.ollamaOpts())
+	})
+
+	t.Run("positive threads returns options", func(t *testing.T) {
+		v := NewOllamaValidator("http://localhost:11434", "test", 4)
+		opts := v.ollamaOpts()
+		require.NotNil(t, opts)
+		assert.Equal(t, 4, opts.NumThread)
+	})
+}
+
+// ---------- OllamaValidator.Validate via httptest ----------
+
+func TestOllamaValidator_Validate_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ollamaChatResponse{
+			Message: struct {
+				Content string `json:"content"`
+			}{Content: "RELATIONSHIP: contradiction\nCATEGORY: strategic\nSEVERITY: high\nEXPLANATION: Direct conflict."},
+		})
+	}))
+	defer srv.Close()
+
+	v := NewOllamaValidator(srv.URL, "test-model", 2)
+	result, err := v.Validate(context.Background(), ValidateInput{
+		OutcomeA: "use Redis", OutcomeB: "use Memcached",
+		TypeA: "architecture", TypeB: "architecture",
+		AgentA: "a", AgentB: "b",
+		CreatedA: time.Now(), CreatedB: time.Now(),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "contradiction", result.Relationship)
+	assert.True(t, result.IsConflict())
+	assert.Equal(t, "strategic", result.Category)
+	assert.Equal(t, "high", result.Severity)
+}
+
+func TestOllamaValidator_Validate_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	v := NewOllamaValidator(srv.URL, "test-model", 0)
+	_, err := v.Validate(context.Background(), ValidateInput{
+		OutcomeA: "a", OutcomeB: "b",
+		TypeA: "t", TypeB: "t",
+		AgentA: "x", AgentB: "y",
+		CreatedA: time.Now(), CreatedB: time.Now(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "status 500")
+}
+
+// ---------- OllamaExtractor via httptest ----------
+
+func TestOllamaExtractor_ExtractClaims_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ollamaChatResponse{
+			Message: struct {
+				Content string `json:"content"`
+			}{Content: `[{"text":"The outbox has no deadletter mechanism","category":"finding"}]`},
+		})
+	}))
+	defer srv.Close()
+
+	e := NewOllamaExtractor(srv.URL, "test-model", 0)
+	claims, err := e.ExtractClaims(context.Background(), "The outbox has no deadletter mechanism and this is a problem.")
+	require.NoError(t, err)
+	require.Len(t, claims, 1)
+	assert.Equal(t, "finding", claims[0].Category)
+}
+
+func TestOllamaExtractor_ExtractClaims_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "model not loaded", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	e := NewOllamaExtractor(srv.URL, "test-model", 0)
+	_, err := e.ExtractClaims(context.Background(), "some outcome text")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "status 500")
+}
+
+func TestOllamaExtractor_ExtractClaims_MalformedResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ollamaChatResponse{
+			Message: struct {
+				Content string `json:"content"`
+			}{Content: "not valid json at all"},
+		})
+	}))
+	defer srv.Close()
+
+	e := NewOllamaExtractor(srv.URL, "test-model", 0)
+	_, err := e.ExtractClaims(context.Background(), "some outcome")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse JSON")
+}
+
+func TestOllamaExtractor_DefaultURL(t *testing.T) {
+	e := NewOllamaExtractor("", "test-model", 0)
+	assert.Equal(t, "http://localhost:11434", e.baseURL)
+}
+
+// ---------- OllamaValidator.DefaultURL ----------
+
+func TestOllamaValidator_DefaultURL(t *testing.T) {
+	v := NewOllamaValidator("", "test-model", 0)
+	assert.Equal(t, "http://localhost:11434", v.baseURL)
+}
+
+// ---------- NewOpenAIValidator default model ----------
+
+func TestNewOpenAIValidator_DefaultModel(t *testing.T) {
+	v := NewOpenAIValidator("fake-key", "")
+	assert.Equal(t, "gpt-4o-mini", v.model)
+}
+
+// ---------- NewOpenAIExtractor default model ----------
+
+func TestNewOpenAIExtractor_DefaultModel(t *testing.T) {
+	e := NewOpenAIExtractor("fake-key", "")
+	assert.Equal(t, "gpt-4o-mini", e.model)
+}
+
+// ---------- scoreRecency: A is more recent than B ----------
+
+func TestScoreRecency_FavorsA(t *testing.T) {
+	c := model.DecisionConflict{
+		DecidedAtA: time.Now().Add(-1 * time.Hour),
+		DecidedAtB: time.Now().Add(-7 * 24 * time.Hour),
+	}
+	r, ok := scoreRecency(c)
+	require.True(t, ok)
+	assert.Less(t, r.score, 0.0, "negative score means favors A")
+	assert.Contains(t, r.reason, "Decision A")
+	assert.Contains(t, r.reason, "more recent")
+}
+
+// ---------- scoreRevisionDepth: A has more revision depth ----------
+
+func TestScoreRevisionDepth_FavorsA(t *testing.T) {
+	input := RecommendationInput{
+		Conflict:       baseConflict(),
+		RevisionDepthA: 3,
+		RevisionDepthB: 0,
+	}
+	r, ok := scoreRevisionDepth(input)
+	require.True(t, ok)
+	assert.Less(t, r.score, 0.0, "negative score means favors A")
+	assert.Contains(t, r.reason, "Decision A")
+}
+
+// ---------- scoreWinRate: favors B ----------
+
+func TestScoreWinRate_FavorsB(t *testing.T) {
+	c := baseConflict()
+	input := RecommendationInput{
+		Conflict:  c,
+		WinRateA:  0.30,
+		WinRateB:  0.80,
+		WinCountA: 5,
+		WinCountB: 5,
+	}
+	r, ok := scoreWinRate(input)
+	require.True(t, ok)
+	assert.Greater(t, r.score, 0.0, "positive score means favors B")
+	assert.Contains(t, r.reason, c.AgentB)
+}

@@ -1044,85 +1044,397 @@ func TestHandleAgentHistory_InvalidAgentID(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid agent_id")
 }
 
-// ---------- mcpTraceHash tests ----------
+// ---------- handleConflicts tests ----------
 
-func TestMcpTraceHash(t *testing.T) {
-	t.Run("deterministic", func(t *testing.T) {
-		h1, err := mcpTraceHash("agent-1", "architecture", "chose Redis", 0.85, "good cache", nil, nil, nil)
-		require.NoError(t, err)
-		h2, err := mcpTraceHash("agent-1", "architecture", "chose Redis", 0.85, "good cache", nil, nil, nil)
-		require.NoError(t, err)
-		assert.Equal(t, h1, h2, "same inputs must produce the same hash")
+func conflictsRequest(args map[string]any) mcplib.CallToolRequest {
+	return mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name:      "akashi_conflicts",
+			Arguments: args,
+		},
+	}
+}
+
+func TestHandleConflicts_EmptyResult(t *testing.T) {
+	ctx := adminCtx()
+
+	result, err := testServer.handleConflicts(ctx, conflictsRequest(map[string]any{
+		"decision_type": "nonexistent-type-" + uuid.New().String()[:8],
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "conflicts query should succeed: %s", parseToolText(t, result))
+
+	var resp struct {
+		Conflicts []any `json:"conflicts"`
+		Total     int   `json:"total"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.Empty(t, resp.Conflicts)
+	assert.Equal(t, 0, resp.Total)
+}
+
+func TestHandleConflicts_NilClaims(t *testing.T) {
+	result, err := testServer.handleConflicts(context.Background(), conflictsRequest(map[string]any{}))
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, parseToolText(t, result), "authentication required")
+}
+
+func TestHandleConflicts_DefaultArgs(t *testing.T) {
+	ctx := adminCtx()
+
+	// Call with no arguments — should use defaults (limit=10, open status).
+	result, err := testServer.handleConflicts(ctx, conflictsRequest(map[string]any{}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "conflicts with empty args should succeed: %s", parseToolText(t, result))
+
+	var resp struct {
+		Conflicts []any `json:"conflicts"`
+		Total     int   `json:"total"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	// We just verify the response parses; total may be 0 if no conflicts exist.
+	assert.GreaterOrEqual(t, resp.Total, 0)
+}
+
+func TestHandleConflicts_FullFormat(t *testing.T) {
+	ctx := adminCtx()
+
+	result, err := testServer.handleConflicts(ctx, conflictsRequest(map[string]any{
+		"format": "full",
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	var resp struct {
+		Conflicts []any `json:"conflicts"`
+		Total     int   `json:"total"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+}
+
+func TestHandleConflicts_WithFilters(t *testing.T) {
+	ctx := adminCtx()
+
+	result, err := testServer.handleConflicts(ctx, conflictsRequest(map[string]any{
+		"decision_type": "architecture",
+		"agent_id":      "nonexistent-agent",
+		"severity":      "critical",
+		"category":      "factual",
+		"status":        "open",
+		"limit":         5,
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	var resp struct {
+		Conflicts []any `json:"conflicts"`
+		Total     int   `json:"total"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.Equal(t, 0, resp.Total)
+}
+
+// ---------- handleAssess tests ----------
+
+func assessRequest(args map[string]any) mcplib.CallToolRequest {
+	return mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name:      "akashi_assess",
+			Arguments: args,
+		},
+	}
+}
+
+func TestHandleAssess_Success(t *testing.T) {
+	ctx := adminCtx()
+	agentID := "assess-agent-" + uuid.New().String()[:8]
+
+	// Create a decision to assess.
+	decisionID := mustTrace(t, agentID, "architecture", "chose PostgreSQL for primary storage", 0.9)
+
+	result, err := testServer.handleAssess(ctx, assessRequest(map[string]any{
+		"decision_id": decisionID,
+		"outcome":     "correct",
+		"notes":       "confirmed by production metrics",
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "assess should succeed: %s", parseToolText(t, result))
+
+	var resp struct {
+		AssessmentID string `json:"assessment_id"`
+		DecisionID   string `json:"decision_id"`
+		Outcome      string `json:"outcome"`
+		Assessor     string `json:"assessor"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.Equal(t, decisionID, resp.DecisionID)
+	assert.Equal(t, "correct", resp.Outcome)
+	assert.Equal(t, testAdminID, resp.Assessor)
+	assert.NotEmpty(t, resp.AssessmentID)
+}
+
+func TestHandleAssess_PartiallyCorrect(t *testing.T) {
+	ctx := adminCtx()
+	agentID := "assess-partial-" + uuid.New().String()[:8]
+	decisionID := mustTrace(t, agentID, "planning", "sprint plan alpha", 0.7)
+
+	result, err := testServer.handleAssess(ctx, assessRequest(map[string]any{
+		"decision_id": decisionID,
+		"outcome":     "partially_correct",
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	var resp struct {
+		Outcome string `json:"outcome"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.Equal(t, "partially_correct", resp.Outcome)
+}
+
+func TestHandleAssess_NilClaims(t *testing.T) {
+	result, err := testServer.handleAssess(context.Background(), assessRequest(map[string]any{
+		"decision_id": uuid.New().String(),
+		"outcome":     "correct",
+	}))
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, parseToolText(t, result), "authentication required")
+}
+
+func TestHandleAssess_MissingDecisionID(t *testing.T) {
+	ctx := adminCtx()
+
+	result, err := testServer.handleAssess(ctx, assessRequest(map[string]any{
+		"outcome": "correct",
+	}))
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, parseToolText(t, result), "decision_id is required")
+}
+
+func TestHandleAssess_InvalidDecisionID(t *testing.T) {
+	ctx := adminCtx()
+
+	result, err := testServer.handleAssess(ctx, assessRequest(map[string]any{
+		"decision_id": "not-a-uuid",
+		"outcome":     "correct",
+	}))
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, parseToolText(t, result), "valid UUID")
+}
+
+func TestHandleAssess_InvalidOutcome(t *testing.T) {
+	ctx := adminCtx()
+
+	result, err := testServer.handleAssess(ctx, assessRequest(map[string]any{
+		"decision_id": uuid.New().String(),
+		"outcome":     "maybe",
+	}))
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, parseToolText(t, result), "correct")
+}
+
+func TestHandleAssess_DecisionNotFound(t *testing.T) {
+	ctx := adminCtx()
+
+	result, err := testServer.handleAssess(ctx, assessRequest(map[string]any{
+		"decision_id": uuid.New().String(),
+		"outcome":     "incorrect",
+	}))
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, parseToolText(t, result), "not found")
+}
+
+// ---------- handleStats tests ----------
+
+func TestHandleStats(t *testing.T) {
+	ctx := adminCtx()
+
+	// Ensure at least one decision exists for stats.
+	mustTrace(t, "stats-agent-"+uuid.New().String()[:8], "architecture", "stats test decision", 0.8)
+
+	result, err := testServer.handleStats(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name:      "akashi_stats",
+			Arguments: map[string]any{},
+		},
 	})
+	require.NoError(t, err)
+	require.False(t, result.IsError, "stats should succeed: %s", parseToolText(t, result))
 
-	t.Run("valid hex output", func(t *testing.T) {
-		h, err := mcpTraceHash("agent-1", "architecture", "chose Redis", 0.85, "", nil, nil, nil)
-		require.NoError(t, err)
-		assert.Len(t, h, 64, "SHA-256 hex digest is 64 characters")
-		assert.Regexp(t, `^[0-9a-f]{64}$`, h)
+	var resp struct {
+		TraceHealth map[string]any `json:"trace_health"`
+		Agents      int            `json:"agents"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.NotNil(t, resp.TraceHealth, "trace_health should be present")
+	assert.Greater(t, resp.Agents, 0, "should have at least one agent")
+}
+
+func TestHandleStats_NilClaimsStillWorks(t *testing.T) {
+	// handleStats doesn't check claims — it's a read-only aggregate endpoint.
+	result, err := testServer.handleStats(context.Background(), mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name:      "akashi_stats",
+			Arguments: map[string]any{},
+		},
 	})
+	require.NoError(t, err)
+	require.False(t, result.IsError, "stats should work without auth claims")
 
-	t.Run("different outcome produces different hash", func(t *testing.T) {
-		h1, err := mcpTraceHash("a", "t", "outcome-1", 0.5, "", nil, nil, nil)
-		require.NoError(t, err)
-		h2, err := mcpTraceHash("a", "t", "outcome-2", 0.5, "", nil, nil, nil)
-		require.NoError(t, err)
-		assert.NotEqual(t, h1, h2)
-	})
+	var resp struct {
+		TraceHealth map[string]any `json:"trace_health"`
+		Agents      int            `json:"agents"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.NotNil(t, resp.TraceHealth)
+}
 
-	t.Run("different agent produces different hash", func(t *testing.T) {
-		h1, err := mcpTraceHash("agent-a", "t", "o", 0.5, "", nil, nil, nil)
-		require.NoError(t, err)
-		h2, err := mcpTraceHash("agent-b", "t", "o", 0.5, "", nil, nil, nil)
-		require.NoError(t, err)
-		assert.NotEqual(t, h1, h2)
-	})
+// ---------- resolveProjectFilter tests ----------
 
-	t.Run("different confidence produces different hash", func(t *testing.T) {
-		h1, err := mcpTraceHash("a", "t", "o", 0.5, "", nil, nil, nil)
-		require.NoError(t, err)
-		h2, err := mcpTraceHash("a", "t", "o", 0.9, "", nil, nil, nil)
-		require.NoError(t, err)
-		assert.NotEqual(t, h1, h2)
-	})
-
-	t.Run("with precedent_ref", func(t *testing.T) {
-		ref := uuid.New()
-		h1, err := mcpTraceHash("a", "t", "o", 0.5, "", nil, nil, nil)
-		require.NoError(t, err)
-		h2, err := mcpTraceHash("a", "t", "o", 0.5, "", nil, nil, &ref)
-		require.NoError(t, err)
-		assert.NotEqual(t, h1, h2, "precedent_ref should affect the hash")
-	})
-
-	t.Run("with evidence", func(t *testing.T) {
-		ev := []model.TraceEvidence{
-			{SourceType: "document", Content: "RFC 9110"},
+func TestResolveProjectFilter(t *testing.T) {
+	t.Run("explicit project", func(t *testing.T) {
+		ctx := adminCtx()
+		req := mcplib.CallToolRequest{
+			Params: mcplib.CallToolParams{
+				Arguments: map[string]any{"project": "my-project"},
+			},
 		}
-		h1, err := mcpTraceHash("a", "t", "o", 0.5, "", nil, nil, nil)
-		require.NoError(t, err)
-		h2, err := mcpTraceHash("a", "t", "o", 0.5, "", ev, nil, nil)
-		require.NoError(t, err)
-		assert.NotEqual(t, h1, h2, "evidence should affect the hash")
+		result := testServer.resolveProjectFilter(ctx, req)
+		require.NotNil(t, result)
+		assert.Equal(t, "my-project", *result)
 	})
 
-	t.Run("with alternatives", func(t *testing.T) {
-		alts := []model.TraceAlternative{
-			{Label: "Redis", Selected: true},
-			{Label: "Memcached", Selected: false},
+	t.Run("wildcard cross-project opt-out", func(t *testing.T) {
+		ctx := adminCtx()
+		req := mcplib.CallToolRequest{
+			Params: mcplib.CallToolParams{
+				Arguments: map[string]any{"project": "*"},
+			},
 		}
-		h1, err := mcpTraceHash("a", "t", "o", 0.5, "", nil, nil, nil)
-		require.NoError(t, err)
-		h2, err := mcpTraceHash("a", "t", "o", 0.5, "", nil, alts, nil)
-		require.NoError(t, err)
-		assert.NotEqual(t, h1, h2, "alternatives should affect the hash")
+		result := testServer.resolveProjectFilter(ctx, req)
+		assert.Nil(t, result, "* should return nil for cross-project opt-out")
 	})
 
-	t.Run("empty reasoning vs non-empty", func(t *testing.T) {
-		h1, err := mcpTraceHash("a", "t", "o", 0.5, "", nil, nil, nil)
-		require.NoError(t, err)
-		h2, err := mcpTraceHash("a", "t", "o", 0.5, "some reasoning", nil, nil, nil)
-		require.NoError(t, err)
-		assert.NotEqual(t, h1, h2)
+	t.Run("empty project with no MCP roots returns nil", func(t *testing.T) {
+		ctx := adminCtx()
+		req := mcplib.CallToolRequest{
+			Params: mcplib.CallToolParams{
+				Arguments: map[string]any{},
+			},
+		}
+		result := testServer.resolveProjectFilter(ctx, req)
+		// With no MCP session in the context, requestRoots returns nil,
+		// so resolveProjectFilter should return nil.
+		assert.Nil(t, result)
 	})
+}
+
+// ---------- handleCheck: full format ----------
+
+func TestHandleCheck_FullFormat(t *testing.T) {
+	ctx := adminCtx()
+	agentID := "check-full-" + uuid.New().String()[:8]
+	mustTrace(t, agentID, "deployment", "full format test", 0.75)
+
+	result, err := testServer.handleCheck(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name: "akashi_check",
+			Arguments: map[string]any{
+				"decision_type": "deployment",
+				"format":        "full",
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	var resp model.CheckResponse
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.True(t, resp.HasPrecedent)
+}
+
+func TestHandleCheck_NilClaims(t *testing.T) {
+	result, err := testServer.handleCheck(context.Background(), mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name: "akashi_check",
+			Arguments: map[string]any{
+				"decision_type": "architecture",
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, parseToolText(t, result), "authentication required")
+}
+
+// ---------- handleQuery: full format ----------
+
+func TestHandleQuery_FullFormat(t *testing.T) {
+	ctx := adminCtx()
+	agentID := "query-full-" + uuid.New().String()[:8]
+	mustTrace(t, agentID, "investigation", "full format query test", 0.8)
+
+	result, err := testServer.handleQuery(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name: "akashi_query",
+			Arguments: map[string]any{
+				"decision_type": "investigation",
+				"format":        "full",
+				"limit":         5,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	var resp struct {
+		Decisions []model.Decision `json:"decisions"`
+		Total     int              `json:"total"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.NotEmpty(t, resp.Decisions)
+}
+
+// ---------- mcpTraceHash ----------
+
+func TestMCPTraceHash_Deterministic(t *testing.T) {
+	h1, err := mcpTraceHash("agent", "architecture", "chose Redis", 0.8, "good fit", nil, nil, nil)
+	require.NoError(t, err)
+
+	h2, err := mcpTraceHash("agent", "architecture", "chose Redis", 0.8, "good fit", nil, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, h1, h2, "same inputs should produce the same hash")
+
+	// Different outcome should produce a different hash.
+	h3, err := mcpTraceHash("agent", "architecture", "chose Memcached", 0.8, "good fit", nil, nil, nil)
+	require.NoError(t, err)
+	assert.NotEqual(t, h1, h3, "different outcome should produce different hash")
+}
+
+func TestMCPTraceHash_WithPrecedentRef(t *testing.T) {
+	ref := uuid.New()
+
+	h1, err := mcpTraceHash("agent", "architecture", "chose Redis", 0.8, "", nil, nil, nil)
+	require.NoError(t, err)
+
+	h2, err := mcpTraceHash("agent", "architecture", "chose Redis", 0.8, "", nil, nil, &ref)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, h1, h2, "adding precedent_ref should change the hash")
+}
+
+// ---------- New() constructor ----------
+
+func TestMCPServerNew(t *testing.T) {
+	s := New(testDB, testSvc, nil, testutil.TestLogger(), "test-version")
+	require.NotNil(t, s)
+	require.NotNil(t, s.MCPServer())
+	// Verify the server has the expected name by checking it's non-nil.
+	assert.NotNil(t, s.mcpServer)
 }

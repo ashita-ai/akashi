@@ -614,6 +614,655 @@ func TestInterfaceCompileTimeAssertion(t *testing.T) {
 	var _ storage.Store = (*sqlite.LiteDB)(nil)
 }
 
+func TestNew_WithFilePath(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/subdir/test.db"
+	ctx := context.Background()
+	logger := slog.Default()
+
+	db, err := sqlite.New(ctx, path, logger)
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close(ctx) })
+
+	require.NoError(t, db.Ping(ctx))
+}
+
+func TestRawDB(t *testing.T) {
+	db := newTestDB(t)
+	rawDB := db.RawDB()
+	require.NotNil(t, rawDB)
+
+	// Verify we can use the raw DB to execute a query.
+	var result int
+	err := rawDB.QueryRowContext(context.Background(), "SELECT 1").Scan(&result)
+	require.NoError(t, err)
+	assert.Equal(t, 1, result)
+}
+
+func TestGetDecisionsByAgent(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	_, err := db.CreateAgent(ctx, model.Agent{
+		AgentID: "agent-by-agent", OrgID: orgID, Name: "A", Role: model.RoleAgent,
+		Tags: []string{}, Metadata: map[string]any{},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	reasoning := "reason"
+	for i := 0; i < 3; i++ {
+		_, _, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+			AgentID: "agent-by-agent", OrgID: orgID, Metadata: map[string]any{},
+			Decision: model.Decision{
+				DecisionType: "test", Outcome: "o", Confidence: 0.5,
+				Reasoning: &reasoning, Metadata: map[string]any{},
+			},
+		})
+		require.NoError(t, err)
+	}
+
+	t.Run("all decisions for agent", func(t *testing.T) {
+		decisions, total, err := db.GetDecisionsByAgent(ctx, orgID, "agent-by-agent", 10, 0, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, 3, total)
+		assert.Len(t, decisions, 3)
+	})
+
+	t.Run("pagination", func(t *testing.T) {
+		decisions, total, err := db.GetDecisionsByAgent(ctx, orgID, "agent-by-agent", 2, 0, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, 3, total)
+		assert.Len(t, decisions, 2)
+	})
+
+	t.Run("with time range", func(t *testing.T) {
+		from := time.Now().Add(-1 * time.Hour)
+		to := time.Now().Add(1 * time.Hour)
+		decisions, total, err := db.GetDecisionsByAgent(ctx, orgID, "agent-by-agent", 10, 0, &from, &to)
+		require.NoError(t, err)
+		assert.Equal(t, 3, total)
+		assert.Len(t, decisions, 3)
+	})
+
+	t.Run("nonexistent agent returns empty", func(t *testing.T) {
+		decisions, total, err := db.GetDecisionsByAgent(ctx, orgID, "no-such-agent", 10, 0, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, 0, total)
+		assert.Empty(t, decisions)
+	})
+}
+
+func TestGetDecisionForScoring(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	_, err := db.CreateAgent(ctx, model.Agent{
+		AgentID: "score-agent", OrgID: orgID, Name: "S", Role: model.RoleAgent,
+		Tags: []string{}, Metadata: map[string]any{},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	reasoning := "scoring reasoning"
+	_, d, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "score-agent", OrgID: orgID, Metadata: map[string]any{},
+		Decision: model.Decision{
+			DecisionType: "review", Outcome: "approve", Confidence: 0.85,
+			Reasoning: &reasoning, Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+
+	t.Run("found", func(t *testing.T) {
+		fetched, err := db.GetDecisionForScoring(ctx, d.ID, orgID)
+		require.NoError(t, err)
+		assert.Equal(t, d.ID, fetched.ID)
+		assert.Equal(t, "score-agent", fetched.AgentID)
+		assert.Equal(t, "approve", fetched.Outcome)
+		assert.InDelta(t, 0.85, fetched.Confidence, 0.001)
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		_, err := db.GetDecisionForScoring(ctx, uuid.New(), orgID)
+		assert.ErrorIs(t, err, storage.ErrNotFound)
+	})
+}
+
+func TestQueryDecisions_OrderByAndDirection(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	_, err := db.CreateAgent(ctx, model.Agent{
+		AgentID: "order-agent", OrgID: orgID, Name: "O", Role: model.RoleAgent,
+		Tags: []string{}, Metadata: map[string]any{},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	for _, conf := range []float32{0.3, 0.7, 0.5} {
+		_, _, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+			AgentID: "order-agent", OrgID: orgID, Metadata: map[string]any{},
+			Decision: model.Decision{
+				DecisionType: "test", Outcome: "o", Confidence: conf,
+				Metadata: map[string]any{},
+			},
+		})
+		require.NoError(t, err)
+	}
+
+	t.Run("order by confidence asc", func(t *testing.T) {
+		decisions, _, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+			OrderBy:  "confidence",
+			OrderDir: "asc",
+			Limit:    10,
+		})
+		require.NoError(t, err)
+		require.Len(t, decisions, 3)
+		assert.LessOrEqual(t, decisions[0].Confidence, decisions[1].Confidence)
+		assert.LessOrEqual(t, decisions[1].Confidence, decisions[2].Confidence)
+	})
+
+	t.Run("unknown order column falls back to valid_from", func(t *testing.T) {
+		// Should not error, just use the safe default.
+		decisions, _, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+			OrderBy: "DROP TABLE decisions", // SQL injection attempt
+			Limit:   10,
+		})
+		require.NoError(t, err)
+		assert.Len(t, decisions, 3)
+	})
+}
+
+func TestQueryDecisions_WithIncludeAlternativesAndEvidence(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	_, err := db.CreateAgent(ctx, model.Agent{
+		AgentID: "include-agent", OrgID: orgID, Name: "I", Role: model.RoleAgent,
+		Tags: []string{}, Metadata: map[string]any{},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	reasoning := "good reason"
+	_, _, err = db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "include-agent", OrgID: orgID, Metadata: map[string]any{},
+		Decision: model.Decision{
+			DecisionType: "test", Outcome: "outcome", Confidence: 0.7,
+			Reasoning: &reasoning, Metadata: map[string]any{},
+		},
+		Alternatives: []model.Alternative{
+			{Label: "opt-a", Score: ptrFloat32(0.3), Selected: false, Metadata: map[string]any{}},
+			{Label: "opt-b", Score: ptrFloat32(0.7), Selected: true, Metadata: map[string]any{}},
+		},
+		Evidence: []model.Evidence{
+			{SourceType: model.SourceAPIResponse, Content: "test data", Metadata: map[string]any{}},
+		},
+	})
+	require.NoError(t, err)
+
+	t.Run("include alternatives", func(t *testing.T) {
+		decisions, _, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+			Include: []string{"alternatives"},
+			Limit:   10,
+		})
+		require.NoError(t, err)
+		require.Len(t, decisions, 1)
+		assert.Len(t, decisions[0].Alternatives, 2)
+	})
+
+	t.Run("include evidence", func(t *testing.T) {
+		decisions, _, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+			Include: []string{"evidence"},
+			Limit:   10,
+		})
+		require.NoError(t, err)
+		require.Len(t, decisions, 1)
+		assert.Len(t, decisions[0].Evidence, 1)
+	})
+
+	t.Run("include all", func(t *testing.T) {
+		decisions, _, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+			Include: []string{"all"},
+			Limit:   10,
+		})
+		require.NoError(t, err)
+		require.Len(t, decisions, 1)
+		assert.Len(t, decisions[0].Alternatives, 2)
+		assert.Len(t, decisions[0].Evidence, 1)
+	})
+}
+
+func TestQueryDecisions_ConfidenceMinFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	_, err := db.CreateAgent(ctx, model.Agent{
+		AgentID: "conf-agent", OrgID: orgID, Name: "C", Role: model.RoleAgent,
+		Tags: []string{}, Metadata: map[string]any{},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	for _, conf := range []float32{0.2, 0.5, 0.9} {
+		_, _, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+			AgentID: "conf-agent", OrgID: orgID, Metadata: map[string]any{},
+			Decision: model.Decision{
+				DecisionType: "test", Outcome: "o", Confidence: conf,
+				Metadata: map[string]any{},
+			},
+		})
+		require.NoError(t, err)
+	}
+
+	minConf := float32(0.5)
+	decisions, total, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+		Filters: model.QueryFilters{ConfidenceMin: &minConf},
+		Limit:   10,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 2, total)
+	assert.Len(t, decisions, 2)
+	for _, d := range decisions {
+		assert.GreaterOrEqual(t, d.Confidence, float32(0.5))
+	}
+}
+
+func TestQueryDecisionsTemporal(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	_, err := db.CreateAgent(ctx, model.Agent{
+		AgentID: "temporal-agent", OrgID: orgID, Name: "T", Role: model.RoleAgent,
+		Tags: []string{}, Metadata: map[string]any{},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	_, _, err = db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "temporal-agent", OrgID: orgID, Metadata: map[string]any{},
+		Decision: model.Decision{
+			DecisionType: "test", Outcome: "temporal-outcome", Confidence: 0.5,
+			Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+
+	t.Run("as of future includes decision", func(t *testing.T) {
+		results, err := db.QueryDecisionsTemporal(ctx, orgID, model.TemporalQueryRequest{
+			AsOf:  time.Now().Add(1 * time.Hour),
+			Limit: 10,
+		})
+		require.NoError(t, err)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "temporal-outcome", results[0].Outcome)
+	})
+
+	t.Run("as of past excludes decision", func(t *testing.T) {
+		results, err := db.QueryDecisionsTemporal(ctx, orgID, model.TemporalQueryRequest{
+			AsOf:  time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+			Limit: 10,
+		})
+		require.NoError(t, err)
+		assert.Empty(t, results)
+	})
+}
+
+func TestUpdateOutcomeScore(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	_, err := db.CreateAgent(ctx, model.Agent{
+		AgentID: "score-upd-agent", OrgID: orgID, Name: "SU", Role: model.RoleAgent,
+		Tags: []string{}, Metadata: map[string]any{},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	_, d, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "score-upd-agent", OrgID: orgID, Metadata: map[string]any{},
+		Decision: model.Decision{
+			DecisionType: "test", Outcome: "outcome", Confidence: 0.5,
+			Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+
+	score := float32(0.85)
+	err = db.UpdateOutcomeScore(ctx, orgID, d.ID, &score)
+	require.NoError(t, err)
+
+	// Verify via GetDecisionsByIDs.
+	result, err := db.GetDecisionsByIDs(ctx, orgID, []uuid.UUID{d.ID})
+	require.NoError(t, err)
+	require.Contains(t, result, d.ID)
+	require.NotNil(t, result[d.ID].OutcomeScore)
+	assert.InDelta(t, 0.85, *result[d.ID].OutcomeScore, 0.001)
+}
+
+func TestFindUnembeddedDecisions(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	_, err := db.CreateAgent(ctx, model.Agent{
+		AgentID: "unembed-agent", OrgID: orgID, Name: "U", Role: model.RoleAgent,
+		Tags: []string{}, Metadata: map[string]any{},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	reasoning := "reason"
+	_, _, err = db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "unembed-agent", OrgID: orgID, Metadata: map[string]any{},
+		Decision: model.Decision{
+			DecisionType: "arch", Outcome: "unembed-outcome", Confidence: 0.6,
+			Reasoning: &reasoning, Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+
+	results, err := db.FindUnembeddedDecisions(ctx, 10)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(results), 1)
+
+	found := false
+	for _, r := range results {
+		if r.Outcome == "unembed-outcome" {
+			found = true
+			assert.Equal(t, "arch", r.DecisionType)
+		}
+	}
+	assert.True(t, found, "expected to find the unembedded decision")
+}
+
+func TestGetDecisionEmbeddings_Empty(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	// Empty IDs should return empty.
+	result, err := db.GetDecisionEmbeddings(ctx, nil, orgID)
+	require.NoError(t, err)
+	assert.Empty(t, result)
+
+	// Non-existent IDs should return empty map.
+	result, err = db.GetDecisionEmbeddings(ctx, []uuid.UUID{uuid.New()}, orgID)
+	require.NoError(t, err)
+	assert.Empty(t, result)
+}
+
+func TestFindDecisionIDsMissingClaims(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+
+	// With no decisions, should return nil/empty.
+	refs, err := db.FindDecisionIDsMissingClaims(ctx, 10)
+	require.NoError(t, err)
+	assert.Empty(t, refs)
+}
+
+func TestMarkAndClearClaimEmbeddingFailure(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	_, err := db.CreateAgent(ctx, model.Agent{
+		AgentID: "claim-fail-agent", OrgID: orgID, Name: "CF", Role: model.RoleAgent,
+		Tags: []string{}, Metadata: map[string]any{},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	_, d, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "claim-fail-agent", OrgID: orgID, Metadata: map[string]any{},
+		Decision: model.Decision{
+			DecisionType: "test", Outcome: "outcome", Confidence: 0.5,
+			Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+
+	// Mark as failed.
+	err = db.MarkClaimEmbeddingFailed(ctx, d.ID, orgID)
+	require.NoError(t, err)
+
+	// Clear the failure.
+	err = db.ClearClaimEmbeddingFailure(ctx, d.ID, orgID)
+	require.NoError(t, err)
+}
+
+func TestCreateAgentWithAudit(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+	now := time.Now().UTC()
+
+	agent := model.Agent{
+		AgentID: "audit-agent", OrgID: orgID, Name: "Audit Agent", Role: model.RoleAgent,
+		Tags: []string{"test"}, Metadata: map[string]any{},
+		CreatedAt: now, UpdatedAt: now,
+	}
+	audit := storage.MutationAuditEntry{
+		RequestID:    "req-123",
+		OrgID:        orgID,
+		ActorAgentID: "system",
+		ActorRole:    "admin",
+		HTTPMethod:   "POST",
+		Endpoint:     "/v1/agents",
+		Operation:    "create",
+		ResourceType: "agent",
+		ResourceID:   "audit-agent",
+		Metadata:     map[string]any{},
+	}
+
+	created, err := db.CreateAgentWithAudit(ctx, agent, audit)
+	require.NoError(t, err)
+	assert.Equal(t, "audit-agent", created.AgentID)
+	assert.NotEqual(t, uuid.Nil, created.ID)
+
+	// Verify agent was created.
+	fetched, err := db.GetAgentByAgentID(ctx, orgID, "audit-agent")
+	require.NoError(t, err)
+	assert.Equal(t, "Audit Agent", fetched.Name)
+}
+
+func TestGetAPIKeyByID_NotFound(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	_, err := db.GetAPIKeyByID(ctx, orgID, uuid.New())
+	assert.ErrorIs(t, err, storage.ErrNotFound)
+}
+
+func TestGetDecisionOutcomeSignalsBatch_Empty(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	t.Run("empty ids returns empty", func(t *testing.T) {
+		result, err := db.GetDecisionOutcomeSignalsBatch(ctx, nil, orgID)
+		require.NoError(t, err)
+		assert.Empty(t, result)
+	})
+
+	t.Run("nonexistent ids returns zero signals", func(t *testing.T) {
+		id := uuid.New()
+		result, err := db.GetDecisionOutcomeSignalsBatch(ctx, []uuid.UUID{id}, orgID)
+		require.NoError(t, err)
+		assert.Contains(t, result, id)
+		sig := result[id]
+		assert.Nil(t, sig.SupersessionVelocityHours)
+		assert.Equal(t, 0, sig.PrecedentCitationCount)
+		assert.Equal(t, 0, sig.ConflictCount)
+		assert.Equal(t, 0, sig.AgreementCount)
+	})
+}
+
+func TestFindRetriableClaimFailures_Empty(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+
+	refs, err := db.FindRetriableClaimFailures(ctx, 3, 10)
+	require.NoError(t, err)
+	assert.Empty(t, refs)
+}
+
+func TestFindDecisionsMissingOutcomeEmbedding(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+
+	// No decisions at all, should return empty.
+	results, err := db.FindDecisionsMissingOutcomeEmbedding(ctx, 10)
+	require.NoError(t, err)
+	assert.Empty(t, results)
+}
+
+func TestGetAssessmentSummaryBatch_Empty(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	// Empty decision IDs should return empty map.
+	result, err := db.GetAssessmentSummaryBatch(ctx, orgID, nil)
+	require.NoError(t, err)
+	assert.Empty(t, result)
+}
+
+func TestSearchDecisionsByText_WithFilters(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	_, err := db.CreateAgent(ctx, model.Agent{
+		AgentID: "filter-search-agent", OrgID: orgID, Name: "FS", Role: model.RoleAgent,
+		Tags: []string{}, Metadata: map[string]any{},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	reasoning := "test reasoning for search"
+	_, _, err = db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "filter-search-agent", OrgID: orgID, Metadata: map[string]any{},
+		Decision: model.Decision{
+			DecisionType: "architecture",
+			Outcome:      "use microservices pattern",
+			Confidence:   0.8,
+			Reasoning:    &reasoning,
+			Metadata:     map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+
+	t.Run("with agent filter", func(t *testing.T) {
+		results, err := db.SearchDecisionsByText(ctx, orgID, "microservices",
+			model.QueryFilters{AgentIDs: []string{"filter-search-agent"}}, 10)
+		require.NoError(t, err)
+		assert.Len(t, results, 1)
+	})
+
+	t.Run("with wrong agent filter", func(t *testing.T) {
+		results, err := db.SearchDecisionsByText(ctx, orgID, "microservices",
+			model.QueryFilters{AgentIDs: []string{"other-agent"}}, 10)
+		require.NoError(t, err)
+		assert.Empty(t, results)
+	})
+
+	t.Run("with decision type filter", func(t *testing.T) {
+		dt := "architecture"
+		results, err := db.SearchDecisionsByText(ctx, orgID, "microservices",
+			model.QueryFilters{DecisionType: &dt}, 10)
+		require.NoError(t, err)
+		assert.Len(t, results, 1)
+	})
+
+	t.Run("zero limit uses default", func(t *testing.T) {
+		results, err := db.SearchDecisionsByText(ctx, orgID, "microservices",
+			model.QueryFilters{}, 0)
+		require.NoError(t, err)
+		assert.Len(t, results, 1)
+	})
+}
+
+func TestCreateTraceTx_WithSupersession(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	_, err := db.CreateAgent(ctx, model.Agent{
+		AgentID: "super-agent", OrgID: orgID, Name: "S", Role: model.RoleAgent,
+		Tags: []string{}, Metadata: map[string]any{},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	// Create original decision.
+	_, d1, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "super-agent", OrgID: orgID, Metadata: map[string]any{},
+		Decision: model.Decision{
+			DecisionType: "review", Outcome: "original", Confidence: 0.5,
+			Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+
+	// Create superseding decision.
+	_, d2, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "super-agent", OrgID: orgID, Metadata: map[string]any{},
+		Decision: model.Decision{
+			DecisionType: "review", Outcome: "superseded", Confidence: 0.9,
+			SupersedesID: &d1.ID,
+			Metadata:     map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+	assert.NotEqual(t, d1.ID, d2.ID)
+
+	// Original decision should now have valid_to set (no longer active).
+	result, err := db.GetDecisionsByIDs(ctx, orgID, []uuid.UUID{d1.ID})
+	require.NoError(t, err)
+	// GetDecisionsByIDs filters valid_to IS NULL, so the superseded one should not appear.
+	assert.Empty(t, result, "superseded decision should not be returned by GetDecisionsByIDs (active-only query)")
+
+	// But the new one should be there.
+	result, err = db.GetDecisionsByIDs(ctx, orgID, []uuid.UUID{d2.ID})
+	require.NoError(t, err)
+	assert.Contains(t, result, d2.ID)
+}
+
+func TestIsDuplicateKey_NilError(t *testing.T) {
+	db := newTestDB(t)
+	assert.False(t, db.IsDuplicateKey(nil))
+}
+
 func ptrFloat32(f float32) *float32 {
 	return &f
 }

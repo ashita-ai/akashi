@@ -1,7 +1,9 @@
 package auth_test
 
 import (
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
@@ -236,6 +238,251 @@ func TestIssueScopedToken(t *testing.T) {
 		assert.Equal(t, target.ID.String(), claims.Subject)
 		assert.Equal(t, "akashi", claims.Issuer)
 	})
+}
+
+// ---------- NewJWTManager error path tests ----------
+
+func TestNewJWTManager_PrivateKeyFileNotFound(t *testing.T) {
+	_, err := auth.NewJWTManager("/nonexistent/priv.pem", "/nonexistent/pub.pem", time.Hour)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read private key")
+}
+
+func TestNewJWTManager_PublicKeyFileNotFound(t *testing.T) {
+	// Write a valid private key, but point to a missing public key file.
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	_ = pub
+
+	dir := t.TempDir()
+	privBytes, err := x509.MarshalPKCS8PrivateKey(priv)
+	require.NoError(t, err)
+	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privBytes})
+	privPath := filepath.Join(dir, "priv.pem")
+	require.NoError(t, os.WriteFile(privPath, privPEM, 0600))
+
+	_, err = auth.NewJWTManager(privPath, "/nonexistent/pub.pem", time.Hour)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read public key")
+}
+
+func TestNewJWTManager_InvalidPrivateKeyPEM(t *testing.T) {
+	dir := t.TempDir()
+	privPath := filepath.Join(dir, "priv.pem")
+	pubPath := filepath.Join(dir, "pub.pem")
+	require.NoError(t, os.WriteFile(privPath, []byte("not a pem block"), 0600))
+	require.NoError(t, os.WriteFile(pubPath, []byte("not a pem block"), 0600))
+
+	_, err := auth.NewJWTManager(privPath, pubPath, time.Hour)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode private key PEM")
+}
+
+func TestNewJWTManager_InvalidPublicKeyPEM(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	_ = pub
+
+	dir := t.TempDir()
+	privBytes, err := x509.MarshalPKCS8PrivateKey(priv)
+	require.NoError(t, err)
+	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privBytes})
+	privPath := filepath.Join(dir, "priv.pem")
+	require.NoError(t, os.WriteFile(privPath, privPEM, 0600))
+
+	pubPath := filepath.Join(dir, "pub.pem")
+	require.NoError(t, os.WriteFile(pubPath, []byte("not a pem block"), 0600))
+
+	_, err = auth.NewJWTManager(privPath, pubPath, time.Hour)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode public key PEM")
+}
+
+func TestNewJWTManager_MismatchedKeys(t *testing.T) {
+	// Generate two independent key pairs and swap the public key.
+	_, priv1, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	pub2, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+
+	privBytes, err := x509.MarshalPKCS8PrivateKey(priv1)
+	require.NoError(t, err)
+	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privBytes})
+	privPath := filepath.Join(dir, "priv.pem")
+	require.NoError(t, os.WriteFile(privPath, privPEM, 0600))
+
+	pubBytes, err := x509.MarshalPKIXPublicKey(pub2)
+	require.NoError(t, err)
+	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubBytes})
+	pubPath := filepath.Join(dir, "pub.pem")
+	require.NoError(t, os.WriteFile(pubPath, pubPEM, 0600))
+
+	_, err = auth.NewJWTManager(privPath, pubPath, time.Hour)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "public key does not match private key")
+}
+
+func TestNewJWTManager_NonEd25519PrivateKey(t *testing.T) {
+	// Write an ECDSA key in PKCS8 format — should be rejected as "not Ed25519".
+	dir := t.TempDir()
+
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	ecKeyBytes, err := x509.MarshalPKCS8PrivateKey(ecKey)
+	require.NoError(t, err)
+	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: ecKeyBytes})
+	privPath := filepath.Join(dir, "priv.pem")
+	require.NoError(t, os.WriteFile(privPath, privPEM, 0600))
+
+	pubPath := filepath.Join(dir, "pub.pem")
+	require.NoError(t, os.WriteFile(pubPath, []byte("placeholder"), 0600))
+
+	_, err = auth.NewJWTManager(privPath, pubPath, time.Hour)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not Ed25519")
+}
+
+func TestNewJWTManager_InvalidPrivateKeyDER(t *testing.T) {
+	// Valid PEM block but garbage DER content inside it.
+	dir := t.TempDir()
+	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte("garbage der bytes")})
+	privPath := filepath.Join(dir, "priv.pem")
+	require.NoError(t, os.WriteFile(privPath, privPEM, 0600))
+
+	pubPath := filepath.Join(dir, "pub.pem")
+	require.NoError(t, os.WriteFile(pubPath, []byte("placeholder"), 0600))
+
+	_, err := auth.NewJWTManager(privPath, pubPath, time.Hour)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse private key")
+}
+
+func TestNewJWTManager_NonEd25519PublicKey(t *testing.T) {
+	// Valid Ed25519 private key but ECDSA public key — should fail key match.
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	privBytes, err := x509.MarshalPKCS8PrivateKey(priv)
+	require.NoError(t, err)
+	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privBytes})
+	privPath := filepath.Join(dir, "priv.pem")
+	require.NoError(t, os.WriteFile(privPath, privPEM, 0600))
+
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	ecPubBytes, err := x509.MarshalPKIXPublicKey(&ecKey.PublicKey)
+	require.NoError(t, err)
+	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: ecPubBytes})
+	pubPath := filepath.Join(dir, "pub.pem")
+	require.NoError(t, os.WriteFile(pubPath, pubPEM, 0600))
+
+	_, err = auth.NewJWTManager(privPath, pubPath, time.Hour)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not Ed25519")
+}
+
+func TestNewJWTManager_InvalidPublicKeyDER(t *testing.T) {
+	// Valid Ed25519 private key but garbage DER content in the public key PEM.
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	privBytes, err := x509.MarshalPKCS8PrivateKey(priv)
+	require.NoError(t, err)
+	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privBytes})
+	privPath := filepath.Join(dir, "priv.pem")
+	require.NoError(t, os.WriteFile(privPath, privPEM, 0600))
+
+	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: []byte("garbage der bytes")})
+	pubPath := filepath.Join(dir, "pub.pem")
+	require.NoError(t, os.WriteFile(pubPath, pubPEM, 0600))
+
+	_, err = auth.NewJWTManager(privPath, pubPath, time.Hour)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse public key")
+}
+
+// ---------- VerifyAPIKey error path tests ----------
+
+func TestVerifyAPIKey_InvalidHashFormat(t *testing.T) {
+	_, err := auth.VerifyAPIKey("some-key", "invalid-no-dollar-sign")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid hash format")
+}
+
+func TestVerifyAPIKey_InvalidBase64Salt(t *testing.T) {
+	_, err := auth.VerifyAPIKey("some-key", "!!!invalid-base64$validhash")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode salt")
+}
+
+func TestVerifyAPIKey_InvalidBase64Hash(t *testing.T) {
+	// Valid base64 salt but invalid base64 hash.
+	_, err := auth.VerifyAPIKey("some-key", "dGVzdA==$!!!invalid-base64")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode hash")
+}
+
+func TestDummyVerify(t *testing.T) {
+	// DummyVerify should not panic. It has no return value; we just verify
+	// it completes without error. This exists for timing-attack resistance.
+	auth.DummyVerify()
+}
+
+// ---------- ValidateToken: expired token ----------
+
+func TestValidateToken_ExpiredToken(t *testing.T) {
+	mgr, err := auth.NewJWTManager("", "", 1*time.Nanosecond)
+	require.NoError(t, err)
+
+	agent := model.Agent{
+		ID:      uuid.New(),
+		AgentID: "expiring-agent",
+		Name:    "Expiring",
+		Role:    model.RoleAgent,
+	}
+
+	token, _, err := mgr.IssueToken(agent)
+	require.NoError(t, err)
+
+	// Token is effectively already expired since TTL was 1ns.
+	_, err = mgr.ValidateToken(token)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "token")
+}
+
+// ---------- ValidateToken: completely garbage input ----------
+
+func TestValidateToken_GarbageInput(t *testing.T) {
+	mgr, err := auth.NewJWTManager("", "", time.Hour)
+	require.NoError(t, err)
+
+	_, err = mgr.ValidateToken("totally.not.a.jwt")
+	require.Error(t, err)
+}
+
+// ---------- IssueScopedToken: negative TTL defaults ----------
+
+func TestIssueScopedToken_NegativeTTL(t *testing.T) {
+	mgr, err := auth.NewJWTManager("", "", time.Hour)
+	require.NoError(t, err)
+
+	target := model.Agent{
+		ID:      uuid.New(),
+		AgentID: "target-agent",
+		OrgID:   uuid.New(),
+		Role:    model.RoleAgent,
+	}
+
+	token, expiresAt, err := mgr.IssueScopedToken("admin", target, -5*time.Minute)
+	require.NoError(t, err)
+	assert.NotEmpty(t, token)
+	// Negative TTL should default to MaxScopedTokenTTL.
+	assert.True(t, expiresAt.Before(time.Now().Add(auth.MaxScopedTokenTTL+time.Minute)),
+		"negative TTL should default to MaxScopedTokenTTL")
 }
 
 func TestValidateToken_MalformedSubject(t *testing.T) {
