@@ -403,14 +403,18 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 	var id uuid.UUID
 	err := db.pool.QueryRow(ctx,
 		// CTE step 1: try to find an existing group for this agent pair + type.
-		// CTE step 2: if none exists, create a new one.
-		// CTE step 3: pick whichever returned a row (existing preferred).
+		// CTE step 2: update last_detected_at when reusing an existing group.
+		// CTE step 3: if none exists, create a new one.
+		// CTE step 4: pick whichever returned a row (existing preferred).
 		`WITH existing AS (
 		     SELECT id FROM conflict_groups
 		     WHERE org_id = $3 AND agent_a = $5 AND agent_b = $6
 		       AND conflict_kind = $4 AND decision_type = $8
 		     ORDER BY last_detected_at DESC
 		     LIMIT 1
+		 ), upd AS (
+		     UPDATE conflict_groups SET last_detected_at = now()
+		     WHERE id = (SELECT id FROM existing) AND org_id = $3
 		 ), new_grp AS (
 		     INSERT INTO conflict_groups
 		         (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic)
@@ -490,8 +494,8 @@ func (db *DB) insertScoredConflictWithGroup(
 
 	// Update the group's last_detected_at.
 	if _, err := tx.Exec(ctx,
-		`UPDATE conflict_groups SET last_detected_at = now() WHERE id = $1`,
-		groupID,
+		`UPDATE conflict_groups SET last_detected_at = now() WHERE id = $1 AND org_id = $2`,
+		groupID, orgID,
 	); err != nil {
 		return uuid.Nil, fmt.Errorf("storage: update group timestamp: %w", err)
 	}
@@ -555,8 +559,8 @@ const TopicGroupSimilarityThreshold = 0.85
 // FindOrCreateTopicGroup finds an existing conflict group whose representative
 // conflict's outcome embedding has cosine similarity > 0.85 to the given
 // embedding, or creates a new group. Uses pgvector's cosine distance operator
-// to perform the comparison in SQL.
-//
+// to perform the comparison in SQL. The entire lookup-or-create is wrapped in
+// a serializable transaction to prevent duplicate groups under concurrency.
 // outcomeEmbedding is the outcome embedding of one of the decisions in the
 // new conflict (typically the decision being scored). topicLabel is a
 // human-readable label for newly created groups (truncated outcome text).
@@ -574,10 +578,18 @@ func (db *DB) FindOrCreateTopicGroup(
 		agentA, agentB = agentB, agentA
 	}
 
-	// Look for an existing group whose representative conflict's decision has
-	// an outcome embedding similar enough to the new conflict.
+	tx, err := db.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("storage: begin topic group tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Look for an existing group whose representative conflict's decision
+	// has an outcome embedding similar enough to the new conflict. The
+	// serializable transaction ensures no concurrent caller can insert a
+	// duplicate between our SELECT and INSERT.
 	var groupID uuid.UUID
-	err := db.pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`SELECT cg.id
 		 FROM conflict_groups cg
 		 JOIN LATERAL (
@@ -606,11 +618,14 @@ func (db *DB) FindOrCreateTopicGroup(
 
 	if err == nil {
 		// Found a matching group — update its timestamp.
-		if _, err := db.pool.Exec(ctx,
-			`UPDATE conflict_groups SET last_detected_at = now() WHERE id = $1`,
-			groupID,
+		if _, err := tx.Exec(ctx,
+			`UPDATE conflict_groups SET last_detected_at = now() WHERE id = $1 AND org_id = $2`,
+			groupID, orgID,
 		); err != nil {
 			return uuid.Nil, fmt.Errorf("storage: update topic group timestamp: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return uuid.Nil, fmt.Errorf("storage: commit topic group tx: %w", err)
 		}
 		return groupID, nil
 	}
@@ -619,7 +634,7 @@ func (db *DB) FindOrCreateTopicGroup(
 	}
 
 	// No matching group — create a new one.
-	err = db.pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`INSERT INTO conflict_groups
 		     (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic)
 		 VALUES ($1, $2, $3, $4, $5, $6)
@@ -628,6 +643,9 @@ func (db *DB) FindOrCreateTopicGroup(
 	).Scan(&groupID)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("storage: create topic group: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return uuid.Nil, fmt.Errorf("storage: commit topic group tx: %w", err)
 	}
 	return groupID, nil
 }
