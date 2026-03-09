@@ -436,11 +436,11 @@ func TestLocalSearcher_FindSimilar_WithProject(t *testing.T) {
 	insertDecisionFull(t, db, d2, orgID, "b", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, nil, strPtr("other"))
 	insertDecisionFull(t, db, d3, orgID, "c", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, nil, nil) // NULL project
 
-	proj := "myproj"
-	results, err := s.FindSimilar(ctx, orgID, []float32{1, 0, 0}, uuid.Nil, &proj, 10)
+	results, err := s.FindSimilar(ctx, orgID, []float32{1, 0, 0}, uuid.Nil, []string{"myproj"}, 10)
 	require.NoError(t, err)
-	// Should match d1 (project = myproj) and d3 (project IS NULL), but not d2 (project = other).
-	assert.Len(t, results, 2, "FindSimilar project filter should include matching project and NULL project")
+	// Strict scoping: should match only d1 (project = myproj), not d2 (other) or d3 (NULL).
+	assert.Len(t, results, 1, "FindSimilar with single project should match only that project")
+	assert.Equal(t, d1, results[0].DecisionID)
 }
 
 func TestLocalSearcher_DefaultLimit(t *testing.T) {
@@ -483,8 +483,8 @@ func TestLocalSearcher_CombinedFilters(t *testing.T) {
 	assert.Len(t, results, 1, "combined filters should narrow to exactly one decision")
 }
 
-// TestLocalSearcher_FindSimilar_NilProject verifies FindSimilar with nil project
-// returns all decisions (no project filter applied).
+// TestLocalSearcher_FindSimilar_NilProject verifies FindSimilar with nil projects
+// matches only NULL-project decisions (strict project scoping).
 func TestLocalSearcher_FindSimilar_NilProject(t *testing.T) {
 	db := openTestDB(t)
 	s := NewLocalSearcher(db)
@@ -495,10 +495,10 @@ func TestLocalSearcher_FindSimilar_NilProject(t *testing.T) {
 	insertDecisionFull(t, db, uuid.New(), orgID, "a", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, nil, strPtr("proj-a"))
 	insertDecisionFull(t, db, uuid.New(), orgID, "b", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, nil, nil)
 
-	// nil project means no project filter — should return both decisions.
+	// nil projects means "no project set" → match only NULL-project decisions.
 	results, err := s.FindSimilar(ctx, orgID, []float32{1, 0, 0}, uuid.Nil, nil, 10)
 	require.NoError(t, err)
-	assert.Len(t, results, 2, "nil project should match all decisions regardless of their project value")
+	assert.Len(t, results, 1, "nil projects should match only NULL-project decisions")
 }
 
 // TestLocalSearcher_NegativeLimit verifies that a negative limit defaults to 10.

@@ -239,6 +239,12 @@ func New(cfg ServerConfig) *Server {
 	mux.Handle("POST /v1/retention/hold", adminOnly(http.HandlerFunc(h.HandleCreateHold)))
 	mux.Handle("DELETE /v1/retention/hold/{id}", adminOnly(http.HandlerFunc(h.HandleReleaseHold)))
 
+	// Project links (admin-only).
+	mux.Handle("POST /v1/project-links", adminOnly(http.HandlerFunc(h.HandleCreateProjectLink)))
+	mux.Handle("GET /v1/project-links", adminOnly(http.HandlerFunc(h.HandleListProjectLinks)))
+	mux.Handle("DELETE /v1/project-links/{id}", adminOnly(http.HandlerFunc(h.HandleDeleteProjectLink)))
+	mux.Handle("POST /v1/project-links/grant-all", adminOnly(http.HandlerFunc(h.HandleGrantAllProjectLinks)))
+
 	// MCP StreamableHTTP transport (auth required, reader+).
 	if cfg.MCPServer != nil {
 		mcpHTTP := mcpserver.NewStreamableHTTPServer(cfg.MCPServer)
