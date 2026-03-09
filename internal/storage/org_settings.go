@@ -5,9 +5,11 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/ashita-ai/akashi/internal/model"
 )
@@ -25,7 +27,7 @@ func (db *DB) GetOrgSettings(ctx context.Context, orgID uuid.UUID) (model.OrgSet
 	).Scan(&raw, &s.UpdatedAt, &s.UpdatedBy)
 	if err != nil {
 		// No row → return empty defaults.
-		if err.Error() == "no rows in result set" {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return s, nil
 		}
 		return s, fmt.Errorf("storage: get org settings: %w", err)
@@ -102,7 +104,7 @@ func (db *DB) AutoResolvableConflicts(ctx context.Context, orgID uuid.UUID, maxS
 	query := conflictSelectBase + `
 		WHERE sc.org_id = $1
 		  AND sc.status IN ('open', 'acknowledged')
-		  AND sc.detected_at < now() - ($2 || ' days')::interval
+		  AND sc.detected_at < now() - ($2 * interval '1 day')
 		  AND (
 		      sc.severity IS NULL
 		      OR CASE sc.severity
