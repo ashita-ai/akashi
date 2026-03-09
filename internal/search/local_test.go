@@ -483,8 +483,8 @@ func TestLocalSearcher_CombinedFilters(t *testing.T) {
 	assert.Len(t, results, 1, "combined filters should narrow to exactly one decision")
 }
 
-// TestLocalSearcher_FindSimilar_NilProject verifies FindSimilar with nil project
-// returns all decisions (no project filter applied).
+// TestLocalSearcher_FindSimilar_NilProject verifies FindSimilar with nil projects
+// matches only NULL-project decisions (strict project scoping).
 func TestLocalSearcher_FindSimilar_NilProject(t *testing.T) {
 	db := openTestDB(t)
 	s := NewLocalSearcher(db)
@@ -495,10 +495,10 @@ func TestLocalSearcher_FindSimilar_NilProject(t *testing.T) {
 	insertDecisionFull(t, db, uuid.New(), orgID, "a", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, nil, strPtr("proj-a"))
 	insertDecisionFull(t, db, uuid.New(), orgID, "b", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, nil, nil)
 
-	// nil project means no project filter — should return both decisions.
+	// nil projects means "no project set" → match only NULL-project decisions.
 	results, err := s.FindSimilar(ctx, orgID, []float32{1, 0, 0}, uuid.Nil, nil, 10)
 	require.NoError(t, err)
-	assert.Len(t, results, 2, "nil project should match all decisions regardless of their project value")
+	assert.Len(t, results, 1, "nil projects should match only NULL-project decisions")
 }
 
 // TestLocalSearcher_NegativeLimit verifies that a negative limit defaults to 10.
