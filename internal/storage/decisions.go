@@ -1343,18 +1343,42 @@ func NewPgCandidateFinder(db *DB) *PgCandidateFinder {
 // project matches only decisions with that exact project value; a nil project matches only
 // decisions with no project set. This mirrors the Qdrant path and prevents cross-project
 // conflict contamination.
-func (f *PgCandidateFinder) FindSimilar(ctx context.Context, orgID uuid.UUID, embedding []float32, excludeID uuid.UUID, project *string, limit int) ([]search.Result, error) {
+func (f *PgCandidateFinder) FindSimilar(ctx context.Context, orgID uuid.UUID, embedding []float32, excludeID uuid.UUID, projects []string, limit int) ([]search.Result, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	emb := pgvector.NewVector(embedding)
-	rows, err := f.db.pool.Query(ctx,
-		`SELECT id, 1 - (embedding <=> $3) AS score
-		 FROM decisions
-		 WHERE org_id = $1 AND id != $2 AND embedding IS NOT NULL AND outcome_embedding IS NOT NULL AND valid_to IS NULL
-		   AND ($5::text IS NULL AND project IS NULL OR project = $5)
-		 ORDER BY embedding <=> $3
-		 LIMIT $4`, orgID, excludeID, emb, limit, project)
+
+	var q string
+	var args []any
+	switch len(projects) {
+	case 0:
+		q = `SELECT id, 1 - (embedding <=> $3) AS score
+		     FROM decisions
+		     WHERE org_id = $1 AND id != $2 AND embedding IS NOT NULL AND outcome_embedding IS NOT NULL AND valid_to IS NULL
+		       AND project IS NULL
+		     ORDER BY embedding <=> $3
+		     LIMIT $4`
+		args = []any{orgID, excludeID, emb, limit}
+	case 1:
+		q = `SELECT id, 1 - (embedding <=> $3) AS score
+		     FROM decisions
+		     WHERE org_id = $1 AND id != $2 AND embedding IS NOT NULL AND outcome_embedding IS NOT NULL AND valid_to IS NULL
+		       AND project = $5
+		     ORDER BY embedding <=> $3
+		     LIMIT $4`
+		args = []any{orgID, excludeID, emb, limit, projects[0]}
+	default:
+		q = `SELECT id, 1 - (embedding <=> $3) AS score
+		     FROM decisions
+		     WHERE org_id = $1 AND id != $2 AND embedding IS NOT NULL AND outcome_embedding IS NOT NULL AND valid_to IS NULL
+		       AND project = ANY($5)
+		     ORDER BY embedding <=> $3
+		     LIMIT $4`
+		args = []any{orgID, excludeID, emb, limit, projects}
+	}
+
+	rows, err := f.db.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("storage: pg candidate finder: %w", err)
 	}

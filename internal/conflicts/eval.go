@@ -112,6 +112,52 @@ func FormatMetrics(m EvalMetrics, results []EvalResult) string {
 	return b.String()
 }
 
+// ScorerPrecisionRecall holds precision/recall/F1 for the full scorer pipeline eval.
+type ScorerPrecisionRecall struct {
+	TruePositives  int     // detected + labeled genuine
+	FalsePositives int     // detected + labeled related_not_contradicting or unrelated_false_positive
+	FalseNegatives int     // not detected + labeled genuine (missed conflicts)
+	Precision      float64 // TP / (TP + FP)
+	Recall         float64 // TP / (TP + FN)
+	F1             float64 // 2 * (P * R) / (P + R)
+}
+
+// ScorerEvalResult pairs a decision pair with its expected and actual outcome.
+type ScorerEvalResult struct {
+	DecisionAOutcome string
+	DecisionBOutcome string
+	ExpectedLabel    string // "genuine", "related_not_contradicting", "unrelated_false_positive"
+	Detected         bool   // whether the scorer produced a conflict for this pair
+}
+
+// ComputePrecisionRecall calculates precision, recall, and F1 from evaluation results.
+// A "genuine" label is a positive; everything else is a negative.
+func ComputePrecisionRecall(results []ScorerEvalResult) ScorerPrecisionRecall {
+	var pr ScorerPrecisionRecall
+	for _, r := range results {
+		isPositive := r.ExpectedLabel == "genuine"
+		switch {
+		case r.Detected && isPositive:
+			pr.TruePositives++
+		case r.Detected && !isPositive:
+			pr.FalsePositives++
+		case !r.Detected && isPositive:
+			pr.FalseNegatives++
+		}
+	}
+
+	if pr.TruePositives+pr.FalsePositives > 0 {
+		pr.Precision = float64(pr.TruePositives) / float64(pr.TruePositives+pr.FalsePositives)
+	}
+	if pr.TruePositives+pr.FalseNegatives > 0 {
+		pr.Recall = float64(pr.TruePositives) / float64(pr.TruePositives+pr.FalseNegatives)
+	}
+	if pr.Precision+pr.Recall > 0 {
+		pr.F1 = 2 * pr.Precision * pr.Recall / (pr.Precision + pr.Recall)
+	}
+	return pr
+}
+
 // DefaultEvalDataset returns the labeled evaluation dataset.
 // Pairs are derived from real conflicts observed in production plus synthetic
 // edge cases covering the major false positive patterns.
@@ -366,17 +412,604 @@ func DefaultEvalDataset() []EvalPair {
 		// SUBTLE CONTRADICTIONS (same technology, different configuration)
 		// =====================================================================
 		{
-			Label: "subtle: same cache different TTL",
+			Label: "subtle: Redis TTL 5min vs 24h",
 			Input: ValidateInput{
-				OutcomeA: "Use Redis for session caching with a 5-minute TTL to prevent stale reads during deployments",
-				OutcomeB: "Use Redis for session caching with a 24-hour TTL to minimize cache miss latency",
+				OutcomeA: "Set Redis session cache TTL to 5 minutes — short-lived sessions reduce stale data risk and memory usage",
+				OutcomeB: "Set Redis session cache TTL to 24 hours — users shouldn't have to re-authenticate constantly, and cache hit rate matters more than memory",
 				TypeA:    "architecture", TypeB: "architecture",
-				AgentA: "planner", AgentB: "coder",
+				AgentA: "backend-eng", AgentB: "platform-eng",
+				CreatedA: now, CreatedB: now.Add(4 * h),
+				ProjectA: "my-service", ProjectB: "my-service",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "subtle: PostgreSQL max_connections 100 vs 500",
+			Input: ValidateInput{
+				OutcomeA: "Configure PostgreSQL max_connections = 100 with PgBouncer in front — direct connections above 100 cause scheduler contention",
+				OutcomeB: "Set PostgreSQL max_connections = 500 to handle peak connection burst from the 20 microservices — PgBouncer adds latency we can't afford",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "dba", AgentB: "backend-eng",
+				CreatedA: now, CreatedB: now.Add(6 * h),
+				ProjectA: "platform", ProjectB: "platform",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "subtle: JWT expiry 15min vs 4h",
+			Input: ValidateInput{
+				OutcomeA: "JWT access token expiry should be 15 minutes — short-lived tokens limit the blast radius of token theft",
+				OutcomeB: "JWT access token expiry should be 4 hours — 15-minute tokens cause excessive refresh traffic and degrade UX on mobile",
+				TypeA:    "security", TypeB: "architecture",
+				AgentA: "security-eng", AgentB: "mobile-eng",
+				CreatedA: now, CreatedB: now.Add(24 * h),
+				ProjectA: "auth-service", ProjectB: "auth-service",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "subtle: batch size 100 vs 10000",
+			Input: ValidateInput{
+				OutcomeA: "Process event ingestion in batches of 100 — keeps memory footprint predictable and latency under 50ms per batch",
+				OutcomeB: "Use batch size of 10000 for event ingestion — smaller batches waste IOPS on transaction overhead and can't keep up with peak throughput",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "coder", AgentB: "data-eng",
+				CreatedA: now, CreatedB: now.Add(2 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "subtle: log level INFO vs DEBUG in production",
+			Input: ValidateInput{
+				OutcomeA: "Production log level must be INFO — DEBUG logging in production generates 50GB/day and masks real issues in noise",
+				OutcomeB: "Enable DEBUG logging in production for the decision pipeline — we can't diagnose conflict detection issues without it, use structured sampling to manage volume",
+				TypeA:    "operations", TypeB: "operations",
+				AgentA: "sre", AgentB: "coder",
+				CreatedA: now, CreatedB: now.Add(h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "subtle: connection pool 10 vs 50",
+			Input: ValidateInput{
+				OutcomeA: "Database connection pool size should be 10 per service instance — matches CPU core count and avoids connection starvation across the cluster",
+				OutcomeB: "Database connection pool size should be 50 per service instance — our async workloads spend 80% of time waiting on I/O, so we need more connections than cores",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "dba", AgentB: "backend-eng",
+				CreatedA: now, CreatedB: now.Add(3 * h),
+				ProjectA: "platform", ProjectB: "platform",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "subtle: gRPC timeout 5s vs 30s",
+			Input: ValidateInput{
+				OutcomeA: "Set gRPC deadline to 5 seconds for inter-service calls — fail fast to prevent cascading timeouts",
+				OutcomeB: "Set gRPC deadline to 30 seconds for inter-service calls — the embedding service regularly takes 10-15s for large payloads and 5s causes false failures",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "sre", AgentB: "ml-eng",
+				CreatedA: now, CreatedB: now.Add(12 * h),
+				ProjectA: "my-service", ProjectB: "my-service",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "subtle: retry 3 vs 10 attempts",
+			Input: ValidateInput{
+				OutcomeA: "Maximum 3 retries with exponential backoff for failed API calls — more retries just amplify load on an already-struggling downstream",
+				OutcomeB: "Allow up to 10 retries with jittered backoff for embedding API calls — the service has transient cold-start failures that resolve within 30s",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "sre", AgentB: "coder",
+				CreatedA: now, CreatedB: now.Add(5 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+
+		// =====================================================================
+		// PARTIAL CONTRADICTIONS (agree on approach, disagree on detail)
+		// =====================================================================
+		{
+			Label: "partial: both use Redis, cluster vs standalone",
+			Input: ValidateInput{
+				OutcomeA: "Use Redis Cluster with 6 nodes for the caching layer — we need horizontal scalability and automatic failover",
+				OutcomeB: "Use a single Redis Sentinel setup for caching — cluster mode adds operational complexity we don't need at our scale, Sentinel gives us failover",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "platform-eng", AgentB: "sre",
+				CreatedA: now, CreatedB: now.Add(8 * h),
+				ProjectA: "my-service", ProjectB: "my-service",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "partial: both use Postgres, disagree on partitioning",
+			Input: ValidateInput{
+				OutcomeA: "Partition the decisions table by created_at using monthly range partitions — time-based queries dominate and old months can be detached cheaply",
+				OutcomeB: "Partition the decisions table by org_id using hash partitioning — multi-tenant isolation is the primary concern, time-based queries can use indexes",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "dba", AgentB: "backend-eng",
+				CreatedA: now, CreatedB: now.Add(24 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "partial: both use JWT, cookie vs localStorage",
+			Input: ValidateInput{
+				OutcomeA: "Store JWT tokens in HttpOnly Secure cookies — immune to XSS, automatic inclusion on requests",
+				OutcomeB: "Store JWT tokens in localStorage with short expiry — cookies are vulnerable to CSRF and complicate the CORS setup for our multi-domain SPA",
+				TypeA:    "security", TypeB: "architecture",
+				AgentA: "security-eng", AgentB: "frontend-eng",
+				CreatedA: now, CreatedB: now.Add(6 * h),
+				ProjectA: "auth-service", ProjectB: "auth-service",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "partial: both cache, disagree on invalidation",
+			Input: ValidateInput{
+				OutcomeA: "Use cache-aside pattern with TTL-based expiration — simple, predictable, no cache coherence complexity",
+				OutcomeB: "Use write-through caching with event-driven invalidation — TTL-based expiration causes stale reads that confuse users when they update settings",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "backend-eng", AgentB: "coder",
+				CreatedA: now, CreatedB: now.Add(4 * h),
+				ProjectA: "my-service", ProjectB: "my-service",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "partial: both use K8s, namespace per team vs per environment",
+			Input: ValidateInput{
+				OutcomeA: "Organize Kubernetes namespaces by team — each team owns their namespace with resource quotas and RBAC scoped to their services",
+				OutcomeB: "Organize Kubernetes namespaces by environment (dev/staging/prod) — team-based namespaces fragment monitoring and make cross-team service discovery harder",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "platform-eng", AgentB: "sre",
+				CreatedA: now, CreatedB: now.Add(48 * h),
+				ProjectA: "platform", ProjectB: "platform",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "partial: both use event sourcing, snapshot frequency",
+			Input: ValidateInput{
+				OutcomeA: "Take event store snapshots every 100 events — keeps replay time under 50ms for any aggregate",
+				OutcomeB: "Take event store snapshots every 10000 events — frequent snapshots waste storage and the P99 replay time at 1000 events is only 200ms which is acceptable",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "backend-eng", AgentB: "data-eng",
+				CreatedA: now, CreatedB: now.Add(12 * h),
+				ProjectA: "my-service", ProjectB: "my-service",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+
+		// =====================================================================
+		// TEMPORAL SUPERSESSION EDGE CASES
+		// =====================================================================
+		{
+			Label: "supersession: same agent revises own timeout decision",
+			Input: ValidateInput{
+				OutcomeA: "Set HTTP client timeout to 5s for the embedding service",
+				OutcomeB: "Revised: increased embedding service timeout from 5s to 30s after observing P99 latency of 12s under load — 5s was causing 15% request failures",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "coder", AgentB: "coder",
+				CreatedA: now, CreatedB: now.Add(72 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+				SessionIDA: "sess-a", SessionIDB: "sess-b",
+			},
+			ExpectedRelationship: "supersession",
+		},
+		{
+			Label: "supersession: team lead overrides junior decision",
+			Input: ValidateInput{
+				OutcomeA: "Use MongoDB for the audit log — schemaless storage is flexible for evolving event shapes",
+				OutcomeB: "Overriding MongoDB decision: use PostgreSQL with JSONB columns for audit logs — we already run Postgres, adding MongoDB doubles operational burden for minimal flexibility benefit",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "junior-eng", AgentB: "tech-lead",
+				CreatedA: now, CreatedB: now.Add(24 * h),
+				ProjectA: "my-service", ProjectB: "my-service",
+			},
+			ExpectedRelationship: "supersession",
+		},
+		{
+			Label: "supersession: narrowing scope after production data",
+			Input: ValidateInput{
+				OutcomeA: "Enable WAL-based replication for all tables to support real-time analytics",
+				OutcomeB: "Scaled back WAL replication to critical tables only (decisions, scored_conflicts) — full replication was generating 200GB/day of WAL and causing replica lag",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "data-eng", AgentB: "data-eng",
+				CreatedA: now, CreatedB: now.Add(168 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "supersession",
+		},
+		{
+			Label: "supersession: explicit replacement with migration",
+			Input: ValidateInput{
+				OutcomeA: "Store embeddings in a separate Qdrant collection per org for tenant isolation",
+				OutcomeB: "Migrated from per-org Qdrant collections to a single shared collection with org_id payload filter — per-org collections don't scale past 100 tenants and complicate backup/restore",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "coder", AgentB: "platform-eng",
+				CreatedA: now, CreatedB: now.Add(720 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "supersession",
+		},
+		{
+			Label: "not_supersession: same agent different session adding context",
+			Input: ValidateInput{
+				OutcomeA: "Use cosine similarity threshold of 0.7 for conflict candidate retrieval",
+				OutcomeB: "Added a second retrieval pass: after cosine similarity (threshold 0.7), also run BM25 keyword search to catch conflicts that share terminology but have low embedding similarity",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "coder", AgentB: "coder",
+				CreatedA: now, CreatedB: now.Add(48 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+				SessionIDA: "sess-x", SessionIDB: "sess-y",
+			},
+			ExpectedRelationship: "refinement",
+		},
+
+		// =====================================================================
+		// NEGATION PATTERNS
+		// =====================================================================
+		{
+			Label: "negation: secure vs has vulnerabilities",
+			Input: ValidateInput{
+				OutcomeA: "The authentication module is secure — all endpoints validate tokens, rate limiting is applied, no injection vectors found",
+				OutcomeB: "The authentication module has critical vulnerabilities — token validation can be bypassed with a malformed JWT header, and the rate limiter doesn't cover the /token endpoint",
+				TypeA:    "audit", TypeB: "audit",
+				AgentA: "reviewer-a", AgentB: "reviewer-b",
+				CreatedA: now, CreatedB: now.Add(2 * h),
+				ProjectA: "auth-service", ProjectB: "auth-service",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "negation: no issues vs critical issues",
+			Input: ValidateInput{
+				OutcomeA: "Code review of the storage layer: no issues found, implementation follows project conventions, queries are properly parameterized",
+				OutcomeB: "Code review of the storage layer: found 3 critical issues — missing org_id filter in ListDecisionsByTag, SQL injection in full-text search handler, N+1 query in GetDecisionWithAlternatives",
+				TypeA:    "code_review", TypeB: "code_review",
+				AgentA: "reviewer-a", AgentB: "reviewer-b",
+				CreatedA: now, CreatedB: now.Add(h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "negation: backwards compatible vs breaking change",
+			Input: ValidateInput{
+				OutcomeA: "The v2 API changes are backwards compatible — existing clients will continue to work without modification",
+				OutcomeB: "The v2 API introduces breaking changes — the response envelope changed from {data: ...} to {result: ...} and three fields were renamed",
+				TypeA:    "assessment", TypeB: "assessment",
+				AgentA: "api-reviewer", AgentB: "integration-tester",
+				CreatedA: now, CreatedB: now.Add(3 * h),
+				ProjectA: "my-service", ProjectB: "my-service",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "negation: thread-safe vs race condition",
+			Input: ValidateInput{
+				OutcomeA: "The event buffer implementation is thread-safe — all shared state is protected by sync.Mutex and the flush goroutine coordinates via channels",
+				OutcomeB: "Race condition detected in the event buffer — the flush goroutine reads buf.events without holding the mutex when checking length, causing data races under concurrent Append calls",
+				TypeA:    "code_review", TypeB: "code_review",
+				AgentA: "reviewer", AgentB: "fuzzer",
+				CreatedA: now, CreatedB: now.Add(4 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "negation: performance acceptable vs degraded",
+			Input: ValidateInput{
+				OutcomeA: "Load test results: P99 latency is 45ms at 1000 RPS, well within the 100ms SLO — performance is acceptable for GA launch",
+				OutcomeB: "Load test results: P99 latency spikes to 800ms at 1000 RPS when conflict detection is enabled — the synchronous embedding call in the hot path is a bottleneck",
+				TypeA:    "assessment", TypeB: "assessment",
+				AgentA: "sre", AgentB: "perf-eng",
+				CreatedA: now, CreatedB: now.Add(h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "negation: no data loss vs potential data loss",
+			Input: ValidateInput{
+				OutcomeA: "The retention policy is safe — expired decisions are soft-deleted with a 30-day recovery window before hard deletion",
+				OutcomeB: "Potential data loss in retention policy — the hard delete job doesn't check for active references from scored_conflicts, so deleting a decision orphans its conflict records",
+				TypeA:    "audit", TypeB: "code_review",
+				AgentA: "auditor", AgentB: "coder",
+				CreatedA: now, CreatedB: now.Add(6 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+
+		// =====================================================================
+		// SCALE / QUANTITY DISAGREEMENTS
+		// =====================================================================
+		{
+			Label: "scale: 3 critical issues vs no issues",
+			Input: ValidateInput{
+				OutcomeA: "Security scan of the API gateway: 3 critical findings — exposed debug endpoint, missing CORS validation, API key logged in plaintext",
+				OutcomeB: "Security scan of the API gateway: clean — no critical or high-severity findings, all endpoints properly secured",
+				TypeA:    "audit", TypeB: "audit",
+				AgentA: "scanner-a", AgentB: "scanner-b",
+				CreatedA: now, CreatedB: now.Add(h),
+				ProjectA: "my-service", ProjectB: "my-service",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "scale: 5 services needed vs 2 sufficient",
+			Input: ValidateInput{
+				OutcomeA: "The platform needs 5 microservices: auth, decisions, conflicts, search, and analytics — each has distinct scaling requirements",
+				OutcomeB: "Two services are sufficient: a monolithic API server and a background worker — 5 services adds network hops and deployment complexity we can't justify at current scale",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "architect", AgentB: "pragmatist",
+				CreatedA: now, CreatedB: now.Add(48 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "scale: 99.99% uptime vs 99.9% sufficient",
+			Input: ValidateInput{
+				OutcomeA: "Target 99.99% uptime (52 min/year downtime) — multi-region active-active deployment with automated failover required",
+				OutcomeB: "99.9% uptime (8.7 hours/year) is sufficient for our use case — the cost of multi-region is not justified when our users are in a single timezone and can tolerate brief maintenance windows",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "sre", AgentB: "product-eng",
+				CreatedA: now, CreatedB: now.Add(24 * h),
+				ProjectA: "platform", ProjectB: "platform",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "scale: keep 90 days vs keep 365 days of data",
+			Input: ValidateInput{
+				OutcomeA: "Set data retention to 90 days — reduces storage costs and keeps query performance manageable",
+				OutcomeB: "Set data retention to 365 days minimum — compliance requires 1 year of audit trail, and customers expect to query historical decisions",
+				TypeA:    "architecture", TypeB: "compliance",
+				AgentA: "sre", AgentB: "compliance-eng",
+				CreatedA: now, CreatedB: now.Add(12 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+
+		// =====================================================================
+		// MULTI-CLAIM OUTCOMES (only one claim pair conflicts)
+		// =====================================================================
+		{
+			Label: "multi_claim: agree on 4 points disagree on auth",
+			Input: ValidateInput{
+				OutcomeA: "Architecture review recommendations: (1) use PostgreSQL for persistence, (2) use Redis for caching, (3) use JWT for auth with 15-min expiry, (4) deploy on Kubernetes, (5) use OpenTelemetry for observability",
+				OutcomeB: "Architecture review recommendations: (1) use PostgreSQL for persistence, (2) use Redis for caching, (3) use session tokens with server-side storage instead of JWT, (4) deploy on Kubernetes, (5) use OpenTelemetry for observability",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "architect-a", AgentB: "architect-b",
 				CreatedA: now, CreatedB: now.Add(24 * h),
 				ProjectA: "my-service", ProjectB: "my-service",
 			},
 			ExpectedRelationship: "contradiction",
 		},
+		{
+			Label: "multi_claim: long review mostly agrees except one finding",
+			Input: ValidateInput{
+				OutcomeA: "Codebase review: (1) error handling is consistent and follows Go conventions, (2) test coverage is good at 82%, (3) the conflict scorer correctly implements early exit, (4) the WAL implementation is correct and handles fsync properly, (5) migration files are well-structured",
+				OutcomeB: "Codebase review: (1) error handling is consistent, (2) test coverage is 82%, (3) conflict scorer early exit works correctly, (4) the WAL implementation has a bug — fsync is called on the file but not the parent directory, so renames may be lost on crash, (5) migrations look good",
+				TypeA:    "code_review", TypeB: "code_review",
+				AgentA: "reviewer-a", AgentB: "reviewer-b",
+				CreatedA: now, CreatedB: now.Add(2 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "multi_claim: fix addresses 2 of 3 findings (partial)",
+			Input: ValidateInput{
+				OutcomeA: "Audit findings: (1) missing org_id filter in ListByTag, (2) N+1 query in GetDecisionTree, (3) retention job doesn't cascade to scored_conflicts",
+				OutcomeB: "Fixed audit findings: (1) added org_id filter to ListByTag, (2) replaced N+1 with LEFT JOIN in GetDecisionTree. Note: retention cascade fix deferred to next sprint pending schema review",
+				TypeA:    "audit", TypeB: "fix",
+				AgentA: "auditor", AgentB: "coder",
+				CreatedA: now, CreatedB: now.Add(8 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "refinement",
+		},
+		{
+			Label: "multi_claim: architecture doc 5 choices all agree",
+			Input: ValidateInput{
+				OutcomeA: "System design: Go for the backend, PostgreSQL for storage, Qdrant for vectors, React for UI, OpenTelemetry for tracing",
+				OutcomeB: "Implementation plan: using Go stdlib net/http for HTTP server, PostgreSQL 16 with pgvector, Qdrant for semantic search, React 19 with TypeScript for the dashboard, OTEL SDK for distributed tracing",
+				TypeA:    "architecture", TypeB: "implementation",
+				AgentA: "architect", AgentB: "coder",
+				CreatedA: now, CreatedB: now.Add(72 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "refinement",
+		},
+
+		// =====================================================================
+		// CROSS-TYPE CONFLICTS (architecture standard vs code review)
+		// =====================================================================
+		{
+			Label: "cross_type: standard says pool, review finds no pooling",
+			Input: ValidateInput{
+				OutcomeA: "Architecture standard: all database access must use connection pooling with a maximum of 20 connections per service instance",
+				OutcomeB: "Code review finding: the search handler opens a new database connection per request using sql.Open() instead of using the shared connection pool",
+				TypeA:    "architecture", TypeB: "code_review",
+				AgentA: "architect", AgentB: "reviewer",
+				CreatedA: now.Add(-720 * h), CreatedB: now,
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "cross_type: security policy vs implementation shortcut",
+			Input: ValidateInput{
+				OutcomeA: "Security policy: all data at rest must be encrypted using AES-256, including database backups and log archives",
+				OutcomeB: "Implementation decision: skip encryption for the analytics staging tables — they contain only aggregated counts with no PII, and encryption adds 30% overhead to the ETL pipeline",
+				TypeA:    "security", TypeB: "implementation",
+				AgentA: "security-eng", AgentB: "data-eng",
+				CreatedA: now.Add(-168 * h), CreatedB: now,
+				ProjectA: "platform", ProjectB: "platform",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "cross_type: API standard vs actual endpoint",
+			Input: ValidateInput{
+				OutcomeA: "API design standard: all list endpoints must support cursor-based pagination with a maximum page size of 100",
+				OutcomeB: "Implemented GET /v1/decisions endpoint with offset-based pagination and a default page size of 500 for backwards compatibility with the existing dashboard",
+				TypeA:    "architecture", TypeB: "implementation",
+				AgentA: "api-designer", AgentB: "coder",
+				CreatedA: now.Add(-240 * h), CreatedB: now,
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "cross_type: standard followed correctly",
+			Input: ValidateInput{
+				OutcomeA: "Architecture standard: all HTTP handlers must extract org_id from the auth context and pass it to storage queries for tenant isolation",
+				OutcomeB: "Code review: HandleListConflicts correctly extracts org_id from OrgIDFromContext and passes it to storage.ListConflicts — tenant isolation is properly maintained",
+				TypeA:    "architecture", TypeB: "code_review",
+				AgentA: "architect", AgentB: "reviewer",
+				CreatedA: now.Add(-720 * h), CreatedB: now,
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "complementary",
+		},
+
+		// =====================================================================
+		// HIGH-CONFIDENCE WRONG DECISIONS (misleading confidence)
+		// =====================================================================
+		{
+			Label: "high_confidence: confident assertion later proven wrong",
+			Input: ValidateInput{
+				OutcomeA: "The current embedding model (all-MiniLM-L6-v2) provides sufficient accuracy for conflict detection — tested on 50 pairs with 95% accuracy",
+				OutcomeB: "Switching embedding model from all-MiniLM-L6-v2 to text-embedding-3-small — the MiniLM model misses semantic similarity for domain-specific terms, causing 40% false negative rate on production data",
+				TypeA:    "assessment", TypeB: "architecture",
+				AgentA: "ml-eng", AgentB: "ml-eng",
+				CreatedA: now, CreatedB: now.Add(168 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "supersession",
+		},
+		{
+			Label: "high_confidence: overconfident clean audit",
+			Input: ValidateInput{
+				OutcomeA: "Complete security audit: the system is production-ready with no vulnerabilities. All inputs are validated, all queries are parameterized, authentication is robust.",
+				OutcomeB: "Penetration test results: found 2 critical vulnerabilities — the /v1/admin/eval endpoint lacks authentication middleware, and the SSE endpoint leaks events across org boundaries when connection pool is exhausted",
+				TypeA:    "audit", TypeB: "audit",
+				AgentA: "auditor", AgentB: "pentester",
+				CreatedA: now, CreatedB: now.Add(48 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+		{
+			Label: "high_confidence: both confident opposite conclusions",
+			Input: ValidateInput{
+				OutcomeA: "Load testing confirms the system handles 10,000 RPS with P99 under 100ms — ready for enterprise rollout",
+				OutcomeB: "Load testing shows the system degrades above 2,000 RPS — connection pool exhaustion causes cascading failures at 3,000 RPS. The 10K test likely hit a cached path.",
+				TypeA:    "assessment", TypeB: "assessment",
+				AgentA: "perf-eng-a", AgentB: "perf-eng-b",
+				CreatedA: now, CreatedB: now.Add(24 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "contradiction",
+		},
+
+		// =====================================================================
+		// ADDITIONAL UNRELATED (strengthen negative class)
+		// =====================================================================
+		{
+			Label: "unrelated: completely different domains",
+			Input: ValidateInput{
+				OutcomeA: "Implemented image resize pipeline using Sharp with WebP output — reduces bundle size by 60% compared to PNG",
+				OutcomeB: "Configured Kafka consumer group with 12 partitions for the event ingestion topic — partition count matches peak throughput requirements",
+				TypeA:    "implementation", TypeB: "architecture",
+				AgentA: "frontend-eng", AgentB: "data-eng",
+				CreatedA: now, CreatedB: now.Add(48 * h),
+				ProjectA: "website", ProjectB: "analytics",
+			},
+			ExpectedRelationship: "unrelated",
+		},
+		{
+			Label: "unrelated: same tech different context",
+			Input: ValidateInput{
+				OutcomeA: "Use PostgreSQL row-level security for the multi-tenant SaaS billing system",
+				OutcomeB: "Use PostgreSQL LISTEN/NOTIFY for real-time dashboard updates in the monitoring tool",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "billing-eng", AgentB: "frontend-eng",
+				CreatedA: now, CreatedB: now.Add(24 * h),
+				ProjectA: "billing", ProjectB: "monitoring",
+			},
+			ExpectedRelationship: "unrelated",
+		},
+
+		// =====================================================================
+		// ADDITIONAL COMPLEMENTARY (strengthen negative class)
+		// =====================================================================
+		{
+			Label: "complementary: different layers same system",
+			Input: ValidateInput{
+				OutcomeA: "The API layer should validate all input using JSON Schema before passing to handlers — fail fast with 400 errors for malformed requests",
+				OutcomeB: "The storage layer should use CHECK constraints and NOT NULL to enforce data integrity — defense in depth against bugs in the API validation",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "backend-eng", AgentB: "dba",
+				CreatedA: now, CreatedB: now.Add(4 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "complementary",
+		},
+		{
+			Label: "complementary: performance and security non-overlapping",
+			Input: ValidateInput{
+				OutcomeA: "Add a read-through cache in front of GetDecision to reduce P99 from 15ms to 2ms for repeated lookups",
+				OutcomeB: "Add audit logging for all GetDecision calls to track who accessed which decisions for compliance",
+				TypeA:    "architecture", TypeB: "security",
+				AgentA: "perf-eng", AgentB: "compliance-eng",
+				CreatedA: now, CreatedB: now.Add(8 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "complementary",
+		},
+
+		// =====================================================================
+		// ADDITIONAL REFINEMENT (strengthen negative class)
+		// =====================================================================
+		{
+			Label: "refinement: prototype then production implementation",
+			Input: ValidateInput{
+				OutcomeA: "Prototype conflict detection using basic string matching — proof of concept to validate the product hypothesis before investing in embeddings",
+				OutcomeB: "Replaced string matching prototype with embedding-based similarity search using Qdrant — cosine similarity with 0.7 threshold followed by LLM validation for 5-class relationship classification",
+				TypeA:    "architecture", TypeB: "architecture",
+				AgentA: "coder", AgentB: "coder",
+				CreatedA: now, CreatedB: now.Add(336 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+			},
+			ExpectedRelationship: "refinement",
+		},
+		{
+			Label: "refinement: error handling improvement on existing code",
+			Input: ValidateInput{
+				OutcomeA: "Implemented the trace ingestion endpoint — accepts POST /v1/trace with outcome, reasoning, confidence, creates a decision record",
+				OutcomeB: "Enhanced trace ingestion with idempotency keys, input validation (confidence 0-1 range, non-empty outcome), and structured error responses with error codes for each validation failure",
+				TypeA:    "implementation", TypeB: "implementation",
+				AgentA: "coder", AgentB: "coder",
+				CreatedA: now, CreatedB: now.Add(96 * h),
+				ProjectA: "akashi", ProjectB: "akashi",
+				SessionIDA: "sess-impl-1", SessionIDB: "sess-impl-2",
+			},
+			ExpectedRelationship: "refinement",
+		},
+
+		// =====================================================================
+		// PAIRS FROM PRIOR EXPANSION (merged from main)
+		// =====================================================================
 		{
 			Label: "subtle: same database different replication mode",
 			Input: ValidateInput{
@@ -401,10 +1034,6 @@ func DefaultEvalDataset() []EvalPair {
 			},
 			ExpectedRelationship: "contradiction",
 		},
-
-		// =====================================================================
-		// PARTIAL CONTRADICTIONS (agree on approach, disagree on detail)
-		// =====================================================================
 		{
 			Label: "partial: both want rate limiting, disagree on strategy",
 			Input: ValidateInput{
@@ -429,10 +1058,6 @@ func DefaultEvalDataset() []EvalPair {
 			},
 			ExpectedRelationship: "contradiction",
 		},
-
-		// =====================================================================
-		// NEGATION PATTERNS (explicit semantic opposition)
-		// =====================================================================
 		{
 			Label: "negation: security assessment positive vs negative",
 			Input: ValidateInput{
@@ -457,10 +1082,6 @@ func DefaultEvalDataset() []EvalPair {
 			},
 			ExpectedRelationship: "contradiction",
 		},
-
-		// =====================================================================
-		// SCALE/QUANTITY DISAGREEMENTS
-		// =====================================================================
 		{
 			Label: "scale: zero issues vs multiple critical issues",
 			Input: ValidateInput{
@@ -485,10 +1106,6 @@ func DefaultEvalDataset() []EvalPair {
 			},
 			ExpectedRelationship: "contradiction",
 		},
-
-		// =====================================================================
-		// CROSS-TYPE CONFLICTS (architecture standard vs finding)
-		// =====================================================================
 		{
 			Label: "cross_type: architecture standard violated by review finding",
 			Input: ValidateInput{
@@ -513,10 +1130,6 @@ func DefaultEvalDataset() []EvalPair {
 			},
 			ExpectedRelationship: "supersession",
 		},
-
-		// =====================================================================
-		// MULTI-CLAIM OUTCOMES (only one claim pair conflicts)
-		// =====================================================================
 		{
 			Label: "multi_claim: one conflicting claim among several agreeing ones",
 			Input: ValidateInput{
@@ -529,10 +1142,6 @@ func DefaultEvalDataset() []EvalPair {
 			},
 			ExpectedRelationship: "contradiction",
 		},
-
-		// =====================================================================
-		// TEMPORAL SUPERSESSION EDGE CASES
-		// =====================================================================
 		{
 			Label: "temporal: same agent explicitly reverses own decision",
 			Input: ValidateInput{
@@ -557,10 +1166,6 @@ func DefaultEvalDataset() []EvalPair {
 			},
 			ExpectedRelationship: "supersession",
 		},
-
-		// =====================================================================
-		// HIGH-CONFIDENCE WRONG (tests whether confidence misleads)
-		// =====================================================================
 		{
 			Label: "high_confidence_both: both very confident, contradictory",
 			Input: ValidateInput{
@@ -573,10 +1178,6 @@ func DefaultEvalDataset() []EvalPair {
 			},
 			ExpectedRelationship: "contradiction",
 		},
-
-		// =====================================================================
-		// ADDITIONAL AGREEMENT PATTERNS
-		// =====================================================================
 		{
 			Label: "agreement: same conclusion different framing",
 			Input: ValidateInput{
@@ -601,10 +1202,6 @@ func DefaultEvalDataset() []EvalPair {
 			},
 			ExpectedRelationship: "complementary",
 		},
-
-		// =====================================================================
-		// ADDITIONAL UNRELATED PATTERNS
-		// =====================================================================
 		{
 			Label: "unrelated: same decision type different domains entirely",
 			Input: ValidateInput{
@@ -629,10 +1226,6 @@ func DefaultEvalDataset() []EvalPair {
 			},
 			ExpectedRelationship: "unrelated",
 		},
-
-		// =====================================================================
-		// ADDITIONAL REFINEMENT PATTERNS
-		// =====================================================================
 		{
 			Label: "refinement: general principle then specific implementation",
 			Input: ValidateInput{
@@ -658,55 +1251,4 @@ func DefaultEvalDataset() []EvalPair {
 			ExpectedRelationship: "refinement",
 		},
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Scorer-level precision/recall evaluation (embedding pipeline, not LLM validator)
-// ---------------------------------------------------------------------------
-
-// ScorerPrecisionRecall holds evaluation metrics for a conflict detection run.
-type ScorerPrecisionRecall struct {
-	TruePositives  int     // detected + labeled genuine
-	FalsePositives int     // detected + labeled related_not_contradicting or unrelated_false_positive
-	FalseNegatives int     // not detected + labeled genuine (missed conflicts)
-	Precision      float64 // TP / (TP + FP)
-	Recall         float64 // TP / (TP + FN)
-	F1             float64 // 2 * (P * R) / (P + R)
-}
-
-// ScorerEvalResult pairs a decision pair with its expected and actual outcome.
-type ScorerEvalResult struct {
-	DecisionAOutcome string
-	DecisionBOutcome string
-	ExpectedLabel    string // "genuine", "related_not_contradicting", "unrelated_false_positive"
-	Detected         bool   // whether the scorer produced a conflict for this pair
-}
-
-// ComputePrecisionRecall calculates precision, recall, and F1 from evaluation results.
-// A "genuine" label is a positive; everything else is a negative.
-func ComputePrecisionRecall(results []ScorerEvalResult) ScorerPrecisionRecall {
-	var pr ScorerPrecisionRecall
-	for _, r := range results {
-		isPositive := r.ExpectedLabel == "genuine"
-		switch {
-		case r.Detected && isPositive:
-			pr.TruePositives++
-		case r.Detected && !isPositive:
-			pr.FalsePositives++
-		case !r.Detected && isPositive:
-			pr.FalseNegatives++
-		}
-		// true negatives: !detected && !isPositive — not tracked, not needed for P/R
-	}
-
-	if pr.TruePositives+pr.FalsePositives > 0 {
-		pr.Precision = float64(pr.TruePositives) / float64(pr.TruePositives+pr.FalsePositives)
-	}
-	if pr.TruePositives+pr.FalseNegatives > 0 {
-		pr.Recall = float64(pr.TruePositives) / float64(pr.TruePositives+pr.FalseNegatives)
-	}
-	if pr.Precision+pr.Recall > 0 {
-		pr.F1 = 2 * pr.Precision * pr.Recall / (pr.Precision + pr.Recall)
-	}
-	return pr
 }

@@ -53,21 +53,26 @@ func (s *LocalSearcher) Search(ctx context.Context, orgID uuid.UUID, embedding [
 }
 
 // FindSimilar implements CandidateFinder for conflict detection.
-func (s *LocalSearcher) FindSimilar(ctx context.Context, orgID uuid.UUID, embedding []float32, excludeID uuid.UUID, project *string, limit int) ([]Result, error) {
+func (s *LocalSearcher) FindSimilar(ctx context.Context, orgID uuid.UUID, embedding []float32, excludeID uuid.UUID, projects []string, limit int) ([]Result, error) {
 	if len(embedding) == 0 {
 		return nil, nil
 	}
-	return s.search(ctx, orgID, embedding, excludeID, model.QueryFilters{}, project, limit)
+	// Ensure non-nil so loadCandidates applies project scoping.
+	// nil projects from caller means "no project set" → match only NULL-project decisions.
+	if projects == nil {
+		projects = []string{}
+	}
+	return s.search(ctx, orgID, embedding, excludeID, model.QueryFilters{}, projects, limit)
 }
 
 // search is the shared implementation for Search and FindSimilar.
-func (s *LocalSearcher) search(ctx context.Context, orgID uuid.UUID, queryVec []float32, excludeID uuid.UUID, filters model.QueryFilters, project *string, limit int) ([]Result, error) {
+func (s *LocalSearcher) search(ctx context.Context, orgID uuid.UUID, queryVec []float32, excludeID uuid.UUID, filters model.QueryFilters, projects []string, limit int) ([]Result, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 
 	// Load candidate decision IDs + embeddings.
-	candidates, err := s.loadCandidates(ctx, orgID, excludeID, filters, project)
+	candidates, err := s.loadCandidates(ctx, orgID, excludeID, filters, projects)
 	if err != nil {
 		return nil, fmt.Errorf("local search: load candidates: %w", err)
 	}
@@ -107,7 +112,7 @@ type candidate struct {
 }
 
 // loadCandidates queries the database for decision embeddings matching the filters.
-func (s *LocalSearcher) loadCandidates(ctx context.Context, orgID uuid.UUID, excludeID uuid.UUID, filters model.QueryFilters, project *string) ([]candidate, error) {
+func (s *LocalSearcher) loadCandidates(ctx context.Context, orgID uuid.UUID, excludeID uuid.UUID, filters model.QueryFilters, projects []string) ([]candidate, error) {
 	// Build the query dynamically based on filters.
 	q := `SELECT id, embedding FROM decisions WHERE org_id = ? AND valid_to IS NULL AND embedding IS NOT NULL`
 	args := []any{orgID.String()}
@@ -152,9 +157,27 @@ func (s *LocalSearcher) loadCandidates(ctx context.Context, orgID uuid.UUID, exc
 		args = append(args, *filters.Project)
 	}
 	// CandidateFinder project filter (separate from QueryFilters.Project).
-	if project != nil {
-		q += ` AND (project = ? OR project IS NULL)`
-		args = append(args, *project)
+	// nil = no CandidateFinder scoping (used by Search).
+	// empty non-nil = match only NULL-project decisions.
+	// non-empty = match decisions in the listed projects.
+	if projects != nil {
+		switch len(projects) {
+		case 0:
+			q += ` AND project IS NULL`
+		case 1:
+			q += ` AND project = ?`
+			args = append(args, projects[0])
+		default:
+			q += ` AND project IN (`
+			for i, p := range projects {
+				if i > 0 {
+					q += ","
+				}
+				q += "?"
+				args = append(args, p)
+			}
+			q += ")"
+		}
 	}
 	if filters.TimeRange != nil {
 		if filters.TimeRange.From != nil {

@@ -1,4 +1,4 @@
--- 063: Org-level settings table with JSONB for extensible configuration.
+-- 064: Org-level settings table with JSONB for extensible configuration.
 -- Initial use: auto-resolution policy for conflicts (issue #358).
 CREATE TABLE IF NOT EXISTS org_settings (
     org_id     UUID PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,

@@ -5687,6 +5687,265 @@ func TestResolveConflictGroup_NotFound(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Tests: CascadeResolveByOutcome
+// ---------------------------------------------------------------------------
+
+func TestCascadeResolveByOutcome(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "cascade-a-" + suffix
+	agentB := "cascade-b-" + suffix
+	decisionType := "cascade_type_" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	// Create a "winning" embedding direction and an opposing direction.
+	// 1024-dim vectors: winning points in +x, loser points in -x.
+	winEmb := make([]float32, 1024)
+	winEmb[0] = 1.0
+	loseEmb := make([]float32, 1024)
+	loseEmb[0] = -1.0
+	// An aligned embedding (slight perturbation of winner).
+	alignedEmb := make([]float32, 1024)
+	alignedEmb[0] = 0.95
+	alignedEmb[1] = 0.05
+	// An unrelated embedding (orthogonal).
+	unrelatedEmb := make([]float32, 1024)
+	unrelatedEmb[2] = 1.0
+
+	// Decision A1 (winner) — outcome aligns with winEmb.
+	dA1, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA,
+		DecisionType:     decisionType,
+		Outcome:          "use Redis for caching",
+		Confidence:       0.9,
+		Metadata:         map[string]any{},
+		OutcomeEmbedding: ptrVec(winEmb),
+	})
+	require.NoError(t, err)
+
+	// Decision B1 (loser) — outcome opposes winner.
+	dB1, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB,
+		DecisionType:     decisionType,
+		Outcome:          "use Memcached for caching",
+		Confidence:       0.8,
+		Metadata:         map[string]any{},
+		OutcomeEmbedding: ptrVec(loseEmb),
+	})
+	require.NoError(t, err)
+
+	// Decision A2 (aligned with winner).
+	dA2, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA,
+		DecisionType:     decisionType,
+		Outcome:          "Redis cluster for sessions",
+		Confidence:       0.85,
+		Metadata:         map[string]any{},
+		OutcomeEmbedding: ptrVec(alignedEmb),
+	})
+	require.NoError(t, err)
+
+	// Decision B2 (opposes winner).
+	dB2, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB,
+		DecisionType:     decisionType,
+		Outcome:          "Memcached with mcrouter",
+		Confidence:       0.75,
+		Metadata:         map[string]any{},
+		OutcomeEmbedding: ptrVec(loseEmb),
+	})
+	require.NoError(t, err)
+
+	// Decision A3 and B3: unrelated topic (orthogonal embeddings).
+	dA3, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA,
+		DecisionType:     decisionType,
+		Outcome:          "unrelated topic A",
+		Confidence:       0.7,
+		Metadata:         map[string]any{},
+		OutcomeEmbedding: ptrVec(unrelatedEmb),
+	})
+	require.NoError(t, err)
+
+	dB3, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB,
+		DecisionType:     decisionType,
+		Outcome:          "unrelated topic B",
+		Confidence:       0.7,
+		Metadata:         map[string]any{},
+		OutcomeEmbedding: ptrVec(unrelatedEmb),
+	})
+	require.NoError(t, err)
+
+	// Insert 3 conflicts in the same group (same agents, same decision_type).
+	topicSim := 0.90
+	outcomeDiv := 0.80
+	sig := topicSim * outcomeDiv
+
+	conflict1ID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, OrgID: uuid.Nil,
+		DecisionAID: dA1.ID, DecisionBID: dB1.ID,
+		AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: decisionType, DecisionTypeB: decisionType,
+		OutcomeA: "use Redis", OutcomeB: "use Memcached",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv, Significance: &sig,
+		ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+
+	conflict2ID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, OrgID: uuid.Nil,
+		DecisionAID: dA2.ID, DecisionBID: dB2.ID,
+		AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: decisionType, DecisionTypeB: decisionType,
+		OutcomeA: "Redis cluster", OutcomeB: "Memcached mcrouter",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv, Significance: &sig,
+		ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+
+	conflict3ID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, OrgID: uuid.Nil,
+		DecisionAID: dA3.ID, DecisionBID: dB3.ID,
+		AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: decisionType, DecisionTypeB: decisionType,
+		OutcomeA: "unrelated A", OutcomeB: "unrelated B",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv, Significance: &sig,
+		ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+
+	// Verify all 3 conflicts share a group.
+	c1, err := testDB.GetConflict(ctx, conflict1ID, uuid.Nil)
+	require.NoError(t, err)
+	require.NotNil(t, c1.GroupID)
+	groupID := *c1.GroupID
+
+	c2, err := testDB.GetConflict(ctx, conflict2ID, uuid.Nil)
+	require.NoError(t, err)
+	require.NotNil(t, c2.GroupID)
+	assert.Equal(t, groupID, *c2.GroupID, "all conflicts should share a group")
+
+	c3, err := testDB.GetConflict(ctx, conflict3ID, uuid.Nil)
+	require.NoError(t, err)
+	require.NotNil(t, c3.GroupID)
+	assert.Equal(t, groupID, *c3.GroupID, "all conflicts should share a group")
+
+	// Now cascade from conflict1 with dA1 as winner (winEmb direction).
+	cascaded, err := testDB.CascadeResolveByOutcome(ctx,
+		uuid.Nil, groupID, dA1.ID, conflict1ID,
+		0.80, // threshold
+		storage.MutationAuditEntry{
+			RequestID:    uuid.New().String(),
+			OrgID:        uuid.Nil,
+			ActorAgentID: "test-admin",
+			ActorRole:    "admin",
+			HTTPMethod:   "PATCH",
+			Endpoint:     "/v1/conflicts/" + conflict1ID.String(),
+			Operation:    "conflict_cascade_resolved",
+			ResourceType: "conflict",
+			ResourceID:   conflict1ID.String(),
+		})
+	require.NoError(t, err)
+
+	// Conflict2 should be cascade-resolved: dA2 has alignedEmb which is similar
+	// to winEmb (cosine sim ~0.998), while dB2 has loseEmb (cosine sim = -1.0).
+	// So dA2 should win.
+	assert.Equal(t, 1, cascaded, "only conflict2 should cascade (conflict3 has unrelated embeddings)")
+
+	// Verify conflict2 was resolved with dA2 as winner.
+	c2After, err := testDB.GetConflict(ctx, conflict2ID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, "resolved", c2After.Status)
+	assert.Equal(t, "cascade", *c2After.ResolvedBy)
+	require.NotNil(t, c2After.WinningDecisionID)
+	assert.Equal(t, dA2.ID, *c2After.WinningDecisionID, "aligned side (A) should win")
+	require.NotNil(t, c2After.ResolutionNote)
+	assert.Contains(t, *c2After.ResolutionNote, "cascade")
+
+	// Verify conflict3 is still open (unrelated embeddings, no side exceeds 0.80).
+	c3After, err := testDB.GetConflict(ctx, conflict3ID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, "open", c3After.Status, "conflict3 should remain open (unrelated topic)")
+
+	// Suppress unused variable warnings.
+	_ = dB1
+	_ = dB3
+	_ = conflict3ID
+}
+
+func TestCascadeResolveByOutcome_NoEmbeddings(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "casc-noemb-a-" + suffix
+	agentB := "casc-noemb-b-" + suffix
+	decisionType := "casc_noemb_" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	// Decisions without outcome embeddings.
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA,
+		DecisionType: decisionType, Outcome: "opt_x",
+		Confidence: 0.8, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB,
+		DecisionType: decisionType, Outcome: "opt_y",
+		Confidence: 0.9, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, OrgID: uuid.Nil,
+		DecisionAID: dA.ID, DecisionBID: dB.ID,
+		AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: decisionType, DecisionTypeB: decisionType,
+		OutcomeA: "opt_x", OutcomeB: "opt_y",
+		ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+
+	c, err := testDB.GetConflict(ctx, conflictID, uuid.Nil)
+	require.NoError(t, err)
+	require.NotNil(t, c.GroupID)
+
+	// Cascade should resolve 0 — no embeddings to compare.
+	cascaded, err := testDB.CascadeResolveByOutcome(ctx,
+		uuid.Nil, *c.GroupID, dA.ID, uuid.New(), // trigger is a different ID
+		0.80,
+		storage.MutationAuditEntry{
+			RequestID:    uuid.New().String(),
+			OrgID:        uuid.Nil,
+			ActorAgentID: "test-admin",
+			ActorRole:    "admin",
+			HTTPMethod:   "PATCH",
+			Endpoint:     "/v1/conflicts/test",
+			Operation:    "conflict_cascade_resolved",
+			ResourceType: "conflict",
+		})
+	require.NoError(t, err)
+	assert.Equal(t, 0, cascaded, "no cascade without embeddings")
+}
+
+// ptrVec returns a pointer to a pgvector.Vector from a float32 slice.
+func ptrVec(v []float32) *pgvector.Vector {
+	vec := pgvector.NewVector(v)
+	return &vec
+}
+
+// ---------------------------------------------------------------------------
 // Tests: CreateTraceAndAdjudicateConflictTx (0% -> full coverage)
 // ---------------------------------------------------------------------------
 

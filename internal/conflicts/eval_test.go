@@ -67,7 +67,7 @@ func TestComputeMetrics_Empty(t *testing.T) {
 
 func TestDefaultEvalDataset_NotEmpty(t *testing.T) {
 	ds := DefaultEvalDataset()
-	assert.GreaterOrEqual(t, len(ds), 16, "dataset should have at least 16 labeled pairs")
+	assert.GreaterOrEqual(t, len(ds), 50, "dataset should have at least 50 labeled pairs")
 
 	// Verify all expected relationships are valid.
 	for _, p := range ds {
