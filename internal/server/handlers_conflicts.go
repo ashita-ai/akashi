@@ -98,6 +98,12 @@ func (h *Handlers) HandleListConflictGroups(w http.ResponseWriter, r *http.Reque
 	writeListJSON(w, r, groups, &total, hasMore, limit, offset)
 }
 
+// cascadeSimilarityThreshold is the minimum cosine similarity between a
+// winning decision's outcome_embedding and a candidate conflict's side for
+// the cascade to auto-resolve that conflict. 0.80 is conservative enough to
+// avoid false matches while catching genuine variants of the same disagreement.
+const cascadeSimilarityThreshold = 0.80
+
 // validConflictStatuses defines the allowed values for conflict status transitions.
 var validConflictStatuses = map[string]bool{
 	"acknowledged": true,
@@ -179,6 +185,33 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 
 	if h.resolutionRecorder != nil {
 		h.resolutionRecorder.RecordResolution(r.Context(), req.Status, string(conflict.ConflictKind), 1)
+	}
+
+	// Resolution cascade: when a conflict is resolved with a winner and belongs
+	// to a group, auto-resolve other open conflicts in the same group whose
+	// outcome embeddings align with the winning decision.
+	if req.Status == "resolved" && req.WinningDecisionID != nil && conflict.GroupID != nil {
+		cascadeAudit := h.buildAuditEntry(r, orgID,
+			"conflict_cascade_resolved", "conflict", id.String(),
+			nil, nil,
+			map[string]any{"trigger_conflict_id": id.String(), "winning_decision_id": req.WinningDecisionID.String()},
+		)
+		cascaded, cascadeErr := h.db.CascadeResolveByOutcome(
+			r.Context(), orgID, *conflict.GroupID, *req.WinningDecisionID, id,
+			cascadeSimilarityThreshold, cascadeAudit,
+		)
+		if cascadeErr != nil {
+			h.logger.Warn("resolution cascade failed", "conflict_id", id, "error", cascadeErr)
+		} else if cascaded > 0 {
+			h.logger.Info("resolution cascade resolved conflicts",
+				"trigger_conflict_id", id,
+				"group_id", conflict.GroupID,
+				"cascade_resolved", cascaded,
+			)
+			if h.resolutionRecorder != nil {
+				h.resolutionRecorder.RecordResolution(r.Context(), "resolved", string(conflict.ConflictKind), cascaded)
+			}
+		}
 	}
 
 	writeJSON(w, r, http.StatusOK, conflict)
@@ -355,6 +388,31 @@ func (h *Handlers) HandleAdjudicateConflict(w http.ResponseWriter, r *http.Reque
 
 	if h.resolutionRecorder != nil {
 		h.resolutionRecorder.RecordResolution(r.Context(), "resolved", string(conflict.ConflictKind), 1)
+	}
+
+	// Resolution cascade: auto-resolve related conflicts in the same group.
+	if req.WinningDecisionID != nil && conflict.GroupID != nil {
+		cascadeAudit := h.buildAuditEntry(r, orgID,
+			"conflict_cascade_resolved", "conflict", id.String(),
+			nil, nil,
+			map[string]any{"trigger_conflict_id": id.String(), "winning_decision_id": req.WinningDecisionID.String()},
+		)
+		cascaded, cascadeErr := h.db.CascadeResolveByOutcome(
+			r.Context(), orgID, *conflict.GroupID, *req.WinningDecisionID, id,
+			cascadeSimilarityThreshold, cascadeAudit,
+		)
+		if cascadeErr != nil {
+			h.logger.Warn("adjudication cascade failed", "conflict_id", id, "error", cascadeErr)
+		} else if cascaded > 0 {
+			h.logger.Info("adjudication cascade resolved conflicts",
+				"trigger_conflict_id", id,
+				"group_id", conflict.GroupID,
+				"cascade_resolved", cascaded,
+			)
+			if h.resolutionRecorder != nil {
+				h.resolutionRecorder.RecordResolution(r.Context(), "resolved", string(conflict.ConflictKind), cascaded)
+			}
+		}
 	}
 
 	// Return the updated conflict.

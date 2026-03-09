@@ -893,6 +893,113 @@ func AutoResolveSupersededConflictsTx(ctx context.Context, tx pgx.Tx, orgID, sup
 	return int(tag.RowsAffected()), nil
 }
 
+// CascadeResolveByOutcome auto-resolves open conflicts in the same conflict
+// group when their outcome embeddings align with the winning decision's outcome.
+// For each candidate conflict, cosine similarity is computed between the
+// winning decision's outcome_embedding and each side's outcome_embedding.
+// If one side exceeds the threshold (typically 0.80), that conflict is resolved
+// with the aligned side as winner.
+//
+// The triggering conflict (triggerID) is excluded from the cascade.
+// Returns the number of conflicts auto-resolved.
+func (db *DB) CascadeResolveByOutcome(
+	ctx context.Context,
+	orgID, groupID, winningDecisionID, triggerID uuid.UUID,
+	threshold float64,
+	audit MutationAuditEntry,
+) (int, error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("storage: begin cascade resolve tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	note := fmt.Sprintf(
+		"Auto-resolved via cascade from conflict %s. Aligned with winning decision %s (threshold %.2f).",
+		triggerID, winningDecisionID, threshold,
+	)
+
+	// Use pgvector's cosine distance operator (<=>). Cosine similarity = 1 - distance.
+	// For each open conflict in the group, compare both sides' outcome_embeddings
+	// against the winner. If exactly one side exceeds the threshold, resolve with
+	// that side as winner. If both exceed, pick the more aligned side.
+	tag, err := tx.Exec(ctx, `
+		WITH winning AS (
+			SELECT outcome_embedding
+			FROM decisions
+			WHERE id = $1 AND org_id = $2
+		),
+		candidates AS (
+			SELECT
+				sc.id,
+				sc.decision_a_id,
+				sc.decision_b_id,
+				CASE
+					WHEN da.outcome_embedding IS NOT NULL AND w.outcome_embedding IS NOT NULL
+					THEN 1.0 - (da.outcome_embedding <=> w.outcome_embedding)
+					ELSE 0.0
+				END AS sim_a,
+				CASE
+					WHEN db.outcome_embedding IS NOT NULL AND w.outcome_embedding IS NOT NULL
+					THEN 1.0 - (db.outcome_embedding <=> w.outcome_embedding)
+					ELSE 0.0
+				END AS sim_b
+			FROM scored_conflicts sc
+			JOIN decisions da ON da.id = sc.decision_a_id AND da.org_id = $2
+			JOIN decisions db ON db.id = sc.decision_b_id AND db.org_id = $2
+			CROSS JOIN winning w
+			WHERE sc.group_id = $3
+			  AND sc.org_id = $2
+			  AND sc.id != $4
+			  AND sc.status IN ('open', 'acknowledged')
+		)
+		UPDATE scored_conflicts sc
+		SET status = 'resolved',
+		    resolved_by = 'cascade',
+		    resolved_at = now(),
+		    resolution_note = $5,
+		    winning_decision_id = CASE
+		        WHEN c.sim_a >= c.sim_b THEN c.decision_a_id
+		        ELSE c.decision_b_id
+		    END
+		FROM candidates c
+		WHERE sc.id = c.id
+		  AND (c.sim_a >= $6 OR c.sim_b >= $6)`,
+		winningDecisionID, orgID, groupID, triggerID, note, threshold,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("storage: cascade resolve by outcome: %w", err)
+	}
+
+	affected := int(tag.RowsAffected())
+	if affected == 0 {
+		// Nothing cascaded — skip audit entry and commit.
+		if err := tx.Commit(ctx); err != nil {
+			return 0, fmt.Errorf("storage: commit cascade resolve tx: %w", err)
+		}
+		return 0, nil
+	}
+
+	audit.BeforeData = map[string]any{
+		"trigger_conflict_id":  triggerID.String(),
+		"winning_decision_id":  winningDecisionID.String(),
+		"group_id":             groupID.String(),
+		"similarity_threshold": threshold,
+	}
+	audit.AfterData = map[string]any{
+		"cascade_resolved": affected,
+		"resolved_by":      "cascade",
+	}
+	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+		return 0, fmt.Errorf("storage: audit in cascade resolve tx: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("storage: commit cascade resolve tx: %w", err)
+	}
+	return affected, nil
+}
+
 // AgentWinRate holds an agent's historical resolution win rate for a decision type.
 type AgentWinRate struct {
 	AgentID  string
