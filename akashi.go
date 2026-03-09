@@ -421,6 +421,11 @@ func New(opts ...Option) (*App, error) {
 		ConflictValidator:       conflictValidator,
 	})
 
+	// Wire akashi_check → IDE hook gate.
+	// The MCP handleCheck calls srv.Handlers().NotifyCheckCalled() so the
+	// PreToolUse hook knows a check was performed and allows edits.
+	mcpSrv.SetCheckNotify(srv.Handlers().NotifyCheckCalled)
+
 	// Seed admin agent.
 	if err := srv.Handlers().SeedAdmin(context.Background(), cfg.AdminAPIKey); err != nil {
 		db.Close(context.Background())

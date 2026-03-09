@@ -13,31 +13,31 @@ import (
 )
 
 func TestHookCheckStore(t *testing.T) {
-	store := newHookCheckStore()
-
 	t.Run("empty store returns false", func(t *testing.T) {
-		assert.False(t, store.IsRecent("session-1"))
+		s := newHookCheckStore()
+		assert.False(t, s.IsRecent("any-session"))
 	})
 
-	t.Run("recorded session returns true", func(t *testing.T) {
-		store.Record("session-1")
-		assert.True(t, store.IsRecent("session-1"))
+	t.Run("record makes IsRecent true for any session id", func(t *testing.T) {
+		// Claude Code uses different session IDs for MCP tool calls vs built-in
+		// tool calls, so the store is global — any recorded check unblocks any
+		// session within the TTL window.
+		s := newHookCheckStore()
+		s.Record("mcp-session-id")
+		assert.True(t, s.IsRecent("editor-session-id"))
 	})
 
-	t.Run("different session returns false", func(t *testing.T) {
-		assert.False(t, store.IsRecent("session-2"))
+	t.Run("expired check returns false", func(t *testing.T) {
+		s := newHookCheckStore()
+		s.lastCheck = time.Now().Add(-(hookCheckTTL + time.Second))
+		assert.False(t, s.IsRecent("any-session"))
 	})
 
-	t.Run("cleanup removes stale entries", func(t *testing.T) {
-		s := &hookCheckStore{
-			entries: map[string]time.Time{
-				"old":    time.Now().Add(-3 * time.Hour),
-				"recent": time.Now().Add(-1 * time.Hour),
-			},
-		}
-		s.Cleanup()
-		assert.False(t, s.IsRecent("old"))
-		assert.True(t, s.IsRecent("recent"))
+	t.Run("cleanup is safe to call", func(t *testing.T) {
+		s := newHookCheckStore()
+		s.Record("session-1")
+		s.Cleanup() // no-op, must not panic
+		assert.True(t, s.IsRecent("session-1"))
 	})
 }
 
@@ -125,13 +125,17 @@ func TestHandleHookPreToolUse_EditGate(t *testing.T) {
 	})
 
 	t.Run("Write tool also gated", func(t *testing.T) {
+		// Use a fresh handler — the store is global, so a prior Record() in a
+		// sibling subtest would make IsRecent return true for any session ID.
+		fresh := &Handlers{hookChecks: newHookCheckStore()}
 		body := `{"session_id":"sess-new","tool_name":"Write","tool_input":{},"cwd":"/tmp"}`
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/hooks/pre-tool-use", strings.NewReader(body))
-		h.HandleHookPreToolUse(rec, req)
+		fresh.HandleHookPreToolUse(rec, req)
 
 		var resp hookResponse
 		require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+		require.NotNil(t, resp.HookSpecificOutput)
 		assert.Equal(t, "deny", resp.HookSpecificOutput.PermissionDecision)
 	})
 
@@ -493,17 +497,13 @@ func TestHandleHookPostToolUse_NonBashNonAkashi(t *testing.T) {
 }
 
 func TestHookCheckStore_TTLExpiry(t *testing.T) {
-	s := &hookCheckStore{
-		entries: map[string]time.Time{
-			// Just barely expired (hookCheckTTL is 2 hours).
-			"expired": time.Now().Add(-(hookCheckTTL + time.Second)),
-			// Just within TTL.
-			"valid": time.Now().Add(-(hookCheckTTL - time.Minute)),
-		},
-	}
+	// The store now tracks a single machine-global timestamp, not per-session
+	// entries. Test expired and valid states with separate store instances.
+	expired := &hookCheckStore{lastCheck: time.Now().Add(-(hookCheckTTL + time.Second))}
+	assert.False(t, expired.IsRecent("any"), "check just past TTL should not be recent")
 
-	assert.False(t, s.IsRecent("expired"), "entry just past TTL should not be recent")
-	assert.True(t, s.IsRecent("valid"), "entry just within TTL should be recent")
+	valid := &hookCheckStore{lastCheck: time.Now().Add(-(hookCheckTTL - time.Minute))}
+	assert.True(t, valid.IsRecent("any"), "check just within TTL should be recent")
 }
 
 func TestHookCheckStore_CleanupEmpty(t *testing.T) {

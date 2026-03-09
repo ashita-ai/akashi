@@ -423,6 +423,13 @@ func (h *Handlers) HandleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 }
 
 // SeedAdmin creates the initial admin agent if the agents table is empty.
+// NotifyCheckCalled records that akashi_check was invoked. Called by the MCP
+// handleCheck handler so the IDE hook gate (PreToolUse) can confirm a check
+// happened before allowing edits. Exported for wiring in akashi.go.
+func (h *Handlers) NotifyCheckCalled() {
+	h.hookChecks.Record("")
+}
+
 func (h *Handlers) SeedAdmin(ctx context.Context, adminAPIKey string) error {
 	if adminAPIKey == "" {
 		totalAgents, err := h.db.CountAgentsGlobal(ctx)

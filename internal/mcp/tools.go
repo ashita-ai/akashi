@@ -380,6 +380,10 @@ func (s *Server) resolveProjectFilter(ctx context.Context, request mcplib.CallTo
 }
 
 func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	// Notify the IDE hook gate that akashi_check was called.
+	if s.onCheck != nil {
+		s.onCheck()
+	}
 	orgID := ctxutil.OrgIDFromContext(ctx)
 	claims := ctxutil.ClaimsFromContext(ctx)
 
