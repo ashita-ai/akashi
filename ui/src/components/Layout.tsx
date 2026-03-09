@@ -13,6 +13,7 @@ import {
   Search,
   Download,
   Shield,
+  BarChart3,
   LogOut,
   Menu,
   Moon,
@@ -47,6 +48,7 @@ const navItems = [
   { to: "/agents", label: "Agents", icon: Users },
   { to: "/conflicts", label: "Conflicts", icon: AlertTriangle },
   { to: "/search", label: "Search", icon: Search },
+  { to: "/analytics", label: "Analytics", icon: BarChart3 },
   { to: "/export", label: "Export", icon: Download },
   { to: "/grants", label: "Grants", icon: Shield },
 ];

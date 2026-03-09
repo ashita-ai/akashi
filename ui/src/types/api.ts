@@ -363,6 +363,46 @@ export interface CreateGrantRequest {
   expires_at?: string;
 }
 
+// Conflict analytics
+export interface ConflictAnalytics {
+  period: { start: string; end: string };
+  summary: {
+    total_detected: number;
+    total_resolved: number;
+    mean_time_to_resolution_hours: number | null;
+    false_positive_rate: number;
+  };
+  by_agent_pair: AgentPairConflictStats[];
+  by_decision_type: DecisionTypeConflictStats[];
+  by_severity: SeverityConflictStats[];
+  trend: ConflictTrendPoint[];
+}
+
+export interface AgentPairConflictStats {
+  agent_a: string;
+  agent_b: string;
+  count: number;
+  open: number;
+  resolved: number;
+}
+
+export interface DecisionTypeConflictStats {
+  decision_type: string;
+  count: number;
+  avg_significance: number;
+}
+
+export interface SeverityConflictStats {
+  severity: string;
+  count: number;
+}
+
+export interface ConflictTrendPoint {
+  date: string;
+  detected: number;
+  resolved: number;
+}
+
 // Health
 export interface HealthResponse {
   status: string;

@@ -11,6 +11,7 @@ import SearchPage from "@/pages/SearchPage";
 import ExportPage from "@/pages/ExportPage";
 import SessionTimeline from "@/pages/SessionTimeline";
 import GrantsPage from "@/pages/GrantsPage";
+import Analytics from "@/pages/Analytics";
 import { type ReactNode } from "react";
 
 function AuthGuard({ children }: { children: ReactNode }) {
@@ -54,6 +55,7 @@ export const router = createBrowserRouter([
       { path: "search", element: <SearchPage /> },
       { path: "export", element: <ExportPage /> },
       { path: "grants", element: <GrantsPage /> },
+      { path: "analytics", element: <Analytics /> },
       { path: "sessions/:sessionId", element: <SessionTimeline /> },
     ],
   },
