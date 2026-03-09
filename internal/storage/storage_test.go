@@ -9620,10 +9620,12 @@ func TestGetConflictAnalytics_WithScoredConflict(t *testing.T) {
 	require.NoError(t, err)
 
 	// Query analytics for the org with a time range that includes now.
+	// The trend query uses generate_series(from::date, (to::date - '1 day')::date, '1 day'),
+	// so from and to must span at least 2 calendar days to produce rows.
 	now := time.Now().UTC()
 	analytics, err := testDB.GetConflictAnalytics(ctx, uuid.Nil, storage.ConflictAnalyticsFilters{
-		From: now.Add(-1 * time.Hour),
-		To:   now.Add(1 * time.Hour),
+		From: now.Add(-24 * time.Hour),
+		To:   now.Add(24 * time.Hour),
 	})
 	require.NoError(t, err)
 
