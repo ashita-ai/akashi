@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -1541,4 +1542,302 @@ func TestScoreWinRate_FavorsB(t *testing.T) {
 	require.True(t, ok)
 	assert.Greater(t, r.score, 0.0, "positive score means favors B")
 	assert.Contains(t, r.reason, c.AgentB)
+}
+
+// ---------- OpenAIValidator.Validate via httptest ----------
+
+func TestOpenAIValidator_Validate_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+
+		var req openAIChatRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		assert.Equal(t, "gpt-4o-mini", req.Model)
+		assert.NotEmpty(t, req.Messages)
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(openAIChatResponse{
+			Choices: []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			}{
+				{Message: struct {
+					Content string `json:"content"`
+				}{Content: "RELATIONSHIP: contradiction\nCATEGORY: factual\nSEVERITY: critical\nEXPLANATION: Incompatible database choices."}},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	v := NewOpenAIValidator("test-key", "")
+	v.httpClient = srv.Client()
+	v.httpClient.Transport = &rewriteTransport{base: srv.Client().Transport, targetURL: srv.URL}
+
+	result, err := v.Validate(context.Background(), ValidateInput{
+		OutcomeA: "use PostgreSQL", OutcomeB: "use MySQL",
+		TypeA: "architecture", TypeB: "architecture",
+		AgentA: "agent-a", AgentB: "agent-b",
+		CreatedA: time.Now(), CreatedB: time.Now(),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "contradiction", result.Relationship)
+	assert.True(t, result.IsConflict())
+	assert.Equal(t, "factual", result.Category)
+	assert.Equal(t, "critical", result.Severity)
+	assert.Equal(t, "Incompatible database choices.", result.Explanation)
+}
+
+func TestOpenAIValidator_Validate_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	v := NewOpenAIValidator("test-key", "gpt-4o-mini")
+	v.httpClient = srv.Client()
+	v.httpClient.Transport = &rewriteTransport{base: srv.Client().Transport, targetURL: srv.URL}
+
+	_, err := v.Validate(context.Background(), ValidateInput{
+		OutcomeA: "a", OutcomeB: "b",
+		TypeA: "t", TypeB: "t",
+		AgentA: "x", AgentB: "y",
+		CreatedA: time.Now(), CreatedB: time.Now(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "status 429")
+}
+
+func TestOpenAIValidator_Validate_NoChoices(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(openAIChatResponse{Choices: nil})
+	}))
+	defer srv.Close()
+
+	v := NewOpenAIValidator("test-key", "gpt-4o-mini")
+	v.httpClient = srv.Client()
+	v.httpClient.Transport = &rewriteTransport{base: srv.Client().Transport, targetURL: srv.URL}
+
+	_, err := v.Validate(context.Background(), ValidateInput{
+		OutcomeA: "a", OutcomeB: "b",
+		TypeA: "t", TypeB: "t",
+		AgentA: "x", AgentB: "y",
+		CreatedA: time.Now(), CreatedB: time.Now(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no choices")
+}
+
+func TestOpenAIValidator_Validate_MalformedJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{invalid json`))
+	}))
+	defer srv.Close()
+
+	v := NewOpenAIValidator("test-key", "gpt-4o-mini")
+	v.httpClient = srv.Client()
+	v.httpClient.Transport = &rewriteTransport{base: srv.Client().Transport, targetURL: srv.URL}
+
+	_, err := v.Validate(context.Background(), ValidateInput{
+		OutcomeA: "a", OutcomeB: "b",
+		TypeA: "t", TypeB: "t",
+		AgentA: "x", AgentB: "y",
+		CreatedA: time.Now(), CreatedB: time.Now(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode response")
+}
+
+func TestOpenAIValidator_Validate_UnparseableRelationship(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(openAIChatResponse{
+			Choices: []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			}{
+				{Message: struct {
+					Content string `json:"content"`
+				}{Content: "I don't know what to say here."}},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	v := NewOpenAIValidator("test-key", "gpt-4o-mini")
+	v.httpClient = srv.Client()
+	v.httpClient.Transport = &rewriteTransport{base: srv.Client().Transport, targetURL: srv.URL}
+
+	_, err := v.Validate(context.Background(), ValidateInput{
+		OutcomeA: "a", OutcomeB: "b",
+		TypeA: "t", TypeB: "t",
+		AgentA: "x", AgentB: "y",
+		CreatedA: time.Now(), CreatedB: time.Now(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no RELATIONSHIP")
+}
+
+func TestOpenAIValidator_Validate_ConnectionRefused(t *testing.T) {
+	v := NewOpenAIValidator("test-key", "gpt-4o-mini")
+	v.httpClient.Transport = &rewriteTransport{base: http.DefaultTransport, targetURL: "http://127.0.0.1:1"}
+
+	_, err := v.Validate(context.Background(), ValidateInput{
+		OutcomeA: "a", OutcomeB: "b",
+		TypeA: "t", TypeB: "t",
+		AgentA: "x", AgentB: "y",
+		CreatedA: time.Now(), CreatedB: time.Now(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "request failed")
+}
+
+// ---------- OpenAIExtractor.ExtractClaims via httptest ----------
+
+func TestOpenAIExtractor_ExtractClaims_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+
+		var req openAIChatRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		require.Len(t, req.Messages, 2)
+		assert.Equal(t, "system", req.Messages[0].Role)
+		assert.Equal(t, "user", req.Messages[1].Role)
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(openAIChatResponse{
+			Choices: []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			}{
+				{Message: struct {
+					Content string `json:"content"`
+				}{Content: `[{"text":"The outbox has no deadletter mechanism","category":"finding"},{"text":"Security posture is strong overall","category":"assessment"}]`}},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	e := NewOpenAIExtractor("test-key", "gpt-4o-mini")
+	e.httpClient = srv.Client()
+	e.httpClient.Transport = &rewriteTransport{base: srv.Client().Transport, targetURL: srv.URL}
+
+	claims, err := e.ExtractClaims(context.Background(), "The outbox has no deadletter mechanism. Security posture is strong overall.")
+	require.NoError(t, err)
+	require.Len(t, claims, 2)
+	assert.Equal(t, "finding", claims[0].Category)
+	assert.Equal(t, "The outbox has no deadletter mechanism", claims[0].Text)
+	assert.Equal(t, "assessment", claims[1].Category)
+}
+
+func TestOpenAIExtractor_ExtractClaims_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	e := NewOpenAIExtractor("test-key", "gpt-4o-mini")
+	e.httpClient = srv.Client()
+	e.httpClient.Transport = &rewriteTransport{base: srv.Client().Transport, targetURL: srv.URL}
+
+	_, err := e.ExtractClaims(context.Background(), "some outcome text")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "status 500")
+}
+
+func TestOpenAIExtractor_ExtractClaims_NoChoices(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(openAIChatResponse{Choices: nil})
+	}))
+	defer srv.Close()
+
+	e := NewOpenAIExtractor("test-key", "gpt-4o-mini")
+	e.httpClient = srv.Client()
+	e.httpClient.Transport = &rewriteTransport{base: srv.Client().Transport, targetURL: srv.URL}
+
+	_, err := e.ExtractClaims(context.Background(), "some outcome text")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no choices")
+}
+
+func TestOpenAIExtractor_ExtractClaims_MalformedJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{not json`))
+	}))
+	defer srv.Close()
+
+	e := NewOpenAIExtractor("test-key", "gpt-4o-mini")
+	e.httpClient = srv.Client()
+	e.httpClient.Transport = &rewriteTransport{base: srv.Client().Transport, targetURL: srv.URL}
+
+	_, err := e.ExtractClaims(context.Background(), "some outcome text")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode response")
+}
+
+func TestOpenAIExtractor_ExtractClaims_MalformedClaims(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(openAIChatResponse{
+			Choices: []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			}{
+				{Message: struct {
+					Content string `json:"content"`
+				}{Content: "this is not json array"}},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	e := NewOpenAIExtractor("test-key", "gpt-4o-mini")
+	e.httpClient = srv.Client()
+	e.httpClient.Transport = &rewriteTransport{base: srv.Client().Transport, targetURL: srv.URL}
+
+	_, err := e.ExtractClaims(context.Background(), "some outcome text")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse JSON")
+}
+
+func TestOpenAIExtractor_ExtractClaims_ConnectionRefused(t *testing.T) {
+	e := NewOpenAIExtractor("test-key", "gpt-4o-mini")
+	e.httpClient.Transport = &rewriteTransport{base: http.DefaultTransport, targetURL: "http://127.0.0.1:1"}
+
+	_, err := e.ExtractClaims(context.Background(), "some outcome text")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "request failed")
+}
+
+// rewriteTransport redirects all requests to a target URL (httptest server)
+// while preserving the request body, headers, and method. This allows testing
+// clients that hardcode external URLs (e.g., api.openai.com) without modifying
+// the production code.
+type rewriteTransport struct {
+	base      http.RoundTripper
+	targetURL string
+}
+
+func (rt *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	target, err := url.Parse(rt.targetURL)
+	if err != nil {
+		return nil, fmt.Errorf("rewriteTransport: parse target URL: %w", err)
+	}
+	req.URL.Scheme = target.Scheme
+	req.URL.Host = target.Host
+	base := rt.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(req)
 }

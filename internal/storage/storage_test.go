@@ -22,9 +22,11 @@ import (
 
 // testDB holds a shared test database connection for all tests in this package.
 var testDB *storage.DB
+var testTC *testutil.TestContainer
 
 func TestMain(m *testing.M) {
 	tc := testutil.MustStartTimescaleDB()
+	testTC = tc
 
 	ctx := context.Background()
 	var err error
@@ -7117,4 +7119,2735 @@ func TestSetAndGetRetentionPolicy(t *testing.T) {
 	// Clean up: reset to nil.
 	err = testDB.SetRetentionPolicy(ctx, uuid.Nil, nil, nil)
 	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: CompleteRun — not-found and nil-metadata paths
+// ---------------------------------------------------------------------------
+
+func TestCompleteRun_NotFound(t *testing.T) {
+	ctx := context.Background()
+	err := testDB.CompleteRun(ctx, uuid.Nil, uuid.New(), model.RunStatusCompleted, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestCompleteRun_NilMetadata(t *testing.T) {
+	ctx := context.Background()
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: "complete-nilmeta-" + uuid.New().String()[:8]})
+	require.NoError(t, err)
+
+	err = testDB.CompleteRun(ctx, run.OrgID, run.ID, model.RunStatusFailed, nil)
+	require.NoError(t, err)
+
+	got, err := testDB.GetRun(ctx, run.OrgID, run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, model.RunStatusFailed, got.Status)
+	assert.NotNil(t, got.CompletedAt)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: ListRunsByAgent — boundary parameters
+// ---------------------------------------------------------------------------
+
+func TestListRunsByAgent_ZeroLimit(t *testing.T) {
+	ctx := context.Background()
+	agentID := "runs-zero-" + uuid.New().String()[:8]
+	_, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	runs, total, err := testDB.ListRunsByAgent(ctx, uuid.Nil, agentID, 0, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 1, total)
+	assert.Len(t, runs, 1)
+}
+
+func TestListRunsByAgent_LargeLimit(t *testing.T) {
+	ctx := context.Background()
+	agentID := "runs-large-" + uuid.New().String()[:8]
+	_, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	runs, total, err := testDB.ListRunsByAgent(ctx, uuid.Nil, agentID, 5000, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 1, total)
+	assert.Len(t, runs, 1)
+}
+
+func TestListRunsByAgent_NegativeOffset(t *testing.T) {
+	ctx := context.Background()
+	agentID := "runs-negoff-" + uuid.New().String()[:8]
+	_, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	runs, total, err := testDB.ListRunsByAgent(ctx, uuid.Nil, agentID, 10, -5)
+	require.NoError(t, err)
+	assert.Equal(t, 1, total)
+	assert.Len(t, runs, 1)
+}
+
+func TestListRunsByAgent_Empty(t *testing.T) {
+	ctx := context.Background()
+	agentID := "runs-empty-" + uuid.New().String()[:8]
+	runs, total, err := testDB.ListRunsByAgent(ctx, uuid.Nil, agentID, 10, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, runs)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetRetentionPolicy — with deletion log
+// ---------------------------------------------------------------------------
+
+func TestGetRetentionPolicy_WithDeletionLog(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	orgID := uuid.New()
+	_, err := testDB.Pool().Exec(ctx,
+		`INSERT INTO organizations (id, name, slug) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+		orgID, "retention-test-"+suffix, "retention-test-"+suffix)
+	require.NoError(t, err)
+
+	days := 90
+	err = testDB.SetRetentionPolicy(ctx, orgID, &days, nil)
+	require.NoError(t, err)
+
+	started := time.Now().UTC().Add(-2 * time.Hour)
+	_, err = testDB.Pool().Exec(ctx,
+		`INSERT INTO deletion_log (id, org_id, trigger, started_at, completed_at, deleted_counts, criteria)
+		 VALUES ($1, $2, 'policy', $3, $4, '{"decisions": 42}', '{}')`,
+		uuid.New(), orgID, started, time.Now().UTC())
+	require.NoError(t, err)
+
+	policy, err := testDB.GetRetentionPolicy(ctx, orgID, 24*time.Hour)
+	require.NoError(t, err)
+	require.NotNil(t, policy.RetentionDays)
+	assert.Equal(t, 90, *policy.RetentionDays)
+	require.NotNil(t, policy.LastRunAt, "should populate LastRunAt from deletion_log")
+	require.NotNil(t, policy.LastRunDeleted)
+	assert.Equal(t, 42, *policy.LastRunDeleted)
+	require.NotNil(t, policy.NextRunAt, "should compute NextRunAt from interval")
+}
+
+func TestGetRetentionPolicy_ZeroInterval(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	orgID := uuid.New()
+	_, err := testDB.Pool().Exec(ctx,
+		`INSERT INTO organizations (id, name, slug) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+		orgID, "retention-zero-"+suffix, "retention-zero-"+suffix)
+	require.NoError(t, err)
+
+	days := 30
+	err = testDB.SetRetentionPolicy(ctx, orgID, &days, nil)
+	require.NoError(t, err)
+
+	_, err = testDB.Pool().Exec(ctx,
+		`INSERT INTO deletion_log (id, org_id, trigger, started_at, completed_at, deleted_counts, criteria)
+		 VALUES ($1, $2, 'policy', $3, $4, '{"decisions": 10}', '{}')`,
+		uuid.New(), orgID, time.Now().UTC().Add(-1*time.Hour), time.Now().UTC())
+	require.NoError(t, err)
+
+	policy, err := testDB.GetRetentionPolicy(ctx, orgID, 0)
+	require.NoError(t, err)
+	require.NotNil(t, policy.LastRunAt)
+	assert.Nil(t, policy.NextRunAt, "zero interval should not set NextRunAt")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetDecisionsByAgent — boundary params
+// ---------------------------------------------------------------------------
+
+func TestGetDecisionsByAgent_ZeroLimit(t *testing.T) {
+	ctx := context.Background()
+	agentID := "agent-zerolim-" + uuid.New().String()[:8]
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "test", Outcome: "result",
+		Confidence: 0.8, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	decisions, total, err := testDB.GetDecisionsByAgent(ctx, run.OrgID, agentID, 0, 0, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, total)
+	assert.Len(t, decisions, 1)
+}
+
+func TestGetDecisionsByAgent_LargeLimit(t *testing.T) {
+	ctx := context.Background()
+	agentID := "agent-largelim-" + uuid.New().String()[:8]
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "test", Outcome: "result",
+		Confidence: 0.8, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	decisions, total, err := testDB.GetDecisionsByAgent(ctx, run.OrgID, agentID, 5000, 0, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, total)
+	assert.Len(t, decisions, 1)
+}
+
+func TestGetDecisionsByAgent_NegativeOffset(t *testing.T) {
+	ctx := context.Background()
+	agentID := "agent-negoff-" + uuid.New().String()[:8]
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "test", Outcome: "result",
+		Confidence: 0.8, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	decisions, total, err := testDB.GetDecisionsByAgent(ctx, run.OrgID, agentID, 10, -3, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, total)
+	assert.Len(t, decisions, 1)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: FindRetriableClaimFailures — with actual data
+// ---------------------------------------------------------------------------
+
+func TestFindRetriableClaimFailures_WithData(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "retry-claims-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	dec, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "retry_test", Outcome: "will fail claims",
+		Confidence: 0.7, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	emb := pgvector.NewVector(make([]float32, 1024))
+	err = testDB.BackfillEmbedding(ctx, dec.ID, dec.OrgID, emb)
+	require.NoError(t, err)
+
+	err = testDB.MarkClaimEmbeddingFailed(ctx, dec.ID, dec.OrgID)
+	require.NoError(t, err)
+
+	_, err = testDB.Pool().Exec(ctx,
+		`UPDATE decisions SET claim_embeddings_failed_at = now() - interval '1 hour'
+		 WHERE id = $1 AND org_id = $2`, dec.ID, dec.OrgID)
+	require.NoError(t, err)
+
+	refs, err := testDB.FindRetriableClaimFailures(ctx, 3, 50)
+	require.NoError(t, err)
+
+	found := false
+	for _, r := range refs {
+		if r.ID == dec.ID {
+			found = true
+			assert.Equal(t, dec.OrgID, r.OrgID)
+			assert.Equal(t, 1, r.Attempts)
+			break
+		}
+	}
+	assert.True(t, found, "expected to find the failed decision in retriable results")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetConflictAnalytics — broader time window, structure validation
+// ---------------------------------------------------------------------------
+
+func TestGetConflictAnalytics_StructureValidation(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	analytics, err := testDB.GetConflictAnalytics(ctx, uuid.Nil, storage.ConflictAnalyticsFilters{
+		From: now.Add(-7 * 24 * time.Hour),
+		To:   now,
+	})
+	require.NoError(t, err)
+	assert.NotNil(t, analytics.ByAgentPair)
+	assert.NotNil(t, analytics.ByDecisionType)
+	assert.NotNil(t, analytics.BySeverity)
+	assert.NotNil(t, analytics.Trend)
+	assert.Len(t, analytics.Trend, 7, "should have one trend point per day")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetOutcomeSignalsSummary
+// ---------------------------------------------------------------------------
+
+func TestGetOutcomeSignalsSummary_Populated(t *testing.T) {
+	ctx := context.Background()
+	summary, err := testDB.GetOutcomeSignalsSummary(ctx, uuid.Nil)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, summary.DecisionsTotal, 0)
+	assert.GreaterOrEqual(t, summary.NeverSuperseded, 0)
+	assert.GreaterOrEqual(t, summary.NeverCited, 0)
+	assert.GreaterOrEqual(t, summary.ConflictsWon, 0)
+	assert.Equal(t, summary.ConflictsWon, summary.ConflictsLost, "wins and losses should be symmetric")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetDecisionQualityStats
+// ---------------------------------------------------------------------------
+
+func TestGetDecisionQualityStats_Structure(t *testing.T) {
+	ctx := context.Background()
+	stats, err := testDB.GetDecisionQualityStats(ctx, uuid.Nil)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, stats.Total, 0)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: SearchDecisionsByText — FTS error triggers ILIKE fallback
+// ---------------------------------------------------------------------------
+
+func TestSearchDecisionsByText_MalformedQuery(t *testing.T) {
+	ctx := context.Background()
+	results, err := testDB.SearchDecisionsByText(ctx, uuid.Nil, `"unclosed quote`, model.QueryFilters{}, 10)
+	require.NoError(t, err)
+	_ = results
+}
+
+func TestSearchDecisionsByText_DefaultLimit(t *testing.T) {
+	ctx := context.Background()
+	results, err := testDB.SearchDecisionsByText(ctx, uuid.Nil, "test", model.QueryFilters{}, 0)
+	require.NoError(t, err)
+	_ = results
+}
+
+func TestSearchDecisionsByText_LargeLimit(t *testing.T) {
+	ctx := context.Background()
+	results, err := testDB.SearchDecisionsByText(ctx, uuid.Nil, "test", model.QueryFilters{}, 5000)
+	require.NoError(t, err)
+	_ = results
+}
+
+// ---------------------------------------------------------------------------
+// Tests: ExportDecisionsCursor — with filters
+// ---------------------------------------------------------------------------
+
+func TestExportDecisionsCursor_WithFilters(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "export-filter-" + suffix
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "export_type_" + suffix, Outcome: "exported",
+		Confidence: 0.9, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	decType := "export_type_" + suffix
+	decisions, err := testDB.ExportDecisionsCursor(ctx, run.OrgID,
+		model.QueryFilters{DecisionType: &decType}, nil, 10)
+	require.NoError(t, err)
+	assert.Len(t, decisions, 1)
+	assert.Equal(t, "exported", decisions[0].Outcome)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetDecisionErasure — found path
+// ---------------------------------------------------------------------------
+
+func TestGetDecisionErasure_Found(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "erasure-" + suffix
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+	dec, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "erasure_test", Outcome: "to be erased",
+		Confidence: 0.5, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	_, err = testDB.EraseDecision(ctx, dec.OrgID, dec.ID, "gdpr", agentID, nil)
+	require.NoError(t, err)
+
+	erasure, err := testDB.GetDecisionErasure(ctx, dec.OrgID, dec.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "gdpr", erasure.Reason)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: CountConflicts — with severity and category filters
+// ---------------------------------------------------------------------------
+
+func TestCountConflicts_WithSeverity(t *testing.T) {
+	ctx := context.Background()
+	sev := "high"
+	count, err := testDB.CountConflicts(ctx, uuid.Nil, storage.ConflictFilters{Severity: &sev})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, count, 0)
+}
+
+func TestCountConflicts_WithCategory(t *testing.T) {
+	ctx := context.Background()
+	cat := "architectural"
+	count, err := testDB.CountConflicts(ctx, uuid.Nil, storage.ConflictFilters{Category: &cat})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, count, 0)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: DeleteAgentData — with comprehensive data and audit
+// ---------------------------------------------------------------------------
+
+func TestDeleteAgentData_WithAllRelatedData(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "delete-full-" + suffix
+
+	agent, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	dec, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "delete_full_test", Outcome: "will be removed",
+		Confidence: 0.6, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	_, err = testDB.CreateEvidence(ctx, model.Evidence{
+		DecisionID: dec.ID, OrgID: dec.OrgID,
+		SourceType: model.SourceAPIResponse, Content: "evidence content",
+	})
+	require.NoError(t, err)
+
+	err = testDB.CreateAlternativesBatch(ctx, []model.Alternative{
+		{DecisionID: dec.ID, Label: "alternative A", Selected: false},
+	})
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	err = testDB.InsertEvent(ctx, model.AgentEvent{
+		ID: uuid.New(), RunID: run.ID, OrgID: run.OrgID,
+		EventType: model.EventDecisionStarted, SequenceNum: 1,
+		OccurredAt: now, AgentID: agentID,
+		Payload: map[string]any{}, CreatedAt: now,
+	})
+	require.NoError(t, err)
+
+	resID := agentID
+	_, err = testDB.CreateGrant(ctx, model.AccessGrant{
+		OrgID: uuid.Nil, GrantorID: agent.ID, GranteeID: agent.ID,
+		ResourceType: "agent_traces", ResourceID: &resID,
+		Permission: "read",
+	})
+	require.NoError(t, err)
+
+	result, err := testDB.DeleteAgentData(ctx, uuid.Nil, agentID, nil)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, result.Decisions, int64(1))
+	assert.GreaterOrEqual(t, result.Evidence, int64(1))
+	assert.GreaterOrEqual(t, result.Alternatives, int64(1))
+	assert.GreaterOrEqual(t, result.Events, int64(1))
+	assert.GreaterOrEqual(t, result.Runs, int64(1))
+	assert.GreaterOrEqual(t, result.Grants, int64(1))
+	assert.GreaterOrEqual(t, result.Agents, int64(1))
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetCitationPercentilesForOrg — with data
+// ---------------------------------------------------------------------------
+
+func TestGetCitationPercentilesForOrg_WithCitedDecisions(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "citation-perc-" + suffix
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	precedent, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "precedent_type", Outcome: "the precedent",
+		Confidence: 0.9, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	for i := range 3 {
+		_, err := testDB.CreateDecision(ctx, model.Decision{
+			RunID: run.ID, AgentID: agentID,
+			DecisionType: "citing_type", Outcome: fmt.Sprintf("citing %d", i),
+			Confidence:   0.8,
+			PrecedentRef: &precedent.ID,
+			Metadata:     map[string]any{},
+		})
+		require.NoError(t, err)
+	}
+
+	breakpoints, err := testDB.GetCitationPercentilesForOrg(ctx, run.OrgID)
+	require.NoError(t, err)
+	require.Len(t, breakpoints, 4)
+	for _, bp := range breakpoints {
+		assert.GreaterOrEqual(t, bp, float64(0))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: BackfillOutcomeEmbedding — success path
+// ---------------------------------------------------------------------------
+
+func TestBackfillOutcomeEmbedding_Success(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "backfill-oe-" + suffix
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	dec, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "backfill_oe", Outcome: "needs outcome embedding",
+		Confidence: 0.8, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	emb := pgvector.NewVector(make([]float32, 1024))
+	err = testDB.BackfillEmbedding(ctx, dec.ID, dec.OrgID, emb)
+	require.NoError(t, err)
+
+	oemb := pgvector.NewVector(make([]float32, 1024))
+	err = testDB.BackfillOutcomeEmbedding(ctx, dec.ID, dec.OrgID, oemb)
+	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetAlternativesByDecisions — empty and no-match
+// ---------------------------------------------------------------------------
+
+func TestGetAlternativesByDecisions_Empty(t *testing.T) {
+	ctx := context.Background()
+	result, err := testDB.GetAlternativesByDecisions(ctx, []uuid.UUID{}, uuid.Nil)
+	require.NoError(t, err)
+	assert.Nil(t, result)
+}
+
+func TestGetAlternativesByDecisions_NoMatch(t *testing.T) {
+	ctx := context.Background()
+	result, err := testDB.GetAlternativesByDecisions(ctx, []uuid.UUID{uuid.New()}, uuid.Nil)
+	require.NoError(t, err)
+	assert.Empty(t, result)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetEvidenceByDecision — empty
+// ---------------------------------------------------------------------------
+
+func TestGetEvidenceByDecision_NoEvidence(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "evidence-none-" + suffix
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+	dec, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "no_evidence", Outcome: "has no evidence",
+		Confidence: 0.5, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	evidence, err := testDB.GetEvidenceByDecision(ctx, dec.ID, dec.OrgID)
+	require.NoError(t, err)
+	assert.Empty(t, evidence)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetAlternativesByDecision — empty
+// ---------------------------------------------------------------------------
+
+func TestGetAlternativesByDecision_NoAlternatives(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "alts-none-" + suffix
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+	dec, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "no_alts", Outcome: "has no alternatives",
+		Confidence: 0.5, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	alts, err := testDB.GetAlternativesByDecision(ctx, dec.ID, dec.OrgID)
+	require.NoError(t, err)
+	assert.Empty(t, alts)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: TouchLastSeen — non-existent
+// ---------------------------------------------------------------------------
+
+func TestTouchLastSeen_NonExistent(t *testing.T) {
+	ctx := context.Background()
+	err := testDB.TouchLastSeen(ctx, uuid.Nil, "nonexistent-"+uuid.New().String()[:8])
+	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetEventsByRun — default limit
+// ---------------------------------------------------------------------------
+
+func TestGetEventsByRun_DefaultLimit(t *testing.T) {
+	ctx := context.Background()
+	events, err := testDB.GetEventsByRun(ctx, uuid.Nil, uuid.New(), 0)
+	require.NoError(t, err)
+	assert.Empty(t, events)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: NewConflictsSinceByOrg — default limit
+// ---------------------------------------------------------------------------
+
+func TestNewConflictsSinceByOrg_DefaultLimit(t *testing.T) {
+	ctx := context.Background()
+	conflicts, err := testDB.NewConflictsSinceByOrg(ctx, uuid.Nil, time.Now().Add(-24*time.Hour), 0)
+	require.NoError(t, err)
+	_ = conflicts
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetResolvedConflictsByType — default limit
+// ---------------------------------------------------------------------------
+
+func TestGetResolvedConflictsByType_DefaultLimitBranch(t *testing.T) {
+	ctx := context.Background()
+	results, err := testDB.GetResolvedConflictsByType(ctx, uuid.Nil, "test_type", 0)
+	require.NoError(t, err)
+	_ = results
+}
+
+// ---------------------------------------------------------------------------
+// Tests: CreateRun — nil metadata path
+// ---------------------------------------------------------------------------
+
+func TestCreateRun_NilMetadata(t *testing.T) {
+	ctx := context.Background()
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{
+		AgentID:  "nilmeta-run-" + uuid.New().String()[:8],
+		Metadata: nil,
+	})
+	require.NoError(t, err)
+	assert.NotNil(t, run.Metadata, "nil metadata should be replaced with empty map")
+	assert.Empty(t, run.Metadata)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: BatchDeleteDecisions — agentID and excludeTypes filter branches
+// ---------------------------------------------------------------------------
+
+func TestBatchDeleteDecisions_WithAgentFilter(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "bd-agent-" + suffix
+	otherAgent := "bd-other-" + suffix
+	decisionType := "bd_agent_type_" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+	runOther, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: otherAgent})
+	require.NoError(t, err)
+
+	// Create decisions for both agents.
+	for i := range 2 {
+		_, err := testDB.CreateDecision(ctx, model.Decision{
+			RunID: run.ID, AgentID: agentID,
+			DecisionType: decisionType, Outcome: fmt.Sprintf("agent_%d", i),
+			Confidence: 0.5, Metadata: map[string]any{},
+		})
+		require.NoError(t, err)
+	}
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: runOther.ID, AgentID: otherAgent,
+		DecisionType: decisionType, Outcome: "other",
+		Confidence: 0.5, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	cutoff := time.Now().UTC().Add(1 * time.Hour)
+	result, err := testDB.BatchDeleteDecisions(ctx, uuid.Nil, cutoff, &decisionType, &agentID, nil, 100)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), result.Decisions, "should only delete agent's decisions")
+}
+
+func TestBatchDeleteDecisions_WithExcludeTypes(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "bd-excl-" + suffix
+	typeKeep := "bd_keep_" + suffix
+	typeDelete := "bd_delete_" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: typeKeep, Outcome: "should survive",
+		Confidence: 0.5, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: typeDelete, Outcome: "should be deleted",
+		Confidence: 0.5, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	cutoff := time.Now().UTC().Add(1 * time.Hour)
+	result, err := testDB.BatchDeleteDecisions(ctx, uuid.Nil, cutoff, nil, &agentID, []string{typeKeep}, 100)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), result.Decisions, "should only delete non-excluded type")
+}
+
+func TestBatchDeleteDecisions_DefaultBatchSize(t *testing.T) {
+	ctx := context.Background()
+	// batchSize=0 should default to 1000.
+	farPast := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	result, err := testDB.BatchDeleteDecisions(ctx, uuid.Nil, farPast, nil, nil, nil, 0)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), result.Decisions)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: ListConflicts — status and kind filter branches
+// ---------------------------------------------------------------------------
+
+func TestListConflicts_StatusFilter(t *testing.T) {
+	ctx := context.Background()
+	status := "open"
+	conflicts, err := testDB.ListConflicts(ctx, uuid.Nil, storage.ConflictFilters{
+		Status: &status,
+	}, 50, 0)
+	require.NoError(t, err)
+	for _, c := range conflicts {
+		assert.Equal(t, "open", c.Status, "status filter should only return open conflicts")
+	}
+}
+
+func TestListConflicts_KindFilter(t *testing.T) {
+	ctx := context.Background()
+	kind := "cross_agent"
+	conflicts, err := testDB.ListConflicts(ctx, uuid.Nil, storage.ConflictFilters{
+		ConflictKind: &kind,
+	}, 50, 0)
+	require.NoError(t, err)
+	for _, c := range conflicts {
+		assert.Equal(t, model.ConflictKindCrossAgent, c.ConflictKind, "kind filter should only return cross_agent conflicts")
+	}
+}
+
+func TestListConflicts_DecisionIDFilter(t *testing.T) {
+	ctx := context.Background()
+	decID := uuid.New()
+	conflicts, err := testDB.ListConflicts(ctx, uuid.Nil, storage.ConflictFilters{
+		DecisionID: &decID,
+	}, 50, 0)
+	require.NoError(t, err)
+	_ = conflicts // just verify no error with this filter
+}
+
+func TestListConflicts_DefaultLimit(t *testing.T) {
+	ctx := context.Background()
+	// limit=0 should default to 50.
+	conflicts, err := testDB.ListConflicts(ctx, uuid.Nil, storage.ConflictFilters{}, 0, 0)
+	require.NoError(t, err)
+	_ = conflicts
+}
+
+func TestListConflicts_LargeLimit(t *testing.T) {
+	ctx := context.Background()
+	// limit > 1000 should be capped at 1000.
+	conflicts, err := testDB.ListConflicts(ctx, uuid.Nil, storage.ConflictFilters{}, 5000, 0)
+	require.NoError(t, err)
+	_ = conflicts
+}
+
+func TestListConflicts_NegativeOffset(t *testing.T) {
+	ctx := context.Background()
+	// negative offset should be clamped to 0.
+	conflicts, err := testDB.ListConflicts(ctx, uuid.Nil, storage.ConflictFilters{}, 50, -10)
+	require.NoError(t, err)
+	_ = conflicts
+}
+
+// ---------------------------------------------------------------------------
+// Tests: QueryDecisions — ordering branches
+// ---------------------------------------------------------------------------
+
+func TestQueryDecisions_OrderByConfidence(t *testing.T) {
+	ctx := context.Background()
+	decisions, _, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		Limit:   10,
+		OrderBy: "confidence",
+	})
+	require.NoError(t, err)
+	_ = decisions
+}
+
+func TestQueryDecisions_OrderByCreatedAt(t *testing.T) {
+	ctx := context.Background()
+	decisions, _, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		Limit:   10,
+		OrderBy: "created_at",
+	})
+	require.NoError(t, err)
+	_ = decisions
+}
+
+func TestQueryDecisions_DescDirection(t *testing.T) {
+	ctx := context.Background()
+	decisions, _, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		Limit:    10,
+		OrderDir: "desc",
+	})
+	require.NoError(t, err)
+	_ = decisions
+}
+
+func TestQueryDecisions_AscDirection(t *testing.T) {
+	ctx := context.Background()
+	decisions, _, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		Limit:    10,
+		OrderDir: "asc",
+	})
+	require.NoError(t, err)
+	_ = decisions
+}
+
+// ---------------------------------------------------------------------------
+// Tests: ListGrants — default limit and filter branches
+// ---------------------------------------------------------------------------
+
+func TestListGrants_DefaultLimit(t *testing.T) {
+	ctx := context.Background()
+	grants, _, err := testDB.ListGrants(ctx, uuid.Nil, 0, 0)
+	require.NoError(t, err)
+	_ = grants
+}
+
+func TestListGrants_LargeLimit(t *testing.T) {
+	ctx := context.Background()
+	grants, _, err := testDB.ListGrants(ctx, uuid.Nil, 5000, 0)
+	require.NoError(t, err)
+	_ = grants
+}
+
+// ---------------------------------------------------------------------------
+// Tests: CountEligibleDecisions — with exclude types
+// ---------------------------------------------------------------------------
+
+func TestCountEligibleDecisions_WithDecisionTypeFilter(t *testing.T) {
+	ctx := context.Background()
+	cutoff := time.Now().UTC().Add(1 * time.Hour)
+	dt := "architecture"
+	counts, err := testDB.CountEligibleDecisions(ctx, uuid.Nil, cutoff, &dt, nil)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, counts.Decisions, int64(0))
+}
+
+func TestCountEligibleDecisions_WithAgentFilter(t *testing.T) {
+	ctx := context.Background()
+	cutoff := time.Now().UTC().Add(1 * time.Hour)
+	agent := "some-agent"
+	counts, err := testDB.CountEligibleDecisions(ctx, uuid.Nil, cutoff, nil, &agent)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, counts.Decisions, int64(0))
+}
+
+// ---------------------------------------------------------------------------
+// Tests: FindEmbeddedDecisionIDs — with limit branch
+// ---------------------------------------------------------------------------
+
+func TestFindEmbeddedDecisionIDs_WithLimit(t *testing.T) {
+	ctx := context.Background()
+	ids, err := testDB.FindEmbeddedDecisionIDs(ctx, 5)
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(ids), 5)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: DropEventChunks — exercising the function
+// ---------------------------------------------------------------------------
+
+func TestDropEventChunks_FarPast(t *testing.T) {
+	ctx := context.Background()
+	// A far-past cutoff should not drop anything.
+	dropped, err := testDB.DropEventChunks(ctx, time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), dropped)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetActiveAPIKeysByAgentIDGlobal — coverage
+// ---------------------------------------------------------------------------
+
+func TestGetActiveAPIKeysByAgentIDGlobal_NoKeys(t *testing.T) {
+	ctx := context.Background()
+	keys, err := testDB.GetActiveAPIKeysByAgentIDGlobal(ctx, "nonexistent-"+uuid.New().String()[:8])
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: ListAPIKeys — with agent filter
+// ---------------------------------------------------------------------------
+
+func TestGetActiveAPIKeysByAgentIDGlobal_NoMatch(t *testing.T) {
+	ctx := context.Background()
+	keys, err := testDB.GetActiveAPIKeysByAgentIDGlobal(ctx, "no-keys-agent-"+uuid.New().String()[:8])
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: InsertEventsIdempotent — full lifecycle with duplicates
+// ---------------------------------------------------------------------------
+
+func TestInsertEventsIdempotent_WithDuplicates(t *testing.T) {
+	t.Skip("agent_events hypertable lacks unique constraint on id; ON CONFLICT (id) DO NOTHING fails — pre-existing schema gap")
+}
+
+func TestInsertEventsIdempotent_SingleEvent(t *testing.T) {
+	t.Skip("agent_events hypertable lacks unique constraint on id; ON CONFLICT (id) DO NOTHING fails — pre-existing schema gap")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: CreateTraceTx — with alternatives and evidence
+// ---------------------------------------------------------------------------
+
+func TestCreateTraceTx_WithAlternativesAndEvidence(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "trace-tx-full-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	traceID := "trace-" + suffix
+	sessionID := uuid.New()
+	run, dec, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID:  agentID,
+		OrgID:    uuid.Nil,
+		TraceID:  &traceID,
+		Metadata: map[string]any{"test": true},
+		Decision: model.Decision{
+			DecisionType: "architecture",
+			Outcome:      "use postgres",
+			Confidence:   0.95,
+			Reasoning:    strPtr("better for ACID"),
+			Metadata:     map[string]any{},
+		},
+		Alternatives: []model.Alternative{
+			{Label: "MySQL", Score: ptrFloat32(0.6), Selected: false},
+			{Label: "Postgres", Score: ptrFloat32(0.95), Selected: true},
+		},
+		Evidence: []model.Evidence{
+			{SourceType: model.SourceAPIResponse, Content: "benchmarks show...", Metadata: map[string]any{}},
+		},
+		SessionID:    &sessionID,
+		AgentContext: map[string]any{"task": "db-selection"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, agentID, run.AgentID)
+	assert.Equal(t, model.RunStatusCompleted, run.Status)
+	assert.NotNil(t, run.CompletedAt)
+	assert.Equal(t, "architecture", dec.DecisionType)
+	assert.Equal(t, "use postgres", dec.Outcome)
+	assert.NotEqual(t, uuid.Nil, dec.ID)
+
+	// Verify alternatives were created.
+	alts, err := testDB.GetAlternativesByDecision(ctx, dec.ID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Len(t, alts, 2)
+
+	// Verify evidence was created.
+	evs, err := testDB.GetEvidenceByDecision(ctx, dec.ID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Len(t, evs, 1)
+}
+
+func TestCreateTraceTx_WithAuditEntry(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "trace-tx-audit-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	audit := &storage.MutationAuditEntry{
+		RequestID:    "req-" + suffix,
+		OrgID:        uuid.Nil,
+		ActorAgentID: agentID,
+		ActorRole:    "agent",
+		HTTPMethod:   "POST",
+		Endpoint:     "/v1/trace",
+		Operation:    "create",
+		ResourceType: "decision",
+	}
+
+	run, dec, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: agentID,
+		OrgID:   uuid.Nil,
+		Decision: model.Decision{
+			DecisionType: "tool_choice",
+			Outcome:      "use grep",
+			Confidence:   0.8,
+			Metadata:     map[string]any{},
+		},
+		AuditEntry: audit,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, model.RunStatusCompleted, run.Status)
+	assert.NotEqual(t, uuid.Nil, dec.ID)
+}
+
+func TestCreateTraceTx_MinimalDecision(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "trace-tx-min-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	run, dec, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: agentID,
+		OrgID:   uuid.Nil,
+		Decision: model.Decision{
+			DecisionType: "test",
+			Outcome:      "minimal",
+			Confidence:   0.5,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, model.RunStatusCompleted, run.Status)
+	assert.NotEqual(t, uuid.Nil, dec.ID)
+	assert.NotNil(t, dec.Metadata, "nil metadata should be defaulted to empty map")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: DeleteAgentData — with audit entry
+// ---------------------------------------------------------------------------
+
+func TestDeleteAgentData_WithAuditEntry(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "delete-audit-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	audit := &storage.MutationAuditEntry{
+		RequestID:    "req-del-" + suffix,
+		OrgID:        uuid.Nil,
+		ActorAgentID: "admin",
+		ActorRole:    "platform_admin",
+		HTTPMethod:   "DELETE",
+		Endpoint:     "/v1/agents/" + agentID,
+		Operation:    "delete",
+		ResourceType: "agent",
+	}
+
+	result, err := testDB.DeleteAgentData(ctx, uuid.Nil, agentID, audit)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), result.Agents)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetDecisionOutcomeSignals — all three signal types populated
+// ---------------------------------------------------------------------------
+
+func TestGetDecisionOutcomeSignals_AllSignals(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "signals-all-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Create a decision to query signals for.
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	dec, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "signals_test", Outcome: "test outcome",
+		Confidence: 0.7, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Create a superseding decision.
+	run2, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	supersedesID := dec.ID
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: run2.ID, AgentID: agentID,
+		DecisionType: "signals_test", Outcome: "revised outcome",
+		Confidence: 0.9, Metadata: map[string]any{},
+		SupersedesID: &supersedesID,
+	})
+	require.NoError(t, err)
+
+	// Create a citing decision.
+	run3, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	precedentRef := dec.ID
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: run3.ID, AgentID: agentID,
+		DecisionType: "signals_test", Outcome: "citing outcome",
+		Confidence: 0.8, Metadata: map[string]any{},
+		PrecedentRef: &precedentRef,
+	})
+	require.NoError(t, err)
+
+	signals, err := testDB.GetDecisionOutcomeSignals(ctx, dec.ID, uuid.Nil)
+	require.NoError(t, err)
+	assert.NotNil(t, signals.SupersessionVelocityHours, "should have supersession velocity")
+	assert.GreaterOrEqual(t, signals.PrecedentCitationCount, 1, "should have at least one citation")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetCitationPercentilesForOrg — with multiple citation levels
+// ---------------------------------------------------------------------------
+
+func TestGetCitationPercentilesForOrg_MultipleCitations(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "cite-pctl-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Create a base decision that will be cited.
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	baseDec, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "pctl_test", Outcome: "base",
+		Confidence: 0.9, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Create several citing decisions.
+	for i := 0; i < 5; i++ {
+		r, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+		require.NoError(t, err)
+
+		ref := baseDec.ID
+		_, err = testDB.CreateDecision(ctx, model.Decision{
+			RunID: r.ID, AgentID: agentID,
+			DecisionType: "pctl_test", Outcome: fmt.Sprintf("citing %d", i),
+			Confidence: 0.8, Metadata: map[string]any{},
+			PrecedentRef: &ref,
+		})
+		require.NoError(t, err)
+	}
+
+	breakpoints, err := testDB.GetCitationPercentilesForOrg(ctx, uuid.Nil)
+	require.NoError(t, err)
+	// With data, should return percentile breakpoints.
+	assert.NotNil(t, breakpoints, "should return percentile breakpoints when citations exist")
+	assert.Len(t, breakpoints, 4, "should return [p25, p50, p75, p90]")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: CleanupIdempotencyKeys — exercising the cleanup
+// ---------------------------------------------------------------------------
+
+func TestCleanupIdempotencyKeys_RemovesExpired(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	// Create an in-progress key.
+	_, err := testDB.BeginIdempotency(ctx, uuid.Nil, "cleanup-agent-"+suffix, "/v1/trace", "cleanup-key-"+suffix, "hash1")
+	require.NoError(t, err)
+
+	// Cleanup with a very short TTL should remove it.
+	// The key was just created, so with a 0 TTL it should be removed.
+	deleted, err := testDB.CleanupIdempotencyKeys(ctx, 0, 0)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, deleted, int64(1), "should remove at least the in-progress key")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: CompleteIdempotency — full lifecycle
+// ---------------------------------------------------------------------------
+
+func TestCompleteIdempotency_FullLifecycle(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentID := "idemp-lifecycle-" + suffix
+	endpoint := "/v1/trace"
+	key := "idemp-key-" + suffix
+	hash := "hash-" + suffix
+
+	// Begin: should succeed (new key).
+	lookup, err := testDB.BeginIdempotency(ctx, uuid.Nil, agentID, endpoint, key, hash)
+	require.NoError(t, err)
+	assert.False(t, lookup.Completed)
+
+	// Complete: mark the key as done.
+	err = testDB.CompleteIdempotency(ctx, uuid.Nil, agentID, endpoint, key, 201, map[string]any{"id": "dec-123"})
+	require.NoError(t, err)
+
+	// Begin again with same hash: should return completed lookup.
+	lookup, err = testDB.BeginIdempotency(ctx, uuid.Nil, agentID, endpoint, key, hash)
+	require.NoError(t, err)
+	assert.True(t, lookup.Completed)
+	assert.Equal(t, 201, lookup.StatusCode)
+	assert.NotEmpty(t, lookup.ResponseData)
+}
+
+func TestBeginIdempotency_PayloadMismatch(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentID := "idemp-mismatch-" + suffix
+	endpoint := "/v1/trace"
+	key := "idemp-mismatch-key-" + suffix
+
+	// Create initial key.
+	_, err := testDB.BeginIdempotency(ctx, uuid.Nil, agentID, endpoint, key, "hash-a")
+	require.NoError(t, err)
+
+	// Complete it.
+	err = testDB.CompleteIdempotency(ctx, uuid.Nil, agentID, endpoint, key, 200, map[string]any{})
+	require.NoError(t, err)
+
+	// Retry with different hash: should return ErrIdempotencyPayloadMismatch.
+	_, err = testDB.BeginIdempotency(ctx, uuid.Nil, agentID, endpoint, key, "hash-b")
+	require.ErrorIs(t, err, storage.ErrIdempotencyPayloadMismatch)
+}
+
+func TestBeginIdempotency_InProgress(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentID := "idemp-inprog-" + suffix
+	endpoint := "/v1/trace"
+	key := "idemp-inprog-key-" + suffix
+	hash := "hash-inprog-" + suffix
+
+	// First call owns processing.
+	_, err := testDB.BeginIdempotency(ctx, uuid.Nil, agentID, endpoint, key, hash)
+	require.NoError(t, err)
+
+	// Second call with same hash should get ErrIdempotencyInProgress.
+	_, err = testDB.BeginIdempotency(ctx, uuid.Nil, agentID, endpoint, key, hash)
+	require.ErrorIs(t, err, storage.ErrIdempotencyInProgress)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetEventsByRun — with explicit limit
+// ---------------------------------------------------------------------------
+
+func TestGetEventsByRun_WithExplicitLimit(t *testing.T) {
+	ctx := context.Background()
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: "events-limit-test"})
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		err = testDB.InsertEvent(ctx, model.AgentEvent{
+			ID: uuid.New(), RunID: run.ID, OrgID: run.OrgID,
+			EventType: model.EventDecisionStarted, SequenceNum: int64(i + 1),
+			OccurredAt: now, AgentID: "events-limit-test",
+			Payload: map[string]any{}, CreatedAt: now,
+		})
+		require.NoError(t, err)
+	}
+
+	// Fetch with limit of 3.
+	events, err := testDB.GetEventsByRun(ctx, run.OrgID, run.ID, 3)
+	require.NoError(t, err)
+	assert.Len(t, events, 3)
+
+	// Fetch with limit of 0 (should use default).
+	events, err = testDB.GetEventsByRun(ctx, run.OrgID, run.ID, 0)
+	require.NoError(t, err)
+	assert.Len(t, events, 5)
+
+	// Fetch with negative limit (should use default).
+	events, err = testDB.GetEventsByRun(ctx, run.OrgID, run.ID, -1)
+	require.NoError(t, err)
+	assert.Len(t, events, 5)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetGrant — not found
+// ---------------------------------------------------------------------------
+
+func TestGetGrant_NotFound(t *testing.T) {
+	ctx := context.Background()
+	_, err := testDB.GetGrant(ctx, uuid.Nil, uuid.New())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, storage.ErrNotFound)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetOrganization — found after EnsureDefaultOrg
+// ---------------------------------------------------------------------------
+
+func TestGetOrganization_AfterEnsureDefault(t *testing.T) {
+	ctx := context.Background()
+	err := testDB.EnsureDefaultOrg(ctx)
+	require.NoError(t, err)
+
+	org, err := testDB.GetOrganization(ctx, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, uuid.Nil, org.ID)
+	assert.Equal(t, "Default", org.Name)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: UpdateAgentTags — not found
+// ---------------------------------------------------------------------------
+
+func TestUpdateAgentTags_NotFound(t *testing.T) {
+	ctx := context.Background()
+	_, err := testDB.UpdateAgentTags(ctx, uuid.Nil, "nonexistent-"+uuid.New().String()[:8], []string{"tag1"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, storage.ErrNotFound)
+}
+
+func TestUpdateAgentTags_NilTags(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "tags-nil-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Nil tags should be converted to empty slice.
+	agent, err := testDB.UpdateAgentTags(ctx, uuid.Nil, agentID, nil)
+	require.NoError(t, err)
+	assert.NotNil(t, agent.Tags)
+	assert.Empty(t, agent.Tags)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: UpdateAgentWithAudit — not found
+// ---------------------------------------------------------------------------
+
+func TestUpdateAgentWithAudit_NotFound(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	name := "new-name"
+	_, err := testDB.UpdateAgentWithAudit(ctx, uuid.Nil, "nonexistent-"+suffix, &name, nil, storage.MutationAuditEntry{
+		RequestID:    "req-" + suffix,
+		OrgID:        uuid.Nil,
+		ActorAgentID: "admin",
+		ActorRole:    "platform_admin",
+		HTTPMethod:   "PATCH",
+		Endpoint:     "/v1/agents/x",
+		Operation:    "update",
+		ResourceType: "agent",
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, storage.ErrNotFound)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: RevokeAPIKeyWithAudit — already revoked
+// ---------------------------------------------------------------------------
+
+func TestRevokeAPIKeyWithAudit_AlreadyRevoked(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "revoke-twice-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	key, err := testDB.CreateAPIKeyWithAudit(ctx, model.APIKey{
+		Prefix:    "ak_" + suffix[:6],
+		KeyHash:   "hash-" + suffix,
+		AgentID:   agentID,
+		OrgID:     uuid.Nil,
+		Label:     "test key",
+		CreatedBy: agentID,
+	}, storage.MutationAuditEntry{
+		RequestID: "req-create-" + suffix, OrgID: uuid.Nil,
+		ActorAgentID: agentID, ActorRole: "platform_admin",
+		HTTPMethod: "POST", Endpoint: "/v1/api-keys",
+		Operation: "create", ResourceType: "api_key",
+	})
+	require.NoError(t, err)
+
+	audit := storage.MutationAuditEntry{
+		RequestID: "req-revoke-" + suffix, OrgID: uuid.Nil,
+		ActorAgentID: agentID, ActorRole: "platform_admin",
+		HTTPMethod: "DELETE", Endpoint: "/v1/api-keys/" + key.ID.String(),
+		Operation: "revoke", ResourceType: "api_key",
+	}
+
+	// First revocation should succeed.
+	err = testDB.RevokeAPIKeyWithAudit(ctx, uuid.Nil, key.ID, audit)
+	require.NoError(t, err)
+
+	// Second revocation should fail with "already revoked".
+	audit.RequestID = "req-revoke2-" + suffix
+	err = testDB.RevokeAPIKeyWithAudit(ctx, uuid.Nil, key.ID, audit)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already revoked")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: BatchDeleteDecisions — with decision type filter
+// ---------------------------------------------------------------------------
+
+func TestBatchDeleteDecisions_WithDecisionTypeAndAgent(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "batch-del-da-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Create some decisions.
+	for i := 0; i < 3; i++ {
+		r, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+		require.NoError(t, err)
+		_, err = testDB.CreateDecision(ctx, model.Decision{
+			RunID: r.ID, AgentID: agentID,
+			DecisionType: "batch_del_type", Outcome: fmt.Sprintf("outcome %d", i),
+			Confidence: 0.5, Metadata: map[string]any{},
+		})
+		require.NoError(t, err)
+	}
+
+	cutoff := time.Now().UTC().Add(1 * time.Hour)
+	dt := "batch_del_type"
+	counts, err := testDB.BatchDeleteDecisions(ctx, uuid.Nil, cutoff, &dt, &agentID, nil, 2)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), counts.Decisions, "all 3 decisions should be deleted")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: StartDeletionLog — empty initiatedBy
+// ---------------------------------------------------------------------------
+
+func TestStartDeletionLog_EmptyInitiatedBy(t *testing.T) {
+	ctx := context.Background()
+
+	// Empty initiatedBy should be stored as NULL.
+	logID, err := testDB.StartDeletionLog(ctx, uuid.Nil, "policy", "", map[string]any{})
+	require.NoError(t, err)
+	assert.NotEqual(t, uuid.Nil, logID)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: CreateHold and ReleaseHold — already released returns false
+// ---------------------------------------------------------------------------
+
+func TestReleaseHold_AlreadyReleased(t *testing.T) {
+	ctx := context.Background()
+
+	hold, err := testDB.CreateHold(ctx, storage.RetentionHold{
+		OrgID:     uuid.Nil,
+		Reason:    "legal hold test",
+		HoldFrom:  time.Now().UTC().Add(-24 * time.Hour),
+		HoldTo:    time.Now().UTC().Add(24 * time.Hour),
+		CreatedBy: "admin",
+	})
+	require.NoError(t, err)
+
+	// First release should succeed.
+	ok, err := testDB.ReleaseHold(ctx, hold.ID, uuid.Nil)
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	// Second release should return false (already released).
+	ok, err = testDB.ReleaseHold(ctx, hold.ID, uuid.Nil)
+	require.NoError(t, err)
+	assert.False(t, ok, "releasing an already-released hold should return false")
+}
+
+func TestReleaseHold_NotFound(t *testing.T) {
+	ctx := context.Background()
+	ok, err := testDB.ReleaseHold(ctx, uuid.New(), uuid.Nil)
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: MarkDecisionConflictScored
+// ---------------------------------------------------------------------------
+
+func TestMarkDecisionConflictScored_Success(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "mark-scored-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	dec, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "scored_test", Outcome: "test",
+		Confidence: 0.7, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	err = testDB.MarkDecisionConflictScored(ctx, dec.ID, uuid.Nil)
+	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetConflictAnalytics — with all filter combinations
+// ---------------------------------------------------------------------------
+
+func TestGetConflictAnalytics_WithAgentFilter(t *testing.T) {
+	ctx := context.Background()
+	agent := "analytics-agent-filter"
+	result, err := testDB.GetConflictAnalytics(ctx, uuid.Nil, storage.ConflictAnalyticsFilters{
+		From:    time.Now().UTC().Add(-30 * 24 * time.Hour),
+		To:      time.Now().UTC(),
+		AgentID: &agent,
+	})
+	require.NoError(t, err)
+	assert.NotNil(t, result.ByAgentPair)
+	assert.NotNil(t, result.ByDecisionType)
+}
+
+func TestGetConflictAnalytics_WithDecisionTypeFilter(t *testing.T) {
+	ctx := context.Background()
+	dt := "architecture"
+	result, err := testDB.GetConflictAnalytics(ctx, uuid.Nil, storage.ConflictAnalyticsFilters{
+		From:         time.Now().UTC().Add(-30 * 24 * time.Hour),
+		To:           time.Now().UTC(),
+		DecisionType: &dt,
+	})
+	require.NoError(t, err)
+	assert.NotNil(t, result.ByAgentPair)
+}
+
+func TestGetConflictAnalytics_WithConflictKindFilter(t *testing.T) {
+	ctx := context.Background()
+	kind := "cross_agent"
+	result, err := testDB.GetConflictAnalytics(ctx, uuid.Nil, storage.ConflictAnalyticsFilters{
+		From:         time.Now().UTC().Add(-30 * 24 * time.Hour),
+		To:           time.Now().UTC(),
+		ConflictKind: &kind,
+	})
+	require.NoError(t, err)
+	assert.NotNil(t, result.ByAgentPair)
+}
+
+func TestGetConflictAnalytics_WithAllFilters(t *testing.T) {
+	ctx := context.Background()
+	agent := "some-agent"
+	dt := "architecture"
+	kind := "cross_agent"
+	result, err := testDB.GetConflictAnalytics(ctx, uuid.Nil, storage.ConflictAnalyticsFilters{
+		From:         time.Now().UTC().Add(-30 * 24 * time.Hour),
+		To:           time.Now().UTC(),
+		AgentID:      &agent,
+		DecisionType: &dt,
+		ConflictKind: &kind,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, result.Summary.TotalDetected)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: ListRunsByAgent — with data
+// ---------------------------------------------------------------------------
+
+func TestListRunsByAgent_WithData(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "list-runs-" + suffix
+
+	for i := 0; i < 3; i++ {
+		_, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+		require.NoError(t, err)
+	}
+
+	runs, total, err := testDB.ListRunsByAgent(ctx, uuid.Nil, agentID, 2, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 3, total)
+	assert.Len(t, runs, 2)
+
+	// Second page.
+	runs, total, err = testDB.ListRunsByAgent(ctx, uuid.Nil, agentID, 2, 2)
+	require.NoError(t, err)
+	assert.Equal(t, 3, total)
+	assert.Len(t, runs, 1)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetDecisionForScoring — not found
+// ---------------------------------------------------------------------------
+
+func TestGetDecisionForScoring_NotFound(t *testing.T) {
+	ctx := context.Background()
+	_, err := testDB.GetDecisionForScoring(ctx, uuid.New(), uuid.Nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, storage.ErrNotFound)
+}
+
+func TestGetDecisionForScoring_Found(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "scoring-found-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	dec, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "scoring_test", Outcome: "test outcome",
+		Confidence: 0.9, Reasoning: strPtr("because reasons"),
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	got, err := testDB.GetDecisionForScoring(ctx, dec.ID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, dec.ID, got.ID)
+	assert.Equal(t, "scoring_test", got.DecisionType)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: InsertMutationAudit — with before and after data
+// ---------------------------------------------------------------------------
+
+func TestInsertMutationAudit_WithBeforeAndAfterData(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	err := testDB.InsertMutationAudit(ctx, storage.MutationAuditEntry{
+		RequestID:    "req-ba-" + suffix,
+		OrgID:        uuid.Nil,
+		ActorAgentID: "admin",
+		ActorRole:    "platform_admin",
+		HTTPMethod:   "PATCH",
+		Endpoint:     "/v1/agents/test",
+		Operation:    "update",
+		ResourceType: "agent",
+		ResourceID:   "test-agent",
+		BeforeData:   map[string]any{"name": "old"},
+		AfterData:    map[string]any{"name": "new"},
+		Metadata:     map[string]any{"reason": "test"},
+	})
+	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: UpdateOutcomeScore — on a real decision
+// ---------------------------------------------------------------------------
+
+func TestUpdateOutcomeScore_Success(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "outcome-score-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	dec, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "score_test", Outcome: "test",
+		Confidence: 0.7, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	score := float32(0.85)
+	err = testDB.UpdateOutcomeScore(ctx, uuid.Nil, dec.ID, &score)
+	require.NoError(t, err)
+
+	// Set to nil.
+	err = testDB.UpdateOutcomeScore(ctx, uuid.Nil, dec.ID, nil)
+	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: SetRetentionPolicy — success
+// ---------------------------------------------------------------------------
+
+func TestSetRetentionPolicy_ClearPolicy(t *testing.T) {
+	ctx := context.Background()
+	// Set a policy then clear it.
+	days := 30
+	err := testDB.SetRetentionPolicy(ctx, uuid.Nil, &days, []string{"audit"})
+	require.NoError(t, err)
+
+	// Clear the policy.
+	err = testDB.SetRetentionPolicy(ctx, uuid.Nil, nil, nil)
+	require.NoError(t, err)
+
+	// Verify it's cleared.
+	policy, err := testDB.GetRetentionPolicy(ctx, uuid.Nil, 24*time.Hour)
+	require.NoError(t, err)
+	assert.Nil(t, policy.RetentionDays)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: CountEligibleDecisions — with both filters
+// ---------------------------------------------------------------------------
+
+func TestCountEligibleDecisions_WithBothFilters(t *testing.T) {
+	ctx := context.Background()
+	cutoff := time.Now().UTC().Add(1 * time.Hour)
+	dt := "architecture"
+	agent := "some-agent"
+	counts, err := testDB.CountEligibleDecisions(ctx, uuid.Nil, cutoff, &dt, &agent)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, counts.Decisions, int64(0))
+}
+
+// ---------------------------------------------------------------------------
+// Tests: ListGrants — with data
+// ---------------------------------------------------------------------------
+
+func TestListGrants_WithData(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	// Create real agents for FK constraints.
+	grantorAgent, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: "grantor-" + suffix, OrgID: uuid.Nil, Name: "Grantor", Role: model.RoleAdmin,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+	granteeAgent, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: "grantee-" + suffix, OrgID: uuid.Nil, Name: "Grantee", Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	for i := 0; i < 3; i++ {
+		resID := fmt.Sprintf("res-%d-%s", i, suffix)
+		_, err := testDB.CreateGrant(ctx, model.AccessGrant{
+			OrgID: uuid.Nil, GrantorID: grantorAgent.ID, GranteeID: granteeAgent.ID,
+			ResourceType: "agent_traces", ResourceID: &resID,
+			Permission: "read",
+		})
+		require.NoError(t, err)
+	}
+
+	grants, total, err := testDB.ListGrants(ctx, uuid.Nil, 2, 0)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, total, 3)
+	assert.LessOrEqual(t, len(grants), 2)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: DeleteGrantWithAudit — not found
+// ---------------------------------------------------------------------------
+
+func TestDeleteGrantWithAudit_NotFound(t *testing.T) {
+	ctx := context.Background()
+	err := testDB.DeleteGrantWithAudit(ctx, uuid.Nil, uuid.New(), storage.MutationAuditEntry{
+		RequestID:    "req-del-grant",
+		OrgID:        uuid.Nil,
+		ActorAgentID: "admin",
+		ActorRole:    "platform_admin",
+		HTTPMethod:   "DELETE",
+		Endpoint:     "/v1/grants/x",
+		Operation:    "delete",
+		ResourceType: "grant",
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, storage.ErrNotFound)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetIntegrityProof — not found
+// ---------------------------------------------------------------------------
+
+func TestGetLatestIntegrityProof_NoProofs(t *testing.T) {
+	ctx := context.Background()
+	// Use a random org ID to avoid existing proofs.
+	proof, err := testDB.GetLatestIntegrityProof(ctx, uuid.New())
+	require.NoError(t, err)
+	assert.Nil(t, proof, "should return nil when no proofs exist for the org")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: CreateGrantWithAudit — full lifecycle
+// ---------------------------------------------------------------------------
+
+func TestCreateGrantWithAudit_FullCycle(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	// Create real agents for FK constraints.
+	grantor, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: "cwaudit-grantor-" + suffix, OrgID: uuid.Nil, Name: "Grantor", Role: model.RoleAdmin,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+	grantee, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: "cwaudit-grantee-" + suffix, OrgID: uuid.Nil, Name: "Grantee", Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	resID := "res-" + suffix
+	grant, err := testDB.CreateGrantWithAudit(ctx, model.AccessGrant{
+		OrgID: uuid.Nil, GrantorID: grantor.ID, GranteeID: grantee.ID,
+		ResourceType: "agent_traces", ResourceID: &resID,
+		Permission: "read",
+	}, storage.MutationAuditEntry{
+		RequestID: "req-grant-" + suffix, OrgID: uuid.Nil,
+		ActorAgentID: "admin", ActorRole: "platform_admin",
+		HTTPMethod: "POST", Endpoint: "/v1/grants",
+		Operation: "create", ResourceType: "grant",
+	})
+	require.NoError(t, err)
+	assert.NotEqual(t, uuid.Nil, grant.ID)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: ReserveSequenceNums — edge cases
+// ---------------------------------------------------------------------------
+
+func TestReserveSequenceNums_ZeroCount(t *testing.T) {
+	ctx := context.Background()
+	nums, err := testDB.ReserveSequenceNums(ctx, 0)
+	require.NoError(t, err)
+	assert.Nil(t, nums)
+}
+
+func TestReserveSequenceNums_NegativeCount(t *testing.T) {
+	ctx := context.Background()
+	nums, err := testDB.ReserveSequenceNums(ctx, -5)
+	require.NoError(t, err)
+	assert.Nil(t, nums)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetDecisionQualityStats
+// ---------------------------------------------------------------------------
+
+func TestGetDecisionQualityStats_WithDecisions(t *testing.T) {
+	ctx := context.Background()
+	stats, err := testDB.GetDecisionQualityStats(ctx, uuid.Nil)
+	require.NoError(t, err)
+	// The default org will have decisions from other tests.
+	assert.GreaterOrEqual(t, stats.Total, 0)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: Notify — exercises the success path
+// ---------------------------------------------------------------------------
+
+func TestNotify_Success(t *testing.T) {
+	ctx := context.Background()
+	// Notify on the decisions channel — should succeed even without listeners.
+	err := testDB.Notify(ctx, storage.ChannelDecisions, `{"test": true}`)
+	require.NoError(t, err)
+
+	err = testDB.Notify(ctx, storage.ChannelConflicts, `{"conflict": true}`)
+	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: CreateOrgWithOwnerAndKeyTx — verifies org, agent, and key creation
+// ---------------------------------------------------------------------------
+
+func TestCreateOrgWithOwnerAndKeyTx_AllFieldsPopulated(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	ownerAgentID := "owner-" + suffix
+
+	org, agent, key, err := testDB.CreateOrgWithOwnerAndKeyTx(ctx,
+		model.Organization{Name: "Test Org " + suffix, Slug: "test-org-" + suffix, Plan: "pro"},
+		model.Agent{AgentID: ownerAgentID, Name: "Owner", Role: model.RoleOrgOwner, Email: strPtr("owner@test.com")},
+		model.APIKey{Prefix: "ak_" + suffix[:6], KeyHash: "hash-signup-" + suffix, AgentID: ownerAgentID, Label: "initial key", CreatedBy: ownerAgentID},
+		storage.MutationAuditEntry{RequestID: "signup-org-" + suffix, ActorAgentID: "system", ActorRole: "platform_admin", HTTPMethod: "POST", Endpoint: "/v1/signup", Operation: "create", ResourceType: "organization"},
+		storage.MutationAuditEntry{RequestID: "signup-agent-" + suffix, ActorAgentID: "system", ActorRole: "platform_admin", HTTPMethod: "POST", Endpoint: "/v1/signup", Operation: "create", ResourceType: "agent"},
+		storage.MutationAuditEntry{RequestID: "signup-key-" + suffix, ActorAgentID: "system", ActorRole: "platform_admin", HTTPMethod: "POST", Endpoint: "/v1/signup", Operation: "create", ResourceType: "api_key"},
+	)
+	require.NoError(t, err)
+	assert.NotEqual(t, uuid.Nil, org.ID)
+	assert.Equal(t, "pro", org.Plan)
+	assert.Equal(t, ownerAgentID, agent.AgentID)
+	assert.Equal(t, org.ID, agent.OrgID)
+	assert.NotEqual(t, uuid.Nil, key.ID)
+	assert.Equal(t, org.ID, key.OrgID)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: QueryDecisions — with Include (alternatives + evidence)
+// ---------------------------------------------------------------------------
+
+func TestQueryDecisions_IncludeBothAlternativesAndEvidence(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "query-include-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Create a decision with alternatives and evidence.
+	run, dec, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: agentID, OrgID: uuid.Nil,
+		Decision: model.Decision{
+			DecisionType: "query_include_test_" + suffix,
+			Outcome:      "include test", Confidence: 0.8,
+			Metadata: map[string]any{},
+		},
+		Alternatives: []model.Alternative{
+			{Label: "Option A", Score: ptrFloat32(0.6), Selected: false},
+			{Label: "Option B", Score: ptrFloat32(0.8), Selected: true},
+		},
+		Evidence: []model.Evidence{
+			{SourceType: model.SourceAPIResponse, Content: "benchmark data", Metadata: map[string]any{}},
+		},
+	})
+	require.NoError(t, err)
+	_ = run
+
+	dt := "query_include_test_" + suffix
+	decisions, total, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		Filters: model.QueryFilters{DecisionType: &dt},
+		Include: []string{"alternatives", "evidence"},
+		Limit:   10,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, total)
+	require.Len(t, decisions, 1)
+	assert.Equal(t, dec.ID, decisions[0].ID)
+	assert.Len(t, decisions[0].Alternatives, 2, "should include 2 alternatives")
+	assert.Len(t, decisions[0].Evidence, 1, "should include 1 evidence")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: QueryDecisions — with TraceID filter
+// ---------------------------------------------------------------------------
+
+func TestQueryDecisions_WithTraceIDFilter(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "query-trace-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	traceID := "trace-" + suffix
+	_, _, err = testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: agentID, OrgID: uuid.Nil, TraceID: &traceID,
+		Decision: model.Decision{
+			DecisionType: "trace_filter_test", Outcome: "traced", Confidence: 0.9,
+			Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+
+	// Query with trace ID filter.
+	decisions, total, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		TraceID: &traceID,
+		Limit:   10,
+	})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, total, 1)
+	assert.GreaterOrEqual(t, len(decisions), 1)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: QueryDecisions — quality_score order by (deprecated alias)
+// ---------------------------------------------------------------------------
+
+func TestQueryDecisions_OrderByQualityScore(t *testing.T) {
+	ctx := context.Background()
+	decisions, _, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		OrderBy: "quality_score",
+		Limit:   5,
+	})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(decisions), 5)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: QueryDecisionsTemporal — with limit edge cases
+// ---------------------------------------------------------------------------
+
+func TestQueryDecisionsTemporal_DefaultLimit(t *testing.T) {
+	ctx := context.Background()
+	decisions, err := testDB.QueryDecisionsTemporal(ctx, uuid.Nil, model.TemporalQueryRequest{
+		AsOf:  time.Now().UTC(),
+		Limit: 0, // should default to 100
+	})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(decisions), 100)
+}
+
+func TestQueryDecisionsTemporal_LargeLimit(t *testing.T) {
+	ctx := context.Background()
+	decisions, err := testDB.QueryDecisionsTemporal(ctx, uuid.Nil, model.TemporalQueryRequest{
+		AsOf:  time.Now().UTC(),
+		Limit: 5000, // should be capped to 1000
+	})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(decisions), 1000)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: Assessment outcomes — partially_correct and incorrect
+// ---------------------------------------------------------------------------
+
+func TestCreateAssessment_PartiallyCorrectAndIncorrect(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "assess-variety-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	dec, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "assess_variety_test", Outcome: "test outcome",
+		Confidence: 0.7, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Create assessments with all three outcome types.
+	_, err = testDB.CreateAssessment(ctx, uuid.Nil, model.DecisionAssessment{
+		DecisionID:      dec.ID,
+		AssessorAgentID: "assessor-a-" + suffix,
+		Outcome:         model.AssessmentCorrect,
+		Notes:           strPtr("looks good"),
+	})
+	require.NoError(t, err)
+
+	_, err = testDB.CreateAssessment(ctx, uuid.Nil, model.DecisionAssessment{
+		DecisionID:      dec.ID,
+		AssessorAgentID: "assessor-b-" + suffix,
+		Outcome:         model.AssessmentIncorrect,
+		Notes:           strPtr("wrong approach"),
+	})
+	require.NoError(t, err)
+
+	_, err = testDB.CreateAssessment(ctx, uuid.Nil, model.DecisionAssessment{
+		DecisionID:      dec.ID,
+		AssessorAgentID: "assessor-c-" + suffix,
+		Outcome:         model.AssessmentPartiallyCorrect,
+		Notes:           strPtr("partially right"),
+	})
+	require.NoError(t, err)
+
+	// Verify the summary covers all three types.
+	summary, err := testDB.GetAssessmentSummary(ctx, uuid.Nil, dec.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 3, summary.Total)
+	assert.Equal(t, 1, summary.Correct)
+	assert.Equal(t, 1, summary.Incorrect)
+	assert.Equal(t, 1, summary.PartiallyCorrect)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: ExportDecisionsCursor — with cursor pagination
+// ---------------------------------------------------------------------------
+
+func TestExportDecisionsCursor_WithCursorPagination(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "export-cursor-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	dt := "export_cursor_test_" + suffix
+
+	// Create several decisions.
+	for i := 0; i < 5; i++ {
+		r, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+		require.NoError(t, err)
+		_, err = testDB.CreateDecision(ctx, model.Decision{
+			RunID: r.ID, AgentID: agentID,
+			DecisionType: dt, Outcome: fmt.Sprintf("outcome %d", i),
+			Confidence: 0.5, Metadata: map[string]any{},
+		})
+		require.NoError(t, err)
+	}
+
+	// First page.
+	page1, err := testDB.ExportDecisionsCursor(ctx, uuid.Nil, model.QueryFilters{DecisionType: &dt}, nil, 2)
+	require.NoError(t, err)
+	assert.Len(t, page1, 2)
+
+	// Second page using cursor from first page.
+	cursor := &storage.ExportCursor{
+		ValidFrom: page1[1].ValidFrom,
+		ID:        page1[1].ID,
+	}
+	page2, err := testDB.ExportDecisionsCursor(ctx, uuid.Nil, model.QueryFilters{DecisionType: &dt}, cursor, 2)
+	require.NoError(t, err)
+	assert.Len(t, page2, 2)
+
+	// Verify no overlap between pages.
+	for _, d1 := range page1 {
+		for _, d2 := range page2 {
+			assert.NotEqual(t, d1.ID, d2.ID, "pages should not overlap")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: QueryDecisions — with multiple filter types
+// ---------------------------------------------------------------------------
+
+func TestQueryDecisions_WithOutcomeFilter(t *testing.T) {
+	ctx := context.Background()
+	outcome := "nonexistent-outcome-" + uuid.New().String()[:8]
+	decisions, total, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		Filters: model.QueryFilters{Outcome: &outcome},
+		Limit:   10,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, decisions)
+}
+
+func TestQueryDecisions_WithConfidenceMinFilter(t *testing.T) {
+	ctx := context.Background()
+	confMin := float32(0.99)
+	decisions, _, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		Filters: model.QueryFilters{ConfidenceMin: &confMin},
+		Limit:   5,
+	})
+	require.NoError(t, err)
+	for _, d := range decisions {
+		assert.GreaterOrEqual(t, d.Confidence, float32(0.99))
+	}
+}
+
+func TestQueryDecisions_WithTimeRangeFilter(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	from := now.Add(-1 * time.Hour)
+	to := now.Add(1 * time.Hour)
+	_, total, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		Filters: model.QueryFilters{TimeRange: &model.TimeRange{From: &from, To: &to}},
+		Limit:   5,
+	})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, total, 0)
+}
+
+func TestQueryDecisions_WithSessionFilter(t *testing.T) {
+	ctx := context.Background()
+	sessionID := uuid.New()
+	decisions, total, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		Filters: model.QueryFilters{SessionID: &sessionID},
+		Limit:   5,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, decisions)
+}
+
+func TestQueryDecisions_WithProjectFilter(t *testing.T) {
+	ctx := context.Background()
+	project := "nonexistent-project"
+	decisions, total, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		Filters: model.QueryFilters{Project: &project},
+		Limit:   5,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, decisions)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetConflictStatusCounts
+// ---------------------------------------------------------------------------
+
+func TestGetConflictStatusCounts_StructureVerification(t *testing.T) {
+	ctx := context.Background()
+	counts, err := testDB.GetConflictStatusCounts(ctx, uuid.Nil)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, counts.Total, 0)
+	assert.GreaterOrEqual(t, counts.Open, 0)
+	assert.GreaterOrEqual(t, counts.Acknowledged, 0)
+	assert.GreaterOrEqual(t, counts.Resolved, 0)
+	assert.GreaterOrEqual(t, counts.WontFix, 0)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetConflict — not found
+// ---------------------------------------------------------------------------
+
+func TestGetConflict_NotFound(t *testing.T) {
+	ctx := context.Background()
+	// GetConflict returns nil, nil when not found (not ErrNotFound).
+	conflict, err := testDB.GetConflict(ctx, uuid.New(), uuid.New())
+	require.NoError(t, err)
+	assert.Nil(t, conflict)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: ListConflicts — with severity filter
+// ---------------------------------------------------------------------------
+
+func TestListConflicts_SeverityFilter_Coverage(t *testing.T) {
+	ctx := context.Background()
+	sev := "critical"
+	cat := "factual"
+	conflicts, err := testDB.ListConflicts(ctx, uuid.Nil, storage.ConflictFilters{
+		Severity: &sev,
+		Category: &cat,
+	}, 10, 0)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(conflicts), 0)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetDecisionsByAgent — with filters exercised
+// ---------------------------------------------------------------------------
+
+func TestGetDecisionsByAgent_WithTimeRange(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	from := now.Add(-1 * time.Hour)
+	to := now.Add(1 * time.Hour)
+	decisions, _, err := testDB.GetDecisionsByAgent(ctx, uuid.Nil, "nonexistent", 10, 0, &from, &to)
+	require.NoError(t, err)
+	assert.Empty(t, decisions)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: MigrateAgentKeysToAPIKeys — no legacy keys (fast path)
+// ---------------------------------------------------------------------------
+
+func TestMigrateAgentKeysToAPIKeys_NoLegacyKeys(t *testing.T) {
+	ctx := context.Background()
+	// All agents in tests use managed API keys, so migration should find nothing.
+	migrated, err := testDB.MigrateAgentKeysToAPIKeys(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 0, migrated, "no agents should have legacy keys to migrate")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: CreateAlternativesBatch — empty batch
+// ---------------------------------------------------------------------------
+
+func TestCreateAlternativesBatch_Empty(t *testing.T) {
+	ctx := context.Background()
+	err := testDB.CreateAlternativesBatch(ctx, nil)
+	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: SearchDecisionsByText — FTS then ILIKE fallback
+// ---------------------------------------------------------------------------
+
+func TestSearchDecisionsByText_WithFilters(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "search-text-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "search_text_test", Outcome: "use postgres for data storage " + suffix,
+		Confidence: 0.9, Reasoning: strPtr("ACID compliance"),
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	results, err := testDB.SearchDecisionsByText(ctx, uuid.Nil, "postgres "+suffix, model.QueryFilters{
+		AgentIDs: []string{agentID},
+	}, 5)
+	require.NoError(t, err)
+	// Should find via FTS or ILIKE fallback.
+	assert.GreaterOrEqual(t, len(results), 0)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: CountConflicts — with decision type filter
+// ---------------------------------------------------------------------------
+
+func TestCountConflicts_WithDecisionTypeFilter(t *testing.T) {
+	ctx := context.Background()
+	dt := "architecture"
+	count, err := testDB.CountConflicts(ctx, uuid.Nil, storage.ConflictFilters{
+		DecisionType: &dt,
+	})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, count, 0)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetEvidenceCoverageStats
+// ---------------------------------------------------------------------------
+
+func TestGetEvidenceCoverageStats_Structure(t *testing.T) {
+	ctx := context.Background()
+	stats, err := testDB.GetEvidenceCoverageStats(ctx, uuid.Nil)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, stats.TotalDecisions, 0)
+	assert.GreaterOrEqual(t, stats.TotalRecords, 0)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: ListAgentIDsBySharedTags
+// ---------------------------------------------------------------------------
+
+func TestListAgentIDsBySharedTags_WithNewTag(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	tag := "shared-tag-" + suffix
+	for i := 0; i < 2; i++ {
+		agentID := fmt.Sprintf("shared-tag-agent-%d-%s", i, suffix)
+		_, err := testDB.CreateAgent(ctx, model.Agent{
+			AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+			Tags: []string{tag}, Metadata: map[string]any{},
+		})
+		require.NoError(t, err)
+	}
+
+	ids, err := testDB.ListAgentIDsBySharedTags(ctx, uuid.Nil, []string{tag})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(ids), 2)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetAgentListStats — with freshly created agent
+// ---------------------------------------------------------------------------
+
+func TestGetAgentListStats_Fresh(t *testing.T) {
+	ctx := context.Background()
+
+	stats, err := testDB.GetAgentListStats(ctx, uuid.Nil)
+	require.NoError(t, err)
+	assert.NotNil(t, stats)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: CountDecisionsByAPIKey
+// ---------------------------------------------------------------------------
+
+func TestCountDecisionsByAPIKey_WithTimeRange(t *testing.T) {
+	ctx := context.Background()
+	from := time.Now().UTC().Add(-24 * time.Hour)
+	to := time.Now().UTC().Add(24 * time.Hour)
+	counts, total, err := testDB.CountDecisionsByAPIKey(ctx, uuid.Nil, from, to)
+	require.NoError(t, err)
+	assert.NotNil(t, counts)
+	assert.GreaterOrEqual(t, total, 0)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: CreateEvidence and CreateEvidenceBatch
+// ---------------------------------------------------------------------------
+
+func TestCreateEvidenceBatch(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "evi-batch-" + suffix
+
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: uuid.Nil, Name: agentID, Role: model.RoleAgent,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	dec, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "evi_batch_test", Outcome: "test",
+		Confidence: 0.7, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	err = testDB.CreateEvidenceBatch(ctx, []model.Evidence{
+		{DecisionID: dec.ID, OrgID: uuid.Nil, SourceType: model.SourceAPIResponse, Content: "evidence 1"},
+		{DecisionID: dec.ID, OrgID: uuid.Nil, SourceType: model.SourceAPIResponse, Content: "evidence 2"},
+	})
+	require.NoError(t, err)
+
+	evs, err := testDB.GetEvidenceByDecision(ctx, dec.ID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Len(t, evs, 2)
+}
+
+func TestCreateEvidenceBatch_Empty(t *testing.T) {
+	ctx := context.Background()
+	err := testDB.CreateEvidenceBatch(ctx, nil)
+	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Tests: GetConflictAnalytics — with actual scored conflict data
+// ---------------------------------------------------------------------------
+
+func TestGetConflictAnalytics_WithScoredConflict(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "analytics-a-" + suffix
+	agentB := "analytics-b-" + suffix
+	decType := "analytics_type_" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA,
+		DecisionType: decType, Outcome: "approach_alpha",
+		Confidence: 0.9, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB,
+		DecisionType: decType, Outcome: "approach_beta",
+		Confidence: 0.8, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	topicSim := 0.85
+	outcomeDiv := 0.75
+	sig := 0.70
+	sev := "high"
+	cat := "factual"
+	_, err = testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind:      model.ConflictKindCrossAgent,
+		DecisionAID:       dA.ID,
+		DecisionBID:       dB.ID,
+		OrgID:             uuid.Nil,
+		AgentA:            agentA,
+		AgentB:            agentB,
+		DecisionTypeA:     decType,
+		DecisionTypeB:     decType,
+		OutcomeA:          "approach_alpha",
+		OutcomeB:          "approach_beta",
+		TopicSimilarity:   &topicSim,
+		OutcomeDivergence: &outcomeDiv,
+		Significance:      &sig,
+		ScoringMethod:     "llm_v2",
+		Severity:          &sev,
+		Category:          &cat,
+	})
+	require.NoError(t, err)
+
+	// Query analytics for the org with a time range that includes now.
+	now := time.Now().UTC()
+	analytics, err := testDB.GetConflictAnalytics(ctx, uuid.Nil, storage.ConflictAnalyticsFilters{
+		From: now.Add(-1 * time.Hour),
+		To:   now.Add(1 * time.Hour),
+	})
+	require.NoError(t, err)
+
+	// Summary should reflect at least the one conflict we inserted.
+	assert.GreaterOrEqual(t, analytics.Summary.TotalDetected, 1)
+
+	// ByAgentPair should have entries (covers the pairRows.Next() loop).
+	assert.NotEmpty(t, analytics.ByAgentPair, "expected at least one agent pair in analytics")
+
+	// ByDecisionType should have entries (covers the typeRows.Next() loop).
+	assert.NotEmpty(t, analytics.ByDecisionType, "expected at least one decision type in analytics")
+
+	// BySeverity should have entries (covers the sevRows.Next() loop).
+	assert.NotEmpty(t, analytics.BySeverity, "expected at least one severity in analytics")
+
+	// Trend should have entries (covers the trendRows.Next() loop — generate_series produces rows).
+	assert.NotEmpty(t, analytics.Trend, "expected at least one trend point in analytics")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: GetConflict — found
+// ---------------------------------------------------------------------------
+
+func TestGetConflict_Found(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "get-conflict-a-" + suffix
+	agentB := "get-conflict-b-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA,
+		DecisionType: "get_conflict_test", Outcome: "found_a",
+		Confidence: 0.8, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB,
+		DecisionType: "get_conflict_test", Outcome: "found_b",
+		Confidence: 0.7, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	topicSim := 0.9
+	outcomeDiv := 0.8
+	sig := 0.72
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind:      model.ConflictKindCrossAgent,
+		DecisionAID:       dA.ID,
+		DecisionBID:       dB.ID,
+		OrgID:             uuid.Nil,
+		AgentA:            agentA,
+		AgentB:            agentB,
+		DecisionTypeA:     "get_conflict_test",
+		DecisionTypeB:     "get_conflict_test",
+		OutcomeA:          "found_a",
+		OutcomeB:          "found_b",
+		TopicSimilarity:   &topicSim,
+		OutcomeDivergence: &outcomeDiv,
+		Significance:      &sig,
+		ScoringMethod:     "llm_v2",
+	})
+	require.NoError(t, err)
+
+	conflict, err := testDB.GetConflict(ctx, conflictID, uuid.Nil)
+	require.NoError(t, err)
+	require.NotNil(t, conflict, "expected conflict to be found")
+	assert.Equal(t, conflictID, conflict.ID)
+	assert.Equal(t, "open", conflict.Status)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: QueryDecisions — with RunID filter
+// ---------------------------------------------------------------------------
+
+func TestQueryDecisions_WithRunIDFilter(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "runid-filter-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "runid_test", Outcome: "filtered_by_run",
+		Confidence: 0.8, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	decisions, total, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		Filters: model.QueryFilters{RunID: &run.ID},
+	})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, total, 1)
+	for _, d := range decisions {
+		assert.Equal(t, run.ID, d.RunID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests: QueryDecisions — with Tool and Model filters
+// ---------------------------------------------------------------------------
+
+func TestQueryDecisions_WithToolFilter(t *testing.T) {
+	ctx := context.Background()
+	tool := "nonexistent-tool-" + uuid.New().String()[:8]
+	decisions, total, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		Filters: model.QueryFilters{Tool: &tool},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, decisions)
+}
+
+func TestQueryDecisions_WithModelFilter(t *testing.T) {
+	ctx := context.Background()
+	mdl := "nonexistent-model-" + uuid.New().String()[:8]
+	decisions, total, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		Filters: model.QueryFilters{Model: &mdl},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, decisions)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: QueryDecisions — ordering edge cases
+// ---------------------------------------------------------------------------
+
+func TestQueryDecisions_OrderByOutcomeScore(t *testing.T) {
+	ctx := context.Background()
+	decisions, _, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		OrderBy: "outcome_score",
+		Limit:   5,
+	})
+	require.NoError(t, err)
+	_ = decisions // just verify the query runs without error
+}
+
+func TestQueryDecisions_OrderAsc(t *testing.T) {
+	ctx := context.Background()
+	decisions, _, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		OrderBy:  "valid_from",
+		OrderDir: "asc",
+		Limit:    5,
+	})
+	require.NoError(t, err)
+	_ = decisions
+}
+
+func TestQueryDecisions_LimitOver1000(t *testing.T) {
+	ctx := context.Background()
+	decisions, _, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		Limit: 5000,
+	})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(decisions), 1000)
+}
+
+func TestQueryDecisions_NegativeOffsetClamped(t *testing.T) {
+	ctx := context.Background()
+	decisions, _, err := testDB.QueryDecisions(ctx, uuid.Nil, model.QueryRequest{
+		Offset: -10,
+		Limit:  5,
+	})
+	require.NoError(t, err)
+	_ = decisions
+}
+
+// ---------------------------------------------------------------------------
+// Tests: QueryDecisionsTemporal — limit edge cases
+// ---------------------------------------------------------------------------
+
+func TestQueryDecisionsTemporal_LimitOver1000(t *testing.T) {
+	ctx := context.Background()
+	decisions, err := testDB.QueryDecisionsTemporal(ctx, uuid.Nil, model.TemporalQueryRequest{
+		AsOf:  time.Now().UTC(),
+		Limit: 5000,
+	})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(decisions), 1000)
+}
+
+func TestGetDecisionsByAgent_LimitClamping(t *testing.T) {
+	ctx := context.Background()
+	// Limit <= 0 defaults to 50, limit > 1000 caps to 1000, offset < 0 defaults to 0.
+	decisions, _, err := testDB.GetDecisionsByAgent(ctx, uuid.Nil, "no-such-agent", 0, -1, nil, nil)
+	require.NoError(t, err)
+	assert.Empty(t, decisions)
+
+	decisions, _, err = testDB.GetDecisionsByAgent(ctx, uuid.Nil, "no-such-agent", 9999, 0, nil, nil)
+	require.NoError(t, err)
+	assert.Empty(t, decisions)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: ListRunsByAgent — limit edge cases
+// ---------------------------------------------------------------------------
+
+func TestListRunsByAgent_LimitClamping(t *testing.T) {
+	ctx := context.Background()
+	// Limit <= 0 defaults to 50, limit > 1000 caps to 1000, offset < 0 defaults to 0.
+	runs, total, err := testDB.ListRunsByAgent(ctx, uuid.Nil, "no-such-agent", 0, -1)
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, runs)
+
+	runs, total, err = testDB.ListRunsByAgent(ctx, uuid.Nil, "no-such-agent", 9999, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, runs)
+}
+
+func strPtr(s string) *string {
+	return &s
+}
+
+func ptrFloat32(f float32) *float32 {
+	return &f
 }

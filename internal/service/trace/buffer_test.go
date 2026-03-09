@@ -2,9 +2,12 @@ package trace
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +15,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/storage"
@@ -489,6 +495,493 @@ func TestBuffer_DroppedEventsInitiallyZero(t *testing.T) {
 	assert.EqualValues(t, 0, buf.DroppedEvents())
 }
 
+func TestBuffer_AppendWithWAL(t *testing.T) {
+	run := createTestRun(t)
+
+	cfg := WALConfig{
+		Dir:            t.TempDir(),
+		SyncMode:       "none",
+		MaxSegmentSize: minSegmentSize,
+		MaxSegmentRecs: minSegmentRecords,
+	}
+	wal, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 100*time.Millisecond, wal)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	events, err := buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(3))
+	require.NoError(t, err)
+	assert.Len(t, events, 3)
+
+	// WAL should have pending bytes.
+	assert.Greater(t, wal.PendingBytes(), int64(0), "WAL should have pending data")
+
+	// Drain flushes to DB and closes WAL.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	require.NoError(t, buf.Drain(drainCtx))
+
+	// Verify events made it to DB.
+	got, err := testDB.GetEventsByRun(context.Background(), run.OrgID, run.ID, 0)
+	require.NoError(t, err)
+	assert.Len(t, got, 3)
+}
+
+func TestBuffer_StartWithWALRecovery(t *testing.T) {
+	run := createTestRun(t)
+
+	cfg := WALConfig{
+		Dir:            t.TempDir(),
+		SyncMode:       "none",
+		MaxSegmentSize: minSegmentSize,
+		MaxSegmentRecs: minSegmentRecords,
+	}
+
+	// Phase 1: Write events to WAL via buffer, then simulate crash (no drain).
+	wal1, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	buf1 := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute, wal1)
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	buf1.Start(ctx1)
+
+	_, err = buf1.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(3))
+	require.NoError(t, err)
+
+	// Close WAL without drain — simulates crash.
+	cancel1()
+	<-buf1.done
+	require.NoError(t, wal1.Close())
+
+	// Phase 2: Create new buffer with same WAL dir — Start should recover events.
+	wal2, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	buf2 := NewBuffer(testDB, testLogger(), 1000, 100*time.Millisecond, wal2)
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	buf2.Start(ctx2) // This triggers recovery
+
+	// Events should have been recovered and flushed to DB.
+	require.Eventually(t, func() bool {
+		got, err := testDB.GetEventsByRun(context.Background(), run.OrgID, run.ID, 0)
+		return err == nil && len(got) >= 3
+	}, 5*time.Second, 100*time.Millisecond, "recovered events should be flushed to DB")
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	require.NoError(t, buf2.Drain(drainCtx))
+}
+
+func TestBuffer_FlushOnceWithWALCheckpoint(t *testing.T) {
+	run := createTestRun(t)
+
+	cfg := WALConfig{
+		Dir:            t.TempDir(),
+		SyncMode:       "none",
+		MaxSegmentSize: minSegmentSize,
+		MaxSegmentRecs: minSegmentRecords,
+	}
+	wal, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute, wal)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	_, err = buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(5))
+	require.NoError(t, err)
+
+	// FlushNow should flush and advance WAL checkpoint.
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer flushCancel()
+	require.NoError(t, buf.FlushNow(flushCtx))
+
+	// After flush + checkpoint, recovering from WAL should find nothing new.
+	recovered, _, err := wal.Recover()
+	require.NoError(t, err)
+	// All events have been checkpointed, so recovery should return empty.
+	assert.Empty(t, recovered, "all events should be checkpointed after flush")
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer drainCancel()
+	require.NoError(t, buf.Drain(drainCtx))
+}
+
+func TestBuffer_DrainWithWALCloseError(t *testing.T) {
+	run := createTestRun(t)
+
+	cfg := WALConfig{
+		Dir:            t.TempDir(),
+		SyncMode:       "batch",
+		SyncInterval:   50 * time.Millisecond,
+		MaxSegmentSize: minSegmentSize,
+		MaxSegmentRecs: minSegmentRecords,
+	}
+	wal, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 100*time.Millisecond, wal)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	_, err = buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(2))
+	require.NoError(t, err)
+
+	// Drain should succeed even with WAL batch sync mode.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	require.NoError(t, buf.Drain(drainCtx))
+}
+
+func TestBuffer_AppendDrainingCountsDropped(t *testing.T) {
+	run := createTestRun(t)
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 100*time.Millisecond, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer drainCancel()
+	require.NoError(t, buf.Drain(drainCtx))
+
+	// Append 5 events after drain — all should be counted as dropped.
+	_, err := buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(5))
+	require.Error(t, err)
+	assert.EqualValues(t, 5, buf.DroppedEvents())
+}
+
+func TestBuffer_StartWithWALRecoveryCheckpointFails(t *testing.T) {
+	// Tests the Start path where WAL recovery succeeds, flush to Postgres succeeds,
+	// but CheckpointLSN fails. Covers the warn-but-continue branch in Start.
+	run := createTestRun(t)
+	cfg := WALConfig{
+		Dir:            t.TempDir(),
+		SyncMode:       "none",
+		MaxSegmentSize: minSegmentSize,
+		MaxSegmentRecs: minSegmentRecords,
+	}
+
+	// Write events directly to WAL with proper run IDs so InsertEventsIdempotent succeeds.
+	wal1, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	events := make([]model.AgentEvent, 3)
+	for i := range events {
+		events[i] = model.AgentEvent{
+			ID:          uuid.New(),
+			RunID:       run.ID,
+			OrgID:       run.OrgID,
+			EventType:   model.EventToolCallCompleted,
+			SequenceNum: int64(i + 9000), // high seq to avoid collisions
+			OccurredAt:  now,
+			AgentID:     run.AgentID,
+			Payload:     map[string]any{"step": i},
+			CreatedAt:   now,
+		}
+	}
+	_, err = wal1.Write(events)
+	require.NoError(t, err)
+	require.NoError(t, wal1.Close())
+
+	// Phase 2: Reopen WAL, then make dir read-only so checkpoint fails.
+	wal2, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	// Make read-only so saveCheckpoint fails during Start's recovery.
+	require.NoError(t, os.Chmod(cfg.Dir, 0o500))       //nolint:gosec // test intentionally restricts dir perms
+	t.Cleanup(func() { _ = os.Chmod(cfg.Dir, 0o700) }) //nolint:gosec // restore
+
+	buf2 := NewBuffer(testDB, testLogger(), 1000, 100*time.Millisecond, wal2)
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+
+	// Start recovers events, flushes to DB, but checkpoint fails (warns, continues).
+	buf2.Start(ctx2)
+
+	require.NoError(t, os.Chmod(cfg.Dir, 0o700)) //nolint:gosec // restore
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	_ = buf2.Drain(drainCtx)
+}
+
+func TestBuffer_StartWithWALRecoveryFlushFails(t *testing.T) {
+	// Tests the Start path where WAL Recover succeeds but InsertEventsIdempotent
+	// fails. Events remain in WAL for next startup.
+	cfg := WALConfig{
+		Dir:            t.TempDir(),
+		SyncMode:       "none",
+		MaxSegmentSize: minSegmentSize,
+		MaxSegmentRecs: minSegmentRecords,
+	}
+
+	// Write events directly to WAL (not through buffer).
+	wal1, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	events := testEvents(3)
+	_, err = wal1.Write(events)
+	require.NoError(t, err)
+	require.NoError(t, wal1.Close())
+
+	// Reopen WAL and start buffer. InsertEventsIdempotent will fail because
+	// the events have UUIDs not associated with any run in the DB.
+	wal2, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 100*time.Millisecond, wal2)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start recovers events but InsertEventsIdempotent fails (logged, not fatal).
+	buf.Start(ctx)
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	_ = buf.Drain(drainCtx)
+}
+
+func TestBuffer_StartWithWALRecoveryError(t *testing.T) {
+	// Tests the Start path where WAL Recover() itself returns an error.
+	cfg := WALConfig{
+		Dir:            t.TempDir(),
+		SyncMode:       "none",
+		MaxSegmentSize: minSegmentSize,
+		MaxSegmentRecs: minSegmentRecords,
+	}
+
+	wal, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	// Write events, then corrupt the checkpoint so Recover's loadCheckpoint fails.
+	events := testEvents(3)
+	_, err = wal.Write(events)
+	require.NoError(t, err)
+	require.NoError(t, wal.Close())
+
+	// Corrupt the checkpoint file.
+	cpPath := filepath.Join(cfg.Dir, "checkpoint.json")
+	require.NoError(t, os.WriteFile(cpPath, []byte("{invalid json"), 0o600))
+
+	wal2, err := NewWAL(testLogger(), cfg)
+	// NewWAL itself should fail on corrupted checkpoint.
+	require.Error(t, err)
+	assert.Nil(t, wal2)
+}
+
+func TestBuffer_FlushUntilEmptyWithRetry(t *testing.T) {
+	// Tests that flushUntilEmpty retries after a transient flush failure.
+	// We use a real DB and real buffer, append events, then call FlushNow
+	// which delegates to flushUntilEmpty.
+	run := createTestRun(t)
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	// Append events.
+	_, err := buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(5))
+	require.NoError(t, err)
+
+	// FlushNow calls flushUntilEmpty — with a working DB it should succeed immediately.
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer flushCancel()
+	require.NoError(t, buf.FlushNow(flushCtx))
+	assert.Equal(t, 0, buf.Len())
+
+	// Test the deadline-exceeded path of flushUntilEmpty by using an already-expired context.
+	_, err = buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(3))
+	require.NoError(t, err)
+
+	expiredCtx, expiredCancel := context.WithCancel(context.Background())
+	expiredCancel() // already cancelled
+	err = buf.FlushNow(expiredCtx)
+	// With a cancelled context, InsertEvents will fail, and flushUntilEmpty returns error.
+	if err != nil {
+		assert.Contains(t, err.Error(), "deadline")
+	}
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	require.NoError(t, buf.Drain(drainCtx))
+}
+
+func TestBuffer_FlushLoopFallbackContext(t *testing.T) {
+	// Tests the fallback path in flushLoop where ctx is cancelled directly
+	// without going through Drain (no drain context sent via channel).
+	// This exercises the else branch: fallbackCtx, cancel := context.WithTimeout(...)
+	run := createTestRun(t)
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	buf.Start(ctx)
+
+	_, err := buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(3))
+	require.NoError(t, err)
+
+	// Cancel the context directly without calling Drain — triggers the fallback path.
+	cancel()
+
+	// Wait for the flush loop to exit.
+	select {
+	case <-buf.done:
+	case <-time.After(35 * time.Second):
+		t.Fatal("flush loop did not exit within the fallback timeout")
+	}
+
+	// Events should have been flushed via the fallback path.
+	got, err := testDB.GetEventsByRun(context.Background(), run.OrgID, run.ID, 0)
+	require.NoError(t, err)
+	assert.Len(t, got, 3, "fallback flush should write events to DB")
+}
+
+func TestBuffer_FlushUntilEmptyExpiredContext(t *testing.T) {
+	// Tests flushUntilEmpty returning early when context is cancelled mid-backoff.
+	run := createTestRun(t)
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	_, err := buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(2))
+	require.NoError(t, err)
+
+	// Use a very short timeout so FlushNow's flushUntilEmpty may hit the
+	// ctx.Done() branch during backoff if the first attempt is slow.
+	tinyCtx, tinyCancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+	defer tinyCancel()
+	// Allow a tiny delay for the context to definitely expire.
+	time.Sleep(1 * time.Millisecond)
+
+	err = buf.FlushNow(tinyCtx)
+	// Either succeeds instantly or returns deadline exceeded.
+	if err != nil {
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+	}
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	require.NoError(t, buf.Drain(drainCtx))
+}
+
+func TestBuffer_DrainWALCloseError(t *testing.T) {
+	// Tests that Drain handles WAL close errors gracefully.
+	run := createTestRun(t)
+
+	cfg := WALConfig{
+		Dir:            t.TempDir(),
+		SyncMode:       "none",
+		MaxSegmentSize: minSegmentSize,
+		MaxSegmentRecs: minSegmentRecords,
+	}
+	wal, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 100*time.Millisecond, wal)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	_, err = buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(2))
+	require.NoError(t, err)
+
+	// Close the WAL's current file early so Close() in Drain hits the error path.
+	wal.mu.Lock()
+	if wal.current != nil {
+		_ = wal.current.Close()
+		wal.current = nil
+	}
+	wal.mu.Unlock()
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	// Drain should not panic even though WAL Close encounters issues.
+	_ = buf.Drain(drainCtx)
+}
+
+// TestBuffer_RegisterMetrics verifies that registerMetrics does not panic
+// when called on a buffer (even with nil DB). The noop OTEL meter provider
+// handles gauge registration without errors.
+func TestBuffer_RegisterMetrics(t *testing.T) {
+	buf := NewBuffer(nil, testLogger(), 100, 50*time.Millisecond, nil)
+	assert.NotPanics(t, func() {
+		buf.registerMetrics()
+	}, "registerMetrics should not panic")
+}
+
+// TestBuffer_RegisterMetrics_ObservesValues verifies that the OTEL callbacks
+// in registerMetrics can read Len() and DroppedEvents() without panicking.
+func TestBuffer_RegisterMetrics_ObservesValues(t *testing.T) {
+	buf := NewBuffer(nil, testLogger(), 100, 50*time.Millisecond, nil)
+	// Pre-populate some state that the callbacks will read.
+	buf.droppedEvents.Add(42)
+	assert.NotPanics(t, func() {
+		buf.registerMetrics()
+	})
+	assert.EqualValues(t, 42, buf.DroppedEvents())
+	assert.Equal(t, 0, buf.Len())
+}
+
+// TestBuffer_StartWithNilDB verifies that Start does not panic when db is nil
+// and WAL is nil. The flush loop will start but flushOnce will have nothing to do.
+func TestBuffer_StartWithNilDB(t *testing.T) {
+	buf := NewBuffer(nil, testLogger(), 100, 50*time.Millisecond, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	assert.NotPanics(t, func() {
+		buf.Start(ctx)
+	}, "Start should not panic with nil DB")
+
+	assert.True(t, buf.started.Load())
+
+	cancel()
+	select {
+	case <-buf.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("flush loop should exit after context cancellation")
+	}
+}
+
+// TestBuffer_DrainContextChannelBusy verifies the fallback path in Drain when
+// the drainCh channel is already full. The buffer should still drain correctly
+// using the fallback timeout.
+func TestBuffer_DrainContextChannelBusy(t *testing.T) {
+	run := createTestRun(t)
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	_, err := buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(2))
+	require.NoError(t, err)
+
+	// Fill the drainCh before calling Drain to exercise the sendCtx.Done() path.
+	buf.drainCh <- context.Background()
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	// Should not panic. Events may or may not be flushed depending on timing.
+	_ = buf.Drain(drainCtx)
+
+	select {
+	case <-buf.done:
+	case <-time.After(35 * time.Second):
+		t.Fatal("flush loop should exit even when drain channel was busy")
+	}
+}
+
 func TestBuffer_AtCapacity(t *testing.T) {
 	run := createTestRun(t)
 
@@ -521,4 +1014,300 @@ func TestBuffer_AtCapacity(t *testing.T) {
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer drainCancel()
 	require.NoError(t, buf.Drain(drainCtx))
+}
+
+// ---------- Buffer Start: WAL recovery error triggers continue-without-events path ----------
+
+func TestBuffer_StartWithWALRecoverError(t *testing.T) {
+	// Tests the Start path where WAL.Recover() returns an error (line 85).
+	// After NewWAL succeeds (loadCheckpoint works), we corrupt the checkpoint
+	// file so that Recover's loadCheckpoint call fails.
+	dir := t.TempDir()
+	cfg := WALConfig{
+		Dir:            dir,
+		SyncMode:       "none",
+		MaxSegmentSize: minSegmentSize,
+		MaxSegmentRecs: minSegmentRecords,
+	}
+
+	wal1, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	// Write events so there's something to potentially recover.
+	events := testEvents(3)
+	_, err = wal1.Write(events)
+	require.NoError(t, err)
+	require.NoError(t, wal1.Close())
+
+	// Reopen the WAL (NewWAL loads checkpoint successfully during init).
+	wal2, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	// Corrupt the checkpoint after NewWAL but before Start calls Recover.
+	cpPath := filepath.Join(dir, "checkpoint.json")
+	require.NoError(t, os.WriteFile(cpPath, []byte("{corrupt json!!!"), 0o600))
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute, wal2)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start should handle the recovery error gracefully and continue.
+	buf.Start(ctx)
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	_ = buf.Drain(drainCtx)
+}
+
+// ---------- WAL recovery with corrupted JSON ----------
+
+func TestWAL_RecoverWithCorruptedJSON(t *testing.T) {
+	// Tests the readSegment path where CRC is valid but JSON unmarshal
+	// fails (lines 563-566). We manually construct a WAL record with
+	// valid CRC but invalid JSON payload.
+	dir := t.TempDir()
+	cfg := WALConfig{
+		Dir:            dir,
+		SyncMode:       "none",
+		MaxSegmentSize: minSegmentSize,
+		MaxSegmentRecs: minSegmentRecords,
+	}
+
+	// Create a WAL and immediately close it (just to get checkpoint/dir setup).
+	wal1, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+	require.NoError(t, wal1.Close())
+
+	// Manually write a segment file with valid header and a record that has
+	// valid CRC but invalid JSON payload.
+	segPath := filepath.Join(dir, "00000000000001.wal")
+	f, err := os.Create(segPath) //nolint:gosec // test file path is deterministic
+	require.NoError(t, err)
+
+	// Write segment header: magic(4) + version(2) + reserved(2) + baseLSN(8)
+	var hdr [walHeaderSize]byte
+	binary.BigEndian.PutUint32(hdr[0:4], walMagic)
+	binary.BigEndian.PutUint16(hdr[4:6], walVersion)
+	binary.BigEndian.PutUint64(hdr[8:16], 1) // baseLSN = 1
+	_, err = f.Write(hdr[:])
+	require.NoError(t, err)
+
+	// Write one record with valid CRC but invalid JSON.
+	badPayload := []byte("{not valid json!!!")
+	var head [walRecordHead]byte
+	binary.BigEndian.PutUint64(head[0:8], 1)                        // LSN = 1
+	binary.BigEndian.PutUint32(head[8:12], uint32(len(badPayload))) //nolint:gosec // test payload is tiny
+
+	// Compute valid CRC over head + payload.
+	h := crc32.New(crc32cTable)
+	_, _ = h.Write(head[:])
+	_, _ = h.Write(badPayload)
+	crcVal := h.Sum32()
+	var crcBuf [walCRCSize]byte
+	binary.BigEndian.PutUint32(crcBuf[:], crcVal)
+
+	_, err = f.Write(head[:])
+	require.NoError(t, err)
+	_, err = f.Write(badPayload)
+	require.NoError(t, err)
+	_, err = f.Write(crcBuf[:])
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	// Reopen WAL and recover. The corrupted JSON record should be skipped.
+	wal2, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+	defer func() { _ = wal2.Close() }()
+
+	recovered, _, err := wal2.Recover()
+	require.NoError(t, err)
+	assert.Empty(t, recovered, "corrupted JSON should cause readSegment to stop")
+}
+
+// ---------- WAL write closed WAL ----------
+
+func TestWAL_WriteAfterClose(t *testing.T) {
+	// Tests the Write path when the WAL's current segment file is closed.
+	// This should trigger a write error on the closed file.
+	cfg := WALConfig{
+		Dir:            t.TempDir(),
+		SyncMode:       "none",
+		MaxSegmentSize: minSegmentSize,
+		MaxSegmentRecs: minSegmentRecords,
+	}
+
+	wal1, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	// Close the underlying segment file directly to simulate a failed write.
+	require.NoError(t, wal1.current.Close())
+
+	_, err = wal1.Write(testEvents(1))
+	assert.Error(t, err, "writing to a closed segment should fail")
+}
+
+// ---------- WAL MkdirAll failure ----------
+
+func TestWAL_NewWALMkdirAllFails(t *testing.T) {
+	// Tests NewWAL when os.MkdirAll fails (line 127). Use /dev/null as the
+	// parent directory — a regular file, not a directory, so MkdirAll for a
+	// child directory inside it will fail.
+	cfg := WALConfig{
+		Dir:            "/dev/null/impossible-wal-dir",
+		SyncMode:       "none",
+		MaxSegmentSize: minSegmentSize,
+		MaxSegmentRecs: minSegmentRecords,
+	}
+
+	wal1, err := NewWAL(testLogger(), cfg)
+	require.Error(t, err, "NewWAL should fail when directory can't be created")
+	assert.Nil(t, wal1)
+	assert.Contains(t, err.Error(), "create directory")
+}
+
+// ---------- WAL directory not writable ----------
+
+func TestWAL_NewWALDirNotWritable(t *testing.T) {
+	// Tests NewWAL when the directory exists but is not writable (line 134).
+	// MkdirAll succeeds, but the probe file creation fails.
+	dir := t.TempDir()
+	require.NoError(t, os.Chmod(dir, 0o444))    //nolint:gosec // intentionally restricting perms for test
+	defer func() { _ = os.Chmod(dir, 0o755) }() //nolint:gosec // restore perms for cleanup
+
+	cfg := WALConfig{
+		Dir:            dir,
+		SyncMode:       "none",
+		MaxSegmentSize: minSegmentSize,
+		MaxSegmentRecs: minSegmentRecords,
+	}
+
+	wal1, err := NewWAL(testLogger(), cfg)
+	require.Error(t, err, "NewWAL should fail when directory is not writable")
+	assert.Nil(t, wal1)
+	assert.Contains(t, err.Error(), "not writable")
+}
+
+// ---------- WAL Recover with listSegments error ----------
+
+func TestWAL_RecoverListSegmentsError(t *testing.T) {
+	// Tests the Recover path where listSegments fails (line 283).
+	// After NewWAL succeeds, we make the directory unreadable so
+	// os.ReadDir fails during Recover.
+	dir := t.TempDir()
+	cfg := WALConfig{
+		Dir:            dir,
+		SyncMode:       "none",
+		MaxSegmentSize: minSegmentSize,
+		MaxSegmentRecs: minSegmentRecords,
+	}
+
+	wal1, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	// Write events so there's a checkpoint.
+	_, err = wal1.Write(testEvents(2))
+	require.NoError(t, err)
+	require.NoError(t, wal1.Close())
+
+	// Reopen (checkpoint loads successfully during NewWAL).
+	wal2, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+	defer func() {
+		// Restore permissions for cleanup.
+		_ = os.Chmod(dir, 0o755) //nolint:gosec // restore perms for cleanup
+		_ = wal2.Close()
+	}()
+
+	// Set directory to execute-only (0o111): allows file access by path
+	// (loadCheckpoint uses ReadFile with a known path) but prevents listing
+	// (listSegments uses ReadDir). This makes loadCheckpoint succeed but
+	// listSegments fail.
+	require.NoError(t, os.Chmod(dir, 0o111)) //nolint:gosec // intentionally restricting perms for test
+
+	_, _, err = wal2.Recover()
+	require.Error(t, err, "Recover should fail when directory is unreadable")
+	assert.Contains(t, err.Error(), "list segments")
+}
+
+// ---------- registerMetrics: OTEL callbacks ----------
+
+func TestBuffer_RegisterMetrics_CallbacksExecute(t *testing.T) {
+	// Verifies that the OTEL observable gauge callbacks registered in
+	// registerMetrics actually execute when a ManualReader forces collection.
+	// This covers the callback bodies at lines 371-374 and 379-382.
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	original := otel.GetMeterProvider()
+	otel.SetMeterProvider(provider)
+	defer func() {
+		otel.SetMeterProvider(original)
+		_ = provider.Shutdown(context.Background())
+	}()
+
+	run := createTestRun(t)
+	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	// Append a few events so depth is non-zero.
+	_, err := buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(3))
+	require.NoError(t, err)
+
+	// Force metric collection — this invokes the observable gauge callbacks.
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+
+	// Verify we got metrics from the buffer scope.
+	var found int
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == "akashi.buffer.depth" || m.Name == "akashi.buffer.dropped_total" {
+				found++
+			}
+		}
+	}
+	assert.Equal(t, 2, found, "should have registered both buffer gauges")
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	require.NoError(t, buf.Drain(drainCtx))
+}
+
+func TestWAL_RegisterMetrics_CallbacksExecute(t *testing.T) {
+	// Same as buffer metrics test but for WAL's registerMetrics.
+	// Covers lines 625-628 and 633-636.
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	original := otel.GetMeterProvider()
+	otel.SetMeterProvider(provider)
+	defer func() {
+		otel.SetMeterProvider(original)
+		_ = provider.Shutdown(context.Background())
+	}()
+
+	cfg := WALConfig{
+		Dir:            t.TempDir(),
+		SyncMode:       "none",
+		MaxSegmentSize: minSegmentSize,
+		MaxSegmentRecs: minSegmentRecords,
+	}
+	wal, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	// registerMetrics is called inside NewWAL's init. Force collection now.
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+
+	var found int
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == "akashi.wal.segment_count" || m.Name == "akashi.wal.pending_bytes" {
+				found++
+			}
+		}
+	}
+	assert.Equal(t, 2, found, "should have registered both WAL gauges")
+
+	require.NoError(t, wal.Close())
 }

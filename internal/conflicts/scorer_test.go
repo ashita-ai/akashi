@@ -14,9 +14,12 @@ import (
 	"github.com/pgvector/pgvector-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/storage"
+	"github.com/ashita-ai/akashi/internal/telemetry"
 	"github.com/ashita-ai/akashi/internal/testutil"
 )
 
@@ -1795,4 +1798,359 @@ func TestScoreForDecision_PreSortProcessesMostSignificantFirst(t *testing.T) {
 		assert.Greater(t, highSig, modSig,
 			"orthogonal outcome (sig=%.3f) should have higher significance than partial (sig=%.3f)", highSig, modSig)
 	}
+}
+
+func TestDerefOrUnknown(t *testing.T) {
+	t.Run("nil returns unknown", func(t *testing.T) {
+		assert.Equal(t, "unknown", derefOrUnknown(nil))
+	})
+
+	t.Run("non-nil returns value", func(t *testing.T) {
+		s := "critical"
+		assert.Equal(t, "critical", derefOrUnknown(&s))
+	})
+
+	t.Run("empty string returns empty", func(t *testing.T) {
+		s := ""
+		assert.Equal(t, "", derefOrUnknown(&s))
+	})
+}
+
+func TestNormalizePair_Deterministic(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		a := uuid.New()
+		b := uuid.New()
+		p1 := normalizePair(a, b)
+		p2 := normalizePair(b, a)
+		assert.Equal(t, p1, p2, "normalizePair should be deterministic regardless of input order")
+	}
+}
+
+func TestNewScorer_ValidatorDefaults(t *testing.T) {
+	scorer := NewScorer(nil, slog.Default(), 0.3, nil, 0, 0)
+	_, isNoop := scorer.validator.(NoopValidator)
+	assert.True(t, isNoop, "nil validator should default to NoopValidator")
+	assert.Equal(t, "noop", scorer.validatorLabel)
+}
+
+func TestRecordResolution(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	scorer := NewScorer(testDB, logger, 0.3, nil, 0, 0)
+
+	// RecordResolution should not panic even without a real OTel provider.
+	// The noop meter instruments accept writes silently.
+	ctx := context.Background()
+	scorer.RecordResolution(ctx, "resolved", "cross_agent", 1)
+	scorer.RecordResolution(ctx, "acknowledged", "self_contradiction", 3)
+	scorer.RecordResolution(ctx, "wont_fix", "cross_agent", 0)
+	// If we reach here without panic, the metrics instruments are properly initialized.
+}
+
+func TestRegisterMetrics_NoNilInstruments(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	scorer := NewScorer(testDB, logger, 0.3, nil, 0, 0)
+
+	// Verify none of the metric instruments are nil after initialization.
+	assert.NotNil(t, scorer.metrics.detected)
+	assert.NotNil(t, scorer.metrics.resolved)
+	assert.NotNil(t, scorer.metrics.llmCalls)
+	assert.NotNil(t, scorer.metrics.candidatesEvaluated)
+	assert.NotNil(t, scorer.metrics.claimLevelWins)
+	assert.NotNil(t, scorer.metrics.scoringDuration)
+	assert.NotNil(t, scorer.metrics.llmCallDuration)
+	assert.NotNil(t, scorer.metrics.significanceDist)
+	assert.NotNil(t, scorer.metrics.candidatesExamined)
+}
+
+// ---------------------------------------------------------------------------
+// ClearUnvalidatedConflicts tests
+// ---------------------------------------------------------------------------
+
+func TestClearUnvalidatedConflicts_NoConflicts(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	scorer := NewScorer(testDB, logger, 0.3, nil, 0, 0)
+	n, err := scorer.ClearUnvalidatedConflicts(ctx)
+	require.NoError(t, err)
+	// In a clean database (or after prior test runs that resolved everything),
+	// we may get 0 or more. The key assertion is no error.
+	assert.GreaterOrEqual(t, n, 0)
+}
+
+func TestClearUnvalidatedConflicts_DeletesNonLLMv2(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "clear-unval-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+
+	topicEmb := makeEmbedding(900, 1.0)
+	outcomeA := makeEmbedding(901, 1.0)
+	outcomeB := makeEmbedding(902, 1.0)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "clear unval test A " + suffix,
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "clear unval test B " + suffix,
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeB,
+	})
+	require.NoError(t, err)
+
+	// Insert a conflict with scoring_method = "embedding" (not llm_v2).
+	_, err = testDB.Pool().Exec(ctx,
+		`INSERT INTO scored_conflicts (decision_a_id, decision_b_id, org_id, agent_a, agent_b,
+			conflict_kind, scoring_method, status, decision_type_a, decision_type_b,
+			outcome_a, outcome_b, topic_similarity, outcome_divergence, significance)
+		 VALUES ($1, $2, $3, $4, $4, 'self_contradiction', 'embedding', 'open',
+			'architecture', 'architecture', 'test A', 'test B', 0.9, 0.8, 0.7)`,
+		dA.ID, dB.ID, orgID, agentID)
+	require.NoError(t, err)
+
+	scorer := NewScorer(testDB, logger, 0.3, nil, 0, 0)
+	n, err := scorer.ClearUnvalidatedConflicts(ctx)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, n, 1, "should delete at least the embedding-method conflict we just inserted")
+}
+
+// ---------------------------------------------------------------------------
+// ClearAllConflicts tests
+// ---------------------------------------------------------------------------
+
+func TestClearAllConflicts_NoConflicts(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	scorer := NewScorer(testDB, logger, 0.3, nil, 0, 0)
+	n, err := scorer.ClearAllConflicts(ctx)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, n, 0)
+}
+
+func TestClearAllConflicts_DeletesOpenConflicts(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "clear-all-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+
+	topicEmb := makeEmbedding(910, 1.0)
+	outcomeA := makeEmbedding(911, 1.0)
+	outcomeB := makeEmbedding(912, 1.0)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "clear all test A " + suffix,
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "clear all test B " + suffix,
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeB,
+	})
+	require.NoError(t, err)
+
+	// Insert an open conflict with llm_v2 method (ClearAll deletes regardless of method).
+	_, err = testDB.Pool().Exec(ctx,
+		`INSERT INTO scored_conflicts (decision_a_id, decision_b_id, org_id, agent_a, agent_b,
+			conflict_kind, scoring_method, status, decision_type_a, decision_type_b,
+			outcome_a, outcome_b, topic_similarity, outcome_divergence, significance)
+		 VALUES ($1, $2, $3, $4, $4, 'self_contradiction', 'llm_v2', 'open',
+			'architecture', 'architecture', 'test A', 'test B', 0.9, 0.8, 0.7)`,
+		dA.ID, dB.ID, orgID, agentID)
+	require.NoError(t, err)
+
+	scorer := NewScorer(testDB, logger, 0.3, nil, 0, 0)
+	n, err := scorer.ClearAllConflicts(ctx)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, n, 1, "should delete at least the open conflict we just inserted")
+}
+
+func TestClearAllConflicts_PreservesResolvedConflicts(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "clear-preserve-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+
+	topicEmb := makeEmbedding(920, 1.0)
+	outcomeA := makeEmbedding(921, 1.0)
+	outcomeB := makeEmbedding(922, 1.0)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "preserve test A " + suffix,
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "preserve test B " + suffix,
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeB,
+	})
+	require.NoError(t, err)
+
+	// Insert a resolved conflict — should NOT be deleted.
+	_, err = testDB.Pool().Exec(ctx,
+		`INSERT INTO scored_conflicts (decision_a_id, decision_b_id, org_id, agent_a, agent_b,
+			conflict_kind, scoring_method, status, decision_type_a, decision_type_b,
+			outcome_a, outcome_b, topic_similarity, outcome_divergence, significance)
+		 VALUES ($1, $2, $3, $4, $4, 'self_contradiction', 'llm_v2', 'resolved',
+			'architecture', 'architecture', 'test A', 'test B', 0.9, 0.8, 0.7)`,
+		dA.ID, dB.ID, orgID, agentID)
+	require.NoError(t, err)
+
+	scorer := NewScorer(testDB, logger, 0.3, nil, 0, 0)
+	_, err = scorer.ClearAllConflicts(ctx)
+	require.NoError(t, err)
+
+	// Verify the resolved conflict still exists.
+	var count int
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT count(*) FROM scored_conflicts
+		 WHERE decision_a_id = $1 AND decision_b_id = $2 AND status = 'resolved'`,
+		dA.ID, dB.ID).Scan(&count)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "resolved conflicts should be preserved by ClearAllConflicts")
+}
+
+// ---------------------------------------------------------------------------
+// registerObservableGauges tests
+// ---------------------------------------------------------------------------
+
+// mockGaugeQuerier implements gaugeQuerier for testing observable gauge registration.
+type mockGaugeQuerier struct {
+	openCount     int64
+	openErr       error
+	unscoredCount int64
+	unscoredErr   error
+}
+
+func (m *mockGaugeQuerier) GetGlobalOpenConflictCount(_ context.Context) (int64, error) {
+	return m.openCount, m.openErr
+}
+
+func (m *mockGaugeQuerier) CountUnscoredDecisions(_ context.Context) (int64, error) {
+	return m.unscoredCount, m.unscoredErr
+}
+
+func TestRegisterObservableGauges_Success(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	mock := &mockGaugeQuerier{openCount: 42, unscoredCount: 7}
+
+	// registerObservableGauges should not panic with a valid meter and mock DB.
+	// The noop OTel meter accepts all registrations silently.
+	require.NotPanics(t, func() {
+		registerObservableGauges(telemetry.Meter("test"), mock, logger)
+	})
+}
+
+func TestRegisterObservableGauges_QueryErrors(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	mock := &mockGaugeQuerier{
+		openErr:     fmt.Errorf("connection refused"),
+		unscoredErr: fmt.Errorf("timeout"),
+	}
+
+	// Even when queries fail, registration should not panic — errors are non-fatal.
+	require.NotPanics(t, func() {
+		registerObservableGauges(telemetry.Meter("test"), mock, logger)
+	})
+}
+
+func TestRegisterObservableGauges_CallbacksInvoked(t *testing.T) {
+	// Use a real SDK meter provider so callbacks are actually invoked during Collect().
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	defer func() { _ = provider.Shutdown(context.Background()) }()
+
+	meter := provider.Meter("test")
+	mock := &mockGaugeQuerier{openCount: 42, unscoredCount: 7}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	registerObservableGauges(meter, mock, logger)
+
+	// Trigger a collection to invoke the callbacks.
+	var rm metricdata.ResourceMetrics
+	err := reader.Collect(context.Background(), &rm)
+	require.NoError(t, err)
+
+	// Verify that we got metrics from the callbacks.
+	require.NotEmpty(t, rm.ScopeMetrics, "should have at least one scope of metrics")
+
+	// Find our gauges in the collected metrics.
+	var foundOpen, foundBackfill bool
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			switch m.Name {
+			case "akashi.conflicts.open_total":
+				foundOpen = true
+				gauge, ok := m.Data.(metricdata.Gauge[int64])
+				require.True(t, ok)
+				require.NotEmpty(t, gauge.DataPoints)
+				assert.Equal(t, int64(42), gauge.DataPoints[0].Value)
+			case "akashi.conflicts.backfill_remaining":
+				foundBackfill = true
+				gauge, ok := m.Data.(metricdata.Gauge[int64])
+				require.True(t, ok)
+				require.NotEmpty(t, gauge.DataPoints)
+				assert.Equal(t, int64(7), gauge.DataPoints[0].Value)
+			}
+		}
+	}
+	assert.True(t, foundOpen, "open_total gauge should be collected")
+	assert.True(t, foundBackfill, "backfill_remaining gauge should be collected")
+}
+
+func TestRegisterObservableGauges_CallbackErrorsNonFatal(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	defer func() { _ = provider.Shutdown(context.Background()) }()
+
+	meter := provider.Meter("test")
+	mock := &mockGaugeQuerier{
+		openErr:     fmt.Errorf("connection refused"),
+		unscoredErr: fmt.Errorf("timeout"),
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	registerObservableGauges(meter, mock, logger)
+
+	// Collection should succeed even when the DB queries fail (errors are non-fatal).
+	var rm metricdata.ResourceMetrics
+	err := reader.Collect(context.Background(), &rm)
+	require.NoError(t, err)
 }

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -15,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashita-ai/akashi/internal/conflicts"
+	"github.com/ashita-ai/akashi/internal/ctxutil"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
@@ -1088,4 +1091,1294 @@ func TestResolveOrCreateAgent_WithAuditFailureDupKey(t *testing.T) {
 	agent, err := svc.ResolveOrCreateAgent(ctx, uuid.Nil, "agent-dup", model.RoleAdmin, audit)
 	require.NoError(t, err, "dup key via audit path should be treated as success")
 	assert.Equal(t, "", agent.AgentID, "zero-value agent on dup key race")
+}
+
+// ---------------------------------------------------------------------------
+// ResolveOrCreateAgent — additional role coverage
+// ---------------------------------------------------------------------------
+
+func TestResolveOrCreateAgent_ReaderRoleDenied(t *testing.T) {
+	t.Parallel()
+	ms := &mockAgentStore{getAgentErr: storage.ErrNotFound}
+	svc := &Service{db: ms, logger: testLogger()}
+
+	_, err := svc.ResolveOrCreateAgent(context.Background(), uuid.Nil, "agent-r", model.RoleReader, nil)
+	assert.ErrorIs(t, err, ErrAgentNotFound)
+}
+
+func TestResolveOrCreateAgent_AgentRoleDenied(t *testing.T) {
+	t.Parallel()
+	ms := &mockAgentStore{getAgentErr: storage.ErrNotFound}
+	svc := &Service{db: ms, logger: testLogger()}
+
+	_, err := svc.ResolveOrCreateAgent(context.Background(), uuid.Nil, "agent-a", model.RoleAgent, nil)
+	assert.ErrorIs(t, err, ErrAgentNotFound)
+}
+
+func TestResolveOrCreateAgent_ExistingAgentReturnsForAnyRole(t *testing.T) {
+	t.Parallel()
+	expected := model.Agent{AgentID: "existing", OrgID: uuid.Nil, Role: model.RoleAgent}
+	ms := &mockAgentStore{getAgentAgent: expected}
+	svc := &Service{db: ms, logger: testLogger()}
+
+	agent, err := svc.ResolveOrCreateAgent(context.Background(), uuid.Nil, "existing", model.RoleReader, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "existing", agent.AgentID)
+}
+
+func TestResolveOrCreateAgent_OrgOwnerCanAutoRegister(t *testing.T) {
+	t.Parallel()
+	ms := &mockAgentStore{
+		getAgentErr:      storage.ErrNotFound,
+		createAgentAgent: model.Agent{AgentID: "new-oo", Role: model.RoleAgent},
+	}
+	svc := &Service{db: ms, logger: testLogger()}
+
+	agent, err := svc.ResolveOrCreateAgent(context.Background(), uuid.Nil, "new-oo", model.RoleOrgOwner, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "new-oo", agent.AgentID)
+}
+
+func TestResolveOrCreateAgent_WithAuditNonDupError(t *testing.T) {
+	t.Parallel()
+	ms := &mockAgentStore{
+		getAgentErr:             storage.ErrNotFound,
+		createAgentWithAuditErr: fmt.Errorf("connection timeout"),
+		isDup:                   false,
+	}
+	svc := &Service{db: ms, logger: testLogger()}
+
+	_, err := svc.ResolveOrCreateAgent(context.Background(), uuid.Nil, "agent-fail", model.RoleAdmin, &storage.MutationAuditEntry{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "auto-register agent")
+}
+
+// ---------------------------------------------------------------------------
+// generateClaims — unit tests
+// ---------------------------------------------------------------------------
+
+func TestGenerateClaims_SkipsWhenClaimsExist(t *testing.T) {
+	t.Parallel()
+	ms := &mockStore{hasClaims: true}
+	svc := newTestService(ms, nil, nil)
+
+	err := svc.GenerateClaims(context.Background(), uuid.New(), uuid.Nil, "some outcome")
+	require.NoError(t, err)
+	assert.Equal(t, 0, ms.insertClaimsCalls)
+}
+
+func TestGenerateClaims_HasClaimsCheckError(t *testing.T) {
+	t.Parallel()
+	ms := &mockStore{hasClaimsErr: fmt.Errorf("db error")}
+	svc := newTestService(ms, nil, nil)
+
+	err := svc.GenerateClaims(context.Background(), uuid.New(), uuid.Nil, "some outcome")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "claims: check existing")
+}
+
+func TestGenerateClaims_RegexExtraction(t *testing.T) {
+	t.Parallel()
+	ms := &mockStore{hasClaims: false}
+	svc := newTestService(ms, nil, nil)
+
+	err := svc.GenerateClaims(context.Background(), uuid.New(), uuid.Nil,
+		"First claim about performance. Second claim about security. Third claim about reliability.")
+	require.NoError(t, err)
+	assert.Equal(t, 1, ms.insertClaimsCalls)
+}
+
+func TestGenerateClaims_InsertError(t *testing.T) {
+	t.Parallel()
+	ms := &mockStore{hasClaims: false, insertClaimsErr: fmt.Errorf("insert failed")}
+	svc := newTestService(ms, nil, nil)
+
+	err := svc.GenerateClaims(context.Background(), uuid.New(), uuid.Nil,
+		"The system performance has degraded significantly under load. The database connection pool needs reconfiguration for production.")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "claims: insert")
+}
+
+func TestGenerateClaims_EmbedBatchError(t *testing.T) {
+	t.Parallel()
+	ms := &mockStore{hasClaims: false}
+	svc := New(ms, &failingBatchEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	err := svc.GenerateClaims(context.Background(), uuid.New(), uuid.Nil,
+		"The system performance has degraded significantly under load. The database connection pool needs reconfiguration for production.")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "claims: embed batch")
+}
+
+// failingBatchEmbedder succeeds on Embed (probe) but fails on EmbedBatch.
+type failingBatchEmbedder struct {
+	dims int
+}
+
+func (f *failingBatchEmbedder) Embed(_ context.Context, _ string) (pgvector.Vector, error) {
+	v := make([]float32, f.dims)
+	v[0] = 1.0
+	return pgvector.NewVector(v), nil
+}
+
+func (f *failingBatchEmbedder) EmbedBatch(_ context.Context, _ []string) ([]pgvector.Vector, error) {
+	return nil, fmt.Errorf("batch embedding unavailable")
+}
+
+func (f *failingBatchEmbedder) Dimensions() int { return f.dims }
+
+func TestGenerateClaims_LLMExtractor(t *testing.T) {
+	t.Parallel()
+	ms := &mockStore{hasClaims: false}
+	svc := newTestService(ms, nil, nil)
+	svc.SetClaimExtractor(&successfulClaimExtractor{})
+
+	err := svc.GenerateClaims(context.Background(), uuid.New(), uuid.Nil, "outcome text")
+	require.NoError(t, err)
+	assert.Equal(t, 1, ms.insertClaimsCalls)
+}
+
+// successfulClaimExtractor returns fixed claims.
+type successfulClaimExtractor struct{}
+
+func (successfulClaimExtractor) ExtractClaims(_ context.Context, _ string) ([]conflicts.ExtractedClaim, error) {
+	return []conflicts.ExtractedClaim{
+		{Text: "LLM extracted claim one", Category: "finding"},
+		{Text: "LLM extracted claim two", Category: "recommendation"},
+	}, nil
+}
+
+func TestGenerateClaims_LLMExtractorFallsBackToRegex(t *testing.T) {
+	t.Parallel()
+	ms := &mockStore{hasClaims: false}
+	svc := newTestService(ms, nil, nil)
+	svc.SetClaimExtractor(&failingClaimExtractor{})
+
+	err := svc.GenerateClaims(context.Background(), uuid.New(), uuid.Nil,
+		"The system performance has degraded significantly under heavy load conditions. The database connection pooling is misconfigured for production workloads.")
+	require.NoError(t, err)
+	assert.Equal(t, 1, ms.insertClaimsCalls, "should fall back to regex when LLM fails")
+}
+
+// failingClaimExtractor always returns an error.
+type failingClaimExtractor struct{}
+
+func (failingClaimExtractor) ExtractClaims(_ context.Context, _ string) ([]conflicts.ExtractedClaim, error) {
+	return nil, fmt.Errorf("LLM unavailable")
+}
+
+func TestGenerateClaims_DimensionMismatchSkipsClaim(t *testing.T) {
+	t.Parallel()
+	ms := &mockStore{hasClaims: false}
+	svc := New(ms, &wrongDimsBatchEmbedder{dims: 3, batchDims: 5}, nil, testLogger(), nil)
+
+	err := svc.GenerateClaims(context.Background(), uuid.New(), uuid.Nil,
+		"The system performance has degraded significantly under load. The database connection pool needs reconfiguration for production.")
+	require.NoError(t, err)
+	assert.Equal(t, 0, ms.insertClaimsCalls, "claims with dimension mismatch should be skipped")
+}
+
+// wrongDimsBatchEmbedder returns correct dims on Embed (probe) but wrong dims on EmbedBatch.
+type wrongDimsBatchEmbedder struct {
+	dims      int
+	batchDims int
+}
+
+func (w *wrongDimsBatchEmbedder) Embed(_ context.Context, _ string) (pgvector.Vector, error) {
+	v := make([]float32, w.dims)
+	v[0] = 1.0
+	return pgvector.NewVector(v), nil
+}
+
+func (w *wrongDimsBatchEmbedder) EmbedBatch(_ context.Context, texts []string) ([]pgvector.Vector, error) {
+	vecs := make([]pgvector.Vector, len(texts))
+	for i := range texts {
+		v := make([]float32, w.batchDims)
+		v[0] = 1.0
+		vecs[i] = pgvector.NewVector(v)
+	}
+	return vecs, nil
+}
+
+func (w *wrongDimsBatchEmbedder) Dimensions() int { return w.dims }
+
+// ---------------------------------------------------------------------------
+// BackfillClaims — unit tests
+// ---------------------------------------------------------------------------
+
+// backfillClaimsStore extends mockStore for BackfillClaims tests.
+type backfillClaimsStore struct {
+	mockStore
+	findMissingClaims []storage.DecisionRef
+	findMissingErr    error
+}
+
+func (m *backfillClaimsStore) FindDecisionIDsMissingClaims(_ context.Context, _ int) ([]storage.DecisionRef, error) {
+	return m.findMissingClaims, m.findMissingErr
+}
+
+func newTestServiceWithBackfillStore(ms *backfillClaimsStore) *Service {
+	return New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+}
+
+func TestBackfillClaims_FindError(t *testing.T) {
+	t.Parallel()
+	ms := &backfillClaimsStore{findMissingErr: fmt.Errorf("query failed")}
+	svc := newTestServiceWithBackfillStore(ms)
+
+	_, err := svc.BackfillClaims(context.Background(), 10)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "backfill claims: find")
+}
+
+func TestBackfillClaims_NoMissingClaims(t *testing.T) {
+	t.Parallel()
+	ms := &backfillClaimsStore{findMissingClaims: nil}
+	svc := newTestServiceWithBackfillStore(ms)
+
+	count, err := svc.BackfillClaims(context.Background(), 10)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count)
+}
+
+func TestBackfillClaims_GetDecisionError(t *testing.T) {
+	t.Parallel()
+	ms := &backfillClaimsStore{
+		findMissingClaims: []storage.DecisionRef{{ID: uuid.New(), OrgID: uuid.Nil}},
+	}
+	ms.decisionForScoErr = fmt.Errorf("decision not found")
+	svc := newTestServiceWithBackfillStore(ms)
+
+	count, err := svc.BackfillClaims(context.Background(), 10)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "failed get should skip, not error")
+}
+
+func TestBackfillClaims_ContextCancellation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	ms := &backfillClaimsStore{
+		findMissingClaims: []storage.DecisionRef{
+			{ID: uuid.New(), OrgID: uuid.Nil},
+			{ID: uuid.New(), OrgID: uuid.Nil},
+		},
+	}
+	ms.decisionForScoring = model.Decision{Outcome: "some outcome"}
+	ms.hasClaims = true
+	svc := newTestServiceWithBackfillStore(ms)
+
+	count, err := svc.BackfillClaims(ctx, 10)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 0, count)
+}
+
+func TestBackfillClaims_SuccessfulBackfill(t *testing.T) {
+	t.Parallel()
+	ms := &backfillClaimsStore{
+		findMissingClaims: []storage.DecisionRef{{ID: uuid.New(), OrgID: uuid.Nil}},
+	}
+	ms.decisionForScoring = model.Decision{
+		Outcome: "First claim sentence. Second claim sentence.",
+	}
+	ms.hasClaims = false
+	svc := newTestServiceWithBackfillStore(ms)
+
+	count, err := svc.BackfillClaims(context.Background(), 10)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+}
+
+func TestBackfillClaims_GenerateClaimsError(t *testing.T) {
+	t.Parallel()
+	ms := &backfillClaimsStore{
+		findMissingClaims: []storage.DecisionRef{{ID: uuid.New(), OrgID: uuid.Nil}},
+	}
+	ms.decisionForScoring = model.Decision{
+		Outcome: "The system performance has degraded significantly under load. The database connection pool needs reconfiguration for production.",
+	}
+	ms.hasClaims = false
+	ms.insertClaimsErr = fmt.Errorf("insert failed")
+	svc := newTestServiceWithBackfillStore(ms)
+
+	count, err := svc.BackfillClaims(context.Background(), 10)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "generate error should skip, not propagate")
+}
+
+// ---------------------------------------------------------------------------
+// RetryFailedClaimEmbeddings — additional edge cases
+// ---------------------------------------------------------------------------
+
+func TestRetryFailedClaimEmbeddings_MarkFailedAlsoErrors(t *testing.T) {
+	t.Parallel()
+	decID := uuid.New()
+	ms := &mockStore{
+		retriableFailures: []storage.ClaimRetryRef{{ID: decID, OrgID: uuid.Nil, Attempts: 1}},
+		decisionForScoErr: fmt.Errorf("decision not found"),
+		markFailedErr:     fmt.Errorf("mark failed too"),
+	}
+	svc := newTestService(ms, nil, nil)
+
+	count, err := svc.RetryFailedClaimEmbeddings(context.Background(), 10, 5)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count)
+}
+
+func TestRetryFailedClaimEmbeddings_ClearFailureError(t *testing.T) {
+	t.Parallel()
+	decID := uuid.New()
+	ms := &mockStore{
+		retriableFailures:  []storage.ClaimRetryRef{{ID: decID, OrgID: uuid.Nil, Attempts: 1}},
+		decisionForScoring: model.Decision{Outcome: "short"},
+		hasClaims:          true,
+		clearFailureErr:    fmt.Errorf("clear failed"),
+	}
+	scorer := &mockConflictScorer{}
+	svc := newTestService(ms, nil, scorer)
+
+	count, err := svc.RetryFailedClaimEmbeddings(context.Background(), 10, 5)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "clear failure error should not affect count")
+	assert.Len(t, scorer.calls, 1, "conflict scorer should still be called")
+}
+
+func TestRetryFailedClaimEmbeddings_NoConflictScorer(t *testing.T) {
+	t.Parallel()
+	decID := uuid.New()
+	ms := &mockStore{
+		retriableFailures:  []storage.ClaimRetryRef{{ID: decID, OrgID: uuid.Nil, Attempts: 0}},
+		decisionForScoring: model.Decision{Outcome: "short"},
+		hasClaims:          true,
+	}
+	svc := newTestService(ms, nil, nil)
+
+	count, err := svc.RetryFailedClaimEmbeddings(context.Background(), 10, 5)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+}
+
+func TestRetryFailedClaimEmbeddings_GenerateFailsMarksFailed(t *testing.T) {
+	t.Parallel()
+	decID := uuid.New()
+	ms := &mockStore{
+		retriableFailures: []storage.ClaimRetryRef{{ID: decID, OrgID: uuid.Nil, Attempts: 2}},
+		decisionForScoring: model.Decision{
+			Outcome: "The system performance has degraded significantly under load. The database connection pool needs reconfiguration for production.",
+		},
+		hasClaims:       false,
+		insertClaimsErr: fmt.Errorf("insert failed"),
+	}
+	svc := newTestService(ms, nil, nil)
+
+	count, err := svc.RetryFailedClaimEmbeddings(context.Background(), 10, 5)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count)
+	assert.Len(t, ms.markFailedCalls, 1, "should mark failure on generate error")
+	assert.Equal(t, decID, ms.markFailedCalls[0])
+}
+
+func TestRetryFailedClaimEmbeddings_MultipleRefsPartialSuccess(t *testing.T) {
+	t.Parallel()
+	dec1, dec2, dec3 := uuid.New(), uuid.New(), uuid.New()
+	ms := &mockStore{
+		retriableFailures: []storage.ClaimRetryRef{
+			{ID: dec1, OrgID: uuid.Nil, Attempts: 0},
+			{ID: dec2, OrgID: uuid.Nil, Attempts: 1},
+			{ID: dec3, OrgID: uuid.Nil, Attempts: 0},
+		},
+		decisionForScoring: model.Decision{Outcome: "short"},
+		hasClaims:          true,
+	}
+	svc := newTestService(ms, nil, nil)
+
+	count, err := svc.RetryFailedClaimEmbeddings(context.Background(), 10, 5)
+	require.NoError(t, err)
+	assert.Equal(t, 3, count)
+}
+
+// ---------------------------------------------------------------------------
+// backfillBatch — unit tests
+// ---------------------------------------------------------------------------
+
+// backfillBatchStore provides mock methods needed by backfillBatch.
+type backfillBatchStore struct {
+	mockStore
+	findUnembedded    []storage.UnembeddedDecision
+	findUnembeddedErr error
+	backfillErr       error
+	backfillCalls     int
+}
+
+func (m *backfillBatchStore) FindUnembeddedDecisions(_ context.Context, _ int) ([]storage.UnembeddedDecision, error) {
+	return m.findUnembedded, m.findUnembeddedErr
+}
+
+func (m *backfillBatchStore) BackfillEmbedding(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ pgvector.Vector) error {
+	m.backfillCalls++
+	return m.backfillErr
+}
+
+func (m *backfillBatchStore) FindDecisionsMissingOutcomeEmbedding(_ context.Context, _ int) ([]storage.UnembeddedDecision, error) {
+	return m.findUnembedded, m.findUnembeddedErr
+}
+
+func (m *backfillBatchStore) BackfillOutcomeEmbedding(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ pgvector.Vector) error {
+	m.backfillCalls++
+	return m.backfillErr
+}
+
+func TestBackfillEmbeddings_FindError(t *testing.T) {
+	t.Parallel()
+	ms := &backfillBatchStore{findUnembeddedErr: fmt.Errorf("db error")}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	_, err := svc.BackfillEmbeddings(context.Background(), 10)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "find")
+}
+
+func TestBackfillEmbeddings_NoneFound(t *testing.T) {
+	t.Parallel()
+	ms := &backfillBatchStore{findUnembedded: nil}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	count, err := svc.BackfillEmbeddings(context.Background(), 10)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count)
+}
+
+func TestBackfillEmbeddings_EmbedBatchError(t *testing.T) {
+	t.Parallel()
+	ms := &backfillBatchStore{
+		findUnembedded: []storage.UnembeddedDecision{
+			{ID: uuid.New(), OrgID: uuid.Nil, DecisionType: "test", Outcome: "outcome"},
+		},
+	}
+	svc := New(ms, &failingBatchEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	_, err := svc.BackfillEmbeddings(context.Background(), 10)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "embed batch")
+}
+
+func TestBackfillEmbeddings_WriteError(t *testing.T) {
+	t.Parallel()
+	ms := &backfillBatchStore{
+		findUnembedded: []storage.UnembeddedDecision{
+			{ID: uuid.New(), OrgID: uuid.Nil, DecisionType: "test", Outcome: "outcome"},
+		},
+		backfillErr: fmt.Errorf("write error"),
+	}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	count, err := svc.BackfillEmbeddings(context.Background(), 10)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "write errors should be skipped")
+}
+
+func TestBackfillEmbeddings_DimensionMismatchSkips(t *testing.T) {
+	t.Parallel()
+	ms := &backfillBatchStore{
+		findUnembedded: []storage.UnembeddedDecision{
+			{ID: uuid.New(), OrgID: uuid.Nil, DecisionType: "test", Outcome: "outcome"},
+		},
+	}
+	svc := New(ms, &wrongDimsBatchEmbedder{dims: 3, batchDims: 5}, nil, testLogger(), nil)
+
+	count, err := svc.BackfillEmbeddings(context.Background(), 10)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count)
+}
+
+func TestBackfillEmbeddings_Success(t *testing.T) {
+	t.Parallel()
+	ms := &backfillBatchStore{
+		findUnembedded: []storage.UnembeddedDecision{
+			{ID: uuid.New(), OrgID: uuid.Nil, DecisionType: "arch", Outcome: "chose Go"},
+			{ID: uuid.New(), OrgID: uuid.Nil, DecisionType: "sec", Outcome: "chose mTLS"},
+		},
+	}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	count, err := svc.BackfillEmbeddings(context.Background(), 10)
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
+	assert.Equal(t, 2, ms.backfillCalls)
+}
+
+func TestBackfillOutcomeEmbeddings_FindError(t *testing.T) {
+	t.Parallel()
+	ms := &backfillBatchStore{findUnembeddedErr: fmt.Errorf("outcome query error")}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	_, err := svc.BackfillOutcomeEmbeddings(context.Background(), 10)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "find")
+}
+
+// ---------------------------------------------------------------------------
+// Check — unit tests via mock store
+// ---------------------------------------------------------------------------
+
+// checkStore extends mockStore for Check path coverage.
+type checkStore struct {
+	mockStore
+	queryDecisions    []model.Decision
+	queryDecisionsErr error
+	queryTotal        int
+	searchResults     []model.SearchResult
+	searchErr         error
+	conflicts         []model.DecisionConflict
+	conflictsErr      error
+	resolvedConflicts []model.ConflictResolution
+	resolvedConflErr  error
+}
+
+func (m *checkStore) QueryDecisions(_ context.Context, _ uuid.UUID, _ model.QueryRequest) ([]model.Decision, int, error) {
+	return m.queryDecisions, m.queryTotal, m.queryDecisionsErr
+}
+
+func (m *checkStore) SearchDecisionsByText(_ context.Context, _ uuid.UUID, _ string, _ model.QueryFilters, _ int) ([]model.SearchResult, error) {
+	return m.searchResults, m.searchErr
+}
+
+func (m *checkStore) ListConflicts(_ context.Context, _ uuid.UUID, _ storage.ConflictFilters, _, _ int) ([]model.DecisionConflict, error) {
+	return m.conflicts, m.conflictsErr
+}
+
+func (m *checkStore) GetResolvedConflictsByType(_ context.Context, _ uuid.UUID, _ string, _ int) ([]model.ConflictResolution, error) {
+	return m.resolvedConflicts, m.resolvedConflErr
+}
+
+func TestCheck_QueryError(t *testing.T) {
+	t.Parallel()
+	ms := &checkStore{queryDecisionsErr: fmt.Errorf("query failed")}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	_, err := svc.Check(context.Background(), uuid.Nil, CheckInput{DecisionType: "arch", Limit: 5})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "check: query")
+}
+
+func TestCheck_ConflictListError(t *testing.T) {
+	t.Parallel()
+	ms := &checkStore{
+		queryDecisions: []model.Decision{{Outcome: "chose Go"}},
+		queryTotal:     1,
+		conflictsErr:   fmt.Errorf("conflicts db error"),
+	}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	resp, err := svc.Check(context.Background(), uuid.Nil, CheckInput{DecisionType: "arch", Limit: 5})
+	require.NoError(t, err, "conflict list error should be non-fatal")
+	assert.True(t, resp.HasPrecedent)
+	assert.Empty(t, resp.Conflicts)
+}
+
+func TestCheck_FiltersResolvedConflicts(t *testing.T) {
+	t.Parallel()
+	ms := &checkStore{
+		queryTotal: 0,
+		conflicts: []model.DecisionConflict{
+			{Status: "open"},
+			{Status: "resolved"},
+			{Status: "acknowledged"},
+			{Status: "wont_fix"},
+		},
+	}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	resp, err := svc.Check(context.Background(), uuid.Nil, CheckInput{DecisionType: "arch", Limit: 5})
+	require.NoError(t, err)
+	assert.Len(t, resp.Conflicts, 2)
+	for _, c := range resp.Conflicts {
+		assert.NotEqual(t, "resolved", c.Status)
+		assert.NotEqual(t, "wont_fix", c.Status)
+	}
+}
+
+func TestCheck_PriorResolutionsError(t *testing.T) {
+	t.Parallel()
+	ms := &checkStore{resolvedConflErr: fmt.Errorf("resolution lookup failed")}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	resp, err := svc.Check(context.Background(), uuid.Nil, CheckInput{DecisionType: "arch", Limit: 5})
+	require.NoError(t, err, "resolution error should be non-fatal")
+	assert.Nil(t, resp.PriorResolutions)
+}
+
+func TestCheck_PriorResolutionsSuccess(t *testing.T) {
+	t.Parallel()
+	ms := &checkStore{
+		resolvedConflicts: []model.ConflictResolution{{DecisionType: "arch"}},
+	}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	resp, err := svc.Check(context.Background(), uuid.Nil, CheckInput{DecisionType: "arch", Limit: 5})
+	require.NoError(t, err)
+	assert.Len(t, resp.PriorResolutions, 1)
+}
+
+func TestCheck_NoDecisionTypeSkipsPriorResolutions(t *testing.T) {
+	t.Parallel()
+	ms := &checkStore{}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	resp, err := svc.Check(context.Background(), uuid.Nil, CheckInput{DecisionType: "", Limit: 5})
+	require.NoError(t, err)
+	assert.Nil(t, resp.PriorResolutions)
+}
+
+func TestCheck_SearchPathFiltersLowRelevance(t *testing.T) {
+	t.Parallel()
+	ms := &checkStore{
+		searchResults: []model.SearchResult{
+			{Decision: model.Decision{Outcome: "high"}, SimilarityScore: 0.8},
+			{Decision: model.Decision{Outcome: "low"}, SimilarityScore: 0.1},
+			{Decision: model.Decision{Outcome: "borderline"}, SimilarityScore: 0.3},
+		},
+	}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	resp, err := svc.Check(context.Background(), uuid.Nil, CheckInput{Query: "some query", Limit: 10})
+	require.NoError(t, err)
+	assert.Len(t, resp.Decisions, 2, "should filter below 0.3 similarity")
+}
+
+func TestCheck_SearchPathError(t *testing.T) {
+	t.Parallel()
+	ms := &checkStore{searchErr: fmt.Errorf("search failed")}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	_, err := svc.Check(context.Background(), uuid.Nil, CheckInput{Query: "some query", Limit: 10})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "check: search")
+}
+
+func TestCheck_WithProjectAndAgentFilters(t *testing.T) {
+	t.Parallel()
+	ms := &checkStore{
+		queryDecisions: []model.Decision{{Outcome: "filtered result"}},
+		queryTotal:     1,
+	}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	resp, err := svc.Check(context.Background(), uuid.Nil, CheckInput{
+		DecisionType: "arch", Project: "my-project", AgentID: "agent-1", Limit: 5,
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.HasPrecedent)
+}
+
+// ---------------------------------------------------------------------------
+// hydrateAndReScore — unit tests via mock store
+// ---------------------------------------------------------------------------
+
+// hydrateStore extends mockStore for hydrateAndReScore tests.
+type hydrateStore struct {
+	mockStore
+	decisions      map[uuid.UUID]model.Decision
+	decisionsErr   error
+	signals        map[uuid.UUID]model.OutcomeSignals
+	signalsErr     error
+	assessments    map[uuid.UUID]model.AssessmentSummary
+	assessmentsErr error
+	searchResults  []model.SearchResult
+	searchErr      error
+}
+
+func (m *hydrateStore) GetDecisionsByIDs(_ context.Context, _ uuid.UUID, _ []uuid.UUID) (map[uuid.UUID]model.Decision, error) {
+	return m.decisions, m.decisionsErr
+}
+
+func (m *hydrateStore) GetDecisionOutcomeSignalsBatch(_ context.Context, _ []uuid.UUID, _ uuid.UUID) (map[uuid.UUID]model.OutcomeSignals, error) {
+	return m.signals, m.signalsErr
+}
+
+func (m *hydrateStore) GetAssessmentSummaryBatch(_ context.Context, _ uuid.UUID, _ []uuid.UUID) (map[uuid.UUID]model.AssessmentSummary, error) {
+	return m.assessments, m.assessmentsErr
+}
+
+func (m *hydrateStore) SearchDecisionsByText(_ context.Context, _ uuid.UUID, _ string, _ model.QueryFilters, _ int) ([]model.SearchResult, error) {
+	return m.searchResults, m.searchErr
+}
+
+type mockSearcherForHydrate struct {
+	results []search.Result
+	err     error
+	healthy error
+}
+
+func (m *mockSearcherForHydrate) Search(_ context.Context, _ uuid.UUID, _ []float32, _ model.QueryFilters, _ int) ([]search.Result, error) {
+	return m.results, m.err
+}
+
+func (m *mockSearcherForHydrate) Healthy(_ context.Context) error { return m.healthy }
+
+type mockEmbedder struct {
+	dims int
+}
+
+func (m *mockEmbedder) Embed(_ context.Context, _ string) (pgvector.Vector, error) {
+	v := make([]float32, m.dims)
+	for i := range v {
+		v[i] = 0.1
+	}
+	return pgvector.NewVector(v), nil
+}
+
+func (m *mockEmbedder) EmbedBatch(_ context.Context, texts []string) ([]pgvector.Vector, error) {
+	vecs := make([]pgvector.Vector, len(texts))
+	for i := range vecs {
+		v := make([]float32, m.dims)
+		for j := range v {
+			v[j] = 0.1
+		}
+		vecs[i] = pgvector.NewVector(v)
+	}
+	return vecs, nil
+}
+
+func (m *mockEmbedder) Dimensions() int { return m.dims }
+
+func TestHydrateAndReScore_GetDecisionsError(t *testing.T) {
+	t.Parallel()
+	decID := uuid.New()
+	ms := &hydrateStore{decisionsErr: fmt.Errorf("decisions lookup failed")}
+	srch := &mockSearcherForHydrate{
+		results: []search.Result{{DecisionID: decID, Score: 0.9}},
+	}
+	svc := New(ms, &mockEmbedder{dims: 3}, srch, testLogger(), nil)
+
+	_, err := svc.Search(context.Background(), uuid.Nil, "test", true, model.QueryFilters{}, 10)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "hydrate decisions")
+}
+
+func TestHydrateAndReScore_OutcomeSignalsError(t *testing.T) {
+	t.Parallel()
+	decID := uuid.New()
+	ms := &hydrateStore{
+		decisions:  map[uuid.UUID]model.Decision{decID: {ID: decID, Outcome: "test"}},
+		signalsErr: fmt.Errorf("signals lookup failed"),
+	}
+	srch := &mockSearcherForHydrate{
+		results: []search.Result{{DecisionID: decID, Score: 0.9}},
+	}
+	svc := New(ms, &mockEmbedder{dims: 3}, srch, testLogger(), nil)
+
+	_, err := svc.Search(context.Background(), uuid.Nil, "test", true, model.QueryFilters{}, 10)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outcome signals")
+}
+
+func TestHydrateAndReScore_AssessmentErrorNonFatal(t *testing.T) {
+	t.Parallel()
+	decID := uuid.New()
+	ms := &hydrateStore{
+		decisions:      map[uuid.UUID]model.Decision{decID: {ID: decID, Outcome: "test"}},
+		signals:        map[uuid.UUID]model.OutcomeSignals{},
+		assessmentsErr: fmt.Errorf("assessments unavailable"),
+	}
+	srch := &mockSearcherForHydrate{
+		results: []search.Result{{DecisionID: decID, Score: 0.9}},
+	}
+	svc := New(ms, &mockEmbedder{dims: 3}, srch, testLogger(), nil)
+
+	results, err := svc.Search(context.Background(), uuid.Nil, "test", true, model.QueryFilters{}, 10)
+	require.NoError(t, err, "assessment error should be non-fatal")
+	assert.NotEmpty(t, results)
+}
+
+func TestHydrateAndReScore_WithSignalsAndAssessments(t *testing.T) {
+	t.Parallel()
+	decID := uuid.New()
+	velHours := float64(48.0)
+	ms := &hydrateStore{
+		decisions: map[uuid.UUID]model.Decision{decID: {ID: decID, Outcome: "test"}},
+		signals: map[uuid.UUID]model.OutcomeSignals{
+			decID: {
+				SupersessionVelocityHours: &velHours,
+				PrecedentCitationCount:    3,
+				AgreementCount:            5,
+				ConflictCount:             1,
+			},
+		},
+		assessments: map[uuid.UUID]model.AssessmentSummary{
+			decID: {Total: 3, Correct: 2},
+		},
+	}
+	srch := &mockSearcherForHydrate{
+		results: []search.Result{{DecisionID: decID, Score: 0.9}},
+	}
+	svc := New(ms, &mockEmbedder{dims: 3}, srch, testLogger(), nil)
+
+	results, err := svc.Search(context.Background(), uuid.Nil, "test", true, model.QueryFilters{}, 10)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, decID, results[0].Decision.ID)
+}
+
+// ---------------------------------------------------------------------------
+// ConsensusScoresBatch — additional edge cases
+// ---------------------------------------------------------------------------
+
+func TestConsensusScoresBatch_FindSimilarError(t *testing.T) {
+	t.Parallel()
+	decID := uuid.New()
+	makeEmb := func(v []float32) [2]pgvector.Vector {
+		return [2]pgvector.Vector{pgvector.NewVector(v), pgvector.NewVector(v)}
+	}
+	ms := &mockStore{
+		conflictCounts: map[uuid.UUID]int{decID: 1},
+		embeddings:     map[uuid.UUID][2]pgvector.Vector{decID: makeEmb([]float32{1, 0, 0})},
+	}
+	srch := &mockSearcher{findErr: fmt.Errorf("qdrant down")}
+	svc := newTestService(ms, srch, nil)
+
+	result, err := svc.ConsensusScoresBatch(context.Background(), []uuid.UUID{decID}, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, 0, result[decID][0], "agreement should be 0 on qdrant error")
+	assert.Equal(t, 1, result[decID][1])
+}
+
+func TestConsensusScoresBatch_EmbeddingsError(t *testing.T) {
+	t.Parallel()
+	decID := uuid.New()
+	ms := &mockStore{
+		conflictCounts: map[uuid.UUID]int{decID: 2},
+		embeddingsErr:  fmt.Errorf("embeddings unavailable"),
+	}
+	srch := &mockSearcher{}
+	svc := newTestService(ms, srch, nil)
+
+	result, err := svc.ConsensusScoresBatch(context.Background(), []uuid.UUID{decID}, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, 0, result[decID][0])
+	assert.Equal(t, 2, result[decID][1])
+}
+
+func TestConsensusScoresBatch_NeighborEmbeddingsError(t *testing.T) {
+	t.Parallel()
+	decID := uuid.New()
+	neighborID := uuid.New()
+	makeEmb := func(v []float32) [2]pgvector.Vector {
+		return [2]pgvector.Vector{pgvector.NewVector(v), pgvector.NewVector(v)}
+	}
+	dualMock := &dualCallEmbeddingStore{
+		mockStore:   mockStore{conflictCounts: map[uuid.UUID]int{decID: 0}},
+		firstResult: map[uuid.UUID][2]pgvector.Vector{decID: makeEmb([]float32{1, 0, 0})},
+		secondErr:   fmt.Errorf("neighbor fetch failed"),
+	}
+	srch := &mockSearcher{findResults: []search.Result{{DecisionID: neighborID, Score: 0.9}}}
+	svc := newTestService(dualMock, srch, nil)
+
+	result, err := svc.ConsensusScoresBatch(context.Background(), []uuid.UUID{decID}, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, 0, result[decID][0])
+}
+
+func (d *dualCallEmbeddingStore) GetConflictCountsBatch(_ context.Context, _ []uuid.UUID, _ uuid.UUID) (map[uuid.UUID]int, error) {
+	return d.conflictCounts, d.conflictCountsErr
+}
+
+func TestConsensusScores_EmbeddingsFetchError(t *testing.T) {
+	t.Parallel()
+	ms := &mockStore{conflictCount: 1, embeddingsErr: fmt.Errorf("unavailable")}
+	svc := newTestService(ms, &mockSearcher{}, nil)
+
+	agreement, conflicts, err := svc.ConsensusScores(context.Background(), uuid.New(), uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, 0, agreement)
+	assert.Equal(t, 1, conflicts)
+}
+
+// ---------------------------------------------------------------------------
+// AdjudicateConflictWithTrace — mock tests
+// ---------------------------------------------------------------------------
+
+// adjudicateStore extends mockStore for AdjudicateConflictWithTrace.
+type adjudicateStore struct {
+	mockStore
+	traceRun      model.AgentRun
+	traceDecision model.Decision
+	traceErr      error
+	notifyErr     error
+}
+
+func (m *adjudicateStore) CreateTraceAndAdjudicateConflictTx(_ context.Context, _ storage.CreateTraceParams, _ storage.AdjudicateConflictInTraceParams) (model.AgentRun, model.Decision, error) {
+	return m.traceRun, m.traceDecision, m.traceErr
+}
+
+func (m *adjudicateStore) Notify(_ context.Context, _, _ string) error {
+	return m.notifyErr
+}
+
+func TestAdjudicateConflictWithTrace_Success(t *testing.T) {
+	t.Parallel()
+	runID, decID := uuid.New(), uuid.New()
+	ms := &adjudicateStore{
+		traceRun:      model.AgentRun{ID: runID},
+		traceDecision: model.Decision{ID: decID, Outcome: "adjudication outcome"},
+	}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	result, err := svc.AdjudicateConflictWithTrace(context.Background(), uuid.Nil, TraceInput{
+		AgentID: "adj", Decision: model.TraceDecision{
+			DecisionType: "adjudication", Outcome: "chose A", Confidence: 0.9,
+		},
+	}, storage.AdjudicateConflictInTraceParams{ConflictID: uuid.New(), ResolvedBy: "adj"})
+	require.NoError(t, err)
+	assert.Equal(t, runID, result.RunID)
+	assert.Equal(t, decID, result.DecisionID)
+}
+
+func TestAdjudicateConflictWithTrace_TxError(t *testing.T) {
+	t.Parallel()
+	ms := &adjudicateStore{traceErr: fmt.Errorf("serialization failure")}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	_, err := svc.AdjudicateConflictWithTrace(context.Background(), uuid.Nil, TraceInput{
+		AgentID: "adj", Decision: model.TraceDecision{
+			DecisionType: "adjudication", Outcome: "chose A", Confidence: 0.9,
+		},
+	}, storage.AdjudicateConflictInTraceParams{ConflictID: uuid.New(), ResolvedBy: "adj"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "trace+adjudicate")
+}
+
+// ---------------------------------------------------------------------------
+// postTraceAsync — Trace with mock store for coverage
+// ---------------------------------------------------------------------------
+
+// traceStore extends mockStore for Trace tests.
+type traceStore struct {
+	mockStore
+	traceRun      model.AgentRun
+	traceDecision model.Decision
+	traceErr      error
+	notifyErr     error
+}
+
+func (m *traceStore) CreateTraceTx(_ context.Context, _ storage.CreateTraceParams) (model.AgentRun, model.Decision, error) {
+	return m.traceRun, m.traceDecision, m.traceErr
+}
+
+func (m *traceStore) Notify(_ context.Context, _, _ string) error {
+	return m.notifyErr
+}
+
+func TestTrace_PostTraceAsync_NotifyError(t *testing.T) {
+	t.Parallel()
+	runID, decID := uuid.New(), uuid.New()
+	ms := &traceStore{
+		traceRun:      model.AgentRun{ID: runID},
+		traceDecision: model.Decision{ID: decID, Outcome: "test"},
+		notifyErr:     fmt.Errorf("pg_notify failed"),
+	}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	result, err := svc.Trace(context.Background(), uuid.Nil, TraceInput{
+		AgentID: "test-agent", Decision: model.TraceDecision{
+			DecisionType: "test", Outcome: "test", Confidence: 0.5,
+		},
+	})
+	require.NoError(t, err, "notify error should be non-fatal")
+	assert.Equal(t, decID, result.DecisionID)
+}
+
+func TestTrace_PostTraceAsync_WithEmbeddingAndScorer(t *testing.T) {
+	t.Parallel()
+	runID, decID := uuid.New(), uuid.New()
+	emb := pgvector.NewVector([]float32{1, 0, 0})
+	ms := &traceStore{
+		traceRun:      model.AgentRun{ID: runID},
+		traceDecision: model.Decision{ID: decID, Outcome: "test", Embedding: &emb},
+	}
+	ms.hasClaims = true
+	scorer := &mockConflictScorer{}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), scorer)
+
+	result, err := svc.Trace(context.Background(), uuid.Nil, TraceInput{
+		AgentID: "test-agent", Decision: model.TraceDecision{
+			DecisionType: "test", Outcome: "test", Confidence: 0.5,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, decID, result.DecisionID)
+	// Allow goroutines to run.
+	time.Sleep(200 * time.Millisecond)
+}
+
+func TestTrace_PostTraceAsync_NoEmbeddingWithScorer(t *testing.T) {
+	t.Parallel()
+	runID, decID := uuid.New(), uuid.New()
+	ms := &traceStore{
+		traceRun:      model.AgentRun{ID: runID},
+		traceDecision: model.Decision{ID: decID, Outcome: "test", Embedding: nil},
+	}
+	scorer := &mockConflictScorer{}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), scorer)
+
+	result, err := svc.Trace(context.Background(), uuid.Nil, TraceInput{
+		AgentID: "test-agent", Decision: model.TraceDecision{
+			DecisionType: "test", Outcome: "test", Confidence: 0.5,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, decID, result.DecisionID)
+	time.Sleep(200 * time.Millisecond)
+}
+
+func TestTrace_TxError(t *testing.T) {
+	t.Parallel()
+	ms := &traceStore{traceErr: fmt.Errorf("serialization failure")}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	_, err := svc.Trace(context.Background(), uuid.Nil, TraceInput{
+		AgentID: "test-agent", Decision: model.TraceDecision{
+			DecisionType: "test", Outcome: "test", Confidence: 0.5,
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "trace:")
+}
+
+// ---------------------------------------------------------------------------
+// prepareTrace — edge cases
+// ---------------------------------------------------------------------------
+
+func TestPrepareTrace_EvidenceEmbeddingDimMismatch(t *testing.T) {
+	t.Parallel()
+	ms := &traceStore{}
+	// nthCallWrongDimsEmbedder returns correct dims on the first two Embed calls
+	// (decision + outcome) but wrong dims on subsequent calls (evidence).
+	svc := New(ms, &nthCallWrongDimsEmbedder{dims: 3, wrongDims: 5, wrongAfter: 2}, nil, testLogger(), nil)
+
+	_, err := svc.Trace(context.Background(), uuid.Nil, TraceInput{
+		AgentID: "test-agent", Decision: model.TraceDecision{
+			DecisionType: "test", Outcome: "test", Confidence: 0.5,
+			Evidence: []model.TraceEvidence{{SourceType: "document", Content: "evidence text"}},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "evidence")
+	assert.Contains(t, err.Error(), "embedding dimension mismatch")
+}
+
+// nthCallWrongDimsEmbedder returns correct dims for the first N Embed calls,
+// then returns wrong dims for subsequent calls. This allows testing the evidence
+// embedding dim mismatch path without triggering the decision embedding check first.
+type nthCallWrongDimsEmbedder struct {
+	dims       int
+	wrongDims  int
+	wrongAfter int
+	callCount  int
+	mu         sync.Mutex
+}
+
+func (n *nthCallWrongDimsEmbedder) Embed(_ context.Context, _ string) (pgvector.Vector, error) {
+	n.mu.Lock()
+	n.callCount++
+	count := n.callCount
+	n.mu.Unlock()
+
+	dims := n.dims
+	if count > n.wrongAfter {
+		dims = n.wrongDims
+	}
+	v := make([]float32, dims)
+	v[0] = 1.0
+	return pgvector.NewVector(v), nil
+}
+
+func (n *nthCallWrongDimsEmbedder) EmbedBatch(_ context.Context, texts []string) ([]pgvector.Vector, error) {
+	vecs := make([]pgvector.Vector, len(texts))
+	for i := range texts {
+		v := make([]float32, n.dims)
+		v[0] = 1.0
+		vecs[i] = pgvector.NewVector(v)
+	}
+	return vecs, nil
+}
+
+func (n *nthCallWrongDimsEmbedder) Dimensions() int { return n.dims }
+
+func TestPrepareTrace_WithAuditMeta(t *testing.T) {
+	t.Parallel()
+	runID, decID := uuid.New(), uuid.New()
+	ms := &traceStore{
+		traceRun: model.AgentRun{ID: runID}, traceDecision: model.Decision{ID: decID},
+	}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	result, err := svc.Trace(context.Background(), uuid.Nil, TraceInput{
+		AgentID: "test-agent", Decision: model.TraceDecision{
+			DecisionType: "test", Outcome: "test", Confidence: 0.5,
+		},
+		AuditMeta: &ctxutil.AuditMeta{
+			RequestID: "req-123", OrgID: uuid.Nil, ActorAgentID: "test-agent",
+			ActorRole: "admin", HTTPMethod: "POST", Endpoint: "/v1/trace",
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, decID, result.DecisionID)
+}
+
+func TestPrepareTrace_WithTraceID(t *testing.T) {
+	t.Parallel()
+	runID, decID := uuid.New(), uuid.New()
+	ms := &traceStore{
+		traceRun: model.AgentRun{ID: runID}, traceDecision: model.Decision{ID: decID},
+	}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	traceID := "my-trace-id"
+	result, err := svc.Trace(context.Background(), uuid.Nil, TraceInput{
+		AgentID: "test-agent", TraceID: &traceID, Decision: model.TraceDecision{
+			DecisionType: "test", Outcome: "test", Confidence: 0.5,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, decID, result.DecisionID)
+}
+
+func TestPrepareTrace_DecisionEmbeddingDimMismatch(t *testing.T) {
+	t.Parallel()
+	ms := &traceStore{}
+	svc := New(ms, &wrongDimsSingleEmbedder{reportedDims: 3, actualDims: 5}, nil, testLogger(), nil)
+
+	_, err := svc.Trace(context.Background(), uuid.Nil, TraceInput{
+		AgentID: "test-agent", Decision: model.TraceDecision{
+			DecisionType: "test", Outcome: "test", Confidence: 0.5,
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "embedding dimension mismatch")
+}
+
+// wrongDimsSingleEmbedder returns vectors of actualDims but reports reportedDims.
+type wrongDimsSingleEmbedder struct {
+	reportedDims int
+	actualDims   int
+}
+
+func (w *wrongDimsSingleEmbedder) Embed(_ context.Context, _ string) (pgvector.Vector, error) {
+	v := make([]float32, w.actualDims)
+	v[0] = 1.0
+	return pgvector.NewVector(v), nil
+}
+
+func (w *wrongDimsSingleEmbedder) EmbedBatch(_ context.Context, texts []string) ([]pgvector.Vector, error) {
+	vecs := make([]pgvector.Vector, len(texts))
+	for i := range texts {
+		v := make([]float32, w.actualDims)
+		v[0] = 1.0
+		vecs[i] = pgvector.NewVector(v)
+	}
+	return vecs, nil
+}
+
+func (w *wrongDimsSingleEmbedder) Dimensions() int { return w.reportedDims }
+
+func TestPrepareTrace_EmbeddingFailureWarnsButContinues(t *testing.T) {
+	t.Parallel()
+	runID, decID := uuid.New(), uuid.New()
+	ms := &traceStore{
+		traceRun: model.AgentRun{ID: runID}, traceDecision: model.Decision{ID: decID},
+	}
+	svc := New(ms, &failingSingleEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	result, err := svc.Trace(context.Background(), uuid.Nil, TraceInput{
+		AgentID: "test-agent", Decision: model.TraceDecision{
+			DecisionType: "test", Outcome: "test", Confidence: 0.5,
+		},
+	})
+	require.NoError(t, err, "embedding failure should warn but not error")
+	assert.Equal(t, decID, result.DecisionID)
+}
+
+// failingSingleEmbedder fails on all Embed calls.
+type failingSingleEmbedder struct {
+	dims int
+}
+
+func (f *failingSingleEmbedder) Embed(_ context.Context, _ string) (pgvector.Vector, error) {
+	return pgvector.Vector{}, fmt.Errorf("embedding unavailable")
+}
+
+func (f *failingSingleEmbedder) EmbedBatch(_ context.Context, _ []string) ([]pgvector.Vector, error) {
+	return nil, fmt.Errorf("embedding unavailable")
+}
+
+func (f *failingSingleEmbedder) Dimensions() int { return f.dims }
+
+func TestPrepareTrace_EvidenceEmptyContentSkipsEmbedding(t *testing.T) {
+	t.Parallel()
+	runID, decID := uuid.New(), uuid.New()
+	ms := &traceStore{
+		traceRun: model.AgentRun{ID: runID}, traceDecision: model.Decision{ID: decID},
+	}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	result, err := svc.Trace(context.Background(), uuid.Nil, TraceInput{
+		AgentID: "test-agent", Decision: model.TraceDecision{
+			DecisionType: "test", Outcome: "test", Confidence: 0.5,
+			Evidence: []model.TraceEvidence{{SourceType: "document", Content: ""}},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 2, result.EventCount, "1 decision + 1 evidence")
+}
+
+func TestPrepareTrace_EvidenceEmbeddingFailureWarns(t *testing.T) {
+	t.Parallel()
+	runID, decID := uuid.New(), uuid.New()
+	ms := &traceStore{
+		traceRun: model.AgentRun{ID: runID}, traceDecision: model.Decision{ID: decID},
+	}
+	// Use an embedder that succeeds on the first two calls (decision + outcome)
+	// but fails on evidence. failingSingleEmbedder fails all calls, so decision
+	// embedding will also fail — but that's non-fatal.
+	svc := New(ms, &failingSingleEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	result, err := svc.Trace(context.Background(), uuid.Nil, TraceInput{
+		AgentID: "test-agent", Decision: model.TraceDecision{
+			DecisionType: "test", Outcome: "test", Confidence: 0.5,
+			Evidence: []model.TraceEvidence{{SourceType: "document", Content: "some content"}},
+		},
+	})
+	// Both decision and evidence embedding fail, but both are non-fatal.
+	require.NoError(t, err)
+	assert.Equal(t, decID, result.DecisionID)
+}
+
+func TestTrace_WithAlternatives(t *testing.T) {
+	t.Parallel()
+	runID, decID := uuid.New(), uuid.New()
+	ms := &traceStore{
+		traceRun: model.AgentRun{ID: runID}, traceDecision: model.Decision{ID: decID},
+	}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	score1 := float32(0.3)
+	score2 := float32(0.9)
+	result, err := svc.Trace(context.Background(), uuid.Nil, TraceInput{
+		AgentID: "test-agent", Decision: model.TraceDecision{
+			DecisionType: "test", Outcome: "test", Confidence: 0.5,
+			Alternatives: []model.TraceAlternative{
+				{Label: "A", Score: &score1, Selected: false},
+				{Label: "B", Score: &score2, Selected: true},
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 3, result.EventCount, "1 decision + 2 alternatives")
+}
+
+// GenerateClaims exposes generateClaims for testing from within the package.
+func (s *Service) GenerateClaims(ctx context.Context, decisionID, orgID uuid.UUID, outcome string) error {
+	return s.generateClaims(ctx, decisionID, orgID, outcome)
 }

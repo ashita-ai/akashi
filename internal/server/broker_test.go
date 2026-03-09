@@ -531,3 +531,66 @@ func TestFormatSSEEmptyData(t *testing.T) {
 		t.Errorf("formatSSE empty data: got %q, want %q", got, want)
 	}
 }
+
+// TestNewBroker exercises the actual NewBroker constructor, which initializes
+// the OTel metrics counter. We pass nil for db since we only test
+// construction — Start is not called.
+func TestNewBroker(t *testing.T) {
+	logger := testLogger()
+	broker := NewBroker(nil, logger)
+
+	if broker == nil {
+		t.Fatal("NewBroker returned nil")
+	}
+	if broker.logger != logger {
+		t.Error("NewBroker did not set logger")
+	}
+	if broker.subscribers == nil {
+		t.Error("NewBroker did not initialize subscribers map")
+	}
+
+	// Verify the constructed broker is fully functional: subscribe, broadcast, unsubscribe.
+	orgID := uuid.New()
+	ch := broker.Subscribe(orgID)
+
+	event := formatSSE("test", `{"new_broker":"true"}`)
+	broker.broadcastToOrg(event, orgID, true)
+
+	select {
+	case got := <-ch:
+		if string(got) != string(event) {
+			t.Errorf("NewBroker subscriber: got %q, want %q", got, event)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("NewBroker subscriber: timed out waiting for event")
+	}
+
+	broker.Unsubscribe(ch)
+
+	broker.mu.RLock()
+	count := len(broker.subscribers)
+	broker.mu.RUnlock()
+	if count != 0 {
+		t.Fatalf("expected 0 subscribers after unsubscribe, got %d", count)
+	}
+}
+
+// TestNewBrokerDroppedEventsMetric verifies that the droppedEvents counter
+// from NewBroker does not panic when Add is called (i.e., the OTel meter
+// was initialized successfully).
+func TestNewBrokerDroppedEventsMetric(t *testing.T) {
+	broker := NewBroker(nil, testLogger())
+
+	// droppedEvents should be non-nil after NewBroker.
+	if broker.droppedEvents == nil {
+		t.Fatal("NewBroker did not initialize droppedEvents counter")
+	}
+
+	// broadcastToOrg with hasOrgID=false should increment the counter without panic.
+	broker.broadcastToOrg(formatSSE("test", "drop"), uuid.Nil, false)
+}
+
+// TestBrokerListenWithRetry_ContextCancelled is intentionally omitted because
+// listenWithRetry calls b.db.Listen which requires a real storage.DB.
+// The listenWithRetry code path is exercised via integration tests that use
+// the full server setup.
