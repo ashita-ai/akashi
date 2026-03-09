@@ -8,10 +8,10 @@ import (
 )
 
 func (s *Server) registerPrompts() {
-	// before-decision — guides the agent through checking the black box for precedents first.
+	// before-decision — guides the agent through checking the audit trail for precedents first.
 	s.mcpServer.AddPrompt(
 		mcplib.NewPrompt("before-decision",
-			mcplib.WithPromptDescription("Check the black box for precedents before making a decision"),
+			mcplib.WithPromptDescription("Check the decision audit trail for precedents before making a decision"),
 			mcplib.WithArgument("decision_type",
 				mcplib.ArgumentDescription("The type of decision you're about to make (e.g., model_selection, architecture, data_source)"),
 				mcplib.RequiredArgument(),
@@ -20,10 +20,10 @@ func (s *Server) registerPrompts() {
 		s.handleBeforeDecisionPrompt,
 	)
 
-	// after-decision — reminds the agent to record the decision to the black box.
+	// after-decision — reminds the agent to record the decision to the audit trail.
 	s.mcpServer.AddPrompt(
 		mcplib.NewPrompt("after-decision",
-			mcplib.WithPromptDescription("Record a decision to the black box after making it"),
+			mcplib.WithPromptDescription("Record a decision to the audit trail after making it"),
 			mcplib.WithArgument("decision_type",
 				mcplib.ArgumentDescription("The type of decision that was made"),
 				mcplib.RequiredArgument(),
@@ -99,7 +99,7 @@ func (s *Server) handleAfterDecisionPrompt(ctx context.Context, request mcplib.G
 				Role: mcplib.RoleUser,
 				Content: mcplib.TextContent{
 					Type: "text",
-					Text: fmt.Sprintf(`You just made a decision. Record it to the black box now so there is proof of why, and other agents can learn from it.
+					Text: fmt.Sprintf(`You just made a decision. Record it to the audit trail now — there is proof of why, and other agents can learn from it.
 
 CALL akashi_trace with:
 - decision_type: "%s"
@@ -131,7 +131,7 @@ func (s *Server) handleAgentSetupPrompt(ctx context.Context, request mcplib.GetP
 				Role: mcplib.RoleUser,
 				Content: mcplib.TextContent{
 					Type: "text",
-					Text: `You have access to Akashi, a black box recorder for AI decisions. It captures
+					Text: `You have access to Akashi, the decision coordination layer for multi-agent AI. It captures
 why every decision was made -- what was chosen, what was rejected, and what
 evidence supported it -- so there is always proof when someone asks "why?"
 
@@ -141,7 +141,7 @@ Every non-trivial decision should follow this workflow:
 
 ### Before deciding:
 Call akashi_check with the decision_type you're about to make.
-This checks the black box for existing precedents and any conflicts.
+This checks the audit trail for existing precedents and any conflicts.
 Use this information to make a more informed decision and avoid
 contradicting prior work.
 
@@ -152,8 +152,8 @@ can learn from it, and so the decision is provable later.
 
 ## Available Tools
 
-- akashi_check: Check the black box for precedents before deciding (use FIRST; pass query for semantic search)
-- akashi_trace: Record a decision to the black box (use AFTER deciding)
+- akashi_check: Check the audit trail for precedents before deciding (use FIRST; pass query for semantic search)
+- akashi_trace: Record a decision to the audit trail (use AFTER deciding)
 - akashi_query: Query the audit trail — structured filters or natural-language query for semantic search
 - akashi_conflicts: List open conflicts between agents
 - akashi_assess: Record whether a past decision turned out to be correct

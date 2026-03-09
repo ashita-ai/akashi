@@ -1,6 +1,6 @@
 # akashi-langchain
 
-LangChain callback handler that traces agent decisions to [Akashi](../../../README.md) -- the black box recorder for AI decisions.
+LangChain callback handler that traces agent decisions to [Akashi](../../../README.md) -- version control for AI decisions.
 
 Hooks into the LangChain agent lifecycle to automatically call `check()` before each tool use and `trace()` after each tool call and final answer, with zero changes to your agent or chain code.
 

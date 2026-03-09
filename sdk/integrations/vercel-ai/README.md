@@ -1,6 +1,6 @@
 # akashi-vercel-ai
 
-Vercel AI SDK middleware that traces LLM calls to [Akashi](../../../README.md) -- the black box recorder for AI decisions.
+Vercel AI SDK middleware that traces LLM calls to [Akashi](../../../README.md) -- version control for AI decisions.
 
 Wraps any `LanguageModelV1`-compatible model so that every `generateText`, `generateObject`, `streamText`, and `streamObject` call automatically:
 1. Calls `check()` before generation to surface relevant precedents.

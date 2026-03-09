@@ -36,7 +36,7 @@ const (
 )
 
 // AgentEvent is an append-only event in the event log.
-// Source of truth for the black box recorder. Never mutated or deleted.
+// Source of truth for the decision audit record. Never mutated or deleted.
 type AgentEvent struct {
 	ID          uuid.UUID      `json:"id"`
 	RunID       uuid.UUID      `json:"run_id"`

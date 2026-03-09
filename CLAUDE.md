@@ -1,6 +1,6 @@
 # ashita-ai/akashi
 
-Decision trace layer for multi-agent AI systems ("git blame for AI decisions").
+Decision coordination layer for multi-agent AI systems ("version control for AI decisions").
 
 ## Tech stack
 

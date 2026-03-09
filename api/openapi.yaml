@@ -2,12 +2,12 @@ openapi: "3.1.0"
 info:
   title: Akashi API
   description: |
-    Decision trace layer for multi-agent AI systems.
-
-    Akashi records, queries, and audits every decision made by AI agents —
-    providing "git blame for AI decisions." It captures the full decision
-    lifecycle: what was decided, why, what alternatives were considered,
-    and what evidence was used.
+    Version control for AI decisions. Akashi is the decision coordination
+    layer for multi-agent AI systems — recording, querying, and auditing
+    every agent decision. Check before deciding to surface precedents and
+    active conflicts. Trace after deciding to record reasoning, alternatives,
+    and confidence. Captures the full decision lifecycle: outcome, reasoning,
+    alternatives considered, evidence, and confidence level.
 
     ## Authentication
 
