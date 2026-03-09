@@ -158,6 +158,9 @@ func compactConflictGroup(g model.ConflictGroup) map[string]any {
 		"first_detected": g.FirstDetectedAt,
 		"last_detected":  g.LastDetectedAt,
 	}
+	if g.GroupTopic != nil {
+		m["group_topic"] = *g.GroupTopic
+	}
 	if g.Representative != nil {
 		r := g.Representative
 		if r.Severity != nil {

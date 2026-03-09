@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/pgvector/pgvector-go"
 
 	"github.com/ashita-ai/akashi/internal/model"
 )
@@ -337,9 +338,10 @@ func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.
 	return oldStatus, nil
 }
 
-// InsertScoredConflict inserts a semantic conflict into scored_conflicts and
-// atomically upserts its conflict_groups row. Uses a CTE so both writes happen
-// in a single round-trip and are consistent even under concurrent inserts.
+// InsertScoredConflict inserts a semantic conflict into scored_conflicts.
+// When c.GroupID is set (pre-computed by FindOrCreateTopicGroup), the conflict
+// is inserted with that group_id directly. When c.GroupID is nil, a fallback
+// creates a new group atomically via CTE (used by callers without embeddings).
 //
 // Canonical pair ordering (decision_a_id < decision_b_id by bytes) is applied
 // before the insert; the UNIQUE constraint on (decision_a_id, decision_b_id)
@@ -359,11 +361,6 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 		outcomeA, outcomeB = outcomeB, outcomeA
 		claimTextA, claimTextB = claimTextB, claimTextA
 	}
-	// Normalize the agent pair for the group key: LEAST first.
-	grpAgentA, grpAgentB := agentA, agentB
-	if grpAgentA > grpAgentB {
-		grpAgentA, grpAgentB = grpAgentB, grpAgentA
-	}
 
 	topicSim := 0.0
 	if c.TopicSimilarity != nil {
@@ -382,23 +379,53 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 		method = "embedding"
 	}
 
+	// When the caller pre-computed a group_id (topic-aware path), insert
+	// the conflict directly with that group and update the group timestamp.
+	if c.GroupID != nil {
+		return db.insertScoredConflictWithGroup(ctx,
+			da, dbID, c.OrgID, c.ConflictKind,
+			agentA, agentB, typeA, typeB, outcomeA, outcomeB,
+			topicSim, outcomeDiv, sig, method, c.Explanation,
+			c.Category, c.Severity, c.Relationship, c.ConfidenceWeight, c.TemporalDecay,
+			claimTextA, claimTextB, *c.GroupID,
+		)
+	}
+
+	// Fallback: find or create a group without embedding similarity.
+	// Reuses the first existing group for the same agent-pair + decision-type
+	// (preserving the old one-group-per-pair behavior when embeddings are unavailable).
+	grpAgentA, grpAgentB := agentA, agentB
+	if grpAgentA > grpAgentB {
+		grpAgentA, grpAgentB = grpAgentB, grpAgentA
+	}
+	topicLabel := TruncateOutcome(outcomeA, 120)
+
 	var id uuid.UUID
 	err := db.pool.QueryRow(ctx,
-		// CTE step 1: upsert the conflict group (one row per agent-pair × decision-type).
-		// ON CONFLICT updates last_detected_at so the group always reflects the most
-		// recent detection time. No other fields change — the group is stable once created.
-		//
-		// CTE step 2: upsert the pairwise conflict row with the group_id from step 1.
-		// The conflict-level ON CONFLICT updates scores/explanation but preserves
-		// lifecycle state (status, resolved_by) except for re-opening 'resolved' ones
-		// when re-detected (resolution was falsified).
-		`WITH grp AS (
+		// CTE step 1: try to find an existing group for this agent pair + type.
+		// CTE step 2: update last_detected_at when reusing an existing group.
+		// CTE step 3: if none exists, create a new one.
+		// CTE step 4: pick whichever returned a row (existing preferred).
+		`WITH existing AS (
+		     SELECT id FROM conflict_groups
+		     WHERE org_id = $3 AND agent_a = $5 AND agent_b = $6
+		       AND conflict_kind = $4 AND decision_type = $8
+		     ORDER BY last_detected_at DESC
+		     LIMIT 1
+		 ), upd AS (
+		     UPDATE conflict_groups SET last_detected_at = now()
+		     WHERE id = (SELECT id FROM existing) AND org_id = $3
+		 ), new_grp AS (
 		     INSERT INTO conflict_groups
-		         (org_id, agent_a, agent_b, conflict_kind, decision_type)
-		     VALUES ($3, $5, $6, $4, $8)
-		     ON CONFLICT (org_id, agent_a, agent_b, conflict_kind, decision_type)
-		         DO UPDATE SET last_detected_at = now()
+		         (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic)
+		     SELECT $3, $5, $6, $4, $8, $23
+		     WHERE NOT EXISTS (SELECT 1 FROM existing)
 		     RETURNING id
+		 ), grp AS (
+		     SELECT id FROM existing
+		     UNION ALL
+		     SELECT id FROM new_grp
+		     LIMIT 1
 		 )
 		 INSERT INTO scored_conflicts
 		     (decision_a_id, decision_b_id, org_id, conflict_kind,
@@ -425,9 +452,6 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 		     claim_text_b        = EXCLUDED.claim_text_b,
 		     group_id            = EXCLUDED.group_id,
 		     detected_at         = now(),
-		     -- Re-open previously resolved conflicts: re-detection falsifies the
-		     -- prior resolution claim. Leave wont_fix alone — that is a permanent
-		     -- policy decision, not a claim about empirical state.
 		     status              = CASE WHEN scored_conflicts.status = 'resolved' THEN 'open'
 		                                ELSE scored_conflicts.status END,
 		     resolved_by         = CASE WHEN scored_conflicts.status = 'resolved' THEN NULL
@@ -441,12 +465,199 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 		grpAgentA, grpAgentB, typeA, typeB, outcomeA, outcomeB,
 		topicSim, outcomeDiv, sig, method, c.Explanation,
 		c.Category, c.Severity, c.Relationship, c.ConfidenceWeight, c.TemporalDecay,
-		claimTextA, claimTextB,
+		claimTextA, claimTextB, topicLabel,
 	).Scan(&id)
 	if err != nil {
 		return uuid.Nil, err
 	}
 	return id, nil
+}
+
+// insertScoredConflictWithGroup inserts a conflict row linked to a pre-determined
+// group_id and updates the group's last_detected_at timestamp.
+func (db *DB) insertScoredConflictWithGroup(
+	ctx context.Context,
+	da, dbID, orgID uuid.UUID,
+	conflictKind model.ConflictKind,
+	agentA, agentB, typeA, typeB, outcomeA, outcomeB string,
+	topicSim, outcomeDiv, sig float64,
+	method string, explanation, category, severity, relationship *string,
+	confWeight, tempDecay *float64,
+	claimTextA, claimTextB *string,
+	groupID uuid.UUID,
+) (uuid.UUID, error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("storage: begin insert conflict tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Update the group's last_detected_at.
+	if _, err := tx.Exec(ctx,
+		`UPDATE conflict_groups SET last_detected_at = now() WHERE id = $1 AND org_id = $2`,
+		groupID, orgID,
+	); err != nil {
+		return uuid.Nil, fmt.Errorf("storage: update group timestamp: %w", err)
+	}
+
+	var id uuid.UUID
+	err = tx.QueryRow(ctx,
+		`INSERT INTO scored_conflicts
+		     (decision_a_id, decision_b_id, org_id, conflict_kind,
+		      agent_a, agent_b, decision_type_a, decision_type_b, outcome_a, outcome_b,
+		      topic_similarity, outcome_divergence, significance, scoring_method, explanation,
+		      category, severity, relationship, confidence_weight, temporal_decay,
+		      claim_text_a, claim_text_b, group_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+		         $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+		         $21, $22, $23)
+		 ON CONFLICT (decision_a_id, decision_b_id) DO UPDATE SET
+		     topic_similarity    = EXCLUDED.topic_similarity,
+		     outcome_divergence  = EXCLUDED.outcome_divergence,
+		     significance        = EXCLUDED.significance,
+		     scoring_method      = EXCLUDED.scoring_method,
+		     explanation         = EXCLUDED.explanation,
+		     category            = EXCLUDED.category,
+		     severity            = EXCLUDED.severity,
+		     relationship        = EXCLUDED.relationship,
+		     confidence_weight   = EXCLUDED.confidence_weight,
+		     temporal_decay      = EXCLUDED.temporal_decay,
+		     claim_text_a        = EXCLUDED.claim_text_a,
+		     claim_text_b        = EXCLUDED.claim_text_b,
+		     group_id            = EXCLUDED.group_id,
+		     detected_at         = now(),
+		     status              = CASE WHEN scored_conflicts.status = 'resolved' THEN 'open'
+		                                ELSE scored_conflicts.status END,
+		     resolved_by         = CASE WHEN scored_conflicts.status = 'resolved' THEN NULL
+		                                ELSE scored_conflicts.resolved_by END,
+		     resolved_at         = CASE WHEN scored_conflicts.status = 'resolved' THEN NULL
+		                                ELSE scored_conflicts.resolved_at END,
+		     resolution_note     = CASE WHEN scored_conflicts.status = 'resolved' THEN NULL
+		                                ELSE scored_conflicts.resolution_note END
+		 RETURNING id`,
+		da, dbID, orgID, string(conflictKind),
+		agentA, agentB, typeA, typeB, outcomeA, outcomeB,
+		topicSim, outcomeDiv, sig, method, explanation,
+		category, severity, relationship, confWeight, tempDecay,
+		claimTextA, claimTextB, groupID,
+	).Scan(&id)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("storage: insert scored conflict: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return uuid.Nil, fmt.Errorf("storage: commit insert conflict tx: %w", err)
+	}
+	return id, nil
+}
+
+// TopicGroupSimilarityThreshold is the minimum cosine similarity between a new
+// conflict's outcome embedding and an existing group's representative outcome
+// embedding for the conflict to join that group.
+const TopicGroupSimilarityThreshold = 0.85
+
+// FindOrCreateTopicGroup finds an existing conflict group whose representative
+// conflict's outcome embedding has cosine similarity > 0.85 to the given
+// embedding, or creates a new group. Uses pgvector's cosine distance operator
+// to perform the comparison in SQL. The entire lookup-or-create is wrapped in
+// a serializable transaction to prevent duplicate groups under concurrency.
+// outcomeEmbedding is the outcome embedding of one of the decisions in the
+// new conflict (typically the decision being scored). topicLabel is a
+// human-readable label for newly created groups (truncated outcome text).
+func (db *DB) FindOrCreateTopicGroup(
+	ctx context.Context,
+	orgID uuid.UUID,
+	agentA, agentB string,
+	conflictKind model.ConflictKind,
+	decisionType string,
+	outcomeEmbedding pgvector.Vector,
+	topicLabel string,
+) (uuid.UUID, error) {
+	// Normalize agent pair ordering.
+	if agentA > agentB {
+		agentA, agentB = agentB, agentA
+	}
+
+	tx, err := db.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("storage: begin topic group tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Look for an existing group whose representative conflict's decision
+	// has an outcome embedding similar enough to the new conflict. The
+	// serializable transaction ensures no concurrent caller can insert a
+	// duplicate between our SELECT and INSERT.
+	var groupID uuid.UUID
+	err = tx.QueryRow(ctx,
+		`SELECT cg.id
+		 FROM conflict_groups cg
+		 JOIN LATERAL (
+		     SELECT sc.decision_a_id
+		     FROM scored_conflicts sc
+		     WHERE sc.group_id = cg.id
+		     ORDER BY
+		         CASE WHEN sc.status IN ('open', 'acknowledged') THEN 0 ELSE 1 END,
+		         sc.significance DESC NULLS LAST,
+		         sc.detected_at DESC
+		     LIMIT 1
+		 ) rep ON true
+		 JOIN decisions d ON d.id = rep.decision_a_id
+		 WHERE cg.org_id = $1
+		   AND cg.agent_a = $2
+		   AND cg.agent_b = $3
+		   AND cg.conflict_kind = $4
+		   AND cg.decision_type = $5
+		   AND d.outcome_embedding IS NOT NULL
+		   AND 1 - (d.outcome_embedding <=> $6::vector) > $7
+		 ORDER BY 1 - (d.outcome_embedding <=> $6::vector) DESC
+		 LIMIT 1`,
+		orgID, agentA, agentB, string(conflictKind), decisionType,
+		outcomeEmbedding, TopicGroupSimilarityThreshold,
+	).Scan(&groupID)
+
+	if err == nil {
+		// Found a matching group — update its timestamp.
+		if _, err := tx.Exec(ctx,
+			`UPDATE conflict_groups SET last_detected_at = now() WHERE id = $1 AND org_id = $2`,
+			groupID, orgID,
+		); err != nil {
+			return uuid.Nil, fmt.Errorf("storage: update topic group timestamp: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return uuid.Nil, fmt.Errorf("storage: commit topic group tx: %w", err)
+		}
+		return groupID, nil
+	}
+	if err != pgx.ErrNoRows {
+		return uuid.Nil, fmt.Errorf("storage: find topic group: %w", err)
+	}
+
+	// No matching group — create a new one.
+	err = tx.QueryRow(ctx,
+		`INSERT INTO conflict_groups
+		     (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id`,
+		orgID, agentA, agentB, string(conflictKind), decisionType, topicLabel,
+	).Scan(&groupID)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("storage: create topic group: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return uuid.Nil, fmt.Errorf("storage: commit topic group tx: %w", err)
+	}
+	return groupID, nil
+}
+
+// truncateOutcome returns the first maxLen characters of s, or s if shorter.
+// Used to derive human-readable group_topic labels from outcome text.
+func TruncateOutcome(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen])
 }
 
 // listOpenConflictsByGroupIDs batch-fetches all open or acknowledged conflicts
@@ -547,6 +758,7 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 	query := fmt.Sprintf(`
 		SELECT
 		    cg.id, cg.org_id, cg.agent_a, cg.agent_b, cg.conflict_kind, cg.decision_type,
+		    cg.group_topic,
 		    cg.first_detected_at, cg.last_detected_at,
 		    COUNT(DISTINCT sc_all.id)::int                                                AS conflict_count,
 		    COUNT(DISTINCT sc_all.id) FILTER (
@@ -592,6 +804,7 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 	query += `
 		GROUP BY
 		    cg.id, cg.org_id, cg.agent_a, cg.agent_b, cg.conflict_kind, cg.decision_type,
+		    cg.group_topic,
 		    cg.first_detected_at, cg.last_detected_at,
 		    rep.id, rep.conflict_kind, rep.decision_a_id, rep.decision_b_id,
 		    rep.agent_a, rep.agent_b,
@@ -645,6 +858,7 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 
 		if err := rows.Scan(
 			&g.ID, &g.OrgID, &g.AgentA, &g.AgentB, &g.ConflictKind, &g.DecisionType,
+			&g.GroupTopic,
 			&g.FirstDetectedAt, &g.LastDetectedAt,
 			&g.ConflictCount, &g.OpenCount,
 			// representative columns

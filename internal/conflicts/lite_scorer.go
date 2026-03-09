@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 // LiteScorer provides text-based conflict detection for lite-mode (no embeddings,
@@ -251,10 +253,11 @@ func (s *LiteScorer) findOrCreateGroup(ctx context.Context, orgID uuid.UUID, a, 
 	// Create new group.
 	groupID := uuid.New()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	topicLabel := storage.TruncateOutcome(a.outcome, 120)
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO conflict_groups (id, org_id, agent_a, agent_b, conflict_kind, decision_type, first_detected_at, last_detected_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		groupID.String(), orgID.String(), agentA, agentB, conflictKind, a.decisionType, now, now,
+		`INSERT INTO conflict_groups (id, org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic, first_detected_at, last_detected_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		groupID.String(), orgID.String(), agentA, agentB, conflictKind, a.decisionType, topicLabel, now, now,
 	)
 	if err != nil {
 		return uuid.Nil, err
