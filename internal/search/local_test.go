@@ -436,11 +436,11 @@ func TestLocalSearcher_FindSimilar_WithProject(t *testing.T) {
 	insertDecisionFull(t, db, d2, orgID, "b", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, nil, strPtr("other"))
 	insertDecisionFull(t, db, d3, orgID, "c", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, nil, nil) // NULL project
 
-	proj := "myproj"
-	results, err := s.FindSimilar(ctx, orgID, []float32{1, 0, 0}, uuid.Nil, &proj, 10)
+	results, err := s.FindSimilar(ctx, orgID, []float32{1, 0, 0}, uuid.Nil, []string{"myproj"}, 10)
 	require.NoError(t, err)
-	// Should match d1 (project = myproj) and d3 (project IS NULL), but not d2 (project = other).
-	assert.Len(t, results, 2, "FindSimilar project filter should include matching project and NULL project")
+	// Strict scoping: should match only d1 (project = myproj), not d2 (other) or d3 (NULL).
+	assert.Len(t, results, 1, "FindSimilar with single project should match only that project")
+	assert.Equal(t, d1, results[0].DecisionID)
 }
 
 func TestLocalSearcher_DefaultLimit(t *testing.T) {
