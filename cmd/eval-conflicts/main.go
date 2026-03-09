@@ -186,12 +186,17 @@ func authenticate(baseURL, agentID, apiKey string) (string, error) {
 	}
 
 	var result struct {
-		Token string `json:"token"`
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", fmt.Errorf("decode: %w", err)
 	}
-	return result.Token, nil
+	if result.Data.Token == "" {
+		return "", fmt.Errorf("empty token in response")
+	}
+	return result.Data.Token, nil
 }
 
 type validatorEvalResponse struct {
@@ -223,11 +228,13 @@ func callValidatorEval(baseURL, token string) (conflicts.EvalMetrics, []conflict
 		return conflicts.EvalMetrics{}, nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	var result validatorEvalResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	var envelope struct {
+		Data validatorEvalResponse `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
 		return conflicts.EvalMetrics{}, nil, fmt.Errorf("decode: %w", err)
 	}
-	return result.Metrics, result.Results, nil
+	return envelope.Data.Metrics, envelope.Data.Results, nil
 }
 
 func callScorerEval(baseURL, token string) (scorerEvalResult, error) {
@@ -254,9 +261,11 @@ func callScorerEval(baseURL, token string) (scorerEvalResult, error) {
 		return scorerEvalResult{}, fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	var result scorerEvalResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	var envelope struct {
+		Data scorerEvalResult `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
 		return scorerEvalResult{}, fmt.Errorf("decode: %w", err)
 	}
-	return result, nil
+	return envelope.Data, nil
 }
