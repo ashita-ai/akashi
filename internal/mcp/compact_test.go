@@ -1,12 +1,15 @@
 package mcp
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/ashita-ai/akashi/internal/model"
 )
@@ -811,3 +814,319 @@ func TestGenerateCheckSummary_ResolvedConflicts(t *testing.T) {
 }
 
 func ptrFloat64(f float64) *float64 { return &f }
+
+// TestBuildOpenConflictSummary_BFavored verifies that the B-side asymmetry path
+// is exercised when decision B has more corroboration.
+func TestBuildOpenConflictSummary_BFavored(t *testing.T) {
+	idA := uuid.New()
+	idB := uuid.New()
+
+	decisions := []model.Decision{
+		{ID: idA, AgreementCount: 1},
+		{ID: idB, AgreementCount: 5},
+	}
+	conflicts := []model.DecisionConflict{
+		{
+			Status:      "open",
+			DecisionAID: idA,
+			DecisionBID: idB,
+			OutcomeA:    "chose Redis",
+			OutcomeB:    "chose Memcached",
+		},
+	}
+
+	got := buildOpenConflictSummary(1, "", decisions, conflicts)
+	assert.Contains(t, got, "5-to-1")
+	assert.Contains(t, got, "chose Memcached", "B-side outcome should appear when B is favored")
+}
+
+// TestBuildOpenConflictSummary_SkipsResolvedConflicts verifies that resolved
+// conflicts are not considered for consensus asymmetry.
+func TestBuildOpenConflictSummary_SkipsResolvedConflicts(t *testing.T) {
+	idA := uuid.New()
+	idB := uuid.New()
+
+	decisions := []model.Decision{
+		{ID: idA, AgreementCount: 5},
+		{ID: idB, AgreementCount: 1},
+	}
+	conflicts := []model.DecisionConflict{
+		{
+			Status:      "resolved", // not open — should be skipped
+			DecisionAID: idA,
+			DecisionBID: idB,
+			OutcomeA:    "chose Redis",
+			OutcomeB:    "chose Memcached",
+		},
+	}
+
+	got := buildOpenConflictSummary(1, "high", decisions, conflicts)
+	assert.Equal(t, "1 open conflict(s), highest severity: high.", got,
+		"resolved conflicts should not trigger consensus asymmetry note")
+}
+
+// TestGenerateCheckSummary_OutcomeSignals verifies that outcome signals are
+// appended to the most recent decision summary line.
+func TestGenerateCheckSummary_OutcomeSignals(t *testing.T) {
+	correct := 3
+	decs := []model.Decision{
+		{
+			Outcome:                "chose Redis",
+			Confidence:             0.85,
+			DecisionType:           "architecture",
+			PrecedentCitationCount: 3,
+			AssessmentSummary:      &model.AssessmentSummary{Total: 5, Correct: correct},
+		},
+	}
+	s := generateCheckSummary(decs, nil)
+	assert.Contains(t, s, "cited 3 times", "should include citation count")
+	assert.Contains(t, s, "assessed correct 3/5", "should include assessment summary")
+	assert.Contains(t, s, "never superseded", "should note never superseded")
+}
+
+// TestGenerateCheckSummary_SupersededDecision verifies that superseded decisions
+// do NOT get the "never superseded" signal.
+func TestGenerateCheckSummary_SupersededDecision(t *testing.T) {
+	vel := float64(48)
+	decs := []model.Decision{
+		{
+			Outcome:                   "chose Redis",
+			Confidence:                0.85,
+			DecisionType:              "architecture",
+			SupersessionVelocityHours: &vel,
+		},
+	}
+	s := generateCheckSummary(decs, nil)
+	assert.NotContains(t, s, "never superseded",
+		"superseded decisions should not get the 'never superseded' signal")
+}
+
+// TestGenerateCheckSummary_OpenAndResolvedMixed verifies that when both open and
+// resolved conflicts exist, the open ones take priority in the summary.
+func TestGenerateCheckSummary_OpenAndResolvedMixed(t *testing.T) {
+	sev := "critical"
+	winID := uuid.New()
+	decs := []model.Decision{
+		{Outcome: "x", Confidence: 0.8, DecisionType: "t"},
+	}
+	conflicts := []model.DecisionConflict{
+		{Status: "open", Severity: &sev},
+		{Status: "resolved", WinningDecisionID: &winID},
+	}
+	s := generateCheckSummary(decs, conflicts)
+	assert.Contains(t, s, "1 open conflict(s)")
+	assert.Contains(t, s, "critical")
+	assert.NotContains(t, s, "resolved with winner",
+		"open conflicts should take priority over resolved in summary")
+}
+
+// TestCompactDecision_ContextNote verifies that context_note is included when
+// the decision has relevant outcome signals.
+func TestCompactDecision_ContextNote(t *testing.T) {
+	d := model.Decision{
+		ID:                     uuid.New(),
+		AgentID:                "agent",
+		DecisionType:           "architecture",
+		Outcome:                "chose Redis",
+		Confidence:             0.9,
+		PrecedentCitationCount: 3,
+		// vel is nil → "never superseded" rule fires
+	}
+	m := compactDecision(d)
+	note, ok := m["context_note"]
+	assert.True(t, ok, "context_note should be present for decisions with citations")
+	assert.Contains(t, note, "Cited as precedent 3 times")
+}
+
+// TestCompactDecision_NoContextNoteWhenNoSignals verifies that context_note is
+// omitted when no outcome signal rules fire.
+func TestCompactDecision_NoContextNoteWhenNoSignals(t *testing.T) {
+	d := model.Decision{
+		ID:           uuid.New(),
+		AgentID:      "agent",
+		DecisionType: "architecture",
+		Outcome:      "chose Redis",
+		Confidence:   0.9,
+	}
+	m := compactDecision(d)
+	_, ok := m["context_note"]
+	assert.False(t, ok, "context_note should be omitted when no rules fire")
+}
+
+// TestActionNeeded_NilSeverity verifies that conflicts with nil severity
+// do not trigger action_needed.
+func TestActionNeeded_NilSeverity(t *testing.T) {
+	conflicts := []model.DecisionConflict{
+		{Status: "open", Severity: nil},
+	}
+	assert.False(t, actionNeeded(conflicts), "nil severity should not trigger action_needed")
+}
+
+// TestActionNeeded_LowSeverity verifies that low-severity open conflicts
+// do not trigger action_needed.
+func TestActionNeeded_LowSeverity(t *testing.T) {
+	low := "low"
+	conflicts := []model.DecisionConflict{
+		{Status: "open", Severity: &low},
+	}
+	assert.False(t, actionNeeded(conflicts), "low severity should not trigger action_needed")
+}
+
+// ---------- rootsCache tests ----------
+
+func TestRootsCache_GetSetRoundTrip(t *testing.T) {
+	rc := newRootsCache()
+	require.NotNil(t, rc)
+
+	// Get before set returns nil and false.
+	roots, ok := rc.Get("session-1")
+	assert.False(t, ok)
+	assert.Nil(t, roots)
+
+	// Set and retrieve.
+	expected := []mcplib.Root{
+		{URI: "file:///home/user/project"},
+		{URI: "file:///home/user/other"},
+	}
+	rc.Set("session-1", expected)
+
+	roots, ok = rc.Get("session-1")
+	assert.True(t, ok)
+	assert.Equal(t, expected, roots)
+}
+
+func TestRootsCache_EmptySliceDistinctFromMissing(t *testing.T) {
+	rc := newRootsCache()
+
+	// Cache an empty slice (client doesn't support roots).
+	rc.Set("session-2", []mcplib.Root{})
+
+	roots, ok := rc.Get("session-2")
+	assert.True(t, ok, "empty slice should be cached and distinguishable from missing")
+	assert.Empty(t, roots)
+}
+
+func TestRootsCache_MultipleSessionsIndependent(t *testing.T) {
+	rc := newRootsCache()
+
+	rc.Set("s1", []mcplib.Root{{URI: "file:///a"}})
+	rc.Set("s2", []mcplib.Root{{URI: "file:///b"}})
+
+	r1, _ := rc.Get("s1")
+	r2, _ := rc.Get("s2")
+	assert.Equal(t, "file:///a", r1[0].URI)
+	assert.Equal(t, "file:///b", r2[0].URI)
+}
+
+// ---------- inferProjectFromRoots edge cases ----------
+
+func TestInferProjectFromRoots_NonFileScheme(t *testing.T) {
+	roots := []mcplib.Root{
+		{URI: "https://github.com/org/repo"},
+		{URI: "file:///home/user/project"},
+	}
+	result := inferProjectFromRoots(roots)
+	assert.Equal(t, "project", result, "should skip non-file URIs and use the file:// root")
+}
+
+func TestInferProjectFromRoots_EmptyRoots(t *testing.T) {
+	assert.Equal(t, "", inferProjectFromRoots(nil))
+	assert.Equal(t, "", inferProjectFromRoots([]mcplib.Root{}))
+}
+
+func TestInferProjectFromRoots_RootPath(t *testing.T) {
+	roots := []mcplib.Root{{URI: "file:///"}}
+	assert.Equal(t, "", inferProjectFromRoots(roots), "root path should return empty")
+}
+
+func TestInferProjectFromRoots_InvalidURI(t *testing.T) {
+	roots := []mcplib.Root{{URI: "file://\x00invalid"}}
+	// Should not panic; returns empty string.
+	result := inferProjectFromRoots(roots)
+	assert.Equal(t, "", result)
+}
+
+// ---------- rootURIs tests ----------
+
+func TestRootURIs_EmptyReturnsNil(t *testing.T) {
+	assert.Nil(t, rootURIs(nil))
+	assert.Nil(t, rootURIs([]mcplib.Root{}))
+}
+
+func TestRootURIs_ExtractsURIs(t *testing.T) {
+	roots := []mcplib.Root{
+		{URI: "file:///a"},
+		{URI: "file:///b"},
+		{URI: "https://example.com"},
+	}
+	uris := rootURIs(roots)
+	require.Len(t, uris, 3)
+	assert.Equal(t, "file:///a", uris[0])
+	assert.Equal(t, "file:///b", uris[1])
+	assert.Equal(t, "https://example.com", uris[2])
+}
+
+// ---------- inferProjectFromRootsWithGit tests ----------
+
+func TestInferProjectFromRootsWithGit_FallsBackToDirName(t *testing.T) {
+	// Use a path that is definitely not a git repo.
+	tmpDir := t.TempDir()
+	roots := []mcplib.Root{
+		{URI: "file://" + tmpDir},
+	}
+	result := inferProjectFromRootsWithGit(roots)
+	// Should fall back to directory basename since tmpDir is not a git repo.
+	assert.NotEmpty(t, result)
+}
+
+func TestInferProjectFromRootsWithGit_EmptyRoots(t *testing.T) {
+	assert.Equal(t, "", inferProjectFromRootsWithGit(nil))
+}
+
+func TestInferProjectFromRootsWithGit_SkipsNonFileRoots(t *testing.T) {
+	roots := []mcplib.Root{
+		{URI: "https://example.com/repo"},
+	}
+	assert.Equal(t, "", inferProjectFromRootsWithGit(roots))
+}
+
+// ---------- gitRepoName tests ----------
+
+func TestGitRepoName_NonGitDir(t *testing.T) {
+	// A temp dir with no git repo should return empty.
+	assert.Equal(t, "", gitRepoName(t.TempDir()))
+}
+
+func TestGitRepoName_NonExistentDir(t *testing.T) {
+	assert.Equal(t, "", gitRepoName("/nonexistent/path/that/does/not/exist"))
+}
+
+func TestGitRepoName_RealGitRepo(t *testing.T) {
+	// This test runs inside the akashi repo, which is a git repo with a remote.
+	// The gitRepoName function should extract "kyoto" or the actual repo name
+	// from the remote URL.
+	name := gitRepoName(".")
+	// We're in a git repo, so name should be non-empty.
+	assert.NotEmpty(t, name, "gitRepoName should extract a name from the current git repo")
+}
+
+func TestInferProjectFromRootsWithGit_RealGitRepo(t *testing.T) {
+	// Use the current working directory (which is inside a git repo) to test
+	// the git detection path rather than the fallback-to-basename path.
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	roots := []mcplib.Root{
+		{URI: "file://" + cwd},
+	}
+	result := inferProjectFromRootsWithGit(roots)
+	assert.NotEmpty(t, result, "should detect project name from git repo")
+}
+
+func TestInferProjectFromRootsWithGit_RootPathIsSlash(t *testing.T) {
+	// A file:// URI pointing to "/" should be skipped (path == "/" guard).
+	roots := []mcplib.Root{
+		{URI: "file:///"},
+	}
+	result := inferProjectFromRootsWithGit(roots)
+	assert.Equal(t, "", result, "root path '/' should be skipped")
+}

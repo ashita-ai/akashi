@@ -5,6 +5,7 @@ package storage
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -137,4 +138,136 @@ func TestBuildDecisionWhereClause_OrgIsolationAlwaysFirst(t *testing.T) {
 	// Org_id should be the first condition in the WHERE clause.
 	assert.True(t, strings.HasPrefix(where, " WHERE org_id = $1"),
 		"org_id should be the first condition, got: %s", where)
+}
+
+func TestBuildDecisionWhereClause_TimeRangeFromOnly(t *testing.T) {
+	orgID := uuid.New()
+	from := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	filters := model.QueryFilters{
+		TimeRange: &model.TimeRange{From: &from},
+	}
+
+	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
+
+	assert.Contains(t, where, "valid_from >= $2")
+	assert.NotContains(t, where, "valid_from <=")
+	require.Len(t, args, 2) // org_id + from
+}
+
+func TestBuildDecisionWhereClause_TimeRangeToOnly(t *testing.T) {
+	orgID := uuid.New()
+	to := time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC)
+	filters := model.QueryFilters{
+		TimeRange: &model.TimeRange{To: &to},
+	}
+
+	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
+
+	assert.Contains(t, where, "valid_from <= $2")
+	assert.NotContains(t, where, "valid_from >= $")
+	require.Len(t, args, 2) // org_id + to
+}
+
+func TestBuildDecisionWhereClause_TimeRangeBothFromAndTo(t *testing.T) {
+	orgID := uuid.New()
+	from := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC)
+	filters := model.QueryFilters{
+		TimeRange: &model.TimeRange{From: &from, To: &to},
+	}
+
+	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
+
+	assert.Contains(t, where, "valid_from >= $2")
+	assert.Contains(t, where, "valid_from <= $3")
+	require.Len(t, args, 3) // org_id + from + to
+}
+
+func TestBuildDecisionWhereClause_OutcomeFilter(t *testing.T) {
+	orgID := uuid.New()
+	outcome := "chose Postgres"
+	filters := model.QueryFilters{Outcome: &outcome}
+
+	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
+
+	assert.Contains(t, where, "outcome = $2")
+	require.Len(t, args, 2)
+	assert.Equal(t, "chose Postgres", args[1])
+}
+
+func TestBuildDecisionWhereClause_SessionIDFilter(t *testing.T) {
+	orgID := uuid.New()
+	sessionID := uuid.New()
+	filters := model.QueryFilters{SessionID: &sessionID}
+
+	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
+
+	assert.Contains(t, where, "session_id = $2")
+	require.Len(t, args, 2)
+	assert.Equal(t, sessionID, args[1])
+}
+
+func TestBuildDecisionWhereClause_ConfidenceMinFilter(t *testing.T) {
+	orgID := uuid.New()
+	confMin := float32(0.75)
+	filters := model.QueryFilters{ConfidenceMin: &confMin}
+
+	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
+
+	assert.Contains(t, where, "confidence >= $2")
+	require.Len(t, args, 2)
+	assert.Equal(t, float32(0.75), args[1])
+}
+
+func TestBuildDecisionWhereClause_RunIDFilter(t *testing.T) {
+	orgID := uuid.New()
+	runID := uuid.New()
+	filters := model.QueryFilters{RunID: &runID}
+
+	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
+
+	assert.Contains(t, where, "run_id = $2")
+	require.Len(t, args, 2)
+	assert.Equal(t, runID, args[1])
+}
+
+func TestBuildDecisionWhereClause_DecisionTypeFilter(t *testing.T) {
+	orgID := uuid.New()
+	dt := "library-choice"
+	filters := model.QueryFilters{DecisionType: &dt}
+
+	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
+
+	assert.Contains(t, where, "decision_type = $2")
+	require.Len(t, args, 2)
+	assert.Equal(t, "library-choice", args[1])
+}
+
+func TestBuildDecisionWhereClause_AgentIDsFilter(t *testing.T) {
+	orgID := uuid.New()
+	filters := model.QueryFilters{AgentIDs: []string{"agent-a", "agent-b"}}
+
+	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
+
+	assert.Contains(t, where, "agent_id = ANY($2)")
+	require.Len(t, args, 2)
+}
+
+func TestBuildDecisionWhereClause_EmptyFilters(t *testing.T) {
+	orgID := uuid.New()
+	filters := model.QueryFilters{}
+
+	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
+
+	assert.Contains(t, where, "org_id = $1")
+	assert.Contains(t, where, "valid_to IS NULL")
+	// No extra filter conditions, just org_id.
+	require.Len(t, args, 1)
+}
+
+func TestContainsStr(t *testing.T) {
+	assert.True(t, containsStr([]string{"a", "b", "c"}, "b"))
+	assert.False(t, containsStr([]string{"a", "b", "c"}, "d"))
+	assert.False(t, containsStr(nil, "a"))
+	assert.False(t, containsStr([]string{}, "a"))
 }

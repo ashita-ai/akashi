@@ -14,12 +14,13 @@ import (
 // GetAPIKeyByID returns the API key with the given ID in the org.
 func (l *LiteDB) GetAPIKeyByID(ctx context.Context, orgID uuid.UUID, keyID uuid.UUID) (model.APIKey, error) {
 	var (
-		k         model.APIKey
-		id        string
-		oid       string
-		lastUsed  sql.NullString
-		expiresAt sql.NullString
-		revokedAt sql.NullString
+		k          model.APIKey
+		id         string
+		oid        string
+		createdStr string
+		lastUsed   sql.NullString
+		expiresAt  sql.NullString
+		revokedAt  sql.NullString
 	)
 	err := l.db.QueryRowContext(ctx,
 		`SELECT id, prefix, key_hash, agent_id, org_id, label, created_by,
@@ -27,7 +28,7 @@ func (l *LiteDB) GetAPIKeyByID(ctx context.Context, orgID uuid.UUID, keyID uuid.
 		 FROM api_keys WHERE id = ? AND org_id = ?`,
 		uuidStr(keyID), uuidStr(orgID),
 	).Scan(&id, &k.Prefix, &k.KeyHash, &k.AgentID, &oid, &k.Label, &k.CreatedBy,
-		&k.CreatedAt, &lastUsed, &expiresAt, &revokedAt)
+		&createdStr, &lastUsed, &expiresAt, &revokedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return model.APIKey{}, storage.ErrNotFound
@@ -37,6 +38,7 @@ func (l *LiteDB) GetAPIKeyByID(ctx context.Context, orgID uuid.UUID, keyID uuid.
 
 	k.ID = parseUUID(id)
 	k.OrgID = parseUUID(oid)
+	k.CreatedAt = parseTime(createdStr)
 	k.LastUsedAt = parseNullTime(lastUsed)
 	k.ExpiresAt = parseNullTime(expiresAt)
 	k.RevokedAt = parseNullTime(revokedAt)

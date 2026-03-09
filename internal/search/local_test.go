@@ -482,3 +482,191 @@ func TestLocalSearcher_CombinedFilters(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, results, 1, "combined filters should narrow to exactly one decision")
 }
+
+// TestLocalSearcher_FindSimilar_NilProject verifies FindSimilar with nil project
+// returns all decisions (no project filter applied).
+func TestLocalSearcher_FindSimilar_NilProject(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+	now := time.Now()
+
+	insertDecisionFull(t, db, uuid.New(), orgID, "a", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, nil, strPtr("proj-a"))
+	insertDecisionFull(t, db, uuid.New(), orgID, "b", "arch", 0.9, []float32{1, 0, 0}, now, nil, nil, nil, nil)
+
+	// nil project means no project filter — should return both decisions.
+	results, err := s.FindSimilar(ctx, orgID, []float32{1, 0, 0}, uuid.Nil, nil, 10)
+	require.NoError(t, err)
+	assert.Len(t, results, 2, "nil project should match all decisions regardless of their project value")
+}
+
+// TestLocalSearcher_NegativeLimit verifies that a negative limit defaults to 10.
+func TestLocalSearcher_NegativeLimit(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+
+	for range 15 {
+		insertDecision(t, db, uuid.New(), orgID, "agent", "arch", []float32{0.5, 0.5, 0.5})
+	}
+
+	results, err := s.Search(ctx, orgID, []float32{1, 0, 0}, model.QueryFilters{}, -1)
+	require.NoError(t, err)
+	assert.Len(t, results, 10, "negative limit should default to 10")
+}
+
+// TestLocalSearcher_AllNegativeScores verifies that decisions with negative cosine
+// similarity (score <= 0) are excluded from results.
+func TestLocalSearcher_AllNegativeScores(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+
+	// Insert a decision whose embedding is opposite to the query vector.
+	insertDecision(t, db, uuid.New(), orgID, "agent", "arch", []float32{-1, 0, 0})
+
+	results, err := s.Search(ctx, orgID, []float32{1, 0, 0}, model.QueryFilters{}, 10)
+	require.NoError(t, err)
+	assert.Empty(t, results, "decisions with score <= 0 should be excluded")
+}
+
+// TestLocalSearcher_NullEmbeddingSkipped verifies that decisions with NULL embedding
+// in the database are excluded from loadCandidates.
+func TestLocalSearcher_NullEmbeddingSkipped(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+
+	// Insert a decision with no embedding (NULL).
+	_, err := db.Exec(
+		`INSERT INTO decisions (id, org_id, agent_id, decision_type, outcome, confidence, embedding, valid_from)
+		 VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
+		uuid.New().String(), orgID.String(), "agent", "arch", "outcome", 0.9,
+		time.Now().UTC().Format(time.RFC3339Nano),
+	)
+	require.NoError(t, err)
+
+	results, err := s.Search(ctx, orgID, []float32{1, 0, 0}, model.QueryFilters{}, 10)
+	require.NoError(t, err)
+	assert.Empty(t, results, "decisions with NULL embedding should be excluded")
+}
+
+// TestLocalSearcher_EmptyBlobEmbeddingSkipped verifies that decisions with empty
+// blob embedding are excluded (blobToFloat32 returns nil for empty blobs).
+func TestLocalSearcher_EmptyBlobEmbeddingSkipped(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+
+	// Insert a decision with an empty blob (0 bytes) as embedding.
+	_, err := db.Exec(
+		`INSERT INTO decisions (id, org_id, agent_id, decision_type, outcome, confidence, embedding, valid_from)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		uuid.New().String(), orgID.String(), "agent", "arch", "outcome", 0.9,
+		[]byte{},
+		time.Now().UTC().Format(time.RFC3339Nano),
+	)
+	require.NoError(t, err)
+
+	results, err := s.Search(ctx, orgID, []float32{1, 0, 0}, model.QueryFilters{}, 10)
+	require.NoError(t, err)
+	assert.Empty(t, results, "decisions with empty blob embedding should be excluded")
+}
+
+// TestLocalSearcher_FindSimilar_ExcludeNilUUID verifies that FindSimilar with
+// uuid.Nil as excludeID does not exclude any decision (the WHERE clause
+// uses `id != ?` which is false for uuid.Nil when no decision has that ID).
+func TestLocalSearcher_FindSimilar_ExcludeNilUUID(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+
+	insertDecision(t, db, uuid.New(), orgID, "a", "arch", []float32{1, 0, 0})
+	insertDecision(t, db, uuid.New(), orgID, "b", "arch", []float32{0.9, 0.1, 0})
+
+	// uuid.Nil excludeID should not exclude any real decision.
+	results, err := s.FindSimilar(ctx, orgID, []float32{1, 0, 0}, uuid.Nil, nil, 10)
+	require.NoError(t, err)
+	assert.Len(t, results, 2, "uuid.Nil excludeID should not exclude any decisions")
+}
+
+// TestLocalSearcher_FilterByTimeRangeBothBounds verifies that both from and to
+// time range bounds are applied simultaneously.
+func TestLocalSearcher_FilterByTimeRangeBothBounds(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+
+	now := time.Now()
+	old := now.Add(-72 * time.Hour)
+	mid := now.Add(-24 * time.Hour)
+	recent := now.Add(-1 * time.Hour)
+
+	insertDecisionFull(t, db, uuid.New(), orgID, "a", "arch", 0.9, []float32{1, 0, 0}, old, nil, nil, nil, nil)
+	insertDecisionFull(t, db, uuid.New(), orgID, "b", "arch", 0.9, []float32{1, 0, 0}, mid, nil, nil, nil, nil)
+	insertDecisionFull(t, db, uuid.New(), orgID, "c", "arch", 0.9, []float32{1, 0, 0}, recent, nil, nil, nil, nil)
+
+	from := now.Add(-48 * time.Hour)
+	to := now.Add(-2 * time.Hour)
+	results, err := s.Search(ctx, orgID, []float32{1, 0, 0}, model.QueryFilters{
+		TimeRange: &model.TimeRange{From: &from, To: &to},
+	}, 10)
+	require.NoError(t, err)
+	assert.Len(t, results, 1, "only the mid-range decision should pass both time bounds")
+}
+
+// TestLocalSearcher_MalformedBlobSkipped verifies that decisions with a blob
+// whose length is not a multiple of 4 (invalid float32 encoding) are skipped.
+func TestLocalSearcher_MalformedBlobSkipped(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+
+	// Insert a decision with a 3-byte blob (not valid float32 encoding).
+	_, err := db.Exec(
+		`INSERT INTO decisions (id, org_id, agent_id, decision_type, outcome, confidence, embedding, valid_from)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		uuid.New().String(), orgID.String(), "agent", "arch", "outcome", 0.9,
+		[]byte{0x01, 0x02, 0x03},
+		time.Now().UTC().Format(time.RFC3339Nano),
+	)
+	require.NoError(t, err)
+
+	results, err := s.Search(ctx, orgID, []float32{1, 0, 0}, model.QueryFilters{}, 10)
+	require.NoError(t, err)
+	assert.Empty(t, results, "decisions with malformed embedding blob should be skipped")
+}
+
+// TestLocalSearcher_LargeResultSet verifies that the searcher handles many
+// candidates and correctly limits to the requested count, sorted by score.
+func TestLocalSearcher_LargeResultSet(t *testing.T) {
+	db := openTestDB(t)
+	s := NewLocalSearcher(db)
+	orgID := uuid.New()
+	ctx := context.Background()
+
+	// Insert 25 decisions with slightly varying embeddings.
+	for i := range 25 {
+		// Vary the x component to produce different cosine similarities.
+		x := float32(0.5) + float32(i)*0.02
+		insertDecision(t, db, uuid.New(), orgID, "agent", "arch", []float32{x, 0.3, 0.2})
+	}
+
+	results, err := s.Search(ctx, orgID, []float32{1, 0, 0}, model.QueryFilters{}, 5)
+	require.NoError(t, err)
+	assert.Len(t, results, 5, "should limit to 5 results")
+
+	// Verify descending score order.
+	for i := 1; i < len(results); i++ {
+		assert.GreaterOrEqual(t, results[i-1].Score, results[i].Score,
+			"results should be sorted by descending score")
+	}
+}

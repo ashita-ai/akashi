@@ -321,3 +321,99 @@ func findSubstring(s, substr string) bool {
 	}
 	return false
 }
+
+// TestScoreWinRate_BothBelowMinHistory verifies that win rate is skipped
+// when both agents lack sufficient history.
+func TestScoreWinRate_BothBelowMinHistory(t *testing.T) {
+	_, ok := scoreWinRate(RecommendationInput{
+		Conflict:  baseConflict(),
+		WinRateA:  0.9,
+		WinRateB:  0.1,
+		WinCountA: 1,
+		WinCountB: 1,
+	})
+	assert.False(t, ok, "should return false when both agents below min history")
+}
+
+// TestScoreWinRate_OneBelowMinHistory verifies that win rate is skipped
+// when one agent lacks sufficient history.
+func TestScoreWinRate_OneBelowMinHistory(t *testing.T) {
+	_, ok := scoreWinRate(RecommendationInput{
+		Conflict:  baseConflict(),
+		WinRateA:  0.9,
+		WinRateB:  0.1,
+		WinCountA: 10,
+		WinCountB: 2, // below minimum of 3
+	})
+	assert.False(t, ok, "should return false when one agent below min history")
+}
+
+// TestScoreWinRate_EqualRates verifies that nearly equal win rates produce no signal.
+func TestScoreWinRate_EqualRates(t *testing.T) {
+	_, ok := scoreWinRate(RecommendationInput{
+		Conflict:  baseConflict(),
+		WinRateA:  0.50,
+		WinRateB:  0.505, // delta < 0.01
+		WinCountA: 10,
+		WinCountB: 10,
+	})
+	assert.False(t, ok, "should return false when rates are nearly equal")
+}
+
+// TestScoreRevisionDepth_BothZero verifies that revision depth is skipped
+// when both decisions have zero depth.
+func TestScoreRevisionDepth_BothZero(t *testing.T) {
+	_, ok := scoreRevisionDepth(RecommendationInput{
+		Conflict:       baseConflict(),
+		RevisionDepthA: 0,
+		RevisionDepthB: 0,
+	})
+	assert.False(t, ok, "should return false when both have zero depth")
+}
+
+// TestScoreRevisionDepth_EqualDepths verifies that equal non-zero depths
+// produce no signal (delta < 0.5).
+func TestScoreRevisionDepth_EqualDepths(t *testing.T) {
+	_, ok := scoreRevisionDepth(RecommendationInput{
+		Conflict:       baseConflict(),
+		RevisionDepthA: 3,
+		RevisionDepthB: 3,
+	})
+	assert.False(t, ok, "should return false when depths are equal")
+}
+
+// TestScoreConfidence_EqualConfidence verifies that nearly equal confidence
+// produces no signal.
+func TestScoreConfidence_EqualConfidence(t *testing.T) {
+	c := baseConflict()
+	c.ConfidenceA = 0.80
+	c.ConfidenceB = 0.805 // delta < 0.01
+	_, ok := scoreConfidence(c)
+	assert.False(t, ok, "should return false when confidence is nearly equal")
+}
+
+// TestScoreRecency_SameTimestamp verifies that nearly simultaneous decisions
+// produce no recency signal.
+func TestScoreRecency_SameTimestamp(t *testing.T) {
+	c := baseConflict()
+	now := time.Now()
+	c.DecidedAtA = now
+	c.DecidedAtB = now.Add(30 * time.Minute) // < 1 hour delta
+	_, ok := scoreRecency(c)
+	assert.False(t, ok, "should return false when timestamps are within 1 hour")
+}
+
+// TestFilterAndSortReasons verifies that weak reasons are filtered and
+// strong ones are sorted by absolute contribution.
+func TestFilterAndSortReasons(t *testing.T) {
+	reasons := []scoredReason{
+		{score: 0.01, reason: "weak"},        // below threshold
+		{score: 0.20, reason: "strong"},      // above threshold
+		{score: -0.15, reason: "moderate-A"}, // above threshold, negative
+	}
+
+	filtered := filterAndSortReasons(reasons)
+	require.Len(t, filtered, 2, "weak reason should be filtered out")
+	assert.Equal(t, "strong", filtered[0], "strongest contribution should be first")
+	assert.Equal(t, "moderate-A", filtered[1])
+}
