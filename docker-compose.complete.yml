@@ -158,6 +158,9 @@ services:
       AKASHI_JWT_PUBLIC_KEY: /data/jwt_public.pem
       AKASHI_JWT_EXPIRATION: ${AKASHI_JWT_EXPIRATION:-24h}
 
+      # Hooks API key — set by dev-setup.sh or manually in .env.
+      AKASHI_HOOKS_API_KEY: ${AKASHI_HOOKS_API_KEY:-}
+
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-akashi}
     volumes:
