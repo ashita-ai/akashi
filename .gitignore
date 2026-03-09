@@ -42,6 +42,9 @@ Thumbs.db
 # Scratchpad (temporary notes, drafts, not committed)
 scratchpad/
 
+# Eval results (local, from cmd/eval-conflicts --save)
+eval-results/
+
 # Node
 node_modules/
 

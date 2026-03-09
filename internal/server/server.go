@@ -223,9 +223,14 @@ func New(cfg ServerConfig) *Server {
 	mux.Handle("POST /v1/conflicts/{id}/adjudicate", writeRole(http.HandlerFunc(h.HandleAdjudicateConflict)))
 	mux.Handle("PATCH /v1/conflicts/{id}", writeRole(http.HandlerFunc(h.HandlePatchConflict)))
 
-	// Conflict eval (admin-only).
+	// Conflict eval and labeling (admin-only).
 	mux.Handle("POST /v1/admin/conflicts/validate-pair", adminOnly(http.HandlerFunc(h.HandleValidatePair)))
 	mux.Handle("POST /v1/admin/conflicts/eval", adminOnly(http.HandlerFunc(h.HandleConflictEval)))
+	mux.Handle("PUT /v1/admin/conflicts/{id}/label", adminOnly(http.HandlerFunc(h.HandleUpsertConflictLabel)))
+	mux.Handle("GET /v1/admin/conflicts/{id}/label", adminOnly(http.HandlerFunc(h.HandleGetConflictLabel)))
+	mux.Handle("DELETE /v1/admin/conflicts/{id}/label", adminOnly(http.HandlerFunc(h.HandleDeleteConflictLabel)))
+	mux.Handle("GET /v1/admin/conflict-labels", adminOnly(http.HandlerFunc(h.HandleListConflictLabels)))
+	mux.Handle("POST /v1/admin/scorer-eval", adminOnly(http.HandlerFunc(h.HandleScorerEval)))
 
 	// Retention policy and legal holds (admin for writes, reader+ for GET).
 	mux.Handle("GET /v1/retention", readRole(http.HandlerFunc(h.HandleGetRetention)))

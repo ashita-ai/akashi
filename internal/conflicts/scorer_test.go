@@ -375,11 +375,17 @@ func TestScoreForDecision_CrossAgent(t *testing.T) {
 func TestBackfillScoring(t *testing.T) {
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	orgID := uuid.Nil
+
+	// Use a dedicated org to isolate backfill from other tests' decisions.
+	orgID := uuid.New()
+	_, err := testDB.Pool().Exec(ctx,
+		`INSERT INTO organizations (id, name, slug, plan, created_at, updated_at)
+		 VALUES ($1, 'backfill-test', 'backfill-test', 'oss', NOW(), NOW())`, orgID)
+	require.NoError(t, err)
 
 	suffix := uuid.New().String()[:8]
 	agentID := "backfill-scorer-" + suffix
-	_, err := testDB.CreateAgent(ctx, model.Agent{
+	_, err = testDB.CreateAgent(ctx, model.Agent{
 		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
 	})
 	require.NoError(t, err)
@@ -410,7 +416,9 @@ func TestBackfillScoring(t *testing.T) {
 	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 
 	// BackfillScoring should process both decisions and produce a conflict.
-	processed, err := scorer.BackfillScoring(ctx, 100)
+	// Use a large batch to ensure our decisions are included even when other
+	// tests have queued unscored decisions ahead of ours (ordered by valid_from).
+	processed, err := scorer.BackfillScoring(ctx, 10000)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, processed, 2, "should process at least the 2 decisions we created")
 
