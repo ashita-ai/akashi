@@ -176,7 +176,7 @@ func (q *QdrantIndex) EnsureCollection(ctx context.Context) error {
 // project scoping is strict: a non-empty project matches only that project's points;
 // a nil/empty project matches only points where the project payload field is absent.
 // This prevents cross-project conflict contamination when decisions share an org.
-func (q *QdrantIndex) FindSimilar(ctx context.Context, orgID uuid.UUID, embedding []float32, excludeID uuid.UUID, project *string, limit int) ([]Result, error) {
+func (q *QdrantIndex) FindSimilar(ctx context.Context, orgID uuid.UUID, embedding []float32, excludeID uuid.UUID, projects []string, limit int) ([]Result, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -184,13 +184,17 @@ func (q *QdrantIndex) FindSimilar(ctx context.Context, orgID uuid.UUID, embeddin
 	must := []*qdrant.Condition{
 		qdrant.NewMatch("org_id", orgID.String()),
 	}
-	if project != nil && *project != "" {
-		must = append(must, qdrant.NewMatch("project", *project))
-	} else {
+	switch len(projects) {
+	case 0:
 		// No project set: only match other untagged decisions. Without this,
 		// nil-project decisions would match the entire org corpus and generate
 		// spurious cross-project conflicts.
 		must = append(must, qdrant.NewIsNull("project"))
+	case 1:
+		must = append(must, qdrant.NewMatch("project", projects[0]))
+	default:
+		// Cross-project conflict detection: match any of the linked projects.
+		must = append(must, qdrant.NewMatchKeywords("project", projects...))
 	}
 
 	// Over-fetch by 1 to absorb the excludeID removal.

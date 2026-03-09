@@ -524,7 +524,7 @@ func (m *mockSearcher) Healthy(_ context.Context) error {
 	return m.healthy
 }
 
-func (m *mockSearcher) FindSimilar(_ context.Context, _ uuid.UUID, _ []float32, _ uuid.UUID, _ *string, _ int) ([]search.Result, error) {
+func (m *mockSearcher) FindSimilar(_ context.Context, _ uuid.UUID, _ []float32, _ uuid.UUID, _ []string, _ int) ([]search.Result, error) {
 	m.findCallCount++
 	return m.findResults, m.findErr
 }

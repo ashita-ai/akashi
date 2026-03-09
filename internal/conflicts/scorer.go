@@ -273,7 +273,22 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		return
 	}
 
-	qdrantResults, err := s.finder.FindSimilar(ctx, orgID, d.Embedding.Slice(), decisionID, d.Project, s.candidateLimit)
+	// Build the project scope for candidate search. When the decision has a
+	// project, include it plus any linked projects (via project_links table).
+	// When no project is set, projects stays nil → matches only nil-project decisions.
+	var projects []string
+	if d.Project != nil && *d.Project != "" {
+		projects = []string{*d.Project}
+		linked, err := s.db.LinkedProjects(ctx, orgID, *d.Project, "conflict_scope")
+		if err != nil {
+			s.logger.Warn("conflict scorer: linked projects lookup failed", "decision_id", decisionID, "error", err)
+			// Continue with just the source project — graceful degradation.
+		} else {
+			projects = append(projects, linked...)
+		}
+	}
+
+	qdrantResults, err := s.finder.FindSimilar(ctx, orgID, d.Embedding.Slice(), decisionID, projects, s.candidateLimit)
 	if err != nil {
 		s.logger.Warn("conflict scorer: qdrant find similar failed", "decision_id", decisionID, "error", err)
 		return
