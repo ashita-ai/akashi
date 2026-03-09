@@ -447,10 +447,10 @@ func (db *DB) deleteBatch(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID)
 	cnt.Claims = tag.RowsAffected()
 
 	// 4. Null out precedent_ref / supersedes_id references to these decisions.
-	if _, err = tx.Exec(ctx, `UPDATE decisions SET precedent_ref = NULL WHERE precedent_ref = ANY($1)`, ids); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE decisions SET precedent_ref = NULL WHERE precedent_ref = ANY($1) AND org_id = $2`, ids, orgID); err != nil {
 		return cnt, fmt.Errorf("storage: clear precedent refs batch: %w", err)
 	}
-	if _, err = tx.Exec(ctx, `UPDATE decisions SET supersedes_id = NULL WHERE supersedes_id = ANY($1)`, ids); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE decisions SET supersedes_id = NULL WHERE supersedes_id = ANY($1) AND org_id = $2`, ids, orgID); err != nil {
 		return cnt, fmt.Errorf("storage: clear supersedes refs batch: %w", err)
 	}
 
@@ -466,7 +466,7 @@ func (db *DB) deleteBatch(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID)
 
 	// 6. Delete scored conflicts referencing these decisions.
 	if _, err = tx.Exec(ctx,
-		`DELETE FROM scored_conflicts WHERE decision_a_id = ANY($1) OR decision_b_id = ANY($1)`, ids,
+		`DELETE FROM scored_conflicts WHERE (decision_a_id = ANY($1) OR decision_b_id = ANY($1)) AND org_id = $2`, ids, orgID,
 	); err != nil {
 		return cnt, fmt.Errorf("storage: delete conflicts batch: %w", err)
 	}
