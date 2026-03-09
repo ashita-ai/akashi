@@ -5688,3 +5688,955 @@ func TestListConflicts_WithDecisionTypeFilter(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// ---------------------------------------------------------------------------
+// ListConflicts — additional filter combinations
+// ---------------------------------------------------------------------------
+
+func TestListConflicts_WithStatusFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	conflicts, err := db.ListConflicts(ctx, orgID, storage.ConflictFilters{
+		Status: strPtr("resolved"),
+	}, 10, 0)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+}
+
+func TestListConflicts_WithSeverityFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	conflicts, err := db.ListConflicts(ctx, orgID, storage.ConflictFilters{
+		Severity: strPtr("high"),
+	}, 10, 0)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+}
+
+func TestListConflicts_WithCategoryFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	conflicts, err := db.ListConflicts(ctx, orgID, storage.ConflictFilters{
+		Category: strPtr("architecture"),
+	}, 10, 0)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+}
+
+func TestListConflicts_WithConflictKindFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	conflicts, err := db.ListConflicts(ctx, orgID, storage.ConflictFilters{
+		ConflictKind: strPtr("contradictory"),
+	}, 10, 0)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+}
+
+func TestListConflicts_WithDecisionIDFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+	decID := uuid.New()
+
+	conflicts, err := db.ListConflicts(ctx, orgID, storage.ConflictFilters{
+		DecisionID: &decID,
+	}, 10, 0)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+}
+
+func TestListConflicts_WithAgentIDFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	conflicts, err := db.ListConflicts(ctx, orgID, storage.ConflictFilters{
+		AgentID: strPtr("agent-a"),
+	}, 10, 0)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+}
+
+func TestListConflicts_AllFilters(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+	decID := uuid.New()
+
+	conflicts, err := db.ListConflicts(ctx, orgID, storage.ConflictFilters{
+		DecisionType: strPtr("architecture"),
+		AgentID:      strPtr("agent-1"),
+		ConflictKind: strPtr("contradictory"),
+		Status:       strPtr("open"),
+		Severity:     strPtr("high"),
+		Category:     strPtr("safety"),
+		DecisionID:   &decID,
+	}, 10, 0)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+}
+
+func TestListConflicts_DefaultLimit(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	// limit <= 0 should default to 20
+	conflicts, err := db.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 0, 0)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+}
+
+// ---------------------------------------------------------------------------
+// ListConflictGroups — with OpenOnly filter
+// ---------------------------------------------------------------------------
+
+func TestListConflictGroups_OpenOnlyFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	groups, err := db.ListConflictGroups(ctx, orgID, storage.ConflictGroupFilters{
+		OpenOnly: true,
+	}, 10, 0)
+	require.NoError(t, err)
+	assert.Empty(t, groups)
+}
+
+func TestListConflictGroups_ConflictKindFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	groups, err := db.ListConflictGroups(ctx, orgID, storage.ConflictGroupFilters{
+		ConflictKind: strPtr("contradictory"),
+	}, 10, 0)
+	require.NoError(t, err)
+	assert.Empty(t, groups)
+}
+
+func TestListConflictGroups_AgentIDFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	groups, err := db.ListConflictGroups(ctx, orgID, storage.ConflictGroupFilters{
+		AgentID: strPtr("agent-x"),
+	}, 10, 0)
+	require.NoError(t, err)
+	assert.Empty(t, groups)
+}
+
+func TestListConflictGroups_DecisionTypeFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	groups, err := db.ListConflictGroups(ctx, orgID, storage.ConflictGroupFilters{
+		DecisionType: strPtr("architecture"),
+	}, 10, 0)
+	require.NoError(t, err)
+	assert.Empty(t, groups)
+}
+
+func TestListConflictGroups_DefaultLimit(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	// limit <= 0 should default to 20
+	groups, err := db.ListConflictGroups(ctx, orgID, storage.ConflictGroupFilters{}, 0, 0)
+	require.NoError(t, err)
+	assert.Empty(t, groups)
+}
+
+// ---------------------------------------------------------------------------
+// QueryDecisions — filter branches
+// ---------------------------------------------------------------------------
+
+func TestQueryDecisions_WithOutcomeFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	decisions, total, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+		Filters: model.QueryFilters{
+			Outcome: strPtr("chose Redis"),
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, decisions)
+}
+
+func TestQueryDecisions_WithSessionIDFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+	sessionID := uuid.New()
+
+	decisions, total, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+		Filters: model.QueryFilters{
+			SessionID: &sessionID,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, decisions)
+}
+
+func TestQueryDecisions_WithToolFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	decisions, total, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+		Filters: model.QueryFilters{
+			Tool: strPtr("claude-code"),
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, decisions)
+}
+
+func TestQueryDecisions_WithModelFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	decisions, total, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+		Filters: model.QueryFilters{
+			Model: strPtr("claude-opus-4-6"),
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, decisions)
+}
+
+func TestQueryDecisions_WithProjectFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	decisions, total, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+		Filters: model.QueryFilters{
+			Project: strPtr("akashi"),
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, decisions)
+}
+
+func TestQueryDecisions_WithDecisionTypeFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	decisions, total, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+		Filters: model.QueryFilters{
+			DecisionType: strPtr("library-choice"),
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, decisions)
+}
+
+func TestQueryDecisions_WithAllFiltersSimultaneously(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+	sessionID := uuid.New()
+	runID := uuid.New()
+	confMin := float32(0.5)
+	from := time.Now().UTC().Add(-1 * time.Hour)
+	to := time.Now().UTC().Add(1 * time.Hour)
+	traceID := "trace-123"
+
+	decisions, total, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+		Filters: model.QueryFilters{
+			AgentIDs:      []string{"agent-1"},
+			RunID:         &runID,
+			DecisionType:  strPtr("architecture"),
+			ConfidenceMin: &confMin,
+			Outcome:       strPtr("chose Redis"),
+			SessionID:     &sessionID,
+			Tool:          strPtr("claude-code"),
+			Model:         strPtr("claude-opus-4-6"),
+			Project:       strPtr("akashi"),
+			TimeRange:     &model.TimeRange{From: &from, To: &to},
+		},
+		TraceID:  &traceID,
+		OrderBy:  "confidence",
+		OrderDir: "asc",
+		Limit:    5,
+		Offset:   0,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, decisions)
+}
+
+func TestQueryDecisions_OrderBySanitization(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	// Create a decision so we get results to verify ordering works.
+	createTestAgent(t, db, orgID, "order-agent")
+	createTestDecision(t, db, orgID, "order-agent", "order test outcome")
+
+	// Unknown column should fall back to valid_from.
+	decisions, total, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+		OrderBy: "DROP TABLE decisions",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, total)
+	assert.Len(t, decisions, 1)
+}
+
+func TestQueryDecisions_OrderByCompleteness(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	decisions, _, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+		OrderBy: "completeness_score",
+	})
+	require.NoError(t, err)
+	assert.Empty(t, decisions)
+}
+
+func TestQueryDecisions_OrderByOutcomeScore(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	decisions, _, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+		OrderBy: "outcome_score",
+	})
+	require.NoError(t, err)
+	assert.Empty(t, decisions)
+}
+
+func TestQueryDecisions_OrderByDecisionType(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	decisions, _, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+		OrderBy: "decision_type",
+	})
+	require.NoError(t, err)
+	assert.Empty(t, decisions)
+}
+
+// ---------------------------------------------------------------------------
+// QueryDecisionsTemporal — filter branches
+// ---------------------------------------------------------------------------
+
+func TestQueryDecisionsTemporal_WithFilters(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+	confMin := float32(0.5)
+	from := time.Now().UTC().Add(-24 * time.Hour)
+	to := time.Now().UTC()
+
+	decisions, err := db.QueryDecisionsTemporal(ctx, orgID, model.TemporalQueryRequest{
+		Filters: model.QueryFilters{
+			AgentIDs:      []string{"agent-1"},
+			DecisionType:  strPtr("architecture"),
+			ConfidenceMin: &confMin,
+			Project:       strPtr("akashi"),
+			TimeRange:     &model.TimeRange{From: &from, To: &to},
+		},
+		AsOf:  time.Now().UTC(),
+		Limit: 10,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, decisions)
+}
+
+// ---------------------------------------------------------------------------
+// GetResolvedConflictsByType — default limit branch
+// ---------------------------------------------------------------------------
+
+func TestGetResolvedConflictsByType_DefaultLimit(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	// limit <= 0 should default to 10
+	results, err := db.GetResolvedConflictsByType(ctx, orgID, "architecture", 0)
+	require.NoError(t, err)
+	assert.Empty(t, results)
+}
+
+// ---------------------------------------------------------------------------
+// SearchDecisionsByText — filter combination branches
+// ---------------------------------------------------------------------------
+
+func TestSearchDecisionsByText_WithConfidenceAndAgentFilters(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	confMin := float32(0.9)
+	results, err := db.SearchDecisionsByText(ctx, orgID, "anything", model.QueryFilters{
+		AgentIDs:      []string{"specific-agent"},
+		ConfidenceMin: &confMin,
+	}, 10)
+	require.NoError(t, err)
+	assert.Empty(t, results)
+}
+
+func TestSearchDecisionsByText_WithTimeRangeFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	from := time.Now().UTC().Add(-1 * time.Hour)
+	to := time.Now().UTC().Add(1 * time.Hour)
+	results, err := db.SearchDecisionsByText(ctx, orgID, "anything", model.QueryFilters{
+		TimeRange: &model.TimeRange{From: &from, To: &to},
+	}, 10)
+	require.NoError(t, err)
+	assert.Empty(t, results)
+}
+
+func TestSearchDecisionsByText_WithDecisionTypeFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	results, err := db.SearchDecisionsByText(ctx, orgID, "query", model.QueryFilters{
+		DecisionType: strPtr("architecture"),
+	}, 10)
+	require.NoError(t, err)
+	assert.Empty(t, results)
+}
+
+// ---------------------------------------------------------------------------
+// GetDecisionsByAgent — time range edge cases
+// ---------------------------------------------------------------------------
+
+func TestGetDecisionsByAgent_OnlyFromTime(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	from := time.Now().UTC().Add(-1 * time.Hour)
+	decisions, total, err := db.GetDecisionsByAgent(ctx, orgID, "agent-1", 10, 0, &from, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, decisions)
+}
+
+func TestGetDecisionsByAgent_OnlyToTime(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	to := time.Now().UTC().Add(1 * time.Hour)
+	decisions, total, err := db.GetDecisionsByAgent(ctx, orgID, "agent-1", 10, 0, nil, &to)
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, decisions)
+}
+
+// ---------------------------------------------------------------------------
+// FindRetriableClaimFailures — default limit branch
+// ---------------------------------------------------------------------------
+
+func TestFindRetriableClaimFailures_DefaultLimitBranch(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+
+	// limit <= 0 should default to 50
+	refs, err := db.FindRetriableClaimFailures(ctx, 5, -1)
+	require.NoError(t, err)
+	assert.Empty(t, refs)
+}
+
+// ---------------------------------------------------------------------------
+// Helper functions for test setup
+// ---------------------------------------------------------------------------
+
+func createTestAgent(t *testing.T, db *sqlite.LiteDB, orgID uuid.UUID, agentID string) {
+	t.Helper()
+	_, err := db.CreateAgent(context.Background(), model.Agent{
+		AgentID:   agentID,
+		OrgID:     orgID,
+		Name:      agentID,
+		Role:      model.RoleAgent,
+		Tags:      []string{},
+		Metadata:  map[string]any{},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+}
+
+func createTestDecision(t *testing.T, db *sqlite.LiteDB, orgID uuid.UUID, agentID, outcome string) model.Decision {
+	t.Helper()
+	_, dec, err := db.CreateTraceTx(context.Background(), storage.CreateTraceParams{
+		AgentID: agentID,
+		OrgID:   orgID,
+		Decision: model.Decision{
+			DecisionType: "test-type",
+			Outcome:      outcome,
+			Confidence:   0.85,
+			Reasoning:    strPtr("test reasoning"),
+		},
+	})
+	require.NoError(t, err)
+	return dec
+}
+
+// ---------------------------------------------------------------------------
+// QueryDecisions — TimeRange with only From
+// ---------------------------------------------------------------------------
+
+func TestQueryDecisions_TimeRangeFromOnly(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+	from := time.Now().UTC().Add(-1 * time.Hour)
+
+	decisions, total, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+		Filters: model.QueryFilters{
+			TimeRange: &model.TimeRange{From: &from},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, decisions)
+}
+
+func TestQueryDecisions_TimeRangeToOnly(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+	to := time.Now().UTC().Add(1 * time.Hour)
+
+	decisions, total, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+		Filters: model.QueryFilters{
+			TimeRange: &model.TimeRange{To: &to},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, decisions)
+}
+
+// ---------------------------------------------------------------------------
+// Close — verify double close logs a warning but doesn't panic
+// ---------------------------------------------------------------------------
+
+func TestClose_DoesNotPanicOnError(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.Default()
+	db, err := sqlite.New(ctx, ":memory:", logger)
+	require.NoError(t, err)
+
+	// First close is normal.
+	db.Close(ctx)
+	// Second close should hit the error path but not panic.
+	assert.NotPanics(t, func() {
+		db.Close(ctx)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// GetConflictCountsBatch — with data to trigger scan path
+// ---------------------------------------------------------------------------
+
+func TestGetConflictCountsBatch_EmptyIDs(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	result, err := db.GetConflictCountsBatch(ctx, []uuid.UUID{}, orgID)
+	require.NoError(t, err)
+	assert.Empty(t, result)
+}
+
+// ---------------------------------------------------------------------------
+// Idempotency — complete then lookup branch
+// ---------------------------------------------------------------------------
+
+func TestCompleteIdempotency_HappyPath(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+	createTestAgent(t, db, orgID, "idem-agent")
+
+	// Begin idempotency
+	_, err := db.BeginIdempotency(ctx, orgID, "idem-agent", "/v1/trace", "key-1", "hash-1")
+	require.NoError(t, err)
+
+	// Complete it
+	err = db.CompleteIdempotency(ctx, orgID, "idem-agent", "/v1/trace", "key-1", 201, map[string]any{"id": "abc"})
+	require.NoError(t, err)
+
+	// Look it up - should get the completed response
+	lookup, err := db.BeginIdempotency(ctx, orgID, "idem-agent", "/v1/trace", "key-1", "hash-1")
+	require.NoError(t, err)
+	assert.True(t, lookup.Completed)
+	assert.Equal(t, 201, lookup.StatusCode)
+}
+
+// ---------------------------------------------------------------------------
+// GetDecisionForScoring — with agentContext and project
+// ---------------------------------------------------------------------------
+
+func TestGetDecisionForScoring_WithNilProject(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	_, err := db.GetDecisionForScoring(ctx, uuid.New(), orgID)
+	assert.ErrorIs(t, err, storage.ErrNotFound)
+}
+
+// ---------------------------------------------------------------------------
+// EvidenceCoverageStats — zero-decisions branch (division guard)
+// ---------------------------------------------------------------------------
+
+func TestGetEvidenceCoverageStats_EmptyOrg(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	stats, err := db.GetEvidenceCoverageStats(ctx, orgID)
+	require.NoError(t, err)
+	assert.Equal(t, 0, stats.TotalDecisions)
+	assert.Equal(t, float64(0), stats.CoveragePercent)
+	assert.Equal(t, float64(0), stats.AvgPerDecision)
+}
+
+// ---------------------------------------------------------------------------
+// CreateTraceTx — createTraceInTx branches for nil-guarding metadata/context
+// ---------------------------------------------------------------------------
+
+func TestCreateTraceTx_AgentContextFromParams(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+	createTestAgent(t, db, orgID, "ctx-agent")
+
+	agentCtx := map[string]any{"env": "prod"}
+	_, dec, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID:      "ctx-agent",
+		OrgID:        orgID,
+		AgentContext: agentCtx,
+		Decision: model.Decision{
+			DecisionType: "test",
+			Outcome:      "test outcome",
+			Confidence:   0.8,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "prod", dec.AgentContext["env"])
+}
+
+func TestCreateTraceTx_ValidFromPreset(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+	createTestAgent(t, db, orgID, "vf-agent")
+
+	presetTime := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
+	_, dec, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "vf-agent",
+		OrgID:   orgID,
+		Decision: model.Decision{
+			DecisionType: "test",
+			Outcome:      "preset valid_from",
+			Confidence:   0.8,
+			ValidFrom:    presetTime,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 2025, dec.ValidFrom.Year())
+	assert.Equal(t, time.January, dec.ValidFrom.Month())
+	assert.Equal(t, 15, dec.ValidFrom.Day())
+}
+
+// ---------------------------------------------------------------------------
+// HasClaimsForDecision — with claims present
+// ---------------------------------------------------------------------------
+
+func TestHasClaimsForDecision_WithClaims(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+	createTestAgent(t, db, orgID, "claims-agent")
+
+	dec := createTestDecision(t, db, orgID, "claims-agent", "claims test")
+
+	// Insert a claim
+	cat := "factual"
+	err := db.InsertClaims(ctx, []storage.Claim{
+		{
+			DecisionID: dec.ID,
+			OrgID:      orgID,
+			ClaimIdx:   0,
+			ClaimText:  "test claim",
+			Category:   &cat,
+		},
+	})
+	require.NoError(t, err)
+
+	has, err := db.HasClaimsForDecision(ctx, dec.ID, orgID)
+	require.NoError(t, err)
+	assert.True(t, has)
+}
+
+// ---------------------------------------------------------------------------
+// buildDecisionFilterWhere — empty filters returns empty string
+// ---------------------------------------------------------------------------
+
+func TestSearchDecisionsByText_NoFiltersEmptyDB(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	// With no filters, buildDecisionFilterWhere should return empty
+	results, err := db.SearchDecisionsByText(ctx, orgID, "nonexistent", model.QueryFilters{}, 10)
+	require.NoError(t, err)
+	assert.Empty(t, results)
+}
+
+// ---------------------------------------------------------------------------
+// QueryDecisionsTemporal — from/to individual time range filters
+// ---------------------------------------------------------------------------
+
+func TestQueryDecisionsTemporal_TimeRangeFromOnly(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+	from := time.Now().UTC().Add(-24 * time.Hour)
+
+	decisions, err := db.QueryDecisionsTemporal(ctx, orgID, model.TemporalQueryRequest{
+		Filters: model.QueryFilters{
+			TimeRange: &model.TimeRange{From: &from},
+		},
+		AsOf:  time.Now().UTC(),
+		Limit: 10,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, decisions)
+}
+
+func TestQueryDecisionsTemporal_TimeRangeToOnly(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+	to := time.Now().UTC()
+
+	decisions, err := db.QueryDecisionsTemporal(ctx, orgID, model.TemporalQueryRequest{
+		Filters: model.QueryFilters{
+			TimeRange: &model.TimeRange{To: &to},
+		},
+		AsOf:  time.Now().UTC(),
+		Limit: 10,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, decisions)
+}
+
+// ---------------------------------------------------------------------------
+// CreateTraceTx — with pre-set TransactionTime and CreatedAt
+// ---------------------------------------------------------------------------
+
+func TestCreateTraceTx_PresetTransactionTimeAndCreatedAt(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+	createTestAgent(t, db, orgID, "preset-agent")
+
+	txTime := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	createdAt := time.Date(2024, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	_, dec, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "preset-agent",
+		OrgID:   orgID,
+		Decision: model.Decision{
+			DecisionType:    "test",
+			Outcome:         "preset times",
+			Confidence:      0.8,
+			TransactionTime: txTime,
+			CreatedAt:       createdAt,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 2024, dec.TransactionTime.Year())
+	assert.Equal(t, time.June, dec.TransactionTime.Month())
+	assert.Equal(t, 2024, dec.CreatedAt.Year())
+	assert.Equal(t, time.May, dec.CreatedAt.Month())
+}
+
+// ---------------------------------------------------------------------------
+// CreateTraceTx — alternative with pre-set ID and CreatedAt
+// ---------------------------------------------------------------------------
+
+func TestCreateTraceTx_AlternativeWithPresetIDAndTime(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+	createTestAgent(t, db, orgID, "alt-preset-agent")
+
+	altID := uuid.New()
+	altTime := time.Date(2024, 3, 15, 10, 0, 0, 0, time.UTC)
+	altScore := float32(0.7)
+
+	_, dec, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "alt-preset-agent",
+		OrgID:   orgID,
+		Decision: model.Decision{
+			DecisionType: "test",
+			Outcome:      "alt preset",
+			Confidence:   0.8,
+		},
+		Alternatives: []model.Alternative{
+			{
+				ID:        altID,
+				Label:     "Option A",
+				Score:     &altScore,
+				Selected:  true,
+				CreatedAt: altTime,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, dec.Alternatives, 1)
+	assert.Equal(t, altID, dec.Alternatives[0].ID)
+	assert.Equal(t, 2024, dec.Alternatives[0].CreatedAt.Year())
+}
+
+// ---------------------------------------------------------------------------
+// CreateTraceTx — evidence with pre-set ID and CreatedAt
+// ---------------------------------------------------------------------------
+
+func TestCreateTraceTx_EvidenceWithPresetIDAndTime(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+	createTestAgent(t, db, orgID, "ev-preset-agent")
+
+	evID := uuid.New()
+	evTime := time.Date(2024, 4, 20, 8, 0, 0, 0, time.UTC)
+	evURI := "https://example.com"
+	evRelScore := float32(0.9)
+
+	_, dec, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "ev-preset-agent",
+		OrgID:   orgID,
+		Decision: model.Decision{
+			DecisionType: "test",
+			Outcome:      "evidence preset",
+			Confidence:   0.8,
+		},
+		Evidence: []model.Evidence{
+			{
+				ID:             evID,
+				SourceType:     model.SourceDocument,
+				SourceURI:      &evURI,
+				Content:        "evidence content",
+				RelevanceScore: &evRelScore,
+				CreatedAt:      evTime,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, dec.Evidence, 1)
+	assert.Equal(t, evID, dec.Evidence[0].ID)
+}
+
+// ---------------------------------------------------------------------------
+// GetDecisionsByAgent — default limit and negative offset
+// ---------------------------------------------------------------------------
+
+func TestGetDecisionsByAgent_DefaultLimitAndNegativeOffset(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	// limit <= 0 and negative offset should be handled gracefully
+	decisions, total, err := db.GetDecisionsByAgent(ctx, orgID, "agent-1", 0, -5, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.Empty(t, decisions)
+}
+
+// ---------------------------------------------------------------------------
+// IsDuplicateKey — with non-unique-constraint error
+// ---------------------------------------------------------------------------
+
+func TestIsDuplicateKey_NonUniqueError(t *testing.T) {
+	db := newTestDB(t)
+	assert.False(t, db.IsDuplicateKey(fmt.Errorf("some other error")))
+	assert.True(t, db.IsDuplicateKey(fmt.Errorf("UNIQUE constraint failed: agents.agent_id")))
+}
