@@ -7,6 +7,7 @@ import type {
   AgentEvent,
   AgentsList,
   AgentStats,
+  ConflictAnalytics,
   ConflictDetail,
   CreateAgentRequest,
   CreateGrantRequest,
@@ -372,6 +373,27 @@ export async function adjudicateConflict(
 // Trace health
 export async function getTraceHealth(): Promise<TraceHealth> {
   return request<TraceHealth>("/v1/trace-health");
+}
+
+// Conflict analytics
+export async function getConflictAnalytics(params?: {
+  period?: "7d" | "30d" | "90d";
+  from?: string;
+  to?: string;
+  agent_id?: string;
+  decision_type?: string;
+}): Promise<ConflictAnalytics> {
+  const searchParams = new URLSearchParams();
+  if (params?.period) searchParams.set("period", params.period);
+  if (params?.from) searchParams.set("from", params.from);
+  if (params?.to) searchParams.set("to", params.to);
+  if (params?.agent_id) searchParams.set("agent_id", params.agent_id);
+  if (params?.decision_type)
+    searchParams.set("decision_type", params.decision_type);
+  const qs = searchParams.toString();
+  return request<ConflictAnalytics>(
+    `/v1/conflicts/analytics${qs ? `?${qs}` : ""}`,
+  );
 }
 
 // Session view
