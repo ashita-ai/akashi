@@ -44,6 +44,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/ratelimit"
 	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/server"
+	"github.com/ashita-ai/akashi/internal/service/autoresolve"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
 	"github.com/ashita-ai/akashi/internal/service/trace"
@@ -70,6 +71,7 @@ type App struct {
 	otelShutdown    func(context.Context) error
 	decisionHooks   []server.DecisionHook
 	logger          *slog.Logger
+	autoResolver    *autoresolve.Service
 	version         string
 }
 
@@ -455,6 +457,7 @@ func New(opts ...Option) (*App, error) {
 		otelShutdown:    otelShutdown,
 		decisionHooks:   decisionHooks,
 		logger:          logger,
+		autoResolver:    autoresolve.New(db, logger),
 		version:         version,
 	}, nil
 }
@@ -480,6 +483,7 @@ func (a *App) Run(ctx context.Context) error {
 	go a.retentionLoop(ctx)
 	go a.claimEmbeddingRetryLoop(ctx)
 	go a.percentileRefreshLoop(ctx)
+	go a.autoResolveLoop(ctx)
 
 	// Start HTTP server.
 	errCh := make(chan error, 1)
@@ -790,6 +794,26 @@ func (a *App) refreshPercentiles(ctx context.Context) {
 
 	if refreshed > 0 {
 		a.logger.Debug("percentile refresh complete", "orgs", refreshed)
+	}
+}
+
+// autoResolveLoop periodically runs auto-resolution of conflicts based on org policies.
+func (a *App) autoResolveLoop(ctx context.Context) {
+	if a.cfg.AutoResolveInterval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(a.cfg.AutoResolveInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := a.autoResolver.RunOnce(ctx); err != nil {
+				a.logger.Warn("auto-resolve loop failed", "error", err)
+			}
+		}
 	}
 }
 

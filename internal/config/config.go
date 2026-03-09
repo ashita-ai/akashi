@@ -102,6 +102,7 @@ type Config struct {
 	RetentionInterval             time.Duration // How often the background retention worker runs (default 24h).
 	ClaimRetryInterval            time.Duration // How often to retry failed claim embeddings (default 2m).
 	PercentileRefreshInterval     time.Duration // How often to refresh signal percentile caches (default 1h).
+	AutoResolveInterval           time.Duration // How often the auto-resolution worker runs (default 1h, 0 disables).
 
 	// Self-serve signup.
 	SignupEnabled bool // Enable POST /auth/signup for self-serve org creation (default: false).
@@ -205,6 +206,7 @@ func Load() (Config, error) {
 	cfg.RetentionInterval, errs = collectDuration(errs, "AKASHI_RETENTION_INTERVAL", 24*time.Hour)
 	cfg.ClaimRetryInterval, errs = collectDuration(errs, "AKASHI_CLAIM_RETRY_INTERVAL", 2*time.Minute)
 	cfg.PercentileRefreshInterval, errs = collectDuration(errs, "AKASHI_PERCENTILE_REFRESH_INTERVAL", 1*time.Hour)
+	cfg.AutoResolveInterval, errs = collectDuration(errs, "AKASHI_AUTO_RESOLVE_INTERVAL", 1*time.Hour)
 
 	if len(errs) > 0 {
 		msgs := make([]string, len(errs))
