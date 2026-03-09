@@ -239,6 +239,10 @@ func New(cfg ServerConfig) *Server {
 	mux.Handle("POST /v1/retention/hold", adminOnly(http.HandlerFunc(h.HandleCreateHold)))
 	mux.Handle("DELETE /v1/retention/hold/{id}", adminOnly(http.HandlerFunc(h.HandleReleaseHold)))
 
+	// Org settings (reader+ for GET, admin-only for PUT).
+	mux.Handle("GET /v1/org/settings", readRole(http.HandlerFunc(h.HandleGetOrgSettings)))
+	mux.Handle("PUT /v1/org/settings", adminOnly(http.HandlerFunc(h.HandleSetOrgSettings)))
+
 	// Project links (admin-only).
 	mux.Handle("POST /v1/project-links", adminOnly(http.HandlerFunc(h.HandleCreateProjectLink)))
 	mux.Handle("GET /v1/project-links", adminOnly(http.HandlerFunc(h.HandleListProjectLinks)))

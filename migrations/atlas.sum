@@ -1,4 +1,4 @@
-h1:AkWptM+ifaE27MVwHCdTyjnsNMUHA1bE45ZqXhaXSro=
+h1:ORZw/Gm6TLwbsVpw95IEjDd6ncdwCWoG5KYLSkJcay0=
 001_initial.sql h1:uhyGXto+QacAaGYb9ZTGjsBs5chlKi8O0eHz9aCQsrY=
 022_full_text_search.sql h1:9iwtA8MgCzAxDV9YkUBn0CLT9ePSmj3GcPoMGg8TXf0=
 023_fix_outbox_index.sql h1:OtMEFBcMRWej02+ghnBXlPr6BVq+LoA62Id9XUWfDNI=
@@ -43,3 +43,4 @@ h1:AkWptM+ifaE27MVwHCdTyjnsNMUHA1bE45ZqXhaXSro=
 062_scoring_method_external.sql h1:6G4D4ecXu/N4xxo5S2MSOM2LAV4kFe3fOwr7QDHs7p4=
 063_project_links.sql h1:QP47uif87hIJdS8aBbKR4Wzip4iAfuJo98YoiyCokzU=
 064_topic_groups.sql h1:Kk4A6IJFUohzqzYEmqJfQnYktyC723OLlBIJfivZLt8=
+065_org_settings.sql h1:ZRwE+kSuPxy5i0TMjA8PF2Afp2YaimwzBIGquYWh5sU=

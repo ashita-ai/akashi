@@ -73,6 +73,8 @@ tags:
     description: API key management (admin-only)
   - name: Usage
     description: Usage metering (admin-only)
+  - name: Settings
+    description: Organization settings and policies
   - name: System
     description: Health, SSE, and infrastructure
 
@@ -1878,6 +1880,48 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/APIResponse_HealthResponse"
+
+  # ── Org Settings ──────────────────────────────────────────────────
+  /v1/org/settings:
+    get:
+      operationId: getOrgSettings
+      tags: [Settings]
+      summary: Get org settings
+      description: |
+        Returns the current organization settings, including conflict
+        auto-resolution policy. Returns empty defaults if no settings
+        have been configured. Requires `reader` role or higher.
+      responses:
+        "200":
+          description: Current org settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_OrgSettingsData"
+    put:
+      operationId: setOrgSettings
+      tags: [Settings]
+      summary: Update org settings
+      description: |
+        Create or update the organization settings. Validates the conflict
+        resolution policy if provided. Requires `admin` role.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgSettingsData"
+      responses:
+        "200":
+          description: Updated org settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_OrgSettingsData"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
 
   /v1/subscribe:
     get:
@@ -4249,3 +4293,49 @@ components:
         error:
           type: string
           description: Error message if the validation failed.
+
+    # ── Org Settings schemas ─────────────────────────────────────────
+    OrgSettingsData:
+      type: object
+      properties:
+        conflict_resolution:
+          $ref: "#/components/schemas/ConflictResolutionPolicy"
+
+    ConflictResolutionPolicy:
+      type: object
+      required:
+        - auto_resolve_after_days
+        - auto_resolve_winner
+        - auto_resolve_max_severity
+      properties:
+        auto_resolve_after_days:
+          type: integer
+          minimum: 1
+          description: Number of days a conflict must be open before auto-resolution.
+        auto_resolve_winner:
+          type: string
+          enum: [recency, confidence, consensus]
+          description: Strategy for selecting the winning decision.
+        auto_resolve_max_severity:
+          type: string
+          enum: [low, medium, high, critical]
+          description: Maximum severity eligible for auto-resolution.
+        never_auto_resolve_severities:
+          type: array
+          items:
+            type: string
+            enum: [low, medium, high, critical]
+          description: Severities that are never auto-resolved.
+        reopened_resolution_policy:
+          type: string
+          enum: [escalate]
+          description: What happens when a conflict reopens a prior resolution.
+
+    APIResponse_OrgSettingsData:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/OrgSettingsData"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
