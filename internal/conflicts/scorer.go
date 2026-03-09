@@ -641,6 +641,23 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			ClaimTextA:        sc.claimFragA,
 			ClaimTextB:        sc.claimFragB,
 		}
+
+		// Topic-aware group assignment: find or create a group whose
+		// representative conflict is semantically similar to this one.
+		if d.OutcomeEmbedding != nil {
+			topicLabel := storage.TruncateOutcome(d.Outcome, 120)
+			groupID, grpErr := s.db.FindOrCreateTopicGroup(ctx,
+				orgID, d.AgentID, cand.AgentID, kind,
+				d.DecisionType, *d.OutcomeEmbedding, topicLabel,
+			)
+			if grpErr != nil {
+				s.logger.Warn("conflict scorer: topic group lookup failed, falling back",
+					"error", grpErr, "decision_a", decisionID, "decision_b", cand.ID)
+			} else {
+				c.GroupID = &groupID
+			}
+		}
+
 		if _, err := s.db.InsertScoredConflict(ctx, c); err != nil {
 			s.logger.Warn("conflict scorer: insert failed", "decision_a", decisionID, "decision_b", cand.ID, "error", err)
 			continue

@@ -204,19 +204,22 @@ type DecisionConflict struct {
 	ClaimTextB *string `json:"claim_text_b,omitempty"`
 }
 
-// ConflictGroup is a canonical conflict cluster: one row per
-// (org, normalized-agent-pair, conflict-kind, decision-type). It collapses
-// the N×M pairwise explosion from conflict detection into a single logical
-// disagreement that the UI and MCP tool can surface without noise.
+// ConflictGroup is a canonical conflict cluster scoped to a semantic topic
+// within an (org, normalized-agent-pair, conflict-kind, decision-type) bucket.
+// Multiple groups may exist for the same agent pair when they disagree about
+// unrelated topics (e.g. "caching strategy" vs "API protocol").
 type ConflictGroup struct {
-	ID              uuid.UUID    `json:"id"`
-	OrgID           uuid.UUID    `json:"org_id"`
-	AgentA          string       `json:"agent_a"` // normalized: LEAST(agent_a, agent_b)
-	AgentB          string       `json:"agent_b"` // normalized: GREATEST(agent_a, agent_b)
-	ConflictKind    ConflictKind `json:"conflict_kind"`
-	DecisionType    string       `json:"decision_type"`
-	FirstDetectedAt time.Time    `json:"first_detected_at"`
-	LastDetectedAt  time.Time    `json:"last_detected_at"`
+	ID           uuid.UUID    `json:"id"`
+	OrgID        uuid.UUID    `json:"org_id"`
+	AgentA       string       `json:"agent_a"` // normalized: LEAST(agent_a, agent_b)
+	AgentB       string       `json:"agent_b"` // normalized: GREATEST(agent_a, agent_b)
+	ConflictKind ConflictKind `json:"conflict_kind"`
+	DecisionType string       `json:"decision_type"`
+	// GroupTopic is a human-readable label derived from the representative
+	// conflict's outcome text (first 120 chars). Used for UI display.
+	GroupTopic      *string   `json:"group_topic,omitempty"`
+	FirstDetectedAt time.Time `json:"first_detected_at"`
+	LastDetectedAt  time.Time `json:"last_detected_at"`
 	// ConflictCount is the total number of pairwise conflicts in this group.
 	ConflictCount int `json:"conflict_count"`
 	// OpenCount is the number of pairwise conflicts with status open or acknowledged.
