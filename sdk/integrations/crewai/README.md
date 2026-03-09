@@ -1,6 +1,6 @@
 # akashi-crewai
 
-CrewAI integration that traces task decisions to [Akashi](../../../README.md) -- the black box recorder for AI decisions.
+CrewAI integration that traces task decisions to [Akashi](../../../README.md) -- version control for AI decisions.
 
 All tracing is **fire-and-forget**: Akashi errors are logged at `DEBUG` level and never interrupt your crew execution.
 

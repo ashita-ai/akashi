@@ -73,6 +73,7 @@ type Config struct {
 	CrossEncoderThreshold         float64 // Min cross-encoder score to proceed to LLM validation (default: 0.50).
 	ClaimExtractionLLM            bool    // Use the conflict LLM model for structured claim extraction (default: false).
 	ForceConflictRescore          bool    // When true (and LLM validator configured), clear all conflicts and re-score at startup.
+	ConflictProfile               string  // Named profile: "balanced" (default), "high_precision", "high_recall". Individual env vars override.
 
 	// Event WAL (write-ahead log) for crash-durable event buffering.
 	WALDir            string        // Directory for WAL files. Default: "./data/wal". Set AKASHI_WAL_DISABLE=true to disable.
@@ -160,13 +161,18 @@ func Load() (Config, error) {
 
 	// Float fields.
 	cfg.RateLimitRPS, errs = collectFloat64(errs, "AKASHI_RATE_LIMIT_RPS", 100.0)
-	cfg.ConflictSignificanceThreshold, errs = collectFloat64(errs, "AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD", 0.30)
-	cfg.ConflictDecayLambda, errs = collectFloat64(errs, "AKASHI_CONFLICT_DECAY_LAMBDA", 0.01)
-	cfg.ConflictClaimTopicSimFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_CLAIM_TOPIC_SIM_FLOOR", 0.60)
-	cfg.ConflictClaimDivFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_CLAIM_DIV_FLOOR", 0.15)
-	cfg.ConflictDecisionTopicSimFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_DECISION_TOPIC_SIM_FLOOR", 0.70)
-	cfg.ConflictEarlyExitFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_EARLY_EXIT_FLOOR", 0.25)
-	cfg.CrossEncoderThreshold, errs = collectFloat64(errs, "AKASHI_CONFLICT_CROSS_ENCODER_THRESHOLD", 0.50)
+	// Load the conflict profile first to get profile defaults, then overlay
+	// individual env var overrides. This ensures explicit env vars always win.
+	cfg.ConflictProfile = envStr("AKASHI_CONFLICT_PROFILE", "balanced")
+	profileDefaults := conflictProfileDefaults(cfg.ConflictProfile)
+
+	cfg.ConflictSignificanceThreshold, errs = collectFloat64(errs, "AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD", profileDefaults.significanceThreshold)
+	cfg.ConflictDecayLambda, errs = collectFloat64(errs, "AKASHI_CONFLICT_DECAY_LAMBDA", profileDefaults.decayLambda)
+	cfg.ConflictClaimTopicSimFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_CLAIM_TOPIC_SIM_FLOOR", profileDefaults.claimTopicSimFloor)
+	cfg.ConflictClaimDivFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_CLAIM_DIV_FLOOR", profileDefaults.claimDivFloor)
+	cfg.ConflictDecisionTopicSimFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_DECISION_TOPIC_SIM_FLOOR", profileDefaults.decisionTopicSimFloor)
+	cfg.ConflictEarlyExitFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_EARLY_EXIT_FLOOR", profileDefaults.earlyExitFloor)
+	cfg.CrossEncoderThreshold, errs = collectFloat64(errs, "AKASHI_CONFLICT_CROSS_ENCODER_THRESHOLD", profileDefaults.crossEncoderThreshold)
 
 	// Boolean fields.
 	cfg.RateLimitEnabled, errs = collectBool(errs, "AKASHI_RATE_LIMIT_ENABLED", true)
@@ -425,6 +431,61 @@ func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 
 // envStrSlice reads a comma-separated env var into a string slice.
 // Returns fallback if the env var is empty or unset.
+
+// conflictProfileValues holds the default threshold values for a conflict
+// detection profile. Individual env var overrides always take precedence.
+type conflictProfileValues struct {
+	significanceThreshold float64
+	decayLambda           float64
+	claimTopicSimFloor    float64
+	claimDivFloor         float64
+	decisionTopicSimFloor float64
+	earlyExitFloor        float64
+	crossEncoderThreshold float64
+}
+
+// conflictProfileDefaults returns threshold defaults for the named profile.
+// Unrecognized profile names fall back to "balanced" (the current defaults).
+//
+// Profiles:
+//   - "balanced": current defaults, good general-purpose settings
+//   - "high_precision": fewer false positives, may miss marginal real conflicts
+//   - "high_recall": catches more real conflicts, accepts more noise
+func conflictProfileDefaults(profile string) conflictProfileValues {
+	switch strings.ToLower(profile) {
+	case "high_precision":
+		return conflictProfileValues{
+			significanceThreshold: 0.40,
+			decayLambda:           0.01,
+			claimTopicSimFloor:    0.65,
+			claimDivFloor:         0.20,
+			decisionTopicSimFloor: 0.75,
+			earlyExitFloor:        0.35,
+			crossEncoderThreshold: 0.60,
+		}
+	case "high_recall":
+		return conflictProfileValues{
+			significanceThreshold: 0.20,
+			decayLambda:           0.005,
+			claimTopicSimFloor:    0.55,
+			claimDivFloor:         0.10,
+			decisionTopicSimFloor: 0.65,
+			earlyExitFloor:        0.15,
+			crossEncoderThreshold: 0.35,
+		}
+	default: // "balanced" and any unrecognized value
+		return conflictProfileValues{
+			significanceThreshold: 0.30,
+			decayLambda:           0.01,
+			claimTopicSimFloor:    0.60,
+			claimDivFloor:         0.15,
+			decisionTopicSimFloor: 0.70,
+			earlyExitFloor:        0.25,
+			crossEncoderThreshold: 0.50,
+		}
+	}
+}
+
 func envStrSlice(key string, fallback []string) []string {
 	v := os.Getenv(key)
 	if v == "" {

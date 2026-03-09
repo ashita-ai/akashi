@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -50,10 +51,27 @@ func MustStartTimescaleDB() *TestContainer {
 			WithStartupTimeout(60 * time.Second),
 	}
 
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
+	// Multiple test packages run in parallel and race to create the
+	// testcontainers reaper ("Ryuk"). The loser gets a Docker "name
+	// already in use" error that is transient — the reaper becomes
+	// available once the winner finishes creating it. Retry a few
+	// times with a short backoff to handle this.
+	var container testcontainers.Container
+	var err error
+	for attempt := range 5 {
+		container, err = testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+			ContainerRequest: req,
+			Started:          true,
+		})
+		if err == nil {
+			break
+		}
+		if !strings.Contains(err.Error(), "is already in use") {
+			break
+		}
+		fmt.Fprintf(os.Stderr, "testutil: reaper conflict (attempt %d/5), retrying...\n", attempt+1)
+		time.Sleep(time.Duration(attempt+1) * time.Second)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "testutil: failed to start container: %v\n", err)
 		os.Exit(1)
@@ -99,6 +117,20 @@ func (tc *TestContainer) NewTestDB(ctx context.Context, logger *slog.Logger) (*s
 	}
 	if err := db.RunMigrations(ctx, migrations.FS); err != nil {
 		return nil, fmt.Errorf("testutil: run migrations: %w", err)
+	}
+	return db, nil
+}
+
+// NewTestDBWithNotify creates a storage.DB with both pool and notify DSN
+// pointing to this container and runs all migrations. The dedicated notify
+// connection enables testing LISTEN/NOTIFY, WaitForNotification, and reconnect.
+func (tc *TestContainer) NewTestDBWithNotify(ctx context.Context, logger *slog.Logger) (*storage.DB, error) {
+	db, err := storage.New(ctx, tc.DSN, tc.DSN, logger)
+	if err != nil {
+		return nil, fmt.Errorf("testutil: create DB with notify: %w", err)
+	}
+	if err := db.RunMigrations(ctx, migrations.FS); err != nil {
+		return nil, fmt.Errorf("testutil: run migrations (notify): %w", err)
 	}
 	return db, nil
 }

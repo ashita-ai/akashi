@@ -2,12 +2,12 @@ openapi: "3.1.0"
 info:
   title: Akashi API
   description: |
-    Decision trace layer for multi-agent AI systems.
-
-    Akashi records, queries, and audits every decision made by AI agents —
-    providing "git blame for AI decisions." It captures the full decision
-    lifecycle: what was decided, why, what alternatives were considered,
-    and what evidence was used.
+    Version control for AI decisions. Akashi is the decision coordination
+    layer for multi-agent AI systems — recording, querying, and auditing
+    every agent decision. Check before deciding to surface precedents and
+    active conflicts. Trace after deciding to record reasoning, alternatives,
+    and confidence. Captures the full decision lifecycle: outcome, reasoning,
+    alternatives considered, evidence, and confidence level.
 
     ## Authentication
 
@@ -1384,6 +1384,119 @@ paths:
         "501":
           description: No LLM conflict validator configured.
 
+  /v1/admin/conflicts/{id}/label:
+    put:
+      operationId: upsertConflictLabel
+      tags: [Admin]
+      summary: Upsert a ground truth label for a scored conflict
+      description: |
+        Inserts or updates a human-verified label for a scored conflict.
+        Labels are used for precision/recall evaluation of the conflict scorer.
+        Returns 409 if the conflict belongs to a different organization.
+        Requires `platform_admin` role.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The scored conflict ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertLabelRequest"
+      responses:
+        "200":
+          description: Label upserted successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LabelResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Conflict belongs to a different organization.
+    get:
+      operationId: getConflictLabel
+      tags: [Admin]
+      summary: Get a ground truth label for a scored conflict
+      description: |
+        Returns the human-verified label for a single scored conflict.
+        Requires `platform_admin` role.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The scored conflict ID.
+      responses:
+        "200":
+          description: Label found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LabelResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: deleteConflictLabel
+      tags: [Admin]
+      summary: Delete a ground truth label for a scored conflict
+      description: |
+        Removes the label for a scored conflict. Used for re-labeling workflows.
+        Requires `platform_admin` role.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The scored conflict ID.
+      responses:
+        "204":
+          description: Label deleted.
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/admin/conflict-labels:
+    get:
+      operationId: listConflictLabels
+      tags: [Admin]
+      summary: List all ground truth labels for the organization
+      description: |
+        Returns all conflict labels and aggregate counts for the caller's organization.
+        Requires `platform_admin` role.
+      responses:
+        "200":
+          description: Labels and counts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListLabelsResponse"
+
+  /v1/admin/scorer-eval:
+    post:
+      operationId: scorerEval
+      tags: [Admin]
+      summary: Compute scorer precision from ground truth labels
+      description: |
+        Computes precision from ground truth labels on existing scored conflicts.
+        Precision = genuine / (genuine + related_not_contradicting + unrelated_false_positive).
+        Requires `platform_admin` role.
+      responses:
+        "200":
+          description: Scorer evaluation result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScorerEvalResponse"
+
   /v1/check:
     post:
       operationId: checkPrecedent
@@ -1918,6 +2031,80 @@ components:
             $ref: "#/components/schemas/APIError"
 
   schemas:
+    # ── Conflict label schemas ──────────────────────────────────────
+    UpsertLabelRequest:
+      type: object
+      required: [label]
+      properties:
+        label:
+          type: string
+          enum: [genuine, related_not_contradicting, unrelated_false_positive]
+          description: Ground truth label for the scored conflict.
+        notes:
+          type: string
+          description: Optional notes about the labeling decision.
+
+    LabelResponse:
+      type: object
+      required: [scored_conflict_id, org_id, label, labeled_by, labeled_at]
+      properties:
+        scored_conflict_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        label:
+          type: string
+          enum: [genuine, related_not_contradicting, unrelated_false_positive]
+        labeled_by:
+          type: string
+        labeled_at:
+          type: string
+          format: date-time
+        notes:
+          type: string
+
+    ListLabelsResponse:
+      type: object
+      required: [labels, counts]
+      properties:
+        labels:
+          type: array
+          items:
+            $ref: "#/components/schemas/LabelResponse"
+        counts:
+          $ref: "#/components/schemas/ConflictLabelCounts"
+
+    ConflictLabelCounts:
+      type: object
+      required: [genuine, related_not_contradicting, unrelated_false_positive, total]
+      properties:
+        genuine:
+          type: integer
+        related_not_contradicting:
+          type: integer
+        unrelated_false_positive:
+          type: integer
+        total:
+          type: integer
+
+    ScorerEvalResponse:
+      type: object
+      required: [precision, true_positives, false_positives, total_labeled]
+      properties:
+        precision:
+          type: number
+          format: double
+        true_positives:
+          type: integer
+        false_positives:
+          type: integer
+        total_labeled:
+          type: integer
+        message:
+          type: string
+
     # ── Response envelopes ───────────────────────────────────────────
     ResponseMeta:
       type: object

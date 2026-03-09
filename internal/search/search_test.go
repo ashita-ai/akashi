@@ -1,6 +1,8 @@
 package search
 
 import (
+	"context"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -607,4 +609,329 @@ func TestInterpolatedPercentile_EdgeCases(t *testing.T) {
 		got := interpolatedPercentile([]float64{10, 20}, 1.0)
 		assert.Equal(t, 20.0, got)
 	})
+}
+
+// TestPercentileScore_DegenerateBreakpoints covers cases where adjacent breakpoints
+// collapse (span = 0), exercising the degenerate-band guards in PercentileScore.
+func TestPercentileScore_DegenerateBreakpoints(t *testing.T) {
+	tests := []struct {
+		name        string
+		value       float64
+		breakpoints []float64
+		want        float64
+		delta       float64
+	}{
+		{
+			name:        "p25==p50: value at p25 boundary returns 0.25",
+			value:       5,
+			breakpoints: []float64{5, 5, 10, 20},
+			want:        0.25,
+			delta:       0.001,
+		},
+		{
+			name:        "p50==p75: value at p50 boundary returns 0.50",
+			value:       7,
+			breakpoints: []float64{3, 7, 7, 15},
+			want:        0.50,
+			delta:       0.001,
+		},
+		{
+			name:        "p75==p90: value in collapsed band returns 0.75",
+			value:       10,
+			breakpoints: []float64{2, 5, 10, 10},
+			want:        0.75,
+			delta:       0.001,
+		},
+		{
+			name:        "p25==0 with positive value below p50",
+			value:       1,
+			breakpoints: []float64{0, 3, 7, 15},
+			want:        0.3333,
+			delta:       0.001,
+		},
+		{
+			name:        "all breakpoints equal to 5, value is 5",
+			value:       5,
+			breakpoints: []float64{5, 5, 5, 5},
+			want:        0.25,
+			delta:       0.001,
+		},
+		{
+			name:        "all breakpoints equal to 5, value is 10 (beyond p90)",
+			value:       10,
+			breakpoints: []float64{5, 5, 5, 5},
+			want:        1.0,
+			delta:       0.001,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := PercentileScore(tc.value, tc.breakpoints)
+			assert.InDelta(t, tc.want, got, tc.delta,
+				"PercentileScore(%v, %v) = %v, want %v", tc.value, tc.breakpoints, got, tc.want)
+		})
+	}
+}
+
+// TestReScore_WithMetrics verifies that ReScore records per-signal contributions
+// when opts.Metrics is non-nil. Uses the noop OTel provider.
+func TestReScore_WithMetrics(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(nil, nil))
+	metrics := RegisterReScoreMetrics(logger)
+	require.NotNil(t, metrics)
+
+	now := time.Now()
+	id := uuid.New()
+	correct := 3
+	decisions := map[uuid.UUID]model.Decision{
+		id: {
+			ID:                     id,
+			ValidFrom:              now,
+			PrecedentCitationCount: 2,
+			AgreementCount:         1,
+			ConflictFate:           model.ConflictFate{Won: 1, Lost: 0},
+			AssessmentSummary:      &model.AssessmentSummary{Total: 3, Correct: correct},
+		},
+	}
+	results := []Result{{DecisionID: id, Score: 0.9, QdrantRank: 0}}
+
+	ctx := context.Background()
+	opts := &ReScoreOpts{
+		Metrics: metrics,
+		Ctx:     ctx,
+	}
+
+	scored := ReScore(results, decisions, 10, opts)
+	assert.Len(t, scored, 1)
+	assert.Greater(t, float64(scored[0].SimilarityScore), 0.0)
+	assert.LessOrEqual(t, float64(scored[0].SimilarityScore), 1.0)
+}
+
+// TestReScore_WithPercentileAndMetrics verifies the combination of percentile
+// normalization and metrics recording.
+func TestReScore_WithPercentileAndMetrics(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(nil, nil))
+	metrics := RegisterReScoreMetrics(logger)
+	require.NotNil(t, metrics)
+
+	now := time.Now()
+	id := uuid.New()
+	decisions := map[uuid.UUID]model.Decision{
+		id: {
+			ID:                     id,
+			ValidFrom:              now,
+			PrecedentCitationCount: 5,
+		},
+	}
+	results := []Result{{DecisionID: id, Score: 0.9}}
+
+	ctx := context.Background()
+	opts := &ReScoreOpts{
+		Percentiles: &OrgPercentiles{
+			CitationBreakpoints: []float64{1, 3, 7, 15},
+		},
+		Metrics: metrics,
+		Ctx:     ctx,
+	}
+
+	scored := ReScore(results, decisions, 10, opts)
+	assert.Len(t, scored, 1)
+	assert.Greater(t, float64(scored[0].SimilarityScore), 0.0)
+}
+
+// TestReScore_AgreementScoreContribution verifies that the agreement signal
+// contributes to the outcome weight and affects ranking.
+func TestReScore_AgreementScoreContribution(t *testing.T) {
+	now := time.Now()
+	highAgreement := uuid.New()
+	noAgreement := uuid.New()
+
+	decisions := map[uuid.UUID]model.Decision{
+		highAgreement: {
+			ID:             highAgreement,
+			ValidFrom:      now,
+			AgreementCount: 5,
+		},
+		noAgreement: {
+			ID:             noAgreement,
+			ValidFrom:      now,
+			AgreementCount: 0,
+		},
+	}
+
+	results := []Result{
+		{DecisionID: highAgreement, Score: 0.9, QdrantRank: 0},
+		{DecisionID: noAgreement, Score: 0.9, QdrantRank: 1},
+	}
+
+	scored := ReScore(results, decisions, 10, nil)
+	assert.Len(t, scored, 2)
+	assert.Equal(t, highAgreement, scored[0].Decision.ID,
+		"decision with high agreement count should rank above one with no agreement")
+	assert.Greater(t, scored[0].SimilarityScore, scored[1].SimilarityScore,
+		"agreement signal should create a score difference")
+}
+
+// TestReScore_PartiallyCorrectAssessment verifies that partially_correct assessments
+// contribute half weight to the assessment signal.
+func TestReScore_PartiallyCorrectAssessment(t *testing.T) {
+	now := time.Now()
+	id := uuid.New()
+	partial := 4
+
+	decisions := map[uuid.UUID]model.Decision{
+		id: {
+			ID:                id,
+			ValidFrom:         now,
+			AssessmentSummary: &model.AssessmentSummary{Total: 4, Correct: 0, PartiallyCorrect: partial},
+		},
+	}
+
+	results := []Result{{DecisionID: id, Score: 0.9}}
+	scored := ReScore(results, decisions, 10, nil)
+	assert.Len(t, scored, 1)
+
+	// assessmentContrib = (0 + 0.5*4) / 4 * 0.40 = 0.5 * 0.40 = 0.20
+	// outcomeWeight = 0.20 + 0.15*1.0 = 0.35
+	// relevance = 0.9 * (0.5 + 0.5*0.35) = 0.9 * 0.675 = 0.6075
+	assert.InDelta(t, 0.6075, float64(scored[0].SimilarityScore), 0.01,
+		"partially_correct should contribute 50% to assessment signal")
+}
+
+// TestReScore_MissingDecisionSkipped verifies that results referencing a decision
+// not in the decisions map are silently skipped.
+func TestReScore_MissingDecisionSkipped(t *testing.T) {
+	now := time.Now()
+	present := uuid.New()
+	missing := uuid.New()
+
+	decisions := map[uuid.UUID]model.Decision{
+		present: {
+			ID:        present,
+			ValidFrom: now,
+		},
+	}
+
+	results := []Result{
+		{DecisionID: missing, Score: 0.95},
+		{DecisionID: present, Score: 0.9},
+	}
+
+	scored := ReScore(results, decisions, 10, nil)
+	assert.Len(t, scored, 1, "missing decision should be silently skipped")
+	assert.Equal(t, present, scored[0].Decision.ID)
+}
+
+// TestReScore_EmptyResults verifies that ReScore with no results returns an empty slice.
+func TestReScore_EmptyResults(t *testing.T) {
+	scored := ReScore(nil, nil, 10, nil)
+	assert.Empty(t, scored)
+
+	scored = ReScore([]Result{}, map[uuid.UUID]model.Decision{}, 10, nil)
+	assert.Empty(t, scored)
+}
+
+// TestReScore_LimitTruncation verifies that ReScore respects the limit parameter.
+func TestReScore_LimitTruncation(t *testing.T) {
+	now := time.Now()
+	decisions := make(map[uuid.UUID]model.Decision)
+	results := make([]Result, 10)
+
+	for i := range 10 {
+		id := uuid.New()
+		decisions[id] = model.Decision{ID: id, ValidFrom: now}
+		results[i] = Result{DecisionID: id, Score: float32(0.5 + float64(i)*0.05)}
+	}
+
+	scored := ReScore(results, decisions, 3, nil)
+	assert.Len(t, scored, 3, "ReScore should truncate to limit")
+}
+
+// TestReScore_RecencyDecay verifies that older decisions score lower due to recency decay.
+func TestReScore_RecencyDecay(t *testing.T) {
+	recent := uuid.New()
+	old := uuid.New()
+
+	decisions := map[uuid.UUID]model.Decision{
+		recent: {
+			ID:        recent,
+			ValidFrom: time.Now(),
+		},
+		old: {
+			ID:        old,
+			ValidFrom: time.Now().Add(-180 * 24 * time.Hour), // 180 days ago
+		},
+	}
+
+	results := []Result{
+		{DecisionID: recent, Score: 0.9},
+		{DecisionID: old, Score: 0.9},
+	}
+
+	scored := ReScore(results, decisions, 10, nil)
+	require.Len(t, scored, 2)
+	assert.Equal(t, recent, scored[0].Decision.ID,
+		"recent decision should rank above an equally-scored old decision due to recency decay")
+	assert.Greater(t, scored[0].SimilarityScore, scored[1].SimilarityScore,
+		"recency decay should create a score difference")
+}
+
+// TestReScore_NilOpts verifies that passing nil opts works correctly (no percentile, no metrics).
+func TestReScore_NilOpts(t *testing.T) {
+	id := uuid.New()
+	decisions := map[uuid.UUID]model.Decision{
+		id: {ID: id, ValidFrom: time.Now()},
+	}
+	results := []Result{{DecisionID: id, Score: 0.8}}
+
+	scored := ReScore(results, decisions, 10, nil)
+	assert.Len(t, scored, 1)
+	assert.Greater(t, float64(scored[0].SimilarityScore), 0.0)
+}
+
+// TestReScore_MetricsWithNilCtx verifies that metrics are not recorded when
+// opts.Ctx is nil (even if opts.Metrics is set).
+func TestReScore_MetricsWithNilCtx(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(nil, nil))
+	metrics := RegisterReScoreMetrics(logger)
+
+	id := uuid.New()
+	decisions := map[uuid.UUID]model.Decision{
+		id: {ID: id, ValidFrom: time.Now(), PrecedentCitationCount: 1},
+	}
+	results := []Result{{DecisionID: id, Score: 0.9}}
+
+	// Ctx is nil but Metrics is set — should not panic.
+	opts := &ReScoreOpts{Metrics: metrics, Ctx: nil}
+	assert.NotPanics(t, func() {
+		scored := ReScore(results, decisions, 10, opts)
+		assert.Len(t, scored, 1)
+	})
+}
+
+// TestReScore_AllSignalsMaximized verifies that when all signals are maximized,
+// the outcome weight approaches 1.0 and the final score is capped at 1.0.
+func TestReScore_AllSignalsMaximized(t *testing.T) {
+	correct := 10
+	id := uuid.New()
+	slowHours := 100.0
+
+	decisions := map[uuid.UUID]model.Decision{
+		id: {
+			ID:                        id,
+			ValidFrom:                 time.Now(),
+			PrecedentCitationCount:    100,
+			AgreementCount:            100,
+			ConflictFate:              model.ConflictFate{Won: 10, Lost: 0},
+			AssessmentSummary:         &model.AssessmentSummary{Total: 10, Correct: correct},
+			SupersessionVelocityHours: &slowHours,
+		},
+	}
+	results := []Result{{DecisionID: id, Score: 1.0}}
+
+	scored := ReScore(results, decisions, 10, nil)
+	require.Len(t, scored, 1)
+	assert.LessOrEqual(t, float64(scored[0].SimilarityScore), 1.0)
+	assert.Greater(t, float64(scored[0].SimilarityScore), 0.9,
+		"all signals maximized should produce a high score")
 }
