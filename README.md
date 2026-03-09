@@ -2,11 +2,11 @@
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8.svg)](https://go.dev/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-336791.svg)](https://www.postgresql.org/)
 
-**Git blame for AI decisions.**
+**Version control for AI decisions.**
 
-Multi-agent AI systems are moving from demos to production, but their decisions are invisible. When something goes wrong, nobody can answer: *who decided what, when, why, and what alternatives were considered?*
+Multi-agent AI systems are moving from demos to production, but their decisions are invisible and uncoordinated. Agents contradict each other, relitigate settled work, and have no shared memory of what's already been decided. When something goes wrong, nobody can answer: *who decided what, when, why, and what alternatives were considered?*
 
-Akashi is the decision audit trail. Every agent decision gets recorded with its full reasoning chain, the alternatives that were weighed, the evidence that informed it, and the confidence level. When the CTO asks "why did the AI do that?" or an auditor asks for proof of decision traceability, you have the answer.
+Akashi is the decision coordination layer. Every agent checks for precedents before deciding and records its full reasoning after. When agents diverge on the same topic, Akashi detects it semantically — and when the CTO asks "why did the AI do that?" or an auditor asks for proof of decision traceability, you have the answer.
 
 ## How it works
 
