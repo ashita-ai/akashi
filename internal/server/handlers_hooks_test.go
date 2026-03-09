@@ -497,17 +497,13 @@ func TestHandleHookPostToolUse_NonBashNonAkashi(t *testing.T) {
 }
 
 func TestHookCheckStore_TTLExpiry(t *testing.T) {
-	s := &hookCheckStore{
-		entries: map[string]time.Time{
-			// Just barely expired (hookCheckTTL is 2 hours).
-			"expired": time.Now().Add(-(hookCheckTTL + time.Second)),
-			// Just within TTL.
-			"valid": time.Now().Add(-(hookCheckTTL - time.Minute)),
-		},
-	}
+	// The store now tracks a single machine-global timestamp, not per-session
+	// entries. Test expired and valid states with separate store instances.
+	expired := &hookCheckStore{lastCheck: time.Now().Add(-(hookCheckTTL + time.Second))}
+	assert.False(t, expired.IsRecent("any"), "check just past TTL should not be recent")
 
-	assert.False(t, s.IsRecent("expired"), "entry just past TTL should not be recent")
-	assert.True(t, s.IsRecent("valid"), "entry just within TTL should be recent")
+	valid := &hookCheckStore{lastCheck: time.Now().Add(-(hookCheckTTL - time.Minute))}
+	assert.True(t, valid.IsRecent("any"), "check just within TTL should be recent")
 }
 
 func TestHookCheckStore_CleanupEmpty(t *testing.T) {
