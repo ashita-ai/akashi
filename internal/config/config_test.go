@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -170,6 +171,10 @@ func TestLoad_WALDisableOverridesExplicitDir(t *testing.T) {
 	if cfg.WALDir != "" {
 		t.Fatalf("expected WALDir to be empty when AKASHI_WAL_DISABLE=true, got %q", cfg.WALDir)
 	}
+}
+
+func floatClose(a, b, eps float64) bool {
+	return math.Abs(a-b) < eps
 }
 
 func contains(s, substr string) bool {
@@ -757,7 +762,7 @@ func validBaseConfig() Config {
 }
 
 func TestConflictProfileDefaults_Balanced(t *testing.T) {
-	p := conflictProfileDefaults("balanced")
+	p := conflictProfileDefaults("balanced", "mxbai-embed-large")
 	if p.significanceThreshold != 0.30 {
 		t.Fatalf("expected significanceThreshold 0.30, got %f", p.significanceThreshold)
 	}
@@ -782,7 +787,7 @@ func TestConflictProfileDefaults_Balanced(t *testing.T) {
 }
 
 func TestConflictProfileDefaults_HighPrecision(t *testing.T) {
-	p := conflictProfileDefaults("high_precision")
+	p := conflictProfileDefaults("high_precision", "mxbai-embed-large")
 	if p.significanceThreshold != 0.40 {
 		t.Fatalf("expected significanceThreshold 0.40, got %f", p.significanceThreshold)
 	}
@@ -804,7 +809,7 @@ func TestConflictProfileDefaults_HighPrecision(t *testing.T) {
 }
 
 func TestConflictProfileDefaults_HighRecall(t *testing.T) {
-	p := conflictProfileDefaults("high_recall")
+	p := conflictProfileDefaults("high_recall", "mxbai-embed-large")
 	if p.significanceThreshold != 0.20 {
 		t.Fatalf("expected significanceThreshold 0.20, got %f", p.significanceThreshold)
 	}
@@ -814,14 +819,15 @@ func TestConflictProfileDefaults_HighRecall(t *testing.T) {
 	if p.crossEncoderThreshold != 0.35 {
 		t.Fatalf("expected crossEncoderThreshold 0.35, got %f", p.crossEncoderThreshold)
 	}
-	if p.claimTopicSimFloor != 0.55 {
-		t.Fatalf("expected claimTopicSimFloor 0.55, got %f", p.claimTopicSimFloor)
+	// Similarity thresholds are model base - 0.05; use tolerance for float arithmetic.
+	if !floatClose(p.claimTopicSimFloor, 0.55, 1e-9) {
+		t.Fatalf("expected claimTopicSimFloor ~0.55, got %f", p.claimTopicSimFloor)
 	}
-	if p.claimDivFloor != 0.10 {
-		t.Fatalf("expected claimDivFloor 0.10, got %f", p.claimDivFloor)
+	if !floatClose(p.claimDivFloor, 0.10, 1e-9) {
+		t.Fatalf("expected claimDivFloor ~0.10, got %f", p.claimDivFloor)
 	}
-	if p.decisionTopicSimFloor != 0.65 {
-		t.Fatalf("expected decisionTopicSimFloor 0.65, got %f", p.decisionTopicSimFloor)
+	if !floatClose(p.decisionTopicSimFloor, 0.65, 1e-9) {
+		t.Fatalf("expected decisionTopicSimFloor ~0.65, got %f", p.decisionTopicSimFloor)
 	}
 	if p.decayLambda != 0.005 {
 		t.Fatalf("expected decayLambda 0.005, got %f", p.decayLambda)
@@ -829,8 +835,8 @@ func TestConflictProfileDefaults_HighRecall(t *testing.T) {
 }
 
 func TestConflictProfileDefaults_UnknownFallsBackToBalanced(t *testing.T) {
-	unknown := conflictProfileDefaults("nonexistent_profile")
-	balanced := conflictProfileDefaults("balanced")
+	unknown := conflictProfileDefaults("nonexistent_profile", "mxbai-embed-large")
+	balanced := conflictProfileDefaults("balanced", "mxbai-embed-large")
 
 	if unknown != balanced {
 		t.Fatalf("expected unknown profile to match balanced defaults\nunknown:  %+v\nbalanced: %+v", unknown, balanced)
@@ -838,8 +844,8 @@ func TestConflictProfileDefaults_UnknownFallsBackToBalanced(t *testing.T) {
 }
 
 func TestConflictProfileDefaults_CaseInsensitive(t *testing.T) {
-	upper := conflictProfileDefaults("HIGH_PRECISION")
-	lower := conflictProfileDefaults("high_precision")
+	upper := conflictProfileDefaults("HIGH_PRECISION", "mxbai-embed-large")
+	lower := conflictProfileDefaults("high_precision", "mxbai-embed-large")
 
 	if upper != lower {
 		t.Fatalf("expected case-insensitive matching\nupper: %+v\nlower: %+v", upper, lower)
@@ -889,11 +895,12 @@ func TestLoad_ConflictProfileHighRecall(t *testing.T) {
 	if cfg.CrossEncoderThreshold != 0.35 {
 		t.Fatalf("expected cross encoder threshold 0.35, got %f", cfg.CrossEncoderThreshold)
 	}
-	if cfg.ConflictClaimTopicSimFloor != 0.55 {
-		t.Fatalf("expected claim topic sim floor 0.55, got %f", cfg.ConflictClaimTopicSimFloor)
+	// Similarity thresholds are model base - 0.05; use tolerance for float arithmetic.
+	if !floatClose(cfg.ConflictClaimTopicSimFloor, 0.55, 1e-9) {
+		t.Fatalf("expected claim topic sim floor ~0.55, got %f", cfg.ConflictClaimTopicSimFloor)
 	}
-	if cfg.ConflictDecisionTopicSimFloor != 0.65 {
-		t.Fatalf("expected decision topic sim floor 0.65, got %f", cfg.ConflictDecisionTopicSimFloor)
+	if !floatClose(cfg.ConflictDecisionTopicSimFloor, 0.65, 1e-9) {
+		t.Fatalf("expected decision topic sim floor ~0.65, got %f", cfg.ConflictDecisionTopicSimFloor)
 	}
 }
 
