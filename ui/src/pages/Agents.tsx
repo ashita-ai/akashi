@@ -118,8 +118,11 @@ export default function Agents() {
 
   return (
     <div className="space-y-6 animate-page">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold tracking-tight">Agents</h1>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Agents</h1>
+          <p className="mt-0.5 text-sm text-muted-foreground">Registered agents and their access grants</p>
+        </div>
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
           <DialogTrigger asChild>
             <Button size="sm">

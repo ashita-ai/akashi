@@ -523,10 +523,13 @@ export default function Conflicts() {
 
   return (
     <div className="space-y-6 animate-page">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold tracking-tight">Conflicts</h1>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Conflicts</h1>
+          <p className="mt-0.5 text-sm text-muted-foreground">Contradictions detected between agent decisions</p>
+        </div>
         {data?.total != null && data.total > 0 && (
-          <Badge variant="outline">
+          <Badge variant="outline" className="shrink-0 mt-1">
             {data.total} group{data.total !== 1 ? "s" : ""}
           </Badge>
         )}
@@ -584,12 +587,20 @@ export default function Conflicts() {
           ))}
         </div>
       ) : !groups?.length ? (
-        <div className="flex flex-col items-center py-12 text-center">
-          <AlertTriangle className="h-12 w-12 text-muted-foreground/30 mb-4" />
-          <p className="text-sm text-muted-foreground">
-            {agentFilter || statusFilter
-              ? "No conflicts match the current filters."
-              : "No conflicts detected. Agents are in agreement."}
+        <div className="flex flex-col items-center py-14 text-center">
+          <div className="relative mb-4">
+            <div className={`absolute inset-0 rounded-full blur-xl ${agentFilter || statusFilter !== "open" ? "bg-primary/8" : "bg-emerald-500/10"}`} />
+            <AlertTriangle className={`relative h-10 w-10 ${agentFilter || statusFilter !== "open" ? "text-primary/25" : "text-emerald-500/30"}`} />
+          </div>
+          <p className="text-sm font-medium text-muted-foreground">
+            {agentFilter || statusFilter !== "open"
+              ? "No conflicts match the current filters"
+              : "No open conflicts"}
+          </p>
+          <p className="text-xs text-muted-foreground/50 mt-1">
+            {agentFilter || statusFilter !== "open"
+              ? "Try adjusting your filters."
+              : "All agents are in agreement."}
           </p>
         </div>
       ) : (
