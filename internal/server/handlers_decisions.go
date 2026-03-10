@@ -5,11 +5,13 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/ashita-ai/akashi/internal/auth"
+	"github.com/ashita-ai/akashi/internal/authz"
 	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
@@ -78,7 +80,15 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	agentContext := h.buildTraceAgentContext(r, orgID, claims, req, resolvedAgent)
+	// Build agent context concurrently with the idempotency check — they're independent.
+	// agentContext may call GetAPIKeyByID (DB round trip); idempotency calls BeginIdempotency.
+	var agentContext map[string]any
+	var ctxWg sync.WaitGroup
+	ctxWg.Add(1)
+	go func() {
+		defer ctxWg.Done()
+		agentContext = h.buildTraceAgentContext(r, orgID, claims, req, resolvedAgent)
+	}()
 
 	idemPayload := struct {
 		Request       model.TraceRequest `json:"request"`
@@ -93,6 +103,8 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	if !proceed {
 		return
 	}
+
+	ctxWg.Wait()
 
 	result, err := h.decisionSvc.Trace(r.Context(), orgID, decisions.TraceInput{
 		AgentID:      req.AgentID,
@@ -238,22 +250,41 @@ func (h *Handlers) HandleGetDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Populate consensus scores and outcome signals (computed at query time, not stored).
-	agreementCount, conflictCount, err := h.decisionSvc.ConsensusScores(r.Context(), d.ID, orgID)
-	if err == nil {
+	// Populate enrichment data concurrently — these are independent read-only queries.
+	var (
+		agreementCount, conflictCount int
+		consensusErr                  error
+		signals                       model.OutcomeSignals
+		signalsErr                    error
+		summary                       model.AssessmentSummary
+		summaryErr                    error
+	)
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		agreementCount, conflictCount, consensusErr = h.decisionSvc.ConsensusScores(r.Context(), d.ID, orgID)
+	}()
+	go func() {
+		defer wg.Done()
+		signals, signalsErr = h.db.GetDecisionOutcomeSignals(r.Context(), d.ID, orgID)
+	}()
+	go func() {
+		defer wg.Done()
+		summary, summaryErr = h.db.GetAssessmentSummary(r.Context(), orgID, d.ID)
+	}()
+	wg.Wait()
+
+	if consensusErr == nil {
 		d.AgreementCount = agreementCount
 		d.ConflictCount = conflictCount
 	}
-
-	signals, err := h.db.GetDecisionOutcomeSignals(r.Context(), d.ID, orgID)
-	if err == nil {
+	if signalsErr == nil {
 		d.SupersessionVelocityHours = signals.SupersessionVelocityHours
 		d.PrecedentCitationCount = signals.PrecedentCitationCount
 		d.ConflictFate = signals.ConflictFate
 	}
-
-	summary, err := h.db.GetAssessmentSummary(r.Context(), orgID, d.ID)
-	if err == nil {
+	if summaryErr == nil {
 		d.AssessmentSummary = &summary
 	}
 
@@ -444,6 +475,18 @@ func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Preload the RBAC grant set concurrently with the check queries.
+	// For admin+ callers this returns nil immediately (no DB call).
+	// For agents, this overlaps the grant DB lookup with the search/conflict queries.
+	var granted map[string]bool
+	var grantErr error
+	var grantWg sync.WaitGroup
+	grantWg.Add(1)
+	go func() {
+		defer grantWg.Done()
+		granted, grantErr = authz.LoadGrantedSet(r.Context(), h.db, claims, h.grantCache)
+	}()
+
 	resp, err := h.decisionSvc.Check(r.Context(), orgID, decisions.CheckInput{
 		DecisionType: req.DecisionType,
 		Query:        req.Query,
@@ -456,15 +499,29 @@ func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp.Decisions, err = filterDecisionsByAccess(r.Context(), h.db, claims, resp.Decisions, h.grantCache)
-	if err != nil {
-		h.writeInternalError(w, r, "authorization check failed", err)
+	grantWg.Wait()
+	if grantErr != nil {
+		h.writeInternalError(w, r, "authorization check failed", grantErr)
 		return
 	}
-	resp.Conflicts, err = filterConflictsByAccess(r.Context(), h.db, claims, resp.Conflicts, h.grantCache)
-	if err != nil {
-		h.writeInternalError(w, r, "authorization check failed", err)
-		return
+
+	// Apply RBAC filtering with the preloaded grant set (no further DB calls).
+	if granted != nil {
+		filtered := make([]model.Decision, 0, len(resp.Decisions))
+		for _, d := range resp.Decisions {
+			if granted[d.AgentID] {
+				filtered = append(filtered, d)
+			}
+		}
+		resp.Decisions = filtered
+
+		filteredConflicts := make([]model.DecisionConflict, 0, len(resp.Conflicts))
+		for _, c := range resp.Conflicts {
+			if granted[c.AgentA] && granted[c.AgentB] {
+				filteredConflicts = append(filteredConflicts, c)
+			}
+		}
+		resp.Conflicts = filteredConflicts
 	}
 	resp.HasPrecedent = len(resp.Decisions) > 0
 

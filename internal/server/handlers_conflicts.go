@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -484,14 +485,26 @@ func (h *Handlers) computeRecommendation(ctx context.Context, c model.DecisionCo
 		winRates = map[string]storage.AgentWinRate{}
 	}
 
-	depthA, err := h.db.GetRevisionDepth(ctx, c.DecisionAID, orgID)
-	if err != nil {
-		h.logger.Warn("recommendation: failed to get revision depth for decision A", "error", err)
-	}
+	// Fetch revision depths concurrently — they're independent queries.
+	var depthA, depthB int
+	var errA, errB error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		depthA, errA = h.db.GetRevisionDepth(ctx, c.DecisionAID, orgID)
+	}()
+	go func() {
+		defer wg.Done()
+		depthB, errB = h.db.GetRevisionDepth(ctx, c.DecisionBID, orgID)
+	}()
+	wg.Wait()
 
-	depthB, err := h.db.GetRevisionDepth(ctx, c.DecisionBID, orgID)
-	if err != nil {
-		h.logger.Warn("recommendation: failed to get revision depth for decision B", "error", err)
+	if errA != nil {
+		h.logger.Warn("recommendation: failed to get revision depth for decision A", "error", errA)
+	}
+	if errB != nil {
+		h.logger.Warn("recommendation: failed to get revision depth for decision B", "error", errB)
 	}
 
 	return conflicts.Recommend(conflicts.RecommendationInput{

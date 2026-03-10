@@ -2,6 +2,7 @@
 package server
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -716,6 +717,56 @@ func localhostOnly(apiKey string, next http.Handler) http.Handler {
 		}
 		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "hook endpoints are localhost-only")
 	})
+}
+
+// gzipMiddleware compresses JSON API responses for clients that accept gzip.
+// Uses BestSpeed to minimize CPU overhead on hot paths (check, trace).
+func gzipMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip SSE streams — they use chunked transfer encoding.
+		if r.URL.Path == "/v1/subscribe" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		gz, err := gzip.NewWriterLevel(w, gzip.BestSpeed)
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Vary", "Accept-Encoding")
+		w.Header().Del("Content-Length")
+
+		gw := &gzipResponseWriter{ResponseWriter: w, Writer: gz}
+		defer func() {
+			// Best-effort close; the response is already written so there's
+			// nothing actionable on error, but we satisfy errcheck.
+			_ = gz.Close()
+		}()
+
+		next.ServeHTTP(gw, r)
+	})
+}
+
+// gzipResponseWriter wraps http.ResponseWriter to pipe through gzip.
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	Writer *gzip.Writer
+}
+
+func (g *gzipResponseWriter) Write(b []byte) (int, error) {
+	return g.Writer.Write(b)
+}
+
+func (g *gzipResponseWriter) WriteHeader(statusCode int) {
+	g.ResponseWriter.Header().Del("Content-Length")
+	g.ResponseWriter.WriteHeader(statusCode)
 }
 
 // errBodyTooLarge is returned by decodeJSON when the request body exceeds maxBytes.

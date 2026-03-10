@@ -80,6 +80,7 @@ type ConflictFilters struct {
 	AgentID      *string
 	ConflictKind *string    // "cross_agent" or "self_contradiction"
 	Status       *string    // "open", "acknowledged", "resolved", "wont_fix"
+	StatusIn     []string   // Multi-value status filter (OR). Takes precedence over Status when set.
 	Severity     *string    // "critical", "high", "medium", "low"
 	Category     *string    // "factual", "assessment", "strategic", "temporal"
 	DecisionID   *uuid.UUID // conflicts involving this decision (A or B side)
