@@ -1,0 +1,1116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Akashi — Version Control for AI Decisions</title>
+  <meta name="description" content="Decision coordination layer for multi-agent AI. Every agent checks for precedents before deciding and records its full reasoning after. Open source." />
+  <meta property="og:title" content="Akashi — Version Control for AI Decisions" />
+  <meta property="og:description" content="Agents contradict each other, relitigate settled work, and leave no audit trail. Akashi is the coordination layer that fixes this." />
+  <meta property="og:type" content="website" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⬡</text></svg>" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #0d1117;
+      --bg-card:    #161b22;
+      --bg-code:    #010409;
+      --border:     #30363d;
+      --border-dim: #21262d;
+      --text:       #e6edf3;
+      --text-dim:   #8b949e;
+      --text-muted: #6e7681;
+      --accent:     #06b6d4;
+      --accent-dim: #0e7490;
+      --green:      #3fb950;
+      --yellow:     #d29922;
+      --red:        #f85149;
+      --purple:     #a371f7;
+      --radius:     8px;
+      --radius-lg:  12px;
+      --font-sans:  -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      --font-mono:  "SF Mono", "Fira Code", "Cascadia Code", Consolas, "Liberation Mono", monospace;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 16px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── NAV ─────────────────────────────────────────────── */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 2rem;
+      height: 56px;
+      background: rgba(13, 17, 23, 0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-dim);
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: -0.01em;
+    }
+
+    .nav-logo .hex { color: var(--accent); font-size: 1.2rem; }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      list-style: none;
+    }
+
+    .nav-links a {
+      color: var(--text-dim);
+      font-size: 0.9rem;
+      transition: color 0.15s;
+    }
+
+    .nav-links a:hover { color: var(--text); text-decoration: none; }
+
+    .nav-github {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.4rem 1rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text) !important;
+      font-size: 0.875rem;
+      font-weight: 500;
+      background: var(--bg-card);
+      transition: border-color 0.15s, background 0.15s;
+    }
+
+    .nav-github:hover {
+      border-color: var(--accent);
+      background: #1c2028;
+      text-decoration: none !important;
+    }
+
+    /* ── LAYOUT HELPERS ──────────────────────────────────── */
+    .container {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 0 2rem;
+    }
+
+    section { padding: 6rem 0; }
+    section + section { border-top: 1px solid var(--border-dim); }
+
+    .label {
+      display: inline-block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 0.75rem;
+    }
+
+    h1, h2, h3 { letter-spacing: -0.02em; line-height: 1.2; }
+
+    h1 { font-size: clamp(2.2rem, 5vw, 3.5rem); font-weight: 700; }
+    h2 { font-size: clamp(1.6rem, 3.5vw, 2.25rem); font-weight: 700; }
+    h3 { font-size: 1.125rem; font-weight: 600; }
+
+    .text-dim { color: var(--text-dim); }
+    .text-accent { color: var(--accent); }
+    .text-green { color: var(--green); }
+
+    /* ── HERO ─────────────────────────────────────────────── */
+    #hero {
+      padding: 7rem 0 5rem;
+      border-top: none;
+    }
+
+    .hero-inner {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4rem;
+      align-items: center;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.3rem 0.75rem;
+      border: 1px solid var(--accent-dim);
+      border-radius: 999px;
+      font-size: 0.8rem;
+      color: var(--accent);
+      background: rgba(6, 182, 212, 0.06);
+      margin-bottom: 1.25rem;
+    }
+
+    .hero-badge .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--green);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .hero-tagline {
+      margin: 1.5rem 0 1rem;
+      color: var(--text-dim);
+      font-size: 1.15rem;
+      line-height: 1.7;
+      max-width: 520px;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 0.75rem;
+      margin-top: 2rem;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.6rem 1.25rem;
+      border-radius: var(--radius);
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+      border: 1px solid transparent;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #000;
+      border-color: var(--accent);
+    }
+
+    .btn-primary:hover {
+      background: #22d3ee;
+      border-color: #22d3ee;
+      text-decoration: none;
+      color: #000;
+    }
+
+    .btn-secondary {
+      background: transparent;
+      color: var(--text);
+      border-color: var(--border);
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--text-dim);
+      background: var(--bg-card);
+      text-decoration: none;
+    }
+
+    /* ── TERMINAL ─────────────────────────────────────────── */
+    .terminal {
+      background: var(--bg-code);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.6;
+    }
+
+    .terminal-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.75rem 1rem;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .terminal-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+
+    .t-red    { background: #ff5f56; }
+    .t-yellow { background: #ffbd2e; }
+    .t-green  { background: #27c93f; }
+
+    .terminal-title {
+      margin-left: 0.5rem;
+      color: var(--text-muted);
+      font-size: 0.78rem;
+    }
+
+    .terminal-body {
+      padding: 1.25rem 1.25rem;
+    }
+
+    .t-comment { color: var(--text-muted); }
+    .t-prompt  { color: var(--text-muted); user-select: none; }
+    .t-cmd     { color: var(--text); }
+    .t-key     { color: var(--purple); }
+    .t-str     { color: #a5d6ff; }
+    .t-num     { color: #79c0ff; }
+    .t-fn      { color: var(--accent); }
+    .t-out     { color: var(--text-dim); }
+    .t-good    { color: var(--green); }
+    .t-warn    { color: var(--yellow); }
+
+    .t-line { display: block; }
+    .t-line + .t-line { margin-top: 0; }
+    .t-blank { display: block; height: 0.8em; }
+
+    /* ── PROBLEM ─────────────────────────────────────────── */
+    .problem-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.25rem;
+      margin-top: 3rem;
+    }
+
+    .problem-card {
+      padding: 1.75rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+    }
+
+    .problem-icon {
+      font-size: 1.75rem;
+      margin-bottom: 1rem;
+    }
+
+    .problem-card h3 { margin-bottom: 0.5rem; }
+
+    .problem-card p {
+      color: var(--text-dim);
+      font-size: 0.9rem;
+      line-height: 1.65;
+    }
+
+    /* ── HOW IT WORKS ─────────────────────────────────────── */
+    .primitives {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      margin-top: 3rem;
+    }
+
+    .primitive-card {
+      padding: 1.75rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .primitive-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+    }
+
+    .primitive-check::before { background: var(--accent); }
+    .primitive-trace::before { background: var(--green); }
+
+    .primitive-card h3 {
+      font-family: var(--font-mono);
+      color: var(--accent);
+      margin-bottom: 0.5rem;
+    }
+
+    .primitive-trace h3 { color: var(--green); }
+
+    .primitive-card p {
+      color: var(--text-dim);
+      font-size: 0.9rem;
+      line-height: 1.65;
+      margin-bottom: 1.25rem;
+    }
+
+    .what-you-get {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .what-you-get li {
+      font-size: 0.85rem;
+      color: var(--text-dim);
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+    }
+
+    .what-you-get li::before {
+      content: '→';
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    .pipeline {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 3rem;
+      flex-wrap: wrap;
+    }
+
+    .pipeline-step {
+      padding: 0.5rem 1rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 0.85rem;
+      color: var(--text);
+    }
+
+    .pipeline-arrow {
+      color: var(--text-muted);
+      font-size: 1rem;
+    }
+
+    /* ── CONFLICT DETECTION ───────────────────────────────── */
+    .formula-block {
+      margin: 2rem 0;
+      padding: 1.5rem 1.75rem;
+      background: var(--bg-code);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
+      color: var(--text-dim);
+    }
+
+    .formula-block .formula-main {
+      font-size: 1rem;
+      color: var(--text);
+      margin-bottom: 1rem;
+    }
+
+    .formula-vars {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0.4rem 2rem;
+    }
+
+    .formula-var {
+      display: flex;
+      gap: 0.5rem;
+      font-size: 0.82rem;
+    }
+
+    .formula-var .var-name { color: var(--accent); }
+
+    .lifecycle {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-top: 2rem;
+      flex-wrap: wrap;
+    }
+
+    .lifecycle-state {
+      padding: 0.4rem 0.9rem;
+      border-radius: 999px;
+      font-size: 0.82rem;
+      font-weight: 500;
+      border: 1px solid;
+    }
+
+    .state-open        { border-color: var(--yellow); color: var(--yellow); background: rgba(210,153,34,0.08); }
+    .state-ack         { border-color: var(--text-muted); color: var(--text-dim); background: rgba(139,148,158,0.08); }
+    .state-resolved    { border-color: var(--green); color: var(--green); background: rgba(63,185,80,0.08); }
+    .state-wontfix     { border-color: var(--text-muted); color: var(--text-muted); background: transparent; }
+
+    .lifecycle-arrow   { color: var(--text-muted); font-size: 0.9rem; }
+
+    /* ── QUICK START ──────────────────────────────────────── */
+    .quickstart-tabs {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      margin-top: 2.5rem;
+    }
+
+    .tab-btn {
+      padding: 0.6rem 1.25rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--text-dim);
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+      margin-bottom: -1px;
+      font-family: var(--font-sans);
+    }
+
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    .tab-pane { display: none; padding-top: 1.5rem; }
+    .tab-pane.active { display: block; }
+
+    pre {
+      background: var(--bg-code);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 1.25rem 1.5rem;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 0.83rem;
+      line-height: 1.65;
+      color: var(--text-dim);
+    }
+
+    pre .hl      { color: var(--text); }
+    pre .comment { color: var(--text-muted); }
+    pre .key     { color: var(--purple); }
+    pre .str     { color: #a5d6ff; }
+    pre .kw      { color: #ff7b72; }
+    pre .num     { color: #79c0ff; }
+    pre .fn      { color: var(--accent); }
+    pre .flag    { color: var(--green); }
+
+    .tab-note {
+      margin-top: 0.75rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    /* ── MCP ──────────────────────────────────────────────── */
+    .mcp-tools {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+      margin-top: 2.5rem;
+    }
+
+    .mcp-tool {
+      padding: 1.25rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+
+    .mcp-tool-name {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: var(--accent);
+      margin-bottom: 0.4rem;
+    }
+
+    .mcp-tool p {
+      font-size: 0.82rem;
+      color: var(--text-dim);
+      line-height: 1.55;
+    }
+
+    /* ── WHAT GETS RECORDED ───────────────────────────────── */
+    .fields-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0.75rem;
+      margin-top: 2.5rem;
+    }
+
+    .field-item {
+      display: flex;
+      gap: 1rem;
+      padding: 1rem 1.25rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      align-items: flex-start;
+    }
+
+    .field-icon { font-size: 1.2rem; flex-shrink: 0; margin-top: 0.05rem; }
+
+    .field-item h4 {
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin-bottom: 0.2rem;
+    }
+
+    .field-item p {
+      font-size: 0.82rem;
+      color: var(--text-dim);
+      line-height: 1.5;
+    }
+
+    /* ── SDKS ─────────────────────────────────────────────── */
+    .sdk-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.25rem;
+      margin-top: 2.5rem;
+    }
+
+    .sdk-card {
+      padding: 1.75rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .sdk-lang {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      font-weight: 600;
+    }
+
+    .sdk-badge {
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+    }
+
+    .badge-go   { background: rgba(0, 173, 216, 0.15); color: #00add8; }
+    .badge-py   { background: rgba(55, 118, 171, 0.2); color: #4ea8de; }
+    .badge-ts   { background: rgba(49, 120, 198, 0.15); color: #3178c6; }
+
+    .sdk-install {
+      background: var(--bg-code);
+      border: 1px solid var(--border-dim);
+      border-radius: var(--radius);
+      padding: 0.6rem 0.85rem;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-dim);
+      word-break: break-all;
+    }
+
+    .sdk-card p {
+      font-size: 0.85rem;
+      color: var(--text-dim);
+      line-height: 1.6;
+    }
+
+    /* ── FOOTER ───────────────────────────────────────────── */
+    footer {
+      border-top: 1px solid var(--border-dim);
+      padding: 3rem 0;
+    }
+
+    .footer-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    .footer-left {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .footer-logo {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-weight: 600;
+      color: var(--text);
+      font-size: 0.95rem;
+    }
+
+    .footer-logo .hex { color: var(--accent); }
+
+    .footer-copy {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 1.5rem;
+      list-style: none;
+      flex-wrap: wrap;
+    }
+
+    .footer-links a {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      transition: color 0.15s;
+    }
+
+    .footer-links a:hover { color: var(--text); text-decoration: none; }
+
+    /* ── RESPONSIVE ───────────────────────────────────────── */
+    @media (max-width: 768px) {
+      .hero-inner { grid-template-columns: 1fr; gap: 2.5rem; }
+      .problem-grid { grid-template-columns: 1fr; }
+      .primitives { grid-template-columns: 1fr; }
+      .mcp-tools { grid-template-columns: 1fr 1fr; }
+      .fields-grid { grid-template-columns: 1fr; }
+      .sdk-grid { grid-template-columns: 1fr; }
+      .formula-vars { grid-template-columns: 1fr; }
+      nav { padding: 0 1rem; }
+      .container { padding: 0 1.25rem; }
+      section { padding: 4rem 0; }
+      .nav-links { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── NAV ──────────────────────────────────────────────────── -->
+<nav>
+  <div class="nav-logo">
+    <span class="hex">⬡</span> Akashi
+  </div>
+  <ul class="nav-links">
+    <li><a href="#how-it-works">How it works</a></li>
+    <li><a href="#quick-start">Quick start</a></li>
+    <li><a href="#mcp">MCP</a></li>
+    <li><a href="#sdks">SDKs</a></li>
+    <li><a href="https://github.com/ashita-ai/akashi/tree/main/docs">Docs</a></li>
+  </ul>
+  <a href="https://github.com/ashita-ai/akashi" class="nav-github" target="_blank" rel="noopener">
+    <svg height="16" width="16" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+    </svg>
+    GitHub
+  </a>
+</nav>
+
+<!-- ── HERO ──────────────────────────────────────────────────── -->
+<section id="hero">
+  <div class="container">
+    <div class="hero-inner">
+      <div>
+        <div class="hero-badge">
+          <span class="dot"></span>
+          Open source · Apache 2.0
+        </div>
+        <h1>Version control<br/>for AI decisions.</h1>
+        <p class="hero-tagline">
+          Multi-agent AI systems make thousands of decisions. Akashi makes them visible, auditable, and coordinated — so agents build on each other's work instead of contradicting it.
+        </p>
+        <div class="hero-actions">
+          <a href="#quick-start" class="btn btn-primary">Get started</a>
+          <a href="https://github.com/ashita-ai/akashi" class="btn btn-secondary" target="_blank" rel="noopener">
+            <svg height="15" width="15" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+            </svg>
+            ashita-ai/akashi
+          </a>
+        </div>
+      </div>
+
+      <div class="terminal">
+        <div class="terminal-header">
+          <div class="terminal-dot t-red"></div>
+          <div class="terminal-dot t-yellow"></div>
+          <div class="terminal-dot t-green"></div>
+          <span class="terminal-title">agent workflow</span>
+        </div>
+        <div class="terminal-body">
+          <span class="t-line t-comment"># Before deciding, check for precedents</span>
+          <span class="t-line">
+            <span class="t-fn">akashi_check</span>
+            <span class="t-out">(</span>
+            <span class="t-key">query</span><span class="t-out">=</span><span class="t-str">"database for session state"</span>
+            <span class="t-out">)</span>
+          </span>
+          <span class="t-blank"></span>
+          <span class="t-line t-out">  has_precedent: true</span>
+          <span class="t-line t-out">  decisions:</span>
+          <span class="t-line t-good">    ✓ "use Redis for session state" (0.88 confidence)</span>
+          <span class="t-line t-out">      decided by: planner · 3 days ago</span>
+          <span class="t-line t-out">      reasoning: "sub-millisecond reads, TTL native..."</span>
+          <span class="t-blank"></span>
+          <span class="t-line t-comment"># Align with precedent and record</span>
+          <span class="t-line">
+            <span class="t-fn">akashi_trace</span>
+            <span class="t-out">(</span>
+          </span>
+          <span class="t-line t-out">  <span class="t-key">outcome</span>=<span class="t-str">"use Redis, consistent with planner"</span>,</span>
+          <span class="t-line t-out">  <span class="t-key">confidence</span>=<span class="t-num">0.9</span>,</span>
+          <span class="t-line t-out">  <span class="t-key">reasoning</span>=<span class="t-str">"precedent validated..."</span></span>
+          <span class="t-line t-out">)</span>
+          <span class="t-blank"></span>
+          <span class="t-line t-good">  ✓ Decision recorded · no conflicts detected</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── PROBLEM ────────────────────────────────────────────────── -->
+<section id="problem">
+  <div class="container">
+    <span class="label">The problem</span>
+    <h2>Multi-agent AI has a<br/>coordination problem.</h2>
+    <div class="problem-grid">
+      <div class="problem-card">
+        <div class="problem-icon">⚡</div>
+        <h3>Agents contradict each other</h3>
+        <p>A planner recommends microservices. A coder builds a monolith. Neither knows the other already decided. The conflict surfaces as a production bug, not a design discussion.</p>
+      </div>
+      <div class="problem-card">
+        <div class="problem-icon">🌊</div>
+        <h3>Decisions evaporate</h3>
+        <p>Agents relitigate settled questions on every session. There's no shared memory of what's already been decided, why, and what alternatives were considered and rejected.</p>
+      </div>
+      <div class="problem-card">
+        <div class="problem-icon">🔍</div>
+        <h3>No audit trail</h3>
+        <p>When something goes wrong, nobody can answer: <em>who decided what, when, why, and what alternatives were considered?</em> Compliance asks. You have nothing.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── HOW IT WORKS ───────────────────────────────────────────── -->
+<section id="how-it-works">
+  <div class="container">
+    <span class="label">How it works</span>
+    <h2>Two primitives.<br/>Every agent. Every decision.</h2>
+
+    <div class="primitives">
+      <div class="primitive-card primitive-check">
+        <h3>akashi_check</h3>
+        <p>Before making a decision, an agent queries the audit trail. Akashi returns the most relevant past decisions — re-ranked by assessment outcomes, citation count, and recency — plus any active conflicts involving those precedents.</p>
+        <ul class="what-you-get">
+          <li>Relevant precedents with full reasoning</li>
+          <li>Active conflicts in the decision area</li>
+          <li>Resolved conflicts and their winning approach</li>
+          <li>Precedent reference to cite in the trace</li>
+        </ul>
+      </div>
+      <div class="primitive-card primitive-trace">
+        <h3>akashi_trace</h3>
+        <p>After deciding, an agent records its full reasoning. Five things happen atomically: embeddings are computed, a completeness score is assigned, everything commits to the database, conflict detection runs asynchronously, and subscribers are notified.</p>
+        <ul class="what-you-get">
+          <li>Decision, confidence, and full reasoning</li>
+          <li>Rejected alternatives with scores</li>
+          <li>Supporting evidence with provenance</li>
+          <li>Integrity proof (SHA-256 + Merkle batch)</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="pipeline" style="margin-top: 2.5rem;">
+      <div class="pipeline-step">Agent decides</div>
+      <div class="pipeline-arrow">→</div>
+      <div class="pipeline-step">akashi_trace</div>
+      <div class="pipeline-arrow">→</div>
+      <div class="pipeline-step">Embeddings computed</div>
+      <div class="pipeline-arrow">→</div>
+      <div class="pipeline-step">Conflict detection</div>
+      <div class="pipeline-arrow">→</div>
+      <div class="pipeline-step">LLM validation</div>
+      <div class="pipeline-arrow">→</div>
+      <div class="pipeline-step">Subscribers notified</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── CONFLICT DETECTION ─────────────────────────────────────── -->
+<section id="conflicts">
+  <div class="container">
+    <span class="label">Conflict detection</span>
+    <h2>Semantic, not syntactic.</h2>
+    <p class="text-dim" style="margin-top: 1rem; max-width: 600px; line-height: 1.7;">
+      Conflicts are detected semantically. A planner recommending microservices and a coder recommending a monolith for the same system will surface as a conflict — regardless of what <code style="font-family: var(--font-mono); font-size: 0.85em; color: var(--text);">decision_type</code> either agent used.
+    </p>
+
+    <div class="formula-block">
+      <div class="formula-main">significance = topic_similarity × outcome_divergence × confidence_weight × temporal_decay</div>
+      <div class="formula-vars">
+        <div class="formula-var"><span class="var-name">topic_similarity</span><span>— semantic distance between decision embeddings</span></div>
+        <div class="formula-var"><span class="var-name">outcome_divergence</span><span>— stance divergence on the conclusion</span></div>
+        <div class="formula-var"><span class="var-name">confidence_weight</span><span>— low-confidence decisions contribute less</span></div>
+        <div class="formula-var"><span class="var-name">temporal_decay</span><span>— older decisions decay in significance</span></div>
+      </div>
+    </div>
+
+    <p class="text-dim" style="font-size: 0.9rem;">Pairs above the significance threshold are validated by an LLM, which classifies the relationship as <em>contradiction</em>, <em>supersession</em>, <em>complementary</em>, <em>refinement</em>, or <em>unrelated</em>. Only genuine conflicts are stored. Conflict lifecycle:</p>
+
+    <div class="lifecycle">
+      <div class="lifecycle-state state-open">open</div>
+      <div class="lifecycle-arrow">→</div>
+      <div class="lifecycle-state state-ack">acknowledged</div>
+      <div class="lifecycle-arrow">→</div>
+      <div class="lifecycle-state state-resolved">resolved</div>
+      <div class="lifecycle-arrow">or</div>
+      <div class="lifecycle-state state-wontfix">wont_fix</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── QUICK START ────────────────────────────────────────────── -->
+<section id="quick-start">
+  <div class="container">
+    <span class="label">Quick start</span>
+    <h2>Three modes. Pick one.</h2>
+
+    <div class="quickstart-tabs">
+      <button class="tab-btn active" onclick="switchTab(this, 'tab-lite')">Local-lite (no Docker)</button>
+      <button class="tab-btn" onclick="switchTab(this, 'tab-docker')">Complete stack</button>
+      <button class="tab-btn" onclick="switchTab(this, 'tab-self')">Self-hosted</button>
+    </div>
+
+    <div id="tab-lite" class="tab-pane active">
+      <pre><span class="comment"># Zero-dependency mode — SQLite backend, all 6 MCP tools work identically</span>
+<span class="hl">go build -o bin/akashi-local ./cmd/akashi-local</span>
+<span class="hl">./bin/akashi-local</span>
+
+<span class="comment"># Add to Claude Code</span>
+<span class="hl">claude mcp add akashi-local -- ./bin/akashi-local</span>
+
+<span class="comment"># Or add to Cursor / Windsurf (~/.cursor/mcp.json)</span>
+{
+  <span class="key">"mcpServers"</span>: {
+    <span class="key">"akashi"</span>: { <span class="key">"command"</span>: <span class="str">"/path/to/bin/akashi-local"</span> }
+  }
+}</pre>
+      <p class="tab-note">No Postgres, Qdrant, or Ollama required. Ideal for individual developers. When you outgrow it, migrate to the full server — decision data is portable.</p>
+    </div>
+
+    <div id="tab-docker" class="tab-pane">
+      <pre><span class="comment"># Everything in Docker: TimescaleDB, Qdrant, Ollama, Akashi server</span>
+<span class="hl">docker compose -f docker-compose.complete.yml up -d</span>
+
+<span class="comment"># First run downloads two Ollama models (~7GB). Watch progress:</span>
+docker compose -f docker-compose.complete.yml logs -f ollama-init
+
+<span class="comment"># Server ready when you see a "listening" log line</span>
+curl http://localhost:8080/health
+<span class="comment"># Open http://localhost:8080 for the audit dashboard</span></pre>
+      <p class="tab-note">Full feature set: LLM conflict validation, vector search, real-time SSE, multi-tenancy, audit dashboard UI. No API keys or external accounts needed.</p>
+    </div>
+
+    <div id="tab-self" class="tab-pane">
+      <pre><span class="comment"># Bring your own TimescaleDB + Qdrant</span>
+cp docker/env.example .env
+<span class="comment"># Edit .env: DATABASE_URL, AKASHI_ADMIN_API_KEY</span>
+
+docker compose up -d
+
+<span class="comment"># Generate persistent JWT signing keys (run once)</span>
+go run ./scripts/genkey -out data/
+<span class="comment"># Add to .env:</span>
+<span class="key">AKASHI_JWT_PRIVATE_KEY</span>=<span class="str">/data/jwt_private.pem</span>
+<span class="key">AKASHI_JWT_PUBLIC_KEY</span>=<span class="str">/data/jwt_public.pem</span></pre>
+      <p class="tab-note">See the <a href="https://github.com/ashita-ai/akashi/blob/main/docs/self-hosting.md">self-hosting guide</a> for Postgres requirements, Qdrant setup, and production hardening.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── MCP ────────────────────────────────────────────────────── -->
+<section id="mcp">
+  <div class="container">
+    <span class="label">MCP integration</span>
+    <h2>One line to wire any<br/>MCP-compatible agent.</h2>
+
+    <pre style="margin-top: 2rem;"><span class="comment"># Claude Code — never expires, survives server restarts</span>
+<span class="hl">claude mcp add --transport http --scope user akashi http://localhost:8080/mcp \
+  --header "Authorization: ApiKey admin:$AKASHI_ADMIN_API_KEY"</span></pre>
+
+    <div class="mcp-tools">
+      <div class="mcp-tool">
+        <div class="mcp-tool-name">akashi_check</div>
+        <p>Semantic precedent lookup before deciding. Returns relevant past decisions, active conflicts, and winning approaches from resolved conflicts.</p>
+      </div>
+      <div class="mcp-tool">
+        <div class="mcp-tool-name">akashi_trace</div>
+        <p>Record a decision with reasoning, alternatives, evidence, and confidence. Triggers embedding, conflict detection, and SSE notification.</p>
+      </div>
+      <div class="mcp-tool">
+        <div class="mcp-tool-name">akashi_assess</div>
+        <p>Mark a past decision as correct, incorrect, or partially correct. Assessments feed back into search re-ranking.</p>
+      </div>
+      <div class="mcp-tool">
+        <div class="mcp-tool-name">akashi_query</div>
+        <p>Filter decisions by type, agent, confidence range, or free-text semantic search. Structured or unstructured.</p>
+      </div>
+      <div class="mcp-tool">
+        <div class="mcp-tool-name">akashi_conflicts</div>
+        <p>List grouped conflicts between agents. Filter by severity, category, and status. Returns representative examples per conflict group.</p>
+      </div>
+      <div class="mcp-tool">
+        <div class="mcp-tool-name">akashi_stats</div>
+        <p>Aggregate health metrics for the decision trail: decision volume, conflict rate, mean confidence, assessment outcomes.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── WHAT GETS RECORDED ─────────────────────────────────────── -->
+<section id="audit-trail">
+  <div class="container">
+    <span class="label">Audit trail</span>
+    <h2>Everything captured.<br/>Nothing inferred.</h2>
+    <p class="text-dim" style="margin-top: 1rem; max-width: 560px; line-height: 1.7;">Every decision trace records the full context at the moment of decision — not a summary reconstructed later.</p>
+
+    <div class="fields-grid">
+      <div class="field-item">
+        <div class="field-icon">🎯</div>
+        <div>
+          <h4>Decision + confidence</h4>
+          <p>What was chosen, expressed as a concrete outcome, with a 0–1 confidence score from the agent.</p>
+        </div>
+      </div>
+      <div class="field-item">
+        <div class="field-icon">🧠</div>
+        <div>
+          <h4>Reasoning</h4>
+          <p>Step-by-step logic explaining why this outcome was chosen over alternatives.</p>
+        </div>
+      </div>
+      <div class="field-item">
+        <div class="field-icon">🔀</div>
+        <div>
+          <h4>Rejected alternatives</h4>
+          <p>Every option considered — with scores, rationale, and why each was not selected.</p>
+        </div>
+      </div>
+      <div class="field-item">
+        <div class="field-icon">📎</div>
+        <div>
+          <h4>Supporting evidence</h4>
+          <p>What information backed the decision: URLs, analysis, observations — with source type and provenance.</p>
+        </div>
+      </div>
+      <div class="field-item">
+        <div class="field-icon">⚡</div>
+        <div>
+          <h4>Conflicts</h4>
+          <p>Semantically detected disagreements between agents on the same question, with severity and lifecycle state.</p>
+        </div>
+      </div>
+      <div class="field-item">
+        <div class="field-icon">🔐</div>
+        <div>
+          <h4>Integrity proof</h4>
+          <p>SHA-256 content hash and Merkle tree batch verification. Tamper detection without external infrastructure.</p>
+        </div>
+      </div>
+      <div class="field-item">
+        <div class="field-icon">🕰</div>
+        <div>
+          <h4>Bi-temporal model</h4>
+          <p>Both business time (valid_from/valid_to) and transaction time — point-in-time queries and full history.</p>
+        </div>
+      </div>
+      <div class="field-item">
+        <div class="field-icon">🤖</div>
+        <div>
+          <h4>Agent identity</h4>
+          <p>Session ID, tool, model, and repo context — automatically enriched from MCP session and HTTP headers.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── SDKS ───────────────────────────────────────────────────── -->
+<section id="sdks">
+  <div class="container">
+    <span class="label">SDKs</span>
+    <h2>Native clients for<br/>Go, Python, and TypeScript.</h2>
+
+    <div class="sdk-grid">
+      <div class="sdk-card">
+        <div class="sdk-lang">
+          <span class="sdk-badge badge-go">Go</span>
+          Go SDK
+        </div>
+        <div class="sdk-install">go get github.com/ashita-ai/akashi/sdk/go/akashi</div>
+        <p>Idiomatic Go client with token management, all six operations, and testable interfaces. Used in the Akashi server itself.</p>
+        <a href="https://github.com/ashita-ai/akashi/tree/main/sdk/go">View source →</a>
+      </div>
+      <div class="sdk-card">
+        <div class="sdk-lang">
+          <span class="sdk-badge badge-py">Py</span>
+          Python SDK
+        </div>
+        <div class="sdk-install">pip install git+https://github.com/ashita-ai/akashi.git<br/>#subdirectory=sdk/python</div>
+        <p>Sync and async clients. Includes a <code style="font-family: var(--font-mono); font-size: 0.85em;">AkashiCallbackHandler</code> for LangChain and a <code style="font-family: var(--font-mono); font-size: 0.85em;">CrewAI</code> hooks adapter.</p>
+        <a href="https://github.com/ashita-ai/akashi/tree/main/sdk/python">View source →</a>
+      </div>
+      <div class="sdk-card">
+        <div class="sdk-lang">
+          <span class="sdk-badge badge-ts">TS</span>
+          TypeScript SDK
+        </div>
+        <div class="sdk-install">npm install github:ashita-ai/akashi<br/>#path:sdk/typescript</div>
+        <p>Full TypeScript types. Includes <code style="font-family: var(--font-mono); font-size: 0.85em;">createAkashiMiddleware</code> for the Vercel AI SDK.</p>
+        <a href="https://github.com/ashita-ai/akashi/tree/main/sdk/typescript">View source →</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ─────────────────────────────────────────────────── -->
+<footer>
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-left">
+        <div class="footer-logo">
+          <span class="hex">⬡</span> Akashi
+        </div>
+        <div class="footer-copy">Apache 2.0 · Built by <a href="https://github.com/ashita-ai" style="color: var(--text-muted);">Ashita AI</a></div>
+      </div>
+      <ul class="footer-links">
+        <li><a href="https://github.com/ashita-ai/akashi">GitHub</a></li>
+        <li><a href="https://github.com/ashita-ai/akashi/tree/main/docs">Docs</a></li>
+        <li><a href="https://github.com/ashita-ai/akashi/blob/main/api/openapi.yaml">OpenAPI</a></li>
+        <li><a href="https://github.com/ashita-ai/akashi/blob/main/CONTRIBUTING.md">Contributing</a></li>
+        <li><a href="https://github.com/ashita-ai/akashi/blob/main/SECURITY.md">Security</a></li>
+        <li><a href="https://github.com/ashita-ai/akashi/blob/main/LICENSE">License</a></li>
+      </ul>
+    </div>
+  </div>
+</footer>
+
+<script>
+  function switchTab(btn, tabId) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(tabId).classList.add('active');
+  }
+</script>
+
+</body>
+</html>
