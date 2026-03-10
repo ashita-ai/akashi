@@ -1,6 +1,6 @@
 # ADR-009: Distribution tiers — local-lite and cloud-hosted MCP
 
-**Status:** Accepted
+**Status:** Accepted — local-lite tier not yet implemented (issue #312)
 **Date:** 2026-03-06
 **Amends:** ADR-004 (MCP and framework integrations as primary distribution channels)
 
