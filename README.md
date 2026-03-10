@@ -8,6 +8,8 @@ Multi-agent AI systems are moving from demos to production, but their decisions 
 
 Akashi is the decision coordination layer. Every agent checks for precedents before deciding and records its full reasoning after. When agents diverge on the same topic, Akashi detects it semantically — and when the CTO asks "why did the AI do that?" or an auditor asks for proof of decision traceability, you have the answer.
 
+![Akashi dashboard showing decision audit trail, agent coordination health, and conflict detection](docs/images/dashboard.png)
+
 ## How it works
 
 Akashi is built around two primitives: **check before deciding, trace after deciding.**
