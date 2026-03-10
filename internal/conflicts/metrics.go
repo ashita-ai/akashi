@@ -177,10 +177,27 @@ func registerObservableGauges(meter metric.Meter, db gaugeQuerier, logger *slog.
 	if err != nil {
 		logger.Warn("conflicts: failed to create akashi.conflicts.backfill_remaining gauge", "error", err)
 	}
+
+	_, err = meter.Float64ObservableGauge("akashi.conflicts.wont_fix_rate",
+		metric.WithDescription("Rolling 30-day wont_fix rate: wont_fix / (resolved + wont_fix). Signals LLM validator drift when elevated."),
+		metric.WithFloat64Callback(func(ctx context.Context, o metric.Float64Observer) error {
+			rate, err := db.GetGlobalWontFixRate(ctx)
+			if err != nil {
+				logger.Debug("conflicts: wont_fix_rate gauge query failed", "error", err)
+				return nil // non-fatal: skip this observation
+			}
+			o.Observe(rate)
+			return nil
+		}),
+	)
+	if err != nil {
+		logger.Warn("conflicts: failed to create akashi.conflicts.wont_fix_rate gauge", "error", err)
+	}
 }
 
 // gaugeQuerier is the subset of storage.DB needed by observable gauge callbacks.
 type gaugeQuerier interface {
 	GetGlobalOpenConflictCount(ctx context.Context) (int64, error)
 	CountUnscoredDecisions(ctx context.Context) (int64, error)
+	GetGlobalWontFixRate(ctx context.Context) (float64, error)
 }

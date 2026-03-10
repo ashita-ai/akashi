@@ -94,6 +94,14 @@ type ConflictStatusCounts struct {
 	WontFix      int
 }
 
+// WontFixRate holds the wont_fix false-positive rate over a rolling 30-day window.
+// Rate = WontFix / (Resolved + WontFix). Zero when the denominator is zero.
+type WontFixRate struct {
+	Resolved int     `json:"resolved"`
+	WontFix  int     `json:"wont_fix"`
+	Rate     float64 `json:"rate"`
+}
+
 // ConflictGroupFilters holds optional filters for conflict group queries.
 type ConflictGroupFilters struct {
 	DecisionType *string

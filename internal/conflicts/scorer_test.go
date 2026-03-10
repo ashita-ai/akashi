@@ -2061,10 +2061,12 @@ func TestClearAllConflicts_PreservesResolvedConflicts(t *testing.T) {
 
 // mockGaugeQuerier implements gaugeQuerier for testing observable gauge registration.
 type mockGaugeQuerier struct {
-	openCount     int64
-	openErr       error
-	unscoredCount int64
-	unscoredErr   error
+	openCount      int64
+	openErr        error
+	unscoredCount  int64
+	unscoredErr    error
+	wontFixRate    float64
+	wontFixRateErr error
 }
 
 func (m *mockGaugeQuerier) GetGlobalOpenConflictCount(_ context.Context) (int64, error) {
@@ -2073,6 +2075,10 @@ func (m *mockGaugeQuerier) GetGlobalOpenConflictCount(_ context.Context) (int64,
 
 func (m *mockGaugeQuerier) CountUnscoredDecisions(_ context.Context) (int64, error) {
 	return m.unscoredCount, m.unscoredErr
+}
+
+func (m *mockGaugeQuerier) GetGlobalWontFixRate(_ context.Context) (float64, error) {
+	return m.wontFixRate, m.wontFixRateErr
 }
 
 func TestRegisterObservableGauges_Success(t *testing.T) {

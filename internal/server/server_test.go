@@ -2961,7 +2961,12 @@ func TestMCPStatsTool(t *testing.T) {
 		TraceHealth struct {
 			Status string `json:"status"`
 		} `json:"trace_health"`
-		Agents int `json:"agents"`
+		Agents      int `json:"agents"`
+		WontFixRate struct {
+			Resolved int     `json:"resolved"`
+			WontFix  int     `json:"wont_fix"`
+			Rate     float64 `json:"rate"`
+		} `json:"wont_fix_rate"`
 	}
 	for _, content := range result.Content {
 		if tc, ok := content.(mcplib.TextContent); ok {
@@ -2971,6 +2976,8 @@ func TestMCPStatsTool(t *testing.T) {
 	}
 	assert.Contains(t, []string{"healthy", "needs_attention", "insufficient_data"}, statsResp.TraceHealth.Status)
 	assert.GreaterOrEqual(t, statsResp.Agents, 0)
+	assert.GreaterOrEqual(t, statsResp.WontFixRate.Rate, 0.0)
+	assert.LessOrEqual(t, statsResp.WontFixRate.Rate, 1.0)
 }
 
 // ---- MCP: akashi_trace with idempotency_key (exercises mcpTraceHash) -----
