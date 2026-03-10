@@ -105,7 +105,16 @@ The OSS distribution uses an in-memory token bucket. Enterprise deployments can 
 
 ### Profiles
 
-Set `AKASHI_CONFLICT_PROFILE` to apply a coherent set of threshold defaults. Individual env var overrides always take precedence over the profile.
+Conflict detection thresholds are composed from two independent dimensions:
+
+1. **Embedding model profile** — compensates for different similarity distributions across models
+2. **Detection profile** — controls aggressiveness (balanced/high_precision/high_recall)
+
+The effective threshold = model base + detection adjustment. Individual env var overrides always take precedence.
+
+#### Detection profiles
+
+Set `AKASHI_CONFLICT_PROFILE` to control detection aggressiveness. The table below shows values for the default embedding model (`mxbai-embed-large`):
 
 | Profile | Significance | Early Exit | Claim Topic Sim | Claim Div | Decision Topic Sim | Cross-Encoder | Decay Lambda | Use case |
 |---------|-------------|------------|-----------------|-----------|-------------------|--------------|-------------|----------|
@@ -113,11 +122,26 @@ Set `AKASHI_CONFLICT_PROFILE` to apply a coherent set of threshold defaults. Ind
 | `high_precision` | 0.40 | 0.35 | 0.65 | 0.20 | 0.75 | 0.60 | 0.01 | Fewer false positives, may miss marginal real conflicts |
 | `high_recall` | 0.20 | 0.15 | 0.55 | 0.10 | 0.65 | 0.35 | 0.005 | Catches more real conflicts, accepts more noise |
 
+#### Embedding model profiles
+
+Set `AKASHI_EMBEDDING_MODEL_PROFILE` to override automatic model detection. By default, the model is auto-detected from `OLLAMA_MODEL` or `AKASHI_EMBEDDING_MODEL`.
+
+| Model | Claim Topic Sim | Claim Div | Decision Topic Sim | Notes |
+|-------|-----------------|-----------|-------------------|-------|
+| `mxbai-embed-large` | 0.60 | 0.15 | 0.70 | Default, original tuning target |
+| `nomic-embed-text` | 0.55 | 0.12 | 0.65 | Wider similarity spread |
+| `bge-large-en-v1.5` | 0.58 | 0.14 | 0.68 | Strong on retrieval benchmarks |
+| `text-embedding-3-small` | 0.52 | 0.12 | 0.62 | OpenAI API, wider distribution |
+| `text-embedding-3-large` | 0.55 | 0.13 | 0.65 | OpenAI API, highest quality |
+
+Unknown models fall back to `mxbai-embed-large` defaults. Run `go run ./cmd/eval-conflicts --mode=benchmark` to calibrate thresholds for a new model.
+
 ### Thresholds
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AKASHI_CONFLICT_PROFILE` | `balanced` | Named profile: `balanced`, `high_precision`, or `high_recall`. Sets coherent defaults for all thresholds below. Individual overrides take precedence |
+| `AKASHI_EMBEDDING_MODEL_PROFILE` | _(auto-detected)_ | Embedding model name for threshold profile selection. Auto-detected from `OLLAMA_MODEL` or `AKASHI_EMBEDDING_MODEL`. Set explicitly to override auto-detection |
 | `AKASHI_CONFLICT_CANDIDATE_LIMIT` | `20` | Max candidates retrieved from Qdrant per decision. Lower values reduce LLM cost; higher values improve recall for embedding-only scoring |
 | `AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD` | `0.30` | Min significance (topic_sim × outcome_div) to store a conflict |
 | `AKASHI_CONFLICT_EARLY_EXIT_FLOOR` | `0.25` | Min pre-LLM significance for early exit pruning. Candidates are sorted by significance descending; once significance drops below this floor (and the candidate doesn't qualify for the bi-encoder bypass), remaining candidates are skipped. Set to `0` to disable early exit |

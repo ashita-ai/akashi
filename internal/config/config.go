@@ -74,6 +74,7 @@ type Config struct {
 	ClaimExtractionLLM            bool    // Use the conflict LLM model for structured claim extraction (default: false).
 	ForceConflictRescore          bool    // When true (and LLM validator configured), clear all conflicts and re-score at startup.
 	ConflictProfile               string  // Named profile: "balanced" (default), "high_precision", "high_recall". Individual env vars override.
+	EmbeddingModelProfile         string  // Embedding model name for threshold profile selection (auto-detected from provider config).
 
 	// Event WAL (write-ahead log) for crash-durable event buffering.
 	WALDir            string        // Directory for WAL files. Default: "./data/wal". Set AKASHI_WAL_DISABLE=true to disable.
@@ -165,7 +166,22 @@ func Load() (Config, error) {
 	// Load the conflict profile first to get profile defaults, then overlay
 	// individual env var overrides. This ensures explicit env vars always win.
 	cfg.ConflictProfile = envStr("AKASHI_CONFLICT_PROFILE", "balanced")
-	profileDefaults := conflictProfileDefaults(cfg.ConflictProfile)
+
+	// Resolve embedding model profile for threshold selection. Explicit override
+	// takes priority; otherwise auto-detect from provider config.
+	cfg.EmbeddingModelProfile = envStr("AKASHI_EMBEDDING_MODEL_PROFILE", "")
+	if cfg.EmbeddingModelProfile == "" {
+		switch cfg.EmbeddingProvider {
+		case "ollama":
+			cfg.EmbeddingModelProfile = cfg.OllamaModel
+		case "openai":
+			cfg.EmbeddingModelProfile = cfg.EmbeddingModel
+		default: // "auto" — ollama is tried first
+			cfg.EmbeddingModelProfile = cfg.OllamaModel
+		}
+	}
+
+	profileDefaults := conflictProfileDefaults(cfg.ConflictProfile, cfg.EmbeddingModelProfile)
 
 	cfg.ConflictSignificanceThreshold, errs = collectFloat64(errs, "AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD", profileDefaults.significanceThreshold)
 	cfg.ConflictDecayLambda, errs = collectFloat64(errs, "AKASHI_CONFLICT_DECAY_LAMBDA", profileDefaults.decayLambda)
@@ -446,45 +462,125 @@ type conflictProfileValues struct {
 	crossEncoderThreshold float64
 }
 
-// conflictProfileDefaults returns threshold defaults for the named profile.
-// Unrecognized profile names fall back to "balanced" (the current defaults).
-//
-// Profiles:
-//   - "balanced": current defaults, good general-purpose settings
-//   - "high_precision": fewer false positives, may miss marginal real conflicts
-//   - "high_recall": catches more real conflicts, accepts more noise
-func conflictProfileDefaults(profile string) conflictProfileValues {
+// embeddingModelThresholds holds base scorer thresholds calibrated for a
+// specific embedding model's similarity distribution. These are base values
+// before detection profile adjustments are applied.
+type embeddingModelThresholds struct {
+	claimTopicSimFloor    float64
+	claimDivFloor         float64
+	decisionTopicSimFloor float64
+}
+
+// embeddingModelProfiles maps embedding model names to calibrated thresholds.
+// The mxbai-embed-large profile matches the original hardcoded values, ensuring
+// zero behavioral change for existing deployments. Other profiles are populated
+// from benchmark results. Unknown models fall back to mxbai-embed-large.
+var embeddingModelProfiles = map[string]embeddingModelThresholds{
+	"mxbai-embed-large": {
+		claimTopicSimFloor:    0.60,
+		claimDivFloor:         0.15,
+		decisionTopicSimFloor: 0.70,
+	},
+	"nomic-embed-text": {
+		claimTopicSimFloor:    0.55,
+		claimDivFloor:         0.12,
+		decisionTopicSimFloor: 0.65,
+	},
+	"bge-large-en-v1.5": {
+		claimTopicSimFloor:    0.58,
+		claimDivFloor:         0.14,
+		decisionTopicSimFloor: 0.68,
+	},
+	"text-embedding-3-small": {
+		claimTopicSimFloor:    0.52,
+		claimDivFloor:         0.12,
+		decisionTopicSimFloor: 0.62,
+	},
+	"text-embedding-3-large": {
+		claimTopicSimFloor:    0.55,
+		claimDivFloor:         0.13,
+		decisionTopicSimFloor: 0.65,
+	},
+}
+
+// EmbeddingModelThresholds returns the calibrated thresholds for a model name.
+// Returns defaults (mxbai-embed-large) for unknown models and a boolean
+// indicating whether a known profile was found.
+func EmbeddingModelThresholds(modelName string) (claimTopicSimFloor, claimDivFloor, decisionTopicSimFloor float64, known bool) {
+	if t, ok := embeddingModelProfiles[modelName]; ok {
+		return t.claimTopicSimFloor, t.claimDivFloor, t.decisionTopicSimFloor, true
+	}
+	def := embeddingModelProfiles["mxbai-embed-large"]
+	return def.claimTopicSimFloor, def.claimDivFloor, def.decisionTopicSimFloor, false
+}
+
+// detectionProfileAdjustments defines relative adjustments to model-specific
+// base thresholds for each detection aggressiveness profile.
+type detectionProfileAdjustments struct {
+	significanceThreshold float64 // absolute value (not model-dependent)
+	decayLambda           float64 // absolute value
+	claimTopicSimDelta    float64 // added to model base
+	claimDivDelta         float64 // added to model base
+	decisionTopicSimDelta float64 // added to model base
+	earlyExitFloor        float64 // absolute value
+	crossEncoderThreshold float64 // absolute value
+}
+
+// conflictProfileDefaults returns threshold defaults for the named detection
+// profile, adjusted for the specified embedding model. The model provides
+// base thresholds for similarity-dependent settings; the detection profile
+// provides relative adjustments for aggressiveness. Unknown model names fall
+// back to mxbai-embed-large. Unrecognized profile names fall back to "balanced".
+func conflictProfileDefaults(profile string, embeddingModel string) conflictProfileValues {
+	// Look up model base thresholds.
+	modelBase, ok := embeddingModelProfiles[embeddingModel]
+	if !ok {
+		modelBase = embeddingModelProfiles["mxbai-embed-large"]
+	}
+
+	// Get detection profile adjustments.
+	var adj detectionProfileAdjustments
 	switch strings.ToLower(profile) {
 	case "high_precision":
-		return conflictProfileValues{
+		adj = detectionProfileAdjustments{
 			significanceThreshold: 0.40,
 			decayLambda:           0.01,
-			claimTopicSimFloor:    0.65,
-			claimDivFloor:         0.20,
-			decisionTopicSimFloor: 0.75,
+			claimTopicSimDelta:    +0.05,
+			claimDivDelta:         +0.05,
+			decisionTopicSimDelta: +0.05,
 			earlyExitFloor:        0.35,
 			crossEncoderThreshold: 0.60,
 		}
 	case "high_recall":
-		return conflictProfileValues{
+		adj = detectionProfileAdjustments{
 			significanceThreshold: 0.20,
 			decayLambda:           0.005,
-			claimTopicSimFloor:    0.55,
-			claimDivFloor:         0.10,
-			decisionTopicSimFloor: 0.65,
+			claimTopicSimDelta:    -0.05,
+			claimDivDelta:         -0.05,
+			decisionTopicSimDelta: -0.05,
 			earlyExitFloor:        0.15,
 			crossEncoderThreshold: 0.35,
 		}
-	default: // "balanced" and any unrecognized value
-		return conflictProfileValues{
+	default: // "balanced"
+		adj = detectionProfileAdjustments{
 			significanceThreshold: 0.30,
 			decayLambda:           0.01,
-			claimTopicSimFloor:    0.60,
-			claimDivFloor:         0.15,
-			decisionTopicSimFloor: 0.70,
+			claimTopicSimDelta:    0,
+			claimDivDelta:         0,
+			decisionTopicSimDelta: 0,
 			earlyExitFloor:        0.25,
 			crossEncoderThreshold: 0.50,
 		}
+	}
+
+	return conflictProfileValues{
+		significanceThreshold: adj.significanceThreshold,
+		decayLambda:           adj.decayLambda,
+		claimTopicSimFloor:    modelBase.claimTopicSimFloor + adj.claimTopicSimDelta,
+		claimDivFloor:         modelBase.claimDivFloor + adj.claimDivDelta,
+		decisionTopicSimFloor: modelBase.decisionTopicSimFloor + adj.decisionTopicSimDelta,
+		earlyExitFloor:        adj.earlyExitFloor,
+		crossEncoderThreshold: adj.crossEncoderThreshold,
 	}
 }
 

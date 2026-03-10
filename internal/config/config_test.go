@@ -881,3 +881,84 @@ func TestLoad_AllEnvVarsHonored(t *testing.T) {
 		t.Fatalf("expected IdempotencyAbandonedTTL 36h, got %s", cfg.IdempotencyAbandonedTTL)
 	}
 }
+
+func TestLoad_EmbeddingModelProfile_AutoDetect(t *testing.T) {
+	// Default provider is auto/ollama with OLLAMA_MODEL defaulting to mxbai-embed-large.
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.EmbeddingModelProfile != "mxbai-embed-large" {
+		t.Fatalf("expected EmbeddingModelProfile 'mxbai-embed-large', got %q", cfg.EmbeddingModelProfile)
+	}
+	// With default model, thresholds should match original hardcoded values.
+	if cfg.ConflictClaimTopicSimFloor != 0.60 {
+		t.Fatalf("expected 0.60, got %f", cfg.ConflictClaimTopicSimFloor)
+	}
+}
+
+func TestLoad_EmbeddingModelProfile_ExplicitOverride(t *testing.T) {
+	t.Setenv("AKASHI_EMBEDDING_MODEL_PROFILE", "nomic-embed-text")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.EmbeddingModelProfile != "nomic-embed-text" {
+		t.Fatalf("expected 'nomic-embed-text', got %q", cfg.EmbeddingModelProfile)
+	}
+	// nomic-embed-text has lower claim topic sim floor than mxbai-embed-large.
+	if cfg.ConflictClaimTopicSimFloor != 0.55 {
+		t.Fatalf("expected 0.55 for nomic-embed-text, got %f", cfg.ConflictClaimTopicSimFloor)
+	}
+}
+
+func TestLoad_EmbeddingModelProfile_WithDetectionProfile(t *testing.T) {
+	t.Setenv("AKASHI_EMBEDDING_MODEL_PROFILE", "nomic-embed-text")
+	t.Setenv("AKASHI_CONFLICT_PROFILE", "high_precision")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	// nomic-embed-text base (0.55) + high_precision delta (+0.05) = 0.60
+	diff := cfg.ConflictClaimTopicSimFloor - 0.60
+	if diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("expected ~0.60 (nomic 0.55 + high_precision +0.05), got %f", cfg.ConflictClaimTopicSimFloor)
+	}
+}
+
+func TestLoad_EmbeddingModelProfile_EnvVarOverridesProfile(t *testing.T) {
+	t.Setenv("AKASHI_EMBEDDING_MODEL_PROFILE", "nomic-embed-text")
+	t.Setenv("AKASHI_CONFLICT_CLAIM_TOPIC_SIM_FLOOR", "0.42")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	// Explicit env var should override the model+detection profile.
+	if cfg.ConflictClaimTopicSimFloor != 0.42 {
+		t.Fatalf("expected 0.42 (explicit override), got %f", cfg.ConflictClaimTopicSimFloor)
+	}
+}
+
+func TestEmbeddingModelThresholds_Known(t *testing.T) {
+	claimSim, claimDiv, decSim, known := EmbeddingModelThresholds("mxbai-embed-large")
+	if !known {
+		t.Fatal("expected mxbai-embed-large to be a known model")
+	}
+	if claimSim != 0.60 || claimDiv != 0.15 || decSim != 0.70 {
+		t.Fatalf("unexpected thresholds: %f, %f, %f", claimSim, claimDiv, decSim)
+	}
+}
+
+func TestEmbeddingModelThresholds_Unknown(t *testing.T) {
+	claimSim, claimDiv, decSim, known := EmbeddingModelThresholds("some-unknown-model")
+	if known {
+		t.Fatal("expected unknown model to return known=false")
+	}
+	// Should fall back to mxbai-embed-large defaults.
+	if claimSim != 0.60 || claimDiv != 0.15 || decSim != 0.70 {
+		t.Fatalf("expected mxbai-embed-large defaults, got: %f, %f, %f", claimSim, claimDiv, decSim)
+	}
+}
