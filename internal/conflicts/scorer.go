@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -472,6 +473,20 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			continue
 		}
 
+		// Complementary workflow filter: suppress conflict creation when the
+		// pair matches a structural pattern (review→fix, same-agent refinement,
+		// precedent chain). Applied after scoring but before the confirmation
+		// gate to save LLM cost and eliminate false positives that embedding
+		// math cannot distinguish from genuine conflicts.
+		if isComplementaryWorkflowPair(d, sc.cand) {
+			s.metrics.workflowFiltered.Add(ctx, 1)
+			s.logger.Debug("conflict scorer: workflow filter suppressed pair",
+				"decision_a", decisionID, "decision_b", sc.cand.ID,
+				"type_a", d.DecisionType, "type_b", sc.cand.DecisionType,
+				"agent_a", d.AgentID, "agent_b", sc.cand.AgentID)
+			continue
+		}
+
 		examined++
 
 		cand := sc.cand
@@ -890,6 +905,96 @@ func (s *Scorer) ClearAllConflicts(ctx context.Context) (int, error) {
 	}
 	s.logger.Warn("startup: cleared all open/acknowledged conflicts", "deleted", n, "reason", "AKASHI_FORCE_CONFLICT_RESCORE")
 	return n, nil
+}
+
+// isComplementaryWorkflowPair returns true if the decision pair matches a
+// structural pattern where two decisions are about the same topic but are
+// complementary rather than contradictory. These patterns are invisible to
+// embedding-based scoring because topic similarity is high and outcome text
+// diverges (review language vs implementation language).
+//
+// Three heuristics, any of which is sufficient:
+//
+//  1. Temporal workflow: one decision is a review/assessment/investigation type
+//     and the other is an implementation/fix type, with the implementation
+//     recorded after the review. This covers review→fix and assessment→implementation.
+//
+//  2. Same-agent refinement: both decisions are from the same agent and the
+//     newer one's outcome contains keywords indicating it built on the older
+//     one ("implemented", "fixed", "resolved", "completed", "addressed").
+//
+//  3. Precedent chain: one decision cites the other via precedent_ref,
+//     meaning the agent explicitly linked them as cause-and-effect.
+func isComplementaryWorkflowPair(d, cand model.Decision) bool {
+	// Heuristic 3: Precedent chain. If either decision cites the other,
+	// they are linked by design — not conflicting.
+	if cand.PrecedentRef != nil && *cand.PrecedentRef == d.ID {
+		return true
+	}
+	if d.PrecedentRef != nil && *d.PrecedentRef == cand.ID {
+		return true
+	}
+
+	// Determine temporal order: earlier and later decision.
+	earlier, later := d, cand
+	if cand.ValidFrom.Before(d.ValidFrom) {
+		earlier, later = cand, d
+	}
+
+	// Heuristic 1: Temporal workflow — review/assessment type followed by
+	// implementation/fix type.
+	if isDirectionalWorkflowPair(earlier.DecisionType, later.DecisionType) {
+		return true
+	}
+
+	// Heuristic 2: Same-agent refinement with outcome keywords.
+	if d.AgentID == cand.AgentID {
+		lowerOutcome := strings.ToLower(later.Outcome)
+		for _, kw := range refinementKeywords {
+			if strings.Contains(lowerOutcome, kw) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// reviewTypes are decision types that represent analysis/review/investigation work.
+var reviewTypes = map[string]bool{
+	"code_review":   true,
+	"assessment":    true,
+	"investigation": true,
+	"review":        true,
+	"analysis":      true,
+	"audit":         true,
+}
+
+// implementationTypes are decision types that represent fix/implementation work.
+var implementationTypes = map[string]bool{
+	"architecture":   true,
+	"bug_fix":        true,
+	"fix":            true,
+	"implementation": true,
+	"refactor":       true,
+}
+
+// isDirectionalWorkflowPair returns true if earlierType is a review/assessment
+// type and laterType is an implementation/fix type. Unlike isWorkflowPair in
+// validator.go (which checks both directions for LLM prompt hints), this check
+// is directional: the review must come first temporally.
+func isDirectionalWorkflowPair(earlierType, laterType string) bool {
+	return reviewTypes[strings.ToLower(earlierType)] && implementationTypes[strings.ToLower(laterType)]
+}
+
+// refinementKeywords are outcome substrings that indicate the decision
+// built on a prior decision by the same agent.
+var refinementKeywords = []string{
+	"implemented",
+	"fixed",
+	"resolved",
+	"completed",
+	"addressed",
 }
 
 func derefString(s *string) string {

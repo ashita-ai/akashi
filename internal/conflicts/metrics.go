@@ -17,6 +17,7 @@ type Metrics struct {
 	llmCalls            metric.Int64Counter
 	candidatesEvaluated metric.Int64Counter
 	claimLevelWins      metric.Int64Counter
+	workflowFiltered    metric.Int64Counter
 
 	scoringDuration    metric.Float64Histogram
 	llmCallDuration    metric.Float64Histogram
@@ -101,6 +102,14 @@ func (s *Scorer) registerMetrics() {
 	if err != nil {
 		s.logger.Warn("conflicts: failed to create akashi.conflicts.claim_level_wins metric", "error", err)
 		s.metrics.claimLevelWins, _ = meter.Int64Counter("akashi.conflicts.claim_level_wins.fallback")
+	}
+
+	s.metrics.workflowFiltered, err = meter.Int64Counter("akashi.conflicts.workflow_filtered",
+		metric.WithDescription("Candidate pairs filtered by complementary workflow heuristic (review→fix, same-agent refinement, precedent chain)"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.workflow_filtered metric", "error", err)
+		s.metrics.workflowFiltered, _ = meter.Int64Counter("akashi.conflicts.workflow_filtered.fallback")
 	}
 
 	// --- Histograms ---
