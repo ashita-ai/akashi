@@ -13,139 +13,263 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg:         #090f1c;
-      --bg-card:    #0d1526;
-      --bg-code:    #060b15;
-      --border:     #1a2540;
-      --border-dim: #111c33;
-      --text:       #e8edf8;
-      --text-dim:   #8897b8;
-      --text-muted: #5a6a8a;
-      --accent:     #3b82f6;
-      --accent-dim: #1e40af;
-      --green:      #3fb950;
-      --yellow:     #d29922;
-      --red:        #f85149;
-      --purple:     #a371f7;
-      --radius:     8px;
-      --radius-lg:  12px;
-      --font-sans:  -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-      --font-mono:  "SF Mono", "Fira Code", "Cascadia Code", Consolas, "Liberation Mono", monospace;
+      --bg:           #05081a;
+      --bg-card:      #090e20;
+      --bg-elevated:  #0c1228;
+      --bg-code:      #030610;
+      --border:       rgba(255,255,255,0.07);
+      --border-hi:    rgba(59,130,246,0.35);
+      --rule:         rgba(255,255,255,0.05);
+      --text:         #dde4f8;
+      --text-dim:     #64738f;
+      --text-muted:   #39485e;
+      --text-code:    #94afd4;
+      --accent:       #3b82f6;
+      --accent-hi:    #60a5fa;
+      --accent-glow:  rgba(59,130,246,0.22);
+      --accent-sub:   rgba(59,130,246,0.08);
+      --green:        #34d399;
+      --green-glow:   rgba(52,211,153,0.18);
+      --yellow:       #fbbf24;
+      --red:          #f87171;
+      --purple:       #a78bfa;
+      --font-sans:    "Helvetica Neue", Helvetica, -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono:    "SF Mono", "Fira Code", "Cascadia Code", Consolas, "Liberation Mono", monospace;
+      --r:            6px;
+      --r-lg:         10px;
     }
 
     html { scroll-behavior: smooth; }
 
     body {
-      background: var(--bg);
+      background-color: var(--bg);
+      background-image:
+        linear-gradient(rgba(59,130,246,0.032) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(59,130,246,0.032) 1px, transparent 1px);
+      background-size: 48px 48px;
       color: var(--text);
       font-family: var(--font-sans);
       font-size: 16px;
-      line-height: 1.6;
+      line-height: 1.65;
       -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
     }
 
-    a { color: var(--accent); text-decoration: none; }
-    a:hover { text-decoration: underline; }
+    /* Vignette over grid */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: radial-gradient(ellipse 120% 60% at 50% 0%, transparent 40%, var(--bg) 100%);
+      pointer-events: none;
+      z-index: 0;
+    }
 
-    /* ── NAV ─────────────────────────────────────────────── */
+    * { position: relative; z-index: 1; }
+
+    a { color: var(--accent); text-decoration: none; transition: color 0.15s; }
+    a:hover { color: var(--accent-hi); }
+
+    /* ── SCROLLBAR ──────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(59,130,246,0.25); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(59,130,246,0.45); }
+
+    /* ── NAV ─────────────────────────────────────────────────── */
     nav {
       position: sticky;
       top: 0;
-      z-index: 100;
+      z-index: 200;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0 2rem;
-      height: 56px;
-      background: rgba(13, 17, 23, 0.92);
-      backdrop-filter: blur(12px);
-      border-bottom: 1px solid var(--border-dim);
+      padding: 0 2.5rem;
+      height: 54px;
+      background: rgba(5, 8, 26, 0.82);
+      backdrop-filter: blur(16px) saturate(180%);
+      -webkit-backdrop-filter: blur(16px) saturate(180%);
+      border-bottom: 1px solid var(--rule);
     }
 
     .nav-logo {
       display: flex;
       align-items: center;
-      gap: 0.6rem;
-      font-size: 1.1rem;
-      font-weight: 700;
+      gap: 0.65rem;
+      font-weight: 600;
+      font-size: 1rem;
       color: var(--text);
-      letter-spacing: -0.02em;
+      letter-spacing: -0.01em;
+      text-decoration: none;
+    }
+    .nav-logo:hover { color: var(--text); text-decoration: none; }
+
+    .nav-logo svg {
+      width: 20px;
+      height: 20px;
+      color: var(--accent);
+      filter: drop-shadow(0 0 6px var(--accent-glow));
     }
 
-    .nav-logo svg { width: 22px; height: 22px; color: var(--accent); }
-
-    .nav-links {
-      display: flex;
-      align-items: center;
-      gap: 1.5rem;
-      list-style: none;
-    }
-
+    .nav-links { display: flex; align-items: center; gap: 2rem; list-style: none; }
     .nav-links a {
+      font-size: 0.85rem;
       color: var(--text-dim);
-      font-size: 0.9rem;
-      transition: color 0.15s;
+      letter-spacing: 0.01em;
     }
+    .nav-links a:hover { color: var(--text); }
 
-    .nav-links a:hover { color: var(--text); text-decoration: none; }
-
-    .nav-github {
+    .nav-cta {
       display: flex;
       align-items: center;
       gap: 0.4rem;
-      padding: 0.4rem 1rem;
+      padding: 0.38rem 0.9rem;
       border: 1px solid var(--border);
-      border-radius: var(--radius);
-      color: var(--text) !important;
-      font-size: 0.875rem;
+      border-radius: 5px;
+      font-size: 0.82rem;
       font-weight: 500;
-      background: var(--bg-card);
-      transition: border-color 0.15s, background 0.15s;
+      color: var(--text-dim) !important;
+      background: rgba(255,255,255,0.03);
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    .nav-cta:hover {
+      border-color: var(--border-hi);
+      color: var(--text) !important;
+      background: rgba(59,130,246,0.06);
+      text-decoration: none;
     }
 
-    .nav-github:hover {
-      border-color: var(--accent);
-      background: #1c2028;
-      text-decoration: none !important;
+    /* ── LAYOUT ──────────────────────────────────────────────── */
+    .container { max-width: 1100px; margin: 0 auto; padding: 0 2.5rem; }
+
+    section {
+      padding: 7rem 0;
+      overflow: hidden;
     }
 
-    /* ── LAYOUT HELPERS ──────────────────────────────────── */
-    .container {
-      max-width: 1080px;
-      margin: 0 auto;
-      padding: 0 2rem;
+    .section-divider {
+      height: 1px;
+      background: linear-gradient(to right, transparent 0%, var(--rule) 20%, var(--rule) 80%, transparent 100%);
+      margin: 0;
     }
 
-    section { padding: 6rem 0; }
-    section + section { border-top: 1px solid var(--border-dim); }
+    .sec-num {
+      position: absolute;
+      top: 3rem;
+      right: 0;
+      font-family: var(--font-mono);
+      font-size: 7.5rem;
+      font-weight: 700;
+      color: rgba(255,255,255,0.022);
+      line-height: 1;
+      pointer-events: none;
+      user-select: none;
+      letter-spacing: -0.04em;
+    }
 
-    .label {
-      display: inline-block;
-      font-size: 0.75rem;
-      font-weight: 600;
-      letter-spacing: 0.08em;
+    /* ── TYPE HELPERS ────────────────────────────────────────── */
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      font-weight: 500;
+      letter-spacing: 0.14em;
       text-transform: uppercase;
       color: var(--accent);
-      margin-bottom: 0.75rem;
+      margin-bottom: 1rem;
+    }
+    .eyebrow::before {
+      content: '';
+      display: block;
+      width: 14px;
+      height: 1px;
+      background: var(--accent);
+      opacity: 0.7;
     }
 
-    h1, h2, h3 { letter-spacing: -0.02em; line-height: 1.2; }
+    h1 {
+      font-size: clamp(2.6rem, 5.5vw, 4rem);
+      font-weight: 300;
+      letter-spacing: -0.03em;
+      line-height: 1.1;
+      background: linear-gradient(150deg, #ffffff 0%, #b8cfff 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
 
-    h1 { font-size: clamp(2.2rem, 5vw, 3.5rem); font-weight: 700; }
-    h2 { font-size: clamp(1.6rem, 3.5vw, 2.25rem); font-weight: 700; }
-    h3 { font-size: 1.125rem; font-weight: 600; }
+    h2 {
+      font-size: clamp(1.8rem, 3.5vw, 2.6rem);
+      font-weight: 300;
+      letter-spacing: -0.03em;
+      line-height: 1.15;
+      background: linear-gradient(150deg, #ffffff 0%, #c8d8ff 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
 
-    .text-dim { color: var(--text-dim); }
-    .text-accent { color: var(--accent); }
-    .text-green { color: var(--green); }
+    h3 {
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--text);
+    }
 
-    /* ── HERO ─────────────────────────────────────────────── */
+    /* ── BUTTONS ─────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.65rem 1.35rem;
+      border-radius: var(--r);
+      font-size: 0.875rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.18s;
+      border: 1px solid transparent;
+      text-decoration: none;
+    }
+    .btn:hover { text-decoration: none; }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+      box-shadow: 0 0 22px var(--accent-glow), 0 0 60px rgba(59,130,246,0.1);
+    }
+    .btn-primary:hover {
+      background: var(--accent-hi);
+      border-color: var(--accent-hi);
+      color: #fff;
+      box-shadow: 0 0 32px rgba(96,165,250,0.4), 0 0 80px rgba(59,130,246,0.18);
+      transform: translateY(-1px);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-dim);
+      border-color: var(--border);
+    }
+    .btn-ghost:hover {
+      border-color: rgba(255,255,255,0.18);
+      color: var(--text);
+      background: rgba(255,255,255,0.04);
+    }
+
+    /* ── HERO ─────────────────────────────────────────────────── */
     #hero {
-      padding: 7rem 0 5rem;
-      border-top: none;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 5rem 0 6rem;
+      overflow: hidden;
     }
 
-    .hero-inner {
+    .hero-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 4rem;
@@ -156,492 +280,591 @@
       display: inline-flex;
       align-items: center;
       gap: 0.5rem;
-      padding: 0.3rem 0.75rem;
-      border: 1px solid var(--accent-dim);
+      padding: 0.28rem 0.75rem 0.28rem 0.5rem;
+      border: 1px solid rgba(59,130,246,0.25);
       border-radius: 999px;
-      font-size: 0.8rem;
-      color: var(--accent);
-      background: rgba(6, 182, 212, 0.06);
-      margin-bottom: 1.25rem;
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--accent-hi);
+      background: rgba(59,130,246,0.06);
+      margin-bottom: 1.75rem;
+      width: fit-content;
+      animation: fadeUp 0.6s ease both;
     }
 
-    .hero-badge .dot {
+    .hero-badge .live-dot {
       width: 6px;
       height: 6px;
       border-radius: 50%;
       background: var(--green);
-      animation: pulse 2s infinite;
+      box-shadow: 0 0 6px var(--green-glow);
+      animation: pulse 2.5s ease-in-out infinite;
     }
 
     @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.85); }
     }
 
-    .hero-tagline {
-      margin: 1.5rem 0 1rem;
+    .hero-h1 { animation: fadeUp 0.6s 0.1s ease both; }
+    .hero-sub {
+      margin-top: 1.5rem;
+      font-size: 1.1rem;
       color: var(--text-dim);
-      font-size: 1.15rem;
-      line-height: 1.7;
-      max-width: 520px;
+      line-height: 1.75;
+      max-width: 480px;
+      animation: fadeUp 0.6s 0.2s ease both;
     }
 
     .hero-actions {
       display: flex;
       gap: 0.75rem;
-      margin-top: 2rem;
+      margin-top: 2.25rem;
       flex-wrap: wrap;
+      animation: fadeUp 0.6s 0.3s ease both;
     }
 
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.4rem;
-      padding: 0.6rem 1.25rem;
-      border-radius: var(--radius);
-      font-size: 0.9rem;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.15s;
-      border: 1px solid transparent;
+    /* Logo watermark */
+    .hero-watermark {
+      position: absolute;
+      right: -6%;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 420px;
+      height: 420px;
+      opacity: 0.035;
+      pointer-events: none;
+      animation: fadeIn 1.2s 0.5s ease both;
     }
 
-    .btn-primary {
-      background: var(--accent);
-      color: #000;
-      border-color: var(--accent);
+    /* ── TERMINAL ─────────────────────────────────────────────── */
+    .terminal-wrap {
+      animation: fadeUp 0.7s 0.35s ease both;
     }
 
-    .btn-primary:hover {
-      background: #22d3ee;
-      border-color: #22d3ee;
-      text-decoration: none;
-      color: #000;
-    }
-
-    .btn-secondary {
-      background: transparent;
-      color: var(--text);
-      border-color: var(--border);
-    }
-
-    .btn-secondary:hover {
-      border-color: var(--text-dim);
-      background: var(--bg-card);
-      text-decoration: none;
-    }
-
-    /* ── TERMINAL ─────────────────────────────────────────── */
     .terminal {
       background: var(--bg-code);
       border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
+      border-radius: var(--r-lg);
       overflow: hidden;
       font-family: var(--font-mono);
-      font-size: 0.82rem;
-      line-height: 1.6;
+      font-size: 0.8rem;
+      line-height: 1.7;
+      box-shadow:
+        0 0 0 1px rgba(59,130,246,0.06),
+        0 20px 60px rgba(0,0,0,0.5),
+        0 0 80px rgba(59,130,246,0.04);
     }
 
-    .terminal-header {
+    .terminal-bar {
       display: flex;
       align-items: center;
       gap: 0.5rem;
-      padding: 0.75rem 1rem;
-      background: var(--bg-card);
+      padding: 0.7rem 1rem;
+      background: rgba(255,255,255,0.025);
       border-bottom: 1px solid var(--border);
     }
 
-    .terminal-dot {
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-    }
-
-    .t-red    { background: #ff5f56; }
-    .t-yellow { background: #ffbd2e; }
-    .t-green  { background: #27c93f; }
+    .td { width: 11px; height: 11px; border-radius: 50%; }
+    .td-r { background: #ff5f57; }
+    .td-y { background: #febc2e; }
+    .td-g { background: #28c840; }
 
     .terminal-title {
-      margin-left: 0.5rem;
+      margin-left: 0.4rem;
+      font-size: 0.72rem;
       color: var(--text-muted);
-      font-size: 0.78rem;
+      letter-spacing: 0.04em;
     }
 
-    .terminal-body {
-      padding: 1.25rem 1.25rem;
+    .terminal-body { padding: 1.25rem 1.4rem 1.4rem; }
+
+    .tl {
+      display: block;
+      opacity: 0;
+      transform: translateY(4px);
+      animation: lineIn 0.3s ease forwards;
+    }
+    .tb { display: block; height: 0.7em; }
+
+    .tl-c0  { animation-delay: 0.7s; }
+    .tl-c1  { animation-delay: 0.9s; }
+    .tl-c2  { animation-delay: 1.05s; }
+    .tl-c3  { animation-delay: 1.2s; }
+    .tl-c4  { animation-delay: 1.35s; }
+    .tl-c5  { animation-delay: 1.5s; }
+    .tl-c6  { animation-delay: 1.65s; }
+    .tl-c7  { animation-delay: 1.9s; }
+    .tl-c8  { animation-delay: 2.05s; }
+    .tl-c9  { animation-delay: 2.2s; }
+    .tl-c10 { animation-delay: 2.35s; }
+    .tl-c11 { animation-delay: 2.5s; }
+    .tl-c12 { animation-delay: 2.65s; }
+    .tl-c13 { animation-delay: 3s; }
+
+    @keyframes lineIn {
+      to { opacity: 1; transform: translateY(0); }
     }
 
-    .t-comment { color: var(--text-muted); }
-    .t-prompt  { color: var(--text-muted); user-select: none; }
-    .t-cmd     { color: var(--text); }
-    .t-key     { color: var(--purple); }
-    .t-str     { color: #a5d6ff; }
-    .t-num     { color: #79c0ff; }
-    .t-fn      { color: var(--accent); }
-    .t-out     { color: var(--text-dim); }
-    .t-good    { color: var(--green); }
-    .t-warn    { color: var(--yellow); }
+    .tc  { color: var(--text-muted); }
+    .tf  { color: var(--accent-hi); }
+    .tk  { color: var(--purple); }
+    .ts  { color: #93c5fd; }
+    .tn  { color: #7dd3fc; }
+    .to  { color: var(--text-code); }
+    .tg  { color: var(--green); }
+    .tw  { color: var(--yellow); }
 
-    .t-line { display: block; }
-    .t-line + .t-line { margin-top: 0; }
-    .t-blank { display: block; height: 0.8em; }
+    /* Blinking cursor */
+    .cursor {
+      display: inline-block;
+      width: 7px;
+      height: 0.9em;
+      background: var(--accent);
+      margin-left: 2px;
+      vertical-align: text-bottom;
+      animation: blink 1.1s step-end infinite, fadeIn 0s 3s forwards;
+      opacity: 0;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+    @keyframes fadeIn { to { opacity: 1; } }
 
-    /* ── PROBLEM ─────────────────────────────────────────── */
-    .problem-grid {
+    /* ── SECTION ANIMATIONS ──────────────────────────────────── */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(18px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    [data-reveal] {
+      opacity: 0;
+      transform: translateY(20px);
+      transition: opacity 0.55s ease, transform 0.55s ease;
+    }
+    [data-reveal].is-visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    [data-reveal-delay="1"] { transition-delay: 0.1s; }
+    [data-reveal-delay="2"] { transition-delay: 0.2s; }
+    [data-reveal-delay="3"] { transition-delay: 0.3s; }
+    [data-reveal-delay="4"] { transition-delay: 0.4s; }
+    [data-reveal-delay="5"] { transition-delay: 0.5s; }
+
+    /* ── PROBLEM ─────────────────────────────────────────────── */
+    .problem-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      margin-top: 3rem;
+      border: 1px solid var(--border);
+      border-radius: var(--r-lg);
+      overflow: hidden;
+    }
+
+    .problem-row {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: 72px 1fr;
+      background: var(--bg-card);
+      transition: background 0.2s;
+    }
+    .problem-row:hover { background: var(--bg-elevated); }
+    .problem-row + .problem-row { border-top: 1px solid var(--border); }
+
+    .problem-num {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--accent);
+      border-right: 1px solid var(--border);
+      letter-spacing: 0.06em;
+      padding: 1.75rem 0;
+    }
+
+    .problem-content {
+      padding: 1.75rem 2rem;
+    }
+    .problem-content h3 { margin-bottom: 0.4rem; }
+    .problem-content p { font-size: 0.9rem; color: var(--text-dim); line-height: 1.7; }
+
+    /* ── PRIMITIVES ──────────────────────────────────────────── */
+    .primitives {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
       gap: 1.25rem;
       margin-top: 3rem;
     }
 
-    .problem-card {
-      padding: 1.75rem;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-    }
-
-    .problem-icon {
-      font-size: 1.75rem;
-      margin-bottom: 1rem;
-    }
-
-    .problem-card h3 { margin-bottom: 0.5rem; }
-
-    .problem-card p {
-      color: var(--text-dim);
-      font-size: 0.9rem;
-      line-height: 1.65;
-    }
-
-    /* ── HOW IT WORKS ─────────────────────────────────────── */
-    .primitives {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1.5rem;
-      margin-top: 3rem;
-    }
-
     .primitive-card {
-      padding: 1.75rem;
+      padding: 2rem;
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
+      border-radius: var(--r-lg);
       position: relative;
       overflow: hidden;
+      transition: border-color 0.2s, transform 0.2s;
+    }
+    .primitive-card:hover {
+      border-color: var(--border-hi);
+      transform: translateY(-2px);
     }
 
-    .primitive-card::before {
+    .primitive-card::after {
       content: '';
       position: absolute;
       top: 0; left: 0; right: 0;
-      height: 2px;
+      height: 1px;
     }
+    .pc-check::after { background: linear-gradient(to right, var(--accent), transparent); }
+    .pc-trace::after { background: linear-gradient(to right, var(--green), transparent); }
 
-    .primitive-check::before { background: var(--accent); }
-    .primitive-trace::before { background: var(--green); }
-
-    .primitive-card h3 {
+    .primitive-fn {
       font-family: var(--font-mono);
-      color: var(--accent);
-      margin-bottom: 0.5rem;
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 0.85rem;
     }
-
-    .primitive-trace h3 { color: var(--green); }
+    .pc-check .primitive-fn { color: var(--accent); }
+    .pc-trace .primitive-fn { color: var(--green); }
 
     .primitive-card p {
+      font-size: 0.875rem;
       color: var(--text-dim);
-      font-size: 0.9rem;
-      line-height: 1.65;
+      line-height: 1.75;
       margin-bottom: 1.25rem;
     }
 
-    .what-you-get {
+    .returns {
       list-style: none;
       display: flex;
       flex-direction: column;
       gap: 0.4rem;
     }
-
-    .what-you-get li {
-      font-size: 0.85rem;
+    .returns li {
+      font-size: 0.82rem;
       color: var(--text-dim);
       display: flex;
       align-items: flex-start;
-      gap: 0.5rem;
+      gap: 0.6rem;
     }
-
-    .what-you-get li::before {
-      content: '→';
+    .returns li::before {
+      content: '↳';
+      font-family: var(--font-mono);
       color: var(--text-muted);
       flex-shrink: 0;
+      font-size: 0.78rem;
     }
 
     .pipeline {
       display: flex;
       align-items: center;
-      gap: 0.5rem;
-      margin-top: 3rem;
-      flex-wrap: wrap;
+      gap: 0;
+      margin-top: 2.5rem;
+      overflow-x: auto;
+      padding-bottom: 0.25rem;
     }
 
-    .pipeline-step {
-      padding: 0.5rem 1rem;
+    .ps {
+      padding: 0.45rem 0.9rem;
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: var(--radius);
-      font-size: 0.85rem;
-      color: var(--text);
+      border-radius: var(--r);
+      font-size: 0.78rem;
+      font-family: var(--font-mono);
+      color: var(--text-code);
+      white-space: nowrap;
+      flex-shrink: 0;
     }
 
-    .pipeline-arrow {
+    .pa {
+      font-size: 0.75rem;
       color: var(--text-muted);
-      font-size: 1rem;
+      padding: 0 0.4rem;
+      flex-shrink: 0;
     }
 
-    /* ── CONFLICT DETECTION ───────────────────────────────── */
-    .formula-block {
+    /* ── CONFLICTS ───────────────────────────────────────────── */
+    .formula-panel {
       margin: 2rem 0;
-      padding: 1.5rem 1.75rem;
+      padding: 1.75rem 2rem;
       background: var(--bg-code);
       border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
+      border-left: 3px solid var(--accent);
+      border-radius: var(--r-lg);
+    }
+
+    .formula-eq {
       font-family: var(--font-mono);
-      font-size: 0.9rem;
-      color: var(--text-dim);
-    }
-
-    .formula-block .formula-main {
-      font-size: 1rem;
+      font-size: 0.93rem;
       color: var(--text);
-      margin-bottom: 1rem;
+      margin-bottom: 1.25rem;
+      line-height: 1.6;
     }
+    .formula-eq .fv { color: var(--accent-hi); }
+    .formula-eq .fo { color: var(--text-muted); }
 
-    .formula-vars {
+    .formula-defs {
       display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 0.4rem 2rem;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.45rem 2.5rem;
     }
 
-    .formula-var {
+    .fd {
       display: flex;
-      gap: 0.5rem;
-      font-size: 0.82rem;
+      gap: 0.65rem;
+      font-size: 0.8rem;
+      align-items: baseline;
     }
-
-    .formula-var .var-name { color: var(--accent); }
+    .fd .fdk { color: var(--accent); font-family: var(--font-mono); white-space: nowrap; }
+    .fd span  { color: var(--text-muted); }
 
     .lifecycle {
       display: flex;
       align-items: center;
-      gap: 0.75rem;
+      gap: 0.6rem;
       margin-top: 2rem;
       flex-wrap: wrap;
     }
 
-    .lifecycle-state {
-      padding: 0.4rem 0.9rem;
+    .lstate {
+      padding: 0.3rem 0.75rem;
       border-radius: 999px;
-      font-size: 0.82rem;
+      font-size: 0.78rem;
+      font-family: var(--font-mono);
       font-weight: 500;
       border: 1px solid;
     }
 
-    .state-open        { border-color: var(--yellow); color: var(--yellow); background: rgba(210,153,34,0.08); }
-    .state-ack         { border-color: var(--text-muted); color: var(--text-dim); background: rgba(139,148,158,0.08); }
-    .state-resolved    { border-color: var(--green); color: var(--green); background: rgba(63,185,80,0.08); }
-    .state-wontfix     { border-color: var(--text-muted); color: var(--text-muted); background: transparent; }
+    .ls-open     { border-color: var(--yellow);  color: var(--yellow);  background: rgba(251,191,36,0.07); }
+    .ls-ack      { border-color: var(--text-muted); color: var(--text-dim); background: transparent; }
+    .ls-resolved { border-color: var(--green); color: var(--green); background: rgba(52,211,153,0.07); }
+    .ls-wontfix  { border-color: var(--text-muted); color: var(--text-muted); background: transparent; }
 
-    .lifecycle-arrow   { color: var(--text-muted); font-size: 0.9rem; }
+    .la { color: var(--text-muted); font-size: 0.8rem; font-family: var(--font-mono); }
 
-    /* ── QUICK START ──────────────────────────────────────── */
-    .quickstart-tabs {
+    /* ── QUICK START ─────────────────────────────────────────── */
+    .qs-tabs {
       display: flex;
       gap: 0;
-      border-bottom: 1px solid var(--border);
       margin-top: 2.5rem;
+      border-bottom: 1px solid var(--border);
     }
 
-    .tab-btn {
-      padding: 0.6rem 1.25rem;
-      font-size: 0.875rem;
+    .qs-tab {
+      padding: 0.55rem 1.2rem;
+      font-size: 0.83rem;
       font-weight: 500;
       color: var(--text-dim);
       background: none;
       border: none;
       border-bottom: 2px solid transparent;
       cursor: pointer;
+      font-family: var(--font-sans);
       transition: color 0.15s, border-color 0.15s;
       margin-bottom: -1px;
-      font-family: var(--font-sans);
     }
+    .qs-tab:hover { color: var(--text); }
+    .qs-tab.active { color: var(--accent-hi); border-bottom-color: var(--accent); }
+    .qs-tab.soon { opacity: 0.38; cursor: default; pointer-events: none; }
 
-    .tab-btn:hover { color: var(--text); }
-    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
-    .tab-btn.soon { cursor: default; opacity: 0.45; }
-    .tab-btn.soon:hover { color: var(--text-dim); }
-
-    .tab-btn .soon-pill {
+    .soon-tag {
       display: inline-block;
       margin-left: 0.4rem;
-      padding: 0.1rem 0.4rem;
-      font-size: 0.65rem;
+      padding: 0.08rem 0.38rem;
+      font-size: 0.62rem;
       font-weight: 600;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.08em;
       text-transform: uppercase;
       border: 1px solid var(--border);
       border-radius: 999px;
       color: var(--text-muted);
       vertical-align: middle;
+      font-family: var(--font-mono);
     }
 
-    .tab-pane { display: none; padding-top: 1.5rem; }
-    .tab-pane.active { display: block; }
+    .qs-pane { display: none; padding-top: 1.5rem; }
+    .qs-pane.active { display: block; }
 
+    /* ── CODE BLOCKS ─────────────────────────────────────────── */
     pre {
       background: var(--bg-code);
       border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
+      border-left: 3px solid rgba(59,130,246,0.4);
+      border-radius: var(--r-lg);
       padding: 1.25rem 1.5rem;
       overflow-x: auto;
       font-family: var(--font-mono);
-      font-size: 0.83rem;
-      line-height: 1.65;
-      color: var(--text-dim);
+      font-size: 0.8rem;
+      line-height: 1.7;
+      color: var(--text-code);
     }
 
-    pre .hl      { color: var(--text); }
-    pre .comment { color: var(--text-muted); }
-    pre .key     { color: var(--purple); }
-    pre .str     { color: #a5d6ff; }
-    pre .kw      { color: #ff7b72; }
-    pre .num     { color: #79c0ff; }
-    pre .fn      { color: var(--accent); }
-    pre .flag    { color: var(--green); }
+    pre .hl  { color: var(--text); }
+    pre .c   { color: var(--text-muted); }
+    pre .k   { color: var(--purple); }
+    pre .s   { color: #93c5fd; }
+    pre .kw  { color: #f87171; }
+    pre .fn  { color: var(--accent-hi); }
 
     .tab-note {
-      margin-top: 0.75rem;
-      font-size: 0.85rem;
-      color: var(--text-muted);
+      margin-top: 0.85rem;
+      font-size: 0.83rem;
+      color: var(--text-dim);
+      line-height: 1.65;
     }
 
-    /* ── MCP ──────────────────────────────────────────────── */
-    .mcp-tools {
+    /* ── MCP TOOLS ───────────────────────────────────────────── */
+    .mcp-command {
+      margin-top: 2rem;
+    }
+
+    .mcp-grid {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      gap: 1rem;
+      gap: 1px;
       margin-top: 2.5rem;
-    }
-
-    .mcp-tool {
-      padding: 1.25rem;
-      background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: var(--radius);
+      border-radius: var(--r-lg);
+      overflow: hidden;
     }
 
-    .mcp-tool-name {
+    .mcp-cell {
+      padding: 1.4rem 1.6rem;
+      background: var(--bg-card);
+      transition: background 0.2s;
+      border-right: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+    .mcp-cell:hover { background: var(--bg-elevated); }
+    .mcp-cell:nth-child(3n) { border-right: none; }
+    .mcp-cell:nth-child(n+4) { border-bottom: none; }
+
+    .mcp-name {
       font-family: var(--font-mono);
-      font-size: 0.85rem;
-      color: var(--accent);
-      margin-bottom: 0.4rem;
-    }
-
-    .mcp-tool p {
       font-size: 0.82rem;
+      color: var(--accent-hi);
+      margin-bottom: 0.5rem;
+    }
+    .mcp-cell p {
+      font-size: 0.8rem;
       color: var(--text-dim);
-      line-height: 1.55;
+      line-height: 1.6;
     }
 
-    /* ── WHAT GETS RECORDED ───────────────────────────────── */
+    /* ── AUDIT FIELDS ────────────────────────────────────────── */
     .fields-grid {
       display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 0.75rem;
-      margin-top: 2.5rem;
-    }
-
-    .field-item {
-      display: flex;
-      gap: 1rem;
-      padding: 1rem 1.25rem;
-      background: var(--bg-card);
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      margin-top: 3rem;
       border: 1px solid var(--border);
-      border-radius: var(--radius);
-      align-items: flex-start;
+      border-radius: var(--r-lg);
+      overflow: hidden;
     }
 
-    .field-icon { font-size: 1.2rem; flex-shrink: 0; margin-top: 0.05rem; }
+    .field-cell {
+      padding: 1.5rem;
+      background: var(--bg-card);
+      border-right: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      transition: background 0.2s;
+    }
+    .field-cell:hover { background: var(--bg-elevated); }
+    .field-cell:nth-child(4n) { border-right: none; }
+    .field-cell:nth-child(n+5) { border-bottom: none; }
 
-    .field-item h4 {
-      font-size: 0.9rem;
+    .field-tag {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
       font-weight: 600;
-      margin-bottom: 0.2rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--accent);
+      background: var(--accent-sub);
+      border: 1px solid rgba(59,130,246,0.2);
+      border-radius: 3px;
+      padding: 0.12rem 0.4rem;
+      margin-bottom: 0.7rem;
     }
 
-    .field-item p {
-      font-size: 0.82rem;
+    .field-cell h4 {
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.35rem;
+    }
+    .field-cell p {
+      font-size: 0.78rem;
       color: var(--text-dim);
-      line-height: 1.5;
+      line-height: 1.6;
     }
 
-    /* ── SDKS ─────────────────────────────────────────────── */
-    .sdk-grid {
+    /* ── SDKS ────────────────────────────────────────────────── */
+    .sdk-row {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
       gap: 1.25rem;
-      margin-top: 2.5rem;
+      margin-top: 3rem;
     }
 
     .sdk-card {
       padding: 1.75rem;
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
+      border-radius: var(--r-lg);
       display: flex;
       flex-direction: column;
       gap: 1rem;
+      transition: border-color 0.2s, transform 0.2s;
+    }
+    .sdk-card:hover {
+      border-color: var(--border-hi);
+      transform: translateY(-2px);
     }
 
-    .sdk-lang {
+    .sdk-header {
       display: flex;
       align-items: center;
       gap: 0.6rem;
       font-weight: 600;
+      font-size: 0.95rem;
     }
 
-    .sdk-badge {
-      padding: 0.2rem 0.5rem;
+    .lang-badge {
+      padding: 0.18rem 0.5rem;
       border-radius: 4px;
       font-family: var(--font-mono);
-      font-size: 0.75rem;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
     }
-
-    .badge-go   { background: rgba(0, 173, 216, 0.15); color: #00add8; }
-    .badge-py   { background: rgba(55, 118, 171, 0.2); color: #4ea8de; }
-    .badge-ts   { background: rgba(49, 120, 198, 0.15); color: #3178c6; }
+    .lb-go { background: rgba(0,173,216,0.12); color: #38bdf8; }
+    .lb-py { background: rgba(55,118,171,0.15); color: #60a5fa; }
+    .lb-ts { background: rgba(49,120,198,0.12); color: #7dd3fc; }
 
     .sdk-install {
       background: var(--bg-code);
-      border: 1px solid var(--border-dim);
-      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
       padding: 0.6rem 0.85rem;
       font-family: var(--font-mono);
-      font-size: 0.78rem;
-      color: var(--text-dim);
+      font-size: 0.75rem;
+      color: var(--text-code);
       word-break: break-all;
-    }
-
-    .sdk-card p {
-      font-size: 0.85rem;
-      color: var(--text-dim);
       line-height: 1.6;
     }
 
-    /* ── FOOTER ───────────────────────────────────────────── */
+    .sdk-card p { font-size: 0.83rem; color: var(--text-dim); line-height: 1.65; }
+    .sdk-card a { font-size: 0.83rem; }
+
+    /* ── FOOTER ──────────────────────────────────────────────── */
     footer {
-      border-top: 1px solid var(--border-dim);
+      border-top: 1px solid var(--rule);
       padding: 3rem 0;
+      background: rgba(0,0,0,0.2);
     }
 
     .footer-inner {
@@ -649,200 +872,217 @@
       align-items: center;
       justify-content: space-between;
       flex-wrap: wrap;
-      gap: 1rem;
+      gap: 1.5rem;
     }
 
-    .footer-left {
+    .footer-brand {
       display: flex;
       flex-direction: column;
-      gap: 0.4rem;
+      gap: 0.35rem;
     }
 
     .footer-logo {
       display: flex;
       align-items: center;
-      gap: 0.5rem;
-      font-weight: 700;
-      color: var(--text);
+      gap: 0.55rem;
+      font-weight: 600;
       font-size: 0.95rem;
-      letter-spacing: -0.02em;
+      color: var(--text);
+      letter-spacing: -0.01em;
     }
+    .footer-logo svg { width: 17px; height: 17px; color: var(--accent); }
 
-    .footer-logo svg { width: 18px; height: 18px; color: var(--accent); }
-
-    .footer-copy {
-      font-size: 0.82rem;
-      color: var(--text-muted);
-    }
+    .footer-copy { font-size: 0.78rem; color: var(--text-muted); }
 
     .footer-links {
       display: flex;
-      gap: 1.5rem;
+      gap: 2rem;
       list-style: none;
       flex-wrap: wrap;
     }
+    .footer-links a { font-size: 0.82rem; color: var(--text-dim); }
+    .footer-links a:hover { color: var(--text); }
 
-    .footer-links a {
-      font-size: 0.85rem;
-      color: var(--text-muted);
-      transition: color 0.15s;
+    /* ── INTRO PARA ──────────────────────────────────────────── */
+    .intro-para {
+      max-width: 580px;
+      color: var(--text-dim);
+      font-size: 1rem;
+      line-height: 1.8;
+      margin-top: 1.25rem;
     }
 
-    .footer-links a:hover { color: var(--text); text-decoration: none; }
+    /* ── RESPONSIVE ──────────────────────────────────────────── */
+    @media (max-width: 860px) {
+      .hero-grid     { grid-template-columns: 1fr; }
+      .hero-watermark { display: none; }
+      .primitives    { grid-template-columns: 1fr; }
+      .mcp-grid      { grid-template-columns: 1fr 1fr; }
+      .fields-grid   { grid-template-columns: repeat(2, 1fr); }
+      .sdk-row       { grid-template-columns: 1fr; }
+      .formula-defs  { grid-template-columns: 1fr; }
+      nav            { padding: 0 1.25rem; }
+      .container     { padding: 0 1.25rem; }
+      section        { padding: 5rem 0; }
+      .nav-links     { display: none; }
+      .sec-num       { display: none; }
+    }
 
-    /* ── RESPONSIVE ───────────────────────────────────────── */
-    @media (max-width: 768px) {
-      .hero-inner { grid-template-columns: 1fr; gap: 2.5rem; }
-      .problem-grid { grid-template-columns: 1fr; }
-      .primitives { grid-template-columns: 1fr; }
-      .mcp-tools { grid-template-columns: 1fr 1fr; }
+    @media (max-width: 520px) {
+      .mcp-grid    { grid-template-columns: 1fr; }
       .fields-grid { grid-template-columns: 1fr; }
-      .sdk-grid { grid-template-columns: 1fr; }
-      .formula-vars { grid-template-columns: 1fr; }
-      nav { padding: 0 1rem; }
-      .container { padding: 0 1.25rem; }
-      section { padding: 4rem 0; }
-      .nav-links { display: none; }
+      h1 { font-size: 2.2rem; }
     }
   </style>
 </head>
 <body>
 
-<!-- ── NAV ──────────────────────────────────────────────────── -->
+<!-- ── NAV ──────────────────────────────────────────────────────── -->
 <nav>
-  <div class="nav-logo">
-    <svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">
+  <a href="/" class="nav-logo">
+    <svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-linecap="square" stroke-linejoin="miter" aria-label="Akashi">
       <path d="M7 7 H93 V48" stroke-width="13"/>
       <path d="M7 7 V93 H48" stroke-width="13"/>
       <line x1="87" y1="52" x2="52" y2="87" stroke-width="13"/>
       <line x1="66" y1="52" x2="94" y2="90" stroke-width="13"/>
     </svg>
     Akashi
-  </div>
+  </a>
   <ul class="nav-links">
     <li><a href="#how-it-works">How it works</a></li>
     <li><a href="#quick-start">Quick start</a></li>
     <li><a href="#mcp">MCP</a></li>
     <li><a href="#sdks">SDKs</a></li>
-    <li><a href="https://github.com/ashita-ai/akashi/tree/main/docs">Docs</a></li>
+    <li><a href="https://github.com/ashita-ai/akashi/tree/main/docs" target="_blank" rel="noopener">Docs</a></li>
   </ul>
-  <a href="https://github.com/ashita-ai/akashi" class="nav-github" target="_blank" rel="noopener">
-    <svg height="16" width="16" viewBox="0 0 16 16" fill="currentColor">
+  <a href="https://github.com/ashita-ai/akashi" class="nav-cta" target="_blank" rel="noopener">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
       <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
     </svg>
     GitHub
   </a>
 </nav>
 
-<!-- ── HERO ──────────────────────────────────────────────────── -->
+<!-- ── HERO ──────────────────────────────────────────────────────── -->
 <section id="hero">
   <div class="container">
-    <div class="hero-inner">
+    <div class="hero-grid">
       <div>
         <div class="hero-badge">
-          <span class="dot"></span>
-          Open source · Apache 2.0
+          <span class="live-dot"></span>
+          Open source &nbsp;·&nbsp; Apache 2.0 &nbsp;·&nbsp; Go + PostgreSQL
         </div>
-        <h1>Version control<br/>for AI decisions.</h1>
-        <p class="hero-tagline">
+        <h1 class="hero-h1">Version control<br/>for AI decisions.</h1>
+        <p class="hero-sub">
           Multi-agent AI systems make thousands of decisions. Akashi makes them visible, auditable, and coordinated — so agents build on each other's work instead of contradicting it.
         </p>
         <div class="hero-actions">
           <a href="#quick-start" class="btn btn-primary">Get started</a>
-          <a href="https://github.com/ashita-ai/akashi" class="btn btn-secondary" target="_blank" rel="noopener">
-            <svg height="15" width="15" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
-            </svg>
+          <a href="https://github.com/ashita-ai/akashi" class="btn btn-ghost" target="_blank" rel="noopener">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
             ashita-ai/akashi
           </a>
         </div>
       </div>
 
-      <div class="terminal">
-        <div class="terminal-header">
-          <div class="terminal-dot t-red"></div>
-          <div class="terminal-dot t-yellow"></div>
-          <div class="terminal-dot t-green"></div>
-          <span class="terminal-title">agent workflow</span>
-        </div>
-        <div class="terminal-body">
-          <span class="t-line t-comment"># Before deciding, check for precedents</span>
-          <span class="t-line">
-            <span class="t-fn">akashi_check</span>
-            <span class="t-out">(</span>
-            <span class="t-key">query</span><span class="t-out">=</span><span class="t-str">"database for session state"</span>
-            <span class="t-out">)</span>
-          </span>
-          <span class="t-blank"></span>
-          <span class="t-line t-out">  has_precedent: true</span>
-          <span class="t-line t-out">  decisions:</span>
-          <span class="t-line t-good">    ✓ "use Redis for session state" (0.88 confidence)</span>
-          <span class="t-line t-out">      decided by: planner · 3 days ago</span>
-          <span class="t-line t-out">      reasoning: "sub-millisecond reads, TTL native..."</span>
-          <span class="t-blank"></span>
-          <span class="t-line t-comment"># Align with precedent and record</span>
-          <span class="t-line">
-            <span class="t-fn">akashi_trace</span>
-            <span class="t-out">(</span>
-          </span>
-          <span class="t-line t-out">  <span class="t-key">outcome</span>=<span class="t-str">"use Redis, consistent with planner"</span>,</span>
-          <span class="t-line t-out">  <span class="t-key">confidence</span>=<span class="t-num">0.9</span>,</span>
-          <span class="t-line t-out">  <span class="t-key">reasoning</span>=<span class="t-str">"precedent validated..."</span></span>
-          <span class="t-line t-out">)</span>
-          <span class="t-blank"></span>
-          <span class="t-line t-good">  ✓ Decision recorded · no conflicts detected</span>
+      <div class="terminal-wrap" style="position:relative;">
+        <!-- Logo watermark behind terminal -->
+        <svg class="hero-watermark" viewBox="0 0 100 100" fill="none" stroke="white" stroke-linecap="square" stroke-linejoin="miter">
+          <path d="M7 7 H93 V48" stroke-width="13"/>
+          <path d="M7 7 V93 H48" stroke-width="13"/>
+          <line x1="87" y1="52" x2="52" y2="87" stroke-width="13"/>
+          <line x1="66" y1="52" x2="94" y2="90" stroke-width="13"/>
+        </svg>
+
+        <div class="terminal">
+          <div class="terminal-bar">
+            <div class="td td-r"></div>
+            <div class="td td-y"></div>
+            <div class="td td-g"></div>
+            <span class="terminal-title">agent · decision workflow</span>
+          </div>
+          <div class="terminal-body">
+            <span class="tl tl-c0 tc"># Before deciding, check for precedents</span>
+            <span class="tl tl-c1"><span class="tf">akashi_check</span><span class="to">(</span><span class="tk">query</span><span class="to">=</span><span class="ts">"database for session state"</span><span class="to">)</span></span>
+            <span class="tb"></span>
+            <span class="tl tl-c2 to">&nbsp;&nbsp;has_precedent: <span class="tg">true</span></span>
+            <span class="tl tl-c3 to">&nbsp;&nbsp;decisions:</span>
+            <span class="tl tl-c4 tg">&nbsp;&nbsp;&nbsp;&nbsp;✓ "use Redis for session state" <span class="to">(conf: 0.88)</span></span>
+            <span class="tl tl-c5 to">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;agent: planner · 3 days ago</span>
+            <span class="tl tl-c6 to">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reasoning: "sub-ms reads, TTL native..."</span>
+            <span class="tb"></span>
+            <span class="tl tl-c7 tc"># Align with precedent and record</span>
+            <span class="tl tl-c8"><span class="tf">akashi_trace</span><span class="to">(</span></span>
+            <span class="tl tl-c9 to">&nbsp;&nbsp;<span class="tk">outcome</span>=<span class="ts">"use Redis, consistent with planner"</span>,</span>
+            <span class="tl tl-c10 to">&nbsp;&nbsp;<span class="tk">confidence</span>=<span class="tn">0.9</span>, <span class="tk">reasoning</span>=<span class="ts">"..."</span></span>
+            <span class="tl tl-c11 to">)</span>
+            <span class="tb"></span>
+            <span class="tl tl-c13 tg">&nbsp;&nbsp;✓ recorded · no conflicts detected<span class="cursor"></span></span>
+          </div>
         </div>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ── PROBLEM ────────────────────────────────────────────────── -->
+<div class="section-divider"></div>
+
+<!-- ── PROBLEM ────────────────────────────────────────────────────── -->
 <section id="problem">
-  <div class="container">
-    <span class="label">The problem</span>
-    <h2>Multi-agent AI has a<br/>coordination problem.</h2>
-    <div class="problem-grid">
-      <div class="problem-card">
-        <div class="problem-icon">⚡</div>
-        <h3>Agents contradict each other</h3>
-        <p>A planner recommends microservices. A coder builds a monolith. Neither knows the other already decided. The conflict surfaces as a production bug, not a design discussion.</p>
+  <div class="container" style="position:relative;">
+    <span class="sec-num">01</span>
+    <div class="eyebrow" data-reveal>The problem</div>
+    <h2 data-reveal data-reveal-delay="1">Multi-agent AI has a<br/>coordination problem.</h2>
+    <div class="problem-stack" data-reveal data-reveal-delay="2">
+      <div class="problem-row">
+        <div class="problem-num">01</div>
+        <div class="problem-content">
+          <h3>Agents contradict each other</h3>
+          <p>A planner recommends microservices. A coder builds a monolith. Neither knows the other already decided. The conflict surfaces as a production bug, not a design discussion.</p>
+        </div>
       </div>
-      <div class="problem-card">
-        <div class="problem-icon">🌊</div>
-        <h3>Decisions evaporate</h3>
-        <p>Agents relitigate settled questions on every session. There's no shared memory of what's already been decided, why, and what alternatives were considered and rejected.</p>
+      <div class="problem-row">
+        <div class="problem-num">02</div>
+        <div class="problem-content">
+          <h3>Decisions evaporate</h3>
+          <p>Agents relitigate settled questions on every session. There's no shared memory of what's already been decided, why, and what alternatives were considered and rejected.</p>
+        </div>
       </div>
-      <div class="problem-card">
-        <div class="problem-icon">🔍</div>
-        <h3>No audit trail</h3>
-        <p>When something goes wrong, nobody can answer: <em>who decided what, when, why, and what alternatives were considered?</em> Compliance asks. You have nothing.</p>
+      <div class="problem-row">
+        <div class="problem-num">03</div>
+        <div class="problem-content">
+          <h3>No audit trail</h3>
+          <p>When something goes wrong, nobody can answer: <em>who decided what, when, why, and what alternatives were considered?</em> Compliance asks. You have nothing.</p>
+        </div>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ── HOW IT WORKS ───────────────────────────────────────────── -->
+<div class="section-divider"></div>
+
+<!-- ── HOW IT WORKS ───────────────────────────────────────────────── -->
 <section id="how-it-works">
-  <div class="container">
-    <span class="label">How it works</span>
-    <h2>Two primitives.<br/>Every agent. Every decision.</h2>
+  <div class="container" style="position:relative;">
+    <span class="sec-num">02</span>
+    <div class="eyebrow" data-reveal>How it works</div>
+    <h2 data-reveal data-reveal-delay="1">Two primitives.<br/>Every agent. Every decision.</h2>
 
     <div class="primitives">
-      <div class="primitive-card primitive-check">
-        <h3>akashi_check</h3>
+      <div class="primitive-card pc-check" data-reveal data-reveal-delay="2">
+        <div class="primitive-fn">akashi_check</div>
         <p>Before making a decision, an agent queries the audit trail. Akashi returns the most relevant past decisions — re-ranked by assessment outcomes, citation count, and recency — plus any active conflicts involving those precedents.</p>
-        <ul class="what-you-get">
+        <ul class="returns">
           <li>Relevant precedents with full reasoning</li>
           <li>Active conflicts in the decision area</li>
           <li>Resolved conflicts and their winning approach</li>
           <li>Precedent reference to cite in the trace</li>
         </ul>
       </div>
-      <div class="primitive-card primitive-trace">
-        <h3>akashi_trace</h3>
+      <div class="primitive-card pc-trace" data-reveal data-reveal-delay="3">
+        <div class="primitive-fn" style="color:var(--green);">akashi_trace</div>
         <p>After deciding, an agent records its full reasoning. Five things happen atomically: embeddings are computed, a completeness score is assigned, everything commits to the database, conflict detection runs asynchronously, and subscribers are notified.</p>
-        <ul class="what-you-get">
+        <ul class="returns">
           <li>Decision, confidence, and full reasoning</li>
           <li>Rejected alternatives with scores</li>
           <li>Supporting evidence with provenance</li>
@@ -851,250 +1091,255 @@
       </div>
     </div>
 
-    <div class="pipeline" style="margin-top: 2.5rem;">
-      <div class="pipeline-step">Agent decides</div>
-      <div class="pipeline-arrow">→</div>
-      <div class="pipeline-step">akashi_trace</div>
-      <div class="pipeline-arrow">→</div>
-      <div class="pipeline-step">Embeddings computed</div>
-      <div class="pipeline-arrow">→</div>
-      <div class="pipeline-step">Conflict detection</div>
-      <div class="pipeline-arrow">→</div>
-      <div class="pipeline-step">LLM validation</div>
-      <div class="pipeline-arrow">→</div>
-      <div class="pipeline-step">Subscribers notified</div>
+    <div class="pipeline" data-reveal data-reveal-delay="4">
+      <div class="ps">Agent decides</div>
+      <div class="pa">→</div>
+      <div class="ps">akashi_trace</div>
+      <div class="pa">→</div>
+      <div class="ps">Embeddings</div>
+      <div class="pa">→</div>
+      <div class="ps">Conflict scoring</div>
+      <div class="pa">→</div>
+      <div class="ps">LLM validation</div>
+      <div class="pa">→</div>
+      <div class="ps">SSE notify</div>
     </div>
   </div>
 </section>
 
-<!-- ── CONFLICT DETECTION ─────────────────────────────────────── -->
+<div class="section-divider"></div>
+
+<!-- ── CONFLICT DETECTION ─────────────────────────────────────────── -->
 <section id="conflicts">
-  <div class="container">
-    <span class="label">Conflict detection</span>
-    <h2>Semantic, not syntactic.</h2>
-    <p class="text-dim" style="margin-top: 1rem; max-width: 600px; line-height: 1.7;">
-      Conflicts are detected semantically. A planner recommending microservices and a coder recommending a monolith for the same system will surface as a conflict — regardless of what <code style="font-family: var(--font-mono); font-size: 0.85em; color: var(--text);">decision_type</code> either agent used.
+  <div class="container" style="position:relative;">
+    <span class="sec-num">03</span>
+    <div class="eyebrow" data-reveal>Conflict detection</div>
+    <h2 data-reveal data-reveal-delay="1">Semantic, not syntactic.</h2>
+    <p class="intro-para" data-reveal data-reveal-delay="2">
+      Conflicts are detected semantically. A planner recommending microservices and a coder recommending a monolith for the same system will surface as a conflict — regardless of what <code style="font-family:var(--font-mono);font-size:0.85em;color:var(--text);">decision_type</code> either agent used.
     </p>
 
-    <div class="formula-block">
-      <div class="formula-main">significance = topic_similarity × outcome_divergence × confidence_weight × temporal_decay</div>
-      <div class="formula-vars">
-        <div class="formula-var"><span class="var-name">topic_similarity</span><span>— semantic distance between decision embeddings</span></div>
-        <div class="formula-var"><span class="var-name">outcome_divergence</span><span>— stance divergence on the conclusion</span></div>
-        <div class="formula-var"><span class="var-name">confidence_weight</span><span>— low-confidence decisions contribute less</span></div>
-        <div class="formula-var"><span class="var-name">temporal_decay</span><span>— older decisions decay in significance</span></div>
+    <div class="formula-panel" data-reveal data-reveal-delay="3">
+      <div class="formula-eq">
+        <span class="fv">significance</span>
+        <span class="fo"> = </span>
+        <span class="fv">topic_similarity</span>
+        <span class="fo"> × </span>
+        <span class="fv">outcome_divergence</span>
+        <span class="fo"> × </span>
+        <span class="fv">confidence_weight</span>
+        <span class="fo"> × </span>
+        <span class="fv">temporal_decay</span>
+      </div>
+      <div class="formula-defs">
+        <div class="fd"><span class="fdk">topic_similarity</span><span>— semantic distance between decision embeddings</span></div>
+        <div class="fd"><span class="fdk">outcome_divergence</span><span>— stance divergence on the conclusion</span></div>
+        <div class="fd"><span class="fdk">confidence_weight</span><span>— low-confidence decisions contribute less</span></div>
+        <div class="fd"><span class="fdk">temporal_decay</span><span>— older decisions decay in significance</span></div>
       </div>
     </div>
 
-    <p class="text-dim" style="font-size: 0.9rem;">Pairs above the significance threshold are validated by an LLM, which classifies the relationship as <em>contradiction</em>, <em>supersession</em>, <em>complementary</em>, <em>refinement</em>, or <em>unrelated</em>. Only genuine conflicts are stored. Conflict lifecycle:</p>
+    <p style="font-size:0.875rem;color:var(--text-dim);margin-bottom:1.25rem;" data-reveal data-reveal-delay="3">
+      Pairs above the significance threshold are validated by an LLM, which classifies the relationship as <em>contradiction</em>, <em>supersession</em>, <em>complementary</em>, <em>refinement</em>, or <em>unrelated</em>. Only genuine conflicts are stored.
+    </p>
 
-    <div class="lifecycle">
-      <div class="lifecycle-state state-open">open</div>
-      <div class="lifecycle-arrow">→</div>
-      <div class="lifecycle-state state-ack">acknowledged</div>
-      <div class="lifecycle-arrow">→</div>
-      <div class="lifecycle-state state-resolved">resolved</div>
-      <div class="lifecycle-arrow">or</div>
-      <div class="lifecycle-state state-wontfix">wont_fix</div>
+    <div class="lifecycle" data-reveal data-reveal-delay="4">
+      <div class="lstate ls-open">open</div>
+      <div class="la">→</div>
+      <div class="lstate ls-ack">acknowledged</div>
+      <div class="la">→</div>
+      <div class="lstate ls-resolved">resolved</div>
+      <div class="la">or</div>
+      <div class="lstate ls-wontfix">wont_fix</div>
     </div>
   </div>
 </section>
 
-<!-- ── QUICK START ────────────────────────────────────────────── -->
-<section id="quick-start">
-  <div class="container">
-    <span class="label">Quick start</span>
-    <h2>Get running in minutes.</h2>
+<div class="section-divider"></div>
 
-    <div class="quickstart-tabs">
-      <button class="tab-btn active" onclick="switchTab(this, 'tab-complete')">Complete stack</button>
-      <button class="tab-btn" onclick="switchTab(this, 'tab-cloud')">Self-hosted cloud</button>
-      <button class="tab-btn soon" tabindex="-1">Local<span class="soon-pill">Coming soon</span></button>
+<!-- ── QUICK START ────────────────────────────────────────────────── -->
+<section id="quick-start">
+  <div class="container" style="position:relative;">
+    <span class="sec-num">04</span>
+    <div class="eyebrow" data-reveal>Quick start</div>
+    <h2 data-reveal data-reveal-delay="1">Get running in minutes.</h2>
+
+    <div class="qs-tabs" data-reveal data-reveal-delay="2">
+      <button class="qs-tab active" onclick="switchTab(this,'qs-complete')">Complete stack</button>
+      <button class="qs-tab" onclick="switchTab(this,'qs-cloud')">Self-hosted cloud</button>
+      <button class="qs-tab soon" tabindex="-1">Local<span class="soon-tag">Coming soon</span></button>
     </div>
 
-    <div id="tab-complete" class="tab-pane active">
-      <pre><span class="comment"># Everything in Docker: TimescaleDB, Qdrant, Ollama, Akashi server</span>
+    <div id="qs-complete" class="qs-pane active" data-reveal data-reveal-delay="3">
+      <pre><span class="c"># Everything in Docker: TimescaleDB, Qdrant, Ollama, Akashi server</span>
 <span class="hl">docker compose -f docker-compose.complete.yml up -d</span>
 
-<span class="comment"># First run downloads two Ollama models (~7GB). Watch progress:</span>
+<span class="c"># First run downloads two Ollama models (~7GB). Watch progress:</span>
 docker compose -f docker-compose.complete.yml logs -f ollama-init
 
-<span class="comment"># Server ready when you see a "listening" log line</span>
+<span class="c"># Server ready when you see a "listening" log line</span>
 curl http://localhost:8080/health
-<span class="comment"># Open http://localhost:8080 for the audit dashboard</span></pre>
+<span class="c"># Open http://localhost:8080 for the audit dashboard</span></pre>
       <p class="tab-note">Full feature set out of the box: LLM conflict validation, vector search, real-time SSE, multi-tenancy, audit dashboard. No API keys or external accounts needed.</p>
     </div>
 
-    <div id="tab-cloud" class="tab-pane">
-      <pre><span class="comment"># Bring your own cloud: TimescaleDB + Qdrant (Postgres-only also works)</span>
+    <div id="qs-cloud" class="qs-pane" data-reveal data-reveal-delay="3">
+      <pre><span class="c"># Bring your own cloud: TimescaleDB + Qdrant (Postgres-only also works)</span>
 cp docker/env.example .env
-<span class="comment"># Edit .env — minimum required:</span>
-<span class="key">DATABASE_URL</span>=<span class="str">postgres://user:pass@host:5432/akashi</span>
-<span class="key">AKASHI_ADMIN_API_KEY</span>=<span class="str">your-api-key</span>
+<span class="c"># Edit .env — minimum required:</span>
+<span class="k">DATABASE_URL</span>=<span class="s">postgres://user:pass@host:5432/akashi</span>
+<span class="k">AKASHI_ADMIN_API_KEY</span>=<span class="s">your-api-key</span>
 
 docker compose up -d
 
-<span class="comment"># Generate persistent JWT signing keys (run once)</span>
+<span class="c"># Generate persistent JWT signing keys (run once)</span>
 go run ./scripts/genkey -out data/
-<span class="comment"># Add to .env:</span>
-<span class="key">AKASHI_JWT_PRIVATE_KEY</span>=<span class="str">/data/jwt_private.pem</span>
-<span class="key">AKASHI_JWT_PUBLIC_KEY</span>=<span class="str">/data/jwt_public.pem</span></pre>
-      <p class="tab-note">Run Akashi on any cloud that can serve a Docker container and a Postgres database. Qdrant and Ollama are optional — the server starts without them and falls back to text search. See the <a href="https://github.com/ashita-ai/akashi/blob/main/docs/self-hosting.md">self-hosting guide</a>.</p>
+<span class="c"># Add to .env:</span>
+<span class="k">AKASHI_JWT_PRIVATE_KEY</span>=<span class="s">/data/jwt_private.pem</span>
+<span class="k">AKASHI_JWT_PUBLIC_KEY</span>=<span class="s">/data/jwt_public.pem</span></pre>
+      <p class="tab-note">Run Akashi on any cloud that can serve a Docker container and a Postgres database. Qdrant and Ollama are optional — the server falls back to text search without them. See the <a href="https://github.com/ashita-ai/akashi/blob/main/docs/self-hosting.md">self-hosting guide</a>.</p>
     </div>
-
   </div>
 </section>
 
-<!-- ── MCP ────────────────────────────────────────────────────── -->
-<section id="mcp">
-  <div class="container">
-    <span class="label">MCP integration</span>
-    <h2>One line to wire any<br/>MCP-compatible agent.</h2>
+<div class="section-divider"></div>
 
-    <pre style="margin-top: 2rem;"><span class="comment"># Claude Code — never expires, survives server restarts</span>
+<!-- ── MCP ────────────────────────────────────────────────────────── -->
+<section id="mcp">
+  <div class="container" style="position:relative;">
+    <span class="sec-num">05</span>
+    <div class="eyebrow" data-reveal>MCP integration</div>
+    <h2 data-reveal data-reveal-delay="1">One line to wire any<br/>MCP-compatible agent.</h2>
+
+    <div class="mcp-command" data-reveal data-reveal-delay="2">
+      <pre><span class="c"># Claude Code — never expires, survives server restarts</span>
 <span class="hl">claude mcp add --transport http --scope user akashi http://localhost:8080/mcp \
   --header "Authorization: ApiKey admin:$AKASHI_ADMIN_API_KEY"</span></pre>
+    </div>
 
-    <div class="mcp-tools">
-      <div class="mcp-tool">
-        <div class="mcp-tool-name">akashi_check</div>
+    <div class="mcp-grid" data-reveal data-reveal-delay="3">
+      <div class="mcp-cell">
+        <div class="mcp-name">akashi_check</div>
         <p>Semantic precedent lookup before deciding. Returns relevant past decisions, active conflicts, and winning approaches from resolved conflicts.</p>
       </div>
-      <div class="mcp-tool">
-        <div class="mcp-tool-name">akashi_trace</div>
+      <div class="mcp-cell">
+        <div class="mcp-name">akashi_trace</div>
         <p>Record a decision with reasoning, alternatives, evidence, and confidence. Triggers embedding, conflict detection, and SSE notification.</p>
       </div>
-      <div class="mcp-tool">
-        <div class="mcp-tool-name">akashi_assess</div>
+      <div class="mcp-cell">
+        <div class="mcp-name">akashi_assess</div>
         <p>Mark a past decision as correct, incorrect, or partially correct. Assessments feed back into search re-ranking.</p>
       </div>
-      <div class="mcp-tool">
-        <div class="mcp-tool-name">akashi_query</div>
+      <div class="mcp-cell">
+        <div class="mcp-name">akashi_query</div>
         <p>Filter decisions by type, agent, confidence range, or free-text semantic search. Structured or unstructured.</p>
       </div>
-      <div class="mcp-tool">
-        <div class="mcp-tool-name">akashi_conflicts</div>
+      <div class="mcp-cell">
+        <div class="mcp-name">akashi_conflicts</div>
         <p>List grouped conflicts between agents. Filter by severity, category, and status. Returns representative examples per conflict group.</p>
       </div>
-      <div class="mcp-tool">
-        <div class="mcp-tool-name">akashi_stats</div>
-        <p>Aggregate health metrics for the decision trail: decision volume, conflict rate, mean confidence, assessment outcomes.</p>
+      <div class="mcp-cell">
+        <div class="mcp-name">akashi_stats</div>
+        <p>Aggregate health metrics: decision volume, conflict rate, mean confidence, and assessment outcomes across the org.</p>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ── WHAT GETS RECORDED ─────────────────────────────────────── -->
+<div class="section-divider"></div>
+
+<!-- ── AUDIT TRAIL ────────────────────────────────────────────────── -->
 <section id="audit-trail">
-  <div class="container">
-    <span class="label">Audit trail</span>
-    <h2>Everything captured.<br/>Nothing inferred.</h2>
-    <p class="text-dim" style="margin-top: 1rem; max-width: 560px; line-height: 1.7;">Every decision trace records the full context at the moment of decision — not a summary reconstructed later.</p>
+  <div class="container" style="position:relative;">
+    <span class="sec-num">06</span>
+    <div class="eyebrow" data-reveal>Audit trail</div>
+    <h2 data-reveal data-reveal-delay="1">Everything captured.<br/>Nothing inferred.</h2>
+    <p class="intro-para" data-reveal data-reveal-delay="2">Every decision trace records the full context at the moment of decision — not a summary reconstructed later.</p>
 
-    <div class="fields-grid">
-      <div class="field-item">
-        <div class="field-icon">🎯</div>
-        <div>
-          <h4>Decision + confidence</h4>
-          <p>What was chosen, expressed as a concrete outcome, with a 0–1 confidence score from the agent.</p>
-        </div>
+    <div class="fields-grid" data-reveal data-reveal-delay="3">
+      <div class="field-cell">
+        <div class="field-tag">DEC</div>
+        <h4>Decision + confidence</h4>
+        <p>What was chosen, expressed as a concrete outcome, with a 0–1 confidence score from the agent.</p>
       </div>
-      <div class="field-item">
-        <div class="field-icon">🧠</div>
-        <div>
-          <h4>Reasoning</h4>
-          <p>Step-by-step logic explaining why this outcome was chosen over alternatives.</p>
-        </div>
+      <div class="field-cell">
+        <div class="field-tag">RSN</div>
+        <h4>Reasoning</h4>
+        <p>Step-by-step logic explaining why this outcome was chosen over alternatives.</p>
       </div>
-      <div class="field-item">
-        <div class="field-icon">🔀</div>
-        <div>
-          <h4>Rejected alternatives</h4>
-          <p>Every option considered — with scores, rationale, and why each was not selected.</p>
-        </div>
+      <div class="field-cell">
+        <div class="field-tag">ALT</div>
+        <h4>Rejected alternatives</h4>
+        <p>Every option considered — with scores, rationale, and why each was not selected.</p>
       </div>
-      <div class="field-item">
-        <div class="field-icon">📎</div>
-        <div>
-          <h4>Supporting evidence</h4>
-          <p>What information backed the decision: URLs, analysis, observations — with source type and provenance.</p>
-        </div>
+      <div class="field-cell">
+        <div class="field-tag">EVD</div>
+        <h4>Supporting evidence</h4>
+        <p>What information backed the decision: URLs, analysis, observations — with source type and provenance.</p>
       </div>
-      <div class="field-item">
-        <div class="field-icon">⚡</div>
-        <div>
-          <h4>Conflicts</h4>
-          <p>Semantically detected disagreements between agents on the same question, with severity and lifecycle state.</p>
-        </div>
+      <div class="field-cell">
+        <div class="field-tag">CNF</div>
+        <h4>Conflicts</h4>
+        <p>Semantically detected disagreements between agents on the same question, with severity and lifecycle state.</p>
       </div>
-      <div class="field-item">
-        <div class="field-icon">🔐</div>
-        <div>
-          <h4>Integrity proof</h4>
-          <p>SHA-256 content hash and Merkle tree batch verification. Tamper detection without external infrastructure.</p>
-        </div>
+      <div class="field-cell">
+        <div class="field-tag">INT</div>
+        <h4>Integrity proof</h4>
+        <p>SHA-256 content hash and Merkle tree batch verification. Tamper detection without external infrastructure.</p>
       </div>
-      <div class="field-item">
-        <div class="field-icon">🕰</div>
-        <div>
-          <h4>Bi-temporal model</h4>
-          <p>Both business time (valid_from/valid_to) and transaction time — point-in-time queries and full history.</p>
-        </div>
+      <div class="field-cell">
+        <div class="field-tag">TMP</div>
+        <h4>Bi-temporal model</h4>
+        <p>Both business time (valid_from/valid_to) and transaction time — point-in-time queries and full history.</p>
       </div>
-      <div class="field-item">
-        <div class="field-icon">🤖</div>
-        <div>
-          <h4>Agent identity</h4>
-          <p>Session ID, tool, model, and repo context — automatically enriched from MCP session and HTTP headers.</p>
-        </div>
+      <div class="field-cell">
+        <div class="field-tag">AGT</div>
+        <h4>Agent identity</h4>
+        <p>Session ID, tool, model, and repo context — automatically enriched from MCP session and HTTP headers.</p>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ── SDKS ───────────────────────────────────────────────────── -->
-<section id="sdks">
-  <div class="container">
-    <span class="label">SDKs</span>
-    <h2>Native clients for<br/>Go, Python, and TypeScript.</h2>
+<div class="section-divider"></div>
 
-    <div class="sdk-grid">
-      <div class="sdk-card">
-        <div class="sdk-lang">
-          <span class="sdk-badge badge-go">Go</span>
-          Go SDK
-        </div>
+<!-- ── SDKS ───────────────────────────────────────────────────────── -->
+<section id="sdks">
+  <div class="container" style="position:relative;">
+    <span class="sec-num">07</span>
+    <div class="eyebrow" data-reveal>SDKs</div>
+    <h2 data-reveal data-reveal-delay="1">Native clients for Go,<br/>Python, and TypeScript.</h2>
+
+    <div class="sdk-row">
+      <div class="sdk-card" data-reveal data-reveal-delay="2">
+        <div class="sdk-header"><span class="lang-badge lb-go">Go</span> Go SDK</div>
         <div class="sdk-install">go get github.com/ashita-ai/akashi/sdk/go/akashi</div>
         <p>Idiomatic Go client with token management, all six operations, and testable interfaces. Used in the Akashi server itself.</p>
         <a href="https://github.com/ashita-ai/akashi/tree/main/sdk/go">View source →</a>
       </div>
-      <div class="sdk-card">
-        <div class="sdk-lang">
-          <span class="sdk-badge badge-py">Py</span>
-          Python SDK
-        </div>
+      <div class="sdk-card" data-reveal data-reveal-delay="3">
+        <div class="sdk-header"><span class="lang-badge lb-py">Py</span> Python SDK</div>
         <div class="sdk-install">pip install git+https://github.com/ashita-ai/akashi.git<br/>#subdirectory=sdk/python</div>
-        <p>Sync and async clients. Includes a <code style="font-family: var(--font-mono); font-size: 0.85em;">AkashiCallbackHandler</code> for LangChain and a <code style="font-family: var(--font-mono); font-size: 0.85em;">CrewAI</code> hooks adapter.</p>
+        <p>Sync and async clients. Includes <code style="font-family:var(--font-mono);font-size:0.85em;">AkashiCallbackHandler</code> for LangChain and a CrewAI hooks adapter.</p>
         <a href="https://github.com/ashita-ai/akashi/tree/main/sdk/python">View source →</a>
       </div>
-      <div class="sdk-card">
-        <div class="sdk-lang">
-          <span class="sdk-badge badge-ts">TS</span>
-          TypeScript SDK
-        </div>
-        <div class="sdk-install">npm install github:ashita-ai/akashi<br/>#path:sdk/typescript</div>
-        <p>Full TypeScript types. Includes <code style="font-family: var(--font-mono); font-size: 0.85em;">createAkashiMiddleware</code> for the Vercel AI SDK.</p>
+      <div class="sdk-card" data-reveal data-reveal-delay="4">
+        <div class="sdk-header"><span class="lang-badge lb-ts">TS</span> TypeScript SDK</div>
+        <div class="sdk-install">npm install github:ashita-ai/akashi#path:sdk/typescript</div>
+        <p>Full TypeScript types. Includes <code style="font-family:var(--font-mono);font-size:0.85em;">createAkashiMiddleware</code> for the Vercel AI SDK.</p>
         <a href="https://github.com/ashita-ai/akashi/tree/main/sdk/typescript">View source →</a>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ── FOOTER ─────────────────────────────────────────────────── -->
+<div class="section-divider"></div>
+
+<!-- ── FOOTER ─────────────────────────────────────────────────────── -->
 <footer>
   <div class="container">
     <div class="footer-inner">
-      <div class="footer-left">
+      <div class="footer-brand">
         <div class="footer-logo">
           <svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true">
             <path d="M7 7 H93 V48" stroke-width="13"/>
@@ -1104,7 +1349,7 @@ go run ./scripts/genkey -out data/
           </svg>
           Akashi
         </div>
-        <div class="footer-copy">Apache 2.0 · Built by <a href="https://github.com/ashita-ai" style="color: var(--text-muted);">Ashita AI</a></div>
+        <div class="footer-copy">Apache 2.0 · Built by <a href="https://github.com/ashita-ai" style="color:var(--text-muted)">Ashita AI</a></div>
       </div>
       <ul class="footer-links">
         <li><a href="https://github.com/ashita-ai/akashi">GitHub</a></li>
@@ -1118,16 +1363,27 @@ go run ./scripts/genkey -out data/
   </div>
 </footer>
 
-
-
 <script>
-  function switchTab(btn, tabId) {
+  // Tab switching
+  function switchTab(btn, paneId) {
     if (btn.classList.contains('soon')) return;
-    document.querySelectorAll('.tab-btn:not(.soon)').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.qs-tab:not(.soon)').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.qs-pane').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
-    document.getElementById(tabId).classList.add('active');
+    document.getElementById(paneId).classList.add('active');
   }
+
+  // Scroll reveal
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        e.target.classList.add('is-visible');
+        observer.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.12 });
+
+  document.querySelectorAll('[data-reveal]').forEach(el => observer.observe(el));
 </script>
 
 </body>
