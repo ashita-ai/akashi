@@ -67,6 +67,7 @@ type CheckRequest struct {
 	AgentID      string `json:"agent_id,omitempty"`
 	Project      string `json:"project,omitempty"`
 	Limit        int    `json:"limit,omitempty"`
+	Format       string `json:"format,omitempty"` // "full" (default) or "concise"
 }
 
 // ConflictResolution summarises a resolved conflict for use in akashi_check responses.

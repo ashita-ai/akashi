@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -18,6 +19,14 @@ const (
 	MaxDecisionTypeLen = 200
 	MaxOutcomeLen      = 32 * 1024 // 32 KB
 	MaxReasoningLen    = 64 * 1024 // 64 KB
+
+	// Sub-entity limits: evidence content, alternative labels/reasons, and collection counts.
+	MaxEvidenceContentLen  = 32 * 1024 // 32 KB — matches outcome; each item gets its own embedding
+	MaxAlternativeLabelLen = 500       // labels are short identifiers
+	MaxRejectionReasonLen  = 8 * 1024  // 8 KB — explanation text, not full reasoning
+	MaxAlternativeCount    = 20        // prevent combinatorial explosion in conflict detection
+	MaxEvidenceCount       = 20        // each evidence item triggers an embedding call
+	MaxMetadataBytes       = 16 * 1024 // 16 KB — serialized JSON cap for any metadata map
 )
 
 // privateIPRanges is the set of CIDR blocks considered non-public.
@@ -54,12 +63,51 @@ func ValidateTraceDecision(d TraceDecision) error {
 	if d.Reasoning != nil && len(*d.Reasoning) > MaxReasoningLen {
 		return fmt.Errorf("reasoning exceeds maximum length of %d bytes", MaxReasoningLen)
 	}
+
+	// Collection count limits.
+	if len(d.Alternatives) > MaxAlternativeCount {
+		return fmt.Errorf("alternatives count %d exceeds maximum of %d", len(d.Alternatives), MaxAlternativeCount)
+	}
+	if len(d.Evidence) > MaxEvidenceCount {
+		return fmt.Errorf("evidence count %d exceeds maximum of %d", len(d.Evidence), MaxEvidenceCount)
+	}
+
+	// Per-alternative field limits.
+	for i, alt := range d.Alternatives {
+		if len(alt.Label) > MaxAlternativeLabelLen {
+			return fmt.Errorf("alternatives[%d].label exceeds maximum length of %d characters", i, MaxAlternativeLabelLen)
+		}
+		if alt.RejectionReason != nil && len(*alt.RejectionReason) > MaxRejectionReasonLen {
+			return fmt.Errorf("alternatives[%d].rejection_reason exceeds maximum length of %d bytes", i, MaxRejectionReasonLen)
+		}
+	}
+
+	// Per-evidence field limits.
 	for i, ev := range d.Evidence {
+		if len(ev.Content) > MaxEvidenceContentLen {
+			return fmt.Errorf("evidence[%d].content exceeds maximum length of %d bytes", i, MaxEvidenceContentLen)
+		}
 		if ev.SourceURI != nil {
 			if err := ValidateSourceURI(*ev.SourceURI); err != nil {
 				return fmt.Errorf("evidence[%d].source_uri: %w", i, err)
 			}
 		}
+	}
+	return nil
+}
+
+// ValidateMetadataSize checks that a metadata map does not exceed MaxMetadataBytes when serialized.
+// Returns nil for nil or empty maps.
+func ValidateMetadataSize(field string, m map[string]any) error {
+	if len(m) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return fmt.Errorf("%s: failed to measure metadata size: %w", field, err)
+	}
+	if len(b) > MaxMetadataBytes {
+		return fmt.Errorf("%s exceeds maximum size of %d bytes (got %d)", field, MaxMetadataBytes, len(b))
 	}
 	return nil
 }

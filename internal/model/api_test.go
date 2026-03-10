@@ -257,3 +257,128 @@ func TestValidateSourceURI_IPv6LinkLocalRejected(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "private or loopback")
 }
+
+// ---- Payload size caps (evidence, alternatives, metadata) -----------------
+
+func TestValidateTraceDecision_EvidenceContentAtMax(t *testing.T) {
+	d := model.TraceDecision{
+		DecisionType: "arch",
+		Outcome:      "ok",
+		Evidence: []model.TraceEvidence{
+			{SourceType: "document", Content: strings.Repeat("x", model.MaxEvidenceContentLen)},
+		},
+	}
+	assert.NoError(t, model.ValidateTraceDecision(d), "at the limit should pass")
+}
+
+func TestValidateTraceDecision_EvidenceContentOverMax(t *testing.T) {
+	d := model.TraceDecision{
+		DecisionType: "arch",
+		Outcome:      "ok",
+		Evidence: []model.TraceEvidence{
+			{SourceType: "document", Content: strings.Repeat("x", model.MaxEvidenceContentLen+1)},
+		},
+	}
+	err := model.ValidateTraceDecision(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "evidence[0].content")
+}
+
+func TestValidateTraceDecision_AlternativeLabelOverMax(t *testing.T) {
+	d := model.TraceDecision{
+		DecisionType: "arch",
+		Outcome:      "ok",
+		Alternatives: []model.TraceAlternative{
+			{Label: strings.Repeat("x", model.MaxAlternativeLabelLen+1)},
+		},
+	}
+	err := model.ValidateTraceDecision(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "alternatives[0].label")
+}
+
+func TestValidateTraceDecision_RejectionReasonOverMax(t *testing.T) {
+	bigReason := strings.Repeat("x", model.MaxRejectionReasonLen+1)
+	d := model.TraceDecision{
+		DecisionType: "arch",
+		Outcome:      "ok",
+		Alternatives: []model.TraceAlternative{
+			{Label: "option-a", RejectionReason: &bigReason},
+		},
+	}
+	err := model.ValidateTraceDecision(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "alternatives[0].rejection_reason")
+}
+
+func TestValidateTraceDecision_TooManyAlternatives(t *testing.T) {
+	alts := make([]model.TraceAlternative, model.MaxAlternativeCount+1)
+	for i := range alts {
+		alts[i] = model.TraceAlternative{Label: "opt"}
+	}
+	d := model.TraceDecision{
+		DecisionType: "arch",
+		Outcome:      "ok",
+		Alternatives: alts,
+	}
+	err := model.ValidateTraceDecision(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "alternatives count")
+}
+
+func TestValidateTraceDecision_TooManyEvidence(t *testing.T) {
+	evs := make([]model.TraceEvidence, model.MaxEvidenceCount+1)
+	for i := range evs {
+		evs[i] = model.TraceEvidence{SourceType: "document", Content: "data"}
+	}
+	d := model.TraceDecision{
+		DecisionType: "arch",
+		Outcome:      "ok",
+		Evidence:     evs,
+	}
+	err := model.ValidateTraceDecision(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "evidence count")
+}
+
+func TestValidateTraceDecision_MaxAlternativesAndEvidencePass(t *testing.T) {
+	alts := make([]model.TraceAlternative, model.MaxAlternativeCount)
+	for i := range alts {
+		alts[i] = model.TraceAlternative{Label: "opt"}
+	}
+	evs := make([]model.TraceEvidence, model.MaxEvidenceCount)
+	for i := range evs {
+		evs[i] = model.TraceEvidence{SourceType: "document", Content: "data"}
+	}
+	d := model.TraceDecision{
+		DecisionType: "arch",
+		Outcome:      "ok",
+		Alternatives: alts,
+		Evidence:     evs,
+	}
+	assert.NoError(t, model.ValidateTraceDecision(d), "exactly at max should pass")
+}
+
+// ---- ValidateMetadataSize -------------------------------------------------
+
+func TestValidateMetadataSize_NilMap(t *testing.T) {
+	assert.NoError(t, model.ValidateMetadataSize("metadata", nil))
+}
+
+func TestValidateMetadataSize_EmptyMap(t *testing.T) {
+	assert.NoError(t, model.ValidateMetadataSize("metadata", map[string]any{}))
+}
+
+func TestValidateMetadataSize_SmallMap(t *testing.T) {
+	m := map[string]any{"key": "value", "nested": map[string]any{"a": 1}}
+	assert.NoError(t, model.ValidateMetadataSize("metadata", m))
+}
+
+func TestValidateMetadataSize_OverMax(t *testing.T) {
+	// Create a map that serializes to > 16 KB.
+	m := map[string]any{"big": strings.Repeat("x", model.MaxMetadataBytes)}
+	err := model.ValidateMetadataSize("metadata", m)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "metadata")
+	assert.Contains(t, err.Error(), "exceeds maximum size")
+}
