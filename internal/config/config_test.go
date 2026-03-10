@@ -756,6 +756,183 @@ func validBaseConfig() Config {
 	}
 }
 
+func TestConflictProfileDefaults_Balanced(t *testing.T) {
+	p := conflictProfileDefaults("balanced")
+	if p.significanceThreshold != 0.30 {
+		t.Fatalf("expected significanceThreshold 0.30, got %f", p.significanceThreshold)
+	}
+	if p.earlyExitFloor != 0.25 {
+		t.Fatalf("expected earlyExitFloor 0.25, got %f", p.earlyExitFloor)
+	}
+	if p.crossEncoderThreshold != 0.50 {
+		t.Fatalf("expected crossEncoderThreshold 0.50, got %f", p.crossEncoderThreshold)
+	}
+	if p.claimTopicSimFloor != 0.60 {
+		t.Fatalf("expected claimTopicSimFloor 0.60, got %f", p.claimTopicSimFloor)
+	}
+	if p.claimDivFloor != 0.15 {
+		t.Fatalf("expected claimDivFloor 0.15, got %f", p.claimDivFloor)
+	}
+	if p.decisionTopicSimFloor != 0.70 {
+		t.Fatalf("expected decisionTopicSimFloor 0.70, got %f", p.decisionTopicSimFloor)
+	}
+	if p.decayLambda != 0.01 {
+		t.Fatalf("expected decayLambda 0.01, got %f", p.decayLambda)
+	}
+}
+
+func TestConflictProfileDefaults_HighPrecision(t *testing.T) {
+	p := conflictProfileDefaults("high_precision")
+	if p.significanceThreshold != 0.40 {
+		t.Fatalf("expected significanceThreshold 0.40, got %f", p.significanceThreshold)
+	}
+	if p.earlyExitFloor != 0.35 {
+		t.Fatalf("expected earlyExitFloor 0.35, got %f", p.earlyExitFloor)
+	}
+	if p.crossEncoderThreshold != 0.60 {
+		t.Fatalf("expected crossEncoderThreshold 0.60, got %f", p.crossEncoderThreshold)
+	}
+	if p.claimTopicSimFloor != 0.65 {
+		t.Fatalf("expected claimTopicSimFloor 0.65, got %f", p.claimTopicSimFloor)
+	}
+	if p.claimDivFloor != 0.20 {
+		t.Fatalf("expected claimDivFloor 0.20, got %f", p.claimDivFloor)
+	}
+	if p.decisionTopicSimFloor != 0.75 {
+		t.Fatalf("expected decisionTopicSimFloor 0.75, got %f", p.decisionTopicSimFloor)
+	}
+}
+
+func TestConflictProfileDefaults_HighRecall(t *testing.T) {
+	p := conflictProfileDefaults("high_recall")
+	if p.significanceThreshold != 0.20 {
+		t.Fatalf("expected significanceThreshold 0.20, got %f", p.significanceThreshold)
+	}
+	if p.earlyExitFloor != 0.15 {
+		t.Fatalf("expected earlyExitFloor 0.15, got %f", p.earlyExitFloor)
+	}
+	if p.crossEncoderThreshold != 0.35 {
+		t.Fatalf("expected crossEncoderThreshold 0.35, got %f", p.crossEncoderThreshold)
+	}
+	if p.claimTopicSimFloor != 0.55 {
+		t.Fatalf("expected claimTopicSimFloor 0.55, got %f", p.claimTopicSimFloor)
+	}
+	if p.claimDivFloor != 0.10 {
+		t.Fatalf("expected claimDivFloor 0.10, got %f", p.claimDivFloor)
+	}
+	if p.decisionTopicSimFloor != 0.65 {
+		t.Fatalf("expected decisionTopicSimFloor 0.65, got %f", p.decisionTopicSimFloor)
+	}
+	if p.decayLambda != 0.005 {
+		t.Fatalf("expected decayLambda 0.005, got %f", p.decayLambda)
+	}
+}
+
+func TestConflictProfileDefaults_UnknownFallsBackToBalanced(t *testing.T) {
+	unknown := conflictProfileDefaults("nonexistent_profile")
+	balanced := conflictProfileDefaults("balanced")
+
+	if unknown != balanced {
+		t.Fatalf("expected unknown profile to match balanced defaults\nunknown:  %+v\nbalanced: %+v", unknown, balanced)
+	}
+}
+
+func TestConflictProfileDefaults_CaseInsensitive(t *testing.T) {
+	upper := conflictProfileDefaults("HIGH_PRECISION")
+	lower := conflictProfileDefaults("high_precision")
+
+	if upper != lower {
+		t.Fatalf("expected case-insensitive matching\nupper: %+v\nlower: %+v", upper, lower)
+	}
+}
+
+func TestLoad_ConflictProfileHighPrecision(t *testing.T) {
+	t.Setenv("AKASHI_CONFLICT_PROFILE", "high_precision")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected Load() to succeed, got: %v", err)
+	}
+	if cfg.ConflictProfile != "high_precision" {
+		t.Fatalf("expected ConflictProfile %q, got %q", "high_precision", cfg.ConflictProfile)
+	}
+	if cfg.ConflictSignificanceThreshold != 0.40 {
+		t.Fatalf("expected significance threshold 0.40, got %f", cfg.ConflictSignificanceThreshold)
+	}
+	if cfg.ConflictEarlyExitFloor != 0.35 {
+		t.Fatalf("expected early exit floor 0.35, got %f", cfg.ConflictEarlyExitFloor)
+	}
+	if cfg.CrossEncoderThreshold != 0.60 {
+		t.Fatalf("expected cross encoder threshold 0.60, got %f", cfg.CrossEncoderThreshold)
+	}
+	if cfg.ConflictClaimTopicSimFloor != 0.65 {
+		t.Fatalf("expected claim topic sim floor 0.65, got %f", cfg.ConflictClaimTopicSimFloor)
+	}
+	if cfg.ConflictDecisionTopicSimFloor != 0.75 {
+		t.Fatalf("expected decision topic sim floor 0.75, got %f", cfg.ConflictDecisionTopicSimFloor)
+	}
+}
+
+func TestLoad_ConflictProfileHighRecall(t *testing.T) {
+	t.Setenv("AKASHI_CONFLICT_PROFILE", "high_recall")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected Load() to succeed, got: %v", err)
+	}
+	if cfg.ConflictSignificanceThreshold != 0.20 {
+		t.Fatalf("expected significance threshold 0.20, got %f", cfg.ConflictSignificanceThreshold)
+	}
+	if cfg.ConflictEarlyExitFloor != 0.15 {
+		t.Fatalf("expected early exit floor 0.15, got %f", cfg.ConflictEarlyExitFloor)
+	}
+	if cfg.CrossEncoderThreshold != 0.35 {
+		t.Fatalf("expected cross encoder threshold 0.35, got %f", cfg.CrossEncoderThreshold)
+	}
+	if cfg.ConflictClaimTopicSimFloor != 0.55 {
+		t.Fatalf("expected claim topic sim floor 0.55, got %f", cfg.ConflictClaimTopicSimFloor)
+	}
+	if cfg.ConflictDecisionTopicSimFloor != 0.65 {
+		t.Fatalf("expected decision topic sim floor 0.65, got %f", cfg.ConflictDecisionTopicSimFloor)
+	}
+}
+
+func TestLoad_ConflictProfileEnvVarOverridesProfile(t *testing.T) {
+	// Set high_precision profile but override one threshold via env var.
+	t.Setenv("AKASHI_CONFLICT_PROFILE", "high_precision")
+	t.Setenv("AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD", "0.50")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected Load() to succeed, got: %v", err)
+	}
+	// The overridden value should win.
+	if cfg.ConflictSignificanceThreshold != 0.50 {
+		t.Fatalf("expected env var override 0.50, got %f", cfg.ConflictSignificanceThreshold)
+	}
+	// Non-overridden values should still come from the profile.
+	if cfg.ConflictEarlyExitFloor != 0.35 {
+		t.Fatalf("expected profile default 0.35 for early exit floor, got %f", cfg.ConflictEarlyExitFloor)
+	}
+	if cfg.CrossEncoderThreshold != 0.60 {
+		t.Fatalf("expected profile default 0.60 for cross encoder threshold, got %f", cfg.CrossEncoderThreshold)
+	}
+}
+
+func TestLoad_ConflictProfileDefaultIsBalanced(t *testing.T) {
+	// No AKASHI_CONFLICT_PROFILE set — should use balanced defaults.
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected Load() to succeed, got: %v", err)
+	}
+	if cfg.ConflictProfile != "balanced" {
+		t.Fatalf("expected default profile %q, got %q", "balanced", cfg.ConflictProfile)
+	}
+	if cfg.ConflictSignificanceThreshold != 0.30 {
+		t.Fatalf("expected balanced significance threshold 0.30, got %f", cfg.ConflictSignificanceThreshold)
+	}
+}
+
 func TestLoad_ConflictScoringThresholdInvalid(t *testing.T) {
 	t.Setenv("AKASHI_CONFLICT_CLAIM_TOPIC_SIM_FLOOR", "not-a-number")
 
