@@ -833,6 +833,12 @@ func (s *Scorer) ClearUnvalidatedConflicts(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// CosineSimilarity computes the cosine similarity between two float32 vectors.
+// Returns 0 if the vectors have different lengths, are empty, or either has zero norm.
+func CosineSimilarity(a, b []float32) float64 {
+	return cosineSimilarity(a, b)
+}
+
 func cosineSimilarity(a, b []float32) float64 {
 	if len(a) != len(b) || len(a) == 0 {
 		return 0
