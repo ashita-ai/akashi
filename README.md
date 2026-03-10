@@ -74,51 +74,11 @@ Assessments feed back into search re-ranking — decisions assessed as correct s
 
 ## Quick start
 
-Three modes. Pick the one that matches your setup.
+Two modes are available today. A third (local-lite, zero-infrastructure) is in progress.
 
-### Local-lite mode (fastest — no infrastructure needed)
+### Complete local stack (recommended)
 
-Zero-dependency mode backed by SQLite. Starts in under 3 seconds with no Docker, Postgres,
-Qdrant, or Ollama. All 6 MCP tools work identically to the full server.
-
-```bash
-# Build the local-lite binary
-go build -o bin/akashi-local ./cmd/akashi-local
-
-# Start — creates ~/.akashi/local.db on first run
-./bin/akashi-local
-```
-
-The binary serves MCP over stdio. Add it to Claude Code:
-
-```bash
-claude mcp add akashi-local -- ./bin/akashi-local
-```
-
-Or to Cursor/Windsurf (`~/.cursor/mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "akashi": {
-      "command": "/path/to/bin/akashi-local"
-    }
-  }
-}
-```
-
-**Limitations:** No multi-tenancy, no SSE subscriptions, no LLM conflict validation
-(uses text-based conflict detection instead), no audit dashboard UI. Ideal for individual
-developers and small teams. When you outgrow it, migrate to the full server — the decision
-data is portable.
-
-**Custom database path:**
-
-```bash
-AKASHI_DB_PATH=/path/to/decisions.db ./bin/akashi-local
-```
-
-### Complete local stack (recommended for trying Akashi)
+> **Start here.** This is the fastest path to a fully working Akashi with all features.
 
 Everything runs in Docker — TimescaleDB, Qdrant, Ollama, and the Akashi server. No API keys, no external accounts.
 
@@ -148,6 +108,14 @@ echo "AKASHI_PORT=8081" > .env
 docker compose -f docker-compose.complete.yml up -d
 # Open http://localhost:8081
 ```
+
+### Local-lite mode *(coming soon)*
+
+> **Not yet available.** This mode is under active development — [track progress in issue #312](https://github.com/ashita-ai/akashi/issues/312).
+
+A zero-dependency binary backed by SQLite. No Docker, no Postgres, no Qdrant, no Ollama.
+All 6 MCP tools will work identically to the full server via stdio transport.
+When it ships, individual developers can be up and running in under 3 seconds — no infrastructure required.
 
 ### Binary only (bring your own infrastructure)
 

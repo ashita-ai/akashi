@@ -9,7 +9,7 @@ to resolve them.
 When a decision is recorded via `POST /v1/trace`, Akashi asynchronously:
 
 1. **Retrieves candidates** — finds semantically similar past decisions via Qdrant (or
-   brute-force cosine similarity in local-lite mode).
+   brute-force cosine similarity in local-lite mode — coming soon, see issue #312).
 2. **Scores significance** — computes a composite score from topic similarity, outcome
    divergence, confidence, and temporal decay.
 3. **Validates via LLM** (optional) — classifies the relationship as contradiction,
