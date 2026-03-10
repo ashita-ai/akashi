@@ -455,32 +455,92 @@
     .lifecycle-arrow   { color: var(--text-muted); font-size: 0.9rem; }
 
     /* ── QUICK START ──────────────────────────────────────── */
-    .quickstart-tabs {
-      display: flex;
-      gap: 0;
-      border-bottom: 1px solid var(--border);
+    .deploy-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 1.25rem;
       margin-top: 2.5rem;
+      align-items: start;
     }
 
-    .tab-btn {
-      padding: 0.6rem 1.25rem;
+    .deploy-card {
+      padding: 1.75rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      position: relative;
+    }
+
+    .deploy-card-featured {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent-dim), 0 4px 24px rgba(6, 182, 212, 0.08);
+    }
+
+    .deploy-card-dim {
+      opacity: 0.55;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    .deploy-badge {
+      position: absolute;
+      top: -1px;
+      right: 1.25rem;
+      padding: 0.25rem 0.65rem;
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      border-radius: 0 0 var(--radius) var(--radius);
+    }
+
+    .badge-recommended {
+      background: var(--accent);
+      color: #000;
+    }
+
+    .badge-soon {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-top: none;
+      color: var(--text-muted);
+    }
+
+    .deploy-card h3 {
+      font-size: 1.05rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .deploy-card p {
       font-size: 0.875rem;
-      font-weight: 500;
       color: var(--text-dim);
-      background: none;
-      border: none;
-      border-bottom: 2px solid transparent;
-      cursor: pointer;
-      transition: color 0.15s, border-color 0.15s;
-      margin-bottom: -1px;
-      font-family: var(--font-sans);
+      line-height: 1.65;
     }
 
-    .tab-btn:hover { color: var(--text); }
-    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .deploy-card .deploy-features {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      margin: 0;
+      padding: 0;
+    }
 
-    .tab-pane { display: none; padding-top: 1.5rem; }
-    .tab-pane.active { display: block; }
+    .deploy-card .deploy-features li {
+      font-size: 0.83rem;
+      color: var(--text-dim);
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+    }
+
+    .deploy-card .deploy-features li .feat-check { color: var(--green); flex-shrink: 0; }
+    .deploy-card .deploy-features li .feat-soon  { color: var(--text-muted); flex-shrink: 0; }
 
     pre {
       background: var(--bg-code);
@@ -680,6 +740,7 @@
       .primitives { grid-template-columns: 1fr; }
       .mcp-tools { grid-template-columns: 1fr 1fr; }
       .fields-grid { grid-template-columns: 1fr; }
+      .deploy-grid { grid-template-columns: 1fr; }
       .sdk-grid { grid-template-columns: 1fr; }
       .formula-vars { grid-template-columns: 1fr; }
       nav { padding: 0 1rem; }
@@ -881,57 +942,77 @@
 <section id="quick-start">
   <div class="container">
     <span class="label">Quick start</span>
-    <h2>Three modes. Pick one.</h2>
+    <h2>Get running in minutes.</h2>
 
-    <div class="quickstart-tabs">
-      <button class="tab-btn active" onclick="switchTab(this, 'tab-lite')">Local-lite (no Docker)</button>
-      <button class="tab-btn" onclick="switchTab(this, 'tab-docker')">Complete stack</button>
-      <button class="tab-btn" onclick="switchTab(this, 'tab-self')">Self-hosted</button>
-    </div>
+    <div class="deploy-grid">
 
-    <div id="tab-lite" class="tab-pane active">
-      <pre><span class="comment"># Zero-dependency mode — SQLite backend, all 6 MCP tools work identically</span>
-<span class="hl">go build -o bin/akashi-local ./cmd/akashi-local</span>
-<span class="hl">./bin/akashi-local</span>
+      <!-- Complete stack -->
+      <div class="deploy-card deploy-card-featured">
+        <div class="deploy-badge badge-recommended">Recommended</div>
+        <h3>Complete stack</h3>
+        <p>Everything in Docker — TimescaleDB, Qdrant, Ollama, and the Akashi server. No API keys, no external accounts. Full feature set out of the box.</p>
+        <ul class="deploy-features">
+          <li><span class="feat-check">✓</span> LLM conflict validation</li>
+          <li><span class="feat-check">✓</span> Vector search (Qdrant)</li>
+          <li><span class="feat-check">✓</span> Real-time SSE notifications</li>
+          <li><span class="feat-check">✓</span> Audit dashboard UI</li>
+          <li><span class="feat-check">✓</span> Multi-tenancy</li>
+        </ul>
+        <pre style="margin: 0;"><span class="comment"># Start everything</span>
+<span class="hl">docker compose \
+  -f docker-compose.complete.yml \
+  up -d</span>
 
-<span class="comment"># Add to Claude Code</span>
-<span class="hl">claude mcp add akashi-local -- ./bin/akashi-local</span>
+<span class="comment"># First run downloads Ollama models (~7GB)</span>
+docker compose \
+  -f docker-compose.complete.yml \
+  logs -f ollama-init
 
-<span class="comment"># Or add to Cursor / Windsurf (~/.cursor/mcp.json)</span>
-{
-  <span class="key">"mcpServers"</span>: {
-    <span class="key">"akashi"</span>: { <span class="key">"command"</span>: <span class="str">"/path/to/bin/akashi-local"</span> }
-  }
-}</pre>
-      <p class="tab-note">No Postgres, Qdrant, or Ollama required. Ideal for individual developers. When you outgrow it, migrate to the full server — decision data is portable.</p>
-    </div>
+<span class="comment"># Open http://localhost:8080</span></pre>
+        <a href="https://github.com/ashita-ai/akashi/blob/main/docs/self-hosting.md" class="btn btn-primary" style="align-self: flex-start;">Self-hosting guide →</a>
+      </div>
 
-    <div id="tab-docker" class="tab-pane">
-      <pre><span class="comment"># Everything in Docker: TimescaleDB, Qdrant, Ollama, Akashi server</span>
-<span class="hl">docker compose -f docker-compose.complete.yml up -d</span>
+      <!-- Cloud -->
+      <div class="deploy-card">
+        <h3>Cloud</h3>
+        <p>Fully managed Akashi. No infrastructure to run — sign up, get an API key, and start tracing decisions in under a minute.</p>
+        <ul class="deploy-features">
+          <li><span class="feat-check">✓</span> Zero infrastructure</li>
+          <li><span class="feat-check">✓</span> Managed embeddings</li>
+          <li><span class="feat-check">✓</span> Multi-agent organizations</li>
+          <li><span class="feat-check">✓</span> Dashboard included</li>
+          <li><span class="feat-check">✓</span> Free tier available</li>
+        </ul>
+        <pre style="margin: 0;"><span class="comment"># Wire Claude Code in 30 seconds</span>
+<span class="hl">claude mcp add \
+  --transport http \
+  --scope user akashi \
+  https://api.akashi.ai/mcp \
+  --header "Authorization: \
+  ApiKey &lt;agent&gt;:&lt;key&gt;"</span></pre>
+        <a href="https://github.com/ashita-ai/akashi" class="btn btn-secondary" style="align-self: flex-start;">Sign up →</a>
+      </div>
 
-<span class="comment"># First run downloads two Ollama models (~7GB). Watch progress:</span>
-docker compose -f docker-compose.complete.yml logs -f ollama-init
+      <!-- Local — coming soon -->
+      <div class="deploy-card deploy-card-dim">
+        <div class="deploy-badge badge-soon">Coming soon</div>
+        <h3>Local</h3>
+        <p>Zero-dependency mode backed by SQLite. No Docker, no Postgres, no Qdrant. Starts in under 3 seconds as a single binary.</p>
+        <ul class="deploy-features">
+          <li><span class="feat-soon">○</span> No infrastructure required</li>
+          <li><span class="feat-soon">○</span> All 6 MCP tools</li>
+          <li><span class="feat-soon">○</span> Portable SQLite database</li>
+          <li><span class="feat-soon">○</span> stdio transport</li>
+          <li><span class="feat-soon">○</span> Upgrade path to full server</li>
+        </ul>
+        <pre style="margin: 0;"><span class="comment"># Not yet available</span>
+<span class="comment"># Star the repo to get notified</span>
+go build \
+  -o bin/akashi-local \
+  ./cmd/akashi-local
+./bin/akashi-local</pre>
+      </div>
 
-<span class="comment"># Server ready when you see a "listening" log line</span>
-curl http://localhost:8080/health
-<span class="comment"># Open http://localhost:8080 for the audit dashboard</span></pre>
-      <p class="tab-note">Full feature set: LLM conflict validation, vector search, real-time SSE, multi-tenancy, audit dashboard UI. No API keys or external accounts needed.</p>
-    </div>
-
-    <div id="tab-self" class="tab-pane">
-      <pre><span class="comment"># Bring your own TimescaleDB + Qdrant</span>
-cp docker/env.example .env
-<span class="comment"># Edit .env: DATABASE_URL, AKASHI_ADMIN_API_KEY</span>
-
-docker compose up -d
-
-<span class="comment"># Generate persistent JWT signing keys (run once)</span>
-go run ./scripts/genkey -out data/
-<span class="comment"># Add to .env:</span>
-<span class="key">AKASHI_JWT_PRIVATE_KEY</span>=<span class="str">/data/jwt_private.pem</span>
-<span class="key">AKASHI_JWT_PUBLIC_KEY</span>=<span class="str">/data/jwt_public.pem</span></pre>
-      <p class="tab-note">See the <a href="https://github.com/ashita-ai/akashi/blob/main/docs/self-hosting.md">self-hosting guide</a> for Postgres requirements, Qdrant setup, and production hardening.</p>
     </div>
   </div>
 </section>
@@ -1103,14 +1184,6 @@ go run ./scripts/genkey -out data/
   </div>
 </footer>
 
-<script>
-  function switchTab(btn, tabId) {
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-    btn.classList.add('active');
-    document.getElementById(tabId).classList.add('active');
-  }
-</script>
 
 </body>
 </html>
