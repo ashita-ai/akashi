@@ -658,7 +658,51 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			}
 		}
 
-		if _, err := s.db.InsertScoredConflict(ctx, c); err != nil {
+		// Precedent-aware escalation: check if this conflict contradicts the
+		// winning side of a previously resolved conflict. If so, auto-escalate
+		// to critical severity and link the reopened resolution.
+		if d.OutcomeEmbedding != nil && cand.OutcomeEmbedding != nil {
+			match, matchErr := s.db.FindReopenedResolution(ctx, orgID,
+				decisionID, cand.ID,
+				*d.OutcomeEmbedding, *cand.OutcomeEmbedding,
+				0.80, // similarity threshold
+			)
+			if matchErr != nil {
+				s.logger.Warn("conflict scorer: reopened resolution check failed",
+					"error", matchErr, "decision_a", decisionID, "decision_b", cand.ID)
+			} else if match != nil {
+				c.ReopensResolutionID = &match.ResolutionID
+				critical := "critical"
+				c.Severity = &critical
+
+				// Prepend prior-resolution context to the explanation.
+				priorNote := fmt.Sprintf("ESCALATED: contradicts prior resolution (conflict %s) where %s's approach prevailed.",
+					match.ResolutionID, match.WinningAgent)
+				if c.Explanation != nil {
+					combined := priorNote + " " + *c.Explanation
+					c.Explanation = &combined
+				} else {
+					c.Explanation = &priorNote
+				}
+
+				// Increment times_reopened on the group.
+				if c.GroupID != nil {
+					if incErr := s.db.IncrementGroupTimesReopened(ctx, *c.GroupID, orgID); incErr != nil {
+						s.logger.Warn("conflict scorer: increment times_reopened failed",
+							"error", incErr, "group_id", c.GroupID)
+					}
+				}
+
+				s.logger.Warn("conflict scorer: precedent reopened",
+					"decision_a", decisionID, "decision_b", cand.ID,
+					"prior_resolution", match.ResolutionID,
+					"winning_agent", match.WinningAgent,
+				)
+			}
+		}
+
+		conflictID, err := s.db.InsertScoredConflict(ctx, c)
+		if err != nil {
 			s.logger.Warn("conflict scorer: insert failed", "decision_a", decisionID, "decision_b", cand.ID, "error", err)
 			continue
 		}
@@ -666,11 +710,18 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			attribute.String("scoring_method", bestMethod),
 			attribute.String("relationship", derefOrUnknown(relationship)),
 			attribute.String("conflict_kind", string(kind)),
-			attribute.String("severity", derefOrUnknown(severity)),
+			attribute.String("severity", derefOrUnknown(c.Severity)),
 		))
 		s.metrics.significanceDist.Record(ctx, sc.bestSig)
 		inserted++
-		if err := s.db.Notify(ctx, storage.ChannelConflicts, `{"source":"scorer","org_id":"`+orgID.String()+`"}`); err != nil {
+
+		notifyPayload := `{"source":"scorer","org_id":"` + orgID.String() + `"}`
+		if c.ReopensResolutionID != nil {
+			notifyPayload = `{"source":"scorer","org_id":"` + orgID.String() +
+				`","event":"conflict_reopened","conflict_id":"` + conflictID.String() +
+				`","reopens_resolution_id":"` + c.ReopensResolutionID.String() + `"}`
+		}
+		if err := s.db.Notify(ctx, storage.ChannelConflicts, notifyPayload); err != nil {
 			s.logger.Debug("conflict scorer: notify failed", "error", err)
 		}
 	}
