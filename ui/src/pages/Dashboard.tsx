@@ -100,7 +100,7 @@ export default function Dashboard() {
             {recent.isPending ? (
               <Skeleton className="h-8 w-20" />
             ) : (
-              <div className="text-2xl font-bold">
+              <div className="text-3xl font-bold tabular-nums">
                 {(recent.data?.total ?? 0).toLocaleString()}
               </div>
             )}
@@ -121,7 +121,7 @@ export default function Dashboard() {
             {agents.isPending ? (
               <Skeleton className="h-8 w-12" />
             ) : (
-              <div className="text-2xl font-bold">
+              <div className="text-3xl font-bold tabular-nums">
                 {agents.data?.length ?? 0}
               </div>
             )}
@@ -139,7 +139,7 @@ export default function Dashboard() {
               {traceHealth.isPending ? (
                 <Skeleton className="h-8 w-12" />
               ) : (
-                <div className="text-2xl font-bold">
+                <div className="text-3xl font-bold tabular-nums">
                   {traceHealth.data?.conflicts?.open ?? 0}
                 </div>
               )}

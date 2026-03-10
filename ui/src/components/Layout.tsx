@@ -101,7 +101,7 @@ export default function Layout() {
                 cn(
                   "group relative flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-all duration-200",
                   isActive
-                    ? "bg-primary/10 text-primary shadow-[inset_0_0_20px_-8px_hsl(var(--glow-blue)/0.20)] shadow-glow-sm"
+                    ? "bg-primary/[0.12] text-primary shadow-[inset_0_0_20px_-6px_hsl(var(--glow-blue)/0.25)]"
                     : "text-muted-foreground hover:bg-accent hover:text-accent-foreground hover:translate-x-0.5",
                 )
               }
@@ -109,7 +109,7 @@ export default function Layout() {
               {({ isActive }) => (
                 <>
                   {isActive && (
-                    <span className="absolute left-0 inset-y-1 w-[3px] rounded-r-full bg-gradient-to-b from-primary via-primary/80 to-purple-500/60" />
+                    <span className="absolute left-0 inset-y-1 w-1 rounded-r-full bg-gradient-to-b from-primary via-primary/80 to-purple-500/60 shadow-[0_0_8px_0_hsl(var(--glow-blue)/0.7)]" />
                   )}
                   <Icon className={cn("h-4 w-4 transition-all duration-200", isActive && "drop-shadow-[0_0_4px_hsl(var(--glow-blue)/0.5)]")} />
                   {label}

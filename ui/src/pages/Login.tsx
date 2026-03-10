@@ -30,7 +30,7 @@ export default function Login() {
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center px-4">
+    <div className="bg-atmosphere relative flex min-h-screen items-center justify-center px-4">
       {/* Subtle background gradient */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <div className="absolute -top-1/2 left-1/2 -translate-x-1/2 h-[800px] w-[800px] rounded-full bg-primary/5 blur-3xl" />
