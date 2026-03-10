@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   getTraceHealth,
   getConflictAnalytics,
@@ -385,7 +385,7 @@ export default function Analytics() {
         filters: { time_range: periodToTimeRange(period) },
         order_by: "created_at",
         order_dir: "desc",
-        limit: 1000,
+        limit: 200,
         offset: 0,
       }),
     staleTime: 60_000,
@@ -401,20 +401,23 @@ export default function Analytics() {
   const analytics = conflictAnalytics.data;
   const decisionList = decisions.data?.decisions ?? [];
 
-  const histogram = buildConfidenceHistogram(decisionList);
-  const dailyStats = buildDailyStats(decisionList);
+  const histogram = useMemo(() => buildConfidenceHistogram(decisionList), [decisionList]);
+  const dailyStats = useMemo(() => buildDailyStats(decisionList), [decisionList]);
 
   // Compute health score composite (0-100)
-  const healthScore =
-    health
-      ? Math.round(
-          (health.completeness.avg_completeness * 40 +
-            (health.completeness.reasoning_pct / 100) * 20 +
-            (health.completeness.alternatives_pct / 100) * 15 +
-            (health.evidence.coverage_pct / 100) * 15 +
-            (health.conflicts?.resolved_pct ?? 0) / 100 * 10),
-        )
-      : null;
+  const healthScore = useMemo(
+    () =>
+      health
+        ? Math.round(
+            (health.completeness.avg_completeness * 40 +
+              (health.completeness.reasoning_pct / 100) * 20 +
+              (health.completeness.alternatives_pct / 100) * 15 +
+              (health.evidence.coverage_pct / 100) * 15 +
+              (health.conflicts?.resolved_pct ?? 0) / 100 * 10),
+          )
+        : null,
+    [health],
+  );
 
   const healthLabel =
     healthScore === null

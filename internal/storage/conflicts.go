@@ -54,7 +54,11 @@ func conflictWhere(filters ConflictFilters, argOffset int) (string, []any) {
 		args = append(args, *filters.ConflictKind)
 		argOffset++
 	}
-	if filters.Status != nil {
+	if len(filters.StatusIn) > 0 {
+		clause += fmt.Sprintf(" AND sc.status = ANY($%d)", argOffset)
+		args = append(args, filters.StatusIn)
+		argOffset++
+	} else if filters.Status != nil {
 		clause += fmt.Sprintf(" AND sc.status = $%d", argOffset)
 		args = append(args, *filters.Status)
 		argOffset++

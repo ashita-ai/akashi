@@ -299,6 +299,7 @@ func New(cfg ServerConfig) *Server {
 		handler = rateLimitMiddleware(cfg.RateLimiter, cfg.Logger, cfg.TrustProxy, handler)
 	}
 	handler = recoveryMiddleware(cfg.Logger, handler)
+	handler = gzipMiddleware(handler)
 	handler = authMiddleware(cfg.JWTMgr, cfg.DB, handler)
 	handler = baggageMiddleware(handler)
 	handler = loggingMiddleware(cfg.Logger, handler)

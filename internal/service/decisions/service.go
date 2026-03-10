@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -192,25 +194,40 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 		span.SetAttributes(attribute.String("akashi.trace_id", *input.TraceID))
 	}
 
-	// 1. Generate decision embedding (full) and outcome embedding (Option B).
+	// 1. Generate decision embedding (full) and outcome embedding concurrently.
 	embText := input.Decision.DecisionType + ": " + input.Decision.Outcome
 	if input.Decision.Reasoning != nil {
 		embText += " " + *input.Decision.Reasoning
 	}
 	var decisionEmb, outcomeEmb *pgvector.Vector
-	embStart := time.Now()
-	emb, err := s.embedder.Embed(ctx, embText)
-	if err != nil {
-		s.logger.Warn("trace: decision embedding failed, continuing without", "error", err)
-	} else if err := s.validateEmbeddingDims(emb); err != nil {
-		return storage.CreateTraceParams{}, fmt.Errorf("trace: %w (check AKASHI_EMBEDDING_DIMENSIONS config)", err)
-	} else {
+	var decEmbErr error
+	var embWg sync.WaitGroup
+	embWg.Add(2)
+	go func() {
+		defer embWg.Done()
+		embStart := time.Now()
+		emb, err := s.embedder.Embed(ctx, embText)
+		if err != nil {
+			s.logger.Warn("trace: decision embedding failed, continuing without", "error", err)
+			return
+		}
+		if err := s.validateEmbeddingDims(emb); err != nil {
+			decEmbErr = fmt.Errorf("trace: %w (check AKASHI_EMBEDDING_DIMENSIONS config)", err)
+			return
+		}
 		s.embeddingDuration.Record(ctx, float64(time.Since(embStart).Milliseconds()))
 		decisionEmb = &emb
-	}
-	// Outcome-only embedding for precise conflict outcome comparison.
-	if outcomeVec, err := s.embedder.Embed(ctx, input.Decision.Outcome); err == nil && s.validateEmbeddingDims(outcomeVec) == nil {
-		outcomeEmb = &outcomeVec
+	}()
+	go func() {
+		defer embWg.Done()
+		// Outcome-only embedding for precise conflict outcome comparison.
+		if outcomeVec, err := s.embedder.Embed(ctx, input.Decision.Outcome); err == nil && s.validateEmbeddingDims(outcomeVec) == nil {
+			outcomeEmb = &outcomeVec
+		}
+	}()
+	embWg.Wait()
+	if decEmbErr != nil {
+		return storage.CreateTraceParams{}, decEmbErr
 	}
 
 	// 2. Compute quality score.
@@ -228,26 +245,50 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 	}
 
 	// 4. Build evidence with embeddings (outside tx — may call external API).
+	// Parallelize embedding calls since each is an independent API request.
 	evs := make([]model.Evidence, len(input.Decision.Evidence))
-	for i, e := range input.Decision.Evidence {
-		var evEmb *pgvector.Vector
-		if e.Content != "" {
-			vec, err := s.embedder.Embed(ctx, e.Content)
-			if err != nil {
-				s.logger.Warn("trace: evidence embedding failed", "error", err)
-			} else if err := s.validateEmbeddingDims(vec); err != nil {
-				return storage.CreateTraceParams{}, fmt.Errorf("trace: evidence %w (check AKASHI_EMBEDDING_DIMENSIONS config)", err)
-			} else {
-				evEmb = &vec
+	if len(input.Decision.Evidence) > 0 {
+		var wg sync.WaitGroup
+		errs := make([]error, len(input.Decision.Evidence))
+		embs := make([]*pgvector.Vector, len(input.Decision.Evidence))
+		for i, e := range input.Decision.Evidence {
+			if e.Content == "" {
+				continue
+			}
+			wg.Add(1)
+			go func(idx int, content string) {
+				defer wg.Done()
+				vec, err := s.embedder.Embed(ctx, content)
+				if err != nil {
+					s.logger.Warn("trace: evidence embedding failed", "error", err)
+					errs[idx] = err
+					return
+				}
+				if err := s.validateEmbeddingDims(vec); err != nil {
+					errs[idx] = fmt.Errorf("trace: evidence %w (check AKASHI_EMBEDDING_DIMENSIONS config)", err)
+					return
+				}
+				embs[idx] = &vec
+			}(i, e.Content)
+		}
+		wg.Wait()
+
+		// Check for dimension validation errors (hard failure).
+		for _, err := range errs {
+			if err != nil && strings.Contains(err.Error(), "AKASHI_EMBEDDING_DIMENSIONS") {
+				return storage.CreateTraceParams{}, err
 			}
 		}
-		evs[i] = model.Evidence{
-			OrgID:          orgID,
-			SourceType:     model.SourceType(e.SourceType),
-			SourceURI:      e.SourceURI,
-			Content:        e.Content,
-			RelevanceScore: e.RelevanceScore,
-			Embedding:      evEmb,
+
+		for i, e := range input.Decision.Evidence {
+			evs[i] = model.Evidence{
+				OrgID:          orgID,
+				SourceType:     model.SourceType(e.SourceType),
+				SourceURI:      e.SourceURI,
+				Content:        e.Content,
+				RelevanceScore: e.RelevanceScore,
+				Embedding:      embs[i],
+			}
 		}
 	}
 
@@ -370,8 +411,6 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, input CheckInput) 
 		input.Limit = 5
 	}
 
-	var decisions []model.Decision
-
 	// Build the shared filter set (applied on both search and structured query paths).
 	// DecisionType is optional — omitting it broadens the search across all types.
 	filters := model.QueryFilters{}
@@ -386,71 +425,96 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, input CheckInput) 
 		filters.Project = &input.Project
 	}
 
-	if input.Query != "" {
-		// Use the same Qdrant → text fallback chain as Search.
-		results, err := s.Search(ctx, orgID, input.Query, true, filters, input.Limit)
-		if err != nil {
-			return model.CheckResponse{}, fmt.Errorf("check: search: %w", err)
-		}
-		// Filter out low-relevance results so akashi_check doesn't report
-		// has_precedent=true for semantically distant decisions (#101).
-		for _, sr := range results {
-			if sr.SimilarityScore >= 0.3 {
-				decisions = append(decisions, sr.Decision)
+	// Run the three independent lookups concurrently.
+	var (
+		decisions   []model.Decision
+		searchErr   error
+		conflicts   []model.DecisionConflict
+		conflictErr error
+		resolutions []model.ConflictResolution
+	)
+	// Silence the linter — conflictErr is written in the goroutine and checked implicitly
+	// via the conflicts slice (nil on error). Keep the variable for future error propagation.
+	_ = conflictErr
+
+	var wg sync.WaitGroup
+
+	// 1. Search or structured query.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if input.Query != "" {
+			results, err := s.Search(ctx, orgID, input.Query, true, filters, input.Limit)
+			if err != nil {
+				searchErr = fmt.Errorf("check: search: %w", err)
+				return
 			}
+			for _, sr := range results {
+				if sr.SimilarityScore >= 0.3 {
+					decisions = append(decisions, sr.Decision)
+				}
+			}
+		} else {
+			queried, _, err := s.db.QueryDecisions(ctx, orgID, model.QueryRequest{
+				Filters:  filters,
+				Include:  []string{"alternatives"},
+				OrderBy:  "valid_from",
+				OrderDir: "desc",
+				Limit:    input.Limit,
+			})
+			if err != nil {
+				searchErr = fmt.Errorf("check: query: %w", err)
+				return
+			}
+			decisions = queried
 		}
-	} else {
-		// Structured query path.
-		queried, _, err := s.db.QueryDecisions(ctx, orgID, model.QueryRequest{
-			Filters:  filters,
-			Include:  []string{"alternatives"},
-			OrderBy:  "valid_from",
-			OrderDir: "desc",
-			Limit:    input.Limit,
-		})
+	}()
+
+	// 2. List open/acknowledged conflicts (filtered in SQL via StatusIn).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		conflictFilter := storage.ConflictFilters{
+			StatusIn: []string{"open", "acknowledged"},
+		}
+		if input.DecisionType != "" {
+			dt := input.DecisionType
+			conflictFilter.DecisionType = &dt
+		}
+		listed, err := s.db.ListConflicts(ctx, orgID, conflictFilter, input.Limit, 0)
 		if err != nil {
-			return model.CheckResponse{}, fmt.Errorf("check: query: %w", err)
+			conflictErr = err
+			s.logger.Warn("check: list conflicts", "error", err)
+			return
 		}
-		decisions = queried
+		conflicts = listed
+	}()
+
+	// 3. Fetch prior resolutions (only when decision type is specified).
+	if input.DecisionType != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res, err := s.db.GetResolvedConflictsByType(ctx, orgID, input.DecisionType, input.Limit)
+			if err != nil {
+				s.logger.Warn("check: get resolved conflicts by type", "decision_type", input.DecisionType, "error", err)
+				return
+			}
+			resolutions = res
+		}()
 	}
 
-	// Only surface open/acknowledged conflicts, optionally scoped to decision type.
-	conflictFilter := storage.ConflictFilters{}
-	if input.DecisionType != "" {
-		dt := input.DecisionType
-		conflictFilter.DecisionType = &dt
+	wg.Wait()
+
+	if searchErr != nil {
+		return model.CheckResponse{}, searchErr
 	}
-	conflicts, err := s.db.ListConflicts(ctx, orgID, conflictFilter, input.Limit, 0)
-	if err != nil {
-		s.logger.Warn("check: list conflicts", "error", err)
-		conflicts = nil
-	}
-	// Filter out resolved/wont_fix so akashi_check only shows actionable conflicts.
-	filtered := conflicts[:0]
-	for _, c := range conflicts {
-		if c.Status == "resolved" || c.Status == "wont_fix" {
-			continue
-		}
-		filtered = append(filtered, c)
-	}
-	conflicts = filtered
 
 	resp := model.CheckResponse{
-		HasPrecedent: len(decisions) > 0,
-		Decisions:    decisions,
-		Conflicts:    conflicts,
-	}
-
-	// Fetch prior resolutions so agents know which approach prevailed for this
-	// decision type and can avoid resurrecting the losing side. Only meaningful
-	// when the type is known; skip for open-ended queries across all types.
-	if input.DecisionType != "" {
-		resolutions, rErr := s.db.GetResolvedConflictsByType(ctx, orgID, input.DecisionType, input.Limit)
-		if rErr != nil {
-			s.logger.Warn("check: get resolved conflicts by type", "decision_type", input.DecisionType, "error", rErr)
-		} else {
-			resp.PriorResolutions = resolutions
-		}
+		HasPrecedent:     len(decisions) > 0,
+		Decisions:        decisions,
+		Conflicts:        conflicts,
+		PriorResolutions: resolutions,
 	}
 
 	return resp, nil

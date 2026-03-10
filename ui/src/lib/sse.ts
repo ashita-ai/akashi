@@ -90,20 +90,19 @@ function handleSSEEvent(
 ) {
   try {
     const event = JSON.parse(data) as { event: string };
-    // Invalidate relevant queries when new data arrives.
+    // Invalidate only the queries that are most likely to be affected.
+    // Use exact:true where possible to avoid nuking paginated/filtered caches.
     switch (event.event) {
       case "decision_made":
       case "decision_revised":
-        queryClient.invalidateQueries({ queryKey: ["decisions"] });
         queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-        queryClient.invalidateQueries({ queryKey: ["usage"] });
+        queryClient.invalidateQueries({ queryKey: ["analytics"] });
         break;
       case "conflict_detected":
-        queryClient.invalidateQueries({ queryKey: ["conflicts"] });
         queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+        queryClient.invalidateQueries({ queryKey: ["analytics"] });
         break;
       default:
-        // For any other event, refresh the dashboard.
         queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     }
   } catch {

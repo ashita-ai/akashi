@@ -1644,8 +1644,25 @@ func (m *checkStore) SearchDecisionsByText(_ context.Context, _ uuid.UUID, _ str
 	return m.searchResults, m.searchErr
 }
 
-func (m *checkStore) ListConflicts(_ context.Context, _ uuid.UUID, _ storage.ConflictFilters, _, _ int) ([]model.DecisionConflict, error) {
-	return m.conflicts, m.conflictsErr
+func (m *checkStore) ListConflicts(_ context.Context, _ uuid.UUID, filters storage.ConflictFilters, _, _ int) ([]model.DecisionConflict, error) {
+	if m.conflictsErr != nil {
+		return nil, m.conflictsErr
+	}
+	// Respect StatusIn filter to match production SQL behavior.
+	if len(filters.StatusIn) > 0 {
+		allowed := make(map[string]bool, len(filters.StatusIn))
+		for _, s := range filters.StatusIn {
+			allowed[s] = true
+		}
+		var filtered []model.DecisionConflict
+		for _, c := range m.conflicts {
+			if allowed[c.Status] {
+				filtered = append(filtered, c)
+			}
+		}
+		return filtered, nil
+	}
+	return m.conflicts, nil
 }
 
 func (m *checkStore) GetResolvedConflictsByType(_ context.Context, _ uuid.UUID, _ string, _ int) ([]model.ConflictResolution, error) {
