@@ -439,8 +439,11 @@ export default function Analytics() {
 
   return (
     <div className="space-y-6 animate-page">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold tracking-tight">Analytics</h1>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Analytics</h1>
+          <p className="mt-0.5 text-sm text-muted-foreground">Conflict trends and decision quality over time</p>
+        </div>
         <PeriodSelector value={period} onChange={setPeriod} />
       </div>
 

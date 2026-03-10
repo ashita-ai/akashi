@@ -78,7 +78,7 @@ export default function Layout() {
         )}
       >
         {/* Brand header */}
-        <div className="flex h-14 items-center justify-between border-b px-4">
+        <div className="sidebar-brand-glow relative flex h-14 items-center justify-between border-b px-4">
           <AkashiBrand />
           <button
             className="lg:hidden text-muted-foreground hover:text-foreground transition-colors"
@@ -101,7 +101,7 @@ export default function Layout() {
                 cn(
                   "group relative flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-all duration-200",
                   isActive
-                    ? "bg-primary/10 text-primary shadow-[inset_0_0_20px_-8px_hsl(var(--glow-blue)/0.15)]"
+                    ? "bg-primary/10 text-primary shadow-[inset_0_0_20px_-8px_hsl(var(--glow-blue)/0.20)] shadow-glow-sm"
                     : "text-muted-foreground hover:bg-accent hover:text-accent-foreground hover:translate-x-0.5",
                 )
               }

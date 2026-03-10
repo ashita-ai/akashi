@@ -74,7 +74,20 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6 animate-page">
-      <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            Decision audit trail and agent coordination health
+          </p>
+        </div>
+        {traceHealth.data && (
+          <div className="shrink-0 flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs text-muted-foreground bg-muted/30">
+            <span className={`h-1.5 w-1.5 rounded-full ${healthConfig.color.replace("text-", "bg-")}`} />
+            {healthConfig.label}
+          </div>
+        )}
+      </div>
 
       {/* Metric cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -167,22 +180,25 @@ export default function Dashboard() {
 
       {/* Coverage tips */}
       {traceHealth.data?.gaps && traceHealth.data.gaps.length > 0 && (
-        <Card>
-          <CardHeader>
+        <Card className="border-amber-500/20 bg-amber-500/[0.03]">
+          <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-sm font-medium">
-              <Lightbulb className="h-4 w-4 text-muted-foreground" />
+              <Lightbulb className="h-4 w-4 text-amber-500/80" />
               Coverage Tips
+              <span className="ml-auto text-xs font-normal text-muted-foreground/60">
+                {traceHealth.data.gaps.length} suggestion{traceHealth.data.gaps.length !== 1 ? "s" : ""}
+              </span>
             </CardTitle>
           </CardHeader>
-          <CardContent>
-            <ul className="space-y-2">
+          <CardContent className="pt-0">
+            <ul className="space-y-1.5">
               {traceHealth.data.gaps.map((gap, i) => (
                 <li
                   key={i}
-                  className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2 text-sm"
+                  className="flex items-start gap-2.5 rounded-md px-3 py-2 text-sm bg-muted/40 border border-border/50"
                 >
-                  <Info className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <span className="text-muted-foreground">{gap}</span>
+                  <Info className="h-3.5 w-3.5 shrink-0 text-amber-500/70 mt-0.5" />
+                  <span className="text-muted-foreground leading-snug">{gap}</span>
                 </li>
               ))}
             </ul>
@@ -203,13 +219,16 @@ export default function Dashboard() {
               ))}
             </div>
           ) : !recent.data?.decisions?.length ? (
-            <div className="flex flex-col items-center py-12 text-center">
-              <FileText className="h-12 w-12 text-muted-foreground/20 mb-3" />
-              <p className="text-sm text-muted-foreground">
-                No decisions recorded yet.
+            <div className="flex flex-col items-center py-14 text-center">
+              <div className="relative mb-4">
+                <div className="absolute inset-0 rounded-full bg-primary/10 blur-xl" />
+                <FileText className="relative h-10 w-10 text-primary/30" />
+              </div>
+              <p className="text-sm font-medium text-muted-foreground">
+                No decisions recorded yet
               </p>
-              <p className="text-xs text-muted-foreground/60 mt-1">
-                Start tracing with the SDK to see decisions here.
+              <p className="text-xs text-muted-foreground/50 mt-1 max-w-[220px]">
+                Call <code className="font-mono bg-muted px-1 rounded text-[11px]">akashi_trace</code> from any agent to start the audit trail.
               </p>
             </div>
           ) : (

@@ -106,7 +106,10 @@ export default function Decisions() {
 
   return (
     <div className="space-y-6 animate-page">
-      <h1 className="text-2xl font-bold tracking-tight">Decisions</h1>
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">Decisions</h1>
+        <p className="mt-0.5 text-sm text-muted-foreground">Full audit trail of every traced AI decision</p>
+      </div>
 
       {/* Filters */}
       <form
@@ -164,13 +167,16 @@ export default function Decisions() {
           ))}
         </div>
       ) : !data?.decisions?.length ? (
-        <div className="flex flex-col items-center py-12 text-center">
-          <FileText className="h-12 w-12 text-muted-foreground/20 mb-3" />
-          <p className="text-sm text-muted-foreground">No decisions found.</p>
-          {(agentFilter || typeFilter) && (
-            <p className="text-xs text-muted-foreground/60 mt-1">
-              Try adjusting your filters.
-            </p>
+        <div className="flex flex-col items-center py-14 text-center">
+          <div className="relative mb-4">
+            <div className="absolute inset-0 rounded-full bg-primary/8 blur-xl" />
+            <FileText className="relative h-10 w-10 text-primary/25" />
+          </div>
+          <p className="text-sm font-medium text-muted-foreground">No decisions found</p>
+          {(agentFilter || typeFilter) ? (
+            <p className="text-xs text-muted-foreground/50 mt-1">Try adjusting your filters.</p>
+          ) : (
+            <p className="text-xs text-muted-foreground/50 mt-1">No decisions have been traced yet.</p>
           )}
         </div>
       ) : (
