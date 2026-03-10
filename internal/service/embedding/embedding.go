@@ -88,6 +88,16 @@ func (a *PublicProviderAdapter) EmbedBatch(ctx context.Context, texts []string) 
 // Dimensions implements embedding.Provider.
 func (a *PublicProviderAdapter) Dimensions() int { return a.external.Dimensions() }
 
+// ModelName returns the external provider's model name if it implements ModelNamer,
+// otherwise "unknown".
+func (a *PublicProviderAdapter) ModelName() string {
+	type namer interface{ ModelName() string }
+	if mn, ok := a.external.(namer); ok {
+		return mn.ModelName()
+	}
+	return "unknown"
+}
+
 // openAIMaxInputChars is a safe default for text-embedding-3-small (8191 tokens).
 // At ~4 chars/token for English prose, 30000 chars ≈ 7500 tokens — well within the
 // 8191-token limit. Code-heavy content tokenizes at ~2-3 chars/token, but even at
@@ -130,6 +140,9 @@ func NewOpenAIProvider(apiKey, model string, dimensions int) (*OpenAIProvider, e
 func (p *OpenAIProvider) Dimensions() int {
 	return p.dimensions
 }
+
+// ModelName returns the OpenAI model name (e.g. "text-embedding-3-small").
+func (p *OpenAIProvider) ModelName() string { return p.model }
 
 type openAIRequest struct {
 	Input      []string `json:"input"`
@@ -230,6 +243,22 @@ func (p *OpenAIProvider) EmbedBatch(ctx context.Context, texts []string) ([]pgve
 	return vecs, nil
 }
 
+// ModelNamer is an optional interface that embedding providers can implement
+// to report their model name. Used for automatic threshold profile selection.
+type ModelNamer interface {
+	ModelName() string
+}
+
+// ProviderModelName returns the model name for an embedding provider.
+// If the provider implements ModelNamer, its ModelName() is returned.
+// Otherwise, returns "unknown".
+func ProviderModelName(p Provider) string {
+	if mn, ok := p.(ModelNamer); ok {
+		return mn.ModelName()
+	}
+	return "unknown"
+}
+
 // NoopProvider returns zero vectors. Used when no API key is configured.
 type NoopProvider struct {
 	dims int
@@ -244,6 +273,9 @@ func NewNoopProvider(dims int) *NoopProvider {
 func (p *NoopProvider) Dimensions() int {
 	return p.dims
 }
+
+// ModelName returns "noop".
+func (p *NoopProvider) ModelName() string { return "noop" }
 
 // Embed returns ErrNoProvider. Callers skip embedding storage on error,
 // avoiding ~4KB of zero-vector bloat per decision in Postgres.

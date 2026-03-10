@@ -22,17 +22,21 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/ashita-ai/akashi/internal/conflicts"
+	"github.com/ashita-ai/akashi/internal/service/embedding"
 )
 
 func main() {
@@ -40,9 +44,14 @@ func main() {
 }
 
 func run() int {
-	mode := flag.String("mode", "validator", "evaluation mode: validator or scorer")
+	mode := flag.String("mode", "validator", "evaluation mode: validator, scorer, or benchmark")
 	save := flag.Bool("save", false, "save results to ./eval-results/{timestamp}.json")
 	flag.Parse()
+
+	// Benchmark mode runs locally — no server or auth required.
+	if *mode == "benchmark" {
+		return runBenchmarkMode(*save)
+	}
 
 	baseURL := os.Getenv("AKASHI_URL")
 	if baseURL == "" {
@@ -73,7 +82,7 @@ func run() int {
 	case "scorer":
 		return runScorerEval(baseURL, token, *save)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown mode: %s (use 'validator' or 'scorer')\n", *mode)
+		fmt.Fprintf(os.Stderr, "unknown mode: %s (use 'validator', 'scorer', or 'benchmark')\n", *mode)
 		return 1
 	}
 }
@@ -235,6 +244,125 @@ func callValidatorEval(baseURL, token string) (conflicts.EvalMetrics, []conflict
 		return conflicts.EvalMetrics{}, nil, fmt.Errorf("decode: %w", err)
 	}
 	return envelope.Data.Metrics, envelope.Data.Results, nil
+}
+
+func runBenchmarkMode(save bool) int {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	provider, err := newBenchmarkProvider(logger)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create embedding provider: %v\n", err)
+		return 1
+	}
+
+	modelName := embedding.ProviderModelName(provider)
+	fmt.Fprintf(os.Stderr, "benchmarking model: %s (%d dimensions)\n", modelName, provider.Dimensions())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	result, err := conflicts.RunBenchmark(ctx, conflicts.BenchmarkConfig{
+		Provider: provider,
+		Logger:   logger,
+		Dataset:  conflicts.BenchmarkDataset(),
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "benchmark failed: %v\n", err)
+		return 1
+	}
+
+	// Print summary.
+	fmt.Printf("\n=== Embedding Model Benchmark: %s ===\n", result.ModelName)
+	fmt.Printf("Dimensions: %d\n", result.Dimensions)
+	fmt.Printf("Dataset:    %d pairs\n", result.DatasetSize)
+	fmt.Printf("Latency:    %.0f ms (total batch embed)\n\n", result.EmbeddingLatencyMs)
+
+	fmt.Printf("Similarity Distribution:\n")
+	fmt.Printf("  Topic Sim:    mean=%.3f  stddev=%.3f  P25=%.3f  P50=%.3f  P75=%.3f\n",
+		result.SimilarityStats.TopicSimMean, result.SimilarityStats.TopicSimStdDev,
+		result.SimilarityStats.TopicSimP25, result.SimilarityStats.TopicSimP50, result.SimilarityStats.TopicSimP75)
+	fmt.Printf("  Outcome Div:  mean=%.3f  P25=%.3f  P50=%.3f  P75=%.3f\n",
+		result.SimilarityStats.OutcomeDivMean,
+		result.SimilarityStats.OutcomeDivP25, result.SimilarityStats.OutcomeDivP50, result.SimilarityStats.OutcomeDivP75)
+	fmt.Printf("  Genuine:      topic_sim=%.3f  outcome_div=%.3f\n\n",
+		result.SimilarityStats.GenuineTopicSim, result.SimilarityStats.GenuineOutDiv)
+
+	fmt.Printf("Optimal Thresholds:\n")
+	fmt.Printf("  ClaimTopicSimFloor:    %.2f\n", result.OptimalClaimTopicSim)
+	fmt.Printf("  ClaimDivFloor:         %.2f\n", result.OptimalClaimDiv)
+	fmt.Printf("  DecisionTopicSimFloor: %.2f\n\n", result.OptimalDecisionTopicSim)
+
+	fmt.Printf("Performance at Optimal:\n")
+	fmt.Printf("  Precision: %.1f%%\n", result.PrecisionAtOptimal*100)
+	fmt.Printf("  Recall:    %.1f%%\n", result.RecallAtOptimal*100)
+	fmt.Printf("  F1:        %.1f%%\n\n", result.F1AtOptimal*100)
+
+	// Derive thresholds from stats.
+	claimSim, claimDiv, decSim := conflicts.DeriveThresholds(result.SimilarityStats)
+	fmt.Printf("Auto-Derived Thresholds (from stats):\n")
+	fmt.Printf("  ClaimTopicSimFloor:    %.2f\n", claimSim)
+	fmt.Printf("  ClaimDivFloor:         %.2f\n", claimDiv)
+	fmt.Printf("  DecisionTopicSimFloor: %.2f\n\n", decSim)
+
+	// Suggested config snippet.
+	fmt.Printf("Suggested config/profile entry:\n")
+	fmt.Printf("  \"%s\": {\n", modelName)
+	fmt.Printf("    claimTopicSimFloor:    %.2f,\n", result.OptimalClaimTopicSim)
+	fmt.Printf("    claimDivFloor:         %.2f,\n", result.OptimalClaimDiv)
+	fmt.Printf("    decisionTopicSimFloor: %.2f,\n", result.OptimalDecisionTopicSim)
+	fmt.Printf("  }\n")
+
+	if save {
+		if err := saveResults("benchmark", result); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to save results: %v\n", err)
+		}
+	}
+	return 0
+}
+
+// newBenchmarkProvider creates an embedding provider from environment variables.
+// Supports OLLAMA_URL/OLLAMA_MODEL for Ollama and OPENAI_API_KEY/AKASHI_EMBEDDING_MODEL for OpenAI.
+func newBenchmarkProvider(logger *slog.Logger) (embedding.Provider, error) {
+	providerType := os.Getenv("AKASHI_EMBEDDING_PROVIDER")
+	if providerType == "" {
+		providerType = "auto"
+	}
+
+	dims := 1024
+	if d := os.Getenv("AKASHI_EMBEDDING_DIMENSIONS"); d != "" {
+		n, err := strconv.Atoi(d)
+		if err != nil {
+			return nil, fmt.Errorf("invalid AKASHI_EMBEDDING_DIMENSIONS: %w", err)
+		}
+		dims = n
+	}
+
+	switch providerType {
+	case "openai":
+		apiKey := os.Getenv("OPENAI_API_KEY")
+		if apiKey == "" {
+			return nil, fmt.Errorf("OPENAI_API_KEY is required for openai provider")
+		}
+		model := os.Getenv("AKASHI_EMBEDDING_MODEL")
+		if model == "" {
+			model = "text-embedding-3-small"
+		}
+		logger.Info("benchmark: using OpenAI provider", "model", model, "dims", dims)
+		return embedding.NewOpenAIProvider(apiKey, model, dims)
+	case "ollama", "auto":
+		ollamaURL := os.Getenv("OLLAMA_URL")
+		if ollamaURL == "" {
+			ollamaURL = "http://localhost:11434"
+		}
+		model := os.Getenv("OLLAMA_MODEL")
+		if model == "" {
+			model = "mxbai-embed-large"
+		}
+		logger.Info("benchmark: using Ollama provider", "url", ollamaURL, "model", model, "dims", dims)
+		return embedding.NewOllamaProvider(ollamaURL, model, dims), nil
+	default:
+		return nil, fmt.Errorf("unsupported embedding provider: %s", providerType)
+	}
 }
 
 func callScorerEval(baseURL, token string) (scorerEvalResult, error) {

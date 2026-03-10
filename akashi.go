@@ -221,6 +221,21 @@ func New(opts ...Option) (*App, error) {
 		backfillWorkers = 1
 		logger.Info("conflict backfill: capped workers to 1 (Ollama is serial)")
 	}
+	// Log embedding model profile selection.
+	_, _, _, knownProfile := config.EmbeddingModelThresholds(cfg.EmbeddingModelProfile)
+	if knownProfile {
+		logger.Info("conflict scoring: using model profile",
+			"model", cfg.EmbeddingModelProfile,
+			"profile", cfg.ConflictProfile,
+			"claim_topic_sim", cfg.ConflictClaimTopicSimFloor,
+			"claim_div", cfg.ConflictClaimDivFloor,
+			"decision_topic_sim", cfg.ConflictDecisionTopicSimFloor)
+	} else {
+		logger.Warn("conflict scoring: unknown embedding model, using mxbai-embed-large defaults",
+			"model", cfg.EmbeddingModelProfile,
+			"hint", "run 'go run ./cmd/eval-conflicts --mode=benchmark' to calibrate thresholds")
+	}
+
 	conflictScorer := conflicts.NewScorer(db, logger, cfg.ConflictSignificanceThreshold, conflictValidator, backfillWorkers, cfg.ConflictDecayLambda).
 		WithScoringThresholds(cfg.ConflictClaimTopicSimFloor, cfg.ConflictClaimDivFloor, cfg.ConflictDecisionTopicSimFloor).
 		WithCandidateLimit(cfg.ConflictCandidateLimit).

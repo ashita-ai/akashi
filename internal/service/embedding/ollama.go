@@ -54,6 +54,9 @@ func (p *OllamaProvider) Dimensions() int {
 	return p.dimensions
 }
 
+// ModelName returns the Ollama model name (e.g. "mxbai-embed-large").
+func (p *OllamaProvider) ModelName() string { return p.model }
+
 // ollamaEmbedRequest is the request body for POST /api/embed.
 // The input field accepts a single string or an array of strings.
 type ollamaEmbedRequest struct {
