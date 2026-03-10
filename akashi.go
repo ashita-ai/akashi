@@ -228,11 +228,18 @@ func New(opts ...Option) (*App, error) {
 	if qdrantIndex != nil {
 		conflictScorer = conflictScorer.WithCandidateFinder(qdrantIndex)
 	}
-	// Cross-encoder reranking (optional, reduces LLM calls).
-	if cfg.CrossEncoderURL != "" {
+	// NLI or cross-encoder reranking (optional, reduces LLM calls).
+	// NLI sidecar takes precedence — it uses a purpose-built stance detection
+	// model (DeBERTa-v3-base) that outperforms generic cross-encoders on
+	// entailment/contradiction classification.
+	if cfg.NLIURL != "" {
+		nliEncoder := conflicts.NewHTTPCrossEncoder(cfg.NLIURL)
+		conflictScorer = conflictScorer.WithCrossEncoder(nliEncoder, cfg.CrossEncoderThreshold)
+		logger.Info("conflict pre-filter: NLI sidecar enabled", "url", cfg.NLIURL, "threshold", cfg.CrossEncoderThreshold)
+	} else if cfg.CrossEncoderURL != "" {
 		crossEnc := conflicts.NewHTTPCrossEncoder(cfg.CrossEncoderURL)
 		conflictScorer = conflictScorer.WithCrossEncoder(crossEnc, cfg.CrossEncoderThreshold)
-		logger.Info("conflict cross-encoder: enabled", "url", cfg.CrossEncoderURL, "threshold", cfg.CrossEncoderThreshold)
+		logger.Info("conflict pre-filter: cross-encoder enabled", "url", cfg.CrossEncoderURL, "threshold", cfg.CrossEncoderThreshold)
 	}
 	// External pairwise scorer override.
 	if o.conflictScorer != nil {
