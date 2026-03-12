@@ -1011,7 +1011,7 @@ type ExportCursor struct {
 //  1. Aggregate counts, avg confidence, and type/agent breakdowns per bucket.
 //  2. Top N decisions per bucket (by confidence DESC) for the executive summary.
 //
-// Conflicts are counted via a LEFT JOIN to decision_conflicts.
+// Conflicts are counted from scored_conflicts.
 func (db *DB) GetDecisionTimeline(ctx context.Context, orgID uuid.UUID, granularity string, agentID, project *string, from, to time.Time, topN int) ([]model.TimelineBucket, error) {
 	truncFn := "day"
 	if granularity == "week" {
@@ -1043,41 +1043,7 @@ func (db *DB) GetDecisionTimeline(ctx context.Context, orgID uuid.UUID, granular
 
 	where := " WHERE " + strings.Join(conditions, " AND ")
 
-	// Query 1: Aggregate stats per bucket.
-	aggQuery := fmt.Sprintf(
-		`SELECT date_trunc('%s', valid_from) AS bucket,
-		        COUNT(*) AS decision_count,
-		        AVG(confidence)::double precision AS avg_confidence,
-		        COALESCE(json_object_agg(dt, dt_count) FILTER (WHERE dt IS NOT NULL), '{}') AS decision_types,
-		        COALESCE(json_object_agg(aid, aid_count) FILTER (WHERE aid IS NOT NULL), '{}') AS agents
-		 FROM (
-		   SELECT valid_from, confidence, decision_type, agent_id
-		   FROM decisions%s
-		 ) d
-		 LEFT JOIN LATERAL (
-		   SELECT d.decision_type AS dt, COUNT(*) AS dt_count
-		   FROM decisions d2
-		   %s AND date_trunc('%s', d2.valid_from) = date_trunc('%s', d.valid_from)
-		   GROUP BY d2.decision_type
-		 ) type_agg ON true
-		 LEFT JOIN LATERAL (
-		   SELECT d.agent_id AS aid, COUNT(*) AS aid_count
-		   FROM decisions d3
-		   %s AND date_trunc('%s', d3.valid_from) = date_trunc('%s', d.valid_from)
-		   GROUP BY d3.agent_id
-		 ) agent_agg ON true
-		 GROUP BY bucket
-		 ORDER BY bucket DESC`,
-		truncFn, where, where, truncFn, truncFn, where, truncFn, truncFn,
-	)
-
-	// Actually, the lateral join approach above is overly complex. Let me use a simpler
-	// two-pass approach: first get the aggregate stats, then get top decisions per bucket.
-	// Rewrite with a cleaner aggregation.
-	_ = aggQuery // discard, use simpler approach below
-
-	// Simpler aggregation: get all matching decisions with minimal columns,
-	// then aggregate in Go. This avoids complex SQL and keeps the query plan simple.
+	// Get all matching decisions with minimal columns, aggregate in Go.
 	selectQuery := fmt.Sprintf(
 		`SELECT id, agent_id, decision_type, outcome, confidence, project, valid_from
 		 FROM decisions%s
@@ -1182,15 +1148,37 @@ func (db *DB) GetDecisionTimeline(ctx context.Context, orgID uuid.UUID, granular
 		}
 	}
 
-	// Count conflicts per bucket.
+	// Count conflicts per bucket, respecting agent/project filters.
+	conflictConditions := []string{"sc.org_id = $1", "sc.detected_at >= $2", "sc.detected_at < $3"}
+	conflictArgs := []any{orgID, from, to}
+	conflictIdx := 4
+
+	if agentID != nil && *agentID != "" {
+		conflictConditions = append(conflictConditions,
+			fmt.Sprintf("(sc.agent_a = $%d OR sc.agent_b = $%d)", conflictIdx, conflictIdx))
+		conflictArgs = append(conflictArgs, *agentID)
+		conflictIdx++
+	}
+	if project != nil && *project != "" {
+		// scored_conflicts has no project column; join through decisions.
+		conflictConditions = append(conflictConditions,
+			fmt.Sprintf(`EXISTS (
+				SELECT 1 FROM decisions d
+				WHERE d.id IN (sc.decision_a_id, sc.decision_b_id)
+				  AND d.project = $%d AND d.org_id = sc.org_id
+			)`, conflictIdx))
+		conflictArgs = append(conflictArgs, *project)
+		conflictIdx++ //nolint:ineffassign
+	}
+
 	conflictQuery := fmt.Sprintf(
-		`SELECT date_trunc('%s', detected_at) AS bucket, COUNT(*)
-		 FROM decision_conflicts
-		 WHERE org_id = $1 AND detected_at >= $2 AND detected_at < $3
+		`SELECT date_trunc('%s', sc.detected_at) AS bucket, COUNT(*)
+		 FROM scored_conflicts sc
+		 WHERE %s
 		 GROUP BY bucket`,
-		truncFn,
+		truncFn, strings.Join(conflictConditions, " AND "),
 	)
-	conflictRows, err := db.pool.Query(ctx, conflictQuery, orgID, from, to)
+	conflictRows, err := db.pool.Query(ctx, conflictQuery, conflictArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("storage: timeline conflicts: %w", err)
 	}
