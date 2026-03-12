@@ -115,6 +115,7 @@ type Store interface {
 	GetDecisionQualityStats(ctx context.Context, orgID uuid.UUID) (DecisionQualityStats, error)
 	GetEvidenceCoverageStats(ctx context.Context, orgID uuid.UUID) (EvidenceCoverageStats, error)
 	GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID) (ConflictStatusCounts, error)
+	GetWontFixRate(ctx context.Context, orgID uuid.UUID) (WontFixRate, error)
 	GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID) (OutcomeSignalsSummary, error)
 
 	// ---- Error classification ----

@@ -495,6 +495,14 @@ func TestTraceHealth(t *testing.T) {
 		assert.Equal(t, 0, counts.Total)
 	})
 
+	t.Run("wont fix rate", func(t *testing.T) {
+		rate, err := db.GetWontFixRate(ctx, orgID)
+		require.NoError(t, err)
+		assert.Equal(t, 0.0, rate.Rate)
+		assert.Equal(t, 0, rate.Resolved)
+		assert.Equal(t, 0, rate.WontFix)
+	})
+
 	t.Run("outcome signals summary", func(t *testing.T) {
 		summary, err := db.GetOutcomeSignalsSummary(ctx, orgID)
 		require.NoError(t, err)

@@ -84,6 +84,30 @@ func (l *LiteDB) GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID) (
 	return cc, nil
 }
 
+// GetWontFixRate computes the wont_fix false-positive rate for an org over the
+// last 30 days.
+func (l *LiteDB) GetWontFixRate(ctx context.Context, orgID uuid.UUID) (storage.WontFixRate, error) {
+	var r storage.WontFixRate
+	err := l.db.QueryRowContext(ctx,
+		`SELECT
+		     COALESCE(SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN status = 'wont_fix' THEN 1 ELSE 0 END), 0)
+		 FROM scored_conflicts
+		 WHERE org_id = ?
+		   AND status IN ('resolved', 'wont_fix')
+		   AND resolved_at >= datetime('now', '-30 days')`,
+		uuidStr(orgID),
+	).Scan(&r.Resolved, &r.WontFix)
+	if err != nil {
+		return r, fmt.Errorf("sqlite: wont_fix rate: %w", err)
+	}
+	denom := r.Resolved + r.WontFix
+	if denom > 0 {
+		r.Rate = float64(r.WontFix) / float64(denom)
+	}
+	return r, nil
+}
+
 // GetOutcomeSignalsSummary returns aggregate outcome signal metrics for an org.
 func (l *LiteDB) GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID) (storage.OutcomeSignalsSummary, error) {
 	var os storage.OutcomeSignalsSummary

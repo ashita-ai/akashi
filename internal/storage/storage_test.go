@@ -5035,6 +5035,26 @@ func TestGetConflictGroupKind(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestGetWontFixRate(t *testing.T) {
+	ctx := context.Background()
+
+	// With no resolved/wont_fix conflicts, rate should be 0.
+	rate, err := testDB.GetWontFixRate(ctx, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, 0.0, rate.Rate)
+	assert.GreaterOrEqual(t, rate.Resolved, 0)
+	assert.GreaterOrEqual(t, rate.WontFix, 0)
+}
+
+func TestGetGlobalWontFixRate(t *testing.T) {
+	ctx := context.Background()
+
+	rate, err := testDB.GetGlobalWontFixRate(ctx)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, rate, 0.0)
+	assert.LessOrEqual(t, rate, 1.0)
+}
+
 // ---------------------------------------------------------------------------
 // Tests: Idempotency (ClearInProgressIdempotency)
 // ---------------------------------------------------------------------------

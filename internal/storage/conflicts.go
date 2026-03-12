@@ -1517,6 +1517,52 @@ func (db *DB) GetGlobalOpenConflictCount(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
+// GetWontFixRate computes the wont_fix false-positive rate for an org over the
+// last 30 days: wont_fix / (resolved + wont_fix). Only conflicts with a
+// resolved_at timestamp in the window are counted; open/acknowledged conflicts
+// are excluded because they haven't been triaged yet.
+func (db *DB) GetWontFixRate(ctx context.Context, orgID uuid.UUID) (WontFixRate, error) {
+	var r WontFixRate
+	err := db.pool.QueryRow(ctx, `
+		SELECT
+			count(*) FILTER (WHERE status = 'resolved'),
+			count(*) FILTER (WHERE status = 'wont_fix'),
+			COALESCE(
+				count(*) FILTER (WHERE status = 'wont_fix')::double precision
+				/ NULLIF(count(*) FILTER (WHERE status IN ('resolved', 'wont_fix')), 0),
+				0
+			)
+		FROM scored_conflicts
+		WHERE org_id = $1
+		  AND status IN ('resolved', 'wont_fix')
+		  AND resolved_at >= now() - interval '30 days'`,
+		orgID).Scan(&r.Resolved, &r.WontFix, &r.Rate)
+	if err != nil {
+		return r, fmt.Errorf("storage: wont_fix rate: %w", err)
+	}
+	return r, nil
+}
+
+// GetGlobalWontFixRate computes the global wont_fix false-positive rate across
+// all orgs over the last 30 days. Used by the OpenTelemetry observable gauge.
+// SECURITY: Intentionally global — aggregate metric with no tenant data exposed.
+func (db *DB) GetGlobalWontFixRate(ctx context.Context) (float64, error) {
+	var rate float64
+	err := db.pool.QueryRow(ctx, `
+		SELECT COALESCE(
+			count(*) FILTER (WHERE status = 'wont_fix')::double precision
+			/ NULLIF(count(*) FILTER (WHERE status IN ('resolved', 'wont_fix')), 0),
+			0
+		)
+		FROM scored_conflicts
+		WHERE status IN ('resolved', 'wont_fix')
+		  AND resolved_at >= now() - interval '30 days'`).Scan(&rate)
+	if err != nil {
+		return 0, fmt.Errorf("storage: global wont_fix rate: %w", err)
+	}
+	return rate, nil
+}
+
 // GetConflictGroupKind returns the conflict_kind for a conflict group.
 // Used by HTTP handlers that need the kind label for resolution metrics.
 func (db *DB) GetConflictGroupKind(ctx context.Context, groupID, orgID uuid.UUID) (string, error) {
