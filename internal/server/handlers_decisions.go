@@ -12,6 +12,7 @@ import (
 
 	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/authz"
+	"github.com/ashita-ai/akashi/internal/compact"
 	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
@@ -47,6 +48,14 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := model.ValidateTraceDecision(req.Decision); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
+	if err := model.ValidateMetadataSize("metadata", req.Metadata); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
+	if err := model.ValidateMetadataSize("context", req.Context); err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
 		return
 	}
@@ -524,6 +533,13 @@ func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 		resp.Conflicts = filteredConflicts
 	}
 	resp.HasPrecedent = len(resp.Decisions) > 0
+
+	// Concise format: compact the response using the same logic as the MCP layer.
+	if req.Format == "concise" {
+		canSuggestPrecedent := claims != nil && model.RoleAtLeast(claims.Role, model.RoleAgent)
+		writeJSON(w, r, http.StatusOK, compact.CheckResult(resp, canSuggestPrecedent))
+		return
+	}
 
 	writeJSON(w, r, http.StatusOK, resp)
 }
