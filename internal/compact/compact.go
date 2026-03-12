@@ -421,7 +421,8 @@ func CheckResult(resp model.CheckResponse, canSuggestPrecedent bool) map[string]
 	}
 
 	// precedent_ref_hint: the UUID of the best candidate for precedent_ref in the
-	// subsequent akashi_trace call. We pick the least-cited decision to spread attribution.
+	// subsequent akashi_trace call. We pick the most recent decision with fewer than
+	// 5 citations so that well-established precedents aren't over-attributed.
 	if canSuggestPrecedent && len(resp.Decisions) > 0 {
 		for _, d := range resp.Decisions {
 			if d.PrecedentCitationCount < 5 {
