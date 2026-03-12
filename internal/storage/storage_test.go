@@ -6102,7 +6102,7 @@ func TestCreateTraceAndAdjudicateConflictTx_ConflictNotFound(t *testing.T) {
 		},
 	)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "conflict not found")
+	assert.ErrorIs(t, err, storage.ErrNotFound)
 }
 
 // ---------------------------------------------------------------------------

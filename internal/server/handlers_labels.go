@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
@@ -47,20 +48,20 @@ func (h *Handlers) HandleUpsertConflictLabel(w http.ResponseWriter, r *http.Requ
 	orgID := OrgIDFromContext(r.Context())
 	claims := ClaimsFromContext(r.Context())
 
-	conflictID, err := uuid.Parse(r.PathValue("id"))
+	conflictID, err := parsePathUUID(r, "id")
 	if err != nil {
-		writeJSON(w, r, http.StatusBadRequest, map[string]string{"error": "invalid conflict id"})
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid conflict id")
 		return
 	}
 
 	var req upsertLabelRequest
 	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
 		return
 	}
 	if !validLabels[req.Label] {
-		writeJSON(w, r, http.StatusBadRequest, map[string]string{
-			"error": "label must be one of: genuine, related_not_contradicting, unrelated_false_positive",
-		})
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"label must be one of: genuine, related_not_contradicting, unrelated_false_positive")
 		return
 	}
 
@@ -74,7 +75,7 @@ func (h *Handlers) HandleUpsertConflictLabel(w http.ResponseWriter, r *http.Requ
 	}
 	if err := h.db.UpsertConflictLabel(r.Context(), cl); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSON(w, r, http.StatusConflict, map[string]string{"error": "conflict belongs to a different organization"})
+			writeError(w, r, http.StatusConflict, model.ErrCodeConflict, "conflict belongs to a different organization")
 			return
 		}
 		h.writeInternalError(w, r, "failed to upsert conflict label", err)
@@ -88,16 +89,16 @@ func (h *Handlers) HandleUpsertConflictLabel(w http.ResponseWriter, r *http.Requ
 func (h *Handlers) HandleGetConflictLabel(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
-	conflictID, err := uuid.Parse(r.PathValue("id"))
+	conflictID, err := parsePathUUID(r, "id")
 	if err != nil {
-		writeJSON(w, r, http.StatusBadRequest, map[string]string{"error": "invalid conflict id"})
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid conflict id")
 		return
 	}
 
 	cl, err := h.db.GetConflictLabel(r.Context(), conflictID, orgID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSON(w, r, http.StatusNotFound, map[string]string{"error": "label not found"})
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "label not found")
 			return
 		}
 		h.writeInternalError(w, r, "failed to get conflict label", err)
@@ -111,15 +112,15 @@ func (h *Handlers) HandleGetConflictLabel(w http.ResponseWriter, r *http.Request
 func (h *Handlers) HandleDeleteConflictLabel(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
-	conflictID, err := uuid.Parse(r.PathValue("id"))
+	conflictID, err := parsePathUUID(r, "id")
 	if err != nil {
-		writeJSON(w, r, http.StatusBadRequest, map[string]string{"error": "invalid conflict id"})
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid conflict id")
 		return
 	}
 
 	if err := h.db.DeleteConflictLabel(r.Context(), conflictID, orgID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSON(w, r, http.StatusNotFound, map[string]string{"error": "label not found"})
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "label not found")
 			return
 		}
 		h.writeInternalError(w, r, "failed to delete conflict label", err)

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ashita-ai/akashi/internal/conflicts"
+	"github.com/ashita-ai/akashi/internal/model"
 )
 
 // validatePairRequest is the JSON body for POST /v1/admin/conflicts/validate-pair.
@@ -34,26 +35,24 @@ type validatePairResponse struct {
 // Returns 501 if no validator is configured.
 func (h *Handlers) HandleValidatePair(w http.ResponseWriter, r *http.Request) {
 	if h.conflictValidator == nil {
-		writeJSON(w, r, http.StatusNotImplemented, map[string]string{
-			"error": "no conflict validator configured (set AKASHI_CONFLICT_LLM_MODEL or OPENAI_API_KEY)",
-		})
+		writeError(w, r, http.StatusNotImplemented, model.ErrCodeNotImplemented,
+			"no conflict validator configured (set AKASHI_CONFLICT_LLM_MODEL or OPENAI_API_KEY)")
 		return
 	}
 	if _, ok := h.conflictValidator.(conflicts.NoopValidator); ok {
-		writeJSON(w, r, http.StatusNotImplemented, map[string]string{
-			"error": "conflict validator is noop (set AKASHI_CONFLICT_LLM_MODEL or OPENAI_API_KEY)",
-		})
+		writeError(w, r, http.StatusNotImplemented, model.ErrCodeNotImplemented,
+			"conflict validator is noop (set AKASHI_CONFLICT_LLM_MODEL or OPENAI_API_KEY)")
 		return
 	}
 
 	var req validatePairRequest
 	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
 		return
 	}
 	if req.OutcomeA == "" || req.OutcomeB == "" {
-		writeJSON(w, r, http.StatusBadRequest, map[string]string{
-			"error": "outcome_a and outcome_b are required",
-		})
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"outcome_a and outcome_b are required")
 		return
 	}
 
@@ -97,15 +96,13 @@ type conflictEvalResponse struct {
 // and returns precision/recall metrics.
 func (h *Handlers) HandleConflictEval(w http.ResponseWriter, r *http.Request) {
 	if h.conflictValidator == nil {
-		writeJSON(w, r, http.StatusNotImplemented, map[string]string{
-			"error": "no conflict validator configured",
-		})
+		writeError(w, r, http.StatusNotImplemented, model.ErrCodeNotImplemented,
+			"no conflict validator configured")
 		return
 	}
 	if _, ok := h.conflictValidator.(conflicts.NoopValidator); ok {
-		writeJSON(w, r, http.StatusNotImplemented, map[string]string{
-			"error": "conflict validator is noop — eval requires an LLM validator",
-		})
+		writeError(w, r, http.StatusNotImplemented, model.ErrCodeNotImplemented,
+			"conflict validator is noop — eval requires an LLM validator")
 		return
 	}
 

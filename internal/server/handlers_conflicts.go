@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -169,7 +168,7 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 		map[string]any{"new_status": req.Status, "resolved_by": resolvedBy},
 	)
 	if _, err := h.db.UpdateConflictStatusWithAudit(r.Context(), id, orgID, req.Status, resolvedBy, req.ResolutionNote, req.WinningDecisionID, audit); err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if isNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
 			return
 		}
@@ -268,7 +267,7 @@ func (h *Handlers) HandleResolveConflictGroup(w http.ResponseWriter, r *http.Req
 
 	affected, err := h.db.ResolveConflictGroup(r.Context(), groupID, orgID, req.Status, resolvedBy, req.ResolutionNote, req.WinningAgent, audit)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if isNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict group not found")
 			return
 		}
@@ -379,7 +378,7 @@ func (h *Handlers) HandleAdjudicateConflict(w http.ResponseWriter, r *http.Reque
 		WinningDecisionID: req.WinningDecisionID,
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "conflict not found") {
+		if isNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
 			return
 		}

@@ -335,8 +335,12 @@ func (c Config) Validate() error {
 			errs = append(errs, errors.New("config: AKASHI_RATE_LIMIT_BURST must be positive when rate limiting is enabled"))
 		}
 	}
-	// Early-exit floor must not exceed the significance threshold, otherwise
-	// the early exit prunes candidates that would pass the threshold check.
+	// Early-exit floor must be non-negative (0 disables) and must not exceed
+	// the significance threshold, otherwise early exit prunes candidates that
+	// would pass the threshold check.
+	if c.ConflictEarlyExitFloor < 0 {
+		errs = append(errs, errors.New("config: AKASHI_CONFLICT_EARLY_EXIT_FLOOR must be >= 0 (0 disables early exit)"))
+	}
 	if c.ConflictEarlyExitFloor > 0 && c.ConflictEarlyExitFloor > c.ConflictSignificanceThreshold {
 		errs = append(errs, fmt.Errorf("config: AKASHI_CONFLICT_EARLY_EXIT_FLOOR (%.2f) must not exceed AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD (%.2f)",
 			c.ConflictEarlyExitFloor, c.ConflictSignificanceThreshold))

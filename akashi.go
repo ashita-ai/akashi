@@ -69,6 +69,7 @@ type App struct {
 	percentileCache *search.PercentileCache
 	broker          *server.Broker // nil when no notify connection
 	otelShutdown    func(context.Context) error
+	limiter         ratelimit.Limiter // rate limiter; closed on shutdown to stop cleanup goroutine
 	decisionHooks   []server.DecisionHook
 	logger          *slog.Logger
 	autoResolver    *autoresolve.Service
@@ -477,6 +478,7 @@ func New(opts ...Option) (*App, error) {
 		percentileCache: pctCache,
 		broker:          broker,
 		otelShutdown:    otelShutdown,
+		limiter:         limiter,
 		decisionHooks:   decisionHooks,
 		logger:          logger,
 		autoResolver:    autoresolve.New(db, logger),
@@ -562,11 +564,15 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 	// Cleanup.
 	a.grantCache.Close()
+	if a.limiter != nil {
+		_ = a.limiter.Close()
+	}
+	a.srv.CloseSignupLimiter()
 	if a.qdrantIndex != nil {
 		_ = a.qdrantIndex.Close()
 	}
-	_ = a.otelShutdown(context.Background())
-	a.db.Close(context.Background())
+	_ = a.otelShutdown(ctx)
+	a.db.Close(ctx)
 
 	a.logger.Info("akashi stopped")
 	return nil

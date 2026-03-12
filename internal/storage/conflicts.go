@@ -298,7 +298,7 @@ func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.
 	if scanErr := tx.QueryRow(ctx,
 		`SELECT status FROM scored_conflicts WHERE id = $1 AND org_id = $2 FOR UPDATE`,
 		id, orgID).Scan(&oldStatus); scanErr != nil {
-		return "", fmt.Errorf("storage: conflict not found")
+		return "", fmt.Errorf("storage: conflict: %w", ErrNotFound)
 	}
 
 	var tag pgconn.CommandTag
@@ -325,7 +325,7 @@ func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.
 		return "", fmt.Errorf("storage: update conflict status: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return "", fmt.Errorf("storage: conflict not found")
+		return "", fmt.Errorf("storage: conflict: %w", ErrNotFound)
 	}
 
 	audit.BeforeData = map[string]any{"status": oldStatus}
@@ -1037,7 +1037,7 @@ func (db *DB) ResolveConflictGroup(
 		return 0, fmt.Errorf("storage: check conflict group: %w", err)
 	}
 	if !exists {
-		return 0, fmt.Errorf("storage: conflict group not found")
+		return 0, fmt.Errorf("storage: conflict group: %w", ErrNotFound)
 	}
 
 	// Build the UPDATE. When winning_agent is set, derive winning_decision_id

@@ -344,3 +344,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.logger.Info("http server shutting down")
 	return s.httpServer.Shutdown(ctx)
 }
+
+// CloseSignupLimiter releases the signup rate limiter's resources (cleanup goroutine).
+// Safe to call when signup is disabled (signupLimiter is nil).
+func (s *Server) CloseSignupLimiter() {
+	if s.handlers.signupLimiter != nil {
+		_ = s.handlers.signupLimiter.Close()
+	}
+}
