@@ -1006,6 +1006,224 @@ type ExportCursor struct {
 	ID        uuid.UUID
 }
 
+// GetDecisionTimeline returns decisions aggregated into time buckets for the
+// timeline summary view. It performs two queries:
+//  1. Aggregate counts, avg confidence, and type/agent breakdowns per bucket.
+//  2. Top N decisions per bucket (by confidence DESC) for the executive summary.
+//
+// Conflicts are counted from scored_conflicts.
+func (db *DB) GetDecisionTimeline(ctx context.Context, orgID uuid.UUID, granularity string, agentID, project *string, from, to time.Time, topN int) ([]model.TimelineBucket, error) {
+	truncFn := "day"
+	if granularity == "week" {
+		truncFn = "week"
+	}
+
+	// Build WHERE clause for filters.
+	conditions := []string{"org_id = $1", "valid_to IS NULL"}
+	args := []any{orgID}
+	idx := 2
+
+	conditions = append(conditions, fmt.Sprintf("valid_from >= $%d", idx))
+	args = append(args, from)
+	idx++
+	conditions = append(conditions, fmt.Sprintf("valid_from < $%d", idx))
+	args = append(args, to)
+	idx++
+
+	if agentID != nil && *agentID != "" {
+		conditions = append(conditions, fmt.Sprintf("agent_id = $%d", idx))
+		args = append(args, *agentID)
+		idx++
+	}
+	if project != nil && *project != "" {
+		conditions = append(conditions, fmt.Sprintf("project = $%d", idx))
+		args = append(args, *project)
+		idx++ //nolint:ineffassign
+	}
+
+	where := " WHERE " + strings.Join(conditions, " AND ")
+
+	// Get all matching decisions with minimal columns, aggregate in Go.
+	selectQuery := fmt.Sprintf(
+		`SELECT id, agent_id, decision_type, outcome, confidence, project, valid_from
+		 FROM decisions%s
+		 ORDER BY valid_from DESC`,
+		where,
+	)
+
+	rows, err := db.pool.Query(ctx, selectQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("storage: decision timeline: %w", err)
+	}
+	defer rows.Close()
+
+	type lightDecision struct {
+		ID           uuid.UUID
+		AgentID      string
+		DecisionType string
+		Outcome      string
+		Confidence   float32
+		Project      *string
+		ValidFrom    time.Time
+	}
+
+	var allDecisions []lightDecision
+	for rows.Next() {
+		var d lightDecision
+		if err := rows.Scan(&d.ID, &d.AgentID, &d.DecisionType, &d.Outcome, &d.Confidence, &d.Project, &d.ValidFrom); err != nil {
+			return nil, fmt.Errorf("storage: scan timeline decision: %w", err)
+		}
+		allDecisions = append(allDecisions, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: timeline rows: %w", err)
+	}
+
+	// Group by bucket.
+	bucketMap := make(map[string]*model.TimelineBucket)
+	var bucketOrder []string
+
+	for _, d := range allDecisions {
+		var bucketKey string
+		if truncFn == "week" {
+			y, w := d.ValidFrom.UTC().ISOWeek()
+			// Find the Monday of this ISO week.
+			monday := isoWeekStart(y, w)
+			bucketKey = monday.Format("2006-01-02")
+		} else {
+			bucketKey = d.ValidFrom.UTC().Format("2006-01-02")
+		}
+
+		b, ok := bucketMap[bucketKey]
+		if !ok {
+			b = &model.TimelineBucket{
+				Bucket:        bucketKey,
+				DecisionTypes: make(map[string]int),
+				Agents:        make(map[string]int),
+			}
+			bucketMap[bucketKey] = b
+			bucketOrder = append(bucketOrder, bucketKey)
+		}
+
+		b.DecisionCount++
+		b.AvgConfidence += float64(d.Confidence)
+		b.DecisionTypes[d.DecisionType]++
+		b.Agents[d.AgentID]++
+
+		// Keep top N by confidence for each bucket.
+		td := model.TimelineDecision{
+			ID:           d.ID,
+			AgentID:      d.AgentID,
+			DecisionType: d.DecisionType,
+			Outcome:      d.Outcome,
+			Confidence:   d.Confidence,
+			Project:      d.Project,
+			CreatedAt:    d.ValidFrom,
+		}
+		if len(b.TopDecisions) < topN {
+			b.TopDecisions = append(b.TopDecisions, td)
+			// Sort to keep highest confidence first.
+			sort.Slice(b.TopDecisions, func(i, j int) bool {
+				return b.TopDecisions[i].Confidence > b.TopDecisions[j].Confidence
+			})
+		} else if d.Confidence > b.TopDecisions[topN-1].Confidence {
+			b.TopDecisions[topN-1] = td
+			sort.Slice(b.TopDecisions, func(i, j int) bool {
+				return b.TopDecisions[i].Confidence > b.TopDecisions[j].Confidence
+			})
+		}
+	}
+
+	// Finalize averages and truncate outcomes.
+	const maxOutcomeLen = 200
+	for _, key := range bucketOrder {
+		b := bucketMap[key]
+		if b.DecisionCount > 0 {
+			b.AvgConfidence /= float64(b.DecisionCount)
+		}
+		for i := range b.TopDecisions {
+			if len(b.TopDecisions[i].Outcome) > maxOutcomeLen {
+				b.TopDecisions[i].Outcome = b.TopDecisions[i].Outcome[:maxOutcomeLen] + "..."
+			}
+		}
+	}
+
+	// Count conflicts per bucket, respecting agent/project filters.
+	conflictConditions := []string{"sc.org_id = $1", "sc.detected_at >= $2", "sc.detected_at < $3"}
+	conflictArgs := []any{orgID, from, to}
+	conflictIdx := 4
+
+	if agentID != nil && *agentID != "" {
+		conflictConditions = append(conflictConditions,
+			fmt.Sprintf("(sc.agent_a = $%d OR sc.agent_b = $%d)", conflictIdx, conflictIdx))
+		conflictArgs = append(conflictArgs, *agentID)
+		conflictIdx++
+	}
+	if project != nil && *project != "" {
+		// scored_conflicts has no project column; join through decisions.
+		conflictConditions = append(conflictConditions,
+			fmt.Sprintf(`EXISTS (
+				SELECT 1 FROM decisions d
+				WHERE d.id IN (sc.decision_a_id, sc.decision_b_id)
+				  AND d.project = $%d AND d.org_id = sc.org_id
+			)`, conflictIdx))
+		conflictArgs = append(conflictArgs, *project)
+		conflictIdx++ //nolint:ineffassign
+	}
+
+	conflictQuery := fmt.Sprintf(
+		`SELECT date_trunc('%s', sc.detected_at) AS bucket, COUNT(*)
+		 FROM scored_conflicts sc
+		 WHERE %s
+		 GROUP BY bucket`,
+		truncFn, strings.Join(conflictConditions, " AND "),
+	)
+	conflictRows, err := db.pool.Query(ctx, conflictQuery, conflictArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("storage: timeline conflicts: %w", err)
+	}
+	defer conflictRows.Close()
+
+	for conflictRows.Next() {
+		var bucketTime time.Time
+		var count int
+		if err := conflictRows.Scan(&bucketTime, &count); err != nil {
+			return nil, fmt.Errorf("storage: scan timeline conflict: %w", err)
+		}
+		var bucketKey string
+		if truncFn == "week" {
+			y, w := bucketTime.UTC().ISOWeek()
+			monday := isoWeekStart(y, w)
+			bucketKey = monday.Format("2006-01-02")
+		} else {
+			bucketKey = bucketTime.UTC().Format("2006-01-02")
+		}
+		if b, ok := bucketMap[bucketKey]; ok {
+			b.ConflictCount = count
+		}
+	}
+
+	// Build result slice in order.
+	result := make([]model.TimelineBucket, 0, len(bucketOrder))
+	for _, key := range bucketOrder {
+		result = append(result, *bucketMap[key])
+	}
+	return result, nil
+}
+
+// isoWeekStart returns the Monday of the given ISO week.
+func isoWeekStart(isoYear, isoWeek int) time.Time {
+	// Jan 4 is always in ISO week 1.
+	jan4 := time.Date(isoYear, time.January, 4, 0, 0, 0, 0, time.UTC)
+	// Find the Monday of week 1.
+	weekday := jan4.Weekday()
+	if weekday == time.Sunday {
+		weekday = 7
+	}
+	week1Monday := jan4.AddDate(0, 0, -int(weekday-time.Monday))
+	return week1Monday.AddDate(0, 0, (isoWeek-1)*7)
+}
+
 func scanDecisions(rows pgx.Rows) ([]model.Decision, error) {
 	var decisions []model.Decision
 	for rows.Next() {

@@ -59,6 +59,35 @@ type SearchResult struct {
 	QdrantRank      int      `json:"qdrant_rank,omitempty"` // 1-based position in Qdrant's ANN results; 0 for text-fallback results.
 }
 
+// TimelineBucket represents a single time period in the decision timeline summary.
+type TimelineBucket struct {
+	Bucket        string             `json:"bucket"` // ISO date string for the bucket start (e.g. "2026-03-10")
+	DecisionCount int                `json:"decision_count"`
+	AvgConfidence float64            `json:"avg_confidence"`
+	DecisionTypes map[string]int     `json:"decision_types"`
+	Agents        map[string]int     `json:"agents"`
+	ConflictCount int                `json:"conflict_count"`
+	TopDecisions  []TimelineDecision `json:"top_decisions"`
+}
+
+// TimelineDecision is a lightweight decision summary for the timeline view.
+type TimelineDecision struct {
+	ID           uuid.UUID `json:"id"`
+	AgentID      string    `json:"agent_id"`
+	DecisionType string    `json:"decision_type"`
+	Outcome      string    `json:"outcome"`
+	Confidence   float32   `json:"confidence"`
+	Project      *string   `json:"project,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// TimelineResponse is the response for GET /v1/decisions/timeline.
+type TimelineResponse struct {
+	Granularity string           `json:"granularity"`
+	Buckets     []TimelineBucket `json:"buckets"`
+	Projects    []string         `json:"projects"`
+}
+
 // CheckRequest is the request body for POST /v1/check.
 // It supports a lightweight precedent lookup before making a decision.
 type CheckRequest struct {
