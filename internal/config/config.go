@@ -71,6 +71,7 @@ type Config struct {
 	ConflictEarlyExitFloor        float64 // Min pre-LLM significance for early exit pruning (default: 0.25, 0 disables).
 	CrossEncoderURL               string  // URL of the cross-encoder reranking service (empty = disabled).
 	CrossEncoderThreshold         float64 // Min cross-encoder score to proceed to LLM validation (default: 0.50).
+	NLIURL                        string  // URL of NLI sidecar for stance-aware pre-filtering (empty = disabled). Takes precedence over CrossEncoderURL.
 	ClaimExtractionLLM            bool    // Use the conflict LLM model for structured claim extraction (default: false).
 	ForceConflictRescore          bool    // When true (and LLM validator configured), clear all conflicts and re-score at startup.
 	ConflictProfile               string  // Named profile: "balanced" (default), "high_precision", "high_recall". Individual env vars override.
@@ -137,6 +138,7 @@ func Load() (Config, error) {
 		QdrantCollection:   envStr("QDRANT_COLLECTION", "akashi_decisions"),
 		ConflictLLMModel:   envStr("AKASHI_CONFLICT_LLM_MODEL", ""),
 		CrossEncoderURL:    envStr("AKASHI_CONFLICT_CROSS_ENCODER_URL", ""),
+		NLIURL:             envStr("AKASHI_CONFLICT_NLI_URL", ""),
 		WALDir:             envStr("AKASHI_WAL_DIR", "./data/wal"),
 		WALSyncMode:        envStr("AKASHI_WAL_SYNC_MODE", "batch"),
 		LogLevel:           envStr("AKASHI_LOG_LEVEL", "info"),

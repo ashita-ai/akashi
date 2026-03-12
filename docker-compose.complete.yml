@@ -127,6 +127,24 @@ services:
         fi
     restart: "no"
 
+  # NLI sidecar: DeBERTa-v3-base for stance-aware conflict pre-filtering.
+  # ~200MB RAM, no GPU required. Reduces LLM validation calls by 70-80%.
+  nli:
+    build:
+      context: ./services/nli
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NLI_MODEL: ${NLI_MODEL:-cross-encoder/nli-deberta-v3-base}
+      NLI_MAX_LENGTH: ${NLI_MAX_LENGTH:-512}
+      LOG_LEVEL: ${NLI_LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health')\" 2>/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   akashi:
     build:
       context: .
@@ -148,6 +166,9 @@ services:
       AKASHI_EMBEDDING_DIMENSIONS: "1024"
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mxbai-embed-large}
+
+      # NLI sidecar — stance-aware pre-filtering, reduces LLM calls 70-80%.
+      AKASHI_CONFLICT_NLI_URL: http://nli:5000
 
       # LLM conflict validation — reduces false positives ~93%.
       # qwen3.5:9b is pulled automatically by ollama-init on first launch.
