@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/pgvector/pgvector-go"
@@ -2167,4 +2168,285 @@ func TestRegisterObservableGauges_CallbackErrorsNonFatal(t *testing.T) {
 	var rm metricdata.ResourceMetrics
 	err := reader.Collect(context.Background(), &rm)
 	require.NoError(t, err)
+}
+
+func TestIsComplementaryWorkflowPair_TemporalWorkflow(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name     string
+		d        model.Decision
+		cand     model.Decision
+		expected bool
+	}{
+		{
+			name: "code_review then bug_fix → filtered",
+			d: model.Decision{
+				DecisionType: "code_review", AgentID: "reviewer",
+				ValidFrom: now,
+			},
+			cand: model.Decision{
+				DecisionType: "bug_fix", AgentID: "coder",
+				ValidFrom: now.Add(time.Hour),
+			},
+			expected: true,
+		},
+		{
+			name: "assessment then implementation → filtered",
+			d: model.Decision{
+				DecisionType: "assessment", AgentID: "analyst",
+				ValidFrom: now,
+			},
+			cand: model.Decision{
+				DecisionType: "implementation", AgentID: "coder",
+				ValidFrom: now.Add(2 * time.Hour),
+			},
+			expected: true,
+		},
+		{
+			name: "audit then refactor → filtered",
+			d: model.Decision{
+				DecisionType: "audit", AgentID: "auditor",
+				ValidFrom: now,
+			},
+			cand: model.Decision{
+				DecisionType: "refactor", AgentID: "coder",
+				ValidFrom: now.Add(time.Hour),
+			},
+			expected: true,
+		},
+		{
+			name: "bug_fix then code_review → NOT filtered (wrong temporal order)",
+			d: model.Decision{
+				DecisionType: "bug_fix", AgentID: "coder",
+				ValidFrom: now,
+			},
+			cand: model.Decision{
+				DecisionType: "code_review", AgentID: "reviewer",
+				ValidFrom: now.Add(time.Hour),
+			},
+			expected: false,
+		},
+		{
+			name: "architecture vs architecture → NOT filtered (both same type)",
+			d: model.Decision{
+				DecisionType: "architecture", AgentID: "planner",
+				ValidFrom: now,
+			},
+			cand: model.Decision{
+				DecisionType: "architecture", AgentID: "coder",
+				ValidFrom: now.Add(time.Hour),
+			},
+			expected: false,
+		},
+		{
+			name: "code_review vs code_review → NOT filtered (both review types)",
+			d: model.Decision{
+				DecisionType: "code_review", AgentID: "reviewer-a",
+				ValidFrom: now,
+			},
+			cand: model.Decision{
+				DecisionType: "code_review", AgentID: "reviewer-b",
+				ValidFrom: now.Add(time.Hour),
+			},
+			expected: false,
+		},
+		{
+			name: "reversed order: cand is earlier review → filtered",
+			d: model.Decision{
+				DecisionType: "fix", AgentID: "coder",
+				ValidFrom: now.Add(time.Hour),
+			},
+			cand: model.Decision{
+				DecisionType: "review", AgentID: "reviewer",
+				ValidFrom: now,
+			},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, isComplementaryWorkflowPair(tt.d, tt.cand))
+		})
+	}
+}
+
+func TestIsComplementaryWorkflowPair_SameAgentRefinement(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name     string
+		d        model.Decision
+		cand     model.Decision
+		expected bool
+	}{
+		{
+			name: "same agent, later says 'implemented' → filtered",
+			d: model.Decision{
+				DecisionType: "architecture", AgentID: "coder",
+				Outcome:   "identified performance issue in query layer",
+				ValidFrom: now,
+			},
+			cand: model.Decision{
+				DecisionType: "architecture", AgentID: "coder",
+				Outcome:   "implemented query optimization with batch processing",
+				ValidFrom: now.Add(time.Hour),
+			},
+			expected: true,
+		},
+		{
+			name: "same agent, later says 'fixed' → filtered",
+			d: model.Decision{
+				DecisionType: "assessment", AgentID: "coder",
+				Outcome:   "found bug in auth middleware",
+				ValidFrom: now,
+			},
+			cand: model.Decision{
+				DecisionType: "assessment", AgentID: "coder",
+				Outcome:   "Fixed the auth middleware bug by adding token validation",
+				ValidFrom: now.Add(time.Hour),
+			},
+			expected: true,
+		},
+		{
+			name: "same agent, later says 'resolved' → filtered",
+			d: model.Decision{
+				DecisionType: "architecture", AgentID: "coder",
+				Outcome:   "race condition in event buffer",
+				ValidFrom: now,
+			},
+			cand: model.Decision{
+				DecisionType: "architecture", AgentID: "coder",
+				Outcome:   "resolved race condition with mutex guard",
+				ValidFrom: now.Add(time.Hour),
+			},
+			expected: true,
+		},
+		{
+			name: "different agents, later says 'implemented' → NOT filtered",
+			d: model.Decision{
+				DecisionType: "architecture", AgentID: "planner",
+				Outcome:   "design the caching layer",
+				ValidFrom: now,
+			},
+			cand: model.Decision{
+				DecisionType: "architecture", AgentID: "coder",
+				Outcome:   "implemented the caching layer with Redis",
+				ValidFrom: now.Add(time.Hour),
+			},
+			expected: false,
+		},
+		{
+			name: "same agent, no refinement keywords → NOT filtered",
+			d: model.Decision{
+				DecisionType: "architecture", AgentID: "coder",
+				Outcome:   "use Redis for caching",
+				ValidFrom: now,
+			},
+			cand: model.Decision{
+				DecisionType: "architecture", AgentID: "coder",
+				Outcome:   "use Memcached for caching instead",
+				ValidFrom: now.Add(time.Hour),
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, isComplementaryWorkflowPair(tt.d, tt.cand))
+		})
+	}
+}
+
+func TestIsComplementaryWorkflowPair_PrecedentChain(t *testing.T) {
+	now := time.Now()
+	idA := uuid.New()
+	idB := uuid.New()
+
+	tests := []struct {
+		name     string
+		d        model.Decision
+		cand     model.Decision
+		expected bool
+	}{
+		{
+			name: "cand cites d via precedent_ref → filtered",
+			d: model.Decision{
+				ID: idA, DecisionType: "architecture", AgentID: "planner",
+				Outcome: "use REST", ValidFrom: now,
+			},
+			cand: model.Decision{
+				ID: idB, DecisionType: "architecture", AgentID: "coder",
+				Outcome: "use gRPC", ValidFrom: now.Add(time.Hour),
+				PrecedentRef: &idA,
+			},
+			expected: true,
+		},
+		{
+			name: "d cites cand via precedent_ref → filtered",
+			d: model.Decision{
+				ID: idA, DecisionType: "architecture", AgentID: "coder",
+				Outcome: "use gRPC", ValidFrom: now.Add(time.Hour),
+				PrecedentRef: &idB,
+			},
+			cand: model.Decision{
+				ID: idB, DecisionType: "architecture", AgentID: "planner",
+				Outcome: "use REST", ValidFrom: now,
+			},
+			expected: true,
+		},
+		{
+			name: "no precedent_ref link → NOT filtered",
+			d: model.Decision{
+				ID: idA, DecisionType: "architecture", AgentID: "planner",
+				Outcome: "use REST", ValidFrom: now,
+			},
+			cand: model.Decision{
+				ID: idB, DecisionType: "architecture", AgentID: "coder",
+				Outcome: "use gRPC", ValidFrom: now.Add(time.Hour),
+			},
+			expected: false,
+		},
+		{
+			name: "precedent_ref to unrelated decision → NOT filtered",
+			d: model.Decision{
+				ID: idA, DecisionType: "architecture", AgentID: "planner",
+				Outcome: "use REST", ValidFrom: now,
+			},
+			cand: model.Decision{
+				ID: idB, DecisionType: "architecture", AgentID: "coder",
+				Outcome: "use gRPC", ValidFrom: now.Add(time.Hour),
+				PrecedentRef: ptr(uuid.New()),
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, isComplementaryWorkflowPair(tt.d, tt.cand))
+		})
+	}
+}
+
+func TestIsDirectionalWorkflowPair(t *testing.T) {
+	// Exhaustive check of all expected review→implementation combinations.
+	reviewTypes := []string{"code_review", "assessment", "investigation", "review", "analysis", "audit"}
+	implTypes := []string{"architecture", "bug_fix", "fix", "implementation", "refactor"}
+
+	for _, rt := range reviewTypes {
+		for _, it := range implTypes {
+			assert.True(t, isDirectionalWorkflowPair(rt, it),
+				"expected %s → %s to be a workflow pair", rt, it)
+			// Reverse direction should NOT match.
+			assert.False(t, isDirectionalWorkflowPair(it, rt),
+				"expected %s → %s (reverse) to NOT be a workflow pair", it, rt)
+		}
+	}
+
+	// Same-category pairs should not match.
+	assert.False(t, isDirectionalWorkflowPair("code_review", "assessment"))
+	assert.False(t, isDirectionalWorkflowPair("architecture", "bug_fix"))
 }
