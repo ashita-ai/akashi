@@ -1576,30 +1576,44 @@ func (db *DB) FindReopenedResolution(
 	// - The winning outcome is similar to one side of the new pair (>= threshold)
 	// - The losing outcome is similar to the OTHER side (>= threshold)
 	// This means the new conflict recapitulates the same disagreement.
+	//
+	// We join both the winning and losing decisions, then check two cross-match
+	// orientations: (winner~A AND loser~B) or (winner~B AND loser~A). The best
+	// pair must have both similarities above the threshold.
 	row := db.pool.QueryRow(ctx, `
-		SELECT
-			sc.id,
-			CASE WHEN sc.winning_decision_id = sc.decision_a_id THEN sc.outcome_a ELSE sc.outcome_b END AS winning_outcome,
-			CASE WHEN sc.winning_decision_id = sc.decision_a_id THEN sc.agent_a  ELSE sc.agent_b  END AS winning_agent,
-			sc.explanation,
-			sc.resolution_note,
+		WITH prior AS (
+			SELECT
+				sc.id,
+				CASE WHEN sc.winning_decision_id = sc.decision_a_id THEN sc.outcome_a ELSE sc.outcome_b END AS winning_outcome,
+				CASE WHEN sc.winning_decision_id = sc.decision_a_id THEN sc.agent_a  ELSE sc.agent_b  END AS winning_agent,
+				sc.explanation,
+				sc.resolution_note,
+				1.0 - (wd.outcome_embedding <=> $2::vector) AS win_sim_a,
+				1.0 - (wd.outcome_embedding <=> $3::vector) AS win_sim_b,
+				1.0 - (ld.outcome_embedding <=> $2::vector) AS lose_sim_a,
+				1.0 - (ld.outcome_embedding <=> $3::vector) AS lose_sim_b
+			FROM scored_conflicts sc
+			JOIN decisions wd ON wd.id = sc.winning_decision_id
+			JOIN decisions ld ON ld.id = CASE
+				WHEN sc.winning_decision_id = sc.decision_a_id THEN sc.decision_b_id
+				ELSE sc.decision_a_id END
+			WHERE sc.org_id = $1
+			  AND sc.status = 'resolved'
+			  AND sc.winning_decision_id IS NOT NULL
+			  AND wd.outcome_embedding IS NOT NULL
+			  AND ld.outcome_embedding IS NOT NULL
+			  AND sc.decision_a_id != $4 AND sc.decision_b_id != $4
+			  AND sc.decision_a_id != $5 AND sc.decision_b_id != $5
+		)
+		SELECT id, winning_outcome, winning_agent, explanation, resolution_note,
 			GREATEST(
-				1.0 - (wd.outcome_embedding <=> $2::vector),
-				1.0 - (wd.outcome_embedding <=> $3::vector)
-			) AS best_similarity
-		FROM scored_conflicts sc
-		JOIN decisions wd ON wd.id = sc.winning_decision_id
-		WHERE sc.org_id = $1
-		  AND sc.status = 'resolved'
-		  AND sc.winning_decision_id IS NOT NULL
-		  AND wd.outcome_embedding IS NOT NULL
-		  AND sc.decision_a_id != $4 AND sc.decision_b_id != $4
-		  AND sc.decision_a_id != $5 AND sc.decision_b_id != $5
-		  AND GREATEST(
-		      1.0 - (wd.outcome_embedding <=> $2::vector),
-		      1.0 - (wd.outcome_embedding <=> $3::vector)
-		  ) >= $6
-		ORDER BY best_similarity DESC
+				LEAST(win_sim_a, lose_sim_b),
+				LEAST(win_sim_b, lose_sim_a)
+			) AS cross_match_similarity
+		FROM prior
+		WHERE (win_sim_a >= $6 AND lose_sim_b >= $6)
+		   OR (win_sim_b >= $6 AND lose_sim_a >= $6)
+		ORDER BY cross_match_similarity DESC
 		LIMIT 1`,
 		orgID,
 		outcomeEmbeddingA, outcomeEmbeddingB,

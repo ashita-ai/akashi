@@ -203,7 +203,7 @@ type DecisionConflict struct {
 	ClaimTextA *string `json:"claim_text_a,omitempty"`
 	ClaimTextB *string `json:"claim_text_b,omitempty"`
 
-	// ReopensResolutionID (migration 066): links to the prior resolved conflict
+	// ReopensResolutionID (migration 067): links to the prior resolved conflict
 	// whose winning side this new conflict contradicts. When set, the conflict
 	// was auto-escalated to critical severity.
 	ReopensResolutionID *uuid.UUID `json:"reopens_resolution_id,omitempty"`
@@ -235,7 +235,7 @@ type ConflictGroup struct {
 	// OpenConflicts contains all open or acknowledged pairwise conflicts in this group,
 	// ordered by significance DESC. Populated by ListConflictGroups; nil when none exist.
 	OpenConflicts []DecisionConflict `json:"open_conflicts,omitempty"`
-	// TimesReopened (migration 066): how many times a conflict in this group
+	// TimesReopened (migration 067): how many times a conflict in this group
 	// has contradicted the winning side of a prior resolved conflict.
 	TimesReopened int `json:"times_reopened"`
 }
