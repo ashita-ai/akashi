@@ -262,8 +262,10 @@ EXAMPLES:
 			mcplib.WithDescription(`Get aggregate statistics about the decision audit trail.
 
 WHEN TO USE: To understand the overall health and usage of the decision
-trail at a glance. Returns trace health metrics, agent count, and the
-rolling 30-day wont_fix rate (false positive rate for conflict detection).
+trail at a glance. Returns trace health metrics (completeness, evidence
+coverage, conflict summary), agent count, decision quality statistics,
+and the rolling 30-day wont_fix rate (false positive rate for conflict
+detection).
 
 The wont_fix_rate field shows resolved/wont_fix counts and the ratio
 wont_fix/(resolved+wont_fix). An elevated rate signals LLM validator drift.
