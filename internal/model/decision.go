@@ -202,6 +202,11 @@ type DecisionConflict struct {
 	// winning scoring method was not "claim".
 	ClaimTextA *string `json:"claim_text_a,omitempty"`
 	ClaimTextB *string `json:"claim_text_b,omitempty"`
+
+	// ReopensResolutionID (migration 067): links to the prior resolved conflict
+	// whose winning side this new conflict contradicts. When set, the conflict
+	// was auto-escalated to critical severity.
+	ReopensResolutionID *uuid.UUID `json:"reopens_resolution_id,omitempty"`
 }
 
 // ConflictGroup is a canonical conflict cluster scoped to a semantic topic
@@ -230,6 +235,9 @@ type ConflictGroup struct {
 	// OpenConflicts contains all open or acknowledged pairwise conflicts in this group,
 	// ordered by significance DESC. Populated by ListConflictGroups; nil when none exist.
 	OpenConflicts []DecisionConflict `json:"open_conflicts,omitempty"`
+	// TimesReopened (migration 067): how many times a conflict in this group
+	// has contradicted the winning side of a prior resolved conflict.
+	TimesReopened int `json:"times_reopened"`
 }
 
 // Recommendation is a lazily-computed suggestion for which decision should
@@ -245,7 +253,8 @@ type Recommendation struct {
 // expensive for list views. Returned by GET /v1/conflicts/{id}.
 type ConflictDetail struct {
 	DecisionConflict
-	Recommendation *Recommendation `json:"recommendation,omitempty"`
+	Recommendation    *Recommendation     `json:"recommendation,omitempty"`
+	ReopensResolution *ConflictResolution `json:"reopens_resolution,omitempty"`
 }
 
 // ConflictStatusUpdate is the request body for PATCH /v1/conflicts/{id}.

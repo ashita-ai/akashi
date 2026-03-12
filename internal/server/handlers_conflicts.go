@@ -471,6 +471,17 @@ func (h *Handlers) HandleGetConflict(w http.ResponseWriter, r *http.Request) {
 		detail.Recommendation = h.computeRecommendation(r.Context(), *conflict, orgID)
 	}
 
+	// Hydrate reopened resolution details when this conflict reopens a prior one.
+	if conflict.ReopensResolutionID != nil {
+		res, resErr := h.db.GetConflictResolution(r.Context(), *conflict.ReopensResolutionID, orgID)
+		if resErr != nil {
+			h.logger.Warn("failed to hydrate reopens_resolution", "error", resErr,
+				"conflict_id", id, "reopens_resolution_id", conflict.ReopensResolutionID)
+		} else if res != nil {
+			detail.ReopensResolution = res
+		}
+	}
+
 	writeJSON(w, r, http.StatusOK, detail)
 }
 
