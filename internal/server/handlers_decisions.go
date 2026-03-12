@@ -885,3 +885,86 @@ func (h *Handlers) HandleEraseDecision(w http.ResponseWriter, r *http.Request) {
 		"evidence_erased":     result.EvidenceErased,
 	})
 }
+
+// HandleDecisionTimeline handles GET /v1/decisions/timeline.
+// Returns decisions aggregated into time buckets for an executive summary view.
+// Query params: granularity (day|week), agent_id, project, from, to.
+func (h *Handlers) HandleDecisionTimeline(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+
+	granularity := r.URL.Query().Get("granularity")
+	if granularity == "" {
+		granularity = "day"
+	}
+	if granularity != "day" && granularity != "week" {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"granularity must be 'day' or 'week'")
+		return
+	}
+
+	// Default time range: last 30 days.
+	now := time.Now().UTC()
+	to := now
+	from := now.AddDate(0, 0, -30)
+
+	if v := r.URL.Query().Get("from"); v != "" {
+		parsed, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid 'from' timestamp")
+			return
+		}
+		from = parsed.UTC()
+	}
+	if v := r.URL.Query().Get("to"); v != "" {
+		parsed, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid 'to' timestamp")
+			return
+		}
+		to = parsed.UTC()
+	}
+
+	var agentID *string
+	if v := r.URL.Query().Get("agent_id"); v != "" {
+		agentID = &v
+	}
+	var project *string
+	if v := r.URL.Query().Get("project"); v != "" {
+		project = &v
+	}
+
+	topN := 5
+
+	var (
+		buckets  []model.TimelineBucket
+		projects []string
+		buckErr  error
+		projErr  error
+		wg       sync.WaitGroup
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		buckets, buckErr = h.db.GetDecisionTimeline(r.Context(), orgID, granularity, agentID, project, from, to, topN)
+	}()
+	go func() {
+		defer wg.Done()
+		projects, projErr = h.db.DistinctProjects(r.Context(), orgID)
+	}()
+	wg.Wait()
+
+	if buckErr != nil {
+		h.writeInternalError(w, r, "failed to build decision timeline", buckErr)
+		return
+	}
+	if projErr != nil {
+		h.writeInternalError(w, r, "failed to list projects", projErr)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, model.TimelineResponse{
+		Granularity: granularity,
+		Buckets:     buckets,
+		Projects:    projects,
+	})
+}

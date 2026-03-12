@@ -13,6 +13,7 @@ const SearchPage = lazy(() => import("@/pages/SearchPage"));
 const ExportPage = lazy(() => import("@/pages/ExportPage"));
 const SessionTimeline = lazy(() => import("@/pages/SessionTimeline"));
 const GrantsPage = lazy(() => import("@/pages/GrantsPage"));
+const Timeline = lazy(() => import("@/pages/Timeline"));
 const Analytics = lazy(() => import("@/pages/Analytics"));
 
 function PageFallback() {
@@ -61,6 +62,7 @@ export const router = createBrowserRouter([
     ),
     children: [
       { index: true, element: <Lazy><Dashboard /></Lazy> },
+      { path: "timeline", element: <Lazy><Timeline /></Lazy> },
       { path: "decisions", element: <Lazy><Decisions /></Lazy> },
       { path: "decisions/:runId", element: <Lazy><DecisionDetail /></Lazy> },
       { path: "agents", element: <Lazy><Agents /></Lazy> },
