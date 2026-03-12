@@ -52,6 +52,15 @@ type Service struct {
 
 	percentileCache *search.PercentileCache // nil = use log fallback in ReScore.
 	rescoreMetrics  *search.ReScoreMetrics  // nil = skip signal contribution recording.
+
+	// asyncWg tracks in-flight post-trace goroutines (claim generation,
+	// conflict scoring) so Shutdown can wait for them before closing the DB.
+	asyncWg sync.WaitGroup
+	// shutdownCtx is cancelled during DrainAsync to signal background
+	// goroutines to abandon work. Replaces context.Background() in
+	// postTraceAsync so goroutines respect shutdown.
+	shutdownCtx  context.Context
+	shutdownStop context.CancelFunc
 }
 
 // SetPercentileCache configures the percentile cache used by ReScore for
@@ -65,6 +74,25 @@ func (s *Service) SetReScoreMetrics(m *search.ReScoreMetrics) { s.rescoreMetrics
 // generateClaims uses the extractor instead of regex-based SplitClaims,
 // producing categorized claims (finding, recommendation, assessment, status).
 func (s *Service) SetClaimExtractor(e conflicts.ClaimExtractor) { s.claimExtractor = e }
+
+// DrainAsync waits for in-flight post-trace goroutines (claim generation and
+// conflict scoring) to complete. If ctx expires first, it cancels the
+// goroutines' shared context and returns ctx.Err(). Call this during shutdown
+// before closing the database pool.
+func (s *Service) DrainAsync(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		s.asyncWg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		s.shutdownStop()
+		return ctx.Err()
+	}
+}
 
 // New creates a new decision Service.
 // searcher may be nil if Qdrant is not configured (falls back to text search).
@@ -82,6 +110,7 @@ func New(db storage.Store, embedder embedding.Provider, searcher search.Searcher
 	claimFail, _ := meter.Int64Counter("akashi.claims.embedding_failures",
 		metric.WithDescription("Claim embedding generation failures"),
 	)
+	shutdownCtx, shutdownStop := context.WithCancel(context.Background())
 	return &Service{
 		db:                     db,
 		embedder:               embedder,
@@ -91,6 +120,8 @@ func New(db storage.Store, embedder embedding.Provider, searcher search.Searcher
 		embeddingDuration:      embDur,
 		searchDuration:         searchDur,
 		claimEmbeddingFailures: claimFail,
+		shutdownCtx:            shutdownCtx,
+		shutdownStop:           shutdownStop,
 	}
 }
 
@@ -354,20 +385,22 @@ func (s *Service) postTraceAsync(ctx context.Context, orgID uuid.UUID, input Tra
 	// Generate claim-level embeddings for fine-grained conflict detection.
 	// Must complete BEFORE conflict scoring so the scorer can use claims.
 	if decision.Embedding != nil {
+		s.asyncWg.Add(1)
 		go func() {
+			defer s.asyncWg.Done()
 			defer func() {
 				if rec := recover(); rec != nil {
 					s.logger.Error("trace: claim generation panicked", "panic", rec, "decision_id", decision.ID)
 				}
 			}()
-			claimCtx, cancelClaims := context.WithTimeout(context.Background(), 60*time.Second)
+			claimCtx, cancelClaims := context.WithTimeout(s.shutdownCtx, 60*time.Second)
 			defer cancelClaims()
 			if err := s.generateClaims(claimCtx, decision.ID, orgID, input.Decision.Outcome); err != nil {
 				s.logger.Warn("trace: claim generation failed", "decision_id", decision.ID, "error", err)
 				s.claimEmbeddingFailures.Add(claimCtx, 1, metric.WithAttributes(
 					attribute.Int("attempt_number", 1),
 				))
-				markCtx, markCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				markCtx, markCancel := context.WithTimeout(s.shutdownCtx, 5*time.Second)
 				if markErr := s.db.MarkClaimEmbeddingFailed(markCtx, decision.ID, orgID); markErr != nil {
 					s.logger.Error("trace: failed to mark claim embedding failure", "decision_id", decision.ID, "error", markErr)
 				}
@@ -376,20 +409,22 @@ func (s *Service) postTraceAsync(ctx context.Context, orgID uuid.UUID, input Tra
 			if s.conflictScorer != nil {
 				// Scoring can include local LLM validation (Ollama), which may take
 				// longer than claim generation on CPU-only machines.
-				scoreCtx, cancelScore := context.WithTimeout(context.Background(), 2*time.Minute)
+				scoreCtx, cancelScore := context.WithTimeout(s.shutdownCtx, 2*time.Minute)
 				defer cancelScore()
 				s.conflictScorer.ScoreForDecision(scoreCtx, decision.ID, orgID)
 			}
 		}()
 	} else if s.conflictScorer != nil {
 		// No embeddings available — still try conflict scoring (it will use full-outcome only).
+		s.asyncWg.Add(1)
 		go func() {
+			defer s.asyncWg.Done()
 			defer func() {
 				if rec := recover(); rec != nil {
 					s.logger.Error("trace: conflict scorer panicked", "panic", rec, "decision_id", decision.ID, "org_id", orgID)
 				}
 			}()
-			scoreCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			scoreCtx, cancel := context.WithTimeout(s.shutdownCtx, 2*time.Minute)
 			defer cancel()
 			s.conflictScorer.ScoreForDecision(scoreCtx, decision.ID, orgID)
 		}()

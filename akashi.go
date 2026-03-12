@@ -540,6 +540,16 @@ func (a *App) Shutdown(ctx context.Context) error {
 	}
 	httpCancel()
 
+	// Phase 1.5: wait for in-flight post-trace async work (claim generation,
+	// conflict scoring) so goroutines finish their DB writes before pool close.
+	asyncCtx, asyncCancel := contextWithOptionalTimeout(ctx, 30*time.Second)
+	if err := a.decisionSvc.DrainAsync(asyncCtx); err != nil {
+		a.logger.Warn("async post-trace drain incomplete — some claims or conflict scores may be missing",
+			"error", err,
+		)
+	}
+	asyncCancel()
+
 	// Phase 2: buffer drain.
 	bufCtx, bufCancel := contextWithOptionalTimeout(ctx, a.cfg.ShutdownBufferDrainTimeout)
 	if err := a.buf.Drain(bufCtx); err != nil {
@@ -557,6 +567,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.outbox != nil {
 		outboxCtx, outboxCancel := contextWithOptionalTimeout(ctx, a.cfg.ShutdownOutboxDrainTimeout)
 		a.outbox.Drain(outboxCtx)
+		if outboxCtx.Err() != nil {
+			a.logger.Warn("search outbox drain did not complete within timeout",
+				"error", outboxCtx.Err(),
+				"configured_timeout", a.cfg.ShutdownOutboxDrainTimeout,
+			)
+		}
 		outboxCancel()
 	}
 

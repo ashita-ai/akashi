@@ -747,7 +747,7 @@ func validBaseConfig() Config {
 		EventBufferSize:            1000,
 		EventFlushTimeout:          100 * time.Millisecond,
 		ShutdownHTTPTimeout:        10 * time.Second,
-		ShutdownBufferDrainTimeout: 0,
+		ShutdownBufferDrainTimeout: 30 * time.Second,
 		ShutdownOutboxDrainTimeout: 0,
 		OutboxPollInterval:         1 * time.Second,
 		ConflictRefreshInterval:    30 * time.Second,
