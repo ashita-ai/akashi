@@ -810,6 +810,55 @@ paths:
               schema:
                 $ref: "#/components/schemas/APIResponse_RecentDecisionsResponse"
 
+  /v1/decisions/timeline:
+    get:
+      operationId: getDecisionTimeline
+      tags: [Query]
+      summary: Decision timeline summary
+      description: |
+        Aggregate decisions into time buckets (day or week) for an executive
+        summary view. Returns counts, average confidence, type/agent
+        breakdowns, conflict counts, and top decisions per bucket.
+        Requires `reader` role or higher.
+      parameters:
+        - name: granularity
+          in: query
+          schema:
+            type: string
+            enum: [day, week]
+            default: day
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - name: project
+          in: query
+          schema:
+            type: string
+        - name: from
+          in: query
+          description: Start of time range (RFC 3339). Defaults to 30 days ago.
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: End of time range (RFC 3339). Defaults to now.
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Timeline buckets with aggregated decision data.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_TimelineResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   /v1/decisions/{id}/revisions:
     get:
       operationId: getDecisionRevisions
@@ -3804,6 +3853,80 @@ components:
           $ref: "#/components/schemas/RecentDecisionsResponse"
         meta:
           $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_TimelineResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/TimelineResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    TimelineResponse:
+      type: object
+      required: [granularity, buckets, projects]
+      properties:
+        granularity:
+          type: string
+          enum: [day, week]
+        buckets:
+          type: array
+          items:
+            $ref: "#/components/schemas/TimelineBucket"
+        projects:
+          type: array
+          items:
+            type: string
+
+    TimelineBucket:
+      type: object
+      required: [bucket, decision_count, avg_confidence, decision_types, agents, conflict_count, top_decisions]
+      properties:
+        bucket:
+          type: string
+          description: ISO date string for the bucket start (e.g. "2026-03-10").
+        decision_count:
+          type: integer
+        avg_confidence:
+          type: number
+          format: double
+        decision_types:
+          type: object
+          additionalProperties:
+            type: integer
+        agents:
+          type: object
+          additionalProperties:
+            type: integer
+        conflict_count:
+          type: integer
+        top_decisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/TimelineDecision"
+
+    TimelineDecision:
+      type: object
+      required: [id, agent_id, decision_type, outcome, confidence, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+        decision_type:
+          type: string
+        outcome:
+          type: string
+        confidence:
+          type: number
+          format: float
+        project:
+          type: string
+        created_at:
+          type: string
+          format: date-time
 
     APIResponse_ConflictAnalytics:
       type: object

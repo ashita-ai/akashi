@@ -14,6 +14,7 @@ import {
   Download,
   Shield,
   BarChart3,
+  CalendarDays,
   LogOut,
   Menu,
   Moon,
@@ -44,6 +45,7 @@ function ConnectionDot({ status }: { status: SSEStatus }) {
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
+  { to: "/timeline", label: "Timeline", icon: CalendarDays },
   { to: "/decisions", label: "Decisions", icon: FileText },
   { to: "/agents", label: "Agents", icon: Users },
   { to: "/conflicts", label: "Conflicts", icon: AlertTriangle },

@@ -187,6 +187,9 @@ func New(cfg ServerConfig) *Server {
 	// Recent decisions (reader+).
 	mux.Handle("GET /v1/decisions/recent", readRole(http.HandlerFunc(h.HandleDecisionsRecent)))
 
+	// Decision timeline summary (reader+).
+	mux.Handle("GET /v1/decisions/timeline", readRole(http.HandlerFunc(h.HandleDecisionTimeline)))
+
 	// Decision revision history (reader+).
 	mux.Handle("GET /v1/decisions/{id}/revisions", readRole(http.HandlerFunc(h.HandleDecisionRevisions)))
 
