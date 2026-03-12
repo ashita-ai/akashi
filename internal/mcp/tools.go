@@ -262,8 +262,13 @@ EXAMPLES:
 			mcplib.WithDescription(`Get aggregate statistics about the decision audit trail.
 
 WHEN TO USE: To understand the overall health and usage of the decision
-trail at a glance. Returns trace health metrics, agent count, conflict
-summary, and decision quality statistics.
+trail at a glance. Returns trace health metrics (completeness, evidence
+coverage, conflict summary), agent count, decision quality statistics,
+and the rolling 30-day wont_fix rate (false positive rate for conflict
+detection).
+
+The wont_fix_rate field shows resolved/wont_fix counts and the ratio
+wont_fix/(resolved+wont_fix). An elevated rate signals LLM validator drift.
 
 Useful at the start of a session for situational awareness, or when
 reporting on the state of decision tracking.`),
@@ -1211,9 +1216,15 @@ func (s *Server) handleStats(ctx context.Context, _ mcplib.CallToolRequest) (*mc
 		return errorResult(fmt.Sprintf("failed to count agents: %v", err)), nil
 	}
 
+	wontFixRate, err := s.db.GetWontFixRate(ctx, orgID)
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to get wont_fix rate: %v", err)), nil
+	}
+
 	resultData, _ := json.MarshalIndent(map[string]any{
-		"trace_health": metrics,
-		"agents":       agentCount,
+		"trace_health":  metrics,
+		"agents":        agentCount,
+		"wont_fix_rate": wontFixRate,
 	}, "", "  ")
 
 	return &mcplib.CallToolResult{

@@ -31,12 +31,13 @@ export function AkashiLogo({ className }: { className?: string }) {
 
 /**
  * Full brand mark: logo + "Akashi" wordmark side by side.
+ * Logo renders in primary blue (matching the landing page); wordmark in foreground.
  */
 export function AkashiBrand({ className, logoSize = "h-7 w-7" }: { className?: string; logoSize?: string }) {
   return (
     <div className={cn("flex items-center gap-2.5", className)}>
-      <AkashiLogo className={logoSize} />
-      <span className="text-lg font-bold tracking-tight">Akashi</span>
+      <AkashiLogo className={cn(logoSize, "text-primary drop-shadow-[0_0_8px_hsl(var(--glow-blue)/0.45)]")} />
+      <span className="text-lg font-bold tracking-tight text-foreground">Akashi</span>
     </div>
   );
 }

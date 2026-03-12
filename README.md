@@ -8,6 +8,8 @@ Multi-agent AI systems are moving from demos to production, but their decisions 
 
 Akashi is the decision coordination layer. Every agent checks for precedents before deciding and records its full reasoning after. When agents diverge on the same topic, Akashi detects it semantically — and when the CTO asks "why did the AI do that?" or an auditor asks for proof of decision traceability, you have the answer.
 
+![Akashi dashboard showing decision audit trail, agent coordination health, and conflict detection](docs/images/dashboard.png)
+
 ## How it works
 
 Akashi is built around two primitives: **check before deciding, trace after deciding.**
@@ -22,53 +24,11 @@ akashi_check                      akashi_trace
                                     → conflicts detected
 ```
 
-### Recording a decision
+When an agent calls `akashi_trace`, the decision is written atomically with its reasoning, alternatives, and evidence. Embeddings are computed, and conflict detection runs asynchronously — comparing the new decision against the org's history to find genuine contradictions between agents. Conflicts have a lifecycle (`open → acknowledged → resolved` or `wont_fix`) and can declare a winner when resolved.
 
-When an agent calls `akashi_trace`, five things happen:
+When an agent later observes whether a past decision was correct, `akashi_assess` feeds that outcome back into search re-ranking — so better decisions surface higher as precedents over time.
 
-1. **Two embeddings are computed** — one from `decision_type + outcome + reasoning` (for semantic search and conflict topic matching), one from `outcome` alone (for detecting stance divergence between decisions on the same topic).
-
-2. **A completeness score is assigned** — a 0–1 heuristic based on whether reasoning, alternatives, evidence, and confidence were provided.
-
-3. **Everything is written atomically** — the decision, alternatives, evidence, and a search index entry commit in a single transaction.
-
-4. **Conflict detection runs asynchronously** — the new decision is compared against the 50 most semantically similar decisions in the org's history. Pairs above a significance threshold are validated by an LLM (Ollama or OpenAI), which classifies the relationship as `contradiction`, `supersession`, `complementary`, `refinement`, or `unrelated`. Only genuine conflicts are stored.
-
-5. **Subscribers are notified** — real-time SSE subscribers and the audit dashboard see new decisions and conflicts immediately.
-
-### Looking up precedents
-
-Before making a decision, an agent calls `akashi_check` with a description of what it's about to decide. Akashi returns:
-
-- **Precedents** — the most relevant past decisions on similar topics, re-ranked by assessment outcomes, citation count, and recency
-- **Conflicts** — any open conflicts involving those precedents
-
-This is the mechanism by which later agents build on earlier decisions rather than rediscovering the same ground.
-
-### Conflict detection
-
-Conflicts are detected semantically, not by type matching. The significance formula is:
-
-```
-significance = topic_similarity × outcome_divergence × confidence_weight × temporal_decay
-```
-
-A planner recommending microservices and a coder recommending a monolith for the same system will have high topic similarity (same domain vocabulary) and high outcome divergence (opposite conclusions) — that pair surfaces as a conflict regardless of what `decision_type` either agent used.
-
-Conflicts have a lifecycle: `open → acknowledged → resolved` (or `wont_fix`). When resolving, you can declare a winner — which of the two decisions prevailed — or use the adjudication endpoint to record the resolution itself as a new traceable decision.
-
-### Closing the loop
-
-When an agent later observes whether a past decision was correct, it calls `akashi_assess`:
-
-```
-akashi_assess
-  decision_id: <uuid>
-  outcome: "correct" | "incorrect" | "partially_correct"
-  notes: "the cache TTL was too short; needed 15 minutes not 5"
-```
-
-Assessments feed back into search re-ranking — decisions assessed as correct surface higher as precedents. This is how the audit trail improves over time rather than just accumulating records.
+See [Subsystems](docs/subsystems.md) and [Conflict Detection](docs/conflicts.md) for internals.
 
 ---
 
@@ -106,7 +66,6 @@ If port 8080 is already in use, set `AKASHI_PORT` before starting:
 ```bash
 echo "AKASHI_PORT=8081" > .env
 docker compose -f docker-compose.complete.yml up -d
-# Open http://localhost:8081
 ```
 
 ### Local-lite mode *(coming soon)*
@@ -127,8 +86,6 @@ cp docker/env.example .env
 docker compose up -d
 ```
 
-First run builds the server image from source (~3–5 minutes). After that, `docker compose up -d` starts in seconds. To force a rebuild after updating the source: `docker compose up -d --build`.
-
 Required variables:
 
 | Variable | Description |
@@ -147,40 +104,7 @@ Optional (server starts without them — search falls back to text):
 | `AKASHI_JWT_PUBLIC_KEY` | Path to Ed25519 public key PEM file. Must be set alongside the private key. |
 | `AKASHI_JWT_EXPIRATION` | JWT token lifetime. Default: `24h`. |
 
-**Generating persistent signing keys** (run once from the repo root):
-
-```bash
-go run ./scripts/genkey -out data/
-# Writes: data/jwt_private.pem, data/jwt_public.pem
-```
-
-Then add to `.env`:
-
-```
-AKASHI_JWT_PRIVATE_KEY=/data/jwt_private.pem
-AKASHI_JWT_PUBLIC_KEY=/data/jwt_public.pem
-```
-
-The `docker-compose.yml` already mounts `./data` as `/data` inside the container — no other changes needed. Both PEM files must have `0600` permissions; the server rejects looser modes at startup.
-
-See [Configuration](docs/configuration.md) for all variables.
-
-### Self-serve signup (cloud / shared deployments)
-
-When `AKASHI_SIGNUP_ENABLED=true`, new organizations can register without admin intervention:
-
-```bash
-curl -X POST http://localhost:8080/auth/signup \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "org_name": "My Team",
-    "agent_id": "planner",
-    "email": "team@example.com"
-  }'
-```
-
-Returns an org ID, API key, and a ready-to-paste MCP config snippet. The API key is shown
-**exactly once** — save it immediately. Rate limited to 1 request/second per IP (burst 5).
+See [Configuration](docs/configuration.md) for all variables and the [Self-Hosting Guide](docs/self-hosting.md) for full setup instructions.
 
 ### Record your first decision
 
@@ -218,7 +142,6 @@ curl -X POST http://localhost:8080/v1/trace \
 ### Check for precedents before deciding
 
 ```bash
-# Before making a decision, check if similar ones exist
 curl -X POST http://localhost:8080/v1/check \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
@@ -434,34 +357,11 @@ flowchart TD
 ## Building from source
 
 ```bash
-# Without UI
-make build
-DATABASE_URL=postgres://... AKASHI_ADMIN_API_KEY=admin ./bin/akashi
-
-# With the embedded audit dashboard
-make build-with-ui
-DATABASE_URL=postgres://... AKASHI_ADMIN_API_KEY=admin ./bin/akashi
-# Open http://localhost:8080
+make build           # without UI
+make build-with-ui   # with embedded audit dashboard
 ```
 
-The binary requires a PostgreSQL 18 database with the `pgvector` and `timescaledb` extensions pre-installed (see `docker/init.sql`). Qdrant and an embedding provider are optional — the server starts without them and falls back to text search.
-
-For a local database during development:
-
-```bash
-# Start just the database and Qdrant (no Akashi binary — run that from source)
-docker run -d --name akashi-pg \
-  -e POSTGRES_USER=akashi -e POSTGRES_PASSWORD=akashi -e POSTGRES_DB=akashi \
-  -v "$(pwd)/docker/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro" \
-  -p 5432:5432 timescale/timescaledb-ha:pg18
-
-docker run -d --name akashi-qdrant -p 6333:6333 qdrant/qdrant:v1.13.6
-
-DATABASE_URL=postgres://akashi:akashi@localhost:5432/akashi?sslmode=disable \
-QDRANT_URL=http://localhost:6333 \
-AKASHI_ADMIN_API_KEY=admin \
-./bin/akashi
-```
+The binary requires PostgreSQL 18 with the `pgvector` and `timescaledb` extensions. See the [Self-Hosting Guide](docs/self-hosting.md) for full setup instructions, including local database options for development.
 
 ## Testing
 

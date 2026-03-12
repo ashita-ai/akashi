@@ -143,6 +143,11 @@ func Conflict(c model.DecisionConflict, consensusNote string) map[string]any {
 		m["consensus_note"] = consensusNote
 	}
 
+	// Precedent-aware escalation: flag when this conflict reopens a prior resolution.
+	if c.ReopensResolutionID != nil {
+		m["reopens_resolution_id"] = c.ReopensResolutionID
+	}
+
 	return m
 }
 
@@ -161,6 +166,9 @@ func ConflictGroup(g model.ConflictGroup) map[string]any {
 		"open_count":     g.OpenCount,
 		"first_detected": g.FirstDetectedAt,
 		"last_detected":  g.LastDetectedAt,
+	}
+	if g.TimesReopened > 0 {
+		m["times_reopened"] = g.TimesReopened
 	}
 	if g.GroupTopic != nil {
 		m["group_topic"] = *g.GroupTopic

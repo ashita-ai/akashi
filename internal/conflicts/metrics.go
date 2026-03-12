@@ -17,6 +17,7 @@ type Metrics struct {
 	llmCalls            metric.Int64Counter
 	candidatesEvaluated metric.Int64Counter
 	claimLevelWins      metric.Int64Counter
+	workflowFiltered    metric.Int64Counter
 
 	scoringDuration    metric.Float64Histogram
 	llmCallDuration    metric.Float64Histogram
@@ -103,6 +104,14 @@ func (s *Scorer) registerMetrics() {
 		s.metrics.claimLevelWins, _ = meter.Int64Counter("akashi.conflicts.claim_level_wins.fallback")
 	}
 
+	s.metrics.workflowFiltered, err = meter.Int64Counter("akashi.conflicts.workflow_filtered",
+		metric.WithDescription("Candidate pairs filtered by complementary workflow heuristic (review→fix, same-agent refinement, precedent chain)"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.workflow_filtered metric", "error", err)
+		s.metrics.workflowFiltered, _ = meter.Int64Counter("akashi.conflicts.workflow_filtered.fallback")
+	}
+
 	// --- Histograms ---
 
 	s.metrics.scoringDuration, err = meter.Float64Histogram("akashi.conflicts.scoring_duration_ms",
@@ -177,10 +186,27 @@ func registerObservableGauges(meter metric.Meter, db gaugeQuerier, logger *slog.
 	if err != nil {
 		logger.Warn("conflicts: failed to create akashi.conflicts.backfill_remaining gauge", "error", err)
 	}
+
+	_, err = meter.Float64ObservableGauge("akashi.conflicts.wont_fix_rate",
+		metric.WithDescription("Rolling 30-day wont_fix rate: wont_fix / (resolved + wont_fix). Signals LLM validator drift when elevated."),
+		metric.WithFloat64Callback(func(ctx context.Context, o metric.Float64Observer) error {
+			rate, err := db.GetGlobalWontFixRate(ctx)
+			if err != nil {
+				logger.Debug("conflicts: wont_fix_rate gauge query failed", "error", err)
+				return nil // non-fatal: skip this observation
+			}
+			o.Observe(rate)
+			return nil
+		}),
+	)
+	if err != nil {
+		logger.Warn("conflicts: failed to create akashi.conflicts.wont_fix_rate gauge", "error", err)
+	}
 }
 
 // gaugeQuerier is the subset of storage.DB needed by observable gauge callbacks.
 type gaugeQuerier interface {
 	GetGlobalOpenConflictCount(ctx context.Context) (int64, error)
 	CountUnscoredDecisions(ctx context.Context) (int64, error)
+	GetGlobalWontFixRate(ctx context.Context) (float64, error)
 }

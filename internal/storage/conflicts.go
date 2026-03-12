@@ -157,6 +157,7 @@ const conflictSelectBase = `SELECT sc.id, sc.conflict_kind, sc.decision_a_id, sc
 		 sc.relationship, sc.confidence_weight, sc.temporal_decay, sc.resolution_decision_id,
 		 sc.winning_decision_id, sc.group_id,
 		 sc.claim_text_a, sc.claim_text_b,
+		 sc.reopens_resolution_id,
 		 da.run_id, db.run_id, da.confidence, db.confidence, da.reasoning, db.reasoning, da.valid_from, db.valid_from
 		 FROM scored_conflicts sc
 		 LEFT JOIN decisions da ON da.id = sc.decision_a_id
@@ -180,6 +181,7 @@ func scanConflictRows(rows pgx.Rows) ([]model.DecisionConflict, error) {
 			&c.Relationship, &c.ConfidenceWeight, &c.TemporalDecay, &c.ResolutionDecisionID,
 			&c.WinningDecisionID, &c.GroupID,
 			&c.ClaimTextA, &c.ClaimTextB,
+			&c.ReopensResolutionID,
 			&runA, &runB, &confA, &confB, &reasonA, &reasonB, &validA, &validB,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan conflict: %w", err)
@@ -391,7 +393,7 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 			agentA, agentB, typeA, typeB, outcomeA, outcomeB,
 			topicSim, outcomeDiv, sig, method, c.Explanation,
 			c.Category, c.Severity, c.Relationship, c.ConfidenceWeight, c.TemporalDecay,
-			claimTextA, claimTextB, *c.GroupID,
+			claimTextA, claimTextB, *c.GroupID, c.ReopensResolutionID,
 		)
 	}
 
@@ -436,10 +438,10 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 		      agent_a, agent_b, decision_type_a, decision_type_b, outcome_a, outcome_b,
 		      topic_similarity, outcome_divergence, significance, scoring_method, explanation,
 		      category, severity, relationship, confidence_weight, temporal_decay,
-		      claim_text_a, claim_text_b, group_id)
+		      claim_text_a, claim_text_b, group_id, reopens_resolution_id)
 		 SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 		        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-		        $21, $22, grp.id
+		        $21, $22, grp.id, $24
 		 FROM grp
 		 ON CONFLICT (decision_a_id, decision_b_id) DO UPDATE SET
 		     topic_similarity    = EXCLUDED.topic_similarity,
@@ -455,6 +457,7 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 		     claim_text_a        = EXCLUDED.claim_text_a,
 		     claim_text_b        = EXCLUDED.claim_text_b,
 		     group_id            = EXCLUDED.group_id,
+		     reopens_resolution_id = EXCLUDED.reopens_resolution_id,
 		     detected_at         = now(),
 		     status              = CASE WHEN scored_conflicts.status = 'resolved' THEN 'open'
 		                                ELSE scored_conflicts.status END,
@@ -469,7 +472,7 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 		grpAgentA, grpAgentB, typeA, typeB, outcomeA, outcomeB,
 		topicSim, outcomeDiv, sig, method, c.Explanation,
 		c.Category, c.Severity, c.Relationship, c.ConfidenceWeight, c.TemporalDecay,
-		claimTextA, claimTextB, topicLabel,
+		claimTextA, claimTextB, topicLabel, c.ReopensResolutionID,
 	).Scan(&id)
 	if err != nil {
 		return uuid.Nil, err
@@ -489,6 +492,7 @@ func (db *DB) insertScoredConflictWithGroup(
 	confWeight, tempDecay *float64,
 	claimTextA, claimTextB *string,
 	groupID uuid.UUID,
+	reopensResolutionID *uuid.UUID,
 ) (uuid.UUID, error) {
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
@@ -511,10 +515,10 @@ func (db *DB) insertScoredConflictWithGroup(
 		      agent_a, agent_b, decision_type_a, decision_type_b, outcome_a, outcome_b,
 		      topic_similarity, outcome_divergence, significance, scoring_method, explanation,
 		      category, severity, relationship, confidence_weight, temporal_decay,
-		      claim_text_a, claim_text_b, group_id)
+		      claim_text_a, claim_text_b, group_id, reopens_resolution_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 		         $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-		         $21, $22, $23)
+		         $21, $22, $23, $24)
 		 ON CONFLICT (decision_a_id, decision_b_id) DO UPDATE SET
 		     topic_similarity    = EXCLUDED.topic_similarity,
 		     outcome_divergence  = EXCLUDED.outcome_divergence,
@@ -529,6 +533,7 @@ func (db *DB) insertScoredConflictWithGroup(
 		     claim_text_a        = EXCLUDED.claim_text_a,
 		     claim_text_b        = EXCLUDED.claim_text_b,
 		     group_id            = EXCLUDED.group_id,
+		     reopens_resolution_id = EXCLUDED.reopens_resolution_id,
 		     detected_at         = now(),
 		     status              = CASE WHEN scored_conflicts.status = 'resolved' THEN 'open'
 		                                ELSE scored_conflicts.status END,
@@ -543,7 +548,7 @@ func (db *DB) insertScoredConflictWithGroup(
 		agentA, agentB, typeA, typeB, outcomeA, outcomeB,
 		topicSim, outcomeDiv, sig, method, explanation,
 		category, severity, relationship, confWeight, tempDecay,
-		claimTextA, claimTextB, groupID,
+		claimTextA, claimTextB, groupID, reopensResolutionID,
 	).Scan(&id)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("storage: insert scored conflict: %w", err)
@@ -764,6 +769,7 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 		    cg.id, cg.org_id, cg.agent_a, cg.agent_b, cg.conflict_kind, cg.decision_type,
 		    cg.group_topic,
 		    cg.first_detected_at, cg.last_detected_at,
+		    cg.times_reopened,
 		    COUNT(DISTINCT sc_all.id)::int                                                AS conflict_count,
 		    COUNT(DISTINCT sc_all.id) FILTER (
 		        WHERE sc_all.status IN ('open', 'acknowledged'))::int                     AS open_count,
@@ -778,6 +784,7 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 		    rep.relationship, rep.confidence_weight, rep.temporal_decay,
 		    rep.resolution_decision_id, rep.winning_decision_id, rep.group_id,
 		    rep.claim_text_a, rep.claim_text_b,
+		    rep.reopens_resolution_id,
 		    rep_da.run_id, rep_db.run_id,
 		    rep_da.confidence, rep_db.confidence,
 		    rep_da.reasoning, rep_db.reasoning,
@@ -810,6 +817,7 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 		    cg.id, cg.org_id, cg.agent_a, cg.agent_b, cg.conflict_kind, cg.decision_type,
 		    cg.group_topic,
 		    cg.first_detected_at, cg.last_detected_at,
+		    cg.times_reopened,
 		    rep.id, rep.conflict_kind, rep.decision_a_id, rep.decision_b_id,
 		    rep.agent_a, rep.agent_b,
 		    rep.decision_type_a, rep.decision_type_b, rep.outcome_a, rep.outcome_b,
@@ -820,6 +828,7 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 		    rep.relationship, rep.confidence_weight, rep.temporal_decay,
 		    rep.resolution_decision_id, rep.winning_decision_id, rep.group_id,
 		    rep.claim_text_a, rep.claim_text_b,
+		    rep.reopens_resolution_id,
 		    rep_da.run_id, rep_db.run_id,
 		    rep_da.confidence, rep_db.confidence,
 		    rep_da.reasoning, rep_db.reasoning,
@@ -859,11 +868,13 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 		var repConfWeight, repTempDecay *float64
 		var repResDecID, repWinDecID, repGroupID *uuid.UUID
 		var repClaimTextA, repClaimTextB *string
+		var repReopensResID *uuid.UUID
 
 		if err := rows.Scan(
 			&g.ID, &g.OrgID, &g.AgentA, &g.AgentB, &g.ConflictKind, &g.DecisionType,
 			&g.GroupTopic,
 			&g.FirstDetectedAt, &g.LastDetectedAt,
+			&g.TimesReopened,
 			&g.ConflictCount, &g.OpenCount,
 			// representative columns
 			&repID, &repConflictKind, &repDecAID, &repDecBID,
@@ -876,6 +887,7 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 			&repRelationship, &repConfWeight, &repTempDecay,
 			&repResDecID, &repWinDecID, &repGroupID,
 			&repClaimTextA, &repClaimTextB,
+			&repReopensResID,
 			&repRunA, &repRunB,
 			&repConfA, &repConfB,
 			&repReasonA, &repReasonB,
@@ -941,6 +953,7 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 			rep.GroupID = repGroupID
 			rep.ClaimTextA = repClaimTextA
 			rep.ClaimTextB = repClaimTextB
+			rep.ReopensResolutionID = repReopensResID
 			if repRunA != nil {
 				rep.RunA = *repRunA
 			}
@@ -1517,6 +1530,52 @@ func (db *DB) GetGlobalOpenConflictCount(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
+// GetWontFixRate computes the wont_fix false-positive rate for an org over the
+// last 30 days: wont_fix / (resolved + wont_fix). Only conflicts with a
+// resolved_at timestamp in the window are counted; open/acknowledged conflicts
+// are excluded because they haven't been triaged yet.
+func (db *DB) GetWontFixRate(ctx context.Context, orgID uuid.UUID) (WontFixRate, error) {
+	var r WontFixRate
+	err := db.pool.QueryRow(ctx, `
+		SELECT
+			count(*) FILTER (WHERE status = 'resolved'),
+			count(*) FILTER (WHERE status = 'wont_fix'),
+			COALESCE(
+				count(*) FILTER (WHERE status = 'wont_fix')::double precision
+				/ NULLIF(count(*) FILTER (WHERE status IN ('resolved', 'wont_fix')), 0),
+				0
+			)
+		FROM scored_conflicts
+		WHERE org_id = $1
+		  AND status IN ('resolved', 'wont_fix')
+		  AND resolved_at >= now() - interval '30 days'`,
+		orgID).Scan(&r.Resolved, &r.WontFix, &r.Rate)
+	if err != nil {
+		return r, fmt.Errorf("storage: wont_fix rate: %w", err)
+	}
+	return r, nil
+}
+
+// GetGlobalWontFixRate computes the global wont_fix false-positive rate across
+// all orgs over the last 30 days. Used by the OpenTelemetry observable gauge.
+// SECURITY: Intentionally global — aggregate metric with no tenant data exposed.
+func (db *DB) GetGlobalWontFixRate(ctx context.Context) (float64, error) {
+	var rate float64
+	err := db.pool.QueryRow(ctx, `
+		SELECT COALESCE(
+			count(*) FILTER (WHERE status = 'wont_fix')::double precision
+			/ NULLIF(count(*) FILTER (WHERE status IN ('resolved', 'wont_fix')), 0),
+			0
+		)
+		FROM scored_conflicts
+		WHERE status IN ('resolved', 'wont_fix')
+		  AND resolved_at >= now() - interval '30 days'`).Scan(&rate)
+	if err != nil {
+		return 0, fmt.Errorf("storage: global wont_fix rate: %w", err)
+	}
+	return rate, nil
+}
+
 // GetConflictGroupKind returns the conflict_kind for a conflict group.
 // Used by HTTP handlers that need the kind label for resolution metrics.
 func (db *DB) GetConflictGroupKind(ctx context.Context, groupID, orgID uuid.UUID) (string, error) {
@@ -1528,4 +1587,141 @@ func (db *DB) GetConflictGroupKind(ctx context.Context, groupID, orgID uuid.UUID
 		return "", fmt.Errorf("storage: get conflict group kind: %w", err)
 	}
 	return kind, nil
+}
+
+// PriorResolutionMatch holds a resolved conflict whose winning outcome is
+// semantically similar to one side of a new conflict pair — indicating
+// that the new decision contradicts a prior resolution.
+type PriorResolutionMatch struct {
+	ResolutionID      uuid.UUID
+	WinningOutcome    string
+	WinningAgent      string
+	Explanation       *string
+	ResolutionNote    *string
+	OutcomeSimilarity float64
+}
+
+// FindReopenedResolution checks whether a new conflict pair contradicts the
+// winning side of a prior resolved conflict. It searches for resolved conflicts
+// in the same org with a winning_decision_id whose outcome_embedding is similar
+// to one side of the new pair (above threshold), while the other side diverges.
+//
+// This detects the pattern: "Resolution R said approach A wins over approach B.
+// Now a new decision re-introduces approach B (or something very like it),
+// which conflicts with a decision aligned with A."
+//
+// Returns nil when no prior resolution is contradicted.
+func (db *DB) FindReopenedResolution(
+	ctx context.Context,
+	orgID uuid.UUID,
+	decisionAID, decisionBID uuid.UUID,
+	outcomeEmbeddingA, outcomeEmbeddingB pgvector.Vector,
+	similarityThreshold float64,
+) (*PriorResolutionMatch, error) {
+	// Find a resolved conflict where:
+	// - The winning outcome is similar to one side of the new pair (>= threshold)
+	// - The losing outcome is similar to the OTHER side (>= threshold)
+	// This means the new conflict recapitulates the same disagreement.
+	//
+	// We join both the winning and losing decisions, then check two cross-match
+	// orientations: (winner~A AND loser~B) or (winner~B AND loser~A). The best
+	// pair must have both similarities above the threshold.
+	row := db.pool.QueryRow(ctx, `
+		WITH prior AS (
+			SELECT
+				sc.id,
+				CASE WHEN sc.winning_decision_id = sc.decision_a_id THEN sc.outcome_a ELSE sc.outcome_b END AS winning_outcome,
+				CASE WHEN sc.winning_decision_id = sc.decision_a_id THEN sc.agent_a  ELSE sc.agent_b  END AS winning_agent,
+				sc.explanation,
+				sc.resolution_note,
+				1.0 - (wd.outcome_embedding <=> $2::vector) AS win_sim_a,
+				1.0 - (wd.outcome_embedding <=> $3::vector) AS win_sim_b,
+				1.0 - (ld.outcome_embedding <=> $2::vector) AS lose_sim_a,
+				1.0 - (ld.outcome_embedding <=> $3::vector) AS lose_sim_b
+			FROM scored_conflicts sc
+			JOIN decisions wd ON wd.id = sc.winning_decision_id
+			JOIN decisions ld ON ld.id = CASE
+				WHEN sc.winning_decision_id = sc.decision_a_id THEN sc.decision_b_id
+				ELSE sc.decision_a_id END
+			WHERE sc.org_id = $1
+			  AND sc.status = 'resolved'
+			  AND sc.winning_decision_id IS NOT NULL
+			  AND wd.outcome_embedding IS NOT NULL
+			  AND ld.outcome_embedding IS NOT NULL
+			  AND sc.decision_a_id != $4 AND sc.decision_b_id != $4
+			  AND sc.decision_a_id != $5 AND sc.decision_b_id != $5
+		)
+		SELECT id, winning_outcome, winning_agent, explanation, resolution_note,
+			GREATEST(
+				LEAST(win_sim_a, lose_sim_b),
+				LEAST(win_sim_b, lose_sim_a)
+			) AS cross_match_similarity
+		FROM prior
+		WHERE (win_sim_a >= $6 AND lose_sim_b >= $6)
+		   OR (win_sim_b >= $6 AND lose_sim_a >= $6)
+		ORDER BY cross_match_similarity DESC
+		LIMIT 1`,
+		orgID,
+		outcomeEmbeddingA, outcomeEmbeddingB,
+		decisionAID, decisionBID,
+		similarityThreshold,
+	)
+
+	var m PriorResolutionMatch
+	err := row.Scan(&m.ResolutionID, &m.WinningOutcome, &m.WinningAgent,
+		&m.Explanation, &m.ResolutionNote, &m.OutcomeSimilarity)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("storage: find reopened resolution: %w", err)
+	}
+	return &m, nil
+}
+
+// IncrementGroupTimesReopened atomically increments the times_reopened counter
+// on a conflict group.
+func (db *DB) IncrementGroupTimesReopened(ctx context.Context, groupID, orgID uuid.UUID) error {
+	_, err := db.pool.Exec(ctx,
+		`UPDATE conflict_groups SET times_reopened = times_reopened + 1
+		 WHERE id = $1 AND org_id = $2`, groupID, orgID)
+	if err != nil {
+		return fmt.Errorf("storage: increment group times_reopened: %w", err)
+	}
+	return nil
+}
+
+// GetConflictResolution fetches a single resolved conflict as a ConflictResolution
+// summary. Used by the conflict detail endpoint to hydrate the reopens_resolution field.
+func (db *DB) GetConflictResolution(ctx context.Context, id, orgID uuid.UUID) (*model.ConflictResolution, error) {
+	var r model.ConflictResolution
+	err := db.pool.QueryRow(ctx, `
+		SELECT
+			sc.id,
+			sc.decision_type_a,
+			sc.winning_decision_id,
+			CASE WHEN sc.winning_decision_id = sc.decision_a_id THEN sc.outcome_a ELSE sc.outcome_b END,
+			CASE WHEN sc.winning_decision_id = sc.decision_a_id THEN sc.outcome_b ELSE sc.outcome_a END,
+			CASE WHEN sc.winning_decision_id = sc.decision_a_id THEN sc.agent_a  ELSE sc.agent_b  END,
+			CASE WHEN sc.winning_decision_id = sc.decision_a_id THEN sc.agent_b  ELSE sc.agent_a  END,
+			sc.explanation,
+			sc.resolution_note,
+			sc.resolved_at
+		FROM scored_conflicts sc
+		WHERE sc.id = $1 AND sc.org_id = $2
+		  AND sc.status = 'resolved'
+		  AND sc.winning_decision_id IS NOT NULL`,
+		id, orgID,
+	).Scan(&r.ID, &r.DecisionType, &r.WinningDecisionID,
+		&r.WinningOutcome, &r.LosingOutcome,
+		&r.WinningAgent, &r.LosingAgent,
+		&r.Explanation, &r.ResolutionNote,
+		&r.ResolvedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("storage: get conflict resolution: %w", err)
+	}
+	return &r, nil
 }
