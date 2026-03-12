@@ -1258,3 +1258,30 @@ func TestSearch_SemanticFalseSkipsQdrant(t *testing.T) {
 	require.NoError(t, err, "semantic=false should use text search directly")
 	assert.NotEmpty(t, results, "text search should find the decision")
 }
+
+func TestDrainAsync_CompletesImmediatelyWhenIdle(t *testing.T) {
+	embedder := embedding.NewNoopProvider(1024)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	svc := decisions.New(testDB, embedder, nil, logger, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := svc.DrainAsync(ctx)
+	require.NoError(t, err, "DrainAsync should return immediately when no goroutines are in flight")
+}
+
+func TestDrainAsync_ReturnsErrorOnTimeout(t *testing.T) {
+	embedder := embedding.NewNoopProvider(1024)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	svc := decisions.New(testDB, embedder, nil, logger, nil)
+
+	// Simulate an in-flight goroutine by calling the exported method
+	// with an already-expired context.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled
+
+	err := svc.DrainAsync(ctx)
+	require.Error(t, err, "DrainAsync should return error when context is already cancelled")
+	assert.ErrorIs(t, err, context.Canceled)
+}

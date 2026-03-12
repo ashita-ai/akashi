@@ -185,7 +185,7 @@ Existing deployments that set `AKASHI_WAL_DIR` explicitly will continue to work 
 | `AKASHI_INTEGRITY_PROOF_INTERVAL` | `5m` | How often Merkle tree proofs are built for new decisions |
 | `AKASHI_ENABLE_DESTRUCTIVE_DELETE` | `false` | Enables irreversible `DELETE /v1/agents/{agent_id}`. Keep `false` in production unless explicitly needed for GDPR workflows |
 | `AKASHI_SHUTDOWN_HTTP_TIMEOUT` | `10s` | HTTP shutdown grace timeout (`0` = wait indefinitely) |
-| `AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT` | `0` | Maximum time to flush in-memory events to Postgres during shutdown. `0` = wait indefinitely (default, durability-first). Non-zero values bound the drain but risk losing unflushed events — process exits non-zero if events remain. |
+| `AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT` | `30s` | Maximum time to flush in-memory events to Postgres during shutdown. `0` = wait indefinitely. The 30s default prevents process hang on unreachable database while giving the WAL time to recover unflushed events on restart. |
 | `AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT` | `0` | Outbox drain timeout (`0` = wait indefinitely) |
 | `AKASHI_PERCENTILE_REFRESH_INTERVAL` | `1h` | How often to refresh per-org signal percentile caches used for distribution-aware ReScore normalization. Set to `0` to disable |
 | `AKASHI_AUTO_RESOLVE_INTERVAL` | `1h` | How often the background auto-resolution worker runs to resolve eligible conflicts per org policy. Set to `0` to disable |

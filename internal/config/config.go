@@ -216,7 +216,7 @@ func Load() (Config, error) {
 	cfg.EventFlushTimeout, errs = collectDuration(errs, "AKASHI_EVENT_FLUSH_TIMEOUT", 100*time.Millisecond)
 	cfg.WALSyncInterval, errs = collectDuration(errs, "AKASHI_WAL_SYNC_INTERVAL", 10*time.Millisecond)
 	cfg.ShutdownHTTPTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_HTTP_TIMEOUT", 10*time.Second)
-	cfg.ShutdownBufferDrainTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT", 0)
+	cfg.ShutdownBufferDrainTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT", 30*time.Second)
 	cfg.ShutdownOutboxDrainTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT", 0)
 	cfg.IdempotencyCleanupInterval, errs = collectDuration(errs, "AKASHI_IDEMPOTENCY_CLEANUP_INTERVAL", time.Hour)
 	cfg.IdempotencyCompletedTTL, errs = collectDuration(errs, "AKASHI_IDEMPOTENCY_COMPLETED_TTL", 7*24*time.Hour)
