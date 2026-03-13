@@ -58,11 +58,19 @@ function confidenceBucket(c: number): string {
 const BUCKET_ORDER = ["0.0-0.3", "0.3-0.5", "0.5-0.7", "0.7-0.9", "0.9-1.0"];
 
 const BUCKET_COLORS: Record<string, string> = {
-  "0.0-0.3": "bg-red-500",
-  "0.3-0.5": "bg-amber-500",
-  "0.5-0.7": "bg-yellow-400",
-  "0.7-0.9": "bg-emerald-400",
-  "0.9-1.0": "bg-blue-500",
+  "0.0-0.3": "bg-gradient-to-t from-red-600 to-red-400",
+  "0.3-0.5": "bg-gradient-to-t from-amber-600 to-amber-400",
+  "0.5-0.7": "bg-gradient-to-t from-yellow-500 to-yellow-300",
+  "0.7-0.9": "bg-gradient-to-t from-emerald-500 to-emerald-300",
+  "0.9-1.0": "bg-gradient-to-t from-blue-600 to-blue-400",
+};
+
+const BUCKET_GLOWS: Record<string, string> = {
+  "0.0-0.3": "shadow-red-500/40",
+  "0.3-0.5": "shadow-amber-500/40",
+  "0.5-0.7": "shadow-yellow-400/40",
+  "0.7-0.9": "shadow-emerald-400/40",
+  "0.9-1.0": "shadow-blue-500/40",
 };
 
 /** Compute confidence histogram from a list of decisions. */
@@ -148,17 +156,23 @@ function StackedBar({
   segments: { label: string; value: number; color: string }[];
 }) {
   const total = segments.reduce((s, seg) => s + seg.value, 0);
-  if (total === 0) return <div className="h-6 rounded bg-muted" />;
+  if (total === 0) return <div className="h-8 rounded bg-muted" />;
   return (
-    <div className="flex h-6 overflow-hidden rounded">
+    <div className="flex h-8 overflow-hidden rounded-lg shadow-inner">
       {segments.map((seg) =>
         seg.value > 0 ? (
           <div
             key={seg.label}
-            className={cn("transition-all duration-500", seg.color)}
+            className={cn(
+              "group/seg relative transition-all duration-500 hover:brightness-110 hover:saturate-150",
+              seg.color,
+            )}
             style={{ width: `${(seg.value / total) * 100}%` }}
-            title={`${seg.label}: ${seg.value}`}
-          />
+          >
+            <span className="absolute inset-0 flex items-center justify-center text-[10px] font-bold text-white opacity-0 group-hover/seg:opacity-100 transition-opacity drop-shadow-sm">
+              {seg.value}
+            </span>
+          </div>
         ) : null,
       )}
     </div>
@@ -177,14 +191,17 @@ function TrendChart({
   return (
     <div className="space-y-1">
       <p className="text-xs font-medium text-muted-foreground">{label}</p>
-      <div className="flex items-end gap-[2px] h-20">
+      <div className="flex items-end gap-[2px] h-24">
         {data.map((d) => (
           <div
             key={d.date}
-            className="flex-1 bg-primary/70 rounded-t transition-all duration-300 hover:bg-primary"
+            className="group/bar relative flex-1 rounded-t transition-all duration-300 bg-gradient-to-t from-primary/60 to-primary hover:from-primary hover:to-primary hover:shadow-[0_-4px_12px_-2px_hsl(var(--glow-blue)/0.4)]"
             style={{ height: `${Math.max((d.value / max) * 100, 2)}%` }}
-            title={`${d.date}: ${d.value}`}
-          />
+          >
+            <span className="absolute -top-6 left-1/2 -translate-x-1/2 rounded bg-foreground/90 px-1.5 py-0.5 text-[10px] font-semibold text-background opacity-0 group-hover/bar:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-md">
+              {d.value}
+            </span>
+          </div>
         ))}
       </div>
       {data.length > 1 && (
@@ -204,31 +221,32 @@ function ConflictTrend({ data }: { data: ConflictTrendPoint[] }) {
     <div className="space-y-1">
       <div className="flex items-center gap-4 text-xs text-muted-foreground">
         <span className="flex items-center gap-1">
-          <span className="inline-block h-2 w-2 rounded-full bg-red-400" />
+          <span className="inline-block h-2.5 w-2.5 rounded-full bg-gradient-to-br from-red-400 to-red-600 shadow-sm shadow-red-500/30" />
           Detected
         </span>
         <span className="flex items-center gap-1">
-          <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
+          <span className="inline-block h-2.5 w-2.5 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 shadow-sm shadow-emerald-500/30" />
           Resolved
         </span>
       </div>
-      <div className="flex items-end gap-[2px] h-20">
+      <div className="flex items-end gap-[2px] h-24">
         {data.map((d) => (
-          <div key={d.date} className="flex-1 flex flex-col gap-[1px] justify-end h-full">
+          <div key={d.date} className="group/ct relative flex-1 flex flex-col gap-[1px] justify-end h-full">
             <div
-              className="bg-red-400/80 rounded-t"
+              className="bg-gradient-to-t from-red-500/70 to-red-400 rounded-t transition-all duration-300 group-hover/ct:from-red-500 group-hover/ct:to-red-400 group-hover/ct:shadow-[0_-2px_8px_-1px_rgba(239,68,68,0.4)]"
               style={{
                 height: `${Math.max((d.detected / max) * 50, d.detected > 0 ? 2 : 0)}%`,
               }}
-              title={`${d.date} detected: ${d.detected}`}
             />
             <div
-              className="bg-emerald-400/80 rounded-t"
+              className="bg-gradient-to-t from-emerald-500/70 to-emerald-400 rounded-t transition-all duration-300 group-hover/ct:from-emerald-500 group-hover/ct:to-emerald-400 group-hover/ct:shadow-[0_-2px_8px_-1px_rgba(16,185,129,0.4)]"
               style={{
                 height: `${Math.max((d.resolved / max) * 50, d.resolved > 0 ? 2 : 0)}%`,
               }}
-              title={`${d.date} resolved: ${d.resolved}`}
             />
+            <span className="absolute -top-6 left-1/2 -translate-x-1/2 rounded bg-foreground/90 px-1.5 py-0.5 text-[10px] font-semibold text-background opacity-0 group-hover/ct:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-md">
+              {d.detected}d / {d.resolved}r
+            </span>
           </div>
         ))}
       </div>
@@ -258,14 +276,17 @@ function ConfidenceHistogram({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-end gap-2 h-24">
+      <div className="flex items-end gap-2 h-28">
         {data.map((d) => (
-          <div key={d.bucket} className="flex-1 flex flex-col items-center gap-1">
-            <span className="text-[10px] text-muted-foreground">{d.count}</span>
+          <div key={d.bucket} className="group/histo flex-1 flex flex-col items-center gap-1">
+            <span className="text-[10px] font-semibold text-muted-foreground group-hover/histo:text-foreground transition-colors">
+              {d.count}
+            </span>
             <div
               className={cn(
-                "w-full rounded-t transition-all duration-300",
+                "w-full rounded-t transition-all duration-300 group-hover/histo:saturate-150 group-hover/histo:shadow-[0_-4px_12px_-2px]",
                 BUCKET_COLORS[d.bucket],
+                BUCKET_GLOWS[d.bucket],
               )}
               style={{ height: `${Math.max((d.count / max) * 100, d.count > 0 ? 4 : 0)}%` }}
             />
@@ -449,43 +470,43 @@ export default function Analytics() {
 
       {/* ── Panel 1: Health Score + Summary Cards ── */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Card className="gradient-border">
+        <Card className="gradient-border hover:glow-emerald transition-shadow duration-300">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Health Score</CardTitle>
-            <HeartPulse className="h-4 w-4 text-emerald-500/70" />
+            <HeartPulse className="h-4 w-4 text-emerald-500 animate-pulse" />
           </CardHeader>
           <CardContent>
             {traceHealth.isPending ? (
               <Skeleton className="h-8 w-16" />
             ) : (
               <>
-                <div className={cn("text-2xl font-bold", healthColor)}>
+                <div className={cn("text-3xl font-black tabular-nums tracking-tight", healthColor)}>
                   {healthScore ?? "?"}
                   <span className="text-sm font-normal text-muted-foreground">
                     /100
                   </span>
                 </div>
-                <p className={cn("text-xs", healthColor)}>{healthLabel}</p>
+                <p className={cn("text-xs font-medium", healthColor)}>{healthLabel}</p>
               </>
             )}
           </CardContent>
         </Card>
 
-        <Card className="gradient-border">
+        <Card className="gradient-border hover:glow-primary transition-shadow duration-300">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Completeness</CardTitle>
-            <BarChart3 className="h-4 w-4 text-primary/60" />
+            <BarChart3 className="h-4 w-4 text-primary" />
           </CardHeader>
           <CardContent>
             {traceHealth.isPending ? (
               <Skeleton className="h-8 w-16" />
             ) : (
               <>
-                <div className="text-2xl font-bold">
+                <div className="text-3xl font-black tabular-nums tracking-tight">
                   {((health?.completeness.avg_completeness ?? 0) * 100).toFixed(
                     0,
                   )}
-                  %
+                  <span className="text-lg">%</span>
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {health?.completeness.below_half ?? 0} decisions below 50%
@@ -495,20 +516,20 @@ export default function Analytics() {
           </CardContent>
         </Card>
 
-        <Card className="gradient-border">
+        <Card className="gradient-border hover:glow-amber transition-shadow duration-300">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">
               Conflict Resolution
             </CardTitle>
-            <ShieldAlert className="h-4 w-4 text-amber-500/70" />
+            <ShieldAlert className="h-4 w-4 text-amber-500" />
           </CardHeader>
           <CardContent>
             {traceHealth.isPending ? (
               <Skeleton className="h-8 w-16" />
             ) : (
               <>
-                <div className="text-2xl font-bold">
-                  {(health?.conflicts?.resolved_pct ?? 0).toFixed(0)}%
+                <div className="text-3xl font-black tabular-nums tracking-tight">
+                  {(health?.conflicts?.resolved_pct ?? 0).toFixed(0)}<span className="text-lg">%</span>
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {health?.conflicts?.open ?? 0} open /{" "}
@@ -519,20 +540,20 @@ export default function Analytics() {
           </CardContent>
         </Card>
 
-        <Card className="gradient-border">
+        <Card className="gradient-border hover:glow-purple transition-shadow duration-300">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">
               Evidence Coverage
             </CardTitle>
-            <Activity className="h-4 w-4 text-primary/60" />
+            <Activity className="h-4 w-4 text-purple-500" />
           </CardHeader>
           <CardContent>
             {traceHealth.isPending ? (
               <Skeleton className="h-8 w-16" />
             ) : (
               <>
-                <div className="text-2xl font-bold">
-                  {(health?.evidence.coverage_pct ?? 0).toFixed(0)}%
+                <div className="text-3xl font-black tabular-nums tracking-tight">
+                  {(health?.evidence.coverage_pct ?? 0).toFixed(0)}<span className="text-lg">%</span>
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {health?.evidence.with_evidence ?? 0} of{" "}
@@ -731,7 +752,7 @@ export default function Analytics() {
                   .map((pair) => (
                     <div
                       key={`${pair.agent_a}-${pair.agent_b}`}
-                      className="flex items-center justify-between rounded-md border px-3 py-2"
+                      className="flex items-center justify-between rounded-lg border px-3 py-2.5 transition-all duration-200 hover:bg-accent/50 hover:shadow-sm"
                     >
                       <div className="flex items-center gap-2">
                         <Badge
@@ -797,35 +818,39 @@ export default function Analytics() {
                     label: "With reasoning",
                     value: health.completeness.with_reasoning,
                     total: health.completeness.total_decisions,
-                    color: "bg-emerald-500",
+                    color: "bg-gradient-to-r from-emerald-600 to-emerald-400",
+                    glow: "shadow-emerald-500/30",
                   },
                   {
                     label: "With alternatives",
                     value: health.completeness.with_alternatives,
                     total: health.completeness.total_decisions,
-                    color: "bg-blue-500",
+                    color: "bg-gradient-to-r from-blue-600 to-blue-400",
+                    glow: "shadow-blue-500/30",
                   },
                   {
                     label: "With evidence",
                     value: health.evidence.with_evidence,
                     total: health.evidence.total_decisions,
-                    color: "bg-purple-500",
+                    color: "bg-gradient-to-r from-purple-600 to-purple-400",
+                    glow: "shadow-purple-500/30",
                   },
                 ].map((item) => (
-                  <div key={item.label} className="space-y-1">
+                  <div key={item.label} className="space-y-1.5">
                     <div className="flex justify-between text-xs">
-                      <span className="text-muted-foreground">
+                      <span className="text-muted-foreground font-medium">
                         {item.label}
                       </span>
-                      <span>
+                      <span className="font-semibold tabular-nums">
                         {item.value}/{item.total} ({pct(item.value, item.total)})
                       </span>
                     </div>
-                    <div className="h-2 rounded bg-muted">
+                    <div className="h-2.5 rounded-full bg-muted overflow-hidden">
                       <div
                         className={cn(
-                          "h-full rounded transition-all duration-500",
+                          "h-full rounded-full progress-fill-animated shadow-sm",
                           item.color,
+                          item.glow,
                         )}
                         style={{
                           width:
