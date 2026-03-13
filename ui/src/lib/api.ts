@@ -23,7 +23,6 @@ import type {
   SearchResponse,
   SearchResult,
   SessionView,
-  TimelineResponse,
   TraceHealth,
   AgentRun,
 } from "@/types/api";
@@ -395,24 +394,6 @@ export async function getConflictAnalytics(params?: {
   return request<ConflictAnalytics>(
     `/v1/conflicts/analytics${qs ? `?${qs}` : ""}`,
   );
-}
-
-// Decision timeline
-export async function getDecisionTimeline(params?: {
-  granularity?: "day" | "week";
-  agent_id?: string;
-  project?: string;
-  from?: string;
-  to?: string;
-}): Promise<TimelineResponse> {
-  const searchParams = new URLSearchParams();
-  if (params?.granularity) searchParams.set("granularity", params.granularity);
-  if (params?.agent_id) searchParams.set("agent_id", params.agent_id);
-  if (params?.project) searchParams.set("project", params.project);
-  if (params?.from) searchParams.set("from", params.from);
-  if (params?.to) searchParams.set("to", params.to);
-  const qs = searchParams.toString();
-  return request<TimelineResponse>(`/v1/decisions/timeline${qs ? `?${qs}` : ""}`);
 }
 
 // Session view
