@@ -978,3 +978,50 @@ func (h *Handlers) HandleDecisionTimeline(w http.ResponseWriter, r *http.Request
 		Projects:    projects,
 	})
 }
+
+// HandleDecisionFacets returns distinct decision types and projects for filter dropdowns.
+func (h *Handlers) HandleDecisionFacets(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+
+	var (
+		types    []string
+		projects []string
+		typeErr  error
+		projErr  error
+		wg       sync.WaitGroup
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		types, typeErr = h.db.DistinctDecisionTypes(r.Context(), orgID)
+	}()
+	go func() {
+		defer wg.Done()
+		projects, projErr = h.db.DistinctProjects(r.Context(), orgID)
+	}()
+	wg.Wait()
+
+	if typeErr != nil {
+		h.writeInternalError(w, r, "failed to list decision types", typeErr)
+		return
+	}
+	if projErr != nil {
+		h.writeInternalError(w, r, "failed to list projects", projErr)
+		return
+	}
+
+	if types == nil {
+		types = []string{}
+	}
+	if projects == nil {
+		projects = []string{}
+	}
+
+	writeJSON(w, r, http.StatusOK, struct {
+		Types    []string `json:"types"`
+		Projects []string `json:"projects"`
+	}{
+		Types:    types,
+		Projects: projects,
+	})
+}

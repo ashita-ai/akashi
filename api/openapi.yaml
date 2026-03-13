@@ -859,6 +859,25 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /v1/decisions/facets:
+    get:
+      operationId: getDecisionFacets
+      tags: [Query]
+      summary: Decision filter facets
+      description: |
+        Returns distinct decision types and project names for the caller's
+        organisation. Intended for populating filter dropdowns in the UI.
+        Requires `reader` role or higher.
+      responses:
+        "200":
+          description: Distinct types and projects.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_DecisionFacets"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   /v1/decisions/{id}/revisions:
     get:
       operationId: getDecisionRevisions
@@ -3878,6 +3897,30 @@ components:
           type: array
           items:
             type: string
+
+    APIResponse_DecisionFacets:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/DecisionFacets"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    DecisionFacets:
+      type: object
+      required: [types, projects]
+      properties:
+        types:
+          type: array
+          items:
+            type: string
+          description: Distinct decision_type values in the organisation.
+        projects:
+          type: array
+          items:
+            type: string
+          description: Distinct project names in the organisation.
 
     TimelineBucket:
       type: object

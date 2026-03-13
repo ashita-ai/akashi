@@ -163,6 +163,30 @@ func (db *DB) LinkedProjects(ctx context.Context, orgID uuid.UUID, project, link
 	return projects, rows.Err()
 }
 
+// DistinctDecisionTypes returns all distinct decision_type values used in decisions within an org.
+func (db *DB) DistinctDecisionTypes(ctx context.Context, orgID uuid.UUID) ([]string, error) {
+	rows, err := db.pool.Query(ctx,
+		`SELECT DISTINCT decision_type FROM decisions
+		 WHERE org_id = $1 AND valid_to IS NULL
+		 ORDER BY decision_type`,
+		orgID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("storage: distinct decision types: %w", err)
+	}
+	defer rows.Close()
+
+	var types []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, fmt.Errorf("storage: scan distinct decision type: %w", err)
+		}
+		types = append(types, t)
+	}
+	return types, rows.Err()
+}
+
 // DistinctProjects returns all distinct project names used in decisions within an org.
 func (db *DB) DistinctProjects(ctx context.Context, orgID uuid.UUID) ([]string, error) {
 	rows, err := db.pool.Query(ctx,
