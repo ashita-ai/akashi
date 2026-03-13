@@ -229,8 +229,7 @@ func (h *Handlers) HandleGetDecision(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
 
-	idStr := r.PathValue("id")
-	id, err := uuid.Parse(idStr)
+	id, err := parsePathUUID(r, "id")
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid decision ID")
 		return
@@ -582,8 +581,7 @@ func (h *Handlers) HandleDecisionRevisions(w http.ResponseWriter, r *http.Reques
 	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
 
-	idStr := r.PathValue("id")
-	id, err := uuid.Parse(idStr)
+	id, err := parsePathUUID(r, "id")
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid decision ID")
 		return
@@ -613,8 +611,7 @@ func (h *Handlers) HandleDecisionRevisions(w http.ResponseWriter, r *http.Reques
 func (h *Handlers) HandleVerifyDecision(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
-	idStr := r.PathValue("id")
-	id, err := uuid.Parse(idStr)
+	id, err := parsePathUUID(r, "id")
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid decision ID")
 		return
@@ -710,8 +707,7 @@ func (h *Handlers) HandleSessionView(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
 
-	sidStr := r.PathValue("session_id")
-	sid, err := uuid.Parse(sidStr)
+	sid, err := parsePathUUID(r, "session_id")
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid session_id")
 		return
@@ -782,8 +778,7 @@ func (h *Handlers) HandleSessionView(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) HandleRetractDecision(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
-	idStr := r.PathValue("id")
-	id, err := uuid.Parse(idStr)
+	id, err := parsePathUUID(r, "id")
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid decision id")
 		return
@@ -837,8 +832,7 @@ func (h *Handlers) HandleRetractDecision(w http.ResponseWriter, r *http.Request)
 func (h *Handlers) HandleEraseDecision(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
-	idStr := r.PathValue("id")
-	id, err := uuid.Parse(idStr)
+	id, err := parsePathUUID(r, "id")
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid decision id")
 		return

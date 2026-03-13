@@ -3,8 +3,6 @@ package server
 import (
 	"net/http"
 
-	"github.com/google/uuid"
-
 	"github.com/ashita-ai/akashi/internal/model"
 )
 
@@ -82,8 +80,7 @@ func (h *Handlers) HandleListProjectLinks(w http.ResponseWriter, r *http.Request
 func (h *Handlers) HandleDeleteProjectLink(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
-	idStr := r.PathValue("id")
-	id, err := uuid.Parse(idStr)
+	id, err := parsePathUUID(r, "id")
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid id")
 		return

@@ -47,7 +47,7 @@ func (h *Handlers) HandleUpsertConflictLabel(w http.ResponseWriter, r *http.Requ
 	orgID := OrgIDFromContext(r.Context())
 	claims := ClaimsFromContext(r.Context())
 
-	conflictID, err := uuid.Parse(r.PathValue("id"))
+	conflictID, err := parsePathUUID(r, "id")
 	if err != nil {
 		writeJSON(w, r, http.StatusBadRequest, map[string]string{"error": "invalid conflict id"})
 		return
@@ -88,7 +88,7 @@ func (h *Handlers) HandleUpsertConflictLabel(w http.ResponseWriter, r *http.Requ
 func (h *Handlers) HandleGetConflictLabel(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
-	conflictID, err := uuid.Parse(r.PathValue("id"))
+	conflictID, err := parsePathUUID(r, "id")
 	if err != nil {
 		writeJSON(w, r, http.StatusBadRequest, map[string]string{"error": "invalid conflict id"})
 		return
@@ -111,7 +111,7 @@ func (h *Handlers) HandleGetConflictLabel(w http.ResponseWriter, r *http.Request
 func (h *Handlers) HandleDeleteConflictLabel(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
-	conflictID, err := uuid.Parse(r.PathValue("id"))
+	conflictID, err := parsePathUUID(r, "id")
 	if err != nil {
 		writeJSON(w, r, http.StatusBadRequest, map[string]string{"error": "invalid conflict id"})
 		return
