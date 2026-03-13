@@ -659,11 +659,6 @@ func (h *Handlers) HandleDecisionConflicts(w http.ResponseWriter, r *http.Reques
 	writeListJSON(w, r, conflicts, ptotal, hasMore, limit, offset)
 }
 
-// parsePathUUID extracts and parses a UUID path parameter from the request.
-func parsePathUUID(r *http.Request, name string) (uuid.UUID, error) {
-	return uuid.Parse(r.PathValue(name))
-}
-
 // parseConflictFilters extracts conflict filter parameters from the request query string.
 func parseConflictFilters(r *http.Request) storage.ConflictFilters {
 	filters := storage.ConflictFilters{}
