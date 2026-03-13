@@ -157,3 +157,91 @@ func (l *LiteDB) GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID) 
 	}
 	return os, nil
 }
+
+// GetConfidenceDistribution returns confidence histogram buckets and per-agent
+// confidence statistics for all current decisions in an org.
+func (l *LiteDB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (storage.ConfidenceDistribution, error) {
+	var d storage.ConfidenceDistribution
+
+	// SQLite lacks percentile_cont and FILTER, so we use CASE/SUM.
+	var b0, b1, b2, b3, b4, b5, b6, b7, b8, b9 int
+	var highCount int
+	err := l.db.QueryRowContext(ctx,
+		`SELECT
+		     COUNT(*),
+		     COALESCE(AVG(confidence), 0),
+		     COALESCE(SUM(CASE WHEN confidence >= 0.0 AND confidence < 0.1 THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN confidence >= 0.1 AND confidence < 0.2 THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN confidence >= 0.2 AND confidence < 0.3 THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN confidence >= 0.3 AND confidence < 0.4 THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN confidence >= 0.4 AND confidence < 0.5 THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN confidence >= 0.5 AND confidence < 0.6 THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN confidence >= 0.6 AND confidence < 0.7 THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN confidence >= 0.7 AND confidence < 0.8 THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN confidence >= 0.8 AND confidence < 0.9 THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN confidence >= 0.9 AND confidence <= 1.0 THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN confidence >= 0.9 THEN 1 ELSE 0 END), 0)
+		 FROM decisions
+		 WHERE org_id = ? AND valid_to IS NULL`,
+		uuidStr(orgID),
+	).Scan(
+		&d.TotalDecisions, &d.AvgConfidence,
+		&b0, &b1, &b2, &b3, &b4, &b5, &b6, &b7, &b8, &b9,
+		&highCount,
+	)
+	if err != nil {
+		return d, fmt.Errorf("sqlite: confidence distribution: %w", err)
+	}
+
+	if d.TotalDecisions > 0 {
+		d.HighConfidencePct = float64(highCount) * 100.0 / float64(d.TotalDecisions)
+	}
+
+	labels := [10]string{
+		"0.0-0.1", "0.1-0.2", "0.2-0.3", "0.3-0.4", "0.4-0.5",
+		"0.5-0.6", "0.6-0.7", "0.7-0.8", "0.8-0.9", "0.9-1.0",
+	}
+	counts := [10]int{b0, b1, b2, b3, b4, b5, b6, b7, b8, b9}
+	d.Buckets = make([]storage.ConfidenceBucket, len(labels))
+	for i := range labels {
+		d.Buckets[i] = storage.ConfidenceBucket{Bucket: labels[i], Count: counts[i]}
+	}
+
+	// Approximate median: sort all confidence values. This is fine for moderate
+	// decision counts; SQLite has no built-in percentile function.
+	var median float64
+	err = l.db.QueryRowContext(ctx,
+		`SELECT COALESCE(confidence, 0) FROM decisions
+		 WHERE org_id = ? AND valid_to IS NULL
+		 ORDER BY confidence
+		 LIMIT 1 OFFSET (SELECT COUNT(*)/2 FROM decisions WHERE org_id = ? AND valid_to IS NULL)`,
+		uuidStr(orgID), uuidStr(orgID),
+	).Scan(&median)
+	if err == nil {
+		d.MedianConfidence = median
+	}
+
+	// Per-agent breakdown.
+	rows, err := l.db.QueryContext(ctx,
+		`SELECT agent_id, AVG(confidence), MIN(confidence), MAX(confidence), COUNT(*)
+		 FROM decisions
+		 WHERE org_id = ? AND valid_to IS NULL
+		 GROUP BY agent_id
+		 ORDER BY AVG(confidence) DESC`,
+		uuidStr(orgID),
+	)
+	if err != nil {
+		return d, fmt.Errorf("sqlite: confidence by agent: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var a storage.AgentConfidenceStats
+		if err := rows.Scan(&a.AgentID, &a.AvgConfidence, &a.MinConfidence, &a.MaxConfidence, &a.DecisionCount); err != nil {
+			return d, fmt.Errorf("sqlite: scan agent confidence: %w", err)
+		}
+		d.ByAgent = append(d.ByAgent, a)
+	}
+
+	return d, nil
+}

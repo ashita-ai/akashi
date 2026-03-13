@@ -117,6 +117,7 @@ type Store interface {
 	GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID) (ConflictStatusCounts, error)
 	GetWontFixRate(ctx context.Context, orgID uuid.UUID) (WontFixRate, error)
 	GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID) (OutcomeSignalsSummary, error)
+	GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (ConfidenceDistribution, error)
 
 	// ---- Error classification ----
 

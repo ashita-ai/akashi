@@ -12,7 +12,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
-// mockStore embeds storage.Store so we only need to override the 4 methods
+// mockStore embeds storage.Store so we only need to override the methods
 // used by tracehealth.Service.Compute. Calls to any other method will panic,
 // which is acceptable for these unit tests.
 type mockStore struct {
@@ -26,6 +26,8 @@ type mockStore struct {
 	conflictErr      error
 	outcomeSignals   storage.OutcomeSignalsSummary
 	outcomeErr       error
+	confidenceDist   storage.ConfidenceDistribution
+	confidenceErr    error
 }
 
 func (m *mockStore) GetDecisionQualityStats(_ context.Context, _ uuid.UUID) (storage.DecisionQualityStats, error) {
@@ -42,6 +44,10 @@ func (m *mockStore) GetConflictStatusCounts(_ context.Context, _ uuid.UUID) (sto
 
 func (m *mockStore) GetOutcomeSignalsSummary(_ context.Context, _ uuid.UUID) (storage.OutcomeSignalsSummary, error) {
 	return m.outcomeSignals, m.outcomeErr
+}
+
+func (m *mockStore) GetConfidenceDistribution(_ context.Context, _ uuid.UUID) (storage.ConfidenceDistribution, error) {
+	return m.confidenceDist, m.confidenceErr
 }
 
 func TestComputeGaps_AllHealthy(t *testing.T) {
@@ -226,6 +232,9 @@ func TestCompute_HealthyOrg(t *testing.T) {
 	// Outcome signals populated when total > 0.
 	require.NotNil(t, m.OutcomeSignals)
 	assert.Equal(t, 100, m.OutcomeSignals.DecisionsTotal)
+
+	// Confidence distribution populated when total > 0.
+	require.NotNil(t, m.ConfidenceDistribution)
 }
 
 func TestCompute_NoConflictsOmitsConflictMetrics(t *testing.T) {
@@ -293,6 +302,21 @@ func TestCompute_OutcomeSignalsError(t *testing.T) {
 	_, err := svc.Compute(context.Background(), uuid.New())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "outcome signals")
+}
+
+func TestCompute_ConfidenceDistributionError(t *testing.T) {
+	ms := &mockStore{
+		qualityStats:   storage.DecisionQualityStats{Total: 5, AvgCompleteness: 0.5},
+		evidenceStats:  storage.EvidenceCoverageStats{TotalDecisions: 5},
+		conflictCounts: storage.ConflictStatusCounts{},
+		outcomeSignals: storage.OutcomeSignalsSummary{DecisionsTotal: 5},
+		confidenceErr:  errors.New("connection reset"),
+	}
+	svc := New(ms)
+
+	_, err := svc.Compute(context.Background(), uuid.New())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "confidence distribution")
 }
 
 func TestComputeGaps_OutcomeSignals_RevisedWithin48h(t *testing.T) {
