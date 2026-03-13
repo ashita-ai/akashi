@@ -13,6 +13,7 @@ import type {
   CreateGrantRequest,
   Decision,
   DecisionConflict,
+  DecisionFacets,
   ConflictGroup,
   Grant,
   GrantsList,
@@ -143,6 +144,10 @@ export async function queryDecisions(
     limit: env.limit,
     offset: env.offset,
   };
+}
+
+export async function listDecisionFacets(): Promise<DecisionFacets> {
+  return request<DecisionFacets>("/v1/decisions/facets");
 }
 
 export async function getRecentDecisions(params?: {

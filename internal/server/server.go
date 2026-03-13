@@ -190,6 +190,9 @@ func New(cfg ServerConfig) *Server {
 	// Decision timeline summary (reader+).
 	mux.Handle("GET /v1/decisions/timeline", readRole(http.HandlerFunc(h.HandleDecisionTimeline)))
 
+	// Decision facets — distinct types & projects for filter dropdowns (reader+).
+	mux.Handle("GET /v1/decisions/facets", readRole(http.HandlerFunc(h.HandleDecisionFacets)))
+
 	// Decision revision history (reader+).
 	mux.Handle("GET /v1/decisions/{id}/revisions", readRole(http.HandlerFunc(h.HandleDecisionRevisions)))
 

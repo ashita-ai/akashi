@@ -75,6 +75,11 @@ export interface Decision {
   valid_to: string | null;
   transaction_time: string;
   created_at: string;
+  session_id?: string;
+  agent_context?: Record<string, unknown>;
+  tool?: string;
+  model?: string;
+  project?: string;
   alternatives?: Alternative[];
   evidence?: Evidence[];
 }
@@ -205,10 +210,16 @@ export interface QueryFilters {
   decision_type?: string;
   confidence_min?: number;
   outcome?: string;
+  project?: string;
   time_range?: {
     from: string;
     to: string;
   };
+}
+
+export interface DecisionFacets {
+  types: string[];
+  projects: string[];
 }
 
 export interface QueryRequest {
