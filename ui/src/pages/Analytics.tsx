@@ -459,11 +459,11 @@ export default function Analytics() {
           : "text-red-500";
 
   return (
-    <div className="space-y-6 animate-page">
-      <div className="flex items-start justify-between gap-4">
+    <div className="space-y-8 animate-page">
+      <div className="page-header flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Analytics</h1>
-          <p className="mt-0.5 text-sm text-muted-foreground">Conflict trends and decision quality over time</p>
+          <h1 className="text-2xl font-semibold">Analytics</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Conflict trends and decision quality over time</p>
         </div>
         <PeriodSelector value={period} onChange={setPeriod} />
       </div>
@@ -472,7 +472,7 @@ export default function Analytics() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card className="gradient-border hover:glow-emerald transition-shadow duration-300">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Health Score</CardTitle>
+            <CardTitle className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Health Score</CardTitle>
             <HeartPulse className="h-4 w-4 text-emerald-500 animate-pulse" />
           </CardHeader>
           <CardContent>
@@ -494,7 +494,7 @@ export default function Analytics() {
 
         <Card className="gradient-border hover:glow-primary transition-shadow duration-300">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Completeness</CardTitle>
+            <CardTitle className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Completeness</CardTitle>
             <BarChart3 className="h-4 w-4 text-primary" />
           </CardHeader>
           <CardContent>
@@ -518,7 +518,7 @@ export default function Analytics() {
 
         <Card className="gradient-border hover:glow-amber transition-shadow duration-300">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">
+            <CardTitle className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Conflict Resolution
             </CardTitle>
             <ShieldAlert className="h-4 w-4 text-amber-500" />
@@ -542,7 +542,7 @@ export default function Analytics() {
 
         <Card className="gradient-border hover:glow-purple transition-shadow duration-300">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">
+            <CardTitle className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Evidence Coverage
             </CardTitle>
             <Activity className="h-4 w-4 text-purple-500" />

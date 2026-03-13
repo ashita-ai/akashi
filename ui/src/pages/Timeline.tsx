@@ -288,11 +288,11 @@ export default function Timeline() {
   }
 
   return (
-    <div className="space-y-6 animate-page">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+    <div className="space-y-8 animate-page">
+      <div className="page-header flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Decision Timeline</h1>
-          <p className="mt-0.5 text-sm text-muted-foreground">
+          <h1 className="text-2xl font-semibold">Decision Timeline</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
             Executive summary of decisions across your organization
           </p>
         </div>
