@@ -71,15 +71,13 @@ export interface Decision {
   precedent_ref: string | null;
   session_id?: string | null;
   project?: string | null;
+  agent_context?: Record<string, unknown>;
+  tool?: string;
+  model?: string;
   valid_from: string;
   valid_to: string | null;
   transaction_time: string;
   created_at: string;
-  session_id?: string;
-  agent_context?: Record<string, unknown>;
-  tool?: string;
-  model?: string;
-  project?: string;
   alternatives?: Alternative[];
   evidence?: Evidence[];
 }
