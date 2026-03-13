@@ -89,10 +89,11 @@
       justify-content: space-between;
       padding: 0 2.5rem;
       height: 54px;
-      background: rgba(5, 8, 26, 0.82);
-      backdrop-filter: blur(16px) saturate(180%);
-      -webkit-backdrop-filter: blur(16px) saturate(180%);
-      border-bottom: 1px solid var(--rule);
+      background: rgba(5, 8, 26, 0.88);
+      backdrop-filter: blur(20px) saturate(200%);
+      -webkit-backdrop-filter: blur(20px) saturate(200%);
+      border-bottom: 1px solid rgba(59,130,246,0.08);
+      box-shadow: 0 1px 0 rgba(59,130,246,0.04), 0 4px 24px rgba(0,0,0,0.2);
     }
 
     .nav-logo {
@@ -152,8 +153,13 @@
 
     .section-divider {
       height: 1px;
-      background: linear-gradient(to right, transparent 0%, var(--rule) 20%, var(--rule) 80%, transparent 100%);
+      background: linear-gradient(to right, transparent 0%, rgba(59,130,246,0.08) 20%, rgba(59,130,246,0.08) 80%, transparent 100%);
       margin: 0;
+    }
+
+    /* Subtle spotlight for alternate sections */
+    #conflicts, #audit-trail {
+      background: radial-gradient(ellipse 80% 50% at 50% 0%, rgba(59,130,246,0.03) 0%, transparent 70%);
     }
 
     .sec-num {
@@ -161,9 +167,12 @@
       top: 3rem;
       right: 0;
       font-family: var(--font-mono);
-      font-size: 7.5rem;
+      font-size: 8rem;
       font-weight: 700;
-      color: rgba(255,255,255,0.022);
+      background: linear-gradient(180deg, rgba(59,130,246,0.08) 0%, rgba(59,130,246,0.02) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
       line-height: 1;
       pointer-events: none;
       user-select: none;
@@ -194,10 +203,21 @@
 
     h1 {
       font-size: clamp(2.6rem, 5.5vw, 4rem);
-      font-weight: 300;
-      letter-spacing: -0.03em;
-      line-height: 1.1;
-      background: linear-gradient(150deg, #ffffff 0%, #b8cfff 100%);
+      font-weight: 200;
+      letter-spacing: -0.035em;
+      line-height: 1.08;
+      background: linear-gradient(155deg, #ffffff 0%, #e8f0ff 35%, #93c5fd 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    /* Bold accent line in hero h1 */
+    .h1-accent {
+      display: block;
+      font-weight: 800;
+      letter-spacing: -0.045em;
+      background: linear-gradient(135deg, #60a5fa 0%, #a5c8ff 60%, #c7deff 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
@@ -205,10 +225,10 @@
 
     h2 {
       font-size: clamp(1.8rem, 3.5vw, 2.6rem);
-      font-weight: 300;
+      font-weight: 250;
       letter-spacing: -0.03em;
-      line-height: 1.15;
-      background: linear-gradient(150deg, #ffffff 0%, #c8d8ff 100%);
+      line-height: 1.13;
+      background: linear-gradient(155deg, #f5f8ff 0%, #c8d8ff 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
@@ -272,15 +292,17 @@
       overflow: hidden;
     }
 
-    /* Subtle glow bloom behind headline */
+    /* Glow bloom behind headline */
     #hero .hero-grid > div:first-child::before {
       content: '';
       position: absolute;
-      top: -60px;
-      left: -80px;
-      width: 560px;
-      height: 360px;
-      background: radial-gradient(ellipse at 30% 40%, rgba(59,130,246,0.09) 0%, transparent 70%);
+      top: -80px;
+      left: -100px;
+      width: 620px;
+      height: 420px;
+      background:
+        radial-gradient(ellipse at 25% 35%, rgba(59,130,246,0.13) 0%, transparent 55%),
+        radial-gradient(ellipse at 60% 70%, rgba(96,165,250,0.05) 0%, transparent 50%);
       pointer-events: none;
       z-index: 0;
     }
@@ -348,9 +370,10 @@
       transform: translateY(-50%);
       width: 420px;
       height: 420px;
-      opacity: 0.035;
+      opacity: 0.055;
       pointer-events: none;
       animation: fadeIn 1.2s 0.5s ease both;
+      filter: drop-shadow(0 0 40px rgba(59,130,246,0.15));
     }
 
     /* ── TERMINAL ─────────────────────────────────────────────── */
@@ -360,16 +383,16 @@
 
     .terminal {
       background: var(--bg-code);
-      border: 1px solid var(--border);
+      border: 1px solid rgba(59,130,246,0.14);
       border-radius: var(--r-lg);
       overflow: hidden;
       font-family: var(--font-mono);
       font-size: 0.8rem;
       line-height: 1.7;
       box-shadow:
-        0 0 0 1px rgba(59,130,246,0.06),
-        0 20px 60px rgba(0,0,0,0.5),
-        0 0 80px rgba(59,130,246,0.04);
+        0 0 0 1px rgba(59,130,246,0.08),
+        0 24px 80px rgba(0,0,0,0.6),
+        0 0 100px rgba(59,130,246,0.07);
     }
 
     .terminal-bar {
@@ -483,7 +506,10 @@
       background: var(--bg-card);
       transition: background 0.2s;
     }
-    .problem-row:hover { background: var(--bg-elevated); }
+    .problem-row:hover {
+      background: var(--bg-elevated);
+      box-shadow: inset 3px 0 0 rgba(59,130,246,0.3);
+    }
     .problem-row + .problem-row { border-top: 1px solid var(--border); }
 
     .problem-num {
@@ -524,8 +550,12 @@
     }
     .primitive-card:hover {
       border-color: var(--border-hi);
-      transform: translateY(-2px);
+      transform: translateY(-3px);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.35);
     }
+
+    .pc-check:hover { box-shadow: 0 0 40px rgba(59,130,246,0.10), 0 12px 40px rgba(0,0,0,0.3); }
+    .pc-trace:hover { box-shadow: 0 0 40px rgba(52,211,153,0.08), 0 12px 40px rgba(0,0,0,0.3); }
 
     .primitive-card::after {
       content: '';
@@ -605,10 +635,11 @@
     .formula-panel {
       margin: 2rem 0;
       padding: 1.75rem 2rem;
-      background: var(--bg-code);
-      border: 1px solid var(--border);
+      background: linear-gradient(135deg, rgba(59,130,246,0.04) 0%, var(--bg-code) 50%);
+      border: 1px solid rgba(59,130,246,0.12);
       border-left: 3px solid var(--accent);
       border-radius: var(--r-lg);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
     }
 
     .formula-eq {
@@ -705,9 +736,9 @@
 
     /* ── CODE BLOCKS ─────────────────────────────────────────── */
     pre {
-      background: var(--bg-code);
+      background: linear-gradient(175deg, rgba(255,255,255,0.018) 0%, transparent 50%), var(--bg-code);
       border: 1px solid var(--border);
-      border-left: 3px solid rgba(59,130,246,0.4);
+      border-left: 3px solid rgba(59,130,246,0.5);
       border-radius: var(--r-lg);
       padding: 1.25rem 1.5rem;
       overflow-x: auto;
@@ -715,6 +746,7 @@
       font-size: 0.8rem;
       line-height: 1.7;
       color: var(--text-code);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
     }
 
     pre .hl  { color: var(--text); }
@@ -753,7 +785,10 @@
       border-right: 1px solid var(--border);
       border-bottom: 1px solid var(--border);
     }
-    .mcp-cell:hover { background: var(--bg-elevated); }
+    .mcp-cell:hover {
+      background: var(--bg-elevated);
+      box-shadow: inset 0 0 0 1px rgba(59,130,246,0.12);
+    }
     .mcp-cell:nth-child(3n) { border-right: none; }
     .mcp-cell:nth-child(n+4) { border-bottom: none; }
 
@@ -787,7 +822,10 @@
       border-bottom: 1px solid var(--border);
       transition: background 0.2s;
     }
-    .field-cell:hover { background: var(--bg-elevated); }
+    .field-cell:hover {
+      background: var(--bg-elevated);
+      box-shadow: inset 0 0 0 1px rgba(59,130,246,0.1);
+    }
     .field-cell:nth-child(4n) { border-right: none; }
     .field-cell:nth-child(n+5) { border-bottom: none; }
 
@@ -838,7 +876,8 @@
     }
     .sdk-card:hover {
       border-color: var(--border-hi);
-      transform: translateY(-2px);
+      transform: translateY(-3px);
+      box-shadow: 0 0 30px rgba(59,130,246,0.08), 0 12px 32px rgba(0,0,0,0.3);
     }
 
     .sdk-header {
@@ -880,7 +919,18 @@
     footer {
       border-top: 1px solid var(--rule);
       padding: 3rem 0;
-      background: rgba(0,0,0,0.2);
+      background: linear-gradient(180deg, rgba(0,0,0,0.15) 0%, rgba(0,0,0,0.3) 100%);
+      position: relative;
+    }
+
+    footer::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 50%; transform: translateX(-50%);
+      width: 60%;
+      height: 1px;
+      background: linear-gradient(to right, transparent, rgba(59,130,246,0.2), transparent);
+      pointer-events: none;
     }
 
     .footer-inner {
@@ -972,9 +1022,10 @@
     }
 
     .int-item:hover {
-      border-color: var(--border-hi);
+      border-color: rgba(59,130,246,0.5);
       color: var(--accent-hi);
       background: var(--accent-sub);
+      box-shadow: 0 0 12px rgba(59,130,246,0.12), inset 0 0 0 1px rgba(59,130,246,0.08);
     }
 
     /* ── PIPELINE ANIMATION ──────────────────────────────────── */
@@ -1004,6 +1055,9 @@
       padding: 1.5rem 1.75rem;
       background: var(--bg-card);
     }
+
+    .ba-before { background: linear-gradient(135deg, rgba(248,113,113,0.05) 0%, var(--bg-card) 60%); }
+    .ba-after  { background: linear-gradient(135deg, rgba(52,211,153,0.05) 0%, var(--bg-card) 60%); }
 
     .ba-pane + .ba-pane {
       border-left: 1px solid var(--border);
@@ -1112,7 +1166,7 @@
           <span class="live-dot"></span>
           Open source &nbsp;·&nbsp; Apache 2.0 &nbsp;·&nbsp; Go + PostgreSQL
         </div>
-        <h1 class="hero-h1">Version control<br/>for AI decisions.</h1>
+        <h1 class="hero-h1">Version control<br/><span class="h1-accent">for AI decisions.</span></h1>
         <p class="hero-sub">
           Multi-agent AI makes thousands of decisions. Akashi makes them visible, auditable, and coordinated — so agents build on prior work instead of contradicting it.
         </p>
