@@ -69,6 +69,8 @@ export interface Decision {
   completeness_score: number;
   outcome_score: number | null;
   precedent_ref: string | null;
+  session_id?: string | null;
+  project?: string | null;
   valid_from: string;
   valid_to: string | null;
   transaction_time: string;
