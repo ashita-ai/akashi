@@ -242,6 +242,9 @@ func (l *LiteDB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID)
 		}
 		d.ByAgent = append(d.ByAgent, a)
 	}
+	if err := rows.Err(); err != nil {
+		return d, fmt.Errorf("sqlite: iterate agent confidence: %w", err)
+	}
 
 	return d, nil
 }
