@@ -206,8 +206,6 @@ func TestHandleValidatePair_InvalidJSON(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v1/admin/conflicts/validate-pair", strings.NewReader("not json"))
 	h.HandleValidatePair(rec, req)
 
-	// The handler returns early without writing an error response when
-	// decodeJSON fails (it should call handleDecodeError but doesn't).
-	// This is existing behavior; the test documents it.
-	assert.Equal(t, http.StatusOK, rec.Code)
+	// The handler calls handleDecodeError which writes a 400 response.
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }

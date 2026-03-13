@@ -62,7 +62,7 @@ func (db *DB) CreateTraceAndAdjudicateConflictTx(ctx context.Context, traceParam
 		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: adjudicate conflict in trace tx: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: conflict not found")
+		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: conflict: %w", ErrNotFound)
 	}
 
 	// Insert conflict adjudication audit entry.

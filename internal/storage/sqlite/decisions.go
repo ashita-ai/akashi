@@ -65,7 +65,7 @@ func (l *LiteDB) CreateTraceAndAdjudicateConflictTx(ctx context.Context, tracePa
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return model.AgentRun{}, model.Decision{}, fmt.Errorf("sqlite: conflict %s not found in org", conflictParams.ConflictID)
+		return model.AgentRun{}, model.Decision{}, fmt.Errorf("sqlite: conflict: %w", storage.ErrNotFound)
 	}
 
 	if err := insertAuditTx(ctx, tx, conflictParams.Audit); err != nil {

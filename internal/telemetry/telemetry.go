@@ -3,6 +3,7 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -91,14 +92,7 @@ func Init(ctx context.Context, endpoint, serviceName, version string, insecure b
 	otel.SetMeterProvider(mp)
 
 	shutdown := func(ctx context.Context) error {
-		var firstErr error
-		if err := tp.Shutdown(ctx); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		if err := mp.Shutdown(ctx); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		return firstErr
+		return errors.Join(tp.Shutdown(ctx), mp.Shutdown(ctx))
 	}
 
 	return shutdown, nil

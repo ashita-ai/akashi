@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	akashi "github.com/ashita-ai/akashi"
@@ -43,10 +44,10 @@ func run0() int {
 }
 
 func parseLogLevel(raw string) slog.Level {
-	switch raw {
+	switch strings.ToLower(raw) {
 	case "debug":
 		return slog.LevelDebug
-	case "warn":
+	case "warn", "warning":
 		return slog.LevelWarn
 	case "error":
 		return slog.LevelError
