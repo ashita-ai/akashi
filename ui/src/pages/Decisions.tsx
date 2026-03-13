@@ -105,10 +105,10 @@ export default function Decisions() {
   const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
 
   return (
-    <div className="space-y-6 animate-page">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Decisions</h1>
-        <p className="mt-0.5 text-sm text-muted-foreground">Full audit trail of every traced AI decision</p>
+    <div className="space-y-8 animate-page">
+      <div className="page-header">
+        <h1 className="text-2xl font-semibold">Decisions</h1>
+        <p className="mt-1 text-sm text-muted-foreground">Full audit trail of every traced AI decision</p>
       </div>
 
       {/* Filters */}

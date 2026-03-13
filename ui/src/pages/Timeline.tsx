@@ -602,11 +602,11 @@ export default function Timeline() {
   }
 
   return (
-    <div className="space-y-6 animate-page">
+    <div className="space-y-8 animate-page">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Activity Feed</h1>
-        <p className="mt-0.5 text-sm text-muted-foreground">
+      <div className="page-header">
+        <h1 className="text-2xl font-semibold">Activity Feed</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
           What happened across your agents, sessions, and projects
         </p>
       </div>

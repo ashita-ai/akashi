@@ -53,8 +53,8 @@ export default function Login() {
         <div className="flex flex-col items-center gap-4">
           <AkashiLogo className="h-16 w-16 text-primary drop-shadow-[0_0_12px_hsl(var(--glow-blue)/0.4)]" />
           <div className="text-center space-y-1">
-            <h1 className="text-3xl font-bold tracking-tight">Akashi</h1>
-            <p className="text-sm text-muted-foreground">
+            <h1 className="text-3xl font-semibold">Akashi</h1>
+            <p className="text-[13px] text-muted-foreground tracking-wide">
               Decision trace layer for multi-agent AI systems
             </p>
           </div>

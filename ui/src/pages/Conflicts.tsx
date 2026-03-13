@@ -522,14 +522,14 @@ export default function Conflicts() {
   }
 
   return (
-    <div className="space-y-6 animate-page">
-      <div className="flex items-start justify-between gap-4">
+    <div className="space-y-8 animate-page">
+      <div className="page-header flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Conflicts</h1>
-          <p className="mt-0.5 text-sm text-muted-foreground">Contradictions detected between agent decisions</p>
+          <h1 className="text-2xl font-semibold">Conflicts</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Contradictions detected between agent decisions</p>
         </div>
         {data?.total != null && data.total > 0 && (
-          <Badge variant="outline" className="shrink-0 mt-1">
+          <Badge variant="outline" className="shrink-0 mt-1 text-[11px]">
             {data.total} group{data.total !== 1 ? "s" : ""}
           </Badge>
         )}

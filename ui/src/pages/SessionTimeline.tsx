@@ -41,13 +41,14 @@ export default function SessionTimeline() {
   }
 
   return (
-    <div className="space-y-6 animate-page">
-      <div className="flex items-center gap-4">
-        <Link to="/" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="h-4 w-4" />
-          Back
+    <div className="space-y-8 animate-page">
+      <div className="page-header flex items-center gap-4">
+        <Link to="/" className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Dashboard
         </Link>
-        <h1 className="text-2xl font-bold tracking-tight">Session Timeline</h1>
+        <span className="text-muted-foreground/30">/</span>
+        <h1 className="text-2xl font-semibold">Session Timeline</h1>
       </div>
 
       {/* Session summary */}

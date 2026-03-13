@@ -28,8 +28,11 @@ export default function SearchPage() {
   }
 
   return (
-    <div className="space-y-6 animate-page">
-      <h1 className="text-2xl font-bold tracking-tight">Search</h1>
+    <div className="space-y-8 animate-page">
+      <div className="page-header">
+        <h1 className="text-2xl font-semibold">Search</h1>
+        <p className="mt-1 text-sm text-muted-foreground">Semantic and keyword search across all decisions</p>
+      </div>
 
       <form onSubmit={handleSubmit} className="flex gap-3">
         <div className="relative flex-1">

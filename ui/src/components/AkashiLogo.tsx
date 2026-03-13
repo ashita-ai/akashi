@@ -37,7 +37,7 @@ export function AkashiBrand({ className, logoSize = "h-7 w-7" }: { className?: s
   return (
     <div className={cn("flex items-center gap-2.5", className)}>
       <AkashiLogo className={cn(logoSize, "text-primary drop-shadow-[0_0_8px_hsl(var(--glow-blue)/0.45)]")} />
-      <span className="text-lg font-bold tracking-tight text-foreground">Akashi</span>
+      <span className="text-[17px] font-semibold tracking-tight text-foreground">Akashi</span>
     </div>
   );
 }

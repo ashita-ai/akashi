@@ -65,8 +65,11 @@ export default function ExportPage() {
   }
 
   return (
-    <div className="space-y-6 animate-page">
-      <h1 className="text-2xl font-bold tracking-tight">Export</h1>
+    <div className="space-y-8 animate-page">
+      <div className="page-header">
+        <h1 className="text-2xl font-semibold">Export</h1>
+        <p className="mt-1 text-sm text-muted-foreground">Download decision data for analysis and compliance</p>
+      </div>
 
       <Card>
         <CardHeader>
