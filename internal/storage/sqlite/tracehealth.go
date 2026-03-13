@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -217,6 +219,9 @@ func (l *LiteDB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID)
 		 LIMIT 1 OFFSET (SELECT COUNT(*)/2 FROM decisions WHERE org_id = ? AND valid_to IS NULL)`,
 		uuidStr(orgID), uuidStr(orgID),
 	).Scan(&median)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return d, fmt.Errorf("sqlite: confidence median: %w", err)
+	}
 	if err == nil {
 		d.MedianConfidence = median
 	}
