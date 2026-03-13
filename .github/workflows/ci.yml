@@ -57,11 +57,11 @@ jobs:
 
       - name: Fuzz (crash detection)
         run: |
-          go test -run='^$' -fuzz=FuzzComputeContentHash -fuzztime=8s -parallel=2 ./internal/integrity/
-          go test -run='^$' -fuzz=FuzzBuildMerkleRoot    -fuzztime=8s -parallel=2 ./internal/integrity/
-          go test -run='^$' -fuzz=FuzzValidateToken      -fuzztime=8s -parallel=2 ./internal/auth/
-          go test -run='^$' -fuzz=FuzzValidateAgentID    -fuzztime=8s -parallel=2 ./internal/model/
-          go test -run='^$' -fuzz=FuzzDecodeJSON         -fuzztime=8s -parallel=2 ./internal/server/
+          go test -run='^$' -fuzz=FuzzComputeContentHash -fuzztime=8s -fuzzminimizetime=0s -parallel=2 ./internal/integrity/
+          go test -run='^$' -fuzz=FuzzBuildMerkleRoot    -fuzztime=8s -fuzzminimizetime=0s -parallel=2 ./internal/integrity/
+          go test -run='^$' -fuzz=FuzzValidateToken      -fuzztime=8s -fuzzminimizetime=0s -parallel=2 ./internal/auth/
+          go test -run='^$' -fuzz=FuzzValidateAgentID    -fuzztime=8s -fuzzminimizetime=0s -parallel=2 ./internal/model/
+          go test -run='^$' -fuzz=FuzzDecodeJSON         -fuzztime=8s -fuzzminimizetime=0s -parallel=2 ./internal/server/
 
       - name: Test
         run: go test -race -count=1 -coverprofile=coverage.out ./...
