@@ -292,6 +292,91 @@ func (l *LiteDB) GetResolvedConflictsByType(ctx context.Context, orgID uuid.UUID
 	return results, nil
 }
 
+// GetConflict returns a single conflict by ID.
+func (l *LiteDB) GetConflict(ctx context.Context, id, orgID uuid.UUID) (*model.DecisionConflict, error) {
+	q := `SELECT sc.id, sc.conflict_kind, sc.decision_a_id, sc.decision_b_id, sc.org_id,
+		        sc.agent_a, sc.agent_b, sc.decision_type_a, sc.decision_type_b,
+		        sc.outcome_a, sc.outcome_b,
+		        sc.topic_similarity, sc.outcome_divergence, sc.significance, sc.scoring_method,
+		        sc.explanation, sc.detected_at,
+		        sc.category, sc.severity, sc.status,
+		        sc.resolved_by, sc.resolved_at, sc.resolution_note,
+		        sc.relationship, sc.confidence_weight, sc.temporal_decay,
+		        sc.resolution_decision_id, sc.winning_decision_id, sc.group_id,
+		        da.run_id, db.run_id, da.confidence, db.confidence,
+		        da.reasoning, db.reasoning, da.valid_from, db.valid_from
+		 FROM scored_conflicts sc
+		 LEFT JOIN decisions da ON da.id = sc.decision_a_id
+		 LEFT JOIN decisions db ON db.id = sc.decision_b_id
+		 WHERE sc.id = ? AND sc.org_id = ?`
+	rows, err := l.db.QueryContext(ctx, q, uuidStr(id), uuidStr(orgID))
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: get conflict: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	conflicts, err := scanConflictRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(conflicts) == 0 {
+		return nil, nil
+	}
+	return &conflicts[0], nil
+}
+
+// UpdateConflictStatusWithAudit transitions a conflict to a new lifecycle state.
+func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, _ storage.MutationAuditEntry) (string, error) {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("sqlite: begin conflict status tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var oldStatus string
+	err = tx.QueryRowContext(ctx,
+		`SELECT status FROM scored_conflicts WHERE id = ? AND org_id = ?`,
+		uuidStr(id), uuidStr(orgID),
+	).Scan(&oldStatus)
+	if err != nil {
+		return "", fmt.Errorf("sqlite: get old conflict status: %w", err)
+	}
+
+	switch status {
+	case "resolved", "wont_fix":
+		var winIDVal any
+		if winningDecisionID != nil {
+			winIDVal = uuidStr(*winningDecisionID)
+		}
+		_, err = tx.ExecContext(ctx,
+			`UPDATE scored_conflicts
+			 SET status = ?, resolved_by = ?, resolved_at = datetime('now'),
+			     resolution_note = ?, winning_decision_id = ?
+			 WHERE id = ? AND org_id = ?`,
+			status, resolvedBy, resolutionNote, winIDVal,
+			uuidStr(id), uuidStr(orgID),
+		)
+	default:
+		_, err = tx.ExecContext(ctx,
+			`UPDATE scored_conflicts SET status = ? WHERE id = ? AND org_id = ?`,
+			status, uuidStr(id), uuidStr(orgID),
+		)
+	}
+	if err != nil {
+		return "", fmt.Errorf("sqlite: update conflict status: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("sqlite: commit conflict status: %w", err)
+	}
+	return oldStatus, nil
+}
+
+// CascadeResolveByOutcome is a no-op in SQLite mode (no pgvector for embedding similarity).
+func (l *LiteDB) CascadeResolveByOutcome(_ context.Context, _, _, _, _ uuid.UUID, _ float64, _ storage.MutationAuditEntry) (int, error) {
+	return 0, nil
+}
+
 // ---- Internal helpers ----
 
 func conflictWhere(orgID uuid.UUID, f storage.ConflictFilters) (string, []any) {

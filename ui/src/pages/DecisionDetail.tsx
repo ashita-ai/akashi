@@ -409,6 +409,42 @@ export default function DecisionDetail() {
                   <p className="text-sm">{decision.outcome}</p>
                 </div>
 
+                {/* Decision metadata */}
+                <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
+                  {decision.project && (
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Project</dt>
+                      <dd className="font-mono text-xs">{decision.project}</dd>
+                    </div>
+                  )}
+                  <div>
+                    <dt className="text-xs text-muted-foreground">Completeness</dt>
+                    <dd className="font-mono text-xs">{(decision.completeness_score * 100).toFixed(0)}%</dd>
+                  </div>
+                  {decision.outcome_score != null && (
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Outcome Score</dt>
+                      <dd className="font-mono text-xs">{(decision.outcome_score * 100).toFixed(0)}%</dd>
+                    </div>
+                  )}
+                  <div>
+                    <dt className="text-xs text-muted-foreground">Valid From</dt>
+                    <dd className="text-xs">{formatDate(decision.valid_from)}</dd>
+                  </div>
+                  {decision.valid_to && (
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Valid To</dt>
+                      <dd className="text-xs">{formatDate(decision.valid_to)}</dd>
+                    </div>
+                  )}
+                  {decision.precedent_ref && (
+                    <div className="col-span-2">
+                      <dt className="text-xs text-muted-foreground">Precedent</dt>
+                      <dd className="font-mono text-xs truncate">{decision.precedent_ref}</dd>
+                    </div>
+                  )}
+                </div>
+
                 {decision.reasoning && (
                   <div>
                     <h4 className="text-xs font-medium text-muted-foreground mb-1">

@@ -2668,3 +2668,188 @@ func TestHandleCheck_WithPriorResolutions(t *testing.T) {
 	summary, _ := checkResp["summary"].(string)
 	assert.Contains(t, summary, "prior conflict")
 }
+
+// ---------- handleResolve tests ----------
+
+func resolveRequest(args map[string]any) mcplib.CallToolRequest {
+	return mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name:      "akashi_resolve",
+			Arguments: args,
+		},
+	}
+}
+
+// seedConflictWithDecisions creates two decisions and a conflict, returning
+// the conflict ID and both decision IDs for use in resolve tests.
+func seedConflictWithDecisions(t *testing.T) (conflictID uuid.UUID, decAID, decBID string) {
+	t.Helper()
+	ctx := adminCtx()
+
+	suffix := uuid.New().String()[:8]
+	agentA := "resolve-a-" + suffix
+	agentB := "resolve-b-" + suffix
+	decType := "resolve-type-" + suffix
+	decAID = mustTrace(t, agentA, decType, "approach A: "+suffix, 0.8)
+	decBID = mustTrace(t, agentB, decType, "approach B: "+suffix, 0.7)
+
+	parsedA, err := uuid.Parse(decAID)
+	require.NoError(t, err)
+	parsedB, err := uuid.Parse(decBID)
+	require.NoError(t, err)
+
+	topicSim := 0.85
+	outcomDiv := 0.9
+	sig := 0.87
+	explanation := "test conflict for resolution"
+	severity := "high"
+	category := "strategic"
+
+	conflictID, err = testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind:      model.ConflictKindCrossAgent,
+		DecisionAID:       parsedA,
+		DecisionBID:       parsedB,
+		OrgID:             uuid.Nil,
+		AgentA:            agentA,
+		AgentB:            agentB,
+		DecisionTypeA:     decType,
+		DecisionTypeB:     decType,
+		DecisionType:      decType,
+		OutcomeA:          "approach A",
+		OutcomeB:          "approach B",
+		TopicSimilarity:   &topicSim,
+		OutcomeDivergence: &outcomDiv,
+		Significance:      &sig,
+		ScoringMethod:     "embedding",
+		Explanation:       &explanation,
+		Severity:          &severity,
+		Category:          &category,
+		Status:            "open",
+	})
+	require.NoError(t, err)
+	return conflictID, decAID, decBID
+}
+
+func TestHandleResolve_WithWinner(t *testing.T) {
+	ctx := adminCtx()
+	conflictID, decAID, _ := seedConflictWithDecisions(t)
+
+	result, err := testServer.handleResolve(ctx, resolveRequest(map[string]any{
+		"conflict_id":         conflictID.String(),
+		"status":              "resolved",
+		"winning_decision_id": decAID,
+		"resolution_note":     "approach A is better",
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "resolve should succeed: %s", parseToolText(t, result))
+
+	var resp struct {
+		ConflictID      string `json:"conflict_id"`
+		OldStatus       string `json:"old_status"`
+		NewStatus       string `json:"new_status"`
+		ResolvedBy      string `json:"resolved_by"`
+		CascadeResolved int    `json:"cascade_resolved"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.Equal(t, conflictID.String(), resp.ConflictID)
+	assert.Equal(t, "open", resp.OldStatus)
+	assert.Equal(t, "resolved", resp.NewStatus)
+	assert.Equal(t, testAdminID, resp.ResolvedBy)
+}
+
+func TestHandleResolve_WontFix(t *testing.T) {
+	ctx := adminCtx()
+	conflictID, _, _ := seedConflictWithDecisions(t)
+
+	result, err := testServer.handleResolve(ctx, resolveRequest(map[string]any{
+		"conflict_id":     conflictID.String(),
+		"status":          "wont_fix",
+		"resolution_note": "false positive",
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "wont_fix should succeed: %s", parseToolText(t, result))
+
+	var resp struct {
+		NewStatus string `json:"new_status"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.Equal(t, "wont_fix", resp.NewStatus)
+}
+
+func TestHandleResolve_Acknowledged(t *testing.T) {
+	ctx := adminCtx()
+	conflictID, _, _ := seedConflictWithDecisions(t)
+
+	result, err := testServer.handleResolve(ctx, resolveRequest(map[string]any{
+		"conflict_id": conflictID.String(),
+		"status":      "acknowledged",
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "acknowledged should succeed: %s", parseToolText(t, result))
+
+	var resp struct {
+		NewStatus string `json:"new_status"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.Equal(t, "acknowledged", resp.NewStatus)
+}
+
+func TestHandleResolve_NilClaims(t *testing.T) {
+	result, err := testServer.handleResolve(context.Background(), resolveRequest(map[string]any{
+		"conflict_id": uuid.New().String(),
+		"status":      "resolved",
+	}))
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, parseToolText(t, result), "authentication required")
+}
+
+func TestHandleResolve_MissingConflictID(t *testing.T) {
+	ctx := adminCtx()
+
+	result, err := testServer.handleResolve(ctx, resolveRequest(map[string]any{
+		"status": "resolved",
+	}))
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, parseToolText(t, result), "conflict_id is required")
+}
+
+func TestHandleResolve_InvalidStatus(t *testing.T) {
+	ctx := adminCtx()
+
+	result, err := testServer.handleResolve(ctx, resolveRequest(map[string]any{
+		"conflict_id": uuid.New().String(),
+		"status":      "invalid",
+	}))
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, parseToolText(t, result), "resolved")
+}
+
+func TestHandleResolve_WinnerWithNonResolvedStatus(t *testing.T) {
+	ctx := adminCtx()
+
+	result, err := testServer.handleResolve(ctx, resolveRequest(map[string]any{
+		"conflict_id":         uuid.New().String(),
+		"status":              "wont_fix",
+		"winning_decision_id": uuid.New().String(),
+	}))
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, parseToolText(t, result), "winning_decision_id can only be set")
+}
+
+func TestHandleResolve_WinnerNotInConflict(t *testing.T) {
+	ctx := adminCtx()
+	conflictID, _, _ := seedConflictWithDecisions(t)
+
+	result, err := testServer.handleResolve(ctx, resolveRequest(map[string]any{
+		"conflict_id":         conflictID.String(),
+		"status":              "resolved",
+		"winning_decision_id": uuid.New().String(),
+	}))
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, parseToolText(t, result), "must be one of the two decisions")
+}

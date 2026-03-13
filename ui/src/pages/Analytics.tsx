@@ -183,9 +183,11 @@ function StackedBar({
 function TrendChart({
   data,
   label,
+  suffix = "",
 }: {
   data: { date: string; value: number }[];
   label: string;
+  suffix?: string;
 }) {
   const max = Math.max(...data.map((d) => d.value), 1);
   return (
@@ -199,7 +201,7 @@ function TrendChart({
             style={{ height: `${Math.max((d.value / max) * 100, 2)}%` }}
           >
             <span className="absolute -top-6 left-1/2 -translate-x-1/2 rounded bg-foreground/90 px-1.5 py-0.5 text-[10px] font-semibold text-background opacity-0 group-hover/bar:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-md">
-              {d.value}
+              {d.value}{suffix}
             </span>
           </div>
         ))}
@@ -608,6 +610,7 @@ export default function Analytics() {
                     value: Math.round(d.avgCompleteness * 100),
                   }))}
                   label="Avg completeness % by day"
+                  suffix="%"
                 />
                 {dailyStats.length >= 2 && (
                   <div className="flex items-center gap-2 text-xs">

@@ -355,6 +355,48 @@ After testing, the coder calls akashi_assess to mark it correct:
 		),
 		s.handleAssess,
 	)
+
+	// akashi_resolve — resolve or acknowledge a conflict.
+	s.mcpServer.AddTool(
+		mcplib.NewTool("akashi_resolve",
+			mcplib.WithDescription(`Resolve, dismiss, or acknowledge a conflict between decisions.
+
+WHEN TO USE: When you or the user decides the outcome of a conflict detected
+by akashi. For example, after reviewing two contradictory decisions, you can
+declare one the winner or dismiss the conflict as a false positive.
+
+Use the conflict id from akashi_check or akashi_conflicts results. You must
+provide a status: "resolved" (with a winner), "wont_fix" (dismiss), or
+"acknowledged" (note it without resolving).
+
+When status is "resolved" and winning_decision_id is provided, the system
+will also cascade-resolve other open conflicts in the same group whose
+outcome embeddings align with the winner (cosine similarity >= 0.80).
+
+EXAMPLE: After a user says "go with approach A", call akashi_resolve with
+  conflict_id="<uuid>", status="resolved",
+  winning_decision_id="<uuid of decision A>",
+  resolution_note="User chose approach A because ..."`),
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithIdempotentHintAnnotation(false),
+			mcplib.WithOpenWorldHintAnnotation(true),
+			mcplib.WithString("conflict_id",
+				mcplib.Description("UUID of the conflict to resolve"),
+				mcplib.Required(),
+			),
+			mcplib.WithString("status",
+				mcplib.Description(`New status: "resolved", "wont_fix", or "acknowledged"`),
+				mcplib.Required(),
+			),
+			mcplib.WithString("winning_decision_id",
+				mcplib.Description("UUID of the winning decision. Only valid when status is \"resolved\". Must be one of the two decisions in the conflict."),
+			),
+			mcplib.WithString("resolution_note",
+				mcplib.Description("Optional explanation of why the conflict was resolved this way"),
+			),
+		),
+		s.handleResolve,
+	)
 }
 
 // resolveProjectFilter returns the project filter to apply to a read operation.
@@ -1193,6 +1235,133 @@ func (s *Server) handleAssess(ctx context.Context, request mcplib.CallToolReques
 		"outcome":       result.Outcome,
 		"assessor":      result.AssessorAgentID,
 		"recorded_at":   result.CreatedAt,
+	}, "", "  ")
+
+	return &mcplib.CallToolResult{
+		Content: []mcplib.Content{
+			mcplib.TextContent{Type: "text", Text: string(resultData)},
+		},
+	}, nil
+}
+
+// cascadeSimilarityThreshold is the minimum cosine similarity for cascade resolution.
+const cascadeSimilarityThreshold = 0.80
+
+func (s *Server) handleResolve(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	orgID := ctxutil.OrgIDFromContext(ctx)
+	claims := ctxutil.ClaimsFromContext(ctx)
+
+	if claims == nil {
+		return errorResult("authentication required"), nil
+	}
+
+	// Parse and validate conflict_id.
+	conflictIDStr := request.GetString("conflict_id", "")
+	if conflictIDStr == "" {
+		return errorResult("conflict_id is required"), nil
+	}
+	conflictID, err := uuid.Parse(conflictIDStr)
+	if err != nil {
+		return errorResult("conflict_id must be a valid UUID"), nil
+	}
+
+	// Parse and validate status.
+	status := request.GetString("status", "")
+	switch status {
+	case "resolved", "wont_fix", "acknowledged":
+		// valid
+	default:
+		return errorResult(`status must be one of: "resolved", "wont_fix", "acknowledged"`), nil
+	}
+
+	// Parse optional winning_decision_id.
+	var winningDecisionID *uuid.UUID
+	if winStr := request.GetString("winning_decision_id", ""); winStr != "" {
+		wid, parseErr := uuid.Parse(winStr)
+		if parseErr != nil {
+			return errorResult("winning_decision_id must be a valid UUID"), nil
+		}
+		winningDecisionID = &wid
+	}
+
+	// winning_decision_id only makes sense with "resolved".
+	if winningDecisionID != nil && status != "resolved" {
+		return errorResult("winning_decision_id can only be set when status is 'resolved'"), nil
+	}
+
+	// Validate winning_decision_id belongs to this conflict.
+	if winningDecisionID != nil {
+		conflict, cErr := s.db.GetConflict(ctx, conflictID, orgID)
+		if cErr != nil || conflict == nil {
+			return errorResult("conflict not found"), nil
+		}
+		if *winningDecisionID != conflict.DecisionAID && *winningDecisionID != conflict.DecisionBID {
+			return errorResult("winning_decision_id must be one of the two decisions in this conflict"), nil
+		}
+	}
+
+	// Parse optional resolution note.
+	var resolutionNote *string
+	if n := request.GetString("resolution_note", ""); n != "" {
+		resolutionNote = &n
+	}
+
+	resolvedBy := claims.AgentID
+	if resolvedBy == "" {
+		resolvedBy = claims.Subject
+	}
+
+	audit := storage.MutationAuditEntry{
+		OrgID:        orgID,
+		ActorAgentID: resolvedBy,
+		ActorRole:    string(claims.Role),
+		Endpoint:     "mcp/akashi_resolve",
+		Operation:    "conflict_status_changed",
+		ResourceType: "conflict",
+		ResourceID:   conflictID.String(),
+		Metadata:     map[string]any{"new_status": status, "resolved_by": resolvedBy},
+	}
+
+	oldStatus, err := s.db.UpdateConflictStatusWithAudit(ctx, conflictID, orgID, status, resolvedBy, resolutionNote, winningDecisionID, audit)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return errorResult("conflict not found"), nil
+		}
+		return errorResult(fmt.Sprintf("failed to update conflict: %v", err)), nil
+	}
+
+	// Cascade resolution when resolving with a winner in a group.
+	var cascaded int
+	if status == "resolved" && winningDecisionID != nil {
+		conflict, cErr := s.db.GetConflict(ctx, conflictID, orgID)
+		if cErr == nil && conflict != nil && conflict.GroupID != nil {
+			cascadeAudit := storage.MutationAuditEntry{
+				OrgID:        orgID,
+				ActorAgentID: resolvedBy,
+				ActorRole:    string(claims.Role),
+				Endpoint:     "mcp/akashi_resolve",
+				Operation:    "conflict_cascade_resolved",
+				ResourceType: "conflict",
+				ResourceID:   conflictID.String(),
+				Metadata:     map[string]any{"trigger_conflict_id": conflictID.String(), "winning_decision_id": winningDecisionID.String()},
+			}
+			cascaded, _ = s.db.CascadeResolveByOutcome(ctx, orgID, *conflict.GroupID, *winningDecisionID, conflictID, cascadeSimilarityThreshold, cascadeAudit)
+			if cascaded > 0 {
+				s.logger.Info("mcp: resolution cascade resolved conflicts",
+					"trigger_conflict_id", conflictID,
+					"group_id", conflict.GroupID,
+					"cascade_resolved", cascaded,
+				)
+			}
+		}
+	}
+
+	resultData, _ := json.MarshalIndent(map[string]any{
+		"conflict_id":      conflictID,
+		"old_status":       oldStatus,
+		"new_status":       status,
+		"resolved_by":      resolvedBy,
+		"cascade_resolved": cascaded,
 	}, "", "  ")
 
 	return &mcplib.CallToolResult{

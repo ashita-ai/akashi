@@ -414,33 +414,6 @@ export interface ConflictTrendPoint {
   resolved: number;
 }
 
-// Timeline
-export interface TimelineDecision {
-  id: string;
-  agent_id: string;
-  decision_type: string;
-  outcome: string;
-  confidence: number;
-  project?: string;
-  created_at: string;
-}
-
-export interface TimelineBucket {
-  bucket: string;
-  decision_count: number;
-  avg_confidence: number;
-  decision_types: Record<string, number>;
-  agents: Record<string, number>;
-  conflict_count: number;
-  top_decisions: TimelineDecision[];
-}
-
-export interface TimelineResponse {
-  granularity: string;
-  buckets: TimelineBucket[];
-  projects: string[];
-}
-
 // Health
 export interface HealthResponse {
   status: string;
