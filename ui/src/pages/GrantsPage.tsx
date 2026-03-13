@@ -130,11 +130,14 @@ export default function GrantsPage() {
   const expiredGrants = grants.filter((g) => isExpired(g));
 
   return (
-    <div className="space-y-6 animate-page">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold tracking-tight">Grants</h1>
-        <Button onClick={() => setShowCreate(true)}>
-          <Plus className="h-4 w-4 mr-2" />
+    <div className="space-y-8 animate-page">
+      <div className="page-header flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">Grants</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Cross-agent access control for decision traces</p>
+        </div>
+        <Button onClick={() => setShowCreate(true)} size="sm">
+          <Plus className="h-4 w-4" />
           Create Grant
         </Button>
       </div>

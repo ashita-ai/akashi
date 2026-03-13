@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestComputeContentHash_Deterministic(t *testing.T) {
@@ -161,13 +162,18 @@ func TestBuildMerkleRoot_Deterministic(t *testing.T) {
 	}
 }
 
-func TestBuildMerkleRoot_OrderMatters(t *testing.T) {
-	r1 := BuildMerkleRoot([]string{"a", "b", "c"})
-	r2 := BuildMerkleRoot([]string{"b", "a", "c"})
+func TestBuildMerkleRoot_PanicsOnUnsortedInput(t *testing.T) {
+	assert.Panics(t, func() {
+		BuildMerkleRoot([]string{"b", "a", "c"})
+	}, "BuildMerkleRoot should panic when given unsorted leaves")
+}
 
-	if r1 == r2 {
-		t.Fatal("different leaf ordering should produce different roots")
-	}
+func TestBuildMerkleRoot_SortedInputProducesDeterministicRoot(t *testing.T) {
+	// Sorted order produces a valid, deterministic root.
+	r1 := BuildMerkleRoot([]string{"a", "b", "c"})
+	r2 := BuildMerkleRoot([]string{"a", "b", "c"})
+	assert.Equal(t, r1, r2, "same sorted input should produce same root")
+	assert.Len(t, r1, 64, "root should be a 64-char hex SHA-256 digest")
 }
 
 func TestBuildMerkleRoot_OddLeafCount(t *testing.T) {

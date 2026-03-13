@@ -2,6 +2,7 @@ package integrity
 
 import (
 	"math"
+	"slices"
 	"testing"
 	"time"
 
@@ -133,6 +134,9 @@ func FuzzBuildMerkleRoot(f *testing.F) {
 				}
 			}
 		}
+
+		// BuildMerkleRoot requires sorted input; sort the fuzzed leaves.
+		slices.Sort(leaves)
 
 		// Must not panic.
 		root := BuildMerkleRoot(leaves)
