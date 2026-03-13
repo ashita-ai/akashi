@@ -8,6 +8,9 @@
   <meta property="og:title" content="Akashi — Version Control for AI Decisions" />
   <meta property="og:description" content="Agents contradict each other, relitigate settled work, and leave no audit trail. Akashi is the coordination layer that fixes this." />
   <meta property="og:type" content="website" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Akashi — Version Control for AI Decisions" />
+  <meta name="twitter:description" content="Agents contradict each other, relitigate settled work, and leave no audit trail. Akashi is the coordination layer that fixes this." />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' fill='none' stroke='%233b82f6' stroke-linecap='square' stroke-linejoin='miter'><path d='M7 7 H93 V48' stroke-width='13'/><path d='M7 7 V93 H48' stroke-width='13'/><line x1='87' y1='52' x2='52' y2='87' stroke-width='13'/><line x1='66' y1='52' x2='94' y2='90' stroke-width='13'/></svg>" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -267,6 +270,19 @@
       justify-content: center;
       padding: 5rem 0 6rem;
       overflow: hidden;
+    }
+
+    /* Subtle glow bloom behind headline */
+    #hero .hero-grid > div:first-child::before {
+      content: '';
+      position: absolute;
+      top: -60px;
+      left: -80px;
+      width: 560px;
+      height: 360px;
+      background: radial-gradient(ellipse at 30% 40%, rgba(59,130,246,0.09) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
     }
 
     .hero-grid {
@@ -912,6 +928,130 @@
       margin-top: 1.25rem;
     }
 
+    /* ── INTEGRATIONS STRIP ──────────────────────────────────── */
+    .int-strip {
+      padding: 1.25rem 0;
+      border-bottom: 1px solid var(--rule);
+      background: rgba(59,130,246,0.012);
+    }
+
+    .int-strip .container {
+      display: flex;
+      align-items: center;
+      gap: 2rem;
+      flex-wrap: wrap;
+    }
+
+    .int-label {
+      font-size: 0.7rem;
+      font-family: var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--text-muted);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .int-items {
+      display: flex;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .int-item {
+      padding: 0.22rem 0.7rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      font-family: var(--font-mono);
+      white-space: nowrap;
+      transition: border-color 0.2s, color 0.2s, background 0.2s;
+    }
+
+    .int-item:hover {
+      border-color: var(--border-hi);
+      color: var(--accent-hi);
+      background: var(--accent-sub);
+    }
+
+    /* ── PIPELINE ANIMATION ──────────────────────────────────── */
+    @keyframes arrowPulse {
+      0%, 70%, 100% { color: var(--text-muted); opacity: 0.5; }
+      35% { color: var(--accent-hi); opacity: 1; }
+    }
+
+    .pipeline .pa:nth-child(2)  { animation: arrowPulse 3.6s ease-in-out infinite 0.0s; }
+    .pipeline .pa:nth-child(4)  { animation: arrowPulse 3.6s ease-in-out infinite 0.6s; }
+    .pipeline .pa:nth-child(6)  { animation: arrowPulse 3.6s ease-in-out infinite 1.2s; }
+    .pipeline .pa:nth-child(8)  { animation: arrowPulse 3.6s ease-in-out infinite 1.8s; }
+    .pipeline .pa:nth-child(10) { animation: arrowPulse 3.6s ease-in-out infinite 2.4s; }
+
+    /* ── BEFORE/AFTER ────────────────────────────────────────── */
+    .before-after {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      margin-top: 3rem;
+      border: 1px solid var(--border);
+      border-radius: var(--r-lg);
+      overflow: hidden;
+    }
+
+    .ba-pane {
+      padding: 1.5rem 1.75rem;
+      background: var(--bg-card);
+    }
+
+    .ba-pane + .ba-pane {
+      border-left: 1px solid var(--border);
+    }
+
+    .ba-label {
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .ba-before .ba-label { color: var(--red); }
+    .ba-after  .ba-label { color: var(--green); }
+
+    .ba-label::before {
+      content: '';
+      display: block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      flex-shrink: 0;
+    }
+
+    .ba-lines {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      line-height: 1.9;
+      color: var(--text-code);
+    }
+
+    .ba-agent { color: var(--accent-hi); }
+    .ba-bad   { color: var(--red); }
+    .ba-good  { color: var(--green); }
+    .ba-muted { color: var(--text-muted); }
+
+    @media (max-width: 600px) {
+      .before-after { grid-template-columns: 1fr; }
+      .ba-pane + .ba-pane { border-left: none; border-top: 1px solid var(--border); }
+      .int-strip .container { gap: 1rem; }
+    }
+
     /* ── RESPONSIVE ──────────────────────────────────────────── */
     @media (max-width: 860px) {
       .hero-grid     { grid-template-columns: 1fr; }
@@ -974,7 +1114,7 @@
         </div>
         <h1 class="hero-h1">Version control<br/>for AI decisions.</h1>
         <p class="hero-sub">
-          Multi-agent AI systems make thousands of decisions. Akashi makes them visible, auditable, and coordinated — so agents build on each other's work instead of contradicting it.
+          Multi-agent AI makes thousands of decisions. Akashi makes them visible, auditable, and coordinated — so agents build on prior work instead of contradicting it.
         </p>
         <div class="hero-actions">
           <a href="#quick-start" class="btn btn-primary">Get started</a>
@@ -1025,6 +1165,20 @@
   </div>
 </section>
 
+<!-- ── INTEGRATIONS ─────────────────────────────────────────────── -->
+<div class="int-strip">
+  <div class="container">
+    <span class="int-label">Works with</span>
+    <div class="int-items">
+      <span class="int-item">Claude Code</span>
+      <span class="int-item">LangChain</span>
+      <span class="int-item">CrewAI</span>
+      <span class="int-item">Vercel AI SDK</span>
+      <span class="int-item">Any MCP agent</span>
+    </div>
+  </div>
+</div>
+
 <div class="section-divider"></div>
 
 <!-- ── PROBLEM ────────────────────────────────────────────────────── -->
@@ -1053,6 +1207,31 @@
         <div class="problem-content">
           <h3>No audit trail</h3>
           <p>When something goes wrong, nobody can answer: <em>who decided what, when, why, and what alternatives were considered?</em> Compliance asks. You have nothing.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="before-after" data-reveal data-reveal-delay="3">
+      <div class="ba-pane ba-before">
+        <div class="ba-label">Without Akashi</div>
+        <div class="ba-lines">
+          <div><span class="ba-agent">planner</span> → use microservices</div>
+          <div><span class="ba-agent">coder</span>&nbsp;&nbsp; → build a monolith</div>
+          <div class="ba-muted">  (neither knows the other decided)</div>
+          <div>&nbsp;</div>
+          <div><span class="ba-bad">✗ conflict surfaces in production</span></div>
+          <div class="ba-muted">  2 weeks later, after deploy</div>
+        </div>
+      </div>
+      <div class="ba-pane ba-after">
+        <div class="ba-label">With Akashi</div>
+        <div class="ba-lines">
+          <div><span class="ba-agent">planner</span> → use microservices <span class="ba-muted">(conf: 0.85)</span></div>
+          <div><span class="ba-agent">coder</span>&nbsp;&nbsp; → akashi_check()</div>
+          <div class="ba-muted">  ↳ precedent found: microservices</div>
+          <div>&nbsp;</div>
+          <div><span class="ba-good">✓ aligned before writing a line of code</span></div>
+          <div class="ba-muted">  conflict detected, not deployed</div>
         </div>
       </div>
     </div>
@@ -1167,7 +1346,6 @@
     <div class="qs-tabs" data-reveal data-reveal-delay="2">
       <button class="qs-tab active" onclick="switchTab(this,'qs-complete')">Complete stack</button>
       <button class="qs-tab" onclick="switchTab(this,'qs-cloud')">Self-hosted cloud</button>
-      <button class="qs-tab soon" tabindex="-1">Local<span class="soon-tag">Coming soon</span></button>
     </div>
 
     <div id="qs-complete" class="qs-pane active" data-reveal data-reveal-delay="3">
