@@ -4,8 +4,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
@@ -219,8 +217,7 @@ func (h *Handlers) HandleCreateHold(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) HandleReleaseHold(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
-	idStr := r.PathValue("id")
-	id, err := uuid.Parse(idStr)
+	id, err := parsePathUUID(r, "id")
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid hold id")
 		return

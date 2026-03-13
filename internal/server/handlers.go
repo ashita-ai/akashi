@@ -491,6 +491,11 @@ func (h *Handlers) HandleConfig(w http.ResponseWriter, r *http.Request) {
 
 // --- Shared helpers ---
 
+// parsePathUUID extracts and parses a UUID path parameter from the request.
+func parsePathUUID(r *http.Request, name string) (uuid.UUID, error) {
+	return uuid.Parse(r.PathValue(name))
+}
+
 func parseRunID(r *http.Request) (uuid.UUID, error) {
 	runIDStr := r.PathValue("run_id")
 	if runIDStr == "" {

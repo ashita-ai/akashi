@@ -125,14 +125,13 @@ func (h *Handlers) HandleListKeys(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) HandleRevokeKey(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
-	keyIDStr := r.PathValue("id")
-	keyID, err := uuid.Parse(keyIDStr)
+	keyID, err := parsePathUUID(r, "id")
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid key id")
 		return
 	}
 
-	audit := h.buildAuditEntry(r, orgID, "revoke_api_key", "api_key", keyIDStr, nil, nil, nil)
+	audit := h.buildAuditEntry(r, orgID, "revoke_api_key", "api_key", keyID.String(), nil, nil, nil)
 	if err := h.db.RevokeAPIKeyWithAudit(r.Context(), orgID, keyID, audit); err != nil {
 		if isNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "api key not found")
@@ -152,8 +151,7 @@ func (h *Handlers) HandleRotateKey(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
 
-	oldKeyIDStr := r.PathValue("id")
-	oldKeyID, err := uuid.Parse(oldKeyIDStr)
+	oldKeyID, err := parsePathUUID(r, "id")
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid key id")
 		return
@@ -196,7 +194,7 @@ func (h *Handlers) HandleRotateKey(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt: oldKey.ExpiresAt, // Inherit expiration.
 	}
 
-	audit := h.buildAuditEntry(r, orgID, "rotate_api_key", "api_key", oldKeyIDStr, nil, nil, nil)
+	audit := h.buildAuditEntry(r, orgID, "rotate_api_key", "api_key", oldKeyID.String(), nil, nil, nil)
 	created, err := h.db.RotateAPIKeyWithAudit(r.Context(), orgID, oldKeyID, newKey, audit)
 	if err != nil {
 		if isNotFoundError(err) {
