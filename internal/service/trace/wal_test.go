@@ -673,7 +673,7 @@ func TestWAL_HighestSegmentNonWALFiles(t *testing.T) {
 	closeWAL(t, w)
 }
 
-func TestWAL_RecoverSkipsReadError(t *testing.T) {
+func TestWAL_RecoverSkipsCorruptedSegment(t *testing.T) {
 	cfg := testWALConfig(t)
 	cfg.MaxSegmentRecs = minSegmentRecords
 
@@ -693,15 +693,18 @@ func TestWAL_RecoverSkipsReadError(t *testing.T) {
 	// Truncate first segment to less than header size — readSegment returns an error.
 	require.NoError(t, os.Truncate(segs[0], 5))
 
-	// Recover should stop at the corrupted segment.
+	// Recover should skip the corrupted segment and continue recovering
+	// events from intact subsequent segments.
 	w2, err := NewWAL(testLogger(), cfg)
 	require.NoError(t, err)
 	defer closeWAL(t, w2)
 
 	recovered, _, err := w2.Recover()
 	require.NoError(t, err)
-	// We should get fewer than 200 events since the first segment is corrupted.
-	assert.Less(t, len(recovered), 200, "corrupted segment should limit recovery")
+	// We should get fewer than 200 events (first segment lost) but more than 0
+	// (subsequent segments recovered).
+	assert.Less(t, len(recovered), 200, "corrupted segment events should be lost")
+	assert.Greater(t, len(recovered), 0, "intact segments after corruption should still be recovered")
 }
 
 func TestWAL_DefaultConfigValues(t *testing.T) {

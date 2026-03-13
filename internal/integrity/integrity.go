@@ -103,7 +103,9 @@ func hashPair(a, b string) string {
 }
 
 // BuildMerkleRoot constructs a Merkle tree from leaf hashes and returns the root.
-// Leaves must be sorted lexicographically by the caller for determinism.
+// Leaves must be sorted lexicographically for determinism; this function validates
+// sort order and panics if the precondition is violated, since unsorted input
+// silently produces wrong proofs that would undermine tamper-evidence.
 // If leaves is empty, returns an empty string.
 // If leaves has one element, the root is that element.
 // Odd-length levels hash the last node with itself for structural binding.
@@ -113,6 +115,14 @@ func BuildMerkleRoot(leaves []string) string {
 	}
 	if len(leaves) == 1 {
 		return leaves[0]
+	}
+
+	// Validate sort order — unsorted input produces non-deterministic roots.
+	for i := 1; i < len(leaves); i++ {
+		prev := leaves[i-1] //nolint:gosec // i starts at 1, so i-1 is always >= 0
+		if leaves[i] < prev {
+			panic(fmt.Sprintf("integrity: BuildMerkleRoot called with unsorted leaves at index %d: %q < %q", i, leaves[i], prev))
+		}
 	}
 
 	// Build tree bottom-up.

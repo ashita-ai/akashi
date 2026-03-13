@@ -289,9 +289,9 @@ func (w *WAL) Recover() ([]model.AgentEvent, uint64, error) {
 	for _, seg := range segments {
 		events, _, err := w.readSegment(seg)
 		if err != nil {
-			w.logger.Warn("wal: recovery: error reading segment, skipping remainder",
+			w.logger.Warn("wal: recovery: error reading segment, skipping to next",
 				"segment", seg, "error", err, "recovered_so_far", len(recovered))
-			break
+			continue
 		}
 		for _, e := range events {
 			if e.lsn > cp.FlushedLSN {

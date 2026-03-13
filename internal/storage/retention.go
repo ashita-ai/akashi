@@ -415,7 +415,9 @@ func (db *DB) BatchDeleteDecisions(ctx context.Context, orgID uuid.UUID, before 
 }
 
 // deleteBatch deletes a single batch of decisions (by ID) and their dependents
-// in a single transaction. Respects FK cascade order.
+// in a single transaction. Archives every row to deletion_audit_log before
+// deletion so the paper trail is preserved even for retention-based purges.
+// Respects FK cascade order.
 func (db *DB) deleteBatch(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID) (PurgeCount, error) {
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
@@ -425,28 +427,71 @@ func (db *DB) deleteBatch(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID)
 
 	var cnt PurgeCount
 
-	// 1. Delete evidence (scoped by org_id for defense in depth).
+	// 1. Archive and delete evidence (scoped by org_id for defense in depth).
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		 SELECT $2, d.agent_id, 'evidence', e.id::text, to_jsonb(e)
+		 FROM evidence e
+		 JOIN decisions d ON d.id = e.decision_id
+		 WHERE e.decision_id = ANY($1) AND e.org_id = $2`,
+		ids, orgID,
+	); err != nil {
+		return cnt, fmt.Errorf("storage: archive evidence batch: %w", err)
+	}
 	tag, err := tx.Exec(ctx, `DELETE FROM evidence WHERE decision_id = ANY($1) AND org_id = $2`, ids, orgID)
 	if err != nil {
 		return cnt, fmt.Errorf("storage: delete evidence batch: %w", err)
 	}
 	cnt.Evidence = tag.RowsAffected()
 
-	// 2. Delete alternatives (no org_id column; decision_id FK provides scoping).
+	// 2. Archive and delete alternatives (no org_id column; decision_id FK provides scoping).
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		 SELECT $2, d.agent_id, 'alternatives', a.id::text, to_jsonb(a)
+		 FROM alternatives a
+		 JOIN decisions d ON d.id = a.decision_id
+		 WHERE a.decision_id = ANY($1) AND d.org_id = $2`,
+		ids, orgID,
+	); err != nil {
+		return cnt, fmt.Errorf("storage: archive alternatives batch: %w", err)
+	}
 	tag, err = tx.Exec(ctx, `DELETE FROM alternatives WHERE decision_id = ANY($1)`, ids)
 	if err != nil {
 		return cnt, fmt.Errorf("storage: delete alternatives batch: %w", err)
 	}
 	cnt.Alternatives = tag.RowsAffected()
 
-	// 3. Delete decision_claims (scoped by org_id for defense in depth).
+	// 3. Archive and delete decision_claims (scoped by org_id for defense in depth).
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		 SELECT $2, d.agent_id, 'decision_claims', c.id::text, to_jsonb(c)
+		 FROM decision_claims c
+		 JOIN decisions d ON d.id = c.decision_id
+		 WHERE c.decision_id = ANY($1) AND c.org_id = $2`,
+		ids, orgID,
+	); err != nil {
+		return cnt, fmt.Errorf("storage: archive claims batch: %w", err)
+	}
 	tag, err = tx.Exec(ctx, `DELETE FROM decision_claims WHERE decision_id = ANY($1) AND org_id = $2`, ids, orgID)
 	if err != nil {
 		return cnt, fmt.Errorf("storage: delete claims batch: %w", err)
 	}
 	cnt.Claims = tag.RowsAffected()
 
-	// 4. Null out precedent_ref / supersedes_id references to these decisions.
+	// 4. Archive and delete decision_assessments (ON DELETE CASCADE from decisions
+	// would silently drop them; archive first so the assessment history remains
+	// recoverable from deletion_audit_log).
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		 SELECT $2, da.assessor_agent_id, 'decision_assessments', da.id::text, to_jsonb(da)
+		 FROM decision_assessments da
+		 WHERE da.decision_id = ANY($1) AND da.org_id = $2`,
+		ids, orgID,
+	); err != nil {
+		return cnt, fmt.Errorf("storage: archive assessments batch: %w", err)
+	}
+
+	// 5. Null out precedent_ref / supersedes_id references to these decisions.
 	if _, err = tx.Exec(ctx, `UPDATE decisions SET precedent_ref = NULL WHERE precedent_ref = ANY($1) AND org_id = $2`, ids, orgID); err != nil {
 		return cnt, fmt.Errorf("storage: clear precedent refs batch: %w", err)
 	}
@@ -454,7 +499,7 @@ func (db *DB) deleteBatch(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID)
 		return cnt, fmt.Errorf("storage: clear supersedes refs batch: %w", err)
 	}
 
-	// 5. Queue Qdrant deletions via search_outbox.
+	// 6. Queue Qdrant deletions via search_outbox.
 	if _, err = tx.Exec(ctx,
 		`INSERT INTO search_outbox (decision_id, org_id, operation)
 		 SELECT id, $2, 'delete' FROM decisions WHERE id = ANY($1)
@@ -464,14 +509,36 @@ func (db *DB) deleteBatch(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID)
 		return cnt, fmt.Errorf("storage: queue outbox deletes batch: %w", err)
 	}
 
-	// 6. Delete scored conflicts referencing these decisions.
+	// 7. Archive and delete scored conflicts referencing these decisions.
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		 SELECT $2,
+		        'system',
+		        'scored_conflicts',
+		        (sc.decision_a_id::text || '::' || sc.decision_b_id::text),
+		        to_jsonb(sc)
+		 FROM scored_conflicts sc
+		 WHERE (sc.decision_a_id = ANY($1) OR sc.decision_b_id = ANY($1)) AND sc.org_id = $2`,
+		ids, orgID,
+	); err != nil {
+		return cnt, fmt.Errorf("storage: archive conflicts batch: %w", err)
+	}
 	if _, err = tx.Exec(ctx,
 		`DELETE FROM scored_conflicts WHERE (decision_a_id = ANY($1) OR decision_b_id = ANY($1)) AND org_id = $2`, ids, orgID,
 	); err != nil {
 		return cnt, fmt.Errorf("storage: delete conflicts batch: %w", err)
 	}
 
-	// 7. Delete decisions.
+	// 8. Archive and delete decisions.
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		 SELECT $2, d.agent_id, 'decisions', d.id::text, to_jsonb(d)
+		 FROM decisions d
+		 WHERE d.id = ANY($1) AND d.org_id = $2`,
+		ids, orgID,
+	); err != nil {
+		return cnt, fmt.Errorf("storage: archive decisions batch: %w", err)
+	}
 	tag, err = tx.Exec(ctx, `DELETE FROM decisions WHERE id = ANY($1) AND org_id = $2`, ids, orgID)
 	if err != nil {
 		return cnt, fmt.Errorf("storage: delete decisions batch: %w", err)
