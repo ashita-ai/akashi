@@ -336,3 +336,20 @@ type DecisionErasure struct {
 	Reason       string    `json:"reason"`
 	ErasedAt     time.Time `json:"erased_at"`
 }
+
+// ValidConflictKinds is the set of recognised ConflictKind values.
+var ValidConflictKinds = []ConflictKind{
+	ConflictKindCrossAgent,
+	ConflictKindSelfContradiction,
+}
+
+// IsValidConflictKind reports whether kind is a known ConflictKind.
+func IsValidConflictKind(kind string) bool {
+	for _, v := range ValidConflictKinds {
+		if string(v) == kind {
+			return true
+		}
+	}
+	return false
+}
+

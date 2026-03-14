@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -20,6 +21,14 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
 
+	if ck := r.URL.Query().Get("conflict_kind"); ck != "" {
+		if !model.IsValidConflictKind(ck) {
+			http.Error(w,
+				fmt.Sprintf("invalid conflict_kind %q, valid values: cross_agent, self_contradiction", ck),
+				http.StatusBadRequest)
+			return
+		}
+	}
 	filters := parseConflictFilters(r)
 	limit := queryLimit(r, 25)
 	offset := queryOffset(r)
