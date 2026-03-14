@@ -67,3 +67,101 @@ func (db *DB) GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID) (Ou
 
 	return s, nil
 }
+
+// GetConfidenceDistribution returns confidence histogram buckets and per-agent
+// confidence statistics for all current decisions in an org.
+func (db *DB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (ConfidenceDistribution, error) {
+	var d ConfidenceDistribution
+
+	// Aggregate stats + histogram in a single query. The FILTER clause counts
+	// decisions in each 0.1-wide bucket, and percentile_cont gives the median.
+	err := db.pool.QueryRow(ctx, `
+		SELECT
+		    COUNT(*)::int,
+		    COALESCE(AVG(confidence), 0),
+		    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY confidence), 0),
+		    COUNT(*) FILTER (WHERE confidence >= 0.0 AND confidence < 0.1)::int,
+		    COUNT(*) FILTER (WHERE confidence >= 0.1 AND confidence < 0.2)::int,
+		    COUNT(*) FILTER (WHERE confidence >= 0.2 AND confidence < 0.3)::int,
+		    COUNT(*) FILTER (WHERE confidence >= 0.3 AND confidence < 0.4)::int,
+		    COUNT(*) FILTER (WHERE confidence >= 0.4 AND confidence < 0.5)::int,
+		    COUNT(*) FILTER (WHERE confidence >= 0.5 AND confidence < 0.6)::int,
+		    COUNT(*) FILTER (WHERE confidence >= 0.6 AND confidence < 0.7)::int,
+		    COUNT(*) FILTER (WHERE confidence >= 0.7 AND confidence < 0.8)::int,
+		    COUNT(*) FILTER (WHERE confidence >= 0.8 AND confidence < 0.9)::int,
+		    COUNT(*) FILTER (WHERE confidence >= 0.9 AND confidence <= 1.0)::int,
+		    COALESCE(COUNT(*) FILTER (WHERE confidence >= 0.9) * 100.0 / NULLIF(COUNT(*), 0), 0)
+		FROM decisions
+		WHERE org_id = $1 AND valid_to IS NULL`, orgID).Scan(
+		&d.TotalDecisions, &d.AvgConfidence, &d.MedianConfidence,
+		&bucketCount{&d, 0}, &bucketCount{&d, 1}, &bucketCount{&d, 2},
+		&bucketCount{&d, 3}, &bucketCount{&d, 4}, &bucketCount{&d, 5},
+		&bucketCount{&d, 6}, &bucketCount{&d, 7}, &bucketCount{&d, 8},
+		&bucketCount{&d, 9},
+		&d.HighConfidencePct,
+	)
+	if err != nil {
+		return d, fmt.Errorf("storage: confidence distribution: %w", err)
+	}
+
+	// Per-agent confidence breakdown, ordered by avg descending so the most
+	// confident agents appear first.
+	rows, err := db.pool.Query(ctx, `
+		SELECT agent_id,
+		       AVG(confidence),
+		       MIN(confidence),
+		       MAX(confidence),
+		       COUNT(*)::int
+		FROM decisions
+		WHERE org_id = $1 AND valid_to IS NULL
+		GROUP BY agent_id
+		ORDER BY AVG(confidence) DESC`, orgID)
+	if err != nil {
+		return d, fmt.Errorf("storage: confidence by agent: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var a AgentConfidenceStats
+		if err := rows.Scan(&a.AgentID, &a.AvgConfidence, &a.MinConfidence, &a.MaxConfidence, &a.DecisionCount); err != nil {
+			return d, fmt.Errorf("storage: scan agent confidence: %w", err)
+		}
+		d.ByAgent = append(d.ByAgent, a)
+	}
+	if err := rows.Err(); err != nil {
+		return d, fmt.Errorf("storage: iterate agent confidence: %w", err)
+	}
+
+	return d, nil
+}
+
+// bucketCount is a sql.Scanner adapter that appends a ConfidenceBucket to the
+// distribution's Buckets slice when scanned. This avoids 10 temporary variables.
+type bucketCount struct {
+	dist *ConfidenceDistribution
+	idx  int
+}
+
+var bucketLabels = [10]string{
+	"0.0-0.1", "0.1-0.2", "0.2-0.3", "0.3-0.4", "0.4-0.5",
+	"0.5-0.6", "0.6-0.7", "0.7-0.8", "0.8-0.9", "0.9-1.0",
+}
+
+func (b *bucketCount) Scan(src any) error {
+	var count int
+	switch v := src.(type) {
+	case int64:
+		count = int(v)
+	case int32:
+		count = int(v)
+	case int:
+		count = v
+	default:
+		return fmt.Errorf("bucketCount: unsupported type %T", src)
+	}
+	b.dist.Buckets = append(b.dist.Buckets, ConfidenceBucket{
+		Bucket: bucketLabels[b.idx],
+		Count:  count,
+	})
+	return nil
+}
