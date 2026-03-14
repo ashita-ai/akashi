@@ -509,6 +509,23 @@ func TestTraceHealth(t *testing.T) {
 		assert.Equal(t, 1, summary.DecisionsTotal)
 		assert.Equal(t, 1, summary.NeverSuperseded)
 	})
+
+	t.Run("confidence distribution", func(t *testing.T) {
+		dist, err := db.GetConfidenceDistribution(ctx, orgID)
+		require.NoError(t, err)
+		assert.Equal(t, 1, dist.TotalDecisions)
+		assert.InDelta(t, 0.8, dist.AvgConfidence, 0.01)
+		assert.InDelta(t, 0.8, dist.MedianConfidence, 0.01)
+		assert.Len(t, dist.Buckets, 10)
+		// Confidence 0.8 falls in the "0.8-0.9" bucket (index 8).
+		assert.Equal(t, 1, dist.Buckets[8].Count)
+		assert.Equal(t, "0.8-0.9", dist.Buckets[8].Bucket)
+		assert.InDelta(t, 0.0, dist.HighConfidencePct, 0.01) // 0.8 < 0.9
+		assert.Len(t, dist.ByAgent, 1)
+		assert.Equal(t, "health-agent", dist.ByAgent[0].AgentID)
+		assert.InDelta(t, 0.8, dist.ByAgent[0].AvgConfidence, 0.01)
+		assert.Equal(t, 1, dist.ByAgent[0].DecisionCount)
+	})
 }
 
 func TestAuthz(t *testing.T) {

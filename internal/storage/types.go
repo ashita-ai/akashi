@@ -200,6 +200,35 @@ type IdempotencyLookup struct {
 }
 
 // ---------------------------------------------------------------------------
+// Confidence distribution types
+// ---------------------------------------------------------------------------
+
+// ConfidenceBucket is a single histogram bucket for confidence distribution.
+type ConfidenceBucket struct {
+	Bucket string `json:"bucket"` // e.g. "0.0-0.1", "0.9-1.0"
+	Count  int    `json:"count"`
+}
+
+// AgentConfidenceStats holds per-agent confidence summary statistics.
+type AgentConfidenceStats struct {
+	AgentID       string  `json:"agent_id"`
+	AvgConfidence float64 `json:"avg_confidence"`
+	MinConfidence float64 `json:"min_confidence"`
+	MaxConfidence float64 `json:"max_confidence"`
+	DecisionCount int     `json:"decision_count"`
+}
+
+// ConfidenceDistribution holds histogram buckets and per-agent breakdowns.
+type ConfidenceDistribution struct {
+	TotalDecisions    int                    `json:"total_decisions"`
+	AvgConfidence     float64                `json:"avg_confidence"`
+	MedianConfidence  float64                `json:"median_confidence"`
+	Buckets           []ConfidenceBucket     `json:"buckets"`
+	HighConfidencePct float64                `json:"high_confidence_pct"` // % of decisions with confidence >= 0.90
+	ByAgent           []AgentConfidenceStats `json:"by_agent"`
+}
+
+// ---------------------------------------------------------------------------
 // Trace health types (originally in tracehealth.go)
 // ---------------------------------------------------------------------------
 
