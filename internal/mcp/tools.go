@@ -719,7 +719,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		if uris := rootURIs(roots); len(uris) > 0 {
 			serverCtx["roots"] = uris
 		}
-		if project := inferProjectFromRoots(roots); project != "" {
+		if project := inferProjectFromRootsWithGit(roots); project != "" {
 			serverCtx["project"] = project
 		}
 	}
