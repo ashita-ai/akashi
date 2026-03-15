@@ -7,8 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Badge, decisionTypeBadgeVariant } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatDate } from "@/lib/utils";
-import { Search } from "lucide-react";
+import { formatRelativeTime } from "@/lib/utils";
+import { Search, Gauge, Brain, Wrench, FolderOpen, Cpu } from "lucide-react";
 
 export default function SearchPage() {
   const [query, setQuery] = useState("");
@@ -75,39 +75,76 @@ export default function SearchPage() {
           <p className="text-sm text-muted-foreground">
             {data.total} result{data.total !== 1 ? "s" : ""}
           </p>
-          {data.results.map((result) => (
-            <Link
-              key={result.decision.id}
-              to={`/decisions/${result.decision.run_id}`}
-              className="animate-list-item block"
-            >
-              <Card className="transition-all duration-200 hover:bg-accent/50 hover:shadow-glow-sm">
-                <CardContent className="p-4">
-                  <div className="space-y-1.5 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline" className="font-mono text-xs">
-                        {result.decision.agent_id}
-                      </Badge>
-                      <Badge variant={decisionTypeBadgeVariant(result.decision.decision_type)}>
-                        {result.decision.decision_type}
-                      </Badge>
+          {data.results.map((result) => {
+            const d = result.decision;
+            const relevance = Math.round(result.similarity_score * 100);
+            return (
+              <Link
+                key={d.id}
+                to={`/decisions/${d.run_id}`}
+                className="animate-list-item block"
+              >
+                <Card className="transition-all duration-200 hover:bg-accent/50 hover:shadow-glow-sm">
+                  <CardContent className="p-4">
+                    <div className="space-y-2 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 flex-wrap min-w-0">
+                          <Badge variant="outline" className="font-mono text-xs">
+                            {d.agent_id}
+                          </Badge>
+                          <Badge variant={decisionTypeBadgeVariant(d.decision_type)}>
+                            {d.decision_type}
+                          </Badge>
+                          {d.project && (
+                            <Badge variant="secondary" className="text-xs gap-1">
+                              <FolderOpen className="h-3 w-3" />
+                              {d.project}
+                            </Badge>
+                          )}
+                        </div>
+                        <span className="text-xs font-medium tabular-nums text-muted-foreground shrink-0" title={`Relevance: ${relevance}%`}>
+                          {relevance}%
+                        </span>
+                      </div>
+                      <p className="text-sm font-medium">{d.outcome}</p>
+                      {d.reasoning && (
+                        <p className="text-xs text-muted-foreground line-clamp-2">
+                          {d.reasoning}
+                        </p>
+                      )}
+                      <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
+                        <span className="flex items-center gap-1" title={`Confidence: ${Math.round(d.confidence * 100)}%`}>
+                          <Gauge className="h-3 w-3" />
+                          {Math.round(d.confidence * 100)}%
+                        </span>
+                        {d.completeness_score > 0 && (
+                          <span className="flex items-center gap-1" title={`Completeness: ${Math.round(d.completeness_score * 100)}%`}>
+                            <Brain className="h-3 w-3" />
+                            {Math.round(d.completeness_score * 100)}%
+                          </span>
+                        )}
+                        {d.tool && (
+                          <span className="flex items-center gap-1">
+                            <Wrench className="h-3 w-3" />
+                            {d.tool}
+                          </span>
+                        )}
+                        {d.model && (
+                          <span className="flex items-center gap-1">
+                            <Cpu className="h-3 w-3" />
+                            {d.model}
+                          </span>
+                        )}
+                        <span className="ml-auto shrink-0">
+                          {formatRelativeTime(d.created_at)}
+                        </span>
+                      </div>
                     </div>
-                    <p className="text-sm font-medium">
-                      {result.decision.outcome}
-                    </p>
-                    {result.decision.reasoning && (
-                      <p className="text-xs text-muted-foreground line-clamp-2">
-                        {result.decision.reasoning}
-                      </p>
-                    )}
-                    <p className="text-xs text-muted-foreground">
-                      {formatDate(result.decision.created_at)}
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-            </Link>
-          ))}
+                  </CardContent>
+                </Card>
+              </Link>
+            );
+          })}
         </div>
       )}
     </div>
