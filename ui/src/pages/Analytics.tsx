@@ -240,9 +240,12 @@ function DecisionTypeChart({ data }: { data: DecisionTypeCount[] }) {
     "from-teal-600 to-teal-400",
   ];
 
+  const visible = data.slice(0, 10);
+  const overflow = data.length - visible.length;
+
   return (
     <div className="space-y-2">
-      {data.map((dt, i) => (
+      {visible.map((dt, i) => (
         <div key={dt.decision_type} className="space-y-1">
           <div className="flex justify-between text-xs">
             <span className="text-muted-foreground font-medium truncate mr-2">
@@ -265,6 +268,11 @@ function DecisionTypeChart({ data }: { data: DecisionTypeCount[] }) {
           </div>
         </div>
       ))}
+      {overflow > 0 && (
+        <p className="text-xs text-muted-foreground pt-1">
+          +{overflow} more
+        </p>
+      )}
     </div>
   );
 }
@@ -603,7 +611,7 @@ export default function Analytics() {
         </Card>
       </div>
 
-      {/* ── Row 4: Conflict Breakdown (severity + agent pairs) ── */}
+      {/* ── Row 4: Conflicts by Severity + Trace Quality (both compact) ── */}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
@@ -645,74 +653,6 @@ export default function Analytics() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <Users className="h-4 w-4 text-muted-foreground" />
-              Conflicting Agent Pairs
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {conflictAnalytics.isPending ? (
-              <Skeleton className="h-24 w-full" />
-            ) : !analytics?.by_agent_pair?.length ? (
-              <p className="text-sm text-muted-foreground py-4 text-center">
-                No agent pair conflicts.
-              </p>
-            ) : (
-              <div className="space-y-2">
-                {analytics.by_agent_pair
-                  .sort((a, b) => b.count - a.count)
-                  .slice(0, 8)
-                  .map((pair) => (
-                    <div
-                      key={`${pair.agent_a}-${pair.agent_b}`}
-                      className="flex items-center justify-between rounded-lg border px-3 py-2.5 transition-all duration-200 hover:bg-accent/50 hover:shadow-sm"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Badge
-                          variant="outline"
-                          className="font-mono text-xs"
-                        >
-                          {pair.agent_a}
-                        </Badge>
-                        <span className="text-xs text-muted-foreground">
-                          vs
-                        </span>
-                        <Badge
-                          variant="outline"
-                          className="font-mono text-xs"
-                        >
-                          {pair.agent_b}
-                        </Badge>
-                      </div>
-                      <div className="flex items-center gap-3 text-xs">
-                        <span
-                          className={cn(
-                            pair.open > 0
-                              ? "text-amber-500"
-                              : "text-muted-foreground",
-                          )}
-                        >
-                          {pair.open} open
-                        </span>
-                        <span className="text-emerald-500">
-                          {pair.resolved} resolved
-                        </span>
-                        <span className="text-muted-foreground font-medium">
-                          {pair.count} total
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* ── Row 5: Trace Quality Breakdown + Agent Scorecard ── */}
-      <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle className="text-sm font-medium">
@@ -777,6 +717,74 @@ export default function Analytics() {
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* ── Row 5: Conflicting Agent Pairs + Agent Scorecard (both lists) ── */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <Users className="h-4 w-4 text-muted-foreground" />
+              Conflicting Agent Pairs
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {conflictAnalytics.isPending ? (
+              <Skeleton className="h-24 w-full" />
+            ) : !analytics?.by_agent_pair?.length ? (
+              <p className="text-sm text-muted-foreground py-4 text-center">
+                No agent pair conflicts.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {analytics.by_agent_pair
+                  .sort((a, b) => b.count - a.count)
+                  .slice(0, 8)
+                  .map((pair) => (
+                    <div
+                      key={`${pair.agent_a}-${pair.agent_b}`}
+                      className="flex items-center justify-between rounded-lg border px-3 py-2.5 transition-all duration-200 hover:bg-accent/50 hover:shadow-sm"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Badge
+                          variant="outline"
+                          className="font-mono text-xs"
+                        >
+                          {pair.agent_a}
+                        </Badge>
+                        <span className="text-xs text-muted-foreground">
+                          vs
+                        </span>
+                        <Badge
+                          variant="outline"
+                          className="font-mono text-xs"
+                        >
+                          {pair.agent_b}
+                        </Badge>
+                      </div>
+                      <div className="flex items-center gap-3 text-xs">
+                        <span
+                          className={cn(
+                            pair.open > 0
+                              ? "text-amber-500"
+                              : "text-muted-foreground",
+                          )}
+                        >
+                          {pair.open} open
+                        </span>
+                        <span className="text-emerald-500">
+                          {pair.resolved} resolved
+                        </span>
+                        <span className="text-muted-foreground font-medium">
+                          {pair.count} total
+                        </span>
+                      </div>
+                    </div>
+                  ))}
               </div>
             )}
           </CardContent>
