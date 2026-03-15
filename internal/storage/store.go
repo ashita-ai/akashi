@@ -121,6 +121,7 @@ type Store interface {
 	GetWontFixRate(ctx context.Context, orgID uuid.UUID) (WontFixRate, error)
 	GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID) (OutcomeSignalsSummary, error)
 	GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (ConfidenceDistribution, error)
+	GetDecisionTypeDistribution(ctx context.Context, orgID uuid.UUID) ([]DecisionTypeCount, error)
 
 	// ---- Error classification ----
 

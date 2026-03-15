@@ -28,6 +28,8 @@ type mockStore struct {
 	outcomeErr       error
 	confidenceDist   storage.ConfidenceDistribution
 	confidenceErr    error
+	typeDist         []storage.DecisionTypeCount
+	typeDistErr      error
 }
 
 func (m *mockStore) GetDecisionQualityStats(_ context.Context, _ uuid.UUID) (storage.DecisionQualityStats, error) {
@@ -48,6 +50,10 @@ func (m *mockStore) GetOutcomeSignalsSummary(_ context.Context, _ uuid.UUID) (st
 
 func (m *mockStore) GetConfidenceDistribution(_ context.Context, _ uuid.UUID) (storage.ConfidenceDistribution, error) {
 	return m.confidenceDist, m.confidenceErr
+}
+
+func (m *mockStore) GetDecisionTypeDistribution(_ context.Context, _ uuid.UUID) ([]storage.DecisionTypeCount, error) {
+	return m.typeDist, m.typeDistErr
 }
 
 func TestComputeGaps_AllHealthy(t *testing.T) {
@@ -197,6 +203,11 @@ func TestCompute_HealthyOrg(t *testing.T) {
 			NeverCited:       30,
 			CitedAtLeastOnce: 70,
 		},
+		typeDist: []storage.DecisionTypeCount{
+			{DecisionType: "architecture", Count: 50},
+			{DecisionType: "trade_off", Count: 30},
+			{DecisionType: "security", Count: 20},
+		},
 	}
 	svc := New(ms)
 
@@ -235,6 +246,11 @@ func TestCompute_HealthyOrg(t *testing.T) {
 
 	// Confidence distribution populated when total > 0.
 	require.NotNil(t, m.ConfidenceDistribution)
+
+	// Decision type distribution populated.
+	require.Len(t, m.DecisionTypeDistribution, 3)
+	assert.Equal(t, "architecture", m.DecisionTypeDistribution[0].DecisionType)
+	assert.Equal(t, 50, m.DecisionTypeDistribution[0].Count)
 }
 
 func TestCompute_NoConflictsOmitsConflictMetrics(t *testing.T) {
@@ -317,6 +333,21 @@ func TestCompute_ConfidenceDistributionError(t *testing.T) {
 	_, err := svc.Compute(context.Background(), uuid.New())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "confidence distribution")
+}
+
+func TestCompute_DecisionTypeDistributionError(t *testing.T) {
+	ms := &mockStore{
+		qualityStats:   storage.DecisionQualityStats{Total: 5, AvgCompleteness: 0.5},
+		evidenceStats:  storage.EvidenceCoverageStats{TotalDecisions: 5},
+		conflictCounts: storage.ConflictStatusCounts{},
+		outcomeSignals: storage.OutcomeSignalsSummary{DecisionsTotal: 5},
+		typeDistErr:    errors.New("table missing"),
+	}
+	svc := New(ms)
+
+	_, err := svc.Compute(context.Background(), uuid.New())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decision type distribution")
 }
 
 func TestComputeGaps_OutcomeSignals_RevisedWithin48h(t *testing.T) {

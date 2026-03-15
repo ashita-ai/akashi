@@ -15,13 +15,14 @@ import (
 
 // Metrics is the top-level trace health response.
 type Metrics struct {
-	Status                 string                          `json:"status"` // healthy, needs_attention, insufficient_data
-	Completeness           *CompletenessMetrics            `json:"completeness"`
-	Evidence               *EvidenceMetrics                `json:"evidence"`
-	Conflicts              *ConflictMetrics                `json:"conflicts,omitempty"`
-	OutcomeSignals         *storage.OutcomeSignalsSummary  `json:"outcome_signals,omitempty"`
-	ConfidenceDistribution *storage.ConfidenceDistribution `json:"confidence_distribution,omitempty"`
-	Gaps                   []string                        `json:"gaps"`
+	Status                   string                          `json:"status"` // healthy, needs_attention, insufficient_data
+	Completeness             *CompletenessMetrics            `json:"completeness"`
+	Evidence                 *EvidenceMetrics                `json:"evidence"`
+	Conflicts                *ConflictMetrics                `json:"conflicts,omitempty"`
+	OutcomeSignals           *storage.OutcomeSignalsSummary  `json:"outcome_signals,omitempty"`
+	ConfidenceDistribution   *storage.ConfidenceDistribution `json:"confidence_distribution,omitempty"`
+	DecisionTypeDistribution []storage.DecisionTypeCount     `json:"decision_type_distribution,omitempty"`
+	Gaps                     []string                        `json:"gaps"`
 }
 
 // CompletenessMetrics tracks decision quality and reasoning coverage.
@@ -156,6 +157,15 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID) (*Metrics, error
 	}
 	if qs.Total > 0 {
 		m.ConfidenceDistribution = &cd
+	}
+
+	// Decision type distribution.
+	dtd, err := s.db.GetDecisionTypeDistribution(ctx, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("tracehealth: decision type distribution: %w", err)
+	}
+	if len(dtd) > 0 {
+		m.DecisionTypeDistribution = dtd
 	}
 
 	// Gap detection: rule-based, max 3 gaps, ordered by severity.

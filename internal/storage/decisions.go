@@ -1816,6 +1816,35 @@ func (db *DB) GetDecisionQualityStats(ctx context.Context, orgID uuid.UUID) (Dec
 	return s, nil
 }
 
+// GetDecisionTypeDistribution returns the count of current decisions grouped by
+// decision_type, ordered by count descending. Only active decisions (valid_to IS NULL)
+// are included.
+func (db *DB) GetDecisionTypeDistribution(ctx context.Context, orgID uuid.UUID) ([]DecisionTypeCount, error) {
+	rows, err := db.pool.Query(ctx,
+		`SELECT decision_type, count(*)
+		 FROM decisions
+		 WHERE org_id = $1 AND valid_to IS NULL
+		 GROUP BY decision_type
+		 ORDER BY count(*) DESC`, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: decision type distribution: %w", err)
+	}
+	defer rows.Close()
+
+	var result []DecisionTypeCount
+	for rows.Next() {
+		var dt DecisionTypeCount
+		if err := rows.Scan(&dt.DecisionType, &dt.Count); err != nil {
+			return nil, fmt.Errorf("storage: scan decision type count: %w", err)
+		}
+		result = append(result, dt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: iterate decision type distribution: %w", err)
+	}
+	return result, nil
+}
+
 // GetDecisionForScoring returns a decision with embedding, outcome_embedding,
 // session_id, agent_context, and repo for conflict scoring. The additional fields
 // provide project, task, and session context to the LLM validator.

@@ -7,20 +7,23 @@ import {
   listAgentsWithStats,
 } from "@/lib/api";
 import type { AgentWithStats } from "@/lib/api";
-import type { Decision, ConflictTrendPoint } from "@/types/api";
+import type {
+  Decision,
+  ConflictTrendPoint,
+  DecisionTypeCount,
+} from "@/types/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import {
-  Activity,
-  AlertTriangle,
-  BarChart3,
-  HeartPulse,
-  ShieldAlert,
+  Clock,
+  GitBranch,
+  Quote,
   TrendingDown,
   TrendingUp,
   Users,
+  Zap,
 } from "lucide-react";
 
 type Period = "7d" | "30d" | "90d";
@@ -47,72 +50,25 @@ function severityColor(severity: string): string {
   }
 }
 
-function confidenceBucket(c: number): string {
-  if (c < 0.3) return "0.0-0.3";
-  if (c < 0.5) return "0.3-0.5";
-  if (c < 0.7) return "0.5-0.7";
-  if (c < 0.9) return "0.7-0.9";
-  return "0.9-1.0";
-}
-
-const BUCKET_ORDER = ["0.0-0.3", "0.3-0.5", "0.5-0.7", "0.7-0.9", "0.9-1.0"];
-
-const BUCKET_COLORS: Record<string, string> = {
-  "0.0-0.3": "bg-gradient-to-t from-red-600 to-red-400",
-  "0.3-0.5": "bg-gradient-to-t from-amber-600 to-amber-400",
-  "0.5-0.7": "bg-gradient-to-t from-yellow-500 to-yellow-300",
-  "0.7-0.9": "bg-gradient-to-t from-emerald-500 to-emerald-300",
-  "0.9-1.0": "bg-gradient-to-t from-blue-600 to-blue-400",
-};
-
-const BUCKET_GLOWS: Record<string, string> = {
-  "0.0-0.3": "shadow-red-500/40",
-  "0.3-0.5": "shadow-amber-500/40",
-  "0.5-0.7": "shadow-yellow-400/40",
-  "0.7-0.9": "shadow-emerald-400/40",
-  "0.9-1.0": "shadow-blue-500/40",
-};
-
-/** Compute confidence histogram from a list of decisions. */
-function buildConfidenceHistogram(
-  decisions: Decision[],
-): { bucket: string; count: number }[] {
-  const counts: Record<string, number> = {};
-  for (const b of BUCKET_ORDER) counts[b] = 0;
-  for (const d of decisions) {
-    const bucket = confidenceBucket(d.confidence);
-    counts[bucket] = (counts[bucket] ?? 0) + 1;
-  }
-  return BUCKET_ORDER.map((b) => ({ bucket: b, count: counts[b] ?? 0 }));
-}
-
 /** Group decisions by date (YYYY-MM-DD) and compute daily averages. */
 function buildDailyStats(
   decisions: Decision[],
 ): {
   date: string;
   count: number;
-  avgConfidence: number;
   avgCompleteness: number;
 }[] {
-  const byDate: Record<
-    string,
-    { confidences: number[]; completeness: number[] }
-  > = {};
+  const byDate: Record<string, { completeness: number[] }> = {};
   for (const d of decisions) {
     const date = d.created_at.slice(0, 10);
-    if (!byDate[date])
-      byDate[date] = { confidences: [], completeness: [] };
-    byDate[date].confidences.push(d.confidence);
+    if (!byDate[date]) byDate[date] = { completeness: [] };
     byDate[date].completeness.push(d.completeness_score);
   }
   return Object.entries(byDate)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([date, vals]) => ({
       date,
-      count: vals.confidences.length,
-      avgConfidence:
-        vals.confidences.reduce((s, v) => s + v, 0) / vals.confidences.length,
+      count: vals.completeness.length,
       avgCompleteness:
         vals.completeness.reduce((s, v) => s + v, 0) /
         vals.completeness.length,
@@ -262,70 +218,63 @@ function ConflictTrend({ data }: { data: ConflictTrendPoint[] }) {
   );
 }
 
-/** Confidence histogram with ideal-range overlay. */
-function ConfidenceHistogram({
-  data,
-}: {
-  data: { bucket: string; count: number }[];
-}) {
-  const total = data.reduce((s, d) => s + d.count, 0);
-  const max = Math.max(...data.map((d) => d.count), 1);
-  const overconfident =
-    total > 0
-      ? data.find((d) => d.bucket === "0.9-1.0")?.count ?? 0
-      : 0;
-  const overconfidentPct = total > 0 ? (overconfident / total) * 100 : 0;
+/** Horizontal bar chart for decision type distribution. */
+function DecisionTypeChart({ data }: { data: DecisionTypeCount[] }) {
+  if (data.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground py-4 text-center">
+        No data yet.
+      </p>
+    );
+  }
+
+  const max = data[0]!.count; // already sorted desc from backend
+  const colors = [
+    "from-blue-600 to-blue-400",
+    "from-emerald-600 to-emerald-400",
+    "from-purple-600 to-purple-400",
+    "from-amber-600 to-amber-400",
+    "from-rose-600 to-rose-400",
+    "from-cyan-600 to-cyan-400",
+    "from-indigo-600 to-indigo-400",
+    "from-teal-600 to-teal-400",
+  ];
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-end gap-2 h-28">
-        {data.map((d) => (
-          <div key={d.bucket} className="group/histo flex-1 flex flex-col items-center gap-1">
-            <span className="text-[10px] font-semibold text-muted-foreground group-hover/histo:text-foreground transition-colors">
-              {d.count}
+    <div className="space-y-2">
+      {data.map((dt, i) => (
+        <div key={dt.decision_type} className="space-y-1">
+          <div className="flex justify-between text-xs">
+            <span className="text-muted-foreground font-medium truncate mr-2">
+              {dt.decision_type}
             </span>
-            <div
-              className={cn(
-                "w-full rounded-t transition-all duration-300 group-hover/histo:saturate-150 group-hover/histo:shadow-[0_-4px_12px_-2px]",
-                BUCKET_COLORS[d.bucket],
-                BUCKET_GLOWS[d.bucket],
-              )}
-              style={{ height: `${Math.max((d.count / max) * 100, d.count > 0 ? 4 : 0)}%` }}
-            />
-            <span className="text-[10px] text-muted-foreground whitespace-nowrap">
-              {d.bucket}
+            <span className="font-semibold tabular-nums shrink-0">
+              {dt.count}
             </span>
           </div>
-        ))}
-      </div>
-      {/* Ideal range indicator */}
-      <div className="flex items-center gap-2 text-xs">
-        <div className="h-2 flex-1 rounded bg-muted relative">
-          {/* Ideal range: 0.4-0.8 → spans buckets 2-3 (0.3-0.5 and 0.5-0.7) */}
-          <div
-            className="absolute h-full rounded bg-emerald-500/30 border border-emerald-500/50"
-            style={{ left: "20%", width: "40%" }}
-            title="Ideal range (0.3-0.7)"
-          />
+          <div className="h-2 rounded-full bg-muted overflow-hidden">
+            <div
+              className={cn(
+                "h-full rounded-full bg-gradient-to-r transition-all duration-500",
+                colors[i % colors.length],
+              )}
+              style={{
+                width: max > 0 ? `${(dt.count / max) * 100}%` : "0%",
+              }}
+            />
+          </div>
         </div>
-        <span className="text-muted-foreground shrink-0">ideal range</span>
-      </div>
-      {overconfidentPct > 50 && (
-        <p className="text-xs text-amber-500 flex items-center gap-1">
-          <AlertTriangle className="h-3 w-3" />
-          {overconfidentPct.toFixed(0)}% of decisions are 0.9+ — likely
-          overconfident
-        </p>
-      )}
+      ))}
     </div>
   );
 }
 
-/** Agent scorecard table. */
+/** Agent scorecard table, capped at top 10. */
 function AgentScorecard({ agents }: { agents: AgentWithStats[] }) {
   const sorted = [...agents]
     .filter((a) => (a.decision_count ?? 0) > 0)
-    .sort((a, b) => (b.decision_count ?? 0) - (a.decision_count ?? 0));
+    .sort((a, b) => (b.decision_count ?? 0) - (a.decision_count ?? 0))
+    .slice(0, 10);
 
   if (sorted.length === 0) {
     return (
@@ -342,7 +291,6 @@ function AgentScorecard({ agents }: { agents: AgentWithStats[] }) {
           <tr className="border-b text-left text-xs text-muted-foreground">
             <th className="pb-2 font-medium">Agent</th>
             <th className="pb-2 font-medium text-right">Decisions</th>
-            <th className="pb-2 font-medium text-right">Avg Confidence</th>
             <th className="pb-2 font-medium text-right">Last Active</th>
           </tr>
         </thead>
@@ -355,11 +303,6 @@ function AgentScorecard({ agents }: { agents: AgentWithStats[] }) {
                 </Badge>
               </td>
               <td className="py-2 text-right">{a.decision_count ?? 0}</td>
-              <td className="py-2 text-right">
-                {/* We don't have avg_confidence from listAgentsWithStats directly,
-                    so show decision count as the primary metric */}
-                -
-              </td>
               <td className="py-2 text-right text-xs text-muted-foreground">
                 {a.last_decision_at
                   ? new Date(a.last_decision_at).toLocaleDateString()
@@ -399,8 +342,6 @@ export default function Analytics() {
     staleTime: 30_000,
   });
 
-  // Fetch recent decisions to compute confidence histogram and daily stats.
-  // Scoped to the selected period so charts stay consistent with conflict data.
   const decisions = useQuery({
     queryKey: ["analytics", "decisions", period],
     queryFn: () =>
@@ -424,41 +365,17 @@ export default function Analytics() {
   const analytics = conflictAnalytics.data;
   const decisionList = decisions.data?.decisions ?? [];
 
-  const histogram = useMemo(() => buildConfidenceHistogram(decisionList), [decisionList]);
   const dailyStats = useMemo(() => buildDailyStats(decisionList), [decisionList]);
 
-  // Compute health score composite (0-100)
-  const healthScore = useMemo(
-    () =>
-      health
-        ? Math.round(
-            (health.completeness.avg_completeness * 40 +
-              (health.completeness.reasoning_pct / 100) * 20 +
-              (health.completeness.alternatives_pct / 100) * 15 +
-              (health.evidence.coverage_pct / 100) * 15 +
-              (health.conflicts?.resolved_pct ?? 0) / 100 * 10),
-          )
-        : null,
-    [health],
-  );
-
-  const healthLabel =
-    healthScore === null
-      ? "Unknown"
-      : healthScore >= 70
-        ? "Healthy"
-        : healthScore >= 40
-          ? "Needs Attention"
-          : "Critical";
-
-  const healthColor =
-    healthScore === null
-      ? "text-muted-foreground"
-      : healthScore >= 70
-        ? "text-emerald-500"
-        : healthScore >= 40
-          ? "text-amber-500"
-          : "text-red-500";
+  // Outcome signal derived metrics.
+  const os = health?.outcome_signals;
+  const stabilityPct = os && os.decisions_total > 0
+    ? ((os.decisions_total - os.revised_within_48h) / os.decisions_total) * 100
+    : null;
+  const citationPct = os && os.decisions_total > 0
+    ? (os.cited_at_least_once / os.decisions_total) * 100
+    : null;
+  const mttrHours = analytics?.summary.mean_time_to_resolution_hours;
 
   return (
     <div className="space-y-8 animate-page">
@@ -470,25 +387,32 @@ export default function Analytics() {
         <PeriodSelector value={period} onChange={setPeriod} />
       </div>
 
-      {/* ── Panel 1: Health Score + Summary Cards ── */}
+      {/* ── Row 1: Outcome Signal Cards ── */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card className="gradient-border hover:glow-emerald transition-shadow duration-300">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Health Score</CardTitle>
-            <HeartPulse className="h-4 w-4 text-emerald-500 animate-pulse" />
+            <CardTitle className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Stability</CardTitle>
+            <Zap className="h-4 w-4 text-emerald-500" />
           </CardHeader>
           <CardContent>
             {traceHealth.isPending ? (
               <Skeleton className="h-8 w-16" />
             ) : (
               <>
-                <div className={cn("text-3xl font-black tabular-nums tracking-tight", healthColor)}>
-                  {healthScore ?? "?"}
-                  <span className="text-sm font-normal text-muted-foreground">
-                    /100
-                  </span>
+                <div className={cn(
+                  "text-3xl font-black tabular-nums tracking-tight",
+                  stabilityPct !== null && stabilityPct >= 90
+                    ? "text-emerald-500"
+                    : stabilityPct !== null && stabilityPct >= 70
+                      ? "text-amber-500"
+                      : "text-foreground",
+                )}>
+                  {stabilityPct !== null ? `${stabilityPct.toFixed(0)}` : "-"}
+                  <span className="text-lg">%</span>
                 </div>
-                <p className={cn("text-xs font-medium", healthColor)}>{healthLabel}</p>
+                <p className="text-xs text-muted-foreground">
+                  not revised within 48h
+                </p>
               </>
             )}
           </CardContent>
@@ -496,8 +420,8 @@ export default function Analytics() {
 
         <Card className="gradient-border hover:glow-primary transition-shadow duration-300">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Completeness</CardTitle>
-            <BarChart3 className="h-4 w-4 text-primary" />
+            <CardTitle className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Citation Rate</CardTitle>
+            <Quote className="h-4 w-4 text-blue-500" />
           </CardHeader>
           <CardContent>
             {traceHealth.isPending ? (
@@ -505,13 +429,11 @@ export default function Analytics() {
             ) : (
               <>
                 <div className="text-3xl font-black tabular-nums tracking-tight">
-                  {((health?.completeness.avg_completeness ?? 0) * 100).toFixed(
-                    0,
-                  )}
+                  {citationPct !== null ? `${citationPct.toFixed(0)}` : "-"}
                   <span className="text-lg">%</span>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  {health?.completeness.below_half ?? 0} decisions below 50%
+                  cited as precedent
                 </p>
               </>
             )}
@@ -521,21 +443,21 @@ export default function Analytics() {
         <Card className="gradient-border hover:glow-amber transition-shadow duration-300">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Conflict Resolution
+              MTTR
             </CardTitle>
-            <ShieldAlert className="h-4 w-4 text-amber-500" />
+            <Clock className="h-4 w-4 text-amber-500" />
           </CardHeader>
           <CardContent>
-            {traceHealth.isPending ? (
+            {conflictAnalytics.isPending ? (
               <Skeleton className="h-8 w-16" />
             ) : (
               <>
                 <div className="text-3xl font-black tabular-nums tracking-tight">
-                  {(health?.conflicts?.resolved_pct ?? 0).toFixed(0)}<span className="text-lg">%</span>
+                  {mttrHours != null ? mttrHours.toFixed(1) : "-"}
+                  <span className="text-lg text-muted-foreground">h</span>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  {health?.conflicts?.open ?? 0} open /{" "}
-                  {health?.conflicts?.total ?? 0} total
+                  mean time to resolve
                 </p>
               </>
             )}
@@ -545,9 +467,9 @@ export default function Analytics() {
         <Card className="gradient-border hover:glow-purple transition-shadow duration-300">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Evidence Coverage
+              Total Decisions
             </CardTitle>
-            <Activity className="h-4 w-4 text-purple-500" />
+            <GitBranch className="h-4 w-4 text-purple-500" />
           </CardHeader>
           <CardContent>
             {traceHealth.isPending ? (
@@ -555,11 +477,10 @@ export default function Analytics() {
             ) : (
               <>
                 <div className="text-3xl font-black tabular-nums tracking-tight">
-                  {(health?.evidence.coverage_pct ?? 0).toFixed(0)}<span className="text-lg">%</span>
+                  {health?.completeness.total_decisions ?? 0}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  {health?.evidence.with_evidence ?? 0} of{" "}
-                  {health?.evidence.total_decisions ?? 0} with evidence
+                  active decisions
                 </p>
               </>
             )}
@@ -567,24 +488,21 @@ export default function Analytics() {
         </Card>
       </div>
 
-      {/* ── Row 2: Confidence Calibration + Completeness Trend ── */}
+      {/* ── Row 2: Decision Type Distribution + Completeness Trend ── */}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              Confidence Calibration
-              {decisionList.length > 0 && (
-                <span className="text-xs font-normal text-muted-foreground">
-                  ({decisionList.length} decisions)
-                </span>
-              )}
+            <CardTitle className="text-sm font-medium">
+              Decision Types
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {decisions.isPending ? (
+            {traceHealth.isPending ? (
               <Skeleton className="h-32 w-full" />
             ) : (
-              <ConfidenceHistogram data={histogram} />
+              <DecisionTypeChart
+                data={health?.decision_type_distribution ?? []}
+              />
             )}
           </CardContent>
         </Card>
@@ -722,12 +640,6 @@ export default function Analytics() {
                     </span>
                   ))}
                 </div>
-                {analytics.summary.mean_time_to_resolution_hours != null && (
-                  <p className="text-xs text-muted-foreground">
-                    Mean time to resolution:{" "}
-                    {analytics.summary.mean_time_to_resolution_hours.toFixed(1)}h
-                  </p>
-                )}
               </div>
             )}
           </CardContent>
@@ -875,6 +787,7 @@ export default function Analytics() {
             <CardTitle className="text-sm font-medium flex items-center gap-2">
               <Users className="h-4 w-4 text-muted-foreground" />
               Agent Scorecard
+              <span className="text-xs font-normal text-muted-foreground">(top 10)</span>
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -886,30 +799,6 @@ export default function Analytics() {
           </CardContent>
         </Card>
       </div>
-
-      {/* ── Row 6: Gaps / Recommendations ── */}
-      {health?.gaps && health.gaps.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-amber-500" />
-              Improvement Recommendations
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ul className="space-y-2">
-              {health.gaps.map((gap, i) => (
-                <li
-                  key={i}
-                  className="rounded-md bg-amber-500/5 border border-amber-500/20 px-3 py-2 text-sm text-muted-foreground"
-                >
-                  {gap}
-                </li>
-              ))}
-            </ul>
-          </CardContent>
-        </Card>
-      )}
     </div>
   );
 }
