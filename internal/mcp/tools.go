@@ -843,8 +843,8 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		Reasoning:    reasoningPtr,
 		Alternatives: alternatives,
 		Evidence:     evidence,
-	})
-	missing := computeMissingFields(decisionType, outcome, confidence, reasoningPtr, alternatives, evidence)
+	}, precedentRef != nil)
+	missing := computeMissingFields(decisionType, outcome, confidence, reasoningPtr, alternatives, evidence, precedentRef != nil)
 
 	responseMap := map[string]any{
 		"run_id":             result.RunID,
@@ -883,7 +883,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 // computeMissingFields returns actionable tips for improving trace completeness.
 // Each tip tells the agent exactly what to add next time. Tips are ordered by
 // completeness score impact (highest first).
-func computeMissingFields(decisionType, outcome string, confidence float32, reasoning *string, alternatives []model.TraceAlternative, evidence []model.TraceEvidence) []string {
+func computeMissingFields(decisionType, outcome string, confidence float32, reasoning *string, alternatives []model.TraceAlternative, evidence []model.TraceEvidence, hasPrecedentRef bool) []string {
 	var tips []string
 
 	// Reasoning: biggest single factor (up to 0.25).
@@ -923,6 +923,11 @@ func computeMissingFields(decisionType, outcome string, confidence float32, reas
 	// Standard decision type (0.10).
 	if !quality.StandardDecisionTypes[decisionType] {
 		tips = append(tips, "Use a standard decision_type (architecture, security, trade_off, etc.) for +10%")
+	}
+
+	// Precedent reference (0.10).
+	if !hasPrecedentRef {
+		tips = append(tips, "Set precedent_ref to the precedent_ref_hint from akashi_check to build the attribution graph (+10%)")
 	}
 
 	// Substantive outcome (0.05).
