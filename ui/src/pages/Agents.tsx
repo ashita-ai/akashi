@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { listAgentsWithStats, createAgent, deleteAgent, ApiError } from "@/lib/api";
 import type { AgentWithStats } from "@/lib/api";
@@ -33,8 +33,49 @@ import {
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate, formatRelativeTime } from "@/lib/utils";
-import { Plus, Trash2 } from "lucide-react";
+import { ArrowUpDown, ChevronDown, ChevronUp, Plus, Trash2 } from "lucide-react";
 import { Link } from "react-router";
+
+type SortField = "agent_id" | "name" | "role" | "decision_count" | "created_at" | "last_decision_at";
+type SortDir = "asc" | "desc";
+
+function SortIcon({ field, active, dir }: { field: string; active: string; dir: SortDir }) {
+  if (field !== active) return <ArrowUpDown className="ml-1 h-3 w-3 opacity-40" />;
+  return dir === "asc"
+    ? <ChevronUp className="ml-1 h-3 w-3" />
+    : <ChevronDown className="ml-1 h-3 w-3" />;
+}
+
+function compareAgents(a: AgentWithStats, b: AgentWithStats, field: SortField, dir: SortDir): number {
+  let cmp = 0;
+  switch (field) {
+    case "agent_id":
+      cmp = a.agent_id.localeCompare(b.agent_id);
+      break;
+    case "name":
+      cmp = a.name.localeCompare(b.name);
+      break;
+    case "role":
+      cmp = a.role.localeCompare(b.role);
+      break;
+    case "decision_count":
+      cmp = (a.decision_count ?? 0) - (b.decision_count ?? 0);
+      break;
+    case "created_at":
+      cmp = a.created_at.localeCompare(b.created_at);
+      break;
+    case "last_decision_at": {
+      const aVal = a.last_decision_at ?? "";
+      const bVal = b.last_decision_at ?? "";
+      if (!aVal && !bVal) cmp = 0;
+      else if (!aVal) cmp = -1;
+      else if (!bVal) cmp = 1;
+      else cmp = aVal.localeCompare(bVal);
+      break;
+    }
+  }
+  return dir === "asc" ? cmp : -cmp;
+}
 
 const roleColors: Record<AgentRole, "default" | "secondary" | "destructive" | "success" | "warning" | "outline"> = {
   admin: "default",
@@ -70,6 +111,17 @@ export default function Agents() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [selectedRole, setSelectedRole] = useState<AgentRole>("agent");
+  const [sortField, setSortField] = useState<SortField>("created_at");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+
+  function toggleSort(field: SortField) {
+    if (sortField === field) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortField(field);
+      setSortDir("asc");
+    }
+  }
 
   const { data: agents, isPending } = useQuery({
     queryKey: ["agents", "with-stats"],
@@ -96,6 +148,11 @@ export default function Agents() {
       setDeleteTarget(null);
     },
   });
+
+  const sortedAgents = useMemo(() => {
+    if (!agents) return [];
+    return [...agents].sort((a, b) => compareAgents(a, b, sortField, sortDir));
+  }, [agents, sortField, sortDir]);
 
   function handleCreate(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -212,7 +269,7 @@ export default function Agents() {
             <Skeleton key={i} className="h-10 w-full" />
           ))}
         </div>
-      ) : !agents?.length ? (
+      ) : !sortedAgents.length ? (
         <p className="text-sm text-muted-foreground py-8 text-center">
           No agents registered.
         </p>
@@ -220,18 +277,44 @@ export default function Agents() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Agent ID</TableHead>
-              <TableHead>Name</TableHead>
-              <TableHead>Role</TableHead>
+              {([
+                ["agent_id", "Agent ID"],
+                ["name", "Name"],
+                ["role", "Role"],
+              ] as const).map(([field, label]) => (
+                <TableHead key={field}>
+                  <button
+                    type="button"
+                    className="inline-flex items-center hover:text-foreground transition-colors"
+                    onClick={() => toggleSort(field)}
+                  >
+                    {label}
+                    <SortIcon field={field} active={sortField} dir={sortDir} />
+                  </button>
+                </TableHead>
+              ))}
               <TableHead>Details</TableHead>
-              <TableHead>Decisions</TableHead>
-              <TableHead>Created</TableHead>
-              <TableHead>Last Active</TableHead>
+              {([
+                ["decision_count", "Decisions"],
+                ["created_at", "Created"],
+                ["last_decision_at", "Last Active"],
+              ] as const).map(([field, label]) => (
+                <TableHead key={field}>
+                  <button
+                    type="button"
+                    className="inline-flex items-center hover:text-foreground transition-colors"
+                    onClick={() => toggleSort(field)}
+                  >
+                    {label}
+                    <SortIcon field={field} active={sortField} dir={sortDir} />
+                  </button>
+                </TableHead>
+              ))}
               <TableHead className="w-12" />
             </TableRow>
           </TableHeader>
           <TableBody>
-            {agents.map((agent) => (
+            {sortedAgents.map((agent) => (
               <TableRow key={agent.id} className="cursor-pointer">
                 <TableCell className="font-mono text-sm">
                   <Link
