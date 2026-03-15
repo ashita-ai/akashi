@@ -291,12 +291,32 @@ export interface AgentStats {
   type_breakdown: Record<string, number>;
 }
 
+// Outcome signals — mirrors storage.OutcomeSignalsSummary from Go
+export interface OutcomeSignals {
+  decisions_total: number;
+  never_superseded: number;
+  revised_within_48h: number;
+  never_cited: number;
+  cited_at_least_once: number;
+  conflicts_won: number;
+  conflicts_lost: number;
+  conflicts_no_winner: number;
+}
+
+// Decision type distribution — mirrors storage.DecisionTypeCount from Go
+export interface DecisionTypeCount {
+  decision_type: string;
+  count: number;
+}
+
 // Trace health — mirrors tracehealth.Metrics from Go
 export interface TraceHealth {
   status: string;
   completeness: TraceHealthCompleteness;
   evidence: TraceHealthEvidence;
   conflicts?: TraceHealthConflicts;
+  outcome_signals?: OutcomeSignals;
+  decision_type_distribution?: DecisionTypeCount[];
   gaps: string[];
 }
 

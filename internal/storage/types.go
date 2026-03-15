@@ -246,6 +246,16 @@ type OutcomeSignalsSummary struct {
 }
 
 // ---------------------------------------------------------------------------
+// Decision type distribution
+// ---------------------------------------------------------------------------
+
+// DecisionTypeCount holds the count of decisions for a single decision_type.
+type DecisionTypeCount struct {
+	DecisionType string `json:"decision_type"`
+	Count        int    `json:"count"`
+}
+
+// ---------------------------------------------------------------------------
 // Notification constants (originally in notify.go)
 // ---------------------------------------------------------------------------
 

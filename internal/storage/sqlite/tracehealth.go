@@ -253,3 +253,33 @@ func (l *LiteDB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID)
 
 	return d, nil
 }
+
+// GetDecisionTypeDistribution returns the count of current decisions grouped by
+// decision_type, ordered by count descending.
+func (l *LiteDB) GetDecisionTypeDistribution(ctx context.Context, orgID uuid.UUID) ([]storage.DecisionTypeCount, error) {
+	rows, err := l.db.QueryContext(ctx,
+		`SELECT decision_type, COUNT(*)
+		 FROM decisions
+		 WHERE org_id = ? AND valid_to IS NULL
+		 GROUP BY decision_type
+		 ORDER BY COUNT(*) DESC`,
+		uuidStr(orgID),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: decision type distribution: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var result []storage.DecisionTypeCount
+	for rows.Next() {
+		var dt storage.DecisionTypeCount
+		if err := rows.Scan(&dt.DecisionType, &dt.Count); err != nil {
+			return nil, fmt.Errorf("sqlite: scan decision type count: %w", err)
+		}
+		result = append(result, dt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: iterate decision type distribution: %w", err)
+	}
+	return result, nil
+}
