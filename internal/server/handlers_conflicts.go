@@ -605,9 +605,10 @@ func (h *Handlers) HandleConflictAnalytics(w http.ResponseWriter, r *http.Reques
 	if v := r.URL.Query().Get("decision_type"); v != "" {
 		filters.DecisionType = &v
 	}
-	if v := r.URL.Query().Get("conflict_kind"); v != "" {
+if v := r.URL.Query().Get("conflict_kind"); v != "" {
 		if !model.IsValidConflictKind(v) {
-			msg := fmt.Sprintf("invalid conflict_kind: must be one of %s", model.ValidConflictKindsString())
+			// Use %q to include the quoted invalid value in the error message
+			msg := fmt.Sprintf("invalid conflict_kind %q: must be one of %s", v, model.ValidConflictKindsString())
 			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, msg)
 			return
 		}
