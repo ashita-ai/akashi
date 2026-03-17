@@ -13,7 +13,6 @@ const SearchPage = lazy(() => import("@/pages/SearchPage"));
 const ExportPage = lazy(() => import("@/pages/ExportPage"));
 const SessionTimeline = lazy(() => import("@/pages/SessionTimeline"));
 const GrantsPage = lazy(() => import("@/pages/GrantsPage"));
-const Analytics = lazy(() => import("@/pages/Analytics"));
 
 function PageFallback() {
   return (
@@ -68,7 +67,6 @@ export const router = createBrowserRouter([
       { path: "search", element: <Lazy><SearchPage /></Lazy> },
       { path: "export", element: <Lazy><ExportPage /></Lazy> },
       { path: "grants", element: <Lazy><GrantsPage /></Lazy> },
-      { path: "analytics", element: <Lazy><Analytics /></Lazy> },
       { path: "sessions/:sessionId", element: <Lazy><SessionTimeline /></Lazy> },
     ],
   },
