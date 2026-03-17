@@ -46,6 +46,13 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	// Fuzz targets in this package (e.g. FuzzDecodeJSON) don't need a database.
+	// Skip expensive testcontainer setup when only fuzzing to avoid context
+	// deadline exceeded flakes on resource-constrained CI runners.
+	if isFuzzRun() {
+		os.Exit(m.Run())
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	req := testcontainers.ContainerRequest{
@@ -166,6 +173,18 @@ func TestMain(m *testing.M) {
 	db.Close(context.Background())
 	_ = testcontainer.Terminate(context.Background())
 	os.Exit(code)
+}
+
+// isFuzzRun returns true when the test binary was invoked with -test.fuzz,
+// meaning only fuzz targets will execute. This lets TestMain skip heavyweight
+// setup (testcontainers, migrations) that fuzz targets don't need.
+func isFuzzRun() bool {
+	for _, arg := range os.Args[1:] {
+		if strings.HasPrefix(arg, "-test.fuzz") {
+			return true
+		}
+	}
+	return false
 }
 
 func getToken(baseURL, agentID, apiKey string) string {
