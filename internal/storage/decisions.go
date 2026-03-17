@@ -575,7 +575,7 @@ func (db *DB) QueryDecisions(ctx context.Context, orgID uuid.UUID, req model.Que
 	orderBy := "valid_from"
 	if req.OrderBy != "" {
 		switch req.OrderBy {
-		case "confidence", "valid_from", "decision_type", "outcome", "completeness_score", "outcome_score", "quality_score":
+		case "confidence", "valid_from", "decision_type", "outcome", "completeness_score", "outcome_score", "quality_score", "agent_id", "project":
 			// quality_score accepted as deprecated alias; maps to the renamed column.
 			if req.OrderBy == "quality_score" {
 				orderBy = "completeness_score"
