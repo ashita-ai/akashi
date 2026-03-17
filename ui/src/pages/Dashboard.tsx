@@ -20,6 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import {
   AlertTriangle,
+  ChevronDown,
   Clock,
   FileText,
   HeartPulse,
@@ -387,6 +388,7 @@ function AgentScorecard({ agents }: { agents: AgentWithStats[] }) {
 
 export default function Dashboard() {
   const [period, setPeriod] = useState<Period>("30d");
+  const [tipsOpen, setTipsOpen] = useState(false);
 
   const recent = useQuery({
     queryKey: ["dashboard", "recent"],
@@ -411,9 +413,10 @@ export default function Dashboard() {
     queryFn: () =>
       queryDecisions({
         filters: { time_range: periodToTimeRange(period) },
+        include: ["alternatives", "evidence"],
         order_by: "created_at",
         order_dir: "desc",
-        limit: 200,
+        limit: 500,
         offset: 0,
       }),
     staleTime: 60_000,
@@ -435,6 +438,32 @@ export default function Dashboard() {
   const analytics = conflictAnalytics.data;
   const decisionList = decisionsTrend.data?.decisions ?? [];
   const dailyStats = useMemo(() => buildDailyStats(decisionList), [decisionList]);
+
+  /** Decision type distribution derived from the period-filtered query. */
+  const periodDecisionTypes: { decision_type: string; count: number }[] = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const d of decisionList) {
+      counts[d.decision_type] = (counts[d.decision_type] ?? 0) + 1;
+    }
+    return Object.entries(counts)
+      .map(([decision_type, count]) => ({ decision_type, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [decisionList]);
+
+  /** Trace quality metrics derived from the period-filtered query. */
+  const periodTraceQuality = useMemo(() => {
+    const total = decisionList.length;
+    const withReasoning = decisionList.filter(
+      (d) => d.reasoning != null && d.reasoning.length > 0,
+    ).length;
+    const withAlternatives = decisionList.filter(
+      (d) => d.alternatives != null && d.alternatives.length > 0,
+    ).length;
+    const withEvidence = decisionList.filter(
+      (d) => d.evidence != null && d.evidence.length > 0,
+    ).length;
+    return { total, withReasoning, withAlternatives, withEvidence };
+  }, [decisionList]);
 
   const os = health?.outcome_signals;
   const stabilityPct =
@@ -556,32 +585,44 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      {/* ── Coverage tips ── */}
+      {/* ── Coverage tips (collapsible) ── */}
       {traceHealth.data?.gaps && traceHealth.data.gaps.length > 0 && (
-        <Card className="border-amber-500/20 bg-amber-500/[0.03]">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              <Lightbulb className="h-3.5 w-3.5 text-amber-500/80" />
+        <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.03]">
+          <button
+            type="button"
+            onClick={() => setTipsOpen((o) => !o)}
+            className="flex w-full items-center gap-2 px-4 py-3 text-left"
+          >
+            <Lightbulb className="h-3.5 w-3.5 text-amber-500/80 shrink-0" />
+            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Coverage Tips
-              <span className="ml-auto text-[11px] font-normal normal-case tracking-normal text-muted-foreground/60">
-                {traceHealth.data.gaps.length} suggestion{traceHealth.data.gaps.length !== 1 ? "s" : ""}
-              </span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0">
-            <ul className="space-y-1.5">
-              {traceHealth.data.gaps.map((gap, i) => (
-                <li
-                  key={i}
-                  className="flex items-start gap-2.5 rounded-md px-3 py-2 text-sm bg-muted/40 border border-border/50"
-                >
-                  <Info className="h-3.5 w-3.5 shrink-0 text-amber-500/70 mt-0.5" />
-                  <span className="text-muted-foreground leading-snug">{gap}</span>
-                </li>
-              ))}
-            </ul>
-          </CardContent>
-        </Card>
+            </span>
+            <span className="text-[11px] font-normal normal-case tracking-normal text-muted-foreground/60">
+              {traceHealth.data.gaps.length} suggestion{traceHealth.data.gaps.length !== 1 ? "s" : ""}
+            </span>
+            <ChevronDown
+              className={cn(
+                "ml-auto h-4 w-4 text-muted-foreground/60 transition-transform duration-200",
+                tipsOpen && "rotate-180",
+              )}
+            />
+          </button>
+          {tipsOpen && (
+            <div className="px-4 pb-4">
+              <ul className="space-y-1.5">
+                {traceHealth.data.gaps.map((gap, i) => (
+                  <li
+                    key={i}
+                    className="flex items-start gap-2.5 rounded-md px-3 py-2 text-sm bg-muted/40 border border-border/50"
+                  >
+                    <Info className="h-3.5 w-3.5 shrink-0 text-amber-500/70 mt-0.5" />
+                    <span className="text-muted-foreground leading-snug">{gap}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
       )}
 
       {/* ── Outcome Signals ── */}
@@ -661,10 +702,10 @@ export default function Dashboard() {
             <CardTitle className="text-sm font-medium">Decision Types</CardTitle>
           </CardHeader>
           <CardContent>
-            {traceHealth.isPending ? (
+            {decisionsTrend.isPending ? (
               <Skeleton className="h-32 w-full" />
             ) : (
-              <DecisionTypeChart data={health?.decision_type_distribution ?? []} />
+              <DecisionTypeChart data={periodDecisionTypes} />
             )}
           </CardContent>
         </Card>
@@ -674,31 +715,31 @@ export default function Dashboard() {
             <CardTitle className="text-sm font-medium">Trace Quality Breakdown</CardTitle>
           </CardHeader>
           <CardContent>
-            {traceHealth.isPending ? (
+            {decisionsTrend.isPending ? (
               <Skeleton className="h-32 w-full" />
-            ) : !health ? (
-              <p className="text-sm text-muted-foreground py-4 text-center">Unavailable.</p>
+            ) : periodTraceQuality.total === 0 ? (
+              <p className="text-sm text-muted-foreground py-4 text-center">No data yet.</p>
             ) : (
               <div className="space-y-3">
                 {[
                   {
                     label: "With reasoning",
-                    value: health.completeness.with_reasoning,
-                    total: health.completeness.total_decisions,
+                    value: periodTraceQuality.withReasoning,
+                    total: periodTraceQuality.total,
                     color: "bg-gradient-to-r from-emerald-600 to-emerald-400",
                     glow: "shadow-emerald-500/30",
                   },
                   {
                     label: "With alternatives",
-                    value: health.completeness.with_alternatives,
-                    total: health.completeness.total_decisions,
+                    value: periodTraceQuality.withAlternatives,
+                    total: periodTraceQuality.total,
                     color: "bg-gradient-to-r from-blue-600 to-blue-400",
                     glow: "shadow-blue-500/30",
                   },
                   {
                     label: "With evidence",
-                    value: health.evidence.with_evidence,
-                    total: health.evidence.total_decisions,
+                    value: periodTraceQuality.withEvidence,
+                    total: periodTraceQuality.total,
                     color: "bg-gradient-to-r from-purple-600 to-purple-400",
                     glow: "shadow-purple-500/30",
                   },
