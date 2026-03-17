@@ -243,7 +243,7 @@ export default function Dashboard() {
                     <Badge variant="outline" className="font-mono text-[11px] shrink-0 px-2 py-0.5">
                       {d.agent_id}
                     </Badge>
-                    <span className="truncate max-w-[240px] text-foreground/80">
+                    <span className="truncate text-foreground/80">
                       {d.outcome}
                     </span>
                   </div>

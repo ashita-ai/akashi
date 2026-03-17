@@ -285,7 +285,7 @@ export default function Decisions() {
                     <TableCell>
                       <Badge variant={decisionTypeBadgeVariant(d.decision_type)}>{d.decision_type}</Badge>
                     </TableCell>
-                    <TableCell className="max-w-[200px]">
+                    <TableCell className="max-w-md">
                       <Link
                         to={`/decisions/${d.run_id}`}
                         className="hover:underline"
