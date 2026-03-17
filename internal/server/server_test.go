@@ -45,7 +45,24 @@ var (
 	orgOwnerToken string
 )
 
+func isFuzzOnly() bool {
+	for _, arg := range os.Args[1:] {
+		if strings.HasPrefix(arg, "-test.fuzz=") {
+			return true
+		}
+	}
+	return false
+}
+
 func TestMain(m *testing.M) {
+	// Fuzz targets in this package (e.g. FuzzDecodeJSON) don't need a
+	// database. Skip the expensive testcontainer setup when the binary
+	// is invoked in fuzz-only mode to avoid a multi-minute container
+	// pull/startup that caused CI timeouts.
+	if isFuzzOnly() {
+		os.Exit(m.Run())
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	req := testcontainers.ContainerRequest{

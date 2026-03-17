@@ -18,11 +18,11 @@ func repeat(ch byte, n int) string {
 
 func TestScore_ZeroInput(t *testing.T) {
 	d := model.TraceDecision{}
-	assert.Equal(t, float32(0.0), Score(d), "empty decision should score 0")
+	assert.Equal(t, float32(0.0), Score(d, false), "empty decision should score 0")
 }
 
 func TestScore_MaximumScore(t *testing.T) {
-	// Every factor at its maximum tier.
+	// Every factor at its maximum tier, including precedent_ref.
 	d := model.TraceDecision{
 		DecisionType: "architecture",                        // standard type → 0.10
 		Outcome:      "chose Redis for session caching now", // >20 chars → 0.05
@@ -39,7 +39,28 @@ func TestScore_MaximumScore(t *testing.T) {
 			{SourceType: "api_response", Content: "evidence two"},
 		}, // >=2 evidence → 0.15
 	}
-	assert.InDelta(t, float32(0.90), Score(d), 0.001, "fully populated decision should score 0.90")
+	assert.InDelta(t, float32(1.0), Score(d, true), 0.001, "fully populated decision with precedent_ref should score 1.0")
+}
+
+func TestScore_MaximumScoreWithoutPrecedent(t *testing.T) {
+	// Every content factor at maximum, but no precedent_ref → 0.90.
+	d := model.TraceDecision{
+		DecisionType: "architecture",
+		Outcome:      "chose Redis for session caching now",
+		Confidence:   0.85,
+		Reasoning:    strPtr(repeat('x', 101)),
+		Alternatives: []model.TraceAlternative{
+			{Label: "a", Selected: true},
+			{Label: "b", Selected: false, RejectionReason: strPtr("not viable because of latency overhead issues")},
+			{Label: "c", Selected: false, RejectionReason: strPtr("rejected due to licensing incompatibility")},
+			{Label: "d", Selected: false, RejectionReason: strPtr("does not meet security requirements for production")},
+		},
+		Evidence: []model.TraceEvidence{
+			{SourceType: "document", Content: "evidence one"},
+			{SourceType: "api_response", Content: "evidence two"},
+		},
+	}
+	assert.InDelta(t, float32(0.90), Score(d, false), 0.001, "fully populated decision without precedent_ref should score 0.90")
 }
 
 // ---------------------------------------------------------------------------
@@ -49,19 +70,19 @@ func TestScore_MaximumScore(t *testing.T) {
 
 func TestScore_Factor1_ConfidenceMidRange(t *testing.T) {
 	d := model.TraceDecision{Confidence: 0.50}
-	assert.InDelta(t, float32(0.15), Score(d), 0.001)
+	assert.InDelta(t, float32(0.15), Score(d, false), 0.001)
 }
 
 func TestScore_Factor1_ConfidenceEdge(t *testing.T) {
 	// Values at the boundary of mid-range fall into the edge tier.
 	d := model.TraceDecision{Confidence: 0.05}
-	assert.InDelta(t, float32(0.10), Score(d), 0.001,
+	assert.InDelta(t, float32(0.10), Score(d, false), 0.001,
 		"confidence == 0.05 is not > 0.05, so falls to edge tier")
 }
 
 func TestScore_Factor2_ReasoningLong(t *testing.T) {
 	d := model.TraceDecision{Reasoning: strPtr(repeat('a', 101))}
-	assert.InDelta(t, float32(0.25), Score(d), 0.001)
+	assert.InDelta(t, float32(0.25), Score(d, false), 0.001)
 }
 
 func TestScore_Factor3_SubstantiveRejections(t *testing.T) {
@@ -74,7 +95,7 @@ func TestScore_Factor3_SubstantiveRejections(t *testing.T) {
 			{Label: "d", Selected: false, RejectionReason: strPtr("licensing issues prevent adoption here")},
 		},
 	}
-	assert.InDelta(t, float32(0.20), Score(d), 0.001)
+	assert.InDelta(t, float32(0.20), Score(d, false), 0.001)
 }
 
 func TestScore_Factor3_AlternativesWithoutRejections_NoCredit(t *testing.T) {
@@ -86,7 +107,7 @@ func TestScore_Factor3_AlternativesWithoutRejections_NoCredit(t *testing.T) {
 			{Label: "c", Selected: false},
 		},
 	}
-	assert.InDelta(t, float32(0.0), Score(d), 0.001,
+	assert.InDelta(t, float32(0.0), Score(d, false), 0.001,
 		"alternatives without rejection reasons should not contribute to score")
 }
 
@@ -99,7 +120,7 @@ func TestScore_Factor3_SelectedAlternativeIgnored(t *testing.T) {
 		},
 	}
 	// 1 substantive rejection → 0.10
-	assert.InDelta(t, float32(0.10), Score(d), 0.001)
+	assert.InDelta(t, float32(0.10), Score(d, false), 0.001)
 }
 
 func TestScore_Factor4_TwoEvidence(t *testing.T) {
@@ -109,17 +130,27 @@ func TestScore_Factor4_TwoEvidence(t *testing.T) {
 			{SourceType: "api_response", Content: "b"},
 		},
 	}
-	assert.InDelta(t, float32(0.15), Score(d), 0.001)
+	assert.InDelta(t, float32(0.15), Score(d, false), 0.001)
 }
 
 func TestScore_Factor5_StandardType(t *testing.T) {
 	d := model.TraceDecision{DecisionType: "security"}
-	assert.InDelta(t, float32(0.10), Score(d), 0.001)
+	assert.InDelta(t, float32(0.10), Score(d, false), 0.001)
 }
 
 func TestScore_Factor6_SubstantiveOutcome(t *testing.T) {
 	d := model.TraceDecision{Outcome: "chose Redis for session caching now"} // >20 chars
-	assert.InDelta(t, float32(0.05), Score(d), 0.001)
+	assert.InDelta(t, float32(0.05), Score(d, false), 0.001)
+}
+
+func TestScore_Factor7_PrecedentRef(t *testing.T) {
+	d := model.TraceDecision{}
+	assert.InDelta(t, float32(0.10), Score(d, true), 0.001)
+}
+
+func TestScore_Factor7_NoPrecedentRef(t *testing.T) {
+	d := model.TraceDecision{}
+	assert.InDelta(t, float32(0.0), Score(d, false), 0.001)
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +176,7 @@ func TestScore_ConfidenceBoundaries(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d := model.TraceDecision{Confidence: tt.confidence}
-			assert.InDelta(t, tt.want, Score(d), 0.001)
+			assert.InDelta(t, tt.want, Score(d, false), 0.001)
 		})
 	}
 }
@@ -173,7 +204,7 @@ func TestScore_ReasoningBoundaries(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := repeat('x', tt.len)
 			d := model.TraceDecision{Reasoning: &s}
-			assert.InDelta(t, tt.want, Score(d), 0.001)
+			assert.InDelta(t, tt.want, Score(d, false), 0.001)
 		})
 	}
 }
@@ -181,14 +212,14 @@ func TestScore_ReasoningBoundaries(t *testing.T) {
 func TestScore_ReasoningNil(t *testing.T) {
 	d := model.TraceDecision{Reasoning: nil}
 	// No reasoning contribution.
-	assert.InDelta(t, float32(0.0), Score(d), 0.001)
+	assert.InDelta(t, float32(0.0), Score(d, false), 0.001)
 }
 
 func TestScore_ReasoningWhitespaceOnly(t *testing.T) {
 	// 30 spaces, but after TrimSpace the length is 0 → no credit.
 	spaces := strings.Repeat(" ", 30)
 	d := model.TraceDecision{Reasoning: &spaces}
-	assert.InDelta(t, float32(0.0), Score(d), 0.001)
+	assert.InDelta(t, float32(0.0), Score(d, false), 0.001)
 }
 
 // ---------------------------------------------------------------------------
@@ -222,7 +253,7 @@ func TestScore_SubstantiveRejectionCount(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d := model.TraceDecision{Alternatives: makeAltsWithRejections(tt.count)}
-			assert.InDelta(t, tt.want, Score(d), 0.001)
+			assert.InDelta(t, tt.want, Score(d, false), 0.001)
 		})
 	}
 }
@@ -238,7 +269,7 @@ func TestScore_RejectionReasonTooShort(t *testing.T) {
 		},
 	}
 	// rejection too short → 0
-	assert.InDelta(t, float32(0.0), Score(d), 0.001)
+	assert.InDelta(t, float32(0.0), Score(d, false), 0.001)
 }
 
 func TestScore_RejectionReasonExactly20(t *testing.T) {
@@ -247,7 +278,7 @@ func TestScore_RejectionReasonExactly20(t *testing.T) {
 			{Label: "a", Selected: false, RejectionReason: strPtr(repeat('x', 20))}, // 20 chars, not > 20
 		},
 	}
-	assert.InDelta(t, float32(0.0), Score(d), 0.001)
+	assert.InDelta(t, float32(0.0), Score(d, false), 0.001)
 }
 
 func TestScore_RejectionReasonExactly21(t *testing.T) {
@@ -257,7 +288,7 @@ func TestScore_RejectionReasonExactly21(t *testing.T) {
 		},
 	}
 	// 1 substantive rejection → 0.10
-	assert.InDelta(t, float32(0.10), Score(d), 0.001)
+	assert.InDelta(t, float32(0.10), Score(d, false), 0.001)
 }
 
 func TestScore_RejectionReasonNil(t *testing.T) {
@@ -266,7 +297,7 @@ func TestScore_RejectionReasonNil(t *testing.T) {
 			{Label: "a", Selected: false, RejectionReason: nil},
 		},
 	}
-	assert.InDelta(t, float32(0.0), Score(d), 0.001)
+	assert.InDelta(t, float32(0.0), Score(d, false), 0.001)
 }
 
 func TestScore_RejectionReasonWhitespace(t *testing.T) {
@@ -277,7 +308,7 @@ func TestScore_RejectionReasonWhitespace(t *testing.T) {
 			{Label: "a", Selected: false, RejectionReason: &ws},
 		},
 	}
-	assert.InDelta(t, float32(0.0), Score(d), 0.001)
+	assert.InDelta(t, float32(0.0), Score(d, false), 0.001)
 }
 
 func TestScore_RejectionReasonMixed(t *testing.T) {
@@ -289,7 +320,7 @@ func TestScore_RejectionReasonMixed(t *testing.T) {
 		},
 	}
 	// 1 substantive rejection → 0.10
-	assert.InDelta(t, float32(0.10), Score(d), 0.001)
+	assert.InDelta(t, float32(0.10), Score(d, false), 0.001)
 }
 
 // ---------------------------------------------------------------------------
@@ -318,7 +349,7 @@ func TestScore_EvidenceCount(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d := model.TraceDecision{Evidence: makeEvidence(tt.count)}
-			assert.InDelta(t, tt.want, Score(d), 0.001)
+			assert.InDelta(t, tt.want, Score(d, false), 0.001)
 		})
 	}
 }
@@ -329,14 +360,14 @@ func TestScore_EvidenceCount(t *testing.T) {
 
 func TestScore_NonStandardDecisionType(t *testing.T) {
 	d := model.TraceDecision{DecisionType: "custom_workflow"}
-	assert.InDelta(t, float32(0.0), Score(d), 0.001)
+	assert.InDelta(t, float32(0.0), Score(d, false), 0.001)
 }
 
 func TestScore_AllStandardDecisionTypes(t *testing.T) {
 	for dt := range StandardDecisionTypes {
 		t.Run(dt, func(t *testing.T) {
 			d := model.TraceDecision{DecisionType: dt}
-			assert.InDelta(t, float32(0.10), Score(d), 0.001)
+			assert.InDelta(t, float32(0.10), Score(d, false), 0.001)
 		})
 	}
 }
@@ -360,7 +391,7 @@ func TestScore_OutcomeBoundaries(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d := model.TraceDecision{Outcome: tt.outcome}
-			assert.InDelta(t, tt.want, Score(d), 0.001)
+			assert.InDelta(t, tt.want, Score(d, false), 0.001)
 		})
 	}
 }
@@ -375,7 +406,7 @@ func TestScore_TwoFactorsCombined(t *testing.T) {
 		DecisionType: "trade_off",
 		Confidence:   0.70,
 	}
-	assert.InDelta(t, float32(0.25), Score(d), 0.001)
+	assert.InDelta(t, float32(0.25), Score(d, false), 0.001)
 }
 
 func TestScore_ThreeFactorsCombined(t *testing.T) {
@@ -388,7 +419,7 @@ func TestScore_ThreeFactorsCombined(t *testing.T) {
 			{SourceType: "document", Content: "b"},
 		},
 	}
-	assert.InDelta(t, float32(0.55), Score(d), 0.001)
+	assert.InDelta(t, float32(0.55), Score(d, false), 0.001)
 }
 
 // ---------------------------------------------------------------------------

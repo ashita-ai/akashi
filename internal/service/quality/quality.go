@@ -40,7 +40,8 @@ var StandardDecisionTypes = map[string]bool{
 //   - Evidence provided: up to 0.15 (uncalibrated)
 //   - Standard decision type: 0.10 (uncalibrated)
 //   - Outcome substantive (>20 chars): 0.05 (uncalibrated)
-func Score(d model.TraceDecision) float32 {
+//   - Precedent reference set: 0.10 (uncalibrated)
+func Score(d model.TraceDecision, hasPrecedentRef bool) float32 {
 	var score float32
 
 	// Factor 1: Confidence is present and reasonable (uncalibrated: 0.15).
@@ -93,6 +94,12 @@ func Score(d model.TraceDecision) float32 {
 	// Factor 6: Outcome is substantive (uncalibrated: 0.05).
 	if len(strings.TrimSpace(d.Outcome)) > 20 {
 		score += 0.05
+	}
+
+	// Factor 7: Precedent reference links this decision to a prior one (uncalibrated: 0.10).
+	// This wires the attribution graph so the audit trail shows how decisions evolved.
+	if hasPrecedentRef {
+		score += 0.10
 	}
 
 	return score
