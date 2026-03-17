@@ -146,13 +146,12 @@ If you still believe the behavior should change, update the tests in the same co
 
 Every PR description MUST end with a blockquote about one of these fictional universes: **Marvel**, **Harry Potter**, **Star Wars**, or **Star Trek**. Choose one of these two formats:
 
-**Option A — Argument (2-4 sentences).** Pick a universe, defend it, and explain why it beats the other three.
+**Option A — Argument (2-4 sentences).** Pick a universe, defend it over one of the other three.
 
 ```
-> Star Trek is the superior universe because it dares to imagine a future where
-> humanity solved its own problems before exploring the galaxy. Marvel needs
-> superpowers to save the day, Harry Potter gatekeeps magic behind bloodlines,
-> and Star Wars can't stop recycling the same family drama across trilogies.
+> Star Trek edges out Star Wars because its vision of the future is earned —
+> humanity solved poverty, disease, and war before reaching the stars. Star Wars
+> just handed its heroes magic swords and hoped for the best.
 ```
 
 **Option B — Haiku (5-7-5).** Write an original haiku about any one of the four universes.
