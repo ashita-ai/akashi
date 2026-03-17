@@ -279,10 +279,11 @@ function DecisionTypeChart({ data }: { data: DecisionTypeCount[] }) {
 
 /** Agent scorecard table, capped at top 10. */
 function AgentScorecard({ agents }: { agents: AgentWithStats[] }) {
-  const sorted = [...agents]
+  const active = [...agents]
     .filter((a) => (a.decision_count ?? 0) > 0)
-    .sort((a, b) => (b.decision_count ?? 0) - (a.decision_count ?? 0))
-    .slice(0, 10);
+    .sort((a, b) => (b.decision_count ?? 0) - (a.decision_count ?? 0));
+  const sorted = active.slice(0, 10);
+  const overflow = active.length - sorted.length;
 
   if (sorted.length === 0) {
     return (
@@ -320,6 +321,11 @@ function AgentScorecard({ agents }: { agents: AgentWithStats[] }) {
           ))}
         </tbody>
       </table>
+      {overflow > 0 && (
+        <p className="text-xs text-muted-foreground pt-2">
+          +{overflow} more
+        </p>
+      )}
     </div>
   );
 }
@@ -496,7 +502,7 @@ export default function Analytics() {
         </Card>
       </div>
 
-      {/* ── Row 2: Decision Type Distribution + Completeness Trend ── */}
+      {/* ── Row 2: Lists — Decision Types + Trace Quality ── */}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
@@ -511,144 +517,6 @@ export default function Analytics() {
               <DecisionTypeChart
                 data={health?.decision_type_distribution ?? []}
               />
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">
-              Completeness Trend
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {decisions.isPending ? (
-              <Skeleton className="h-32 w-full" />
-            ) : dailyStats.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-4 text-center">
-                No data yet.
-              </p>
-            ) : (
-              <div className="space-y-4">
-                <TrendChart
-                  data={dailyStats.map((d) => ({
-                    date: d.date,
-                    value: Math.round(d.avgCompleteness * 100),
-                  }))}
-                  label="Avg completeness % by day"
-                  suffix="%"
-                />
-                {dailyStats.length >= 2 && (
-                  <div className="flex items-center gap-2 text-xs">
-                    {dailyStats[dailyStats.length - 1]!.avgCompleteness >=
-                    dailyStats[0]!.avgCompleteness ? (
-                      <>
-                        <TrendingUp className="h-3 w-3 text-emerald-500" />
-                        <span className="text-emerald-500">Improving</span>
-                      </>
-                    ) : (
-                      <>
-                        <TrendingDown className="h-3 w-3 text-amber-500" />
-                        <span className="text-amber-500">Declining</span>
-                      </>
-                    )}
-                    <span className="text-muted-foreground">
-                      {dailyStats[0]!.date.slice(5)} to{" "}
-                      {dailyStats[dailyStats.length - 1]!.date.slice(5)}
-                    </span>
-                  </div>
-                )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* ── Row 3: Decision Volume + Conflict Trend ── */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">
-              Decision Volume
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {decisions.isPending ? (
-              <Skeleton className="h-32 w-full" />
-            ) : dailyStats.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-4 text-center">
-                No data yet.
-              </p>
-            ) : (
-              <TrendChart
-                data={dailyStats.map((d) => ({
-                  date: d.date,
-                  value: d.count,
-                }))}
-                label="Decisions per day"
-              />
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">
-              Conflict Trend
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {conflictAnalytics.isPending ? (
-              <Skeleton className="h-32 w-full" />
-            ) : !analytics?.trend?.length ? (
-              <p className="text-sm text-muted-foreground py-4 text-center">
-                No conflict data yet.
-              </p>
-            ) : (
-              <ConflictTrend data={analytics.trend} />
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* ── Row 4: Conflicts by Severity + Trace Quality (both compact) ── */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">
-              Conflicts by Severity
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {conflictAnalytics.isPending ? (
-              <Skeleton className="h-24 w-full" />
-            ) : !analytics?.by_severity?.length ? (
-              <p className="text-sm text-muted-foreground py-4 text-center">
-                No conflicts detected.
-              </p>
-            ) : (
-              <div className="space-y-3">
-                <StackedBar
-                  segments={analytics.by_severity.map((s) => ({
-                    label: s.severity,
-                    value: s.count,
-                    color: severityColor(s.severity),
-                  }))}
-                />
-                <div className="flex flex-wrap gap-3 text-xs">
-                  {analytics.by_severity.map((s) => (
-                    <span key={s.severity} className="flex items-center gap-1">
-                      <span
-                        className={cn(
-                          "inline-block h-2 w-2 rounded-full",
-                          severityColor(s.severity),
-                        )}
-                      />
-                      {s.severity}: {s.count}
-                    </span>
-                  ))}
-                </div>
-              </div>
             )}
           </CardContent>
         </Card>
@@ -723,7 +591,145 @@ export default function Analytics() {
         </Card>
       </div>
 
-      {/* ── Row 5: Conflicting Agent Pairs + Agent Scorecard (both lists) ── */}
+      {/* ── Row 3: Charts — Completeness Trend + Decision Volume ── */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium">
+              Completeness Trend
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {decisions.isPending ? (
+              <Skeleton className="h-32 w-full" />
+            ) : dailyStats.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-4 text-center">
+                No data yet.
+              </p>
+            ) : (
+              <div className="space-y-4">
+                <TrendChart
+                  data={dailyStats.map((d) => ({
+                    date: d.date,
+                    value: Math.round(d.avgCompleteness * 100),
+                  }))}
+                  label="Avg completeness % by day"
+                  suffix="%"
+                />
+                {dailyStats.length >= 2 && (
+                  <div className="flex items-center gap-2 text-xs">
+                    {dailyStats[dailyStats.length - 1]!.avgCompleteness >=
+                    dailyStats[0]!.avgCompleteness ? (
+                      <>
+                        <TrendingUp className="h-3 w-3 text-emerald-500" />
+                        <span className="text-emerald-500">Improving</span>
+                      </>
+                    ) : (
+                      <>
+                        <TrendingDown className="h-3 w-3 text-amber-500" />
+                        <span className="text-amber-500">Declining</span>
+                      </>
+                    )}
+                    <span className="text-muted-foreground">
+                      {dailyStats[0]!.date.slice(5)} to{" "}
+                      {dailyStats[dailyStats.length - 1]!.date.slice(5)}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium">
+              Decision Volume
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {decisions.isPending ? (
+              <Skeleton className="h-32 w-full" />
+            ) : dailyStats.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-4 text-center">
+                No data yet.
+              </p>
+            ) : (
+              <TrendChart
+                data={dailyStats.map((d) => ({
+                  date: d.date,
+                  value: d.count,
+                }))}
+                label="Decisions per day"
+              />
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* ── Row 4: Charts — Conflict Trend + Conflicts by Severity ── */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium">
+              Conflict Trend
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {conflictAnalytics.isPending ? (
+              <Skeleton className="h-32 w-full" />
+            ) : !analytics?.trend?.length ? (
+              <p className="text-sm text-muted-foreground py-4 text-center">
+                No conflict data yet.
+              </p>
+            ) : (
+              <ConflictTrend data={analytics.trend} />
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium">
+              Conflicts by Severity
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {conflictAnalytics.isPending ? (
+              <Skeleton className="h-24 w-full" />
+            ) : !analytics?.by_severity?.length ? (
+              <p className="text-sm text-muted-foreground py-4 text-center">
+                No conflicts detected.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                <StackedBar
+                  segments={analytics.by_severity.map((s) => ({
+                    label: s.severity,
+                    value: s.count,
+                    color: severityColor(s.severity),
+                  }))}
+                />
+                <div className="flex flex-wrap gap-3 text-xs">
+                  {analytics.by_severity.map((s) => (
+                    <span key={s.severity} className="flex items-center gap-1">
+                      <span
+                        className={cn(
+                          "inline-block h-2 w-2 rounded-full",
+                          severityColor(s.severity),
+                        )}
+                      />
+                      {s.severity}: {s.count}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* ── Row 5: Lists — Conflicting Agent Pairs + Agent Scorecard ── */}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
@@ -743,7 +749,7 @@ export default function Analytics() {
               <div className="space-y-2">
                 {analytics.by_agent_pair
                   .sort((a, b) => b.count - a.count)
-                  .slice(0, 8)
+                  .slice(0, 10)
                   .map((pair) => (
                     <div
                       key={`${pair.agent_a}-${pair.agent_b}`}
@@ -785,6 +791,11 @@ export default function Analytics() {
                       </div>
                     </div>
                   ))}
+                {analytics.by_agent_pair.length > 10 && (
+                  <p className="text-xs text-muted-foreground pt-1">
+                    +{analytics.by_agent_pair.length - 10} more
+                  </p>
+                )}
               </div>
             )}
           </CardContent>
