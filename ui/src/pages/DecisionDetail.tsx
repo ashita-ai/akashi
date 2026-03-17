@@ -1,6 +1,6 @@
 import { useParams, Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
-import { getRun, getDecisionRevisions, getDecisionConflicts, verifyDecisionIntegrity } from "@/lib/api";
+import { getRun, getDecision, getDecisionRevisions, getDecisionConflicts, verifyDecisionIntegrity } from "@/lib/api";
 import type { Decision, DecisionConflict } from "@/types/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge, decisionTypeBadgeVariant } from "@/components/ui/badge";
@@ -27,6 +27,35 @@ import {
   ShieldX,
   XCircle,
 } from "lucide-react";
+
+function PrecedentLink({ decisionId }: { decisionId: string }) {
+  const { data, isPending, error } = useQuery({
+    queryKey: ["precedent", decisionId],
+    queryFn: () => getDecision(decisionId),
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  if (isPending) return <Skeleton className="h-4 w-32 inline-block" />;
+
+  if (error || !data) {
+    return (
+      <span className="font-mono text-xs text-muted-foreground" title="Referenced decision not found">
+        {decisionId.slice(0, 8)}… <span className="text-destructive">(not found)</span>
+      </span>
+    );
+  }
+
+  return (
+    <Link
+      to={`/decisions/${data.run_id}`}
+      className="font-mono text-xs text-primary hover:underline inline-flex items-center gap-1"
+    >
+      <GitBranch className="h-3 w-3" />
+      {decisionId.slice(0, 8)}…
+    </Link>
+  );
+}
 
 const evidenceSourceColors: Record<string, string> = {
   tool_output: "border-l-cyan-500/60",
@@ -440,7 +469,7 @@ export default function DecisionDetail() {
                   {decision.precedent_ref && (
                     <div className="col-span-2">
                       <dt className="text-xs text-muted-foreground">Precedent</dt>
-                      <dd className="font-mono text-xs truncate">{decision.precedent_ref}</dd>
+                      <dd><PrecedentLink decisionId={decision.precedent_ref} /></dd>
                     </div>
                   )}
                 </div>
