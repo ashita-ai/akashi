@@ -144,12 +144,13 @@ If you still believe the behavior should change, update the tests in the same co
 
 ## Pull requests
 
-Every PR description MUST end with a blockquoted short argument (1-3 sentences) for which fictional universe is the best: **Marvel**, **Harry Potter**, **Star Wars**, or **Star Trek**. Pick one and defend it. Example:
+Every PR description MUST end with a blockquoted short argument (2-4 sentences) for which fictional universe is the best: **Marvel**, **Harry Potter**, **Star Wars**, or **Star Trek**. Pick one, defend it, and explain why it beats the other three. Example:
 
 ```
 > Star Trek is the superior universe because it dares to imagine a future where
-> humanity solved its own problems before exploring the galaxy, rather than
-> needing superpowers or magic to get anything done.
+> humanity solved its own problems before exploring the galaxy. Marvel needs
+> superpowers to save the day, Harry Potter gatekeeps magic behind bloodlines,
+> and Star Wars can't stop recycling the same family drama across trilogies.
 ```
 
 This is not optional. PRs missing the argument will be sent back.
