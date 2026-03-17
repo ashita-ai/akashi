@@ -45,11 +45,21 @@ var (
 	orgOwnerToken string
 )
 
+func isFuzzOnly() bool {
+	for _, arg := range os.Args[1:] {
+		if strings.HasPrefix(arg, "-test.fuzz=") {
+			return true
+		}
+	}
+	return false
+}
+
 func TestMain(m *testing.M) {
-	// Fuzz targets in this package (e.g. FuzzDecodeJSON) don't need a database.
-	// Skip expensive testcontainer setup when only fuzzing to avoid context
-	// deadline exceeded flakes on resource-constrained CI runners.
-	if isFuzzRun() {
+	// Fuzz targets in this package (e.g. FuzzDecodeJSON) don't need a
+	// database. Skip the expensive testcontainer setup when the binary
+	// is invoked in fuzz-only mode to avoid a multi-minute container
+	// pull/startup that caused CI timeouts.
+	if isFuzzOnly() {
 		os.Exit(m.Run())
 	}
 
@@ -173,18 +183,6 @@ func TestMain(m *testing.M) {
 	db.Close(context.Background())
 	_ = testcontainer.Terminate(context.Background())
 	os.Exit(code)
-}
-
-// isFuzzRun returns true when the test binary was invoked with -test.fuzz,
-// meaning only fuzz targets will execute. This lets TestMain skip heavyweight
-// setup (testcontainers, migrations) that fuzz targets don't need.
-func isFuzzRun() bool {
-	for _, arg := range os.Args[1:] {
-		if strings.HasPrefix(arg, "-test.fuzz") {
-			return true
-		}
-	}
-	return false
 }
 
 func getToken(baseURL, agentID, apiKey string) string {

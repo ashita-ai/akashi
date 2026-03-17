@@ -262,7 +262,7 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 	}
 
 	// 2. Compute quality score.
-	qualityScore := quality.Score(input.Decision)
+	qualityScore := quality.Score(input.Decision, input.PrecedentRef != nil)
 
 	// 3. Build alternatives.
 	alts := make([]model.Alternative, len(input.Decision.Alternatives))
