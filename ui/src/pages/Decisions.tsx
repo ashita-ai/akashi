@@ -20,7 +20,17 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate, truncate } from "@/lib/utils";
-import { ChevronLeft, ChevronRight, FileText } from "lucide-react";
+import { ArrowUpDown, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FileText } from "lucide-react";
+
+type SortField = "valid_from" | "agent_id" | "decision_type" | "outcome" | "confidence" | "completeness_score" | "project";
+type SortDir = "asc" | "desc";
+
+function SortIcon({ field, active, dir }: { field: string; active: string; dir: SortDir }) {
+  if (field !== active) return <ArrowUpDown className="ml-1 h-3 w-3 opacity-40" />;
+  return dir === "asc"
+    ? <ChevronUp className="ml-1 h-3 w-3" />
+    : <ChevronDown className="ml-1 h-3 w-3" />;
+}
 
 function typeRowClass(decisionType: string): string {
   const map: Record<string, string> = {
@@ -45,9 +55,12 @@ export default function Decisions() {
   const agentFilter = searchParams.get("agent") ?? "";
   const typeFilter = searchParams.get("type") ?? "";
   const projectFilter = searchParams.get("project") ?? "";
+  const sortField = (searchParams.get("sort") ?? "valid_from") as SortField;
+  const defaultDir: SortDir = sortField === "valid_from" ? "desc" : "asc";
+  const sortDir = (searchParams.get("dir") ?? defaultDir) as SortDir;
 
   const { data, isPending } = useQuery({
-    queryKey: ["decisions", page, agentFilter, typeFilter, projectFilter],
+    queryKey: ["decisions", page, agentFilter, typeFilter, projectFilter, sortField, sortDir],
     queryFn: () =>
       queryDecisions({
         filters: {
@@ -55,8 +68,8 @@ export default function Decisions() {
           ...(typeFilter ? { decision_type: typeFilter } : {}),
           ...(projectFilter ? { project: projectFilter } : {}),
         },
-        order_by: "valid_from",
-        order_dir: "desc",
+        order_by: sortField,
+        order_dir: sortDir,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
       }),
@@ -74,8 +87,15 @@ export default function Decisions() {
     staleTime: 60_000,
   });
 
+  function sortParams(): Record<string, string> {
+    const p: Record<string, string> = {};
+    if (sortField !== "valid_from") p.sort = sortField;
+    if (sortDir !== defaultDir) p.dir = sortDir;
+    return p;
+  }
+
   function updateFilter(key: string, value: string) {
-    const params: Record<string, string> = {};
+    const params: Record<string, string> = { ...sortParams() };
     const current = { agent: agentFilter, type: typeFilter, project: projectFilter };
     for (const [k, v] of Object.entries(current)) {
       if (k === key) {
@@ -89,15 +109,32 @@ export default function Decisions() {
   }
 
   function clearFilters() {
-    setSearchParams({});
+    setSearchParams(sortParams());
   }
 
   function goToPage(p: number) {
-    const params: Record<string, string> = {};
+    const params: Record<string, string> = { ...sortParams() };
     if (agentFilter) params.agent = agentFilter;
     if (typeFilter) params.type = typeFilter;
     if (projectFilter) params.project = projectFilter;
     if (p > 0) params.page = String(p);
+    setSearchParams(params);
+  }
+
+  function toggleSort(field: SortField) {
+    const params: Record<string, string> = {};
+    if (agentFilter) params.agent = agentFilter;
+    if (typeFilter) params.type = typeFilter;
+    if (projectFilter) params.project = projectFilter;
+    if (field !== "valid_from") params.sort = field;
+    if (sortField === field) {
+      const newDir = sortDir === "asc" ? "desc" : "asc";
+      if (newDir !== "desc") params.dir = newDir;
+    } else {
+      // New field defaults to asc, except valid_from which defaults desc
+      if (field !== "valid_from") params.dir = "asc";
+    }
+    // Reset to page 0 when sort changes
     setSearchParams(params);
   }
 
@@ -207,13 +244,26 @@ export default function Decisions() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Timestamp</TableHead>
-                <TableHead>Agent</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Outcome</TableHead>
-                <TableHead className="text-right">Confidence</TableHead>
-                <TableHead className="text-right">Completeness</TableHead>
-                <TableHead>Project</TableHead>
+                {([
+                  ["valid_from", "Timestamp", ""],
+                  ["agent_id", "Agent", ""],
+                  ["decision_type", "Type", ""],
+                  ["outcome", "Outcome", ""],
+                  ["confidence", "Confidence", "text-right"],
+                  ["completeness_score", "Completeness", "text-right"],
+                  ["project", "Project", ""],
+                ] as const).map(([field, label, align]) => (
+                  <TableHead key={field} className={align}>
+                    <button
+                      type="button"
+                      className={`inline-flex items-center hover:text-foreground transition-colors ${align ? "ml-auto" : ""}`}
+                      onClick={() => toggleSort(field)}
+                    >
+                      {label}
+                      <SortIcon field={field} active={sortField} dir={sortDir} />
+                    </button>
+                  </TableHead>
+                ))}
               </TableRow>
             </TableHeader>
             <TableBody>
