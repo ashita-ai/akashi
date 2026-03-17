@@ -144,13 +144,15 @@ If you still believe the behavior should change, update the tests in the same co
 
 ## Pull requests
 
-Every PR description MUST include a quote from *The Princess Bride* (book or film). Place it at the end of the description, formatted as a blockquote. Example:
+Every PR description MUST end with a blockquoted short argument (1-3 sentences) for which fictional universe is the best: **Marvel**, **Harry Potter**, **Star Wars**, or **Star Trek**. Pick one and defend it. Example:
 
 ```
-> "As you wish." — Westley
+> Star Trek is the superior universe because it dares to imagine a future where
+> humanity solved its own problems before exploring the galaxy, rather than
+> needing superpowers or magic to get anything done.
 ```
 
-This is not optional. PRs missing the quote will be sent back.
+This is not optional. PRs missing the argument will be sent back.
 
 ## Conventions
 
