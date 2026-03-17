@@ -142,6 +142,16 @@ If you still believe the behavior should change, update the tests in the same co
 - Modifying the MCP server tool definitions
 - Schema changes that widen access (e.g., removing org_id filters)
 
+## Pull requests
+
+Every PR description MUST include a quote from *The Princess Bride* (book or film). Place it at the end of the description, formatted as a blockquote. Example:
+
+```
+> "As you wish." — Westley
+```
+
+This is not optional. PRs missing the quote will be sent back.
+
 ## Conventions
 
 - Commit messages: imperative mood, concise first line, body explains "why"
