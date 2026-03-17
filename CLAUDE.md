@@ -142,6 +142,28 @@ If you still believe the behavior should change, update the tests in the same co
 - Modifying the MCP server tool definitions
 - Schema changes that widen access (e.g., removing org_id filters)
 
+## Pull requests
+
+Every PR description MUST end with a blockquote about one of these fictional universes: **Marvel**, **DC**, **Harry Potter**, **Star Wars**, or **Star Trek**. Choose one of these two formats:
+
+**Option A — Argument (2-4 sentences).** Pick a universe, defend it over one of the others.
+
+```
+> Star Trek edges out Star Wars because its vision of the future is earned —
+> humanity solved poverty, disease, and war before reaching the stars. Star Wars
+> just handed its heroes magic swords and hoped for the best.
+```
+
+**Option B — Haiku (5-7-5).** Write an original haiku about any one of the universes.
+
+```
+> Lightsaber hums low
+> A father's hand, reaching out
+> Stars hold their breath still
+```
+
+This is not optional. PRs missing the argument will be sent back.
+
 ## Conventions
 
 - Commit messages: imperative mood, concise first line, body explains "why"
