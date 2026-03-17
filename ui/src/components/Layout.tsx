@@ -160,7 +160,7 @@ export default function Layout() {
           <span className="text-lg font-semibold tracking-tight">Akashi</span>
         </header>
         <main className="flex-1 overflow-y-auto p-6 lg:p-8">
-          <div className="mx-auto max-w-7xl">
+          <div className="mx-auto w-full max-w-[1600px]">
             <Outlet />
           </div>
         </main>
