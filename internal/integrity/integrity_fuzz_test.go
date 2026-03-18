@@ -138,8 +138,11 @@ func FuzzBuildMerkleRoot(f *testing.F) {
 		// BuildMerkleRoot requires sorted input; sort the fuzzed leaves.
 		slices.Sort(leaves)
 
-		// Must not panic.
-		root := BuildMerkleRoot(leaves)
+		// Must not panic or error on sorted input.
+		root, err := BuildMerkleRoot(leaves)
+		if err != nil {
+			t.Fatalf("BuildMerkleRoot returned unexpected error on sorted input: %v", err)
+		}
 
 		if len(leaves) == 0 && root != "" {
 			t.Fatal("empty leaves should produce empty root")
@@ -152,7 +155,10 @@ func FuzzBuildMerkleRoot(f *testing.F) {
 				t.Fatalf("merkle root should be 64 hex chars, got %d", len(root))
 			}
 			// Determinism.
-			root2 := BuildMerkleRoot(leaves)
+			root2, err := BuildMerkleRoot(leaves)
+			if err != nil {
+				t.Fatalf("BuildMerkleRoot returned error on second call: %v", err)
+			}
 			if root != root2 {
 				t.Fatalf("non-deterministic merkle root")
 			}
