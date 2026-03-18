@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestComputeContentHash_Deterministic(t *testing.T) {
@@ -134,7 +135,8 @@ func TestV2AndV1ProduceDifferentHashes(t *testing.T) {
 }
 
 func TestBuildMerkleRoot_Empty(t *testing.T) {
-	root := BuildMerkleRoot(nil)
+	root, err := BuildMerkleRoot(nil)
+	require.NoError(t, err)
 	if root != "" {
 		t.Fatalf("empty input should produce empty root, got %q", root)
 	}
@@ -142,7 +144,8 @@ func TestBuildMerkleRoot_Empty(t *testing.T) {
 
 func TestBuildMerkleRoot_SingleLeaf(t *testing.T) {
 	leaf := "abc123"
-	root := BuildMerkleRoot([]string{leaf})
+	root, err := BuildMerkleRoot([]string{leaf})
+	require.NoError(t, err)
 	if root != leaf {
 		t.Fatalf("single leaf should be the root: got %q, want %q", root, leaf)
 	}
@@ -151,8 +154,10 @@ func TestBuildMerkleRoot_SingleLeaf(t *testing.T) {
 func TestBuildMerkleRoot_Deterministic(t *testing.T) {
 	leaves := []string{"hash_a", "hash_b", "hash_c", "hash_d"}
 
-	r1 := BuildMerkleRoot(leaves)
-	r2 := BuildMerkleRoot(leaves)
+	r1, err := BuildMerkleRoot(leaves)
+	require.NoError(t, err)
+	r2, err := BuildMerkleRoot(leaves)
+	require.NoError(t, err)
 
 	if r1 != r2 {
 		t.Fatalf("Merkle root not deterministic: %q != %q", r1, r2)
@@ -162,23 +167,26 @@ func TestBuildMerkleRoot_Deterministic(t *testing.T) {
 	}
 }
 
-func TestBuildMerkleRoot_PanicsOnUnsortedInput(t *testing.T) {
-	assert.Panics(t, func() {
-		BuildMerkleRoot([]string{"b", "a", "c"})
-	}, "BuildMerkleRoot should panic when given unsorted leaves")
+func TestBuildMerkleRoot_ReturnsErrorOnUnsortedInput(t *testing.T) {
+	_, err := BuildMerkleRoot([]string{"b", "a", "c"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnsortedLeaves, "BuildMerkleRoot should return ErrUnsortedLeaves for unsorted input")
 }
 
 func TestBuildMerkleRoot_SortedInputProducesDeterministicRoot(t *testing.T) {
 	// Sorted order produces a valid, deterministic root.
-	r1 := BuildMerkleRoot([]string{"a", "b", "c"})
-	r2 := BuildMerkleRoot([]string{"a", "b", "c"})
+	r1, err := BuildMerkleRoot([]string{"a", "b", "c"})
+	require.NoError(t, err)
+	r2, err := BuildMerkleRoot([]string{"a", "b", "c"})
+	require.NoError(t, err)
 	assert.Equal(t, r1, r2, "same sorted input should produce same root")
 	assert.Len(t, r1, 64, "root should be a 64-char hex SHA-256 digest")
 }
 
 func TestBuildMerkleRoot_OddLeafCount(t *testing.T) {
 	// With 3 leaves: pair (0,1), promote (2). Then pair (hash01, leaf2) -> root.
-	root := BuildMerkleRoot([]string{"x", "y", "z"})
+	root, err := BuildMerkleRoot([]string{"x", "y", "z"})
+	require.NoError(t, err)
 	if root == "" {
 		t.Fatal("odd leaf count should still produce a root")
 	}

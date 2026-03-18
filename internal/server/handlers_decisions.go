@@ -154,6 +154,9 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		"decision_id": result.DecisionID,
 		"event_count": result.EventCount,
 	}
+	if result.EmbeddingSkipped {
+		resp["embedding_skipped"] = true
+	}
 	h.completeIdempotentWriteBestEffort(r, orgID, idem, http.StatusCreated, resp)
 	writeJSON(w, r, http.StatusCreated, resp)
 }

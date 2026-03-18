@@ -49,6 +49,7 @@ type Service struct {
 	embeddingDuration      metric.Float64Histogram
 	searchDuration         metric.Float64Histogram
 	claimEmbeddingFailures metric.Int64Counter
+	embeddingSkips         metric.Int64Counter
 
 	percentileCache *search.PercentileCache // nil = use log fallback in ReScore.
 	rescoreMetrics  *search.ReScoreMetrics  // nil = skip signal contribution recording.
@@ -110,6 +111,9 @@ func New(db storage.Store, embedder embedding.Provider, searcher search.Searcher
 	claimFail, _ := meter.Int64Counter("akashi.claims.embedding_failures",
 		metric.WithDescription("Claim embedding generation failures"),
 	)
+	embSkips, _ := meter.Int64Counter("akashi.embedding.skips",
+		metric.WithDescription("Decisions traced without embedding (provider unavailable or errored)"),
+	)
 	shutdownCtx, shutdownStop := context.WithCancel(context.Background())
 	return &Service{
 		db:                     db,
@@ -120,6 +124,7 @@ func New(db storage.Store, embedder embedding.Provider, searcher search.Searcher
 		embeddingDuration:      embDur,
 		searchDuration:         searchDur,
 		claimEmbeddingFailures: claimFail,
+		embeddingSkips:         embSkips,
 		shutdownCtx:            shutdownCtx,
 		shutdownStop:           shutdownStop,
 	}
@@ -150,6 +155,10 @@ type TraceResult struct {
 	// Decision is the full model as stored, available for event hooks.
 	// Populated by Trace() and AdjudicateConflictWithTrace().
 	Decision model.Decision
+	// EmbeddingSkipped is true when the embedding provider was unavailable or
+	// returned an error. Conflict detection and semantic search may be degraded
+	// for this decision.
+	EmbeddingSkipped bool
 }
 
 // Trace records a complete decision with its alternatives and evidence.
@@ -174,10 +183,11 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 
 	s.postTraceAsync(ctx, orgID, input, decision)
 	return TraceResult{
-		RunID:      run.ID,
-		DecisionID: decision.ID,
-		EventCount: len(params.Alternatives) + len(params.Evidence) + 1,
-		Decision:   decision,
+		RunID:            run.ID,
+		DecisionID:       decision.ID,
+		EventCount:       len(params.Alternatives) + len(params.Evidence) + 1,
+		Decision:         decision,
+		EmbeddingSkipped: decision.Embedding == nil,
 	}, nil
 }
 
@@ -204,10 +214,11 @@ func (s *Service) AdjudicateConflictWithTrace(ctx context.Context, orgID uuid.UU
 
 	s.postTraceAsync(ctx, orgID, input, decision)
 	return TraceResult{
-		RunID:      run.ID,
-		DecisionID: decision.ID,
-		EventCount: len(params.Alternatives) + len(params.Evidence) + 1,
-		Decision:   decision,
+		RunID:            run.ID,
+		DecisionID:       decision.ID,
+		EventCount:       len(params.Alternatives) + len(params.Evidence) + 1,
+		Decision:         decision,
+		EmbeddingSkipped: decision.Embedding == nil,
 	}, nil
 }
 
@@ -259,6 +270,13 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 	embWg.Wait()
 	if decEmbErr != nil {
 		return storage.CreateTraceParams{}, decEmbErr
+	}
+	if decisionEmb == nil {
+		s.embeddingSkips.Add(ctx, 1)
+		s.logger.Warn("trace: decision stored without embedding — semantic search and conflict detection degraded",
+			"agent_id", input.AgentID,
+			"decision_type", input.Decision.DecisionType,
+		)
 	}
 
 	// 2. Compute quality score.
