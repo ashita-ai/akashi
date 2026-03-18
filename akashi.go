@@ -570,7 +570,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 		outboxCtx, outboxCancel := contextWithOptionalTimeout(ctx, a.cfg.ShutdownOutboxDrainTimeout)
 		a.outbox.Drain(outboxCtx)
 		if outboxCtx.Err() != nil {
-			a.logger.Warn("search outbox drain did not complete within timeout",
+			a.logger.Error("search outbox drain did not complete within timeout — Qdrant index may be stale",
 				"error", outboxCtx.Err(),
 				"configured_timeout", a.cfg.ShutdownOutboxDrainTimeout,
 			)
@@ -1168,7 +1168,11 @@ func buildIntegrityProofs(ctx context.Context, db *storage.DB, logger *slog.Logg
 			continue
 		}
 
-		root := integrity.BuildMerkleRoot(hashes)
+		root, err := integrity.BuildMerkleRoot(hashes)
+		if err != nil {
+			logger.Warn("integrity proof: merkle root construction failed", "error", err, "org_id", orgID)
+			continue
+		}
 
 		proof := storage.IntegrityProof{
 			OrgID:         orgID,

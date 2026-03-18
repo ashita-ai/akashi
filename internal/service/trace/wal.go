@@ -426,8 +426,12 @@ func (w *WAL) rotateSegment() error {
 			w.logger.Warn("wal: sync before rotation failed", "error", err)
 		}
 		if err := w.current.Close(); err != nil {
-			w.logger.Warn("wal: close before rotation failed", "error", err)
+			// Close failure means the old file descriptor may be leaked. Return
+			// the error so the caller can decide how to handle it rather than
+			// silently accumulating leaked FDs.
+			return fmt.Errorf("wal: close segment before rotation: %w", err)
 		}
+		w.current = nil // clear so a subsequent failure doesn't double-close
 	}
 
 	path := w.segmentPath(w.segmentNum)

@@ -15,7 +15,9 @@ import (
 var version = "dev"
 
 func main() {
-	os.Exit(run0())
+	// Capture the exit code so defers in main() execute before process exit.
+	code := run0()
+	os.Exit(code)
 }
 
 func run0() int {
