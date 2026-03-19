@@ -135,15 +135,26 @@ func (db *DB) GetEvidenceByDecision(ctx context.Context, decisionID uuid.UUID, o
 }
 
 // GetEvidenceCoverageStats returns how many current decisions have at least one evidence record.
-func (db *DB) GetEvidenceCoverageStats(ctx context.Context, orgID uuid.UUID) (EvidenceCoverageStats, error) {
+// When from/to are non-nil, only decisions with valid_from in [from, to) are included.
+func (db *DB) GetEvidenceCoverageStats(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (EvidenceCoverageStats, error) {
 	var s EvidenceCoverageStats
-	err := db.pool.QueryRow(ctx, `
+	q := `
 		SELECT count(DISTINCT d.id) AS total,
 		       count(DISTINCT e.decision_id) AS with_evidence,
 		       count(e.id) AS total_records
 		FROM decisions d
 		LEFT JOIN evidence e ON d.id = e.decision_id AND e.org_id = d.org_id
-		WHERE d.org_id = $1 AND d.valid_to IS NULL`, orgID).Scan(
+		WHERE d.org_id = $1 AND d.valid_to IS NULL`
+	args := []any{orgID}
+	if from != nil {
+		args = append(args, *from)
+		q += fmt.Sprintf(" AND d.valid_from >= $%d", len(args))
+	}
+	if to != nil {
+		args = append(args, *to)
+		q += fmt.Sprintf(" AND d.valid_from < $%d", len(args))
+	}
+	err := db.pool.QueryRow(ctx, q, args...).Scan(
 		&s.TotalDecisions, &s.WithEvidence, &s.TotalRecords)
 	if err != nil {
 		return s, fmt.Errorf("storage: evidence coverage stats: %w", err)

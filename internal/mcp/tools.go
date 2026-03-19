@@ -1380,7 +1380,7 @@ func (s *Server) handleStats(ctx context.Context, _ mcplib.CallToolRequest) (*mc
 	orgID := ctxutil.OrgIDFromContext(ctx)
 
 	svc := tracehealth.New(s.db)
-	metrics, err := svc.Compute(ctx, orgID)
+	metrics, err := svc.Compute(ctx, orgID, nil, nil)
 	if err != nil {
 		return errorResult(fmt.Sprintf("failed to compute trace health: %v", err)), nil
 	}
