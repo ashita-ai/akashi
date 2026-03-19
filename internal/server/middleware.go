@@ -121,10 +121,18 @@ func loggingMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
 
 type statusWriter struct {
 	http.ResponseWriter
-	statusCode int
+	statusCode  int
+	wroteHeader bool
 }
 
 func (w *statusWriter) WriteHeader(code int) {
+	if w.wroteHeader {
+		// Subsequent calls (e.g. SSE handler error after 200 flush) are
+		// no-ops. We keep the first status code since that's what the
+		// client actually received.
+		return
+	}
+	w.wroteHeader = true
 	w.statusCode = code
 	w.ResponseWriter.WriteHeader(code)
 }
@@ -723,8 +731,9 @@ func localhostOnly(apiKey string, next http.Handler) http.Handler {
 // Uses BestSpeed to minimize CPU overhead on hot paths (check, trace).
 func gzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip SSE streams — they use chunked transfer encoding.
-		if r.URL.Path == "/v1/subscribe" {
+		// Skip SSE streams — they use chunked transfer encoding and
+		// require unbuffered writes for real-time delivery.
+		if r.URL.Path == "/v1/subscribe" || r.URL.Path == "/mcp" {
 			next.ServeHTTP(w, r)
 			return
 		}
