@@ -231,6 +231,18 @@ func TestStatusWriter(t *testing.T) {
 		assert.Equal(t, rec, sw.Unwrap())
 	})
 
+	t.Run("second WriteHeader is no-op", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		sw := &statusWriter{ResponseWriter: rec, statusCode: http.StatusOK}
+		sw.WriteHeader(http.StatusOK)
+		// Simulate an SSE handler that tries to write 500 after already
+		// having flushed 200 headers. The second call should be silently
+		// dropped so the logged status reflects what the client received.
+		sw.WriteHeader(http.StatusInternalServerError)
+		assert.Equal(t, http.StatusOK, sw.statusCode, "first status wins")
+		assert.Equal(t, http.StatusOK, rec.Code, "underlying writer keeps first status")
+	})
+
 	t.Run("Flush delegates to underlying Flusher", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		sw := &statusWriter{ResponseWriter: rec, statusCode: http.StatusOK}
