@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -2852,4 +2853,29 @@ func TestHandleResolve_WinnerNotInConflict(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.IsError)
 	assert.Contains(t, parseToolText(t, result), "must be one of the two decisions")
+}
+
+func TestComputeMissingFields_TaskTip(t *testing.T) {
+	reasoning := "detailed reasoning that is over one hundred characters long so it passes the threshold requirement here"
+	// Without task: tip should be present.
+	tips := computeMissingFields("architecture", "chose Redis with 5min TTL", 0.7, &reasoning, nil, nil, false, false)
+	found := false
+	for _, tip := range tips {
+		if strings.Contains(tip, "Add task") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "should include task tip when hasTask is false")
+
+	// With task: tip should be absent.
+	tips = computeMissingFields("architecture", "chose Redis with 5min TTL", 0.7, &reasoning, nil, nil, false, true)
+	found = false
+	for _, tip := range tips {
+		if strings.Contains(tip, "Add task") {
+			found = true
+			break
+		}
+	}
+	assert.False(t, found, "should not include task tip when hasTask is true")
 }

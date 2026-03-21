@@ -130,6 +130,7 @@ OPTIONAL FIELDS (each improves completeness score and future usefulness):
 EXAMPLE: After choosing a caching strategy, record decision_type="architecture",
 outcome="chose Redis with 5min TTL for session cache", confidence=0.7,
 reasoning="Redis handles our expected QPS, TTL prevents stale reads. Memcached lacks native clustering in our stack. In-memory cache won't share across instances.",
+task="session infrastructure redesign",
 project="my-service",
 precedent_ref="<paste precedent_ref_hint from akashi_check here, if applicable>",
 alternatives='[{"label":"in-memory cache","rejection_reason":"not shared across instances, would require sticky sessions"},{"label":"Memcached","rejection_reason":"no native clustering in our stack, adds operational overhead"}]',
@@ -201,9 +202,13 @@ TWO MODES:
   with confidence >= 0.8.
 
 Results always sorted by recency. Use limit + offset for pagination.
+The "task" field is returned for each decision when set (e.g. "codebase review",
+"CI pipeline fix"). Use semantic search with the task name as query to find
+all decisions from a specific work session.
 
 EXAMPLES:
 - Semantic: query="how did we handle rate limiting?"
+- By task: query="dashboard redesign" (finds decisions grouped under that task)
 - Structured: decision_type="architecture", confidence_min=0.8, agent_id="planner"
 - Recent activity: no filters, limit=20 (returns newest decisions)`),
 			mcplib.WithReadOnlyHintAnnotation(true),
@@ -844,7 +849,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		Alternatives: alternatives,
 		Evidence:     evidence,
 	}, precedentRef != nil)
-	missing := computeMissingFields(decisionType, outcome, confidence, reasoningPtr, alternatives, evidence, precedentRef != nil)
+	missing := computeMissingFields(decisionType, outcome, confidence, reasoningPtr, alternatives, evidence, precedentRef != nil, request.GetString("task", "") != "")
 
 	responseMap := map[string]any{
 		"run_id":             result.RunID,
@@ -883,7 +888,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 // computeMissingFields returns actionable tips for improving trace completeness.
 // Each tip tells the agent exactly what to add next time. Tips are ordered by
 // completeness score impact (highest first).
-func computeMissingFields(decisionType, outcome string, confidence float32, reasoning *string, alternatives []model.TraceAlternative, evidence []model.TraceEvidence, hasPrecedentRef bool) []string {
+func computeMissingFields(decisionType, outcome string, confidence float32, reasoning *string, alternatives []model.TraceAlternative, evidence []model.TraceEvidence, hasPrecedentRef, hasTask bool) []string {
 	var tips []string
 
 	// Reasoning: biggest single factor (up to 0.25).
@@ -933,6 +938,11 @@ func computeMissingFields(decisionType, outcome string, confidence float32, reas
 	// Substantive outcome (0.05).
 	if len(strings.TrimSpace(outcome)) <= 20 {
 		tips = append(tips, "Make outcome more specific (>20 chars) for +5%")
+	}
+
+	// Task label: not a scoring factor, but useful for grouping related decisions.
+	if !hasTask {
+		tips = append(tips, "Add task (e.g. \"codebase review\", \"CI pipeline fix\") to group related decisions from this work session")
 	}
 
 	return tips
