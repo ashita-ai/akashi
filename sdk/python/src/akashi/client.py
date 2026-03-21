@@ -69,6 +69,40 @@ def _build_check_body(
     return body
 
 
+def _infer_project_from_git() -> str:
+    """Resolve the canonical project name from git remote origin.
+
+    Runs ``git remote get-url origin``, strips ``.git``, and returns the
+    basename. Cached for the process lifetime. Returns "" on any failure.
+    """
+    cached = getattr(_infer_project_from_git, "_cached", None)
+    if cached is not None:
+        return cached
+
+    import subprocess  # noqa: PLC0415 — deferred to avoid import cost when not needed
+
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            _infer_project_from_git._cached = ""  # type: ignore[attr-defined]
+            return ""
+        import posixpath
+
+        remote = result.stdout.strip().removesuffix(".git")
+        name = posixpath.basename(remote)
+        _infer_project_from_git._cached = name  # type: ignore[attr-defined]
+        return name
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        _infer_project_from_git._cached = ""  # type: ignore[attr-defined]
+        return ""
+
+
 def _build_trace_body(agent_id: str, request: TraceRequest) -> dict[str, Any]:
     """Build the wire-format body for POST /v1/trace.
 
@@ -78,6 +112,10 @@ def _build_trace_body(agent_id: str, request: TraceRequest) -> dict[str, Any]:
 
     decision_type is normalized to lowercase with surrounding whitespace stripped
     so that callers using "Architecture" vs "architecture" are treated identically.
+
+    When the caller has not set ``context["project"]``, auto-detects the project
+    from ``git remote get-url origin`` to prevent workspace names from leaking
+    as project identifiers.
     """
     decision: dict[str, Any] = {
         "decision_type": request.decision_type.strip().lower(),
@@ -98,8 +136,14 @@ def _build_trace_body(agent_id: str, request: TraceRequest) -> dict[str, Any]:
         body["precedent_reason"] = request.precedent_reason
     if request.metadata:
         body["metadata"] = request.metadata
-    if request.context:
-        body["context"] = request.context
+
+    ctx = dict(request.context) if request.context else {}
+    if not ctx.get("project"):
+        detected = _infer_project_from_git()
+        if detected:
+            ctx["project"] = detected
+    if ctx:
+        body["context"] = ctx
     return body
 
 

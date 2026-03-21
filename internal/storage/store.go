@@ -95,6 +95,13 @@ type Store interface {
 	ClearClaimEmbeddingFailure(ctx context.Context, decisionID, orgID uuid.UUID) error
 	FindRetriableClaimFailures(ctx context.Context, maxAttempts, limit int) ([]ClaimRetryRef, error)
 
+	// ---- Project Links ----
+
+	// ResolveProjectAlias returns the canonical project name for the given
+	// alias (via project_links with link_type='alias'). Returns "" if no
+	// alias mapping exists.
+	ResolveProjectAlias(ctx context.Context, orgID uuid.UUID, alias string) (string, error)
+
 	// ---- Idempotency ----
 
 	BeginIdempotency(ctx context.Context, orgID uuid.UUID, agentID, endpoint, key, requestHash string) (IdempotencyLookup, error)
