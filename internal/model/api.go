@@ -263,10 +263,8 @@ type TraceDecision struct {
 
 // TraceAlternative is an alternative in a trace convenience request.
 type TraceAlternative struct {
-	Label           string   `json:"label"`
-	Score           *float32 `json:"score,omitempty"`
-	Selected        bool     `json:"selected"`
-	RejectionReason *string  `json:"rejection_reason,omitempty"`
+	Label           string  `json:"label"`
+	RejectionReason *string `json:"rejection_reason,omitempty"`
 }
 
 // TraceEvidence is evidence in a trace convenience request.
