@@ -202,7 +202,7 @@ func (l *LiteDB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID)
 
 	// SQLite lacks percentile_cont and FILTER, so we use CASE/SUM.
 	var b0, b1, b2, b3, b4, b5, b6, b7, b8, b9 int
-	var highCount int
+	var highCount, overconfidentCount int
 	err := l.db.QueryRowContext(ctx,
 		`SELECT
 		     COUNT(*),
@@ -217,14 +217,15 @@ func (l *LiteDB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID)
 		     COALESCE(SUM(CASE WHEN confidence >= 0.7 AND confidence < 0.8 THEN 1 ELSE 0 END), 0),
 		     COALESCE(SUM(CASE WHEN confidence >= 0.8 AND confidence < 0.9 THEN 1 ELSE 0 END), 0),
 		     COALESCE(SUM(CASE WHEN confidence >= 0.9 AND confidence <= 1.0 THEN 1 ELSE 0 END), 0),
-		     COALESCE(SUM(CASE WHEN confidence >= 0.9 THEN 1 ELSE 0 END), 0)
+		     COALESCE(SUM(CASE WHEN confidence >= 0.9 THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN confidence >= 0.85 THEN 1 ELSE 0 END), 0)
 		 FROM decisions
 		 WHERE org_id = ? AND valid_to IS NULL`,
 		uuidStr(orgID),
 	).Scan(
 		&d.TotalDecisions, &d.AvgConfidence,
 		&b0, &b1, &b2, &b3, &b4, &b5, &b6, &b7, &b8, &b9,
-		&highCount,
+		&highCount, &overconfidentCount,
 	)
 	if err != nil {
 		return d, fmt.Errorf("sqlite: confidence distribution: %w", err)
@@ -232,6 +233,7 @@ func (l *LiteDB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID)
 
 	if d.TotalDecisions > 0 {
 		d.HighConfidencePct = float64(highCount) * 100.0 / float64(d.TotalDecisions)
+		d.OverconfidentPct = float64(overconfidentCount) * 100.0 / float64(d.TotalDecisions)
 	}
 
 	labels := [10]string{

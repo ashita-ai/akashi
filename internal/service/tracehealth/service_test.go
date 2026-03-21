@@ -439,7 +439,7 @@ func TestComputeGaps_ConfidenceCalibration_HighPct(t *testing.T) {
 
 	found := false
 	for _, g := range gaps {
-		if assert.ObjectsAreEqual("Avg confidence is 0.78 (65% of decisions >= 0.85) — above the recommended 0.4–0.8 range. Over-confident scoring reduces signal quality.", g) {
+		if assert.ObjectsAreEqual("65% of decisions have confidence >= 0.85 (avg 0.78). A heavy tail of over-confident scores reduces signal quality.", g) {
 			found = true
 		}
 	}

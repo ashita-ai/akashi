@@ -204,10 +204,14 @@ func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts 
 	// Confidence calibration gap: flag when the distribution is inflated
 	// beyond the recommended 0.4–0.8 range, reducing signal quality.
 	if len(gaps) < 3 && cd.TotalDecisions > 0 {
-		if cd.AvgConfidence > 0.82 || cd.OverconfidentPct > 60 {
+		if cd.AvgConfidence > 0.82 {
 			gaps = append(gaps, fmt.Sprintf(
 				"Avg confidence is %.2f (%.0f%% of decisions >= 0.85) — above the recommended 0.4–0.8 range. Over-confident scoring reduces signal quality.",
 				cd.AvgConfidence, cd.OverconfidentPct))
+		} else if cd.OverconfidentPct > 60 {
+			gaps = append(gaps, fmt.Sprintf(
+				"%.0f%% of decisions have confidence >= 0.85 (avg %.2f). A heavy tail of over-confident scores reduces signal quality.",
+				cd.OverconfidentPct, cd.AvgConfidence))
 		}
 	}
 
