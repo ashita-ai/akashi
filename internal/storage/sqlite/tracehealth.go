@@ -195,6 +195,116 @@ func (l *LiteDB) GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID, 
 	return os, nil
 }
 
+// GetConfidenceCalibration returns per-tier and per-agent calibration signals
+// correlating declared confidence with revision rates and assessment outcomes.
+func (l *LiteDB) GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID) (storage.ConfidenceCalibration, error) {
+	var cal storage.ConfidenceCalibration
+
+	// Per-tier calibration: group into low/mid/high and compute revision rate + outcome.
+	rows, err := l.db.QueryContext(ctx, `
+		SELECT
+		    tier,
+		    COUNT(*)                                                            AS total,
+		    COALESCE(SUM(CASE WHEN revised = 1 THEN 1 ELSE 0 END), 0)         AS revised_count,
+		    COALESCE(SUM(CASE WHEN outcome_score IS NOT NULL THEN 1 ELSE 0 END), 0) AS assessed_count,
+		    AVG(CASE WHEN outcome_score IS NOT NULL THEN outcome_score END)
+		FROM (
+		    SELECT
+		        d.id,
+		        d.outcome_score,
+		        CASE
+		            WHEN d.confidence >= 0.85 THEN 'high'
+		            WHEN d.confidence >= 0.5  THEN 'mid'
+		            ELSE 'low'
+		        END AS tier,
+		        CASE WHEN EXISTS (
+		            SELECT 1 FROM decisions sup
+		            WHERE sup.supersedes_id = d.id
+		              AND sup.org_id = d.org_id
+		              AND (julianday(sup.valid_from) - julianday(d.valid_from)) * 24.0 < 48
+		        ) THEN 1 ELSE 0 END AS revised
+		    FROM decisions d
+		    WHERE d.org_id = ? AND d.valid_to IS NULL
+		) sub
+		GROUP BY tier
+		ORDER BY tier`, uuidStr(orgID))
+	if err != nil {
+		return cal, fmt.Errorf("sqlite: confidence calibration tiers: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	tierMap := make(map[string]*storage.ConfidenceTier, 3)
+	for rows.Next() {
+		var t storage.ConfidenceTier
+		var revisedCount int
+		var avgOutcome *float64
+		if err := rows.Scan(&t.Tier, &t.Total, &revisedCount, &t.AssessedCount, &avgOutcome); err != nil {
+			return cal, fmt.Errorf("sqlite: scan calibration tier: %w", err)
+		}
+		if t.Total > 0 {
+			t.RevisionRate = float64(revisedCount) / float64(t.Total) * 100
+		}
+		t.AvgOutcome = avgOutcome
+		tierMap[t.Tier] = &t
+		cal.Tiers = append(cal.Tiers, t)
+	}
+	if err := rows.Err(); err != nil {
+		return cal, fmt.Errorf("sqlite: iterate calibration tiers: %w", err)
+	}
+
+	// Determine calibration state.
+	cal.HasOutcomeData = false
+	for _, t := range cal.Tiers {
+		if t.AssessedCount > 0 {
+			cal.HasOutcomeData = true
+			break
+		}
+	}
+	cal.Calibrated = storage.ComputeCalibrated(tierMap, cal.HasOutcomeData)
+
+	// Per-agent calibration.
+	agentRows, err := l.db.QueryContext(ctx, `
+		SELECT
+		    d.agent_id,
+		    COUNT(*),
+		    AVG(d.confidence),
+		    COALESCE(SUM(CASE WHEN EXISTS (
+		        SELECT 1 FROM decisions sup
+		        WHERE sup.supersedes_id = d.id
+		          AND sup.org_id = d.org_id
+		          AND (julianday(sup.valid_from) - julianday(d.valid_from)) * 24.0 < 48
+		    ) THEN 1 ELSE 0 END), 0),
+		    COALESCE(SUM(CASE WHEN d.outcome_score IS NOT NULL THEN 1 ELSE 0 END), 0),
+		    AVG(CASE WHEN d.outcome_score IS NOT NULL THEN d.outcome_score END)
+		FROM decisions d
+		WHERE d.org_id = ? AND d.valid_to IS NULL
+		GROUP BY d.agent_id
+		ORDER BY AVG(d.confidence) DESC`, uuidStr(orgID))
+	if err != nil {
+		return cal, fmt.Errorf("sqlite: confidence calibration by agent: %w", err)
+	}
+	defer func() { _ = agentRows.Close() }()
+
+	for agentRows.Next() {
+		var a storage.AgentCalibration
+		var revisedCount int
+		var avgOutcome *float64
+		if err := agentRows.Scan(&a.AgentID, &a.Total, &a.AvgConfidence, &revisedCount, &a.AssessedCount, &avgOutcome); err != nil {
+			return cal, fmt.Errorf("sqlite: scan agent calibration: %w", err)
+		}
+		if a.Total > 0 {
+			a.RevisionRate = float64(revisedCount) / float64(a.Total) * 100
+		}
+		a.AvgOutcome = avgOutcome
+		cal.ByAgent = append(cal.ByAgent, a)
+	}
+	if err := agentRows.Err(); err != nil {
+		return cal, fmt.Errorf("sqlite: iterate agent calibration: %w", err)
+	}
+
+	return cal, nil
+}
+
 // GetConfidenceDistribution returns confidence histogram buckets and per-agent
 // confidence statistics for all current decisions in an org.
 func (l *LiteDB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (storage.ConfidenceDistribution, error) {
@@ -202,7 +312,7 @@ func (l *LiteDB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID)
 
 	// SQLite lacks percentile_cont and FILTER, so we use CASE/SUM.
 	var b0, b1, b2, b3, b4, b5, b6, b7, b8, b9 int
-	var highCount int
+	var highCount, overconfidentCount int
 	err := l.db.QueryRowContext(ctx,
 		`SELECT
 		     COUNT(*),
@@ -217,14 +327,15 @@ func (l *LiteDB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID)
 		     COALESCE(SUM(CASE WHEN confidence >= 0.7 AND confidence < 0.8 THEN 1 ELSE 0 END), 0),
 		     COALESCE(SUM(CASE WHEN confidence >= 0.8 AND confidence < 0.9 THEN 1 ELSE 0 END), 0),
 		     COALESCE(SUM(CASE WHEN confidence >= 0.9 AND confidence <= 1.0 THEN 1 ELSE 0 END), 0),
-		     COALESCE(SUM(CASE WHEN confidence >= 0.9 THEN 1 ELSE 0 END), 0)
+		     COALESCE(SUM(CASE WHEN confidence >= 0.9 THEN 1 ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN confidence >= 0.85 THEN 1 ELSE 0 END), 0)
 		 FROM decisions
 		 WHERE org_id = ? AND valid_to IS NULL`,
 		uuidStr(orgID),
 	).Scan(
 		&d.TotalDecisions, &d.AvgConfidence,
 		&b0, &b1, &b2, &b3, &b4, &b5, &b6, &b7, &b8, &b9,
-		&highCount,
+		&highCount, &overconfidentCount,
 	)
 	if err != nil {
 		return d, fmt.Errorf("sqlite: confidence distribution: %w", err)
@@ -232,6 +343,7 @@ func (l *LiteDB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID)
 
 	if d.TotalDecisions > 0 {
 		d.HighConfidencePct = float64(highCount) * 100.0 / float64(d.TotalDecisions)
+		d.OverconfidentPct = float64(overconfidentCount) * 100.0 / float64(d.TotalDecisions)
 	}
 
 	labels := [10]string{
