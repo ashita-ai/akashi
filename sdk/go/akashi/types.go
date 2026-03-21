@@ -47,8 +47,6 @@ type Alternative struct {
 	ID              uuid.UUID      `json:"id"`
 	DecisionID      uuid.UUID      `json:"decision_id"`
 	Label           string         `json:"label"`
-	Score           *float32       `json:"score,omitempty"`
-	Selected        bool           `json:"selected"`
 	RejectionReason *string        `json:"rejection_reason,omitempty"`
 	Metadata        map[string]any `json:"metadata"`
 	CreatedAt       time.Time      `json:"created_at"`

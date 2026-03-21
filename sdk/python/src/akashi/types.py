@@ -44,8 +44,6 @@ class Alternative(BaseModel):
     id: UUID
     decision_id: UUID
     label: str
-    score: float | None = None
-    selected: bool
     rejection_reason: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
@@ -190,8 +188,6 @@ class TraceAlternative(BaseModel):
     """An alternative in a trace request."""
 
     label: str
-    score: float | None = None
-    selected: bool = False
     rejection_reason: str | None = None
 
 

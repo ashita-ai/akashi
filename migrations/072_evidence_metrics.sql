@@ -1,4 +1,4 @@
--- 071: Add typed metrics column to evidence for structured quantitative data.
+-- 072: Add typed metrics column to evidence for structured quantitative data.
 --
 -- source_type = 'metrics' entries store key→float pairs in this column,
 -- allowing the server to query and compare numeric evidence natively

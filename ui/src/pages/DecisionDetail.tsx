@@ -590,8 +590,6 @@ export default function DecisionDetail() {
                       <TableHeader>
                         <TableRow>
                           <TableHead>Option</TableHead>
-                          <TableHead className="text-right">Score</TableHead>
-                          <TableHead>Selected</TableHead>
                           <TableHead>Rejection Reason</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -600,18 +598,6 @@ export default function DecisionDetail() {
                           <TableRow key={alt.id}>
                             <TableCell className="font-medium">
                               {alt.label}
-                            </TableCell>
-                            <TableCell className="text-right font-mono">
-                              {alt.score != null
-                                ? (alt.score * 100).toFixed(0) + "%"
-                                : "\u2014"}
-                            </TableCell>
-                            <TableCell>
-                              {alt.selected ? (
-                                <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                              ) : (
-                                <span className="text-muted-foreground">{"—"}</span>
-                              )}
                             </TableCell>
                             <TableCell className="text-sm text-muted-foreground">
                               {alt.rejection_reason ?? "\u2014"}
