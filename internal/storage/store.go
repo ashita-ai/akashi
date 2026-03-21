@@ -126,6 +126,9 @@ type Store interface {
 	// GetOutcomeSignalsSummary returns outcome signals. from/to scope decisions by valid_from.
 	GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (OutcomeSignalsSummary, error)
 	GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (ConfidenceDistribution, error)
+	// GetConfidenceCalibration returns per-tier and per-agent calibration signals
+	// correlating declared confidence with revision rates and assessment outcomes.
+	GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID) (ConfidenceCalibration, error)
 	GetDecisionTypeDistribution(ctx context.Context, orgID uuid.UUID) ([]DecisionTypeCount, error)
 
 	// ---- Error classification ----

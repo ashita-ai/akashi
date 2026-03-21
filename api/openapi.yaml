@@ -543,15 +543,9 @@ paths:
                 reasoning: "Redis handles expected QPS with sub-ms latency. TTL-based expiry prevents stale sessions without manual cleanup."
                 alternatives:
                   - label: "Redis"
-                    score: 0.85
-                    selected: true
                   - label: "Memcached"
-                    score: 0.6
-                    selected: false
                     rejection_reason: "No persistence — sessions lost on restart"
                   - label: "Database sessions"
-                    score: 0.3
-                    selected: false
                     rejection_reason: "Adds read load to primary database"
                 evidence:
                   - source_type: document
@@ -643,15 +637,11 @@ paths:
                         - id: "11111111-1111-1111-1111-111111111111"
                           decision_id: "f9e8d7c6-b5a4-3210-fedc-ba9876543210"
                           label: "Redis"
-                          score: 0.85
-                          selected: true
                           metadata: {}
                           created_at: "2026-01-15T10:30:00Z"
                         - id: "22222222-2222-2222-2222-222222222222"
                           decision_id: "f9e8d7c6-b5a4-3210-fedc-ba9876543210"
                           label: "Memcached"
-                          score: 0.6
-                          selected: false
                           rejection_reason: "No persistence — sessions lost on restart"
                           metadata: {}
                           created_at: "2026-01-15T10:30:00Z"
@@ -2900,7 +2890,7 @@ components:
 
     Alternative:
       type: object
-      required: [id, decision_id, label, selected, metadata, created_at]
+      required: [id, decision_id, label, metadata, created_at]
       properties:
         id:
           type: string
@@ -2910,11 +2900,6 @@ components:
           format: uuid
         label:
           type: string
-        score:
-          type: number
-          format: float
-        selected:
-          type: boolean
         rejection_reason:
           type: string
         metadata:
@@ -3451,15 +3436,10 @@ components:
 
     TraceAlternative:
       type: object
-      required: [label, selected]
+      required: [label]
       properties:
         label:
           type: string
-        score:
-          type: number
-          format: float
-        selected:
-          type: boolean
         rejection_reason:
           type: string
 

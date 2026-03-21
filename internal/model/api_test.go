@@ -1,6 +1,7 @@
 package model_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -357,6 +358,84 @@ func TestValidateTraceDecision_MaxAlternativesAndEvidencePass(t *testing.T) {
 		Evidence:     evs,
 	}
 	assert.NoError(t, model.ValidateTraceDecision(d), "exactly at max should pass")
+}
+
+// ---- Metrics evidence validation -------------------------------------------
+
+func TestValidateTraceDecision_MetricsSourceTypeRequiresMetrics(t *testing.T) {
+	d := model.TraceDecision{
+		DecisionType: "arch",
+		Outcome:      "ok",
+		Evidence: []model.TraceEvidence{
+			{SourceType: "metrics", Content: "benchmark results"},
+		},
+	}
+	err := model.ValidateTraceDecision(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "metrics is required")
+}
+
+func TestValidateTraceDecision_MetricsSourceTypeWithMetricsPass(t *testing.T) {
+	d := model.TraceDecision{
+		DecisionType: "arch",
+		Outcome:      "ok",
+		Evidence: []model.TraceEvidence{
+			{
+				SourceType: "metrics",
+				Content:    "NER benchmark",
+				Metrics:    map[string]float64{"accuracy": 0.93, "f1": 0.87},
+			},
+		},
+	}
+	assert.NoError(t, model.ValidateTraceDecision(d))
+}
+
+func TestValidateTraceDecision_MetricsOnNonMetricsSourceTypeRejected(t *testing.T) {
+	d := model.TraceDecision{
+		DecisionType: "arch",
+		Outcome:      "ok",
+		Evidence: []model.TraceEvidence{
+			{
+				SourceType: "document",
+				Content:    "some doc",
+				Metrics:    map[string]float64{"accuracy": 0.93},
+			},
+		},
+	}
+	err := model.ValidateTraceDecision(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only allowed when source_type is \"metrics\"")
+}
+
+func TestValidateTraceDecision_MetricsTooManyKeys(t *testing.T) {
+	m := make(map[string]float64, model.MaxMetricsKeys+1)
+	for i := range model.MaxMetricsKeys + 1 {
+		m[fmt.Sprintf("metric_%d", i)] = float64(i)
+	}
+	d := model.TraceDecision{
+		DecisionType: "arch",
+		Outcome:      "ok",
+		Evidence: []model.TraceEvidence{
+			{SourceType: "metrics", Content: "too many", Metrics: m},
+		},
+	}
+	err := model.ValidateTraceDecision(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "maximum is")
+}
+
+func TestValidateTraceDecision_MetricsEmptyContentAllowed(t *testing.T) {
+	d := model.TraceDecision{
+		DecisionType: "arch",
+		Outcome:      "ok",
+		Evidence: []model.TraceEvidence{
+			{
+				SourceType: "metrics",
+				Metrics:    map[string]float64{"latency_ms": 234},
+			},
+		},
+	}
+	assert.NoError(t, model.ValidateTraceDecision(d), "content is optional for metrics source type")
 }
 
 // ---- ValidateMetadataSize -------------------------------------------------

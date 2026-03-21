@@ -123,8 +123,6 @@ CREATE TABLE IF NOT EXISTS alternatives (
     id               TEXT PRIMARY KEY,
     decision_id      TEXT NOT NULL REFERENCES decisions(id),
     label            TEXT NOT NULL,
-    score            REAL,
-    selected         INTEGER NOT NULL DEFAULT 0,
     rejection_reason TEXT,
     metadata         TEXT NOT NULL DEFAULT '{}',
     created_at       TEXT NOT NULL DEFAULT (datetime('now'))

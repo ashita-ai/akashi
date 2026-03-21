@@ -1,4 +1,4 @@
--- 071: Add precedent_reason column to decisions for explaining why a precedent was cited.
+-- 073: Add precedent_reason column to decisions for explaining why a precedent was cited.
 -- When an agent references a prior decision via precedent_ref, precedent_reason captures
 -- the human-readable explanation of why that precedent applies, making attribution chains
 -- auditable without re-reading both decisions.
