@@ -27,10 +27,10 @@ func (db *DB) CreateEvidence(ctx context.Context, ev model.Evidence) (model.Evid
 
 	_, err := db.pool.Exec(ctx,
 		`INSERT INTO evidence (id, decision_id, org_id, source_type, source_uri, content,
-		 relevance_score, embedding, metadata, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		 relevance_score, embedding, metadata, metrics, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		ev.ID, ev.DecisionID, ev.OrgID, string(ev.SourceType), ev.SourceURI, ev.Content,
-		ev.RelevanceScore, ev.Embedding, ev.Metadata, ev.CreatedAt,
+		ev.RelevanceScore, ev.Embedding, ev.Metadata, ev.Metrics, ev.CreatedAt,
 	)
 	if err != nil {
 		return model.Evidence{}, fmt.Errorf("storage: create evidence: %w", err)
@@ -45,7 +45,7 @@ func (db *DB) CreateEvidenceBatch(ctx context.Context, evs []model.Evidence) err
 	}
 
 	columns := []string{"id", "decision_id", "org_id", "source_type", "source_uri", "content",
-		"relevance_score", "embedding", "metadata", "created_at"}
+		"relevance_score", "embedding", "metadata", "metrics", "created_at"}
 
 	rows := make([][]any, len(evs))
 	for i, ev := range evs {
@@ -62,7 +62,7 @@ func (db *DB) CreateEvidenceBatch(ctx context.Context, evs []model.Evidence) err
 			meta = map[string]any{}
 		}
 		rows[i] = []any{id, ev.DecisionID, ev.OrgID, string(ev.SourceType), ev.SourceURI, ev.Content,
-			ev.RelevanceScore, ev.Embedding, meta, createdAt}
+			ev.RelevanceScore, ev.Embedding, meta, ev.Metrics, createdAt}
 	}
 
 	_, err := db.pool.CopyFrom(ctx, pgx.Identifier{"evidence"}, columns, pgx.CopyFromRows(rows))
@@ -83,7 +83,7 @@ func (db *DB) GetEvidenceByDecisions(ctx context.Context, decisionIDs []uuid.UUI
 
 	rows, err := db.pool.Query(ctx,
 		`SELECT id, decision_id, org_id, source_type, source_uri, content,
-		 relevance_score, metadata, created_at
+		 relevance_score, metrics, metadata, created_at
 		 FROM evidence WHERE decision_id = ANY($1) AND org_id = $2
 		 ORDER BY relevance_score DESC NULLS LAST`, decisionIDs, orgID,
 	)
@@ -97,7 +97,7 @@ func (db *DB) GetEvidenceByDecisions(ctx context.Context, decisionIDs []uuid.UUI
 		var ev model.Evidence
 		if err := rows.Scan(
 			&ev.ID, &ev.DecisionID, &ev.OrgID, &ev.SourceType, &ev.SourceURI, &ev.Content,
-			&ev.RelevanceScore, &ev.Metadata, &ev.CreatedAt,
+			&ev.RelevanceScore, &ev.Metrics, &ev.Metadata, &ev.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan evidence: %w", err)
 		}
@@ -111,7 +111,7 @@ func (db *DB) GetEvidenceByDecisions(ctx context.Context, decisionIDs []uuid.UUI
 func (db *DB) GetEvidenceByDecision(ctx context.Context, decisionID uuid.UUID, orgID uuid.UUID) ([]model.Evidence, error) {
 	rows, err := db.pool.Query(ctx,
 		`SELECT id, decision_id, org_id, source_type, source_uri, content,
-		 relevance_score, metadata, created_at
+		 relevance_score, metrics, metadata, created_at
 		 FROM evidence WHERE decision_id = $1 AND org_id = $2
 		 ORDER BY relevance_score DESC NULLS LAST`, decisionID, orgID,
 	)
@@ -125,7 +125,7 @@ func (db *DB) GetEvidenceByDecision(ctx context.Context, decisionID uuid.UUID, o
 		var ev model.Evidence
 		if err := rows.Scan(
 			&ev.ID, &ev.DecisionID, &ev.OrgID, &ev.SourceType, &ev.SourceURI, &ev.Content,
-			&ev.RelevanceScore, &ev.Metadata, &ev.CreatedAt,
+			&ev.RelevanceScore, &ev.Metrics, &ev.Metadata, &ev.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan evidence: %w", err)
 		}

@@ -334,6 +334,7 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 				SourceURI:      e.SourceURI,
 				Content:        e.Content,
 				RelevanceScore: e.RelevanceScore,
+				Metrics:        e.Metrics,
 				Embedding:      embs[i],
 			}
 		}
