@@ -56,14 +56,15 @@ type Alternative struct {
 
 // Evidence represents supporting information for a decision.
 type Evidence struct {
-	ID             uuid.UUID      `json:"id"`
-	DecisionID     uuid.UUID      `json:"decision_id"`
-	SourceType     string         `json:"source_type"`
-	SourceURI      *string        `json:"source_uri,omitempty"`
-	Content        string         `json:"content"`
-	RelevanceScore *float32       `json:"relevance_score,omitempty"`
-	Metadata       map[string]any `json:"metadata"`
-	CreatedAt      time.Time      `json:"created_at"`
+	ID             uuid.UUID          `json:"id"`
+	DecisionID     uuid.UUID          `json:"decision_id"`
+	SourceType     string             `json:"source_type"`
+	SourceURI      *string            `json:"source_uri,omitempty"`
+	Content        string             `json:"content"`
+	RelevanceScore *float32           `json:"relevance_score,omitempty"`
+	Metrics        map[string]float64 `json:"metrics,omitempty"`
+	Metadata       map[string]any     `json:"metadata"`
+	CreatedAt      time.Time          `json:"created_at"`
 }
 
 // ConflictKind indicates whether a conflict is between agents or self-contradiction.
@@ -135,10 +136,11 @@ type TraceAlternative struct {
 
 // TraceEvidence is evidence in a trace request.
 type TraceEvidence struct {
-	SourceType     string   `json:"source_type"`
-	SourceURI      *string  `json:"source_uri,omitempty"`
-	Content        string   `json:"content"`
-	RelevanceScore *float32 `json:"relevance_score,omitempty"`
+	SourceType     string             `json:"source_type"`
+	SourceURI      *string            `json:"source_uri,omitempty"`
+	Content        string             `json:"content"`
+	RelevanceScore *float32           `json:"relevance_score,omitempty"`
+	Metrics        map[string]float64 `json:"metrics,omitempty"`
 }
 
 // QueryFilters are structured filters for decision queries.

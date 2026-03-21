@@ -26,6 +26,7 @@ const (
 	MaxRejectionReasonLen  = 8 * 1024  // 8 KB — explanation text, not full reasoning
 	MaxAlternativeCount    = 20        // prevent combinatorial explosion in conflict detection
 	MaxEvidenceCount       = 20        // each evidence item triggers an embedding call
+	MaxMetricsKeys         = 50        // cap metric entries per evidence item
 	MaxMetadataBytes       = 16 * 1024 // 16 KB — serialized JSON cap for any metadata map
 )
 
@@ -91,6 +92,17 @@ func ValidateTraceDecision(d TraceDecision) error {
 			if err := ValidateSourceURI(*ev.SourceURI); err != nil {
 				return fmt.Errorf("evidence[%d].source_uri: %w", i, err)
 			}
+		}
+		if ev.SourceType == string(SourceMetrics) {
+			if len(ev.Metrics) == 0 {
+				return fmt.Errorf("evidence[%d].metrics is required when source_type is \"metrics\"", i)
+			}
+			if len(ev.Metrics) > MaxMetricsKeys {
+				return fmt.Errorf("evidence[%d].metrics has %d keys, maximum is %d", i, len(ev.Metrics), MaxMetricsKeys)
+			}
+		}
+		if len(ev.Metrics) > 0 && ev.SourceType != string(SourceMetrics) {
+			return fmt.Errorf("evidence[%d].metrics is only allowed when source_type is \"metrics\"", i)
 		}
 	}
 	return nil
@@ -271,10 +283,11 @@ type TraceAlternative struct {
 
 // TraceEvidence is evidence in a trace convenience request.
 type TraceEvidence struct {
-	SourceType     string   `json:"source_type"`
-	SourceURI      *string  `json:"source_uri,omitempty"`
-	Content        string   `json:"content"`
-	RelevanceScore *float32 `json:"relevance_score,omitempty"`
+	SourceType     string             `json:"source_type"`
+	SourceURI      *string            `json:"source_uri,omitempty"`
+	Content        string             `json:"content"`
+	RelevanceScore *float32           `json:"relevance_score,omitempty"`
+	Metrics        map[string]float64 `json:"metrics,omitempty"`
 }
 
 // AuthTokenRequest is the request body for POST /auth/token.

@@ -118,9 +118,12 @@ OPTIONAL FIELDS (each improves completeness score and future usefulness):
   This is the single biggest driver of completeness after reasoning.
 - evidence: JSON array of supporting facts.
   Format: [{"source_type":"tool_output","content":"test suite passed with 0 failures"},
-           {"source_type":"document","content":"ADR-007 requires event sourcing","source_uri":"adrs/007.md"}]
+           {"source_type":"document","content":"ADR-007 requires event sourcing","source_uri":"adrs/007.md"},
+           {"source_type":"metrics","content":"NER benchmark","metrics":{"accuracy":0.93,"f1":0.87}}]
   source_type values: document, api_response, agent_output, user_input, search_result,
-                      tool_output, memory, database_query
+                      tool_output, memory, database_query, metrics
+  For source_type "metrics", include a "metrics" object with numeric key-value pairs.
+  The "content" field is optional for metrics (used as a human-readable summary).
   Include at least 2 pieces of evidence to maximize completeness.
 - project: The project or app this belongs to (e.g. "akashi", "my-langchain-app").
   Enables project-scoped queries. Auto-detected from working directory if omitted.

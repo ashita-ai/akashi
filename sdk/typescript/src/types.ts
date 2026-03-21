@@ -46,6 +46,7 @@ export interface Evidence {
   source_uri?: string;
   content: string;
   relevance_score?: number;
+  metrics?: Record<string, number>;
   metadata: Record<string, unknown>;
   created_at: string;
 }
@@ -173,6 +174,7 @@ export interface TraceEvidence {
   source_uri?: string;
   content: string;
   relevance_score?: number;
+  metrics?: Record<string, number>;
 }
 
 export interface QueryFilters {
