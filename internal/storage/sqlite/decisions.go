@@ -410,7 +410,7 @@ func (l *LiteDB) GetDecisionsByAgent(ctx context.Context, orgID uuid.UUID, agent
 func (l *LiteDB) GetDecisionForScoring(ctx context.Context, id, orgID uuid.UUID) (model.Decision, error) {
 	row := l.db.QueryRowContext(ctx,
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		        valid_from, embedding, outcome_embedding, session_id, agent_context, project
+		        valid_from, embedding, outcome_embedding, session_id, agent_context, project, transaction_time
 		 FROM decisions WHERE id = ? AND org_id = ? AND valid_to IS NULL`,
 		uuidStr(id), uuidStr(orgID),
 	)
@@ -426,11 +426,12 @@ func (l *LiteDB) GetDecisionForScoring(ctx context.Context, id, orgID uuid.UUID)
 		sessionIDStr sql.NullString
 		agentCtxJSON sql.NullString
 		project      sql.NullString
+		txTimeStr    string
 	)
 	err := row.Scan(&idStr, &runIDStr, &d.AgentID, &orgIDStr, &d.DecisionType,
 		&d.Outcome, &d.Confidence, &d.Reasoning,
 		&validFromStr, &embBlob, &outEmbBlob,
-		&sessionIDStr, &agentCtxJSON, &project)
+		&sessionIDStr, &agentCtxJSON, &project, &txTimeStr)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return model.Decision{}, storage.ErrNotFound
@@ -442,6 +443,7 @@ func (l *LiteDB) GetDecisionForScoring(ctx context.Context, id, orgID uuid.UUID)
 	d.RunID = parseUUID(runIDStr)
 	d.OrgID = parseUUID(orgIDStr)
 	d.ValidFrom = parseTime(validFromStr)
+	d.TransactionTime = parseTime(txTimeStr)
 	d.Embedding = blobToVector(embBlob)
 	d.OutcomeEmbedding = blobToVector(outEmbBlob)
 	d.SessionID = parseNullUUID(sessionIDStr)
