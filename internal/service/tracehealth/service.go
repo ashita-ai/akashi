@@ -7,6 +7,7 @@ package tracehealth
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -68,8 +69,10 @@ func New(db storage.Store) *Service {
 }
 
 // Compute calculates all trace health metrics for an organization.
-func (s *Service) Compute(ctx context.Context, orgID uuid.UUID) (*Metrics, error) {
-	qs, err := s.db.GetDecisionQualityStats(ctx, orgID)
+// When from/to are non-nil they scope the decision and conflict windows.
+// Pass nil, nil to get all-time metrics (equivalent to the legacy behavior).
+func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (*Metrics, error) {
+	qs, err := s.db.GetDecisionQualityStats(ctx, orgID, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("tracehealth: quality stats: %w", err)
 	}
@@ -83,12 +86,12 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID) (*Metrics, error
 		}, nil
 	}
 
-	es, err := s.db.GetEvidenceCoverageStats(ctx, orgID)
+	es, err := s.db.GetEvidenceCoverageStats(ctx, orgID, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("tracehealth: evidence stats: %w", err)
 	}
 
-	cc, err := s.db.GetConflictStatusCounts(ctx, orgID)
+	cc, err := s.db.GetConflictStatusCounts(ctx, orgID, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("tracehealth: conflict status counts: %w", err)
 	}
@@ -142,7 +145,7 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID) (*Metrics, error
 	}
 
 	// Outcome signals: temporal, graph, and fate aggregate counts.
-	os, err := s.db.GetOutcomeSignalsSummary(ctx, orgID)
+	os, err := s.db.GetOutcomeSignalsSummary(ctx, orgID, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("tracehealth: outcome signals: %w", err)
 	}

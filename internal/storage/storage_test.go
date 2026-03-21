@@ -3675,7 +3675,7 @@ func TestCountDecisionsByAPIKey(t *testing.T) {
 func TestGetDecisionQualityStats(t *testing.T) {
 	ctx := context.Background()
 
-	stats, err := testDB.GetDecisionQualityStats(ctx, uuid.Nil)
+	stats, err := testDB.GetDecisionQualityStats(ctx, uuid.Nil, nil, nil)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, stats.Total, 0)
 	// From earlier tests, there should be at least some decisions with reasoning.
@@ -3685,7 +3685,7 @@ func TestGetDecisionQualityStats(t *testing.T) {
 func TestGetEvidenceCoverageStats(t *testing.T) {
 	ctx := context.Background()
 
-	stats, err := testDB.GetEvidenceCoverageStats(ctx, uuid.Nil)
+	stats, err := testDB.GetEvidenceCoverageStats(ctx, uuid.Nil, nil, nil)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, stats.TotalDecisions, 0)
 	assert.GreaterOrEqual(t, stats.WithEvidence, 0)
@@ -3695,7 +3695,7 @@ func TestGetEvidenceCoverageStats(t *testing.T) {
 func TestGetConflictStatusCounts(t *testing.T) {
 	ctx := context.Background()
 
-	counts, err := testDB.GetConflictStatusCounts(ctx, uuid.Nil)
+	counts, err := testDB.GetConflictStatusCounts(ctx, uuid.Nil, nil, nil)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, counts.Total, 0)
 	assert.Equal(t, counts.Total, counts.Open+counts.Acknowledged+counts.Resolved+counts.WontFix)
@@ -3704,7 +3704,7 @@ func TestGetConflictStatusCounts(t *testing.T) {
 func TestGetOutcomeSignalsSummary(t *testing.T) {
 	ctx := context.Background()
 
-	summary, err := testDB.GetOutcomeSignalsSummary(ctx, uuid.Nil)
+	summary, err := testDB.GetOutcomeSignalsSummary(ctx, uuid.Nil, nil, nil)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, summary.DecisionsTotal, 0)
 	assert.GreaterOrEqual(t, summary.NeverSuperseded, 0)
@@ -7662,7 +7662,7 @@ func TestGetConflictAnalytics_StructureValidation(t *testing.T) {
 
 func TestGetOutcomeSignalsSummary_Populated(t *testing.T) {
 	ctx := context.Background()
-	summary, err := testDB.GetOutcomeSignalsSummary(ctx, uuid.Nil)
+	summary, err := testDB.GetOutcomeSignalsSummary(ctx, uuid.Nil, nil, nil)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, summary.DecisionsTotal, 0)
 	assert.GreaterOrEqual(t, summary.NeverSuperseded, 0)
@@ -7677,7 +7677,7 @@ func TestGetOutcomeSignalsSummary_Populated(t *testing.T) {
 
 func TestGetDecisionQualityStats_Structure(t *testing.T) {
 	ctx := context.Background()
-	stats, err := testDB.GetDecisionQualityStats(ctx, uuid.Nil)
+	stats, err := testDB.GetDecisionQualityStats(ctx, uuid.Nil, nil, nil)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, stats.Total, 0)
 }
@@ -9265,7 +9265,7 @@ func TestReserveSequenceNums_NegativeCount(t *testing.T) {
 
 func TestGetDecisionQualityStats_WithDecisions(t *testing.T) {
 	ctx := context.Background()
-	stats, err := testDB.GetDecisionQualityStats(ctx, uuid.Nil)
+	stats, err := testDB.GetDecisionQualityStats(ctx, uuid.Nil, nil, nil)
 	require.NoError(t, err)
 	// The default org will have decisions from other tests.
 	assert.GreaterOrEqual(t, stats.Total, 0)
@@ -9614,7 +9614,7 @@ func TestQueryDecisions_WithProjectFilter(t *testing.T) {
 
 func TestGetConflictStatusCounts_StructureVerification(t *testing.T) {
 	ctx := context.Background()
-	counts, err := testDB.GetConflictStatusCounts(ctx, uuid.Nil)
+	counts, err := testDB.GetConflictStatusCounts(ctx, uuid.Nil, nil, nil)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, counts.Total, 0)
 	assert.GreaterOrEqual(t, counts.Open, 0)
@@ -9741,7 +9741,7 @@ func TestCountConflicts_WithDecisionTypeFilter(t *testing.T) {
 
 func TestGetEvidenceCoverageStats_Structure(t *testing.T) {
 	ctx := context.Background()
-	stats, err := testDB.GetEvidenceCoverageStats(ctx, uuid.Nil)
+	stats, err := testDB.GetEvidenceCoverageStats(ctx, uuid.Nil, nil, nil)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, stats.TotalDecisions, 0)
 	assert.GreaterOrEqual(t, stats.TotalRecords, 0)

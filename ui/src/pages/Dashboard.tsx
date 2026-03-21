@@ -2,13 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import {
   getRecentDecisions,
-  listAgents,
   getTraceHealth,
   getConflictAnalytics,
   queryDecisions,
-  listAgentsWithStats,
 } from "@/lib/api";
-import type { AgentWithStats } from "@/lib/api";
 import type {
   Decision,
   ConflictTrendPoint,
@@ -331,11 +328,17 @@ function DecisionTypeChart({ data }: { data: DecisionTypeCount[] }) {
   );
 }
 
+type ScorecardAgent = {
+  agent_id: string;
+  decision_count: number;
+  last_decision_at: string | null;
+};
+
 /** Agent scorecard table. */
-function AgentScorecard({ agents }: { agents: AgentWithStats[] }) {
+function AgentScorecard({ agents }: { agents: ScorecardAgent[] }) {
   const active = [...agents]
-    .filter((a) => (a.decision_count ?? 0) > 0)
-    .sort((a, b) => (b.decision_count ?? 0) - (a.decision_count ?? 0));
+    .filter((a) => a.decision_count > 0)
+    .sort((a, b) => b.decision_count - a.decision_count);
   const sorted = active.slice(0, 5);
   const overflow = active.length - sorted.length;
 
@@ -394,13 +397,9 @@ export default function Dashboard() {
     queryKey: ["dashboard", "recent"],
     queryFn: () => getRecentDecisions({ limit: 5 }),
   });
-  const agents = useQuery({
-    queryKey: ["dashboard", "agents"],
-    queryFn: listAgents,
-  });
   const traceHealth = useQuery({
-    queryKey: ["dashboard", "trace-health"],
-    queryFn: getTraceHealth,
+    queryKey: ["dashboard", "trace-health", period],
+    queryFn: () => getTraceHealth(periodToTimeRange(period)),
     staleTime: 30_000,
   });
   const conflictAnalytics = useQuery({
@@ -421,11 +420,6 @@ export default function Dashboard() {
       }),
     staleTime: 60_000,
   });
-  const agentsWithStats = useQuery({
-    queryKey: ["dashboard", "agents-stats"],
-    queryFn: listAgentsWithStats,
-    staleTime: 60_000,
-  });
 
   const healthConfig = healthStatusConfig[traceHealth.data?.status ?? ""] ?? {
     label: "Unknown",
@@ -438,6 +432,29 @@ export default function Dashboard() {
   const analytics = conflictAnalytics.data;
   const decisionList = decisionsTrend.data?.decisions ?? [];
   const dailyStats = useMemo(() => buildDailyStats(decisionList), [decisionList]);
+
+  /** Period-scoped distinct active agents, derived from the already-fetched decisions list. */
+  const periodActiveAgentCount = useMemo(() => {
+    const ids = new Set(decisionList.map((d) => d.agent_id));
+    return ids.size;
+  }, [decisionList]);
+
+  /** Period-scoped agent scorecard, derived from the already-fetched decisions list. */
+  const periodAgentScorecard = useMemo((): ScorecardAgent[] => {
+    const byAgent: Record<string, { count: number; lastAt: string }> = {};
+    for (const d of decisionList) {
+      const prev = byAgent[d.agent_id];
+      byAgent[d.agent_id] = {
+        count: (prev?.count ?? 0) + 1,
+        lastAt: prev && prev.lastAt > d.created_at ? prev.lastAt : d.created_at,
+      };
+    }
+    return Object.entries(byAgent).map(([agent_id, stats]) => ({
+      agent_id,
+      decision_count: stats.count,
+      last_decision_at: stats.lastAt,
+    }));
+  }, [decisionList]);
 
   /** Decision type distribution derived from the period-filtered query. */
   const periodDecisionTypes: { decision_type: string; count: number }[] = useMemo(() => {
@@ -504,18 +521,14 @@ export default function Dashboard() {
             <FileText className="h-4 w-4 text-primary/50" />
           </CardHeader>
           <CardContent>
-            {recent.isPending ? (
+            {decisionsTrend.isPending ? (
               <Skeleton className="h-8 w-20" />
             ) : (
               <div className="text-3xl font-semibold tabular-nums tracking-tight">
-                {(recent.data?.total ?? 0).toLocaleString()}
+                {(decisionsTrend.data?.total ?? 0).toLocaleString()}
               </div>
             )}
-            {traceHealth.data && (
-              <p className="text-[11px] text-muted-foreground mt-1">
-                {traceHealth.data.completeness.total_decisions} total traced
-              </p>
-            )}
+            <p className="text-[11px] text-muted-foreground mt-1">in period</p>
           </CardContent>
         </Card>
 
@@ -525,14 +538,14 @@ export default function Dashboard() {
             <Users className="h-4 w-4 text-primary/50" />
           </CardHeader>
           <CardContent>
-            {agents.isPending ? (
+            {decisionsTrend.isPending ? (
               <Skeleton className="h-8 w-12" />
             ) : (
               <div className="text-3xl font-semibold tabular-nums tracking-tight">
-                {agents.data?.length ?? 0}
+                {periodActiveAgentCount}
               </div>
             )}
-            <p className="text-[11px] text-muted-foreground mt-1">registered</p>
+            <p className="text-[11px] text-muted-foreground mt-1">with decisions in period</p>
           </CardContent>
         </Card>
 
@@ -949,10 +962,10 @@ export default function Dashboard() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {agentsWithStats.isPending ? (
+            {decisionsTrend.isPending ? (
               <Skeleton className="h-32 w-full" />
             ) : (
-              <AgentScorecard agents={agentsWithStats.data ?? []} />
+              <AgentScorecard agents={periodAgentScorecard} />
             )}
           </CardContent>
         </Card>

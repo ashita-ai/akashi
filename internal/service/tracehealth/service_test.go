@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -32,19 +33,19 @@ type mockStore struct {
 	typeDistErr      error
 }
 
-func (m *mockStore) GetDecisionQualityStats(_ context.Context, _ uuid.UUID) (storage.DecisionQualityStats, error) {
+func (m *mockStore) GetDecisionQualityStats(_ context.Context, _ uuid.UUID, _, _ *time.Time) (storage.DecisionQualityStats, error) {
 	return m.qualityStats, m.qualityStatsErr
 }
 
-func (m *mockStore) GetEvidenceCoverageStats(_ context.Context, _ uuid.UUID) (storage.EvidenceCoverageStats, error) {
+func (m *mockStore) GetEvidenceCoverageStats(_ context.Context, _ uuid.UUID, _, _ *time.Time) (storage.EvidenceCoverageStats, error) {
 	return m.evidenceStats, m.evidenceStatsErr
 }
 
-func (m *mockStore) GetConflictStatusCounts(_ context.Context, _ uuid.UUID) (storage.ConflictStatusCounts, error) {
+func (m *mockStore) GetConflictStatusCounts(_ context.Context, _ uuid.UUID, _, _ *time.Time) (storage.ConflictStatusCounts, error) {
 	return m.conflictCounts, m.conflictErr
 }
 
-func (m *mockStore) GetOutcomeSignalsSummary(_ context.Context, _ uuid.UUID) (storage.OutcomeSignalsSummary, error) {
+func (m *mockStore) GetOutcomeSignalsSummary(_ context.Context, _ uuid.UUID, _, _ *time.Time) (storage.OutcomeSignalsSummary, error) {
 	return m.outcomeSignals, m.outcomeErr
 }
 
@@ -164,7 +165,7 @@ func TestCompute_InsufficientData(t *testing.T) {
 	}
 	svc := New(ms)
 
-	m, err := svc.Compute(context.Background(), uuid.New())
+	m, err := svc.Compute(context.Background(), uuid.New(), nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "insufficient_data", m.Status)
 	assert.NotNil(t, m.Completeness)
@@ -211,7 +212,7 @@ func TestCompute_HealthyOrg(t *testing.T) {
 	}
 	svc := New(ms)
 
-	m, err := svc.Compute(context.Background(), uuid.New())
+	m, err := svc.Compute(context.Background(), uuid.New(), nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "healthy", m.Status)
 
@@ -264,7 +265,7 @@ func TestCompute_NoConflictsOmitsConflictMetrics(t *testing.T) {
 	}
 	svc := New(ms)
 
-	m, err := svc.Compute(context.Background(), uuid.New())
+	m, err := svc.Compute(context.Background(), uuid.New(), nil, nil)
 	require.NoError(t, err)
 	assert.Nil(t, m.Conflicts, "conflicts should be nil when total == 0")
 }
@@ -275,7 +276,7 @@ func TestCompute_QualityStatsError(t *testing.T) {
 	}
 	svc := New(ms)
 
-	_, err := svc.Compute(context.Background(), uuid.New())
+	_, err := svc.Compute(context.Background(), uuid.New(), nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "quality stats")
 	assert.Contains(t, err.Error(), "db timeout")
@@ -288,7 +289,7 @@ func TestCompute_EvidenceStatsError(t *testing.T) {
 	}
 	svc := New(ms)
 
-	_, err := svc.Compute(context.Background(), uuid.New())
+	_, err := svc.Compute(context.Background(), uuid.New(), nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "evidence stats")
 }
@@ -301,7 +302,7 @@ func TestCompute_ConflictCountsError(t *testing.T) {
 	}
 	svc := New(ms)
 
-	_, err := svc.Compute(context.Background(), uuid.New())
+	_, err := svc.Compute(context.Background(), uuid.New(), nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "conflict status counts")
 }
@@ -315,7 +316,7 @@ func TestCompute_OutcomeSignalsError(t *testing.T) {
 	}
 	svc := New(ms)
 
-	_, err := svc.Compute(context.Background(), uuid.New())
+	_, err := svc.Compute(context.Background(), uuid.New(), nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "outcome signals")
 }
@@ -330,7 +331,7 @@ func TestCompute_ConfidenceDistributionError(t *testing.T) {
 	}
 	svc := New(ms)
 
-	_, err := svc.Compute(context.Background(), uuid.New())
+	_, err := svc.Compute(context.Background(), uuid.New(), nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "confidence distribution")
 }
@@ -345,7 +346,7 @@ func TestCompute_DecisionTypeDistributionError(t *testing.T) {
 	}
 	svc := New(ms)
 
-	_, err := svc.Compute(context.Background(), uuid.New())
+	_, err := svc.Compute(context.Background(), uuid.New(), nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "decision type distribution")
 }
