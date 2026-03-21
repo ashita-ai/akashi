@@ -108,9 +108,10 @@ type ConflictGroupFilters struct {
 	DecisionType *string
 	AgentID      *string
 	ConflictKind *string
-	// OpenOnly restricts results to groups that have at least one open or
-	// acknowledged member conflict. When false, all groups are returned.
-	OpenOnly bool
+	// Status restricts results to groups that have at least one member
+	// conflict matching this exact status (e.g. "open", "acknowledged",
+	// "resolved", "wont_fix"). When nil, all groups are returned.
+	Status *string
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +288,17 @@ type ConfidenceCalibration struct {
 type DecisionTypeCount struct {
 	DecisionType string `json:"decision_type"`
 	Count        int    `json:"count"`
+}
+
+// DecisionTypeCompleteness holds per-type aggregate completeness metrics with
+// health threshold enrichment. ExpectedMin and Status are populated server-side
+// by the tracehealth service, not by the storage query.
+type DecisionTypeCompleteness struct {
+	DecisionType    string  `json:"decision_type"`
+	Count           int     `json:"count"`
+	AvgCompleteness float64 `json:"avg_completeness"`
+	ExpectedMin     float64 `json:"expected_min,omitempty"` // per-type health threshold
+	Status          string  `json:"status,omitempty"`       // "healthy" or "needs_attention"
 }
 
 // ---------------------------------------------------------------------------

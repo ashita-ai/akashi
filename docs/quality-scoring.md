@@ -10,6 +10,10 @@ It is computed when the decision is created and does not change afterward.
 
 ### Scoring factors
 
+Scoring is **uniform across all decision types**. A score of 0.55 means the same thing
+whether it's an investigation or a security decision. This preserves cross-type
+comparability and prevents stored score discontinuities.
+
 | Factor | Max contribution | Scoring tiers |
 |--------|-----------------|---------------|
 | **Confidence** | 0.15 | 0.15 if mid-range (0.05 < c < 0.95); 0.10 at edges (0 < c ≤ 0.05 or 0.95 ≤ c < 1); 0.0 if exactly 0 or 1 |
@@ -18,8 +22,52 @@ It is computed when the decision is created and does not change afterward.
 | **Evidence** | 0.15 | 0.15 for ≥ 2 items; 0.10 for 1; 0.0 for none |
 | **Decision type** | 0.10 | 0.10 for standard types; 0.0 for custom |
 | **Outcome** | 0.05 | 0.05 if > 20 chars; 0.0 otherwise |
+| **Precedent ref** | 0.10 | 0.10 if precedent_ref set; 0.0 otherwise |
 
-**Maximum possible score: 0.90**
+**Maximum possible score: 1.00** (0.90 from content + 0.10 from precedent_ref)
+
+### Per-type differentiation
+
+Instead of changing the scoring formula per type (which would break comparability and
+create stored score discontinuities), Akashi differentiates decision types in two ways:
+
+#### 1. Profile-aware completeness tips
+
+Agents get tips tailored to their decision type. An investigation agent won't be told
+"add alternatives" because that's not meaningful for investigations. A security agent
+will get evidence nudges because evidence matters for security decisions.
+
+| Decision type | Evidence tips | Alternatives tips | Confidence warning |
+|---|---|---|---|
+| `investigation` | suppressed | suppressed | if > 0.90 without evidence |
+| `planning` | suppressed | suppressed | if > 0.85 without evidence |
+| `code_review` | shown | shown | if > 0.85 without evidence |
+| `architecture` | shown | shown | if > 0.80 without evidence |
+| `security` | shown | shown | if > 0.75 without evidence |
+
+Override via `AKASHI_COMPLETENESS_PROFILES` env var (JSON map):
+```
+AKASHI_COMPLETENESS_PROFILES='{"security":{"min_evidence":3,"alternatives_expected":true,"max_confidence_no_evidence":0.70}}'
+```
+
+#### 2. Per-type health thresholds
+
+The `completeness_by_type` breakdown in trace-health enriches each type with an
+`expected_min` threshold and `status` ("healthy" or "needs_attention"). This surfaces
+which decision types fall below expectations for that type's importance level.
+
+| Decision type | Expected minimum |
+|---|---|
+| `investigation` | 0.30 |
+| `planning` | 0.30 |
+| `assessment` | 0.30 |
+| `code_review` | 0.45 |
+| `architecture` | 0.55 |
+| `trade_off` | 0.55 |
+| `security` | 0.60 |
+
+A security decision averaging 0.35 completeness shows as "needs_attention" while an
+investigation averaging 0.35 shows as "healthy." Same score, different expectation.
 
 ### Standard decision types
 

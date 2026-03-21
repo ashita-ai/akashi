@@ -1,4 +1,4 @@
--- 073: Queue Qdrant re-sync when agent_context is updated on existing decisions.
+-- 074: Queue Qdrant re-sync when agent_context is updated on existing decisions.
 --
 -- In normal operation agent_context is write-once (revisions create new rows).
 -- However, manual corrections (e.g. fixing workspace names to canonical project

@@ -121,6 +121,10 @@ function buildTraceBody(
   }
 
   const body: Record<string, unknown> = { agent_id: agentId, decision };
+  if (request.precedentRef !== undefined)
+    body.precedent_ref = request.precedentRef;
+  if (request.precedentReason !== undefined)
+    body.precedent_reason = request.precedentReason;
   if (request.metadata !== undefined) body.metadata = request.metadata;
   if (Object.keys(ctx).length > 0) body.context = ctx;
   return body;
