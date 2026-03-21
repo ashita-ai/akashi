@@ -3636,6 +3636,11 @@ components:
           format: uuid
         event_count:
           type: integer
+        warnings:
+          type: array
+          items:
+            type: string
+          description: Quality warnings (e.g. high confidence with no evidence).
 
     AppendEventsResponse:
       type: object
