@@ -931,47 +931,67 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 
 // computeMissingFields returns actionable tips for improving trace completeness.
 // Each tip tells the agent exactly what to add next time. Tips are ordered by
-// completeness score impact (highest first). hasModel is true when the model
-// field is either explicitly provided or successfully inferred from session
-// metadata / HTTP headers; tips are only surfaced when neither source produced
-// a value.
+// completeness score impact (highest first) and are profile-aware: decision types
+// that don't expect alternatives or evidence won't get tips for those factors.
+// hasModel is true when the model field is either explicitly provided or
+// successfully inferred from session metadata / HTTP headers; tips are only
+// surfaced when neither source produced a value.
 func computeMissingFields(decisionType, outcome string, confidence float32, reasoning *string, alternatives []model.TraceAlternative, evidence []model.TraceEvidence, hasPrecedentRef, hasModel, hasTask bool) []string {
+	profile := quality.ProfileFor(decisionType, nil)
 	var tips []string
 
-	// Reasoning: biggest single factor (up to 0.25).
+	// Reasoning: biggest single factor (up to 0.25). When alternatives and
+	// evidence tips are suppressed by the profile, reasoning becomes the
+	// primary way to improve the score — reflect that in the label.
+	reasoningPctLabel := "25"
+	if !profile.AlternativesExpected && profile.MinEvidence == 0 {
+		// Both alts (20%) and evidence (15%) are suppressed, so reasoning +
+		// outcome + type + confidence are the only levers. Reasoning is the
+		// biggest at 25%.
+		reasoningPctLabel = "25 — reasoning is the primary factor for this decision type"
+	}
 	if reasoning == nil || len(strings.TrimSpace(*reasoning)) <= 100 {
 		if reasoning == nil || len(strings.TrimSpace(*reasoning)) <= 20 {
-			tips = append(tips, "Add reasoning (>100 chars) explaining why you chose this over alternatives (+25%)")
+			tips = append(tips, fmt.Sprintf("Add reasoning (>100 chars) explaining why you chose this over alternatives (+%s%%)", reasoningPctLabel))
 		} else {
 			tips = append(tips, "Expand reasoning to >100 chars for full credit (+5-15%)")
 		}
 	}
 
 	// Alternatives with substantive rejection reasons (up to 0.20).
-	substantive := 0
-	for _, alt := range alternatives {
-		if alt.RejectionReason != nil && len(strings.TrimSpace(*alt.RejectionReason)) > 20 {
-			substantive++
+	// Only suggest when the profile expects alternatives.
+	if profile.AlternativesExpected {
+		substantive := 0
+		for _, alt := range alternatives {
+			if alt.RejectionReason != nil && len(strings.TrimSpace(*alt.RejectionReason)) > 20 {
+				substantive++
+			}
+		}
+		if substantive < 3 {
+			tips = append(tips, fmt.Sprintf("Add %d more rejected alternatives with rejection_reason >20 chars (+%d%%)", 3-substantive, (3-substantive)*5))
 		}
 	}
-	if substantive < 3 {
-		tips = append(tips, fmt.Sprintf("Add %d more rejected alternatives with rejection_reason >20 chars (+%d%%)", 3-substantive, (3-substantive)*5))
-	}
 
-	// Evidence (up to 0.15). Be specific about what counts as evidence so
-	// agents know what to attach — file paths, error messages, test output,
-	// benchmark numbers, or the constraint that drove the choice.
-	if len(evidence) < 2 {
-		if len(evidence) == 0 {
-			tips = append(tips, "Add evidence to make this trace verifiable: attach file paths, error messages, test output, benchmark numbers, or the constraint that drove the choice (source_type + content, 2+ items for +15%)")
-		} else {
-			tips = append(tips, "Add 1 more evidence item for full credit — e.g. a file path, error message, test result, or benchmark number (+5%)")
+	// Evidence (up to 0.15). Only suggest when the profile expects evidence.
+	if profile.MinEvidence > 0 {
+		if len(evidence) < 2 {
+			if len(evidence) == 0 {
+				tips = append(tips, "Add evidence to make this trace verifiable: attach file paths, error messages, test output, benchmark numbers, or the constraint that drove the choice (source_type + content, 2+ items for +15%)")
+			} else {
+				tips = append(tips, "Add 1 more evidence item for full credit — e.g. a file path, error message, test result, or benchmark number (+5%)")
+			}
 		}
 	}
 
 	// Confidence calibration nudge.
 	if confidence >= 0.95 || confidence <= 0.05 {
 		tips = append(tips, "Confidence is at an extreme — values between 0.4 and 0.8 are more informative")
+	}
+
+	// Profile-specific confidence penalty warning.
+	if len(evidence) == 0 && confidence > profile.MaxConfidenceNoEvidence {
+		tips = append(tips, fmt.Sprintf("Confidence %.2f exceeds max %.2f for %s without evidence — add evidence or lower confidence to avoid penalty",
+			confidence, profile.MaxConfidenceNoEvidence, decisionType))
 	}
 
 	// Standard decision type (0.10).

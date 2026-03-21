@@ -1856,6 +1856,45 @@ func (db *DB) GetDecisionTypeDistribution(ctx context.Context, orgID uuid.UUID) 
 	return result, nil
 }
 
+// GetCompletenessByDecisionType returns per-type average completeness for current
+// decisions in an org. Results are ordered by average completeness ascending so
+// the weakest decision types surface first. When from/to are non-nil, only
+// decisions with valid_from in [from, to) are included.
+func (db *DB) GetCompletenessByDecisionType(ctx context.Context, orgID uuid.UUID, from, to *time.Time) ([]DecisionTypeCompleteness, error) {
+	q := `SELECT decision_type, count(*), COALESCE(avg(completeness_score), 0)
+		 FROM decisions
+		 WHERE org_id = $1 AND valid_to IS NULL`
+	args := []any{orgID}
+	if from != nil {
+		args = append(args, *from)
+		q += fmt.Sprintf(" AND valid_from >= $%d", len(args))
+	}
+	if to != nil {
+		args = append(args, *to)
+		q += fmt.Sprintf(" AND valid_from < $%d", len(args))
+	}
+	q += " GROUP BY decision_type ORDER BY COALESCE(avg(completeness_score), 0) ASC"
+
+	rows, err := db.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("storage: completeness by decision type: %w", err)
+	}
+	defer rows.Close()
+
+	var result []DecisionTypeCompleteness
+	for rows.Next() {
+		var dtc DecisionTypeCompleteness
+		if err := rows.Scan(&dtc.DecisionType, &dtc.Count, &dtc.AvgCompleteness); err != nil {
+			return nil, fmt.Errorf("storage: scan completeness by type: %w", err)
+		}
+		result = append(result, dtc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: iterate completeness by type: %w", err)
+	}
+	return result, nil
+}
+
 // GetDecisionForScoring returns a decision with embedding, outcome_embedding,
 // session_id, agent_context, and repo for conflict scoring. The additional fields
 // provide project, task, and session context to the LLM validator.
