@@ -247,6 +247,17 @@ type OutcomeSignalsSummary struct {
 	ConflictsNoWinner int `json:"conflicts_no_winner"`
 }
 
+// HighConfOutcomeSignals holds behavioral outcome signals scoped to decisions
+// with confidence >= 0.85. Used by the confidence calibration gap detector to
+// measure actual calibration quality rather than documentation completeness.
+type HighConfOutcomeSignals struct {
+	Total            int     `json:"total"`              // total high-confidence decisions in the window
+	RevisedWithin48h int     `json:"revised_within_48h"` // count revised by a successor within 48 hours
+	ConflictsLost    int     `json:"conflicts_lost"`     // count that lost a resolved/wont_fix conflict
+	AssessedCount    int     `json:"assessed_count"`     // count that have a non-NULL outcome_score
+	AvgOutcomeScore  float64 `json:"avg_outcome_score"`  // mean outcome_score where outcome_score IS NOT NULL; 0 if none
+}
+
 // ---------------------------------------------------------------------------
 // Decision type distribution
 // ---------------------------------------------------------------------------

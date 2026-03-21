@@ -166,6 +166,52 @@ func (db *DB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID, fr
 	return d, nil
 }
 
+// GetHighConfOutcomeSignals returns behavioral outcome signals scoped to
+// current decisions with confidence >= 0.85 for an org.
+// When from/to are non-nil, only decisions with valid_from in [from, to) are included.
+func (db *DB) GetHighConfOutcomeSignals(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (HighConfOutcomeSignals, error) {
+	var s HighConfOutcomeSignals
+
+	timeFilter := ""
+	args := []any{orgID}
+	if from != nil {
+		args = append(args, *from)
+		timeFilter += fmt.Sprintf(" AND d.valid_from >= $%d", len(args))
+	}
+	if to != nil {
+		args = append(args, *to)
+		timeFilter += fmt.Sprintf(" AND d.valid_from < $%d", len(args))
+	}
+
+	err := db.pool.QueryRow(ctx, `
+		SELECT
+		    COUNT(*)::int,
+		    COUNT(*) FILTER (WHERE EXISTS (
+		        SELECT 1 FROM decisions sup
+		        WHERE sup.supersedes_id = d.id
+		          AND sup.org_id = d.org_id
+		          AND EXTRACT(EPOCH FROM (sup.valid_from - d.valid_from)) / 3600 < 48
+		    ))::int,
+		    COUNT(*) FILTER (WHERE EXISTS (
+		        SELECT 1 FROM scored_conflicts sc
+		        WHERE sc.org_id = d.org_id
+		          AND (sc.decision_a_id = d.id OR sc.decision_b_id = d.id)
+		          AND sc.status IN ('resolved', 'wont_fix')
+		          AND sc.winning_decision_id IS NOT NULL
+		          AND sc.winning_decision_id != d.id
+		    ))::int,
+		    COUNT(*) FILTER (WHERE d.outcome_score IS NOT NULL)::int,
+		    COALESCE(AVG(d.outcome_score) FILTER (WHERE d.outcome_score IS NOT NULL), 0)
+		FROM decisions d
+		WHERE d.org_id = $1 AND d.valid_to IS NULL AND d.confidence >= 0.85`+timeFilter,
+		args...,
+	).Scan(&s.Total, &s.RevisedWithin48h, &s.ConflictsLost, &s.AssessedCount, &s.AvgOutcomeScore)
+	if err != nil {
+		return s, fmt.Errorf("storage: high-conf outcome signals: %w", err)
+	}
+	return s, nil
+}
+
 // bucketCount is a sql.Scanner adapter that appends a ConfidenceBucket to the
 // distribution's Buckets slice when scanned. This avoids 10 temporary variables.
 type bucketCount struct {

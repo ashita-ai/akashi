@@ -329,6 +329,46 @@ func (l *LiteDB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID,
 	return d, nil
 }
 
+// GetHighConfOutcomeSignals returns behavioral outcome signals scoped to
+// decisions with confidence >= 0.85. When from/to are non-nil, only decisions
+// with valid_from in [from, to) are included.
+func (l *LiteDB) GetHighConfOutcomeSignals(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (storage.HighConfOutcomeSignals, error) {
+	var s storage.HighConfOutcomeSignals
+	q := `SELECT
+	         COUNT(*),
+	         COALESCE(SUM(CASE WHEN EXISTS (
+	             SELECT 1 FROM decisions sup
+	             WHERE sup.supersedes_id = d.id AND sup.org_id = d.org_id
+	               AND (julianday(sup.valid_from) - julianday(d.valid_from)) * 24.0 < 48
+	         ) THEN 1 ELSE 0 END), 0),
+	         COALESCE(SUM(CASE WHEN EXISTS (
+	             SELECT 1 FROM scored_conflicts sc
+	             WHERE (sc.decision_a_id = d.id OR sc.decision_b_id = d.id)
+	               AND sc.status IN ('resolved', 'wont_fix')
+	               AND sc.winning_decision_id IS NOT NULL
+	               AND sc.winning_decision_id != d.id
+	         ) THEN 1 ELSE 0 END), 0),
+	         COALESCE(SUM(CASE WHEN d.outcome_score IS NOT NULL THEN 1 ELSE 0 END), 0),
+	         COALESCE(AVG(CASE WHEN d.outcome_score IS NOT NULL THEN d.outcome_score END), 0)
+	     FROM decisions d
+	     WHERE d.org_id = ? AND d.valid_to IS NULL AND d.confidence >= 0.85`
+	args := []any{uuidStr(orgID)}
+	if from != nil {
+		q += " AND d.valid_from >= ?"
+		args = append(args, from.UTC().Format("2006-01-02T15:04:05.999999999Z"))
+	}
+	if to != nil {
+		q += " AND d.valid_from < ?"
+		args = append(args, to.UTC().Format("2006-01-02T15:04:05.999999999Z"))
+	}
+	err := l.db.QueryRowContext(ctx, q, args...).Scan(
+		&s.Total, &s.RevisedWithin48h, &s.ConflictsLost, &s.AssessedCount, &s.AvgOutcomeScore)
+	if err != nil {
+		return storage.HighConfOutcomeSignals{}, fmt.Errorf("sqlite: high-conf outcome signals: %w", err)
+	}
+	return s, nil
+}
+
 // GetDecisionTypeDistribution returns the count of current decisions grouped by
 // decision_type, ordered by count descending.
 func (l *LiteDB) GetDecisionTypeDistribution(ctx context.Context, orgID uuid.UUID) ([]storage.DecisionTypeCount, error) {

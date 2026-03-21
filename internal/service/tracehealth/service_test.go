@@ -19,18 +19,20 @@ import (
 type mockStore struct {
 	storage.Store
 
-	qualityStats     storage.DecisionQualityStats
-	qualityStatsErr  error
-	evidenceStats    storage.EvidenceCoverageStats
-	evidenceStatsErr error
-	conflictCounts   storage.ConflictStatusCounts
-	conflictErr      error
-	outcomeSignals   storage.OutcomeSignalsSummary
-	outcomeErr       error
-	confidenceDist   storage.ConfidenceDistribution
-	confidenceErr    error
-	typeDist         []storage.DecisionTypeCount
-	typeDistErr      error
+	qualityStats           storage.DecisionQualityStats
+	qualityStatsErr        error
+	evidenceStats          storage.EvidenceCoverageStats
+	evidenceStatsErr       error
+	conflictCounts         storage.ConflictStatusCounts
+	conflictErr            error
+	outcomeSignals         storage.OutcomeSignalsSummary
+	outcomeErr             error
+	confidenceDist         storage.ConfidenceDistribution
+	confidenceErr          error
+	highConfOutcomeSignals storage.HighConfOutcomeSignals
+	highConfOutcomeErr     error
+	typeDist               []storage.DecisionTypeCount
+	typeDistErr            error
 }
 
 func (m *mockStore) GetDecisionQualityStats(_ context.Context, _ uuid.UUID, _, _ *time.Time) (storage.DecisionQualityStats, error) {
@@ -53,6 +55,10 @@ func (m *mockStore) GetConfidenceDistribution(_ context.Context, _ uuid.UUID, _,
 	return m.confidenceDist, m.confidenceErr
 }
 
+func (m *mockStore) GetHighConfOutcomeSignals(_ context.Context, _ uuid.UUID, _, _ *time.Time) (storage.HighConfOutcomeSignals, error) {
+	return m.highConfOutcomeSignals, m.highConfOutcomeErr
+}
+
 func (m *mockStore) GetDecisionTypeDistribution(_ context.Context, _ uuid.UUID) ([]storage.DecisionTypeCount, error) {
 	return m.typeDist, m.typeDistErr
 }
@@ -61,7 +67,7 @@ func TestComputeGaps_AllHealthy(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.8, BelowHalf: 2, BelowThird: 0, WithReasoning: 95,
 	}
-	gaps := computeGaps(qs, 5, 0, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{})
+	gaps := computeGaps(qs, 5, 0, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{}, storage.HighConfOutcomeSignals{})
 
 	assert.LessOrEqual(t, len(gaps), 3)
 	for _, g := range gaps {
@@ -75,7 +81,7 @@ func TestComputeGaps_LowQuality(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 50, AvgCompleteness: 0.2, BelowHalf: 30, BelowThird: 20, WithReasoning: 10,
 	}
-	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{})
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{}, storage.HighConfOutcomeSignals{})
 
 	assert.GreaterOrEqual(t, len(gaps), 1)
 	assert.Contains(t, gaps[0], "Average completeness score")
@@ -85,7 +91,7 @@ func TestComputeGaps_UnresolvedConflicts(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.7, BelowHalf: 5, BelowThird: 0, WithReasoning: 90,
 	}
-	gaps := computeGaps(qs, 10, 7, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{})
+	gaps := computeGaps(qs, 10, 7, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{}, storage.HighConfOutcomeSignals{})
 
 	found := false
 	for _, g := range gaps {
@@ -102,7 +108,7 @@ func TestComputeGaps_EvidenceNeverSurfaces(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.7, BelowHalf: 5, BelowThird: 0, WithReasoning: 90,
 	}
-	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{})
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{}, storage.HighConfOutcomeSignals{})
 
 	for _, g := range gaps {
 		assert.NotContains(t, g, "evidence")
@@ -113,7 +119,7 @@ func TestComputeGaps_MaxThree(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.1, BelowHalf: 80, BelowThird: 60, WithReasoning: 10,
 	}
-	gaps := computeGaps(qs, 20, 15, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{})
+	gaps := computeGaps(qs, 20, 15, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{}, storage.HighConfOutcomeSignals{})
 
 	assert.LessOrEqual(t, len(gaps), 3, "should return at most 3 gaps")
 }
@@ -359,7 +365,7 @@ func TestComputeGaps_OutcomeSignals_RevisedWithin48h(t *testing.T) {
 		DecisionsTotal:   100,
 		RevisedWithin48h: 15, // 15% > 10% threshold
 	}
-	gaps := computeGaps(qs, 0, 0, os, storage.ConfidenceDistribution{})
+	gaps := computeGaps(qs, 0, 0, os, storage.ConfidenceDistribution{}, storage.HighConfOutcomeSignals{})
 
 	found := false
 	for _, g := range gaps {
@@ -378,7 +384,7 @@ func TestComputeGaps_OutcomeSignals_NeverCited(t *testing.T) {
 		DecisionsTotal: 100,
 		NeverCited:     80, // 80% > 70% threshold
 	}
-	gaps := computeGaps(qs, 0, 0, os, storage.ConfidenceDistribution{})
+	gaps := computeGaps(qs, 0, 0, os, storage.ConfidenceDistribution{}, storage.HighConfOutcomeSignals{})
 
 	found := false
 	for _, g := range gaps {
@@ -398,7 +404,7 @@ func TestComputeGaps_OutcomeSignals_BelowThresholds(t *testing.T) {
 		RevisedWithin48h: 5,  // 5% <= 10% threshold
 		NeverCited:       60, // 60% <= 70% threshold
 	}
-	gaps := computeGaps(qs, 0, 0, os, storage.ConfidenceDistribution{})
+	gaps := computeGaps(qs, 0, 0, os, storage.ConfidenceDistribution{}, storage.HighConfOutcomeSignals{})
 
 	for _, g := range gaps {
 		assert.NotContains(t, g, "revised within 48 hours")
@@ -417,7 +423,7 @@ func TestComputeGaps_HighAvgConfidence_LowCompleteness(t *testing.T) {
 		OverconfidentPct:        75,
 		HighConfAvgCompleteness: 0.30, // unsupported
 	}
-	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd, storage.HighConfOutcomeSignals{})
 
 	found := false
 	for _, g := range gaps {
@@ -439,7 +445,7 @@ func TestComputeGaps_HighAvgConfidence_HighCompleteness(t *testing.T) {
 		OverconfidentPct:        75,
 		HighConfAvgCompleteness: 0.72, // well-supported — earned confidence
 	}
-	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd, storage.HighConfOutcomeSignals{})
 
 	for _, g := range gaps {
 		assert.NotContains(t, g, "confidence", "earned high confidence should not trigger a gap")
@@ -457,7 +463,7 @@ func TestComputeGaps_HighOverconfidentPct_LowCompleteness(t *testing.T) {
 		OverconfidentPct:        65,
 		HighConfAvgCompleteness: 0.25, // unsupported
 	}
-	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd, storage.HighConfOutcomeSignals{})
 
 	found := false
 	for _, g := range gaps {
@@ -479,7 +485,7 @@ func TestComputeGaps_ConfidenceWithinRange(t *testing.T) {
 		OverconfidentPct:        40,
 		HighConfAvgCompleteness: 0.30, // low completeness but confidence is in range — no gap
 	}
-	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd, storage.HighConfOutcomeSignals{})
 
 	for _, g := range gaps {
 		assert.NotContains(t, g, "confidence")
@@ -497,7 +503,7 @@ func TestComputeGaps_BothConfidenceTriggersPicksAvg(t *testing.T) {
 		OverconfidentPct:        70,
 		HighConfAvgCompleteness: 0.20, // unsupported
 	}
-	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd, storage.HighConfOutcomeSignals{})
 
 	found := false
 	for _, g := range gaps {
@@ -524,9 +530,132 @@ func TestComputeGaps_ConfidenceAtCompletenessThreshold(t *testing.T) {
 		OverconfidentPct:        75,
 		HighConfAvgCompleteness: 0.60, // exactly at threshold — should not fire
 	}
-	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd, storage.HighConfOutcomeSignals{})
 
 	for _, g := range gaps {
 		assert.NotContains(t, g, "confidence", "completeness == 0.6 is not < 0.6, so no gap")
 	}
+}
+
+func TestCompute_HighConfOutcomeSignalsError(t *testing.T) {
+	ms := &mockStore{
+		qualityStats:       storage.DecisionQualityStats{Total: 5, AvgCompleteness: 0.5},
+		evidenceStats:      storage.EvidenceCoverageStats{TotalDecisions: 5},
+		conflictCounts:     storage.ConflictStatusCounts{},
+		outcomeSignals:     storage.OutcomeSignalsSummary{DecisionsTotal: 5},
+		highConfOutcomeErr: errors.New("index missing"),
+	}
+	svc := New(ms)
+	_, err := svc.Compute(context.Background(), uuid.New(), nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "high-conf outcome signals")
+}
+
+// --- confidenceCalibrationGap tier tests ---
+
+// Tier 1: low outcome score with enough assessments fires.
+func TestConfidenceCalibrationGap_Tier1_LowScore(t *testing.T) {
+	hcos := storage.HighConfOutcomeSignals{
+		Total: 20, AssessedCount: 10, AvgOutcomeScore: 0.55,
+	}
+	g := confidenceCalibrationGap(hcos, storage.ConfidenceDistribution{})
+	assert.Contains(t, g, "55% correctness")
+	assert.Contains(t, g, "miscalibrated")
+}
+
+// Tier 1: exactly at threshold (0.70) does NOT fire.
+func TestConfidenceCalibrationGap_Tier1_AtThreshold(t *testing.T) {
+	hcos := storage.HighConfOutcomeSignals{
+		Total: 20, AssessedCount: 5, AvgOutcomeScore: 0.70,
+	}
+	g := confidenceCalibrationGap(hcos, storage.ConfidenceDistribution{})
+	assert.Empty(t, g, "0.70 is not < 0.70, so no gap")
+}
+
+// Tier 1: insufficient assessment data (<5) falls through to lower tiers.
+func TestConfidenceCalibrationGap_Tier1_InsufficientData(t *testing.T) {
+	hcos := storage.HighConfOutcomeSignals{
+		Total: 20, AssessedCount: 4, AvgOutcomeScore: 0.50,
+	}
+	g := confidenceCalibrationGap(hcos, storage.ConfidenceDistribution{})
+	// With Total=20 but no revisions or conflicts, falls through all tiers.
+	assert.Empty(t, g)
+}
+
+// Tier 2a: high revision rate fires.
+func TestConfidenceCalibrationGap_Tier2_HighRevisionRate(t *testing.T) {
+	hcos := storage.HighConfOutcomeSignals{
+		Total: 20, RevisedWithin48h: 6, // 30% > 25%
+	}
+	g := confidenceCalibrationGap(hcos, storage.ConfidenceDistribution{})
+	assert.Contains(t, g, "30% of high-confidence decisions were revised")
+}
+
+// Tier 2a: exactly at revision threshold (25%) does NOT fire.
+func TestConfidenceCalibrationGap_Tier2_AtRevisionThreshold(t *testing.T) {
+	hcos := storage.HighConfOutcomeSignals{
+		Total: 4, RevisedWithin48h: 1, // 25% is not > 25%
+	}
+	g := confidenceCalibrationGap(hcos, storage.ConfidenceDistribution{})
+	assert.Empty(t, g, "25%% is not > 25%%, so no gap")
+}
+
+// Tier 2b: high conflict loss rate fires.
+func TestConfidenceCalibrationGap_Tier2_HighConflictLoss(t *testing.T) {
+	hcos := storage.HighConfOutcomeSignals{
+		Total: 20, ConflictsLost: 4, // 20% > 15%
+	}
+	g := confidenceCalibrationGap(hcos, storage.ConfidenceDistribution{})
+	assert.Contains(t, g, "20% of high-confidence decisions lost conflicts")
+}
+
+// Tier 2b: exactly at conflict loss threshold (15%) does NOT fire.
+func TestConfidenceCalibrationGap_Tier2_AtConflictThreshold(t *testing.T) {
+	hcos := storage.HighConfOutcomeSignals{
+		Total: 20, ConflictsLost: 3, // 15% is not > 15%
+	}
+	g := confidenceCalibrationGap(hcos, storage.ConfidenceDistribution{})
+	assert.Empty(t, g, "15%% is not > 15%%, so no gap")
+}
+
+// Tier 1 takes priority over tier 2 when both would fire.
+func TestConfidenceCalibrationGap_Tier1PrecedesTier2(t *testing.T) {
+	hcos := storage.HighConfOutcomeSignals{
+		Total:            20,
+		AssessedCount:    10,
+		AvgOutcomeScore:  0.50,
+		RevisedWithin48h: 10, // 50% revision rate would fire tier 2
+	}
+	g := confidenceCalibrationGap(hcos, storage.ConfidenceDistribution{})
+	assert.Contains(t, g, "correctness from assessments", "tier 1 should fire, not tier 2")
+	assert.NotContains(t, g, "revised")
+}
+
+// All healthy: no gap returned.
+func TestConfidenceCalibrationGap_AllHealthy(t *testing.T) {
+	hcos := storage.HighConfOutcomeSignals{
+		Total:           20,
+		AssessedCount:   10,
+		AvgOutcomeScore: 0.85, // well-calibrated
+	}
+	cd := storage.ConfidenceDistribution{
+		TotalDecisions:          100,
+		AvgConfidence:           0.75,
+		HighConfAvgCompleteness: 0.80,
+	}
+	g := confidenceCalibrationGap(hcos, cd)
+	assert.Empty(t, g)
+}
+
+// Tier 3 fires as fallback when hcos has no data (zero-value struct).
+func TestConfidenceCalibrationGap_Tier3_Fallback(t *testing.T) {
+	hcos := storage.HighConfOutcomeSignals{} // zero value — no behavioral data
+	cd := storage.ConfidenceDistribution{
+		TotalDecisions:          100,
+		AvgConfidence:           0.89,
+		HighConfAvgCompleteness: 0.30,
+	}
+	g := confidenceCalibrationGap(hcos, cd)
+	assert.Contains(t, g, "Avg confidence is 0.89")
+	assert.Contains(t, g, "30% completeness")
 }

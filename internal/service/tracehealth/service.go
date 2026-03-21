@@ -162,6 +162,12 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 		m.ConfidenceDistribution = &cd
 	}
 
+	// High-confidence outcome signals: behavioral calibration check.
+	hcos, err := s.db.GetHighConfOutcomeSignals(ctx, orgID, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("tracehealth: high-conf outcome signals: %w", err)
+	}
+
 	// Decision type distribution.
 	dtd, err := s.db.GetDecisionTypeDistribution(ctx, orgID)
 	if err != nil {
@@ -172,7 +178,7 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 	}
 
 	// Gap detection: rule-based, max 3 gaps, ordered by severity.
-	m.Gaps = computeGaps(qs, cc.Total, cc.Open, os, cd)
+	m.Gaps = computeGaps(qs, cc.Total, cc.Open, os, cd, hcos)
 
 	// Overall status.
 	m.Status = computeStatus(qs, cc.Open)
@@ -182,7 +188,7 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 
 // computeGaps identifies the most important areas for improvement.
 // Returns at most 3 gaps, ordered by severity.
-func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts int, os storage.OutcomeSignalsSummary, cd storage.ConfidenceDistribution) []string {
+func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts int, os storage.OutcomeSignalsSummary, cd storage.ConfidenceDistribution, hcos storage.HighConfOutcomeSignals) []string {
 	var gaps []string
 
 	// Most severe first.
@@ -201,18 +207,10 @@ func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts 
 			"%d decisions have completeness scores below 0.5.", qs.BelowHalf))
 	}
 
-	// Confidence calibration gap: only flag high confidence when it is unsupported
-	// by completeness (reasoning, alternatives, evidence). Well-supported high
-	// confidence is "earned" and should not trigger a warning.
-	if len(gaps) < 3 && cd.TotalDecisions > 0 && cd.HighConfAvgCompleteness < 0.6 {
-		if cd.AvgConfidence > 0.82 {
-			gaps = append(gaps, fmt.Sprintf(
-				"Avg confidence is %.2f but high-confidence decisions average only %.0f%% completeness. Add reasoning, alternatives, or evidence to support high confidence scores.",
-				cd.AvgConfidence, cd.HighConfAvgCompleteness*100))
-		} else if cd.OverconfidentPct > 60 {
-			gaps = append(gaps, fmt.Sprintf(
-				"%.0f%% of decisions have confidence >= 0.85 but average only %.0f%% completeness. Add reasoning, alternatives, or evidence to support high confidence scores.",
-				cd.OverconfidentPct, cd.HighConfAvgCompleteness*100))
+	// Confidence calibration gap — tiered by signal quality.
+	if len(gaps) < 3 {
+		if g := confidenceCalibrationGap(hcos, cd); g != "" {
+			gaps = append(gaps, g)
 		}
 	}
 
@@ -238,6 +236,50 @@ func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts 
 		gaps = gaps[:3]
 	}
 	return gaps
+}
+
+// confidenceCalibrationGap returns a single gap string describing a confidence
+// calibration problem, or "" if none is detected.
+// Priority: outcome correctness > revision rate > conflict loss > completeness fallback.
+func confidenceCalibrationGap(hcos storage.HighConfOutcomeSignals, cd storage.ConfidenceDistribution) string {
+	// Tier 1: outcome score data — most reliable signal.
+	if hcos.AssessedCount >= 5 && hcos.AvgOutcomeScore < 0.70 {
+		return fmt.Sprintf(
+			"High-confidence decisions (>=0.85) average only %.0f%% correctness from assessments. Confidence scores may be miscalibrated.",
+			hcos.AvgOutcomeScore*100)
+	}
+
+	// Tier 2: behavioral signals — visible actions are harder to fake.
+	if hcos.Total > 0 {
+		revisionRate := float64(hcos.RevisedWithin48h) / float64(hcos.Total)
+		if revisionRate > 0.25 {
+			return fmt.Sprintf(
+				"%.0f%% of high-confidence decisions were revised within 48 hours, suggesting confidence levels are too high.",
+				revisionRate*100)
+		}
+		conflictLossRate := float64(hcos.ConflictsLost) / float64(hcos.Total)
+		if conflictLossRate > 0.15 {
+			return fmt.Sprintf(
+				"%.0f%% of high-confidence decisions lost conflicts, suggesting confidence levels are too high.",
+				conflictLossRate*100)
+		}
+	}
+
+	// Tier 3: completeness fallback — only when no behavioral data fires.
+	if cd.TotalDecisions > 0 && cd.HighConfAvgCompleteness < 0.6 {
+		if cd.AvgConfidence > 0.82 {
+			return fmt.Sprintf(
+				"Avg confidence is %.2f but high-confidence decisions average only %.0f%% completeness. Add reasoning, alternatives, or evidence to support high confidence scores.",
+				cd.AvgConfidence, cd.HighConfAvgCompleteness*100)
+		}
+		if cd.OverconfidentPct > 60 {
+			return fmt.Sprintf(
+				"%.0f%% of decisions have confidence >= 0.85 but average only %.0f%% completeness. Add reasoning, alternatives, or evidence to support high confidence scores.",
+				cd.OverconfidentPct, cd.HighConfAvgCompleteness*100)
+		}
+	}
+
+	return ""
 }
 
 // computeStatus determines the overall health status.
