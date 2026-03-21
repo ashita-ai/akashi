@@ -83,9 +83,22 @@ func (db *DB) GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID, fro
 }
 
 // GetConfidenceDistribution returns confidence histogram buckets and per-agent
-// confidence statistics for all current decisions in an org.
-func (db *DB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (ConfidenceDistribution, error) {
+// confidence statistics for current decisions in an org.
+// When from/to are non-nil, only decisions with valid_from in [from, to) are included.
+func (db *DB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (ConfidenceDistribution, error) {
 	var d ConfidenceDistribution
+
+	// Build optional time-range clause.
+	timeFilter := ""
+	args := []any{orgID}
+	if from != nil {
+		args = append(args, *from)
+		timeFilter += fmt.Sprintf(" AND valid_from >= $%d", len(args))
+	}
+	if to != nil {
+		args = append(args, *to)
+		timeFilter += fmt.Sprintf(" AND valid_from < $%d", len(args))
+	}
 
 	// Aggregate stats + histogram in a single query. The FILTER clause counts
 	// decisions in each 0.1-wide bucket, and percentile_cont gives the median.
@@ -107,7 +120,7 @@ func (db *DB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (C
 		    COALESCE(COUNT(*) FILTER (WHERE confidence >= 0.9) * 100.0 / NULLIF(COUNT(*), 0), 0),
 		    COALESCE(COUNT(*) FILTER (WHERE confidence >= 0.85) * 100.0 / NULLIF(COUNT(*), 0), 0)
 		FROM decisions
-		WHERE org_id = $1 AND valid_to IS NULL`, orgID).Scan(
+		WHERE org_id = $1 AND valid_to IS NULL`+timeFilter, args...).Scan(
 		&d.TotalDecisions, &d.AvgConfidence, &d.MedianConfidence,
 		&bucketCount{&d, 0}, &bucketCount{&d, 1}, &bucketCount{&d, 2},
 		&bucketCount{&d, 3}, &bucketCount{&d, 4}, &bucketCount{&d, 5},
@@ -121,7 +134,7 @@ func (db *DB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (C
 	}
 
 	// Per-agent confidence breakdown, ordered by avg descending so the most
-	// confident agents appear first.
+	// confident agents appear first. Same time-range filter applies.
 	rows, err := db.pool.Query(ctx, `
 		SELECT agent_id,
 		       AVG(confidence),
@@ -129,9 +142,9 @@ func (db *DB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (C
 		       MAX(confidence),
 		       COUNT(*)::int
 		FROM decisions
-		WHERE org_id = $1 AND valid_to IS NULL
+		WHERE org_id = $1 AND valid_to IS NULL`+timeFilter+`
 		GROUP BY agent_id
-		ORDER BY AVG(confidence) DESC`, orgID)
+		ORDER BY AVG(confidence) DESC`, args...)
 	if err != nil {
 		return d, fmt.Errorf("storage: confidence by agent: %w", err)
 	}
@@ -149,6 +162,52 @@ func (db *DB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (C
 	}
 
 	return d, nil
+}
+
+// GetHighConfOutcomeSignals returns behavioral outcome signals scoped to
+// current decisions with confidence >= 0.85 for an org.
+// When from/to are non-nil, only decisions with valid_from in [from, to) are included.
+func (db *DB) GetHighConfOutcomeSignals(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (HighConfOutcomeSignals, error) {
+	var s HighConfOutcomeSignals
+
+	timeFilter := ""
+	args := []any{orgID}
+	if from != nil {
+		args = append(args, *from)
+		timeFilter += fmt.Sprintf(" AND d.valid_from >= $%d", len(args))
+	}
+	if to != nil {
+		args = append(args, *to)
+		timeFilter += fmt.Sprintf(" AND d.valid_from < $%d", len(args))
+	}
+
+	err := db.pool.QueryRow(ctx, `
+		SELECT
+		    COUNT(*)::int,
+		    COUNT(*) FILTER (WHERE EXISTS (
+		        SELECT 1 FROM decisions sup
+		        WHERE sup.supersedes_id = d.id
+		          AND sup.org_id = d.org_id
+		          AND EXTRACT(EPOCH FROM (sup.valid_from - d.valid_from)) / 3600 < 48
+		    ))::int,
+		    COUNT(*) FILTER (WHERE EXISTS (
+		        SELECT 1 FROM scored_conflicts sc
+		        WHERE sc.org_id = d.org_id
+		          AND (sc.decision_a_id = d.id OR sc.decision_b_id = d.id)
+		          AND sc.status IN ('resolved', 'wont_fix')
+		          AND sc.winning_decision_id IS NOT NULL
+		          AND sc.winning_decision_id != d.id
+		    ))::int,
+		    COUNT(*) FILTER (WHERE d.outcome_score IS NOT NULL)::int,
+		    COALESCE(AVG(d.outcome_score) FILTER (WHERE d.outcome_score IS NOT NULL), 0)
+		FROM decisions d
+		WHERE d.org_id = $1 AND d.valid_to IS NULL AND d.confidence >= 0.85`+timeFilter,
+		args...,
+	).Scan(&s.Total, &s.RevisedWithin48h, &s.ConflictsLost, &s.AssessedCount, &s.AvgOutcomeScore)
+	if err != nil {
+		return s, fmt.Errorf("storage: high-conf outcome signals: %w", err)
+	}
+	return s, nil
 }
 
 // GetConfidenceCalibration returns per-tier and per-agent calibration signals.

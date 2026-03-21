@@ -306,15 +306,15 @@ func (l *LiteDB) GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID) 
 }
 
 // GetConfidenceDistribution returns confidence histogram buckets and per-agent
-// confidence statistics for all current decisions in an org.
-func (l *LiteDB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (storage.ConfidenceDistribution, error) {
+// confidence statistics for current decisions in an org.
+// When from/to are non-nil, only decisions with valid_from in [from, to) are included.
+func (l *LiteDB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (storage.ConfidenceDistribution, error) {
 	var d storage.ConfidenceDistribution
 
 	// SQLite lacks percentile_cont and FILTER, so we use CASE/SUM.
 	var b0, b1, b2, b3, b4, b5, b6, b7, b8, b9 int
 	var highCount, overconfidentCount int
-	err := l.db.QueryRowContext(ctx,
-		`SELECT
+	q := `SELECT
 		     COUNT(*),
 		     COALESCE(AVG(confidence), 0),
 		     COALESCE(SUM(CASE WHEN confidence >= 0.0 AND confidence < 0.1 THEN 1 ELSE 0 END), 0),
@@ -330,9 +330,17 @@ func (l *LiteDB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID)
 		     COALESCE(SUM(CASE WHEN confidence >= 0.9 THEN 1 ELSE 0 END), 0),
 		     COALESCE(SUM(CASE WHEN confidence >= 0.85 THEN 1 ELSE 0 END), 0)
 		 FROM decisions
-		 WHERE org_id = ? AND valid_to IS NULL`,
-		uuidStr(orgID),
-	).Scan(
+		 WHERE org_id = ? AND valid_to IS NULL`
+	args := []any{uuidStr(orgID)}
+	if from != nil {
+		q += " AND valid_from >= ?"
+		args = append(args, from.UTC().Format("2006-01-02T15:04:05.999999999Z"))
+	}
+	if to != nil {
+		q += " AND valid_from < ?"
+		args = append(args, to.UTC().Format("2006-01-02T15:04:05.999999999Z"))
+	}
+	err := l.db.QueryRowContext(ctx, q, args...).Scan(
 		&d.TotalDecisions, &d.AvgConfidence,
 		&b0, &b1, &b2, &b3, &b4, &b5, &b6, &b7, &b8, &b9,
 		&highCount, &overconfidentCount,
@@ -358,14 +366,30 @@ func (l *LiteDB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID)
 
 	// Approximate median: sort all confidence values. This is fine for moderate
 	// decision counts; SQLite has no built-in percentile function.
+	// Apply the same time-range filter to the median subquery.
+	medianQ := `SELECT COALESCE(confidence, 0) FROM decisions
+		 WHERE org_id = ? AND valid_to IS NULL`
+	countQ := `SELECT COUNT(*)/2 FROM decisions WHERE org_id = ? AND valid_to IS NULL`
+	medianArgs := []any{uuidStr(orgID)}
+	countArgs := []any{uuidStr(orgID)}
+	if from != nil {
+		fmtFrom := from.UTC().Format("2006-01-02T15:04:05.999999999Z")
+		medianQ += " AND valid_from >= ?"
+		countQ += " AND valid_from >= ?"
+		medianArgs = append(medianArgs, fmtFrom)
+		countArgs = append(countArgs, fmtFrom)
+	}
+	if to != nil {
+		fmtTo := to.UTC().Format("2006-01-02T15:04:05.999999999Z")
+		medianQ += " AND valid_from < ?"
+		countQ += " AND valid_from < ?"
+		medianArgs = append(medianArgs, fmtTo)
+		countArgs = append(countArgs, fmtTo)
+	}
+	medianQ += " ORDER BY confidence LIMIT 1 OFFSET (" + countQ + ")"
+	medianArgs = append(medianArgs, countArgs...)
 	var median float64
-	err = l.db.QueryRowContext(ctx,
-		`SELECT COALESCE(confidence, 0) FROM decisions
-		 WHERE org_id = ? AND valid_to IS NULL
-		 ORDER BY confidence
-		 LIMIT 1 OFFSET (SELECT COUNT(*)/2 FROM decisions WHERE org_id = ? AND valid_to IS NULL)`,
-		uuidStr(orgID), uuidStr(orgID),
-	).Scan(&median)
+	err = l.db.QueryRowContext(ctx, medianQ, medianArgs...).Scan(&median)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return d, fmt.Errorf("sqlite: confidence median: %w", err)
 	}
@@ -373,15 +397,21 @@ func (l *LiteDB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID)
 		d.MedianConfidence = median
 	}
 
-	// Per-agent breakdown.
-	rows, err := l.db.QueryContext(ctx,
-		`SELECT agent_id, AVG(confidence), MIN(confidence), MAX(confidence), COUNT(*)
+	// Per-agent breakdown. Same time-range filter applies.
+	agentQ := `SELECT agent_id, AVG(confidence), MIN(confidence), MAX(confidence), COUNT(*)
 		 FROM decisions
-		 WHERE org_id = ? AND valid_to IS NULL
-		 GROUP BY agent_id
-		 ORDER BY AVG(confidence) DESC`,
-		uuidStr(orgID),
-	)
+		 WHERE org_id = ? AND valid_to IS NULL`
+	agentArgs := []any{uuidStr(orgID)}
+	if from != nil {
+		agentQ += " AND valid_from >= ?"
+		agentArgs = append(agentArgs, from.UTC().Format("2006-01-02T15:04:05.999999999Z"))
+	}
+	if to != nil {
+		agentQ += " AND valid_from < ?"
+		agentArgs = append(agentArgs, to.UTC().Format("2006-01-02T15:04:05.999999999Z"))
+	}
+	agentQ += " GROUP BY agent_id ORDER BY AVG(confidence) DESC"
+	rows, err := l.db.QueryContext(ctx, agentQ, agentArgs...)
 	if err != nil {
 		return d, fmt.Errorf("sqlite: confidence by agent: %w", err)
 	}
@@ -399,6 +429,47 @@ func (l *LiteDB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID)
 	}
 
 	return d, nil
+}
+
+// GetHighConfOutcomeSignals returns behavioral outcome signals scoped to
+// decisions with confidence >= 0.85. When from/to are non-nil, only decisions
+// with valid_from in [from, to) are included.
+func (l *LiteDB) GetHighConfOutcomeSignals(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (storage.HighConfOutcomeSignals, error) {
+	var s storage.HighConfOutcomeSignals
+	q := `SELECT
+	         COUNT(*),
+	         COALESCE(SUM(CASE WHEN EXISTS (
+	             SELECT 1 FROM decisions sup
+	             WHERE sup.supersedes_id = d.id AND sup.org_id = d.org_id
+	               AND (julianday(sup.valid_from) - julianday(d.valid_from)) * 24.0 < 48
+	         ) THEN 1 ELSE 0 END), 0),
+	         COALESCE(SUM(CASE WHEN EXISTS (
+	             SELECT 1 FROM scored_conflicts sc
+	             WHERE sc.org_id = d.org_id
+	               AND (sc.decision_a_id = d.id OR sc.decision_b_id = d.id)
+	               AND sc.status IN ('resolved', 'wont_fix')
+	               AND sc.winning_decision_id IS NOT NULL
+	               AND sc.winning_decision_id != d.id
+	         ) THEN 1 ELSE 0 END), 0),
+	         COALESCE(SUM(CASE WHEN d.outcome_score IS NOT NULL THEN 1 ELSE 0 END), 0),
+	         COALESCE(AVG(CASE WHEN d.outcome_score IS NOT NULL THEN d.outcome_score END), 0)
+	     FROM decisions d
+	     WHERE d.org_id = ? AND d.valid_to IS NULL AND d.confidence >= 0.85`
+	args := []any{uuidStr(orgID)}
+	if from != nil {
+		q += " AND d.valid_from >= ?"
+		args = append(args, from.UTC().Format("2006-01-02T15:04:05.999999999Z"))
+	}
+	if to != nil {
+		q += " AND d.valid_from < ?"
+		args = append(args, to.UTC().Format("2006-01-02T15:04:05.999999999Z"))
+	}
+	err := l.db.QueryRowContext(ctx, q, args...).Scan(
+		&s.Total, &s.RevisedWithin48h, &s.ConflictsLost, &s.AssessedCount, &s.AvgOutcomeScore)
+	if err != nil {
+		return storage.HighConfOutcomeSignals{}, fmt.Errorf("sqlite: high-conf outcome signals: %w", err)
+	}
+	return s, nil
 }
 
 // GetCompletenessByDecisionType returns per-type average completeness for current
