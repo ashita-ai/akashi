@@ -4,7 +4,6 @@ package storage
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -13,16 +12,6 @@ import (
 
 	"github.com/ashita-ai/akashi/internal/model"
 )
-
-// metricsToJSON converts a metrics map to a JSON byte slice for JSONB storage.
-// Returns nil when the map is empty so the column stays NULL.
-func metricsToJSON(m map[string]float64) []byte {
-	if len(m) == 0 {
-		return nil
-	}
-	b, _ := json.Marshal(m) // map[string]float64 cannot fail to marshal
-	return b
-}
 
 // CreateEvidence inserts a single piece of evidence for a decision.
 func (db *DB) CreateEvidence(ctx context.Context, ev model.Evidence) (model.Evidence, error) {
@@ -41,7 +30,7 @@ func (db *DB) CreateEvidence(ctx context.Context, ev model.Evidence) (model.Evid
 		 relevance_score, embedding, metadata, metrics, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		ev.ID, ev.DecisionID, ev.OrgID, string(ev.SourceType), ev.SourceURI, ev.Content,
-		ev.RelevanceScore, ev.Embedding, ev.Metadata, metricsToJSON(ev.Metrics), ev.CreatedAt,
+		ev.RelevanceScore, ev.Embedding, ev.Metadata, ev.Metrics, ev.CreatedAt,
 	)
 	if err != nil {
 		return model.Evidence{}, fmt.Errorf("storage: create evidence: %w", err)
@@ -73,7 +62,7 @@ func (db *DB) CreateEvidenceBatch(ctx context.Context, evs []model.Evidence) err
 			meta = map[string]any{}
 		}
 		rows[i] = []any{id, ev.DecisionID, ev.OrgID, string(ev.SourceType), ev.SourceURI, ev.Content,
-			ev.RelevanceScore, ev.Embedding, meta, metricsToJSON(ev.Metrics), createdAt}
+			ev.RelevanceScore, ev.Embedding, meta, ev.Metrics, createdAt}
 	}
 
 	_, err := db.pool.CopyFrom(ctx, pgx.Identifier{"evidence"}, columns, pgx.CopyFromRows(rows))
