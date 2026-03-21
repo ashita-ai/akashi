@@ -19,22 +19,24 @@ import (
 type mockStore struct {
 	storage.Store
 
-	qualityStats          storage.DecisionQualityStats
-	qualityStatsErr       error
-	evidenceStats         storage.EvidenceCoverageStats
-	evidenceStatsErr      error
-	conflictCounts        storage.ConflictStatusCounts
-	conflictErr           error
-	outcomeSignals        storage.OutcomeSignalsSummary
-	outcomeErr            error
-	confidenceDist        storage.ConfidenceDistribution
-	confidenceErr         error
-	calibration           storage.ConfidenceCalibration
-	calibrationErr        error
-	typeDist              []storage.DecisionTypeCount
-	typeDistErr           error
-	completenessByType    []storage.DecisionTypeCompleteness
-	completenessByTypeErr error
+	qualityStats           storage.DecisionQualityStats
+	qualityStatsErr        error
+	evidenceStats          storage.EvidenceCoverageStats
+	evidenceStatsErr       error
+	conflictCounts         storage.ConflictStatusCounts
+	conflictErr            error
+	outcomeSignals         storage.OutcomeSignalsSummary
+	outcomeErr             error
+	confidenceDist         storage.ConfidenceDistribution
+	confidenceErr          error
+	highConfOutcomeSignals storage.HighConfOutcomeSignals
+	highConfOutcomeErr     error
+	calibration            storage.ConfidenceCalibration
+	calibrationErr         error
+	typeDist               []storage.DecisionTypeCount
+	typeDistErr            error
+	completenessByType     []storage.DecisionTypeCompleteness
+	completenessByTypeErr  error
 }
 
 func (m *mockStore) GetDecisionQualityStats(_ context.Context, _ uuid.UUID, _, _ *time.Time) (storage.DecisionQualityStats, error) {
@@ -53,8 +55,12 @@ func (m *mockStore) GetOutcomeSignalsSummary(_ context.Context, _ uuid.UUID, _, 
 	return m.outcomeSignals, m.outcomeErr
 }
 
-func (m *mockStore) GetConfidenceDistribution(_ context.Context, _ uuid.UUID) (storage.ConfidenceDistribution, error) {
+func (m *mockStore) GetConfidenceDistribution(_ context.Context, _ uuid.UUID, _, _ *time.Time) (storage.ConfidenceDistribution, error) {
 	return m.confidenceDist, m.confidenceErr
+}
+
+func (m *mockStore) GetHighConfOutcomeSignals(_ context.Context, _ uuid.UUID, _, _ *time.Time) (storage.HighConfOutcomeSignals, error) {
+	return m.highConfOutcomeSignals, m.highConfOutcomeErr
 }
 
 func (m *mockStore) GetConfidenceCalibration(_ context.Context, _ uuid.UUID) (storage.ConfidenceCalibration, error) {
@@ -131,6 +137,19 @@ func TestComputeGaps_MaxThree(t *testing.T) {
 	gaps := computeGaps(qs, 20, 15, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{}, emptyCal)
 
 	assert.LessOrEqual(t, len(gaps), 3, "should return at most 3 gaps")
+}
+
+// When confidence is well-calibrated, no gap is generated.
+func TestComputeGaps_CalibratedConfidenceNoGap(t *testing.T) {
+	qs := storage.DecisionQualityStats{
+		Total: 100, AvgCompleteness: 0.9,
+	}
+	cd := storage.ConfidenceDistribution{TotalDecisions: 100, AvgConfidence: 0.65, OverconfidentPct: 20}
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd, emptyCal)
+
+	for _, g := range gaps {
+		assert.NotContains(t, g, "confidence")
+	}
 }
 
 func TestComputeStatus_Healthy(t *testing.T) {
@@ -219,6 +238,13 @@ func TestCompute_HealthyOrg(t *testing.T) {
 			NeverCited:       30,
 			CitedAtLeastOnce: 70,
 		},
+		highConfOutcomeSignals: storage.HighConfOutcomeSignals{
+			Total:            30,
+			RevisedWithin48h: 2,
+			ConflictsLost:    1,
+			AssessedCount:    8,
+			AvgOutcomeScore:  0.85,
+		},
 		typeDist: []storage.DecisionTypeCount{
 			{DecisionType: "architecture", Count: 50},
 			{DecisionType: "trade_off", Count: 30},
@@ -263,6 +289,14 @@ func TestCompute_HealthyOrg(t *testing.T) {
 	// Confidence distribution populated when total > 0.
 	require.NotNil(t, m.ConfidenceDistribution)
 
+	// High-confidence outcome signals surfaced as data.
+	require.NotNil(t, m.HighConfOutcomeSignals)
+	assert.Equal(t, 30, m.HighConfOutcomeSignals.Total)
+	assert.Equal(t, 2, m.HighConfOutcomeSignals.RevisedWithin48h)
+	assert.Equal(t, 1, m.HighConfOutcomeSignals.ConflictsLost)
+	assert.Equal(t, 8, m.HighConfOutcomeSignals.AssessedCount)
+	assert.InDelta(t, 0.85, m.HighConfOutcomeSignals.AvgOutcomeScore, 0.001)
+
 	// Confidence calibration populated when total > 0.
 	require.NotNil(t, m.ConfidenceCalibration)
 
@@ -270,6 +304,24 @@ func TestCompute_HealthyOrg(t *testing.T) {
 	require.Len(t, m.DecisionTypeDistribution, 3)
 	assert.Equal(t, "architecture", m.DecisionTypeDistribution[0].DecisionType)
 	assert.Equal(t, 50, m.DecisionTypeDistribution[0].Count)
+}
+
+// When no high-confidence decisions exist, the field is omitted.
+func TestCompute_NoHighConfOmitsSignals(t *testing.T) {
+	ms := &mockStore{
+		qualityStats: storage.DecisionQualityStats{
+			Total: 10, AvgCompleteness: 0.9, WithReasoning: 10,
+		},
+		evidenceStats:          storage.EvidenceCoverageStats{TotalDecisions: 10},
+		conflictCounts:         storage.ConflictStatusCounts{Total: 0},
+		outcomeSignals:         storage.OutcomeSignalsSummary{DecisionsTotal: 10},
+		highConfOutcomeSignals: storage.HighConfOutcomeSignals{Total: 0}, // no high-conf decisions
+	}
+	svc := New(ms)
+
+	m, err := svc.Compute(context.Background(), uuid.New(), nil, nil)
+	require.NoError(t, err)
+	assert.Nil(t, m.HighConfOutcomeSignals, "should be nil when Total == 0")
 }
 
 func TestCompute_NoConflictsOmitsConflictMetrics(t *testing.T) {
@@ -352,6 +404,20 @@ func TestCompute_ConfidenceDistributionError(t *testing.T) {
 	_, err := svc.Compute(context.Background(), uuid.New(), nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "confidence distribution")
+}
+
+func TestCompute_HighConfOutcomeSignalsError(t *testing.T) {
+	ms := &mockStore{
+		qualityStats:       storage.DecisionQualityStats{Total: 5, AvgCompleteness: 0.5},
+		evidenceStats:      storage.EvidenceCoverageStats{TotalDecisions: 5},
+		conflictCounts:     storage.ConflictStatusCounts{},
+		outcomeSignals:     storage.OutcomeSignalsSummary{DecisionsTotal: 5},
+		highConfOutcomeErr: errors.New("index missing"),
+	}
+	svc := New(ms)
+	_, err := svc.Compute(context.Background(), uuid.New(), nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "high-conf outcome signals")
 }
 
 func TestCompute_ConfidenceCalibrationError(t *testing.T) {
@@ -479,7 +545,7 @@ func TestComputeGaps_OutcomeSignals_RevisedWithin48h(t *testing.T) {
 
 	found := false
 	for _, g := range gaps {
-		if assert.ObjectsAreEqual("15 decisions (15%) were revised within 48 hours.", g) {
+		if g == "15 decisions (15%) were revised within 48 hours." {
 			found = true
 		}
 	}
@@ -498,7 +564,7 @@ func TestComputeGaps_OutcomeSignals_NeverCited(t *testing.T) {
 
 	found := false
 	for _, g := range gaps {
-		if assert.ObjectsAreEqual("80 decisions (80%) have never been cited as a precedent. Set precedent_ref when tracing to build the attribution graph.", g) {
+		if g == "80 decisions (80%) have never been cited as a precedent. Set precedent_ref when tracing to build the attribution graph." {
 			found = true
 		}
 	}

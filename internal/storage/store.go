@@ -125,7 +125,10 @@ type Store interface {
 	GetWontFixRate(ctx context.Context, orgID uuid.UUID) (WontFixRate, error)
 	// GetOutcomeSignalsSummary returns outcome signals. from/to scope decisions by valid_from.
 	GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (OutcomeSignalsSummary, error)
-	GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (ConfidenceDistribution, error)
+	// GetConfidenceDistribution returns confidence histogram and per-agent stats. from/to scope decisions by valid_from.
+	GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (ConfidenceDistribution, error)
+	// GetHighConfOutcomeSignals returns behavioral signals for decisions with confidence >= 0.85. from/to scope by valid_from.
+	GetHighConfOutcomeSignals(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (HighConfOutcomeSignals, error)
 	// GetConfidenceCalibration returns per-tier and per-agent calibration signals
 	// correlating declared confidence with revision rates and assessment outcomes.
 	GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID) (ConfidenceCalibration, error)

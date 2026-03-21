@@ -23,6 +23,7 @@ type Metrics struct {
 	Conflicts                *ConflictMetrics                   `json:"conflicts,omitempty"`
 	OutcomeSignals           *storage.OutcomeSignalsSummary     `json:"outcome_signals,omitempty"`
 	ConfidenceDistribution   *storage.ConfidenceDistribution    `json:"confidence_distribution,omitempty"`
+	HighConfOutcomeSignals   *storage.HighConfOutcomeSignals    `json:"high_conf_outcome_signals,omitempty"`
 	ConfidenceCalibration    *storage.ConfidenceCalibration     `json:"confidence_calibration,omitempty"`
 	DecisionTypeDistribution []storage.DecisionTypeCount        `json:"decision_type_distribution,omitempty"`
 	CompletenessByType       []storage.DecisionTypeCompleteness `json:"completeness_by_type,omitempty"`
@@ -157,12 +158,21 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 	}
 
 	// Confidence distribution: histogram + per-agent breakdown.
-	cd, err := s.db.GetConfidenceDistribution(ctx, orgID)
+	cd, err := s.db.GetConfidenceDistribution(ctx, orgID, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("tracehealth: confidence distribution: %w", err)
 	}
 	if qs.Total > 0 {
 		m.ConfidenceDistribution = &cd
+	}
+
+	// High-confidence outcome signals: behavioral data for the dashboard.
+	hcos, err := s.db.GetHighConfOutcomeSignals(ctx, orgID, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("tracehealth: high-conf outcome signals: %w", err)
+	}
+	if hcos.Total > 0 {
+		m.HighConfOutcomeSignals = &hcos
 	}
 
 	// Confidence calibration: correlates confidence with outcomes.
