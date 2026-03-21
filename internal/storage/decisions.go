@@ -1863,12 +1863,12 @@ func (db *DB) GetDecisionForScoring(ctx context.Context, id, orgID uuid.UUID) (m
 	var d model.Decision
 	err := db.pool.QueryRow(ctx,
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 valid_from, embedding, outcome_embedding, session_id, agent_context, project
+		 valid_from, embedding, outcome_embedding, session_id, agent_context, project, transaction_time
 		 FROM decisions WHERE id = $1 AND org_id = $2 AND valid_to IS NULL`,
 		id, orgID,
 	).Scan(
 		&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence, &d.Reasoning,
-		&d.ValidFrom, &d.Embedding, &d.OutcomeEmbedding, &d.SessionID, &d.AgentContext, &d.Project,
+		&d.ValidFrom, &d.Embedding, &d.OutcomeEmbedding, &d.SessionID, &d.AgentContext, &d.Project, &d.TransactionTime,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
