@@ -58,6 +58,7 @@ class Evidence(BaseModel):
     source_uri: str | None = None
     content: str
     relevance_score: float | None = None
+    metrics: dict[str, float] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 
@@ -195,8 +196,9 @@ class TraceEvidence(BaseModel):
 
     source_type: str
     source_uri: str | None = None
-    content: str
+    content: str = ""
     relevance_score: float | None = None
+    metrics: dict[str, float] | None = None
 
 
 class QueryFilters(BaseModel):
