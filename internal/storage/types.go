@@ -220,13 +220,14 @@ type AgentConfidenceStats struct {
 
 // ConfidenceDistribution holds histogram buckets and per-agent breakdowns.
 type ConfidenceDistribution struct {
-	TotalDecisions    int                    `json:"total_decisions"`
-	AvgConfidence     float64                `json:"avg_confidence"`
-	MedianConfidence  float64                `json:"median_confidence"`
-	Buckets           []ConfidenceBucket     `json:"buckets"`
-	HighConfidencePct float64                `json:"high_confidence_pct"` // % of decisions with confidence >= 0.90
-	OverconfidentPct  float64                `json:"overconfident_pct"`   // % of decisions with confidence >= 0.85
-	ByAgent           []AgentConfidenceStats `json:"by_agent"`
+	TotalDecisions          int                    `json:"total_decisions"`
+	AvgConfidence           float64                `json:"avg_confidence"`
+	MedianConfidence        float64                `json:"median_confidence"`
+	Buckets                 []ConfidenceBucket     `json:"buckets"`
+	HighConfidencePct       float64                `json:"high_confidence_pct"`        // % of decisions with confidence >= 0.90
+	OverconfidentPct        float64                `json:"overconfident_pct"`          // % of decisions with confidence >= 0.85
+	HighConfAvgCompleteness float64                `json:"high_conf_avg_completeness"` // avg completeness_score of decisions with confidence >= 0.85
+	ByAgent                 []AgentConfidenceStats `json:"by_agent"`
 }
 
 // ---------------------------------------------------------------------------

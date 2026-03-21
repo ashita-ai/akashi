@@ -406,42 +406,62 @@ func TestComputeGaps_OutcomeSignals_BelowThresholds(t *testing.T) {
 	}
 }
 
-// Confidence calibration gap: avg confidence above the recommended 0.4–0.8 range.
-func TestComputeGaps_HighAvgConfidence(t *testing.T) {
+// Unsupported high avg confidence triggers the gap.
+func TestComputeGaps_HighAvgConfidence_LowCompleteness(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.9,
 	}
 	cd := storage.ConfidenceDistribution{
-		TotalDecisions:   100,
-		AvgConfidence:    0.89,
-		OverconfidentPct: 75,
+		TotalDecisions:          100,
+		AvgConfidence:           0.89,
+		OverconfidentPct:        75,
+		HighConfAvgCompleteness: 0.30, // unsupported
 	}
 	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
 
 	found := false
 	for _, g := range gaps {
-		if g == "Avg confidence is 0.89 — the recommended range is 0.4–0.8. Over-confident scoring reduces the signal value of the confidence field." {
+		if g == "Avg confidence is 0.89 but high-confidence decisions average only 30% completeness. Add reasoning, alternatives, or evidence to support high confidence scores." {
 			found = true
 		}
 	}
 	assert.True(t, found, "expected confidence calibration gap, got: %v", gaps)
 }
 
-// Confidence calibration gap: avg within range but high clustering at >= 0.85.
-func TestComputeGaps_HighOverconfidentPct(t *testing.T) {
+// High avg confidence with strong completeness does NOT trigger a gap.
+func TestComputeGaps_HighAvgConfidence_HighCompleteness(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.9,
 	}
 	cd := storage.ConfidenceDistribution{
-		TotalDecisions:   100,
-		AvgConfidence:    0.75,
-		OverconfidentPct: 65,
+		TotalDecisions:          100,
+		AvgConfidence:           0.89,
+		OverconfidentPct:        75,
+		HighConfAvgCompleteness: 0.72, // well-supported — earned confidence
+	}
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
+
+	for _, g := range gaps {
+		assert.NotContains(t, g, "confidence", "earned high confidence should not trigger a gap")
+	}
+}
+
+// Unsupported high overconfident pct triggers the gap when avg is in range.
+func TestComputeGaps_HighOverconfidentPct_LowCompleteness(t *testing.T) {
+	qs := storage.DecisionQualityStats{
+		Total: 100, AvgCompleteness: 0.9,
+	}
+	cd := storage.ConfidenceDistribution{
+		TotalDecisions:          100,
+		AvgConfidence:           0.75,
+		OverconfidentPct:        65,
+		HighConfAvgCompleteness: 0.25, // unsupported
 	}
 	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
 
 	found := false
 	for _, g := range gaps {
-		if g == "65% of decisions have confidence >= 0.85 — the recommended range is 0.4–0.8. Over-confident scoring reduces the signal value of the confidence field." {
+		if g == "65% of decisions have confidence >= 0.85 but average only 25% completeness. Add reasoning, alternatives, or evidence to support high confidence scores." {
 			found = true
 		}
 	}
@@ -454,9 +474,10 @@ func TestComputeGaps_ConfidenceWithinRange(t *testing.T) {
 		Total: 100, AvgCompleteness: 0.9,
 	}
 	cd := storage.ConfidenceDistribution{
-		TotalDecisions:   100,
-		AvgConfidence:    0.70,
-		OverconfidentPct: 40,
+		TotalDecisions:          100,
+		AvgConfidence:           0.70,
+		OverconfidentPct:        40,
+		HighConfAvgCompleteness: 0.30, // low completeness but confidence is in range — no gap
 	}
 	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
 
@@ -471,15 +492,16 @@ func TestComputeGaps_BothConfidenceTriggersPicksAvg(t *testing.T) {
 		Total: 100, AvgCompleteness: 0.9,
 	}
 	cd := storage.ConfidenceDistribution{
-		TotalDecisions:   100,
-		AvgConfidence:    0.88,
-		OverconfidentPct: 70,
+		TotalDecisions:          100,
+		AvgConfidence:           0.88,
+		OverconfidentPct:        70,
+		HighConfAvgCompleteness: 0.20, // unsupported
 	}
 	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
 
 	found := false
 	for _, g := range gaps {
-		if g == "Avg confidence is 0.88 — the recommended range is 0.4–0.8. Over-confident scoring reduces the signal value of the confidence field." {
+		if g == "Avg confidence is 0.88 but high-confidence decisions average only 20% completeness. Add reasoning, alternatives, or evidence to support high confidence scores." {
 			found = true
 		}
 	}
@@ -488,5 +510,23 @@ func TestComputeGaps_BothConfidenceTriggersPicksAvg(t *testing.T) {
 	// Should NOT also contain the pct-based message.
 	for _, g := range gaps {
 		assert.NotContains(t, g, "% of decisions have confidence")
+	}
+}
+
+// Exactly at the completeness threshold (0.6) should NOT trigger.
+func TestComputeGaps_ConfidenceAtCompletenessThreshold(t *testing.T) {
+	qs := storage.DecisionQualityStats{
+		Total: 100, AvgCompleteness: 0.9,
+	}
+	cd := storage.ConfidenceDistribution{
+		TotalDecisions:          100,
+		AvgConfidence:           0.89,
+		OverconfidentPct:        75,
+		HighConfAvgCompleteness: 0.60, // exactly at threshold — should not fire
+	}
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
+
+	for _, g := range gaps {
+		assert.NotContains(t, g, "confidence", "completeness == 0.6 is not < 0.6, so no gap")
 	}
 }

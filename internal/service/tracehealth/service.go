@@ -201,17 +201,18 @@ func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts 
 			"%d decisions have completeness scores below 0.5.", qs.BelowHalf))
 	}
 
-	// Confidence calibration gap: flag distributions that cluster above the
-	// recommended 0.4–0.8 range, which degrades the signal value of confidence.
-	if len(gaps) < 3 && cd.TotalDecisions > 0 {
+	// Confidence calibration gap: only flag high confidence when it is unsupported
+	// by completeness (reasoning, alternatives, evidence). Well-supported high
+	// confidence is "earned" and should not trigger a warning.
+	if len(gaps) < 3 && cd.TotalDecisions > 0 && cd.HighConfAvgCompleteness < 0.6 {
 		if cd.AvgConfidence > 0.82 {
 			gaps = append(gaps, fmt.Sprintf(
-				"Avg confidence is %.2f — the recommended range is 0.4–0.8. Over-confident scoring reduces the signal value of the confidence field.",
-				cd.AvgConfidence))
+				"Avg confidence is %.2f but high-confidence decisions average only %.0f%% completeness. Add reasoning, alternatives, or evidence to support high confidence scores.",
+				cd.AvgConfidence, cd.HighConfAvgCompleteness*100))
 		} else if cd.OverconfidentPct > 60 {
 			gaps = append(gaps, fmt.Sprintf(
-				"%.0f%% of decisions have confidence >= 0.85 — the recommended range is 0.4–0.8. Over-confident scoring reduces the signal value of the confidence field.",
-				cd.OverconfidentPct))
+				"%.0f%% of decisions have confidence >= 0.85 but average only %.0f%% completeness. Add reasoning, alternatives, or evidence to support high confidence scores.",
+				cd.OverconfidentPct, cd.HighConfAvgCompleteness*100))
 		}
 	}
 
