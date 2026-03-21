@@ -475,9 +475,10 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 
 		// Complementary workflow filter: suppress conflict creation when the
 		// pair matches a structural pattern (review→fix, same-agent refinement,
-		// precedent chain). Applied after scoring but before the confirmation
-		// gate to save LLM cost and eliminate false positives that embedding
-		// math cannot distinguish from genuine conflicts.
+		// or non-superseding precedent chain). Applied after scoring but before
+		// the confirmation gate to save LLM cost and eliminate false positives
+		// that embedding math cannot distinguish from genuine conflicts.
+		// Precedent-linked pairs with supersession keywords pass through (#452).
 		if isComplementaryWorkflowPair(d, sc.cand) {
 			s.metrics.workflowFiltered.Add(ctx, 1)
 			s.logger.Debug("conflict scorer: workflow filter suppressed pair",
@@ -586,6 +587,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				FullOutcomeA:    d.Outcome,
 				FullOutcomeB:    cand.Outcome,
 				TopicSimilarity: sc.topicSim,
+				PrecedentLinked: isPrecedentLinked(d, cand),
 			})
 			s.metrics.llmCallDuration.Record(ctx, float64(time.Since(llmStart).Milliseconds()))
 			if err != nil {
@@ -991,15 +993,24 @@ func (s *Scorer) ClearAllConflicts(ctx context.Context) (int, error) {
 //     one ("implemented", "fixed", "resolved", "completed", "addressed").
 //
 //  3. Precedent chain: one decision cites the other via precedent_ref,
-//     meaning the agent explicitly linked them as cause-and-effect.
+//     meaning the agent explicitly linked them. However, precedent links can
+//     represent supersession (reversal) rather than refinement. When the later
+//     decision's outcome contains supersession keywords, the pair is passed
+//     through to LLM validation instead of being suppressed. See issue #452.
 func isComplementaryWorkflowPair(d, cand model.Decision) bool {
 	// Heuristic 3: Precedent chain. If either decision cites the other,
-	// they are linked by design — not conflicting.
-	if cand.PrecedentRef != nil && *cand.PrecedentRef == d.ID {
-		return true
-	}
-	if d.PrecedentRef != nil && *d.PrecedentRef == cand.ID {
-		return true
+	// they are linked by design. But linked decisions can still conflict
+	// (supersession). Check the later decision's outcome for reversal signals;
+	// if found, let the LLM decide instead of suppressing.
+	if isPrecedentLinked(d, cand) {
+		later := cand
+		if cand.ValidFrom.Before(d.ValidFrom) {
+			later = d
+		}
+		if containsSupersessionKeyword(later.Outcome) {
+			return false // probable supersession — let LLM validate
+		}
+		return true // probable refinement — suppress
 	}
 
 	// Determine temporal order: earlier and later decision.
@@ -1024,6 +1035,50 @@ func isComplementaryWorkflowPair(d, cand model.Decision) bool {
 		}
 	}
 
+	return false
+}
+
+// isPrecedentLinked returns true if either decision cites the other via
+// precedent_ref, meaning there is an explicit lineage link between them.
+func isPrecedentLinked(d, cand model.Decision) bool {
+	if cand.PrecedentRef != nil && *cand.PrecedentRef == d.ID {
+		return true
+	}
+	if d.PrecedentRef != nil && *d.PrecedentRef == cand.ID {
+		return true
+	}
+	return false
+}
+
+// supersessionKeywords are outcome substrings that indicate the decision
+// reverses or replaces a prior decision rather than refining it.
+var supersessionKeywords = []string{
+	"switched",
+	"superseding",
+	"superseded",
+	"replaced",
+	"replacing",
+	"reversed",
+	"reversing",
+	"reverted",
+	"reverting",
+	"migrated from",
+	"migrating from",
+	"instead of",
+	"no longer",
+	"abandoned",
+	"abandoning",
+}
+
+// containsSupersessionKeyword returns true if the outcome text contains any
+// keyword indicating the decision reverses or replaces a prior one.
+func containsSupersessionKeyword(outcome string) bool {
+	lower := strings.ToLower(outcome)
+	for _, kw := range supersessionKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
 	return false
 }
 

@@ -34,6 +34,7 @@ type ValidateInput struct {
 	FullOutcomeA    string // full outcome when OutcomeA is a claim fragment
 	FullOutcomeB    string
 	TopicSimilarity float64 // decision-level embedding similarity (0–1); 0 means unavailable
+	PrecedentLinked bool    // true when one decision cites the other via precedent_ref
 }
 
 // ValidationResult holds the structured output from an LLM validation call.
@@ -145,6 +146,18 @@ func formatPrompt(input ValidateInput) string {
 	if input.TopicSimilarity >= 0.70 && input.AgentA != input.AgentB {
 		fmt.Fprintf(&b, "HIGH TOPIC OVERLAP: Embeddings show %.0f%% topic similarity, meaning both decisions address the same domain. Check whether the agents take OPPOSITE STANCES on the same specific question.\n",
 			input.TopicSimilarity*100)
+	}
+
+	// --- Precedent chain supersession hint (#452) ---
+	// When one decision explicitly cites the other via precedent_ref and
+	// contains supersession keywords, the heuristic filter passed it through
+	// for LLM validation. Hint the LLM that this is a linked pair where the
+	// later decision may reverse the earlier one.
+	if input.PrecedentLinked {
+		b.WriteString("PRECEDENT LINK: One decision explicitly cites the other as its precedent. " +
+			"The later decision may REFINE the earlier one (building on it) or SUPERSEDE it (reversing the choice). " +
+			"Pay close attention to whether the later decision's outcome contradicts or reverses the earlier decision's conclusion. " +
+			"If it does, classify as SUPERSESSION.\n")
 	}
 
 	// --- Decision type workflow hint ---

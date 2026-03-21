@@ -643,6 +643,38 @@ func TestFormatPrompt_NonWorkflowPair(t *testing.T) {
 	assert.NotContains(t, prompt, "WORKFLOW PATTERN")
 }
 
+func TestFormatPrompt_PrecedentLinked(t *testing.T) {
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA:        "Chose Python for Mimir",
+		OutcomeB:        "Switched to Go, superseding Python",
+		TypeA:           "architecture",
+		TypeB:           "architecture",
+		AgentA:          "planner",
+		AgentB:          "coder",
+		CreatedA:        now,
+		CreatedB:        now.Add(1 * time.Hour),
+		PrecedentLinked: true,
+	})
+	assert.Contains(t, prompt, "PRECEDENT LINK")
+	assert.Contains(t, prompt, "SUPERSEDE")
+}
+
+func TestFormatPrompt_NoPrecedentLink(t *testing.T) {
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA: "Use PostgreSQL",
+		OutcomeB: "Use MySQL",
+		TypeA:    "architecture",
+		TypeB:    "architecture",
+		AgentA:   "planner-a",
+		AgentB:   "planner-b",
+		CreatedA: now,
+		CreatedB: now.Add(1 * time.Hour),
+	})
+	assert.NotContains(t, prompt, "PRECEDENT LINK")
+}
+
 func TestTruncateRunes(t *testing.T) {
 	// Below limit: unchanged.
 	assert.Equal(t, "hello", truncateRunes("hello", 10))
