@@ -294,7 +294,7 @@ exist in the decision trail. Useful for understanding where agents
 disagree and what needs resolution.
 
 Returns conflicts filtered by type, agent, status, severity, or category.
-Only open/acknowledged conflicts are shown by default.`),
+All statuses are shown by default; pass status to narrow results.`),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithIdempotentHintAnnotation(true),
 			mcplib.WithOpenWorldHintAnnotation(false),
@@ -305,7 +305,7 @@ Only open/acknowledged conflicts are shown by default.`),
 				mcplib.Description("Filter by agent involved in the conflict"),
 			),
 			mcplib.WithString("status",
-				mcplib.Description("Filter by status: open, acknowledged, resolved, wont_fix. Defaults to showing open+acknowledged."),
+				mcplib.Description("Filter by status: open, acknowledged, resolved, wont_fix. Shows all statuses by default."),
 			),
 			mcplib.WithString("severity",
 				mcplib.Description("Filter by severity: critical, high, medium, low"),
