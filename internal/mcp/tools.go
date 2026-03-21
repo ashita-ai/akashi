@@ -946,6 +946,9 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	if len(missing) > 0 {
 		responseMap["completeness_tips"] = missing
 	}
+	if warnings := model.HighConfidenceWarnings(confidence, len(evidence), s.highConfidenceWarnThreshold); len(warnings) > 0 {
+		responseMap["warnings"] = warnings
+	}
 
 	resultData, _ := json.Marshal(responseMap)
 

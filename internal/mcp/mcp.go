@@ -53,14 +53,15 @@ Be honest about confidence — most decisions warrant 0.4-0.8, not 0.9+. Referen
 
 // Server wraps the MCP server with Akashi's service layer.
 type Server struct {
-	mcpServer   *mcpserver.MCPServer
-	db          storage.Store      // for resources (read-only queries)
-	decisionSvc *decisions.Service // for tools (shared business logic)
-	grantCache  *authz.GrantCache  // optional cache for LoadGrantedSet
-	logger      *slog.Logger
-	rootsCache  *rootsCache          // caches MCP roots per session (one request per session)
-	checkCache  *checkCache          // caches last akashi_check response per session for evidence auto-attach
-	onCheck     func(agentID string) // called when akashi_check is invoked; wires IDE hook gate
+	mcpServer                   *mcpserver.MCPServer
+	db                          storage.Store      // for resources (read-only queries)
+	decisionSvc                 *decisions.Service // for tools (shared business logic)
+	grantCache                  *authz.GrantCache  // optional cache for LoadGrantedSet
+	logger                      *slog.Logger
+	rootsCache                  *rootsCache          // caches MCP roots per session (one request per session)
+	checkCache                  *checkCache          // caches last akashi_check response per session for evidence auto-attach
+	onCheck                     func(agentID string) // called when akashi_check is invoked; wires IDE hook gate
+	highConfidenceWarnThreshold float32              // confidence above this with no evidence triggers a warning
 }
 
 // SetCheckNotify registers a callback that fires whenever akashi_check is called.
@@ -71,14 +72,15 @@ func (s *Server) SetCheckNotify(f func(agentID string)) {
 }
 
 // New creates and configures a new MCP server with all resources, tools, and prompts.
-func New(db storage.Store, decisionSvc *decisions.Service, grantCache *authz.GrantCache, logger *slog.Logger, version string) *Server {
+func New(db storage.Store, decisionSvc *decisions.Service, grantCache *authz.GrantCache, logger *slog.Logger, version string, highConfWarnThreshold float32) *Server {
 	s := &Server{
-		db:          db,
-		decisionSvc: decisionSvc,
-		grantCache:  grantCache,
-		logger:      logger,
-		rootsCache:  newRootsCache(),
-		checkCache:  newCheckCache(),
+		db:                          db,
+		decisionSvc:                 decisionSvc,
+		grantCache:                  grantCache,
+		logger:                      logger,
+		rootsCache:                  newRootsCache(),
+		checkCache:                  newCheckCache(),
+		highConfidenceWarnThreshold: highConfWarnThreshold,
 	}
 
 	s.mcpServer = mcpserver.NewMCPServer(
