@@ -10730,7 +10730,8 @@ func TestHandleOpenAPISpec_NotConfigured(t *testing.T) {
 // ===========================================================================
 
 func TestHandleTrace_XModelHeader(t *testing.T) {
-	resp, err := authedRequestWithHeaders("POST", testSrv.URL+"/v1/trace", adminToken, map[string]any{
+	// POST trace with X-Model header, no explicit model in body.
+	traceResp, err := authedRequestWithHeaders("POST", testSrv.URL+"/v1/trace", adminToken, map[string]any{
 		"agent_id": "admin",
 		"decision": map[string]any{
 			"decision_type": "x-model-test",
@@ -10741,12 +10742,37 @@ func TestHandleTrace_XModelHeader(t *testing.T) {
 		"X-Model": "claude-opus-4-6",
 	})
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+	defer func() { _ = traceResp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, traceResp.StatusCode)
+
+	var traceResult struct {
+		Data struct {
+			DecisionID uuid.UUID `json:"decision_id"`
+		} `json:"data"`
+	}
+	traceBody, _ := io.ReadAll(traceResp.Body)
+	require.NoError(t, json.Unmarshal(traceBody, &traceResult))
+	decisionID := traceResult.Data.DecisionID
+	require.NotEqual(t, uuid.Nil, decisionID)
+
+	// GET the decision and verify the model was persisted from the header.
+	getResp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/"+decisionID.String(), adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = getResp.Body.Close() }()
+	require.Equal(t, http.StatusOK, getResp.StatusCode)
+
+	var result struct {
+		Data model.Decision `json:"data"`
+	}
+	body, _ := io.ReadAll(getResp.Body)
+	require.NoError(t, json.Unmarshal(body, &result))
+	require.NotNil(t, result.Data.Model, "model should be populated from X-Model header")
+	assert.Equal(t, "claude-opus-4-6", *result.Data.Model)
 }
 
 func TestHandleTrace_ExplicitModelTakesPriorityOverXModelHeader(t *testing.T) {
-	resp, err := authedRequestWithHeaders("POST", testSrv.URL+"/v1/trace", adminToken, map[string]any{
+	// POST trace with both explicit model in body and X-Model header.
+	traceResp, err := authedRequestWithHeaders("POST", testSrv.URL+"/v1/trace", adminToken, map[string]any{
 		"agent_id": "admin",
 		"decision": map[string]any{
 			"decision_type": "model-priority-test",
@@ -10760,6 +10786,30 @@ func TestHandleTrace_ExplicitModelTakesPriorityOverXModelHeader(t *testing.T) {
 		"X-Model": "claude-opus-4-6",
 	})
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+	defer func() { _ = traceResp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, traceResp.StatusCode)
+
+	var traceResult struct {
+		Data struct {
+			DecisionID uuid.UUID `json:"decision_id"`
+		} `json:"data"`
+	}
+	traceBody, _ := io.ReadAll(traceResp.Body)
+	require.NoError(t, json.Unmarshal(traceBody, &traceResult))
+	decisionID := traceResult.Data.DecisionID
+	require.NotEqual(t, uuid.Nil, decisionID)
+
+	// GET the decision and verify the explicit model won over the header.
+	getResp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/"+decisionID.String(), adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = getResp.Body.Close() }()
+	require.Equal(t, http.StatusOK, getResp.StatusCode)
+
+	var result struct {
+		Data model.Decision `json:"data"`
+	}
+	body, _ := io.ReadAll(getResp.Body)
+	require.NoError(t, json.Unmarshal(body, &result))
+	require.NotNil(t, result.Data.Model, "model should be populated")
+	assert.Equal(t, "gpt-4o", *result.Data.Model, "explicit model in body must take priority over X-Model header")
 }
