@@ -358,7 +358,7 @@ func New(opts ...Option) (*App, error) {
 	grantCache := authz.NewGrantCache(30 * time.Second)
 
 	// MCP server.
-	mcpSrv := mcp.New(db, decisionSvc, grantCache, logger, version)
+	mcpSrv := mcp.New(db, decisionSvc, grantCache, logger, version, cfg.HighConfidenceWarnThreshold)
 
 	// SSE broker.
 	var broker *server.Broker
@@ -414,36 +414,37 @@ func New(opts ...Option) (*App, error) {
 
 	// Create HTTP server.
 	srv := server.New(server.ServerConfig{
-		DB:                      db,
-		JWTMgr:                  jwtMgr,
-		DecisionSvc:             decisionSvc,
-		Buffer:                  buf,
-		Broker:                  broker,
-		Searcher:                searcher,
-		GrantCache:              grantCache,
-		Logger:                  logger,
-		Port:                    cfg.Port,
-		ReadTimeout:             cfg.ReadTimeout,
-		WriteTimeout:            cfg.WriteTimeout,
-		MCPServer:               mcpSrv.MCPServer(),
-		Version:                 version,
-		MaxRequestBodyBytes:     cfg.MaxRequestBodyBytes,
-		RateLimiter:             limiter,
-		TrustProxy:              cfg.TrustProxy,
-		CORSAllowedOrigins:      cfg.CORSAllowedOrigins,
-		EnableDestructiveDelete: cfg.EnableDestructiveDelete,
-		RetentionInterval:       cfg.RetentionInterval,
-		UIFS:                    uiFS,
-		OpenAPISpec:             api.OpenAPISpec,
-		ExtraRoutes:             extraRoutes,
-		Middlewares:             middlewares,
-		DecisionHooks:           decisionHooks,
-		HooksEnabled:            cfg.HooksEnabled,
-		HooksAPIKey:             cfg.HooksAPIKey,
-		AutoTrace:               cfg.AutoTrace,
-		SignupEnabled:           cfg.SignupEnabled,
-		ResolutionRecorder:      conflictScorer,
-		ConflictValidator:       conflictValidator,
+		DB:                          db,
+		JWTMgr:                      jwtMgr,
+		DecisionSvc:                 decisionSvc,
+		Buffer:                      buf,
+		Broker:                      broker,
+		Searcher:                    searcher,
+		GrantCache:                  grantCache,
+		Logger:                      logger,
+		Port:                        cfg.Port,
+		ReadTimeout:                 cfg.ReadTimeout,
+		WriteTimeout:                cfg.WriteTimeout,
+		MCPServer:                   mcpSrv.MCPServer(),
+		Version:                     version,
+		MaxRequestBodyBytes:         cfg.MaxRequestBodyBytes,
+		RateLimiter:                 limiter,
+		TrustProxy:                  cfg.TrustProxy,
+		CORSAllowedOrigins:          cfg.CORSAllowedOrigins,
+		EnableDestructiveDelete:     cfg.EnableDestructiveDelete,
+		RetentionInterval:           cfg.RetentionInterval,
+		UIFS:                        uiFS,
+		OpenAPISpec:                 api.OpenAPISpec,
+		ExtraRoutes:                 extraRoutes,
+		Middlewares:                 middlewares,
+		DecisionHooks:               decisionHooks,
+		HooksEnabled:                cfg.HooksEnabled,
+		HooksAPIKey:                 cfg.HooksAPIKey,
+		AutoTrace:                   cfg.AutoTrace,
+		SignupEnabled:               cfg.SignupEnabled,
+		ResolutionRecorder:          conflictScorer,
+		ConflictValidator:           conflictValidator,
+		HighConfidenceWarnThreshold: cfg.HighConfidenceWarnThreshold,
 	})
 
 	// Wire akashi_check → IDE hook gate.

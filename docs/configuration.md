@@ -237,6 +237,12 @@ Operational idempotency settings:
 
 Hook endpoints (`/hooks/session-start`, `/hooks/pre-tool-use`, `/hooks/post-tool-use`) are unauthenticated but restricted to localhost by default. They enable IDE agents to receive context injection, edit gating, and automatic decision tracing without shell-script marker files.
 
+## Trace quality warnings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AKASHI_HIGH_CONFIDENCE_WARN_THRESHOLD` | `0.85` | Confidence above this with zero evidence items triggers a `warnings` array in the trace response. Set to `1.0` to disable |
+
 ## Data retention
 
 Akashi supports per-org data retention policies that automatically delete decisions older than a configured threshold. Policies are set via `PUT /v1/retention` (admin-only). Legal holds (`POST /v1/retention/hold`) exempt matching decisions from both automated and GDPR deletion. All deletion operations are recorded in the `deletion_log` table.
