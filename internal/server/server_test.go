@@ -137,7 +137,8 @@ func TestMain(m *testing.M) {
 		Version:             "test",
 		MaxRequestBodyBytes: 1 * 1024 * 1024,
 		// Explicitly enabled for tests that exercise GDPR delete behavior.
-		EnableDestructiveDelete: true,
+		EnableDestructiveDelete:     true,
+		HighConfidenceWarnThreshold: 0.85,
 	})
 
 	// Seed admin.

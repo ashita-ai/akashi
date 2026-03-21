@@ -3113,9 +3113,7 @@ func TestHandleTrace_HighConfWithEvidence_NoWarning(t *testing.T) {
 		"decision_type": "architecture",
 		"outcome":       "high confidence with evidence",
 		"confidence":    0.9,
-		"evidence": []map[string]any{
-			{"source_type": "benchmark", "content": "latency p99 < 50ms"},
-		},
+		"evidence":      `[{"source_type":"benchmark","content":"latency p99 < 50ms"}]`,
 	}))
 	require.NoError(t, err)
 	require.False(t, result.IsError)

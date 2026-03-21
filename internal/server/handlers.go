@@ -58,7 +58,7 @@ type Handlers struct {
 	conflictValidator conflicts.Validator
 	// highConfidenceWarnThreshold triggers a response warning when confidence
 	// exceeds this value and no evidence items are provided (default 0.85).
-	highConfidenceWarnThreshold float64
+	highConfidenceWarnThreshold float32
 }
 
 // HandlersDeps holds all dependencies for constructing Handlers.
@@ -82,7 +82,7 @@ type HandlersDeps struct {
 	TrustProxy                  bool
 	ResolutionRecorder          conflicts.ResolutionRecorder
 	ConflictValidator           conflicts.Validator
-	HighConfidenceWarnThreshold float64
+	HighConfidenceWarnThreshold float32
 }
 
 // NewHandlers creates a new Handlers with all dependencies.

@@ -279,8 +279,8 @@ type TraceEvidence struct {
 
 // HighConfidenceWarnings returns warnings when confidence exceeds threshold
 // with zero evidence items. Returns nil when no warning applies.
-func HighConfidenceWarnings(confidence float32, evidenceCount int, threshold float64) []string {
-	if confidence > float32(threshold) && evidenceCount == 0 {
+func HighConfidenceWarnings(confidence float32, evidenceCount int, threshold float32) []string {
+	if confidence > threshold && evidenceCount == 0 {
 		return []string{
 			fmt.Sprintf(
 				"high confidence (%.2g) with no supporting evidence — consider adding evidence items or lowering confidence to 0.4–0.8",

@@ -107,7 +107,7 @@ type Config struct {
 	AutoResolveInterval           time.Duration // How often the auto-resolution worker runs (default 1h, 0 disables).
 
 	// Trace quality warnings.
-	HighConfidenceWarnThreshold float64 // Confidence above this with zero evidence triggers a response warning (default: 0.85).
+	HighConfidenceWarnThreshold float32 // Confidence above this with zero evidence triggers a response warning (default: 0.85).
 
 	// Self-serve signup.
 	SignupEnabled bool // Enable POST /auth/signup for self-serve org creation (default: false).
@@ -195,7 +195,9 @@ func Load() (Config, error) {
 	cfg.ConflictDecisionTopicSimFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_DECISION_TOPIC_SIM_FLOOR", profileDefaults.decisionTopicSimFloor)
 	cfg.ConflictEarlyExitFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_EARLY_EXIT_FLOOR", profileDefaults.earlyExitFloor)
 	cfg.CrossEncoderThreshold, errs = collectFloat64(errs, "AKASHI_CONFLICT_CROSS_ENCODER_THRESHOLD", profileDefaults.crossEncoderThreshold)
-	cfg.HighConfidenceWarnThreshold, errs = collectFloat64(errs, "AKASHI_HIGH_CONFIDENCE_WARN_THRESHOLD", 0.85)
+	var highConfThreshF64 float64
+	highConfThreshF64, errs = collectFloat64(errs, "AKASHI_HIGH_CONFIDENCE_WARN_THRESHOLD", 0.85)
+	cfg.HighConfidenceWarnThreshold = float32(highConfThreshF64)
 
 	// Boolean fields.
 	cfg.RateLimitEnabled, errs = collectBool(errs, "AKASHI_RATE_LIMIT_ENABLED", true)

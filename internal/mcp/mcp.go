@@ -60,7 +60,7 @@ type Server struct {
 	logger                      *slog.Logger
 	rootsCache                  *rootsCache // caches MCP roots per session (one request per session)
 	onCheck                     func()      // called when akashi_check is invoked; wires IDE hook gate
-	highConfidenceWarnThreshold float64     // confidence above this with no evidence triggers a warning
+	highConfidenceWarnThreshold float32     // confidence above this with no evidence triggers a warning
 }
 
 // SetCheckNotify registers a callback that fires whenever akashi_check is called.
@@ -71,7 +71,7 @@ func (s *Server) SetCheckNotify(f func()) {
 }
 
 // New creates and configures a new MCP server with all resources, tools, and prompts.
-func New(db storage.Store, decisionSvc *decisions.Service, grantCache *authz.GrantCache, logger *slog.Logger, version string, highConfWarnThreshold float64) *Server {
+func New(db storage.Store, decisionSvc *decisions.Service, grantCache *authz.GrantCache, logger *slog.Logger, version string, highConfWarnThreshold float32) *Server {
 	s := &Server{
 		db:                          db,
 		decisionSvc:                 decisionSvc,

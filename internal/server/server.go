@@ -98,7 +98,7 @@ type ServerConfig struct {
 	ConflictValidator conflicts.Validator
 
 	// Trace quality warnings.
-	HighConfidenceWarnThreshold float64
+	HighConfidenceWarnThreshold float32
 }
 
 // New creates a new HTTP server with all routes configured.
