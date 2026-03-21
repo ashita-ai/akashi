@@ -297,7 +297,7 @@ exist in the decision trail. Useful for understanding where agents
 disagree and what needs resolution.
 
 Returns conflicts filtered by type, agent, status, severity, or category.
-Only open/acknowledged conflicts are shown by default.`),
+All statuses are shown by default; pass status to narrow results.`),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithIdempotentHintAnnotation(true),
 			mcplib.WithOpenWorldHintAnnotation(false),
@@ -308,7 +308,7 @@ Only open/acknowledged conflicts are shown by default.`),
 				mcplib.Description("Filter by agent involved in the conflict"),
 			),
 			mcplib.WithString("status",
-				mcplib.Description("Filter by status: open, acknowledged, resolved, wont_fix. Defaults to showing open+acknowledged."),
+				mcplib.Description("Filter by status: open, acknowledged, resolved, wont_fix. Shows all statuses by default."),
 			),
 			mcplib.WithString("severity",
 				mcplib.Description("Filter by severity: critical, high, medium, low"),
@@ -1180,11 +1180,13 @@ func (s *Server) handleConflicts(ctx context.Context, request mcplib.CallToolReq
 	limit := request.GetInt("limit", 10)
 	format := request.GetString("format", "concise")
 
-	// Build group filters. The MCP tool defaults to open+acknowledged groups so
-	// agents see actionable disagreements, not resolved history.
+	// Build group filters. By default the MCP tool shows all groups so agents
+	// see both open and acknowledged conflicts (both are actionable). Agents
+	// can pass status="open", "resolved", etc. to narrow results.
 	statusFilter := request.GetString("status", "")
-	groupFilters := storage.ConflictGroupFilters{
-		OpenOnly: statusFilter == "" || statusFilter == "open" || statusFilter == "acknowledged",
+	groupFilters := storage.ConflictGroupFilters{}
+	if statusFilter != "" && statusFilter != "all" {
+		groupFilters.Status = &statusFilter
 	}
 	if dt := request.GetString("decision_type", ""); dt != "" {
 		groupFilters.DecisionType = &dt
