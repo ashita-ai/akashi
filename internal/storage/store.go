@@ -127,6 +127,9 @@ type Store interface {
 	GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (OutcomeSignalsSummary, error)
 	GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (ConfidenceDistribution, error)
 	GetDecisionTypeDistribution(ctx context.Context, orgID uuid.UUID) ([]DecisionTypeCount, error)
+	// GetCompletenessByDecisionType returns per-type average completeness for current decisions.
+	// Ordered by avg completeness ascending so the worst types surface first.
+	GetCompletenessByDecisionType(ctx context.Context, orgID uuid.UUID, from, to *time.Time) ([]DecisionTypeCompleteness, error)
 
 	// ---- Error classification ----
 

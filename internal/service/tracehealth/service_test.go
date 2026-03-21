@@ -19,18 +19,20 @@ import (
 type mockStore struct {
 	storage.Store
 
-	qualityStats     storage.DecisionQualityStats
-	qualityStatsErr  error
-	evidenceStats    storage.EvidenceCoverageStats
-	evidenceStatsErr error
-	conflictCounts   storage.ConflictStatusCounts
-	conflictErr      error
-	outcomeSignals   storage.OutcomeSignalsSummary
-	outcomeErr       error
-	confidenceDist   storage.ConfidenceDistribution
-	confidenceErr    error
-	typeDist         []storage.DecisionTypeCount
-	typeDistErr      error
+	qualityStats          storage.DecisionQualityStats
+	qualityStatsErr       error
+	evidenceStats         storage.EvidenceCoverageStats
+	evidenceStatsErr      error
+	conflictCounts        storage.ConflictStatusCounts
+	conflictErr           error
+	outcomeSignals        storage.OutcomeSignalsSummary
+	outcomeErr            error
+	confidenceDist        storage.ConfidenceDistribution
+	confidenceErr         error
+	typeDist              []storage.DecisionTypeCount
+	typeDistErr           error
+	completenessByType    []storage.DecisionTypeCompleteness
+	completenessByTypeErr error
 }
 
 func (m *mockStore) GetDecisionQualityStats(_ context.Context, _ uuid.UUID, _, _ *time.Time) (storage.DecisionQualityStats, error) {
@@ -55,6 +57,10 @@ func (m *mockStore) GetConfidenceDistribution(_ context.Context, _ uuid.UUID) (s
 
 func (m *mockStore) GetDecisionTypeDistribution(_ context.Context, _ uuid.UUID) ([]storage.DecisionTypeCount, error) {
 	return m.typeDist, m.typeDistErr
+}
+
+func (m *mockStore) GetCompletenessByDecisionType(_ context.Context, _ uuid.UUID, _, _ *time.Time) ([]storage.DecisionTypeCompleteness, error) {
+	return m.completenessByType, m.completenessByTypeErr
 }
 
 func TestComputeGaps_AllHealthy(t *testing.T) {

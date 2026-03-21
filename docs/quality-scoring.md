@@ -18,8 +18,40 @@ It is computed when the decision is created and does not change afterward.
 | **Evidence** | 0.15 | 0.15 for ≥ 2 items; 0.10 for 1; 0.0 for none |
 | **Decision type** | 0.10 | 0.10 for standard types; 0.0 for custom |
 | **Outcome** | 0.05 | 0.05 if > 20 chars; 0.0 otherwise |
+| **Precedent ref** | 0.10 | 0.10 if precedent_ref set; 0.0 otherwise |
 
-**Maximum possible score: 0.90**
+**Maximum possible score: 1.00** (0.90 from content + 0.10 from precedent_ref)
+
+### Completeness profiles
+
+Scoring is **profile-aware**: different decision types have different expectations.
+When a profile marks a factor as not expected, its weight is redistributed to reasoning.
+
+| Decision type | Min evidence | Alternatives expected | Max confidence (no evidence) |
+|---|---|---|---|
+| `investigation` | 0 | no | 0.9 |
+| `planning` | 0 | no | 0.85 |
+| `code_review` | 1 | yes | 0.85 |
+| `architecture` | 2 | yes | 0.80 |
+| `security` | 2 | yes | 0.75 |
+
+All other types use the default profile: `min_evidence=1`, `alternatives_expected=true`,
+`max_confidence_no_evidence=1.0` (no penalty).
+
+**Weight redistribution**: When alternatives are not expected (investigation, planning),
+their 0.20 weight is added to reasoning. Same for evidence when `min_evidence=0`.
+This means investigation decisions can reach max score through thorough reasoning alone,
+while architecture/security decisions must also document alternatives and evidence.
+
+**Confidence penalty**: When confidence exceeds `max_confidence_no_evidence` and no
+evidence is provided, the confidence factor is capped at the edge tier (0.10) instead
+of mid-range (0.15). This penalizes overconfident decisions lacking supporting evidence.
+
+**Config override**: Set `AKASHI_COMPLETENESS_PROFILES` to a JSON map to override
+profiles per org. Example:
+```
+AKASHI_COMPLETENESS_PROFILES='{"security":{"min_evidence":3,"alternatives_expected":true,"max_confidence_no_evidence":0.70}}'
+```
 
 ### Standard decision types
 

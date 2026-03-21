@@ -16,14 +16,15 @@ import (
 
 // Metrics is the top-level trace health response.
 type Metrics struct {
-	Status                   string                          `json:"status"` // healthy, needs_attention, insufficient_data
-	Completeness             *CompletenessMetrics            `json:"completeness"`
-	Evidence                 *EvidenceMetrics                `json:"evidence"`
-	Conflicts                *ConflictMetrics                `json:"conflicts,omitempty"`
-	OutcomeSignals           *storage.OutcomeSignalsSummary  `json:"outcome_signals,omitempty"`
-	ConfidenceDistribution   *storage.ConfidenceDistribution `json:"confidence_distribution,omitempty"`
-	DecisionTypeDistribution []storage.DecisionTypeCount     `json:"decision_type_distribution,omitempty"`
-	Gaps                     []string                        `json:"gaps"`
+	Status                   string                             `json:"status"` // healthy, needs_attention, insufficient_data
+	Completeness             *CompletenessMetrics               `json:"completeness"`
+	Evidence                 *EvidenceMetrics                   `json:"evidence"`
+	Conflicts                *ConflictMetrics                   `json:"conflicts,omitempty"`
+	OutcomeSignals           *storage.OutcomeSignalsSummary     `json:"outcome_signals,omitempty"`
+	ConfidenceDistribution   *storage.ConfidenceDistribution    `json:"confidence_distribution,omitempty"`
+	DecisionTypeDistribution []storage.DecisionTypeCount        `json:"decision_type_distribution,omitempty"`
+	CompletenessByType       []storage.DecisionTypeCompleteness `json:"completeness_by_type,omitempty"`
+	Gaps                     []string                           `json:"gaps"`
 }
 
 // CompletenessMetrics tracks decision quality and reasoning coverage.
@@ -169,6 +170,16 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 	}
 	if len(dtd) > 0 {
 		m.DecisionTypeDistribution = dtd
+	}
+
+	// Per-type completeness breakdown: surfaces which decision types are
+	// weakest, ordered by avg completeness ascending.
+	cbt, err := s.db.GetCompletenessByDecisionType(ctx, orgID, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("tracehealth: completeness by type: %w", err)
+	}
+	if len(cbt) > 0 {
+		m.CompletenessByType = cbt
 	}
 
 	// Gap detection: rule-based, max 3 gaps, ordered by severity.

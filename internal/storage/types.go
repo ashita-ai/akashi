@@ -255,6 +255,13 @@ type DecisionTypeCount struct {
 	Count        int    `json:"count"`
 }
 
+// DecisionTypeCompleteness holds per-type aggregate completeness metrics.
+type DecisionTypeCompleteness struct {
+	DecisionType    string  `json:"decision_type"`
+	Count           int     `json:"count"`
+	AvgCompleteness float64 `json:"avg_completeness"`
+}
+
 // ---------------------------------------------------------------------------
 // Notification constants (originally in notify.go)
 // ---------------------------------------------------------------------------
