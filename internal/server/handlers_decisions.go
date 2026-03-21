@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -57,6 +58,16 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := model.ValidateMetadataSize("context", req.Context); err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
+	if req.PrecedentReason != nil && len(*req.PrecedentReason) > model.MaxPrecedentReasonLen {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			fmt.Sprintf("precedent_reason exceeds maximum length of %d bytes", model.MaxPrecedentReasonLen))
+		return
+	}
+	if req.PrecedentReason != nil && req.PrecedentRef == nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"precedent_reason requires precedent_ref to be set")
 		return
 	}
 
@@ -116,15 +127,16 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	ctxWg.Wait()
 
 	result, err := h.decisionSvc.Trace(r.Context(), orgID, decisions.TraceInput{
-		AgentID:      req.AgentID,
-		TraceID:      req.TraceID,
-		Metadata:     req.Metadata,
-		Decision:     req.Decision,
-		PrecedentRef: req.PrecedentRef,
-		SessionID:    sessionID,
-		AgentContext: agentContext,
-		APIKeyID:     claims.APIKeyID,
-		AuditMeta:    h.buildAuditMeta(r, orgID),
+		AgentID:         req.AgentID,
+		TraceID:         req.TraceID,
+		Metadata:        req.Metadata,
+		Decision:        req.Decision,
+		PrecedentRef:    req.PrecedentRef,
+		PrecedentReason: req.PrecedentReason,
+		SessionID:       sessionID,
+		AgentContext:    agentContext,
+		APIKeyID:        claims.APIKeyID,
+		AuditMeta:       h.buildAuditMeta(r, orgID),
 	})
 	if err != nil {
 		h.clearIdempotentWrite(r, orgID, idem)
