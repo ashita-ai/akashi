@@ -108,9 +108,10 @@ type ConflictGroupFilters struct {
 	DecisionType *string
 	AgentID      *string
 	ConflictKind *string
-	// OpenOnly restricts results to groups that have at least one open or
-	// acknowledged member conflict. When false, all groups are returned.
-	OpenOnly bool
+	// Status restricts results to groups that have at least one member
+	// conflict matching this exact status (e.g. "open", "acknowledged",
+	// "resolved", "wont_fix"). When nil, all groups are returned.
+	Status *string
 }
 
 // ---------------------------------------------------------------------------

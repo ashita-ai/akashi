@@ -738,20 +738,56 @@ func conflictGroupWhere(f ConflictGroupFilters, argOffset int) (string, []any) {
 }
 
 // CountConflictGroups returns the total number of conflict groups matching the filters.
+//
+// Status filter semantics:
+//   - "open"/"acknowledged": groups with at least one conflict in that status
+//   - "resolved": groups with no open/acknowledged conflicts (fully closed)
+//   - "wont_fix": groups with no open/acknowledged conflicts and at least one wont_fix
 func (db *DB) CountConflictGroups(ctx context.Context, orgID uuid.UUID, f ConflictGroupFilters) (int, error) {
-	query := `SELECT COUNT(*) FROM conflict_groups cg WHERE cg.org_id = $1`
 	args := []any{orgID}
-	if f.OpenOnly {
-		query = `
-			SELECT COUNT(DISTINCT cg.id)
-			FROM conflict_groups cg
-			JOIN scored_conflicts sc ON sc.group_id = cg.id
-			WHERE cg.org_id = $1
-			  AND sc.status IN ('open', 'acknowledged')`
+
+	if f.Status == nil {
+		query := `SELECT COUNT(*) FROM conflict_groups cg WHERE cg.org_id = $1`
+		suffix, extra := conflictGroupWhere(f, 2)
+		query += suffix
+		args = append(args, extra...)
+		var count int
+		if err := db.pool.QueryRow(ctx, query, args...).Scan(&count); err != nil {
+			return 0, fmt.Errorf("storage: count conflict groups: %w", err)
+		}
+		return count, nil
 	}
-	suffix, extra := conflictGroupWhere(f, 2)
-	query += suffix
+
+	// Status filter requires aggregation over member conflicts.
+	var havingClause string
+	switch *f.Status {
+	case "open", "acknowledged":
+		havingClause = fmt.Sprintf(
+			"HAVING COUNT(CASE WHEN sc.status = $%d THEN 1 END) > 0", len(args)+1)
+		args = append(args, *f.Status)
+	case "resolved":
+		havingClause = "HAVING COUNT(CASE WHEN sc.status IN ('open', 'acknowledged') THEN 1 END) = 0 AND COUNT(sc.id) > 0"
+	case "wont_fix":
+		havingClause = "HAVING COUNT(CASE WHEN sc.status IN ('open', 'acknowledged') THEN 1 END) = 0" +
+			" AND COUNT(CASE WHEN sc.status = 'wont_fix' THEN 1 END) > 0"
+	default:
+		havingClause = fmt.Sprintf(
+			"HAVING COUNT(CASE WHEN sc.status = $%d THEN 1 END) > 0", len(args)+1)
+		args = append(args, *f.Status)
+	}
+
+	suffix, extra := conflictGroupWhere(f, len(args)+1)
 	args = append(args, extra...)
+
+	query := fmt.Sprintf(`
+		SELECT COUNT(*) FROM (
+			SELECT cg.id
+			FROM conflict_groups cg
+			LEFT JOIN scored_conflicts sc ON sc.group_id = cg.id
+			WHERE cg.org_id = $1%s
+			GROUP BY cg.id
+			%s
+		) sub`, suffix, havingClause)
 
 	var count int
 	if err := db.pool.QueryRow(ctx, query, args...).Scan(&count); err != nil {
@@ -778,17 +814,34 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 		offset = 0
 	}
 
-	// Build the optional open-only join/having.
-	openJoin := ""
-	openHaving := ""
-	if f.OpenOnly {
-		openJoin = `
-			JOIN scored_conflicts sc_open ON sc_open.group_id = cg.id
-			    AND sc_open.status IN ('open', 'acknowledged')`
-		openHaving = " HAVING COUNT(DISTINCT sc_open.id) > 0"
+	// Build the optional status HAVING clause. Uses the existing sc_all join
+	// rather than adding a separate join, so conflict_count/open_count
+	// aggregations remain correct.
+	statusHaving := ""
+	statusArgs := []any{}
+	if f.Status != nil {
+		switch *f.Status {
+		case "open", "acknowledged":
+			// Groups with at least one conflict in this exact status.
+			statusHaving = " HAVING COUNT(DISTINCT sc_all.id) FILTER (WHERE sc_all.status = $2) > 0"
+			statusArgs = append(statusArgs, *f.Status)
+		case "resolved":
+			// Groups with no actionable conflicts remaining (fully closed).
+			statusHaving = " HAVING COUNT(DISTINCT sc_all.id) FILTER (" +
+				"WHERE sc_all.status IN ('open', 'acknowledged'))::int = 0" +
+				" AND COUNT(DISTINCT sc_all.id)::int > 0"
+		case "wont_fix":
+			// Groups with no actionable conflicts and at least one wont_fix.
+			statusHaving = " HAVING COUNT(DISTINCT sc_all.id) FILTER (" +
+				"WHERE sc_all.status IN ('open', 'acknowledged'))::int = 0" +
+				" AND COUNT(DISTINCT sc_all.id) FILTER (WHERE sc_all.status = 'wont_fix') > 0"
+		default:
+			statusHaving = " HAVING COUNT(DISTINCT sc_all.id) FILTER (WHERE sc_all.status = $2) > 0"
+			statusArgs = append(statusArgs, *f.Status)
+		}
 	}
 
-	query := fmt.Sprintf(`
+	query := `
 		SELECT
 		    cg.id, cg.org_id, cg.agent_a, cg.agent_b, cg.conflict_kind, cg.decision_type,
 		    cg.group_topic,
@@ -814,7 +867,6 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 		    rep_da.reasoning, rep_db.reasoning,
 		    rep_da.valid_from, rep_db.valid_from
 		FROM conflict_groups cg
-		%s
 		LEFT JOIN scored_conflicts sc_all ON sc_all.group_id = cg.id
 		LEFT JOIN LATERAL (
 		    SELECT sc2.*
@@ -829,10 +881,11 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 		) rep ON true
 		LEFT JOIN decisions rep_da ON rep_da.id = rep.decision_a_id
 		LEFT JOIN decisions rep_db ON rep_db.id = rep.decision_b_id
-		WHERE cg.org_id = $1`, openJoin)
+		WHERE cg.org_id = $1`
 
 	args := []any{orgID}
-	suffix, extra := conflictGroupWhere(f, 2)
+	args = append(args, statusArgs...)
+	suffix, extra := conflictGroupWhere(f, len(args)+1)
 	query += suffix
 	args = append(args, extra...)
 
@@ -857,7 +910,7 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 		    rep_da.confidence, rep_db.confidence,
 		    rep_da.reasoning, rep_db.reasoning,
 		    rep_da.valid_from, rep_db.valid_from`
-	query += openHaving
+	query += statusHaving
 	query += fmt.Sprintf(" ORDER BY cg.last_detected_at DESC LIMIT %d OFFSET %d", limit, offset)
 
 	rows, err := db.pool.Query(ctx, query, args...)
