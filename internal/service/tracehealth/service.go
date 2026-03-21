@@ -172,7 +172,7 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 	}
 
 	// Gap detection: rule-based, max 3 gaps, ordered by severity.
-	m.Gaps = computeGaps(qs, cc.Total, cc.Open, os)
+	m.Gaps = computeGaps(qs, cc.Total, cc.Open, os, cd)
 
 	// Overall status.
 	m.Status = computeStatus(qs, cc.Open)
@@ -182,7 +182,7 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 
 // computeGaps identifies the most important areas for improvement.
 // Returns at most 3 gaps, ordered by severity.
-func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts int, os storage.OutcomeSignalsSummary) []string {
+func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts int, os storage.OutcomeSignalsSummary, cd storage.ConfidenceDistribution) []string {
 	var gaps []string
 
 	// Most severe first.
@@ -199,6 +199,16 @@ func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts 
 	if len(gaps) < 3 && qs.BelowHalf > 0 {
 		gaps = append(gaps, fmt.Sprintf(
 			"%d decisions have completeness scores below 0.5.", qs.BelowHalf))
+	}
+
+	// Confidence calibration gap: flag when the distribution is inflated
+	// beyond the recommended 0.4–0.8 range, reducing signal quality.
+	if len(gaps) < 3 && cd.TotalDecisions > 0 {
+		if cd.AvgConfidence > 0.82 || cd.OverconfidentPct > 60 {
+			gaps = append(gaps, fmt.Sprintf(
+				"Avg confidence is %.2f (%.0f%% of decisions >= 0.85) — above the recommended 0.4–0.8 range. Over-confident scoring reduces signal quality.",
+				cd.AvgConfidence, cd.OverconfidentPct))
+		}
 	}
 
 	// Outcome signal gaps (Spec 35).

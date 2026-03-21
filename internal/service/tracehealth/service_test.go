@@ -61,7 +61,7 @@ func TestComputeGaps_AllHealthy(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.8, BelowHalf: 2, BelowThird: 0, WithReasoning: 95,
 	}
-	gaps := computeGaps(qs, 5, 0, storage.OutcomeSignalsSummary{})
+	gaps := computeGaps(qs, 5, 0, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{})
 
 	assert.LessOrEqual(t, len(gaps), 3)
 	for _, g := range gaps {
@@ -75,7 +75,7 @@ func TestComputeGaps_LowQuality(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 50, AvgCompleteness: 0.2, BelowHalf: 30, BelowThird: 20, WithReasoning: 10,
 	}
-	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{})
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{})
 
 	assert.GreaterOrEqual(t, len(gaps), 1)
 	assert.Contains(t, gaps[0], "Average completeness score")
@@ -85,7 +85,7 @@ func TestComputeGaps_UnresolvedConflicts(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.7, BelowHalf: 5, BelowThird: 0, WithReasoning: 90,
 	}
-	gaps := computeGaps(qs, 10, 7, storage.OutcomeSignalsSummary{})
+	gaps := computeGaps(qs, 10, 7, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{})
 
 	found := false
 	for _, g := range gaps {
@@ -102,7 +102,7 @@ func TestComputeGaps_EvidenceNeverSurfaces(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.7, BelowHalf: 5, BelowThird: 0, WithReasoning: 90,
 	}
-	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{})
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{})
 
 	for _, g := range gaps {
 		assert.NotContains(t, g, "evidence")
@@ -113,7 +113,7 @@ func TestComputeGaps_MaxThree(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.1, BelowHalf: 80, BelowThird: 60, WithReasoning: 10,
 	}
-	gaps := computeGaps(qs, 20, 15, storage.OutcomeSignalsSummary{})
+	gaps := computeGaps(qs, 20, 15, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{})
 
 	assert.LessOrEqual(t, len(gaps), 3, "should return at most 3 gaps")
 }
@@ -359,7 +359,7 @@ func TestComputeGaps_OutcomeSignals_RevisedWithin48h(t *testing.T) {
 		DecisionsTotal:   100,
 		RevisedWithin48h: 15, // 15% > 10% threshold
 	}
-	gaps := computeGaps(qs, 0, 0, os)
+	gaps := computeGaps(qs, 0, 0, os, storage.ConfidenceDistribution{})
 
 	found := false
 	for _, g := range gaps {
@@ -378,7 +378,7 @@ func TestComputeGaps_OutcomeSignals_NeverCited(t *testing.T) {
 		DecisionsTotal: 100,
 		NeverCited:     80, // 80% > 70% threshold
 	}
-	gaps := computeGaps(qs, 0, 0, os)
+	gaps := computeGaps(qs, 0, 0, os, storage.ConfidenceDistribution{})
 
 	found := false
 	for _, g := range gaps {
@@ -398,10 +398,99 @@ func TestComputeGaps_OutcomeSignals_BelowThresholds(t *testing.T) {
 		RevisedWithin48h: 5,  // 5% <= 10% threshold
 		NeverCited:       60, // 60% <= 70% threshold
 	}
-	gaps := computeGaps(qs, 0, 0, os)
+	gaps := computeGaps(qs, 0, 0, os, storage.ConfidenceDistribution{})
 
 	for _, g := range gaps {
 		assert.NotContains(t, g, "revised within 48 hours")
 		assert.NotContains(t, g, "never been cited")
+	}
+}
+
+func TestComputeGaps_ConfidenceCalibration_HighAvg(t *testing.T) {
+	qs := storage.DecisionQualityStats{
+		Total: 100, AvgCompleteness: 0.9,
+	}
+	cd := storage.ConfidenceDistribution{
+		TotalDecisions:   100,
+		AvgConfidence:    0.89, // > 0.82 threshold
+		OverconfidentPct: 50,   // below 60% threshold, but avg triggers
+	}
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
+
+	found := false
+	for _, g := range gaps {
+		if assert.ObjectsAreEqual("Avg confidence is 0.89 (50% of decisions >= 0.85) — above the recommended 0.4–0.8 range. Over-confident scoring reduces signal quality.", g) {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected confidence calibration gap, got: %v", gaps)
+}
+
+func TestComputeGaps_ConfidenceCalibration_HighPct(t *testing.T) {
+	qs := storage.DecisionQualityStats{
+		Total: 100, AvgCompleteness: 0.9,
+	}
+	cd := storage.ConfidenceDistribution{
+		TotalDecisions:   100,
+		AvgConfidence:    0.78, // below 0.82 threshold
+		OverconfidentPct: 65,   // > 60% threshold
+	}
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
+
+	found := false
+	for _, g := range gaps {
+		if assert.ObjectsAreEqual("Avg confidence is 0.78 (65% of decisions >= 0.85) — above the recommended 0.4–0.8 range. Over-confident scoring reduces signal quality.", g) {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected confidence calibration gap, got: %v", gaps)
+}
+
+func TestComputeGaps_ConfidenceCalibration_BelowBothThresholds(t *testing.T) {
+	qs := storage.DecisionQualityStats{
+		Total: 100, AvgCompleteness: 0.9,
+	}
+	cd := storage.ConfidenceDistribution{
+		TotalDecisions:   100,
+		AvgConfidence:    0.72, // <= 0.82
+		OverconfidentPct: 40,   // <= 60%
+	}
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
+
+	for _, g := range gaps {
+		assert.NotContains(t, g, "Over-confident")
+	}
+}
+
+func TestComputeGaps_ConfidenceCalibration_ExactThresholds(t *testing.T) {
+	qs := storage.DecisionQualityStats{
+		Total: 100, AvgCompleteness: 0.9,
+	}
+
+	// Exactly at 0.82 avg — should NOT trigger (> not >=)
+	cd := storage.ConfidenceDistribution{
+		TotalDecisions:   100,
+		AvgConfidence:    0.82,
+		OverconfidentPct: 60, // exactly 60% — should NOT trigger (> not >=)
+	}
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
+
+	for _, g := range gaps {
+		assert.NotContains(t, g, "Over-confident", "exactly-at-threshold should not trigger")
+	}
+}
+
+func TestComputeGaps_ConfidenceCalibration_ZeroDecisions(t *testing.T) {
+	qs := storage.DecisionQualityStats{
+		Total: 100, AvgCompleteness: 0.9,
+	}
+	cd := storage.ConfidenceDistribution{
+		TotalDecisions: 0, // no confidence data
+		AvgConfidence:  0.95,
+	}
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
+
+	for _, g := range gaps {
+		assert.NotContains(t, g, "Over-confident", "should not trigger with zero decisions")
 	}
 }

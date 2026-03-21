@@ -104,7 +104,8 @@ func (db *DB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (C
 		    COUNT(*) FILTER (WHERE confidence >= 0.7 AND confidence < 0.8)::int,
 		    COUNT(*) FILTER (WHERE confidence >= 0.8 AND confidence < 0.9)::int,
 		    COUNT(*) FILTER (WHERE confidence >= 0.9 AND confidence <= 1.0)::int,
-		    COALESCE(COUNT(*) FILTER (WHERE confidence >= 0.9) * 100.0 / NULLIF(COUNT(*), 0), 0)
+		    COALESCE(COUNT(*) FILTER (WHERE confidence >= 0.9) * 100.0 / NULLIF(COUNT(*), 0), 0),
+		    COALESCE(COUNT(*) FILTER (WHERE confidence >= 0.85) * 100.0 / NULLIF(COUNT(*), 0), 0)
 		FROM decisions
 		WHERE org_id = $1 AND valid_to IS NULL`, orgID).Scan(
 		&d.TotalDecisions, &d.AvgConfidence, &d.MedianConfidence,
@@ -113,6 +114,7 @@ func (db *DB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (C
 		&bucketCount{&d, 6}, &bucketCount{&d, 7}, &bucketCount{&d, 8},
 		&bucketCount{&d, 9},
 		&d.HighConfidencePct,
+		&d.OverconfidentPct,
 	)
 	if err != nil {
 		return d, fmt.Errorf("storage: confidence distribution: %w", err)
