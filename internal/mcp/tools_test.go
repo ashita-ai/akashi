@@ -2879,3 +2879,83 @@ func TestComputeMissingFields_TaskTip(t *testing.T) {
 	}
 	assert.False(t, found, "should not include task tip when hasTask is true")
 }
+
+func TestComputeMissingFields_EvidenceTips(t *testing.T) {
+	t.Parallel()
+
+	reasoning := "A long enough reasoning string that exceeds one hundred characters so it doesn't trigger the reasoning tip in the output"
+	reason := "solid reason for rejection"
+	fullAlts := []model.TraceAlternative{
+		{Label: "alt1", Selected: false, RejectionReason: &reason},
+		{Label: "alt2", Selected: false, RejectionReason: &reason},
+		{Label: "alt3", Selected: false, RejectionReason: &reason},
+	}
+
+	tests := []struct {
+		name     string
+		evidence []model.TraceEvidence
+		wantTip  string
+		noTip    bool
+	}{
+		{
+			name:     "no evidence — actionable tip with examples",
+			evidence: nil,
+			wantTip:  "Add evidence to make this trace verifiable: attach file paths, error messages, test output, benchmark numbers, or the constraint that drove the choice",
+		},
+		{
+			name:     "empty slice — same as nil",
+			evidence: []model.TraceEvidence{},
+			wantTip:  "Add evidence to make this trace verifiable",
+		},
+		{
+			name: "one evidence item — nudge for more",
+			evidence: []model.TraceEvidence{
+				{SourceType: "tool_output", Content: "test passed"},
+			},
+			wantTip: "Add 1 more evidence item for full credit",
+		},
+		{
+			name: "one evidence item tip includes examples",
+			evidence: []model.TraceEvidence{
+				{SourceType: "tool_output", Content: "test passed"},
+			},
+			wantTip: "file path, error message, test result, or benchmark number",
+		},
+		{
+			name: "two evidence items — no tip",
+			evidence: []model.TraceEvidence{
+				{SourceType: "document", Content: "evidence one"},
+				{SourceType: "api_response", Content: "evidence two"},
+			},
+			noTip: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tips := computeMissingFields("architecture", "chose X", 0.7, &reasoning, fullAlts, tc.evidence, true, true)
+
+			// Filter to only evidence-related tips.
+			var evidenceTips []string
+			for _, tip := range tips {
+				if containsEvidence(tip) {
+					evidenceTips = append(evidenceTips, tip)
+				}
+			}
+
+			if tc.noTip {
+				assert.Empty(t, evidenceTips, "expected no evidence tip with >=2 items")
+				return
+			}
+
+			require.Len(t, evidenceTips, 1, "expected exactly one evidence tip")
+			assert.Contains(t, evidenceTips[0], tc.wantTip)
+		})
+	}
+}
+
+// containsEvidence returns true if the tip string relates to evidence.
+func containsEvidence(tip string) bool {
+	return strings.Contains(tip, "evidence") || strings.Contains(tip, "verifiable")
+}
