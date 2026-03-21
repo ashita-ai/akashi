@@ -327,26 +327,18 @@ func gitBranchTask(cwd string) string {
 	return stripBranchPrefix(branch)
 }
 
-// stripBranchPrefix removes conventional branch prefixes so the task
-// label reflects the intent, not the workflow convention.
+// stripBranchPrefix removes conventional workflow prefixes so the task
+// label reflects the intent, not the branching convention. Only known
+// prefixes are stripped — unknown prefixes (usernames, "release/", etc.)
+// are left intact to preserve meaningful context in the audit trail.
 func stripBranchPrefix(branch string) string {
 	prefixes := []string{
 		"feature/", "fix/", "bugfix/", "hotfix/",
 		"chore/", "refactor/", "docs/", "test/",
 	}
-	// Also strip username prefixes like "evanvolgas/".
-	if i := strings.Index(branch, "/"); i > 0 && i < len(branch)-1 {
-		prefix := branch[:i+1]
-		for _, p := range prefixes {
-			if prefix == p {
-				return branch[i+1:]
-			}
-		}
-		// If it looks like a username prefix (no second slash in the
-		// remainder), strip it too. e.g. "evanvolgas/enrich-auto-trace".
-		remainder := branch[i+1:]
-		if !strings.Contains(remainder, "/") {
-			return remainder
+	for _, p := range prefixes {
+		if strings.HasPrefix(branch, p) && len(branch) > len(p) {
+			return branch[len(p):]
 		}
 	}
 	return branch
