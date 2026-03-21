@@ -4236,11 +4236,106 @@ components:
           $ref: "#/components/schemas/EvidenceMetrics"
         conflicts:
           $ref: "#/components/schemas/TraceHealthConflictMetrics"
+        confidence_distribution:
+          $ref: "#/components/schemas/ConfidenceDistribution"
+        high_conf_outcome_signals:
+          $ref: "#/components/schemas/HighConfOutcomeSignals"
         gaps:
           type: array
           items:
             type: string
           description: Up to 3 actionable improvement suggestions, ordered by severity.
+
+    ConfidenceDistribution:
+      type: object
+      description: Confidence histogram buckets and per-agent breakdowns for current decisions.
+      properties:
+        total_decisions:
+          type: integer
+          description: Total number of current decisions included.
+        avg_confidence:
+          type: number
+          format: double
+          description: Mean confidence across all included decisions (0.0–1.0).
+        median_confidence:
+          type: number
+          format: double
+          description: Median confidence across all included decisions (0.0–1.0).
+        buckets:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfidenceBucket"
+          description: Histogram of decisions per 0.1-wide confidence bucket.
+        high_confidence_pct:
+          type: number
+          format: double
+          description: Percentage of decisions with confidence >= 0.90 (0–100).
+        overconfident_pct:
+          type: number
+          format: double
+          description: Percentage of decisions with confidence >= 0.85 (0–100).
+        high_conf_avg_completeness:
+          type: number
+          format: double
+          description: Average completeness_score of decisions with confidence >= 0.85 (0.0–1.0).
+        by_agent:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentConfidenceStats"
+          description: Per-agent confidence summary, ordered by avg confidence descending.
+
+    ConfidenceBucket:
+      type: object
+      properties:
+        bucket:
+          type: string
+          description: Label for the bucket range, e.g. "0.0-0.1", "0.9-1.0".
+        count:
+          type: integer
+          description: Number of decisions in this bucket.
+
+    AgentConfidenceStats:
+      type: object
+      properties:
+        agent_id:
+          type: string
+          description: The agent identifier.
+        avg_confidence:
+          type: number
+          format: double
+          description: Mean confidence for this agent's decisions.
+        min_confidence:
+          type: number
+          format: double
+          description: Minimum confidence among this agent's decisions.
+        max_confidence:
+          type: number
+          format: double
+          description: Maximum confidence among this agent's decisions.
+        decision_count:
+          type: integer
+          description: Number of decisions traced by this agent.
+
+    HighConfOutcomeSignals:
+      type: object
+      description: Behavioral outcome signals scoped to decisions with confidence >= 0.85.
+      properties:
+        total:
+          type: integer
+          description: Total high-confidence decisions in the time window.
+        revised_within_48h:
+          type: integer
+          description: Count of high-confidence decisions revised by a successor within 48 hours.
+        conflicts_lost:
+          type: integer
+          description: Count of high-confidence decisions that lost a resolved or wont_fix conflict.
+        assessed_count:
+          type: integer
+          description: Count of high-confidence decisions that have a non-null outcome_score.
+        avg_outcome_score:
+          type: number
+          format: double
+          description: Mean outcome_score among assessed high-confidence decisions (0 if none).
 
     CompletenessMetrics:
       type: object
