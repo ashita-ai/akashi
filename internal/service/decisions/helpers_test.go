@@ -2380,14 +2380,12 @@ func TestTrace_WithAlternatives(t *testing.T) {
 	}
 	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
 
-	score1 := float32(0.3)
-	score2 := float32(0.9)
 	result, err := svc.Trace(context.Background(), uuid.Nil, TraceInput{
 		AgentID: "test-agent", Decision: model.TraceDecision{
 			DecisionType: "test", Outcome: "test", Confidence: 0.5,
 			Alternatives: []model.TraceAlternative{
-				{Label: "A", Score: &score1, Selected: false},
-				{Label: "B", Score: &score2, Selected: true},
+				{Label: "A"},
+				{Label: "B"},
 			},
 		},
 	})

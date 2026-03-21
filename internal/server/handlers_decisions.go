@@ -160,6 +160,7 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	if warnings := model.HighConfidenceWarnings(req.Decision.Confidence, len(req.Decision.Evidence), h.highConfidenceWarnThreshold); len(warnings) > 0 {
 		resp["warnings"] = warnings
 	}
+
 	h.completeIdempotentWriteBestEffort(r, orgID, idem, http.StatusCreated, resp)
 	writeJSON(w, r, http.StatusCreated, resp)
 }

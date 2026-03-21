@@ -87,8 +87,6 @@ type Alternative struct {
 	ID              uuid.UUID      `json:"id"`
 	DecisionID      uuid.UUID      `json:"decision_id"`
 	Label           string         `json:"label"`
-	Score           *float32       `json:"score,omitempty"`
-	Selected        bool           `json:"selected"`
 	RejectionReason *string        `json:"rejection_reason,omitempty"`
 	Metadata        map[string]any `json:"metadata"`
 	CreatedAt       time.Time      `json:"created_at"`
@@ -106,20 +104,22 @@ const (
 	SourceToolOutput    SourceType = "tool_output"
 	SourceMemory        SourceType = "memory"
 	SourceDatabaseQuery SourceType = "database_query"
+	SourceMetrics       SourceType = "metrics"
 )
 
 // Evidence represents supporting information for a decision. Immutable.
 type Evidence struct {
-	ID             uuid.UUID        `json:"id"`
-	DecisionID     uuid.UUID        `json:"decision_id"`
-	OrgID          uuid.UUID        `json:"org_id"`
-	SourceType     SourceType       `json:"source_type"`
-	SourceURI      *string          `json:"source_uri,omitempty"`
-	Content        string           `json:"content"`
-	RelevanceScore *float32         `json:"relevance_score,omitempty"`
-	Embedding      *pgvector.Vector `json:"-"`
-	Metadata       map[string]any   `json:"metadata"`
-	CreatedAt      time.Time        `json:"created_at"`
+	ID             uuid.UUID          `json:"id"`
+	DecisionID     uuid.UUID          `json:"decision_id"`
+	OrgID          uuid.UUID          `json:"org_id"`
+	SourceType     SourceType         `json:"source_type"`
+	SourceURI      *string            `json:"source_uri,omitempty"`
+	Content        string             `json:"content"`
+	RelevanceScore *float32           `json:"relevance_score,omitempty"`
+	Metrics        map[string]float64 `json:"metrics,omitempty"`
+	Embedding      *pgvector.Vector   `json:"-"`
+	Metadata       map[string]any     `json:"metadata"`
+	CreatedAt      time.Time          `json:"created_at"`
 }
 
 // ConflictFate tracks how a decision fared in resolved conflict pairs.

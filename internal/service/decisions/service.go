@@ -287,8 +287,6 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 	for i, a := range input.Decision.Alternatives {
 		alts[i] = model.Alternative{
 			Label:           a.Label,
-			Score:           a.Score,
-			Selected:        a.Selected,
 			RejectionReason: a.RejectionReason,
 		}
 	}
@@ -336,6 +334,7 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 				SourceURI:      e.SourceURI,
 				Content:        e.Content,
 				RelevanceScore: e.RelevanceScore,
+				Metrics:        e.Metrics,
 				Embedding:      embs[i],
 			}
 		}
