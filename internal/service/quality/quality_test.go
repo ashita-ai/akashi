@@ -423,6 +423,35 @@ func TestScore_ThreeFactorsCombined(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Uniform scoring: score is independent of decision type.
+// This is a critical invariant — changing the formula per type would break
+// aggregate comparability and create stored score discontinuities.
+// ---------------------------------------------------------------------------
+
+func TestScore_UniformAcrossTypes(t *testing.T) {
+	// Same content, different types → same score.
+	d := model.TraceDecision{
+		Outcome:    "root cause is a race condition in the event buffer flush",
+		Confidence: 0.70,
+		Reasoning:  strPtr(repeat('r', 101)),
+	}
+
+	types := []string{"investigation", "security", "architecture", "planning", "code_review"}
+	scores := make(map[string]float32)
+	for _, dt := range types {
+		d.DecisionType = dt
+		scores[dt] = Score(d, false)
+	}
+
+	// All standard types get type credit (0.10), so all should be equal.
+	first := scores[types[0]]
+	for _, dt := range types[1:] {
+		assert.InDelta(t, first, scores[dt], 0.001,
+			"%s and %s should have the same score with identical content", types[0], dt)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // StandardDecisionTypes map completeness
 // ---------------------------------------------------------------------------
 
@@ -486,7 +515,7 @@ func TestComputeOutcomeScore_AllPartial(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Completeness profile tests
+// Completeness profile tests (profiles drive tips, not scoring)
 // ---------------------------------------------------------------------------
 
 func TestProfileFor_DefaultOverride(t *testing.T) {
@@ -514,270 +543,39 @@ func TestProfileFor_NilOverrides(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Profile-aware scoring: investigation (no alts, no evidence expected)
+// Type expectation tests
 // ---------------------------------------------------------------------------
 
-func TestScore_Investigation_ReasoningWeightRedistributed(t *testing.T) {
-	// Investigation profile: alts_expected=false, min_evidence=0.
-	// Reasoning weight = 0.25 + 0.20 + 0.15 = 0.60.
-	// Well-reasoned investigation should score high without alts/evidence.
-	d := model.TraceDecision{
-		DecisionType: "investigation",
-		Outcome:      "root cause is a race condition in the event buffer flush path",
-		Confidence:   0.70,
-		Reasoning:    strPtr(repeat('r', 101)),
-	}
-	// Confidence mid-range: 0.15
-	// Reasoning >100 chars @ 0.60 weight: 0.60
-	// Standard type: 0.10
-	// Outcome >20 chars: 0.05
-	// Total: 0.90
-	assert.InDelta(t, float32(0.90), Score(d, false), 0.001,
-		"investigation with good reasoning should reach 0.90 without alternatives or evidence")
-}
-
-func TestScore_Investigation_MaxWithPrecedent(t *testing.T) {
-	d := model.TraceDecision{
-		DecisionType: "investigation",
-		Outcome:      "root cause is a race condition in the event buffer flush path",
-		Confidence:   0.70,
-		Reasoning:    strPtr(repeat('r', 101)),
-	}
-	assert.InDelta(t, float32(1.0), Score(d, true), 0.001,
-		"investigation with reasoning + precedent should reach 1.0")
-}
-
-func TestScore_Investigation_EmptyStillScoresLow(t *testing.T) {
-	// An empty investigation should not get free credit — redistribution only
-	// helps when reasoning is actually provided.
-	d := model.TraceDecision{DecisionType: "investigation"}
-	assert.InDelta(t, float32(0.10), Score(d, false), 0.001,
-		"empty investigation should score only the type factor")
-}
-
-func TestScore_Investigation_HighConfidenceNoEvidence_Penalized(t *testing.T) {
-	// Investigation max_confidence_no_evidence = 0.90.
-	// Confidence 0.92 with no evidence should be capped at edge tier (0.10).
-	d := model.TraceDecision{
-		DecisionType: "investigation",
-		Confidence:   0.92,
-	}
-	// Confidence: 0.92 > 0.90 and no evidence → capped to 0.10
-	// Type: 0.10
-	assert.InDelta(t, float32(0.20), Score(d, false), 0.001)
-}
-
-func TestScore_Investigation_HighConfidenceWithEvidence_NoPenalty(t *testing.T) {
-	// Even though confidence > max_confidence_no_evidence, having evidence
-	// disables the penalty.
-	d := model.TraceDecision{
-		DecisionType: "investigation",
-		Confidence:   0.92,
-		Evidence: []model.TraceEvidence{
-			{SourceType: "tool_output", Content: "stack trace"},
-		},
-	}
-	// Confidence: 0.92 with evidence → mid-range 0.15 (no penalty)
-	// Evidence: investigation has min_evidence=0, so evidence factor skipped
-	// Type: 0.10
-	assert.InDelta(t, float32(0.25), Score(d, false), 0.001)
-}
-
-// ---------------------------------------------------------------------------
-// Profile-aware scoring: security (strict requirements)
-// ---------------------------------------------------------------------------
-
-func TestScore_Security_HighConfidenceNoEvidence_Penalized(t *testing.T) {
-	// Security max_confidence_no_evidence = 0.75.
-	// Confidence 0.80 with no evidence should be capped at edge tier.
-	d := model.TraceDecision{
-		DecisionType: "security",
-		Confidence:   0.80,
-		Reasoning:    strPtr(repeat('r', 101)),
-	}
-	// Confidence: 0.80 > 0.75 and no evidence → capped to 0.10
-	// Reasoning: 0.25 (base weight, alts and evidence both expected)
-	// Type: 0.10
-	// Total: 0.45
-	assert.InDelta(t, float32(0.45), Score(d, false), 0.001)
-}
-
-func TestScore_Security_HighConfidenceWithEvidence_NoPenalty(t *testing.T) {
-	d := model.TraceDecision{
-		DecisionType: "security",
-		Confidence:   0.80,
-		Reasoning:    strPtr(repeat('r', 101)),
-		Evidence: []model.TraceEvidence{
-			{SourceType: "document", Content: "OWASP guideline"},
-			{SourceType: "tool_output", Content: "security scan passed"},
-		},
-	}
-	// Confidence: 0.80 with evidence → mid-range 0.15
-	// Reasoning: 0.25
-	// Evidence: 2 items → 0.15
-	// Type: 0.10
-	// Total: 0.65
-	assert.InDelta(t, float32(0.65), Score(d, false), 0.001)
-}
-
-func TestScore_Security_MaxScore(t *testing.T) {
-	d := model.TraceDecision{
-		DecisionType: "security",
-		Outcome:      "enforced Argon2id for all API key hashing with 64MB memory cost",
-		Confidence:   0.75, // exactly at threshold, not above
-		Reasoning:    strPtr(repeat('r', 101)),
-		Alternatives: []model.TraceAlternative{
-			{Label: "selected", Selected: true},
-			{Label: "a", Selected: false, RejectionReason: strPtr("insufficient for production workloads")},
-			{Label: "b", Selected: false, RejectionReason: strPtr("deprecated algorithm with known weaknesses")},
-			{Label: "c", Selected: false, RejectionReason: strPtr("excessive memory cost for containerized deploys")},
-		},
-		Evidence: []model.TraceEvidence{
-			{SourceType: "document", Content: "OWASP password storage cheat sheet"},
-			{SourceType: "tool_output", Content: "benchmark: 250ms per hash at 64MB"},
-		},
-	}
-	// Confidence 0.75 > 0.05 && < 0.95 → mid-range 0.15.
-	// 0.75 is NOT > 0.75 (strict inequality), so no penalty.
-	assert.InDelta(t, float32(1.0), Score(d, true), 0.001,
-		"fully documented security decision with precedent should reach 1.0")
-}
-
-// ---------------------------------------------------------------------------
-// Profile-aware scoring: planning (no alts, no evidence expected)
-// ---------------------------------------------------------------------------
-
-func TestScore_Planning_ReasoningHeavy(t *testing.T) {
-	// Planning profile: same redistribution as investigation.
-	d := model.TraceDecision{
-		DecisionType: "planning",
-		Outcome:      "split migration into three phases to reduce blast radius",
-		Confidence:   0.60,
-		Reasoning:    strPtr(repeat('r', 101)),
-	}
-	// Reasoning weight = 0.25 + 0.20 + 0.15 = 0.60
-	// Confidence mid-range: 0.15
-	// Reasoning >100: 0.60
-	// Type: 0.10
-	// Outcome >20: 0.05
-	// Total: 0.90
-	assert.InDelta(t, float32(0.90), Score(d, false), 0.001)
-}
-
-// ---------------------------------------------------------------------------
-// Profile-aware scoring: code_review (alts expected, min_evidence=1)
-// ---------------------------------------------------------------------------
-
-func TestScore_CodeReview_MatchesDefaultForAltsAndEvidence(t *testing.T) {
-	// code_review profile: min_evidence=1, alts_expected=true.
-	// Same base weights as default (no redistribution).
-	d := model.TraceDecision{
-		DecisionType: "code_review",
-		Outcome:      "approved with minor nits on error handling",
-		Confidence:   0.70,
-		Reasoning:    strPtr(repeat('r', 101)),
-		Alternatives: []model.TraceAlternative{
-			{Label: "selected", Selected: true},
-			{Label: "a", Selected: false, RejectionReason: strPtr("refactor is too large for this PR cycle")},
-		},
-		Evidence: []model.TraceEvidence{
-			{SourceType: "tool_output", Content: "tests pass, coverage at 82%"},
-		},
-	}
-	// Confidence: 0.15, Reasoning: 0.25, Alts (1): 0.10, Evidence (1): 0.10, Type: 0.10, Outcome: 0.05
-	assert.InDelta(t, float32(0.75), Score(d, false), 0.001)
-}
-
-func TestScore_CodeReview_HighConfidenceNoEvidence_Penalized(t *testing.T) {
-	// code_review max_confidence_no_evidence = 0.85.
-	d := model.TraceDecision{
-		DecisionType: "code_review",
-		Confidence:   0.90,
-	}
-	// 0.90 > 0.85 and no evidence → capped to 0.10
-	// Type: 0.10
-	assert.InDelta(t, float32(0.20), Score(d, false), 0.001)
-}
-
-// ---------------------------------------------------------------------------
-// ScoreWithProfile: direct profile usage
-// ---------------------------------------------------------------------------
-
-func TestScoreWithProfile_CustomProfile(t *testing.T) {
-	// Custom profile: no alternatives, no evidence, no confidence penalty.
-	profile := CompletenessProfile{
-		MinEvidence:             0,
-		AlternativesExpected:    false,
-		MaxConfidenceNoEvidence: 1.0,
-	}
-	d := model.TraceDecision{
-		DecisionType: "custom_type",
-		Outcome:      "made a decision about something important",
-		Confidence:   0.60,
-		Reasoning:    strPtr(repeat('r', 101)),
-	}
-	// reasoningMax = 0.25 + 0.20 + 0.15 = 0.60
-	// Confidence: 0.15, Reasoning: 0.60, Type: 0.00 (custom), Outcome: 0.05
-	// Total: 0.80
-	assert.InDelta(t, float32(0.80), ScoreWithProfile(d, false, profile), 0.001)
-}
-
-// ---------------------------------------------------------------------------
-// Default profile preserves backward compatibility for non-profiled types
-// ---------------------------------------------------------------------------
-
-func TestScore_UnprofiledType_MatchesOldBehavior(t *testing.T) {
-	// "trade_off" has no specific profile → DefaultProfile.
-	// Behavior should be identical to the pre-profile scoring.
-	d := model.TraceDecision{
-		DecisionType: "trade_off",
-		Outcome:      "chose latency over throughput for user-facing endpoint",
-		Confidence:   0.70,
-		Reasoning:    strPtr(repeat('r', 101)),
-		Alternatives: []model.TraceAlternative{
-			{Label: "selected", Selected: true},
-			{Label: "a", Selected: false, RejectionReason: strPtr("throughput optimization hurts p99 latency")},
-			{Label: "b", Selected: false, RejectionReason: strPtr("hybrid approach adds too much complexity")},
-			{Label: "c", Selected: false, RejectionReason: strPtr("caching layer introduces consistency problems")},
-		},
-		Evidence: []model.TraceEvidence{
-			{SourceType: "tool_output", Content: "load test results"},
-			{SourceType: "document", Content: "SLA requirements doc"},
-		},
-	}
-	// All factors at max: 0.15 + 0.25 + 0.20 + 0.15 + 0.10 + 0.05 = 0.90
-	assert.InDelta(t, float32(0.90), Score(d, false), 0.001)
-	assert.InDelta(t, float32(1.0), Score(d, true), 0.001)
-}
-
-// ---------------------------------------------------------------------------
-// Reasoning tier scaling with redistributed weight
-// ---------------------------------------------------------------------------
-
-func TestScore_Investigation_ReasoningTiers(t *testing.T) {
-	// Investigation reasoningMax = 0.60.
-	// Verify each tier scales correctly.
+func TestExpectationFor_KnownTypes(t *testing.T) {
 	tests := []struct {
-		name string
-		len  int
-		want float32 // just reasoning contribution
+		decisionType string
+		wantMin      float64
 	}{
-		{"empty", 0, 0.0},
-		{"20 chars (not > 20)", 20, 0.0},
-		{"21 chars (> 20, 40% tier)", 21, 0.24}, // 0.60 * 0.40
-		{"51 chars (> 50, 80% tier)", 51, 0.48}, // 0.60 * 0.80
-		{"101 chars (> 100, full)", 101, 0.60},  // 0.60 * 1.00
+		{"investigation", 0.30},
+		{"planning", 0.30},
+		{"assessment", 0.30},
+		{"code_review", 0.45},
+		{"architecture", 0.55},
+		{"trade_off", 0.55},
+		{"security", 0.60},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := repeat('x', tt.len)
-			d := model.TraceDecision{
-				DecisionType: "investigation",
-				Reasoning:    &s,
-			}
-			// Score = reasoning + type(0.10). Subtract type to isolate reasoning.
-			got := Score(d, false) - 0.10
-			assert.InDelta(t, tt.want, got, 0.001)
+		t.Run(tt.decisionType, func(t *testing.T) {
+			e := ExpectationFor(tt.decisionType)
+			assert.InDelta(t, tt.wantMin, e.ExpectedMin, 0.001)
 		})
+	}
+}
+
+func TestExpectationFor_UnknownType(t *testing.T) {
+	e := ExpectationFor("custom_workflow")
+	assert.InDelta(t, 0.40, e.ExpectedMin, 0.001, "unknown types should get default expectation of 0.40")
+}
+
+func TestExpectationFor_AllStandardTypesHaveExpectations(t *testing.T) {
+	// Verify that every type with an expectation is a standard type.
+	for dt := range DefaultExpectations {
+		assert.True(t, StandardDecisionTypes[dt],
+			"type %q has an expectation but is not a standard decision type", dt)
 	}
 }

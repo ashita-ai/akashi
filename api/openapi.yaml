@@ -4324,6 +4324,11 @@ components:
           $ref: "#/components/schemas/EvidenceMetrics"
         conflicts:
           $ref: "#/components/schemas/TraceHealthConflictMetrics"
+        completeness_by_type:
+          type: array
+          items:
+            $ref: "#/components/schemas/DecisionTypeCompleteness"
+          description: Per-type completeness breakdown with health thresholds.
         gaps:
           type: array
           items:
@@ -4410,6 +4415,29 @@ components:
           type: number
           format: double
           description: Percentage of conflicts that have been resolved (0–100).
+
+    DecisionTypeCompleteness:
+      type: object
+      required: [decision_type, count, avg_completeness]
+      properties:
+        decision_type:
+          type: string
+          description: The decision type (e.g., "architecture", "security").
+        count:
+          type: integer
+          description: Number of decisions of this type.
+        avg_completeness:
+          type: number
+          format: double
+          description: Average completeness score for this type (0.0–1.0).
+        expected_min:
+          type: number
+          format: double
+          description: Per-type health threshold. Avg completeness below this indicates the type needs attention.
+        status:
+          type: string
+          enum: [healthy, needs_attention]
+          description: Whether this type meets its expected completeness threshold.
 
     ValidatePairRequest:
       type: object

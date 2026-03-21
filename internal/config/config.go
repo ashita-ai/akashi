@@ -114,9 +114,10 @@ type Config struct {
 	HooksAPIKey  string // Optional API key for non-localhost hook access (default: "" = localhost only).
 	AutoTrace    bool   // Auto-trace git commits from PostToolUse hooks (default: true).
 
-	// Completeness profile overrides.
+	// Completeness profile overrides (tip filtering, not scoring).
 	// JSON map of decision_type → profile overrides. Merges with built-in defaults
-	// in internal/service/quality. Example:
+	// in internal/service/quality. Controls which completeness tips are surfaced
+	// to agents for each decision type. Scoring is always uniform. Example:
 	//   {"security":{"min_evidence":3,"alternatives_expected":true,"max_confidence_no_evidence":0.70}}
 	CompletenessProfilesJSON string
 }

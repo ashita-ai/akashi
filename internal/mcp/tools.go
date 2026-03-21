@@ -908,11 +908,15 @@ func computeMissingFields(decisionType, outcome string, confidence float32, reas
 	profile := quality.ProfileFor(decisionType, nil)
 	var tips []string
 
-	// Reasoning: biggest single factor. Weight increases when alternatives
-	// or evidence weight is redistributed to reasoning by the profile.
+	// Reasoning: biggest single factor (up to 0.25). When alternatives and
+	// evidence tips are suppressed by the profile, reasoning becomes the
+	// primary way to improve the score — reflect that in the label.
 	reasoningPctLabel := "25"
-	if !profile.AlternativesExpected || profile.MinEvidence == 0 {
-		reasoningPctLabel = "up to 60"
+	if !profile.AlternativesExpected && profile.MinEvidence == 0 {
+		// Both alts (20%) and evidence (15%) are suppressed, so reasoning +
+		// outcome + type + confidence are the only levers. Reasoning is the
+		// biggest at 25%.
+		reasoningPctLabel = "25 — reasoning is the primary factor for this decision type"
 	}
 	if reasoning == nil || len(strings.TrimSpace(*reasoning)) <= 100 {
 		if reasoning == nil || len(strings.TrimSpace(*reasoning)) <= 20 {

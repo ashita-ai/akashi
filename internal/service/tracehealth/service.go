@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
@@ -173,12 +174,15 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 	}
 
 	// Per-type completeness breakdown: surfaces which decision types are
-	// weakest, ordered by avg completeness ascending.
+	// weakest, ordered by avg completeness ascending. Each row is enriched
+	// with the per-type health threshold so consumers can see which types
+	// fall below expectations without client-side knowledge of thresholds.
 	cbt, err := s.db.GetCompletenessByDecisionType(ctx, orgID, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("tracehealth: completeness by type: %w", err)
 	}
 	if len(cbt) > 0 {
+		enrichCompletenessWithExpectations(cbt)
 		m.CompletenessByType = cbt
 	}
 
@@ -189,6 +193,22 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 	m.Status = computeStatus(qs, cc.Open)
 
 	return m, nil
+}
+
+// enrichCompletenessWithExpectations annotates each row in completeness_by_type
+// with the per-type health threshold and status. This is a server-side
+// enrichment — the storage layer returns raw avg completeness, and this
+// function adds the type-aware health judgment.
+func enrichCompletenessWithExpectations(rows []storage.DecisionTypeCompleteness) {
+	for i := range rows {
+		exp := quality.ExpectationFor(rows[i].DecisionType)
+		rows[i].ExpectedMin = exp.ExpectedMin
+		if rows[i].AvgCompleteness >= exp.ExpectedMin {
+			rows[i].Status = "healthy"
+		} else {
+			rows[i].Status = "needs_attention"
+		}
+	}
 }
 
 // computeGaps identifies the most important areas for improvement.

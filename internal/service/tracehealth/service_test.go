@@ -357,6 +357,89 @@ func TestCompute_DecisionTypeDistributionError(t *testing.T) {
 	assert.Contains(t, err.Error(), "decision type distribution")
 }
 
+// ---------------------------------------------------------------------------
+// enrichCompletenessWithExpectations tests
+// ---------------------------------------------------------------------------
+
+func TestEnrichCompletenessWithExpectations_HealthyType(t *testing.T) {
+	rows := []storage.DecisionTypeCompleteness{
+		{DecisionType: "investigation", Count: 20, AvgCompleteness: 0.45},
+	}
+	enrichCompletenessWithExpectations(rows)
+
+	assert.InDelta(t, 0.30, rows[0].ExpectedMin, 0.001, "investigation expected_min should be 0.30")
+	assert.Equal(t, "healthy", rows[0].Status, "0.45 >= 0.30 should be healthy")
+}
+
+func TestEnrichCompletenessWithExpectations_NeedsAttention(t *testing.T) {
+	rows := []storage.DecisionTypeCompleteness{
+		{DecisionType: "security", Count: 10, AvgCompleteness: 0.35},
+	}
+	enrichCompletenessWithExpectations(rows)
+
+	assert.InDelta(t, 0.60, rows[0].ExpectedMin, 0.001, "security expected_min should be 0.60")
+	assert.Equal(t, "needs_attention", rows[0].Status, "0.35 < 0.60 should be needs_attention")
+}
+
+func TestEnrichCompletenessWithExpectations_ExactlyAtThreshold(t *testing.T) {
+	rows := []storage.DecisionTypeCompleteness{
+		{DecisionType: "architecture", Count: 15, AvgCompleteness: 0.55},
+	}
+	enrichCompletenessWithExpectations(rows)
+
+	assert.Equal(t, "healthy", rows[0].Status, "exactly at expected_min should be healthy")
+}
+
+func TestEnrichCompletenessWithExpectations_UnknownType(t *testing.T) {
+	rows := []storage.DecisionTypeCompleteness{
+		{DecisionType: "custom_workflow", Count: 5, AvgCompleteness: 0.50},
+	}
+	enrichCompletenessWithExpectations(rows)
+
+	assert.InDelta(t, 0.40, rows[0].ExpectedMin, 0.001, "unknown type should get default 0.40")
+	assert.Equal(t, "healthy", rows[0].Status, "0.50 >= 0.40 should be healthy")
+}
+
+func TestEnrichCompletenessWithExpectations_MultipleTypes(t *testing.T) {
+	rows := []storage.DecisionTypeCompleteness{
+		{DecisionType: "investigation", Count: 20, AvgCompleteness: 0.40},
+		{DecisionType: "security", Count: 10, AvgCompleteness: 0.35},
+		{DecisionType: "architecture", Count: 15, AvgCompleteness: 0.60},
+	}
+	enrichCompletenessWithExpectations(rows)
+
+	assert.Equal(t, "healthy", rows[0].Status, "investigation 0.40 >= 0.30")
+	assert.Equal(t, "needs_attention", rows[1].Status, "security 0.35 < 0.60")
+	assert.Equal(t, "healthy", rows[2].Status, "architecture 0.60 >= 0.55")
+}
+
+func TestCompute_CompletenessByTypeEnriched(t *testing.T) {
+	ms := &mockStore{
+		qualityStats: storage.DecisionQualityStats{
+			Total: 50, AvgCompleteness: 0.6, WithReasoning: 40,
+		},
+		evidenceStats:  storage.EvidenceCoverageStats{TotalDecisions: 50},
+		conflictCounts: storage.ConflictStatusCounts{},
+		outcomeSignals: storage.OutcomeSignalsSummary{DecisionsTotal: 50},
+		completenessByType: []storage.DecisionTypeCompleteness{
+			{DecisionType: "investigation", Count: 20, AvgCompleteness: 0.40},
+			{DecisionType: "security", Count: 10, AvgCompleteness: 0.35},
+		},
+	}
+	svc := New(ms)
+
+	m, err := svc.Compute(context.Background(), uuid.New(), nil, nil)
+	require.NoError(t, err)
+	require.Len(t, m.CompletenessByType, 2)
+
+	// Verify enrichment was applied.
+	assert.Equal(t, "healthy", m.CompletenessByType[0].Status)
+	assert.InDelta(t, 0.30, m.CompletenessByType[0].ExpectedMin, 0.001)
+
+	assert.Equal(t, "needs_attention", m.CompletenessByType[1].Status)
+	assert.InDelta(t, 0.60, m.CompletenessByType[1].ExpectedMin, 0.001)
+}
+
 func TestComputeGaps_OutcomeSignals_RevisedWithin48h(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.9,
