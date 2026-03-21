@@ -1,7 +1,7 @@
 .PHONY: all build build-local build-ui build-with-ui test lint fmt vet clean docker-up docker-down ci security tidy \
        dev-ui migrate-apply migrate-lint migrate-hash migrate-diff migrate-status migrate-validate \
        check-doc-consistency verify-restore reconcile-qdrant reconcile-qdrant-repair \
-       archive-events-dry-run archive-events verify-exit-criteria install-hooks coverage
+       archive-events-dry-run archive-events verify-exit-criteria install-hooks clean-hooks coverage
 
 BINARY := bin/akashi
 GO := go
@@ -120,5 +120,13 @@ archive-events: ## Archive and purge one retention window (requires explicit fla
 verify-exit-criteria: ## Evaluate durability exit criteria (JSON output; non-zero on failure)
 	python3 scripts/verify_exit_criteria.py
 
-install-hooks: ## Install IDE hooks for Claude Code and Cursor
+clean-hooks: ## Remove orphaned hook scripts from ~/.claude/hooks/
+	@for f in akashi-trace-reminder.sh akashi-precheck-gate.sh akashi-check-marker.sh; do \
+		if [ -f "$$HOME/.claude/hooks/$$f" ]; then \
+			rm "$$HOME/.claude/hooks/$$f"; \
+			echo "  [clean] removed ~/.claude/hooks/$$f"; \
+		fi; \
+	done
+
+install-hooks: clean-hooks ## Install IDE hooks for Claude Code and Cursor
 	@bash scripts/install-ide-hooks.sh

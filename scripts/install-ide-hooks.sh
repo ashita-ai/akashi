@@ -78,6 +78,14 @@ fi
 
 mkdir -p "$HOOKS_DST"
 
+# Remove orphaned hook scripts from previous installations.
+for stale in akashi-trace-reminder.sh akashi-precheck-gate.sh akashi-check-marker.sh; do
+    if [ -f "$HOOKS_DST/$stale" ]; then
+        rm "$HOOKS_DST/$stale"
+        echo "  [clean] removed $HOOKS_DST/$stale"
+    fi
+done
+
 # Copy the unified hook script.
 cp "$HOOKS_SRC/akashi-hook.sh" "$HOOKS_DST/akashi-hook.sh"
 chmod +x "$HOOKS_DST/akashi-hook.sh"
@@ -98,6 +106,27 @@ except FileNotFoundError:
 
 hooks = settings.setdefault("hooks", {})
 cmd = f"{hooks_dst}/akashi-hook.sh"
+
+# Remove stale hook registrations that pointed at the old per-script hooks.
+stale_scripts = {
+    f"{hooks_dst}/akashi-trace-reminder.sh",
+    f"{hooks_dst}/akashi-precheck-gate.sh",
+    f"{hooks_dst}/akashi-check-marker.sh",
+}
+cleaned = 0
+for event_type in list(hooks.keys()):
+    original = hooks[event_type]
+    filtered = []
+    for entry in original:
+        entry_hooks = [h for h in entry.get("hooks", []) if h.get("command") not in stale_scripts]
+        if entry_hooks:
+            entry["hooks"] = entry_hooks
+            filtered.append(entry)
+        else:
+            cleaned += 1
+    hooks[event_type] = filtered
+if cleaned:
+    print(f"  [claude] settings.json -> removed {cleaned} stale hook registration(s)")
 
 def has_command(hook_list, target_cmd):
     """Check if a hook list already contains our unified script."""
