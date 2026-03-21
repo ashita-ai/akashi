@@ -2912,9 +2912,9 @@ func TestComputeMissingFields_EvidenceTips(t *testing.T) {
 	reasoning := "A long enough reasoning string that exceeds one hundred characters so it doesn't trigger the reasoning tip in the output"
 	reason := "solid reason for rejection"
 	fullAlts := []model.TraceAlternative{
-		{Label: "alt1", Selected: false, RejectionReason: &reason},
-		{Label: "alt2", Selected: false, RejectionReason: &reason},
-		{Label: "alt3", Selected: false, RejectionReason: &reason},
+		{Label: "alt1", RejectionReason: &reason},
+		{Label: "alt2", RejectionReason: &reason},
+		{Label: "alt3", RejectionReason: &reason},
 	}
 
 	tests := []struct {

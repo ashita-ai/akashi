@@ -29,10 +29,10 @@ func TestScore_MaximumScore(t *testing.T) {
 		Confidence:   0.85,                                  // mid-range → 0.15
 		Reasoning:    strPtr(repeat('x', 101)),              // >100 chars → 0.25
 		Alternatives: []model.TraceAlternative{
-			{Label: "a", Selected: true},
-			{Label: "b", Selected: false, RejectionReason: strPtr("not viable because of latency overhead issues")},
-			{Label: "c", Selected: false, RejectionReason: strPtr("rejected due to licensing incompatibility")},
-			{Label: "d", Selected: false, RejectionReason: strPtr("does not meet security requirements for production")},
+			{Label: "a"},
+			{Label: "b", RejectionReason: strPtr("not viable because of latency overhead issues")},
+			{Label: "c", RejectionReason: strPtr("rejected due to licensing incompatibility")},
+			{Label: "d", RejectionReason: strPtr("does not meet security requirements for production")},
 		}, // >=3 substantive rejections → 0.20
 		Evidence: []model.TraceEvidence{
 			{SourceType: "document", Content: "evidence one"},
@@ -50,10 +50,10 @@ func TestScore_MaximumScoreWithoutPrecedent(t *testing.T) {
 		Confidence:   0.85,
 		Reasoning:    strPtr(repeat('x', 101)),
 		Alternatives: []model.TraceAlternative{
-			{Label: "a", Selected: true},
-			{Label: "b", Selected: false, RejectionReason: strPtr("not viable because of latency overhead issues")},
-			{Label: "c", Selected: false, RejectionReason: strPtr("rejected due to licensing incompatibility")},
-			{Label: "d", Selected: false, RejectionReason: strPtr("does not meet security requirements for production")},
+			{Label: "a"},
+			{Label: "b", RejectionReason: strPtr("not viable because of latency overhead issues")},
+			{Label: "c", RejectionReason: strPtr("rejected due to licensing incompatibility")},
+			{Label: "d", RejectionReason: strPtr("does not meet security requirements for production")},
 		},
 		Evidence: []model.TraceEvidence{
 			{SourceType: "document", Content: "evidence one"},
@@ -89,10 +89,10 @@ func TestScore_Factor3_SubstantiveRejections(t *testing.T) {
 	// Three non-selected alternatives with substantive rejection reasons (>20 chars).
 	d := model.TraceDecision{
 		Alternatives: []model.TraceAlternative{
-			{Label: "a", Selected: true},
-			{Label: "b", Selected: false, RejectionReason: strPtr("this option was rejected for good reason")},
-			{Label: "c", Selected: false, RejectionReason: strPtr("too slow for production usage patterns")},
-			{Label: "d", Selected: false, RejectionReason: strPtr("licensing issues prevent adoption here")},
+			{Label: "a"},
+			{Label: "b", RejectionReason: strPtr("this option was rejected for good reason")},
+			{Label: "c", RejectionReason: strPtr("too slow for production usage patterns")},
+			{Label: "d", RejectionReason: strPtr("licensing issues prevent adoption here")},
 		},
 	}
 	assert.InDelta(t, float32(0.20), Score(d, false), 0.001)
@@ -102,25 +102,25 @@ func TestScore_Factor3_AlternativesWithoutRejections_NoCredit(t *testing.T) {
 	// Three alternatives but no rejection reasons → no credit (anti-gaming).
 	d := model.TraceDecision{
 		Alternatives: []model.TraceAlternative{
-			{Label: "a", Selected: true},
-			{Label: "b", Selected: false},
-			{Label: "c", Selected: false},
+			{Label: "a"},
+			{Label: "b"},
+			{Label: "c"},
 		},
 	}
 	assert.InDelta(t, float32(0.0), Score(d, false), 0.001,
 		"alternatives without rejection reasons should not contribute to score")
 }
 
-func TestScore_Factor3_SelectedAlternativeIgnored(t *testing.T) {
-	// Selected alternatives are ignored — only non-selected with rejections count.
+func TestScore_Factor3_TwoSubstantiveRejections(t *testing.T) {
+	// Both alternatives have substantive rejection reasons (>20 chars).
 	d := model.TraceDecision{
 		Alternatives: []model.TraceAlternative{
-			{Label: "a", Selected: true, RejectionReason: strPtr("this was selected so rejection is irrelevant")},
-			{Label: "b", Selected: false, RejectionReason: strPtr("this option was rejected for good reason")},
+			{Label: "a", RejectionReason: strPtr("this option was rejected for reason one here")},
+			{Label: "b", RejectionReason: strPtr("this option was rejected for good reason")},
 		},
 	}
-	// 1 substantive rejection → 0.10
-	assert.InDelta(t, float32(0.10), Score(d, false), 0.001)
+	// 2 substantive rejections → 0.10 + 0.05 = 0.15
+	assert.InDelta(t, float32(0.15), Score(d, false), 0.001)
 }
 
 func TestScore_Factor4_TwoEvidence(t *testing.T) {
@@ -228,11 +228,10 @@ func TestScore_ReasoningWhitespaceOnly(t *testing.T) {
 
 func TestScore_SubstantiveRejectionCount(t *testing.T) {
 	makeAltsWithRejections := func(n int) []model.TraceAlternative {
-		alts := []model.TraceAlternative{{Label: "selected", Selected: true}}
+		alts := []model.TraceAlternative{{Label: "selected"}}
 		for i := range n {
 			alts = append(alts, model.TraceAlternative{
 				Label:           repeat('a'+byte(i%26), 1),
-				Selected:        false,
 				RejectionReason: strPtr("this alternative was rejected because of reason " + repeat('x', 10)),
 			})
 		}
@@ -265,7 +264,7 @@ func TestScore_SubstantiveRejectionCount(t *testing.T) {
 func TestScore_RejectionReasonTooShort(t *testing.T) {
 	d := model.TraceDecision{
 		Alternatives: []model.TraceAlternative{
-			{Label: "a", Selected: false, RejectionReason: strPtr("too short")}, // 9 chars, not > 20
+			{Label: "a", RejectionReason: strPtr("too short")}, // 9 chars, not > 20
 		},
 	}
 	// rejection too short → 0
@@ -275,7 +274,7 @@ func TestScore_RejectionReasonTooShort(t *testing.T) {
 func TestScore_RejectionReasonExactly20(t *testing.T) {
 	d := model.TraceDecision{
 		Alternatives: []model.TraceAlternative{
-			{Label: "a", Selected: false, RejectionReason: strPtr(repeat('x', 20))}, // 20 chars, not > 20
+			{Label: "a", RejectionReason: strPtr(repeat('x', 20))}, // 20 chars, not > 20
 		},
 	}
 	assert.InDelta(t, float32(0.0), Score(d, false), 0.001)
@@ -284,7 +283,7 @@ func TestScore_RejectionReasonExactly20(t *testing.T) {
 func TestScore_RejectionReasonExactly21(t *testing.T) {
 	d := model.TraceDecision{
 		Alternatives: []model.TraceAlternative{
-			{Label: "a", Selected: false, RejectionReason: strPtr(repeat('x', 21))}, // 21 chars, > 20 → credit
+			{Label: "a", RejectionReason: strPtr(repeat('x', 21))}, // 21 chars, > 20 → credit
 		},
 	}
 	// 1 substantive rejection → 0.10
@@ -294,7 +293,7 @@ func TestScore_RejectionReasonExactly21(t *testing.T) {
 func TestScore_RejectionReasonNil(t *testing.T) {
 	d := model.TraceDecision{
 		Alternatives: []model.TraceAlternative{
-			{Label: "a", Selected: false, RejectionReason: nil},
+			{Label: "a", RejectionReason: nil},
 		},
 	}
 	assert.InDelta(t, float32(0.0), Score(d, false), 0.001)
@@ -305,7 +304,7 @@ func TestScore_RejectionReasonWhitespace(t *testing.T) {
 	ws := strings.Repeat(" ", 25)
 	d := model.TraceDecision{
 		Alternatives: []model.TraceAlternative{
-			{Label: "a", Selected: false, RejectionReason: &ws},
+			{Label: "a", RejectionReason: &ws},
 		},
 	}
 	assert.InDelta(t, float32(0.0), Score(d, false), 0.001)
@@ -315,8 +314,8 @@ func TestScore_RejectionReasonMixed(t *testing.T) {
 	// Two non-selected alternatives: one without rejection, one with substantive rejection.
 	d := model.TraceDecision{
 		Alternatives: []model.TraceAlternative{
-			{Label: "a", Selected: false, RejectionReason: nil},
-			{Label: "b", Selected: false, RejectionReason: strPtr("this option was rejected for good reason")},
+			{Label: "a", RejectionReason: nil},
+			{Label: "b", RejectionReason: strPtr("this option was rejected for good reason")},
 		},
 	}
 	// 1 substantive rejection → 0.10

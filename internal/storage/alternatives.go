@@ -19,7 +19,7 @@ func (db *DB) CreateAlternativesBatch(ctx context.Context, alts []model.Alternat
 		return nil
 	}
 
-	columns := []string{"id", "decision_id", "label", "score", "selected", "rejection_reason", "metadata", "created_at"}
+	columns := []string{"id", "decision_id", "label", "rejection_reason", "metadata", "created_at"}
 	rows := make([][]any, len(alts))
 	for i, a := range alts {
 		id := a.ID
@@ -34,7 +34,7 @@ func (db *DB) CreateAlternativesBatch(ctx context.Context, alts []model.Alternat
 		if meta == nil {
 			meta = map[string]any{}
 		}
-		rows[i] = []any{id, a.DecisionID, a.Label, a.Score, a.Selected, a.RejectionReason, meta, createdAt}
+		rows[i] = []any{id, a.DecisionID, a.Label, a.RejectionReason, meta, createdAt}
 	}
 
 	_, err := db.pool.CopyFrom(ctx, pgx.Identifier{"alternatives"}, columns, pgx.CopyFromRows(rows))
@@ -54,11 +54,11 @@ func (db *DB) GetAlternativesByDecisions(ctx context.Context, decisionIDs []uuid
 	}
 
 	rows, err := db.pool.Query(ctx,
-		`SELECT a.id, a.decision_id, a.label, a.score, a.selected, a.rejection_reason, a.metadata, a.created_at
+		`SELECT a.id, a.decision_id, a.label, a.rejection_reason, a.metadata, a.created_at
 		 FROM alternatives a
 		 WHERE a.decision_id = ANY($1)
 		   AND a.decision_id IN (SELECT id FROM decisions WHERE org_id = $2)
-		 ORDER BY a.score DESC NULLS LAST`, decisionIDs, orgID,
+		 ORDER BY a.created_at`, decisionIDs, orgID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("storage: get alternatives batch: %w", err)
@@ -69,7 +69,7 @@ func (db *DB) GetAlternativesByDecisions(ctx context.Context, decisionIDs []uuid
 	for rows.Next() {
 		var a model.Alternative
 		if err := rows.Scan(
-			&a.ID, &a.DecisionID, &a.Label, &a.Score, &a.Selected,
+			&a.ID, &a.DecisionID, &a.Label,
 			&a.RejectionReason, &a.Metadata, &a.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan alternative: %w", err)
@@ -84,11 +84,11 @@ func (db *DB) GetAlternativesByDecisions(ctx context.Context, decisionIDs []uuid
 // since the alternatives table has no org_id column.
 func (db *DB) GetAlternativesByDecision(ctx context.Context, decisionID uuid.UUID, orgID uuid.UUID) ([]model.Alternative, error) {
 	rows, err := db.pool.Query(ctx,
-		`SELECT a.id, a.decision_id, a.label, a.score, a.selected, a.rejection_reason, a.metadata, a.created_at
+		`SELECT a.id, a.decision_id, a.label, a.rejection_reason, a.metadata, a.created_at
 		 FROM alternatives a
 		 WHERE a.decision_id = $1
 		   AND a.decision_id IN (SELECT id FROM decisions WHERE org_id = $2)
-		 ORDER BY a.score DESC NULLS LAST`, decisionID, orgID,
+		 ORDER BY a.created_at`, decisionID, orgID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("storage: get alternatives: %w", err)
@@ -99,7 +99,7 @@ func (db *DB) GetAlternativesByDecision(ctx context.Context, decisionID uuid.UUI
 	for rows.Next() {
 		var a model.Alternative
 		if err := rows.Scan(
-			&a.ID, &a.DecisionID, &a.Label, &a.Score, &a.Selected,
+			&a.ID, &a.DecisionID, &a.Label,
 			&a.RejectionReason, &a.Metadata, &a.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan alternative: %w", err)

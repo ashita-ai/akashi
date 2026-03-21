@@ -571,6 +571,15 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 	}
 
 	resultData, _ := json.MarshalIndent(result, "", "  ")
+
+	// Cache the compact check response so handleTrace can auto-inject it
+	// as evidence. Both handlers share the same MCP session.
+	if session := mcpserver.ClientSessionFromContext(ctx); session != nil {
+		if sid := session.SessionID(); sid != "" {
+			s.checkCache.Store(sid, string(resultData))
+		}
+	}
+
 	return &mcplib.CallToolResult{
 		Content: []mcplib.Content{
 			mcplib.TextContent{Type: "text", Text: string(resultData)},
@@ -828,6 +837,26 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		apiKeyID = claims.APIKeyID
 	}
 
+	// Auto-attach the preceding akashi_check response as evidence when the
+	// agent provided none. This injects the research step into the decision
+	// record automatically, rather than suggesting it after the fact.
+	if len(evidence) == 0 {
+		if session := mcpserver.ClientSessionFromContext(ctx); session != nil {
+			if sid := session.SessionID(); sid != "" {
+				if checkResult := s.checkCache.Drain(sid); checkResult != "" {
+					relevance := float32(0.6)
+					sourceURI := "akashi://check"
+					evidence = []model.TraceEvidence{{
+						SourceType:     "tool_output",
+						SourceURI:      &sourceURI,
+						Content:        checkResult,
+						RelevanceScore: &relevance,
+					}}
+				}
+			}
+		}
+	}
+
 	result, err := s.decisionSvc.Trace(ctx, orgID, decisions.TraceInput{
 		AgentID:      agentID,
 		SessionID:    sessionID,
@@ -931,7 +960,7 @@ func computeMissingFields(decisionType, outcome string, confidence float32, reas
 	if profile.AlternativesExpected {
 		substantive := 0
 		for _, alt := range alternatives {
-			if !alt.Selected && alt.RejectionReason != nil && len(strings.TrimSpace(*alt.RejectionReason)) > 20 {
+			if alt.RejectionReason != nil && len(strings.TrimSpace(*alt.RejectionReason)) > 20 {
 				substantive++
 			}
 		}
