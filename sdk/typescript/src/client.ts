@@ -61,6 +61,14 @@ function buildCheckBody(
 let inferredProjectCache: string | undefined;
 
 /**
+ * @internal Reset the cached project name. Exported for testing only —
+ * setting the cache to "" prevents inferProjectFromGit from running git.
+ */
+export function _resetProjectCache(value: string = ""): void {
+  inferredProjectCache = value;
+}
+
+/**
  * Resolve the canonical project name from git remote origin.
  * Runs `git remote get-url origin`, strips `.git`, and returns the basename.
  * Cached for the process lifetime. Returns "" on any failure.
