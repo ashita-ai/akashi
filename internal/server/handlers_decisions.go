@@ -193,6 +193,15 @@ func (h *Handlers) buildTraceAgentContext(
 		}
 	}
 
+	// Server-inferred model from X-Model header. Only set when the client
+	// hasn't already self-reported a model in the request body context, so
+	// explicit values always take priority (generated column: client > server > flat).
+	if _, hasClientModel := clientCtx["model"]; !hasClientModel {
+		if xm := r.Header.Get("X-Model"); xm != "" {
+			serverCtx["model"] = xm
+		}
+	}
+
 	// API key prefix for server-verified attribution.
 	if claims.APIKeyID != nil {
 		key, keyErr := h.db.GetAPIKeyByID(r.Context(), orgID, *claims.APIKeyID)

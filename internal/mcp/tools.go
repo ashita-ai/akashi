@@ -743,6 +743,17 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		clientCtx["project"] = r
 	}
 
+	// Server-inferred model from MCP tool name. Only set when the agent
+	// hasn't explicitly provided a model, so explicit values always win
+	// (generated column extraction: client > server > flat).
+	if _, hasClientModel := clientCtx["model"]; !hasClientModel {
+		if toolName, _ := serverCtx["tool"].(string); toolName != "" {
+			if inferred := inferModelFromToolName(toolName); inferred != "" {
+				serverCtx["model"] = inferred
+			}
+		}
+	}
+
 	// Operator from JWT claims: use the agent's display name if distinct from agent_id.
 	if claims != nil {
 		agent, agentErr := s.db.GetAgentByAgentID(ctx, orgID, claims.AgentID)
@@ -844,7 +855,8 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		Alternatives: alternatives,
 		Evidence:     evidence,
 	}, precedentRef != nil)
-	missing := computeMissingFields(decisionType, outcome, confidence, reasoningPtr, alternatives, evidence, precedentRef != nil)
+	hasModel := clientCtx["model"] != nil || serverCtx["model"] != nil
+	missing := computeMissingFields(decisionType, outcome, confidence, reasoningPtr, alternatives, evidence, precedentRef != nil, hasModel)
 
 	responseMap := map[string]any{
 		"run_id":             result.RunID,
@@ -882,8 +894,11 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 
 // computeMissingFields returns actionable tips for improving trace completeness.
 // Each tip tells the agent exactly what to add next time. Tips are ordered by
-// completeness score impact (highest first).
-func computeMissingFields(decisionType, outcome string, confidence float32, reasoning *string, alternatives []model.TraceAlternative, evidence []model.TraceEvidence, hasPrecedentRef bool) []string {
+// completeness score impact (highest first). hasModel is true when the model
+// field is either explicitly provided or successfully inferred from session
+// metadata / HTTP headers; tips are only surfaced when neither source produced
+// a value.
+func computeMissingFields(decisionType, outcome string, confidence float32, reasoning *string, alternatives []model.TraceAlternative, evidence []model.TraceEvidence, hasPrecedentRef, hasModel bool) []string {
 	var tips []string
 
 	// Reasoning: biggest single factor (up to 0.25).
@@ -932,12 +947,38 @@ func computeMissingFields(decisionType, outcome string, confidence float32, reas
 		tips = append(tips, "Set precedent_ref to the precedent_ref_hint from akashi_check to build the attribution graph (+10%)")
 	}
 
+	// Model attribution (not scored, but critical for analysis).
+	if !hasModel {
+		tips = append(tips, `Pass "model" (e.g. "claude-opus-4-6") so decisions can be correlated by model capability tier`)
+	}
+
 	// Substantive outcome (0.05).
 	if len(strings.TrimSpace(outcome)) <= 20 {
 		tips = append(tips, "Make outcome more specific (>20 chars) for +5%")
 	}
 
 	return tips
+}
+
+// knownToolModels maps MCP client tool names (lowercase) to model families.
+// Only includes tools that exclusively use a single vendor's models, so the
+// inference is defensible. Agents should still provide the exact model string
+// via the "model" parameter for full precision — this is a best-effort fallback
+// that prevents NULL when the agent forgets.
+var knownToolModels = map[string]string{
+	"claude-code":    "claude",
+	"claude-desktop": "claude",
+}
+
+// inferModelFromToolName returns a model family identifier for well-known MCP
+// tools that are tied to a single model vendor. Returns "" when the tool name
+// is unknown or ambiguous (e.g., "cursor" can use any model).
+func inferModelFromToolName(name string) string {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if m, ok := knownToolModels[lower]; ok {
+		return m
+	}
+	return ""
 }
 
 // mcpTraceHash computes a deterministic SHA-256 hash of the trace parameters
