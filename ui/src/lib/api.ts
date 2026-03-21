@@ -14,6 +14,7 @@ import type {
   Decision,
   DecisionConflict,
   DecisionFacets,
+  DecisionLineage,
   ConflictGroup,
   Grant,
   GrantsList,
@@ -338,6 +339,13 @@ export async function verifyDecisionIntegrity(
   id: string,
 ): Promise<{ decision_id: string; status: string; valid?: boolean; content_hash?: string; message?: string }> {
   return request(`/v1/verify/${id}`);
+}
+
+// Decision lineage
+export async function getDecisionLineage(
+  id: string,
+): Promise<DecisionLineage> {
+  return request<DecisionLineage>(`/v1/decisions/${id}/lineage`);
 }
 
 // Decision conflicts

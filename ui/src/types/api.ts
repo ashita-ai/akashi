@@ -432,6 +432,27 @@ export interface ConflictTrendPoint {
   resolved: number;
 }
 
+// Lineage
+export interface LineageEntry {
+  id: string;
+  run_id: string;
+  agent_id: string;
+  decision_type: string;
+  outcome: string;
+  confidence: number;
+  project?: string | null;
+  created_at: string;
+  valid_from: string;
+  valid_to?: string | null;
+}
+
+export interface DecisionLineage {
+  decision_id: string;
+  preceded_by: LineageEntry | null;
+  cited_by: LineageEntry[];
+  cited_by_has_more: boolean;
+}
+
 // Health
 export interface HealthResponse {
   status: string;

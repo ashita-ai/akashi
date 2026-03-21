@@ -417,11 +417,17 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 	}
 	topicLabel := TruncateOutcome(outcomeA, 120)
 
+	// Use earliest possible detection time for new group creation instead of now().
+	firstDetected := time.Now()
+	if c.EarliestPossibleAt != nil && !c.EarliestPossibleAt.IsZero() {
+		firstDetected = *c.EarliestPossibleAt
+	}
+
 	var id uuid.UUID
 	err := db.pool.QueryRow(ctx,
 		// CTE step 1: try to find an existing group for this agent pair + type.
 		// CTE step 2: update last_detected_at when reusing an existing group.
-		// CTE step 3: if none exists, create a new one.
+		// CTE step 3: if none exists, create a new one with decision-derived timestamp.
 		// CTE step 4: pick whichever returned a row (existing preferred).
 		`WITH existing AS (
 		     SELECT id FROM conflict_groups
@@ -434,8 +440,8 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 		     WHERE id = (SELECT id FROM existing) AND org_id = $3
 		 ), new_grp AS (
 		     INSERT INTO conflict_groups
-		         (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic)
-		     SELECT $3, $5, $6, $4, $8, $23
+		         (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic, first_detected_at)
+		     SELECT $3, $5, $6, $4, $8, $23, $25
 		     WHERE NOT EXISTS (SELECT 1 FROM existing)
 		     RETURNING id
 		 ), grp AS (
@@ -483,7 +489,7 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 		grpAgentA, grpAgentB, typeA, typeB, outcomeA, outcomeB,
 		topicSim, outcomeDiv, sig, method, c.Explanation,
 		c.Category, c.Severity, c.Relationship, c.ConfidenceWeight, c.TemporalDecay,
-		claimTextA, claimTextB, topicLabel, c.ReopensResolutionID,
+		claimTextA, claimTextB, topicLabel, c.ReopensResolutionID, firstDetected,
 	).Scan(&id)
 	if err != nil {
 		return uuid.Nil, err
@@ -592,6 +598,7 @@ func (db *DB) FindOrCreateTopicGroup(
 	decisionType string,
 	outcomeEmbedding pgvector.Vector,
 	topicLabel string,
+	earliestPossibleAt *time.Time,
 ) (uuid.UUID, error) {
 	// Normalize agent pair ordering.
 	if agentA > agentB {
@@ -653,13 +660,19 @@ func (db *DB) FindOrCreateTopicGroup(
 		return uuid.Nil, fmt.Errorf("storage: find topic group: %w", err)
 	}
 
-	// No matching group — create a new one.
+	// No matching group — create a new one. Use the earliest possible detection
+	// time (max of both decisions' transaction_time) instead of now() for
+	// first_detected_at so that backfills produce historically accurate timestamps.
+	firstDetected := time.Now()
+	if earliestPossibleAt != nil && !earliestPossibleAt.IsZero() {
+		firstDetected = *earliestPossibleAt
+	}
 	err = tx.QueryRow(ctx,
 		`INSERT INTO conflict_groups
-		     (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic)
-		 VALUES ($1, $2, $3, $4, $5, $6)
+		     (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic, first_detected_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 RETURNING id`,
-		orgID, agentA, agentB, string(conflictKind), decisionType, topicLabel,
+		orgID, agentA, agentB, string(conflictKind), decisionType, topicLabel, firstDetected,
 	).Scan(&groupID)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("storage: create topic group: %w", err)
