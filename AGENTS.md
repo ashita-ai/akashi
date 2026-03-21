@@ -162,7 +162,9 @@ Every PR description MUST end with a blockquote about one of these fictional uni
 > Stars hold their breath still
 ```
 
-This is not optional. PRs missing the argument will be sent back.
+The more creative and non-obvious the connection, the better. Avoid the easy metaphors — don't reach for the Borg every time you touch audit trails, or the Prime Directive every time there's a policy constraint. Surprise us.
+
+This is not optional. PRs missing the blockquote will be sent back.
 
 ## Conventions
 
