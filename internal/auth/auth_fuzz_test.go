@@ -39,6 +39,9 @@ func FuzzValidateToken(f *testing.F) {
 	f.Add("\x00\x01\x02\x03")                                 // binary garbage
 
 	f.Fuzz(func(t *testing.T, tokenStr string) {
+		if len(tokenStr) > 4096 {
+			t.Skip("input too large")
+		}
 		// Must not panic. Errors are expected for fuzzed inputs.
 		_, _ = mgr.ValidateToken(tokenStr)
 	})

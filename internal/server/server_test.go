@@ -124,7 +124,7 @@ func TestMain(m *testing.M) {
 	buf.Start(ctx)
 	testBuf = buf
 
-	mcpSrv := mcp.New(db, decisionSvc, nil, logger, "test")
+	mcpSrv := mcp.New(db, decisionSvc, nil, logger, "test", 0.85)
 	srv := server.New(server.ServerConfig{
 		DB:                  db,
 		JWTMgr:              jwtMgr,
@@ -137,7 +137,8 @@ func TestMain(m *testing.M) {
 		Version:             "test",
 		MaxRequestBodyBytes: 1 * 1024 * 1024,
 		// Explicitly enabled for tests that exercise GDPR delete behavior.
-		EnableDestructiveDelete: true,
+		EnableDestructiveDelete:     true,
+		HighConfidenceWarnThreshold: 0.85,
 	})
 
 	// Seed admin.
@@ -10810,4 +10811,71 @@ func TestHandleTrace_ExplicitModelTakesPriorityOverXModelHeader(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &result))
 	require.NotNil(t, result.Data.Model, "model should be populated")
 	assert.Equal(t, "gpt-4o", *result.Data.Model, "explicit model in body must take priority over X-Model header")
+}
+
+// ===========================================================================
+// High-confidence warning in trace response (#468)
+// ===========================================================================
+
+func TestHandleTrace_HighConfNoEvidence_ReturnsWarning(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken,
+		map[string]any{
+			"agent_id": "test-agent",
+			"decision": map[string]any{
+				"decision_type": "architecture",
+				"outcome":       "chose Postgres for high-confidence-warning test",
+				"confidence":    0.9,
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var body struct {
+		Data struct {
+			Warnings []string `json:"warnings"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	require.Len(t, body.Data.Warnings, 1, "expected one warning for high confidence without evidence")
+	assert.Contains(t, body.Data.Warnings[0], "high confidence")
+}
+
+func TestHandleTrace_HighConfWithEvidence_NoWarning(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken,
+		map[string]any{
+			"agent_id": "test-agent",
+			"decision": map[string]any{
+				"decision_type": "architecture",
+				"outcome":       "chose Postgres with evidence",
+				"confidence":    0.9,
+				"evidence": []map[string]any{
+					{"source_type": "document", "content": "benchmark results showing 10x throughput"},
+				},
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	body, _ := io.ReadAll(resp.Body)
+	assert.NotContains(t, string(body), "warnings", "no warning expected when evidence is present")
+}
+
+func TestHandleTrace_LowConfNoEvidence_NoWarning(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken,
+		map[string]any{
+			"agent_id": "test-agent",
+			"decision": map[string]any{
+				"decision_type": "implementation",
+				"outcome":       "low confidence decision",
+				"confidence":    0.7,
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	body, _ := io.ReadAll(resp.Body)
+	assert.NotContains(t, string(body), "warnings", "no warning expected for confidence below threshold")
 }

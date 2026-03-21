@@ -69,7 +69,7 @@ func setupAndRun(m *testing.M, tc *testutil.TestContainer) int {
 
 	embedder := embedding.NewNoopProvider(1024)
 	testSvc = decisions.New(testDB, embedder, nil, logger, nil)
-	testServer = New(testDB, testSvc, nil, logger, "test")
+	testServer = New(testDB, testSvc, nil, logger, "test", 0.85)
 
 	return m.Run()
 }
@@ -1433,7 +1433,7 @@ func TestMCPTraceHash_WithPrecedentRef(t *testing.T) {
 // ---------- New() constructor ----------
 
 func TestMCPServerNew(t *testing.T) {
-	s := New(testDB, testSvc, nil, testutil.TestLogger(), "test-version")
+	s := New(testDB, testSvc, nil, testutil.TestLogger(), "test-version", 0.85)
 	require.NotNil(t, s)
 	require.NotNil(t, s.MCPServer())
 	// Verify the server has the expected name by checking it's non-nil.
@@ -3077,6 +3077,67 @@ func TestHandleTrace_ExplicitModelSuppressesTip(t *testing.T) {
 // containsEvidence returns true if the tip string relates to evidence.
 func containsEvidence(tip string) bool {
 	return strings.Contains(tip, "evidence") || strings.Contains(tip, "verifiable")
+}
+
+// ---------- High-confidence warning (#468) ----------
+
+func TestHandleTrace_HighConfNoEvidence_Warning(t *testing.T) {
+	ctx := adminCtx()
+	agentID := "high-conf-warn-" + uuid.New().String()[:8]
+	_, _ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
+
+	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
+		"agent_id":      agentID,
+		"decision_type": "architecture",
+		"outcome":       "high confidence no evidence warning test",
+		"confidence":    0.9,
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	var resp struct {
+		Warnings []string `json:"warnings"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	require.Len(t, resp.Warnings, 1)
+	assert.Contains(t, resp.Warnings[0], "high confidence")
+}
+
+func TestHandleTrace_HighConfWithEvidence_NoWarning(t *testing.T) {
+	ctx := adminCtx()
+	agentID := "high-conf-ev-" + uuid.New().String()[:8]
+	_, _ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
+
+	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
+		"agent_id":      agentID,
+		"decision_type": "architecture",
+		"outcome":       "high confidence with evidence",
+		"confidence":    0.9,
+		"evidence":      `[{"source_type":"benchmark","content":"latency p99 < 50ms"}]`,
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	text := parseToolText(t, result)
+	assert.NotContains(t, text, "warnings")
+}
+
+func TestHandleTrace_BelowThreshold_NoWarning(t *testing.T) {
+	ctx := adminCtx()
+	agentID := "low-conf-" + uuid.New().String()[:8]
+	_, _ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
+
+	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
+		"agent_id":      agentID,
+		"decision_type": "implementation",
+		"outcome":       "low confidence decision",
+		"confidence":    0.6,
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	text := parseToolText(t, result)
+	assert.NotContains(t, text, "warnings")
 }
 
 // ===========================================================================

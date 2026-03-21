@@ -96,29 +96,33 @@ type ServerConfig struct {
 
 	// Conflict validator for the eval endpoint. Nil = eval returns 501.
 	ConflictValidator conflicts.Validator
+
+	// Trace quality warnings.
+	HighConfidenceWarnThreshold float32
 }
 
 // New creates a new HTTP server with all routes configured.
 func New(cfg ServerConfig) *Server {
 	h := NewHandlers(HandlersDeps{
-		DB:                      cfg.DB,
-		JWTMgr:                  cfg.JWTMgr,
-		DecisionSvc:             cfg.DecisionSvc,
-		Buffer:                  cfg.Buffer,
-		Broker:                  cfg.Broker,
-		Searcher:                cfg.Searcher,
-		GrantCache:              cfg.GrantCache,
-		Logger:                  cfg.Logger,
-		Version:                 cfg.Version,
-		MaxRequestBodyBytes:     cfg.MaxRequestBodyBytes,
-		OpenAPISpec:             cfg.OpenAPISpec,
-		EnableDestructiveDelete: cfg.EnableDestructiveDelete,
-		RetentionInterval:       cfg.RetentionInterval,
-		DecisionHooks:           cfg.DecisionHooks,
-		AutoTrace:               cfg.AutoTrace,
-		TrustProxy:              cfg.TrustProxy,
-		ResolutionRecorder:      cfg.ResolutionRecorder,
-		ConflictValidator:       cfg.ConflictValidator,
+		DB:                          cfg.DB,
+		JWTMgr:                      cfg.JWTMgr,
+		DecisionSvc:                 cfg.DecisionSvc,
+		Buffer:                      cfg.Buffer,
+		Broker:                      cfg.Broker,
+		Searcher:                    cfg.Searcher,
+		GrantCache:                  cfg.GrantCache,
+		Logger:                      cfg.Logger,
+		Version:                     cfg.Version,
+		MaxRequestBodyBytes:         cfg.MaxRequestBodyBytes,
+		OpenAPISpec:                 cfg.OpenAPISpec,
+		EnableDestructiveDelete:     cfg.EnableDestructiveDelete,
+		RetentionInterval:           cfg.RetentionInterval,
+		DecisionHooks:               cfg.DecisionHooks,
+		AutoTrace:                   cfg.AutoTrace,
+		TrustProxy:                  cfg.TrustProxy,
+		ResolutionRecorder:          cfg.ResolutionRecorder,
+		ConflictValidator:           cfg.ConflictValidator,
+		HighConfidenceWarnThreshold: cfg.HighConfidenceWarnThreshold,
 	})
 
 	mux := http.NewServeMux()
