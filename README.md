@@ -372,6 +372,22 @@ make test              # Full suite (requires Docker)
 go test -race ./...    # Go tests with race detection
 ```
 
+## IDE hooks (optional)
+
+If you develop with Claude Code or Cursor, Akashi can enforce the check-before/trace-after workflow automatically via IDE hooks:
+
+- **Session start** — injects the 5 most recent decisions and open conflicts into your agent's context.
+- **Edit gate** — blocks file edits until `akashi_check` has been called (2-hour TTL).
+- **Commit trace** — auto-records each `git commit` as a decision (or reminds you to call `akashi_trace` manually).
+
+```bash
+make install-hooks   # copies unified hook script, registers in settings.json
+```
+
+This is idempotent and safe to re-run. It also cleans up stale hook scripts from earlier installations. If the Akashi server is unreachable, hooks degrade gracefully — edits fall back to a local marker file, and commit tracing prints a reminder instead of blocking.
+
+See [IDE Hooks](docs/hooks.md) for endpoint details, Cursor setup, and configuration variables (`AKASHI_HOOKS_ENABLED`, `AKASHI_AUTO_TRACE`, `AKASHI_HOOKS_API_KEY`).
+
 ## Requirements
 
 - Go 1.26+

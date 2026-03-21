@@ -11,21 +11,23 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 // Metrics is the top-level trace health response.
 type Metrics struct {
-	Status                   string                          `json:"status"` // healthy, needs_attention, insufficient_data
-	Completeness             *CompletenessMetrics            `json:"completeness"`
-	Evidence                 *EvidenceMetrics                `json:"evidence"`
-	Conflicts                *ConflictMetrics                `json:"conflicts,omitempty"`
-	OutcomeSignals           *storage.OutcomeSignalsSummary  `json:"outcome_signals,omitempty"`
-	ConfidenceDistribution   *storage.ConfidenceDistribution `json:"confidence_distribution,omitempty"`
-	HighConfOutcomeSignals   *storage.HighConfOutcomeSignals `json:"high_conf_outcome_signals,omitempty"`
-	ConfidenceCalibration    *storage.ConfidenceCalibration  `json:"confidence_calibration,omitempty"`
-	DecisionTypeDistribution []storage.DecisionTypeCount     `json:"decision_type_distribution,omitempty"`
-	Gaps                     []string                        `json:"gaps"`
+	Status                   string                             `json:"status"` // healthy, needs_attention, insufficient_data
+	Completeness             *CompletenessMetrics               `json:"completeness"`
+	Evidence                 *EvidenceMetrics                   `json:"evidence"`
+	Conflicts                *ConflictMetrics                   `json:"conflicts,omitempty"`
+	OutcomeSignals           *storage.OutcomeSignalsSummary     `json:"outcome_signals,omitempty"`
+	ConfidenceDistribution   *storage.ConfidenceDistribution    `json:"confidence_distribution,omitempty"`
+	HighConfOutcomeSignals   *storage.HighConfOutcomeSignals    `json:"high_conf_outcome_signals,omitempty"`
+	ConfidenceCalibration    *storage.ConfidenceCalibration     `json:"confidence_calibration,omitempty"`
+	DecisionTypeDistribution []storage.DecisionTypeCount        `json:"decision_type_distribution,omitempty"`
+	CompletenessByType       []storage.DecisionTypeCompleteness `json:"completeness_by_type,omitempty"`
+	Gaps                     []string                           `json:"gaps"`
 }
 
 // CompletenessMetrics tracks decision quality and reasoning coverage.
@@ -191,6 +193,19 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 		m.DecisionTypeDistribution = dtd
 	}
 
+	// Per-type completeness breakdown: surfaces which decision types are
+	// weakest, ordered by avg completeness ascending. Each row is enriched
+	// with the per-type health threshold so consumers can see which types
+	// fall below expectations without client-side knowledge of thresholds.
+	cbt, err := s.db.GetCompletenessByDecisionType(ctx, orgID, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("tracehealth: completeness by type: %w", err)
+	}
+	if len(cbt) > 0 {
+		enrichCompletenessWithExpectations(cbt)
+		m.CompletenessByType = cbt
+	}
+
 	// Gap detection: rule-based, max 3 gaps, ordered by severity.
 	m.Gaps = computeGaps(qs, cc.Total, cc.Open, os, cd, cal)
 
@@ -198,6 +213,22 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 	m.Status = computeStatus(qs, cc.Open)
 
 	return m, nil
+}
+
+// enrichCompletenessWithExpectations annotates each row in completeness_by_type
+// with the per-type health threshold and status. This is a server-side
+// enrichment — the storage layer returns raw avg completeness, and this
+// function adds the type-aware health judgment.
+func enrichCompletenessWithExpectations(rows []storage.DecisionTypeCompleteness) {
+	for i := range rows {
+		exp := quality.ExpectationFor(rows[i].DecisionType)
+		rows[i].ExpectedMin = exp.ExpectedMin
+		if rows[i].AvgCompleteness >= exp.ExpectedMin {
+			rows[i].Status = "healthy"
+		} else {
+			rows[i].Status = "needs_attention"
+		}
+	}
 }
 
 // computeGaps identifies the most important areas for improvement.

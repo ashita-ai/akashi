@@ -12,6 +12,7 @@ export interface Decision {
   completeness_score: number;
   outcome_score?: number | null;
   precedent_ref?: string;
+  precedent_reason?: string;
   supersedes_id?: string;
   content_hash?: string;
   tags?: string[];
@@ -44,6 +45,7 @@ export interface Evidence {
   source_uri?: string;
   content: string;
   relevance_score?: number;
+  metrics?: Record<string, number>;
   metadata: Record<string, unknown>;
   created_at: string;
 }
@@ -155,6 +157,8 @@ export interface TraceRequest {
   reasoning?: string;
   alternatives?: TraceAlternative[];
   evidence?: TraceEvidence[];
+  precedentRef?: string;
+  precedentReason?: string;
   metadata?: Record<string, unknown>;
   context?: Record<string, unknown>;
 }
@@ -171,6 +175,7 @@ export interface TraceEvidence {
   source_uri?: string;
   content: string;
   relevance_score?: number;
+  metrics?: Record<string, number>;
 }
 
 export interface QueryFilters {

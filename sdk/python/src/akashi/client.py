@@ -92,6 +92,10 @@ def _build_trace_body(agent_id: str, request: TraceRequest) -> dict[str, Any]:
         decision["evidence"] = [e.model_dump(exclude_none=True) for e in request.evidence]
 
     body: dict[str, Any] = {"agent_id": agent_id, "decision": decision}
+    if request.precedent_ref is not None:
+        body["precedent_ref"] = str(request.precedent_ref)
+    if request.precedent_reason is not None:
+        body["precedent_reason"] = request.precedent_reason
     if request.metadata:
         body["metadata"] = request.metadata
     if request.context:

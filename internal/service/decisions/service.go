@@ -132,14 +132,15 @@ func New(db storage.Store, embedder embedding.Provider, searcher search.Searcher
 
 // TraceInput contains the data needed to record a decision.
 type TraceInput struct {
-	AgentID      string
-	TraceID      *string
-	Metadata     map[string]any
-	Decision     model.TraceDecision
-	PrecedentRef *uuid.UUID
-	SessionID    *uuid.UUID     // MCP session or X-Akashi-Session header.
-	AgentContext map[string]any // Merged server-extracted + client-supplied context.
-	APIKeyID     *uuid.UUID     // Managed API key that authenticated this request.
+	AgentID         string
+	TraceID         *string
+	Metadata        map[string]any
+	Decision        model.TraceDecision
+	PrecedentRef    *uuid.UUID
+	PrecedentReason *string
+	SessionID       *uuid.UUID     // MCP session or X-Akashi-Session header.
+	AgentContext    map[string]any // Merged server-extracted + client-supplied context.
+	APIKeyID        *uuid.UUID     // Managed API key that authenticated this request.
 
 	// AuditMeta, when non-nil, causes the trace to include a mutation audit
 	// record inside the same transaction. This closes the gap where mutations
@@ -334,6 +335,7 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 				SourceURI:      e.SourceURI,
 				Content:        e.Content,
 				RelevanceScore: e.RelevanceScore,
+				Metrics:        e.Metrics,
 				Embedding:      embs[i],
 			}
 		}
@@ -371,6 +373,7 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 			OutcomeEmbedding:  outcomeEmb,
 			CompletenessScore: qualityScore,
 			PrecedentRef:      input.PrecedentRef,
+			PrecedentReason:   input.PrecedentReason,
 			APIKeyID:          input.APIKeyID,
 		},
 		Alternatives: alts,

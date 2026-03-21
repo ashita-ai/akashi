@@ -472,6 +472,43 @@ func (l *LiteDB) GetHighConfOutcomeSignals(ctx context.Context, orgID uuid.UUID,
 	return s, nil
 }
 
+// GetCompletenessByDecisionType returns per-type average completeness for current
+// decisions, ordered by average completeness ascending.
+func (l *LiteDB) GetCompletenessByDecisionType(ctx context.Context, orgID uuid.UUID, from, to *time.Time) ([]storage.DecisionTypeCompleteness, error) {
+	q := `SELECT decision_type, COUNT(*), COALESCE(AVG(completeness_score), 0)
+		 FROM decisions
+		 WHERE org_id = ? AND valid_to IS NULL`
+	args := []any{uuidStr(orgID)}
+	if from != nil {
+		q += " AND valid_from >= ?"
+		args = append(args, from.UTC().Format("2006-01-02T15:04:05.999999999Z"))
+	}
+	if to != nil {
+		q += " AND valid_from < ?"
+		args = append(args, to.UTC().Format("2006-01-02T15:04:05.999999999Z"))
+	}
+	q += " GROUP BY decision_type ORDER BY COALESCE(AVG(completeness_score), 0) ASC"
+
+	rows, err := l.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: completeness by decision type: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var result []storage.DecisionTypeCompleteness
+	for rows.Next() {
+		var dtc storage.DecisionTypeCompleteness
+		if err := rows.Scan(&dtc.DecisionType, &dtc.Count, &dtc.AvgCompleteness); err != nil {
+			return nil, fmt.Errorf("sqlite: scan completeness by type: %w", err)
+		}
+		result = append(result, dtc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: iterate completeness by type: %w", err)
+	}
+	return result, nil
+}
+
 // GetDecisionTypeDistribution returns the count of current decisions grouped by
 // decision_type, ordered by count descending.
 func (l *LiteDB) GetDecisionTypeDistribution(ctx context.Context, orgID uuid.UUID) ([]storage.DecisionTypeCount, error) {
