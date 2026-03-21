@@ -422,6 +422,35 @@ func TestScore_ThreeFactorsCombined(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Uniform scoring: score is independent of decision type.
+// This is a critical invariant — changing the formula per type would break
+// aggregate comparability and create stored score discontinuities.
+// ---------------------------------------------------------------------------
+
+func TestScore_UniformAcrossTypes(t *testing.T) {
+	// Same content, different types → same score.
+	d := model.TraceDecision{
+		Outcome:    "root cause is a race condition in the event buffer flush",
+		Confidence: 0.70,
+		Reasoning:  strPtr(repeat('r', 101)),
+	}
+
+	types := []string{"investigation", "security", "architecture", "planning", "code_review"}
+	scores := make(map[string]float32)
+	for _, dt := range types {
+		d.DecisionType = dt
+		scores[dt] = Score(d, false)
+	}
+
+	// All standard types get type credit (0.10), so all should be equal.
+	first := scores[types[0]]
+	for _, dt := range types[1:] {
+		assert.InDelta(t, first, scores[dt], 0.001,
+			"%s and %s should have the same score with identical content", types[0], dt)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // StandardDecisionTypes map completeness
 // ---------------------------------------------------------------------------
 
@@ -482,4 +511,70 @@ func TestComputeOutcomeScore_AllPartial(t *testing.T) {
 	score := ComputeOutcomeScore(s)
 	assert.NotNil(t, score)
 	assert.InDelta(t, float32(0.5), *score, 0.001)
+}
+
+// ---------------------------------------------------------------------------
+// Completeness profile tests (profiles drive tips, not scoring)
+// ---------------------------------------------------------------------------
+
+func TestProfileFor_DefaultOverride(t *testing.T) {
+	overrides := map[string]CompletenessProfile{
+		"architecture": {MinEvidence: 3, AlternativesExpected: true, MaxConfidenceNoEvidence: 0.70},
+	}
+	p := ProfileFor("architecture", overrides)
+	assert.Equal(t, 3, p.MinEvidence, "override should take precedence")
+
+	// Non-overridden type falls to built-in default.
+	p2 := ProfileFor("investigation", overrides)
+	assert.Equal(t, 0, p2.MinEvidence, "investigation should use built-in default")
+
+	// Unknown type falls to DefaultProfile.
+	p3 := ProfileFor("custom_thing", overrides)
+	assert.Equal(t, DefaultProfile, p3)
+}
+
+func TestProfileFor_NilOverrides(t *testing.T) {
+	p := ProfileFor("security", nil)
+	assert.Equal(t, DefaultProfiles["security"], p)
+
+	p2 := ProfileFor("unknown_type", nil)
+	assert.Equal(t, DefaultProfile, p2)
+}
+
+// ---------------------------------------------------------------------------
+// Type expectation tests
+// ---------------------------------------------------------------------------
+
+func TestExpectationFor_KnownTypes(t *testing.T) {
+	tests := []struct {
+		decisionType string
+		wantMin      float64
+	}{
+		{"investigation", 0.30},
+		{"planning", 0.30},
+		{"assessment", 0.30},
+		{"code_review", 0.45},
+		{"architecture", 0.55},
+		{"trade_off", 0.55},
+		{"security", 0.60},
+	}
+	for _, tt := range tests {
+		t.Run(tt.decisionType, func(t *testing.T) {
+			e := ExpectationFor(tt.decisionType)
+			assert.InDelta(t, tt.wantMin, e.ExpectedMin, 0.001)
+		})
+	}
+}
+
+func TestExpectationFor_UnknownType(t *testing.T) {
+	e := ExpectationFor("custom_workflow")
+	assert.InDelta(t, 0.40, e.ExpectedMin, 0.001, "unknown types should get default expectation of 0.40")
+}
+
+func TestExpectationFor_AllStandardTypesHaveExpectations(t *testing.T) {
+	// Verify that every type with an expectation is a standard type.
+	for dt := range DefaultExpectations {
+		assert.True(t, StandardDecisionTypes[dt],
+			"type %q has an expectation but is not a standard decision type", dt)
+	}
 }

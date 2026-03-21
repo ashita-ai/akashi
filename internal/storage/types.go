@@ -290,6 +290,17 @@ type DecisionTypeCount struct {
 	Count        int    `json:"count"`
 }
 
+// DecisionTypeCompleteness holds per-type aggregate completeness metrics with
+// health threshold enrichment. ExpectedMin and Status are populated server-side
+// by the tracehealth service, not by the storage query.
+type DecisionTypeCompleteness struct {
+	DecisionType    string  `json:"decision_type"`
+	Count           int     `json:"count"`
+	AvgCompleteness float64 `json:"avg_completeness"`
+	ExpectedMin     float64 `json:"expected_min,omitempty"` // per-type health threshold
+	Status          string  `json:"status,omitempty"`       // "healthy" or "needs_attention"
+}
+
 // ---------------------------------------------------------------------------
 // Notification constants (originally in notify.go)
 // ---------------------------------------------------------------------------
