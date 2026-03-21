@@ -2788,6 +2788,12 @@ components:
         precedent_ref:
           type: string
           format: uuid
+        precedent_reason:
+          type: string
+          maxLength: 4096
+          description: >
+            Brief explanation of why the cited precedent_ref applies to this decision.
+            Only meaningful when precedent_ref is set; ignored otherwise.
         valid_from:
           type: string
           format: date-time
@@ -3394,6 +3400,12 @@ components:
         precedent_ref:
           type: string
           format: uuid
+        precedent_reason:
+          type: string
+          maxLength: 4096
+          description: >
+            Brief explanation of why the cited precedent_ref applies to this decision.
+            Requires precedent_ref to be set; rejected with 400 otherwise.
         metadata:
           type: object
           additionalProperties: true

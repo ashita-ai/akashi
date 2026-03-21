@@ -15,9 +15,7 @@ import (
 // ordered chronologically (oldest first) to reconstruct the session timeline.
 func (db *DB) GetSessionDecisions(ctx context.Context, orgID, sessionID uuid.UUID) ([]model.Decision, error) {
 	rows, err := db.pool.Query(ctx,
-		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id, tool, model, project
+		`SELECT `+decisionCols+`
 		 FROM decisions
 		 WHERE org_id = $1 AND session_id = $2 AND valid_to IS NULL
 		 ORDER BY valid_from ASC`,

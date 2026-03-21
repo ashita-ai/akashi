@@ -25,6 +25,7 @@ class Decision(BaseModel):
     completeness_score: float = 0.0
     outcome_score: float | None = None
     precedent_ref: UUID | None = None
+    precedent_reason: str | None = None
     supersedes_id: UUID | None = None
     content_hash: str = ""
     tags: list[str] = Field(default_factory=list)
@@ -180,6 +181,8 @@ class TraceRequest(BaseModel):
     reasoning: str | None = None
     alternatives: list[TraceAlternative] = Field(default_factory=list)
     evidence: list[TraceEvidence] = Field(default_factory=list)
+    precedent_ref: UUID | None = None
+    precedent_reason: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     context: dict[str, Any] = Field(default_factory=dict)
 
