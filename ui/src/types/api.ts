@@ -86,8 +86,6 @@ export interface Alternative {
   id: string;
   decision_id: string;
   label: string;
-  score: number | null;
-  selected: boolean;
   rejection_reason: string | null;
   metadata: Record<string, unknown> | null;
   created_at: string;

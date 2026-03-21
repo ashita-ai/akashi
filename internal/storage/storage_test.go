@@ -193,10 +193,9 @@ func TestDecisionWithAlternativesAndEvidence(t *testing.T) {
 	require.NoError(t, err)
 
 	// Add alternatives.
-	score1, score2 := float32(0.92), float32(0.45)
 	err = testDB.CreateAlternativesBatch(ctx, []model.Alternative{
-		{DecisionID: d.ID, Label: "Route to specialist", Score: &score1, Selected: true},
-		{DecisionID: d.ID, Label: "Route to general", Score: &score2, Selected: false},
+		{DecisionID: d.ID, Label: "Route to specialist"},
+		{DecisionID: d.ID, Label: "Route to general"},
 	})
 	require.NoError(t, err)
 
@@ -1538,8 +1537,6 @@ func TestCreateTraceTx(t *testing.T) {
 	agentID := "tracetx-" + suffix
 
 	reasoning := "test reasoning for trace tx"
-	score1 := float32(0.9)
-	score2 := float32(0.3)
 	rel := float32(0.85)
 
 	run, decision, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
@@ -1554,8 +1551,8 @@ func TestCreateTraceTx(t *testing.T) {
 			Metadata:     map[string]any{"key": "val"},
 		},
 		Alternatives: []model.Alternative{
-			{Label: "Option A", Score: &score1, Selected: true},
-			{Label: "Option B", Score: &score2, Selected: false},
+			{Label: "Option A"},
+			{Label: "Option B"},
 		},
 		Evidence: []model.Evidence{
 			{
@@ -1914,9 +1911,8 @@ func TestGetDecision_WithOpts(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	score := float32(0.95)
 	err = testDB.CreateAlternativesBatch(ctx, []model.Alternative{
-		{DecisionID: d.ID, Label: "Selected", Score: &score, Selected: true},
+		{DecisionID: d.ID, Label: "Selected"},
 	})
 	require.NoError(t, err)
 
@@ -2486,9 +2482,8 @@ func TestQueryDecisions_WithInclude(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	score := float32(0.77)
 	err = testDB.CreateAlternativesBatch(ctx, []model.Alternative{
-		{DecisionID: d.ID, Label: "Alt1", Score: &score, Selected: true},
+		{DecisionID: d.ID, Label: "Alt1"},
 	})
 	require.NoError(t, err)
 
@@ -4611,9 +4606,8 @@ func TestEraseDecision(t *testing.T) {
 	require.NoError(t, err)
 
 	// Add alternatives and evidence for erasure.
-	score := float32(0.8)
 	err = testDB.CreateAlternativesBatch(ctx, []model.Alternative{
-		{DecisionID: d.ID, Label: "Alt 1", Score: &score, Selected: false},
+		{DecisionID: d.ID, Label: "Alt 1"},
 	})
 	require.NoError(t, err)
 
@@ -6345,9 +6339,8 @@ func TestBatchDeleteDecisions_WithData(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		score := float32(0.7)
 		err = testDB.CreateAlternativesBatch(ctx, []model.Alternative{
-			{DecisionID: d.ID, Label: "alt", Score: &score, Selected: true},
+			{DecisionID: d.ID, Label: "alt"},
 		})
 		require.NoError(t, err)
 
@@ -7321,11 +7314,9 @@ func TestCreateAlternativesBatch_NilMetadata(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scoreA := float32(0.7)
-	scoreB := float32(0.9)
 	alts := []model.Alternative{
-		{DecisionID: d.ID, Label: "alt A", Score: &scoreA, Selected: false, Metadata: nil},
-		{DecisionID: d.ID, Label: "alt B", Score: &scoreB, Selected: true, Metadata: map[string]any{"note": "best"}},
+		{DecisionID: d.ID, Label: "alt A", Metadata: nil},
+		{DecisionID: d.ID, Label: "alt B", Metadata: map[string]any{"note": "best"}},
 	}
 	err = testDB.CreateAlternativesBatch(ctx, alts)
 	require.NoError(t, err)
@@ -7808,7 +7799,7 @@ func TestDeleteAgentData_WithAllRelatedData(t *testing.T) {
 	require.NoError(t, err)
 
 	err = testDB.CreateAlternativesBatch(ctx, []model.Alternative{
-		{DecisionID: dec.ID, Label: "alternative A", Selected: false},
+		{DecisionID: dec.ID, Label: "alternative A"},
 	})
 	require.NoError(t, err)
 
@@ -8334,8 +8325,8 @@ func TestCreateTraceTx_WithAlternativesAndEvidence(t *testing.T) {
 			Metadata:     map[string]any{},
 		},
 		Alternatives: []model.Alternative{
-			{Label: "MySQL", Score: ptrFloat32(0.6), Selected: false},
-			{Label: "Postgres", Score: ptrFloat32(0.95), Selected: true},
+			{Label: "MySQL"},
+			{Label: "Postgres"},
 		},
 		Evidence: []model.Evidence{
 			{SourceType: model.SourceAPIResponse, Content: "benchmarks show...", Metadata: map[string]any{}},
@@ -9335,8 +9326,8 @@ func TestQueryDecisions_IncludeBothAlternativesAndEvidence(t *testing.T) {
 			Metadata: map[string]any{},
 		},
 		Alternatives: []model.Alternative{
-			{Label: "Option A", Score: ptrFloat32(0.6), Selected: false},
-			{Label: "Option B", Score: ptrFloat32(0.8), Selected: true},
+			{Label: "Option A"},
+			{Label: "Option B"},
 		},
 		Evidence: []model.Evidence{
 			{SourceType: model.SourceAPIResponse, Content: "benchmark data", Metadata: map[string]any{}},
@@ -10127,8 +10118,4 @@ func TestListRunsByAgent_LimitClamping(t *testing.T) {
 
 func strPtr(s string) *string {
 	return &s
-}
-
-func ptrFloat32(f float32) *float32 {
-	return &f
 }

@@ -67,7 +67,7 @@ func Score(d model.TraceDecision, hasPrecedentRef bool) float32 {
 	}
 
 	// Factor 3: Alternatives with substantive rejection reasons (uncalibrated: up to 0.20).
-	// Only non-selected alternatives with rejection reasons > 20 chars count.
+	// Alternatives with rejection reasons > 20 chars count.
 	// This prevents gaming by providing empty alternatives with no explanation.
 	substantiveAlts := countSubstantiveRejections(d.Alternatives)
 	switch {
@@ -105,15 +105,11 @@ func Score(d model.TraceDecision, hasPrecedentRef bool) float32 {
 	return score
 }
 
-// countSubstantiveRejections counts non-selected alternatives that have a
-// rejection reason longer than 20 characters (after trimming). Selected
-// alternatives are excluded — they don't need rejection reasons.
+// countSubstantiveRejections counts alternatives that have a
+// rejection reason longer than 20 characters (after trimming).
 func countSubstantiveRejections(alts []model.TraceAlternative) int {
 	count := 0
 	for _, alt := range alts {
-		if alt.Selected {
-			continue
-		}
 		if alt.RejectionReason != nil && len(strings.TrimSpace(*alt.RejectionReason)) > 20 {
 			count++
 		}

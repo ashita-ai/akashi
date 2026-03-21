@@ -918,7 +918,7 @@ func computeMissingFields(decisionType, outcome string, confidence float32, reas
 	// Alternatives with substantive rejection reasons (up to 0.20).
 	substantive := 0
 	for _, alt := range alternatives {
-		if !alt.Selected && alt.RejectionReason != nil && len(strings.TrimSpace(*alt.RejectionReason)) > 20 {
+		if alt.RejectionReason != nil && len(strings.TrimSpace(*alt.RejectionReason)) > 20 {
 			substantive++
 		}
 	}

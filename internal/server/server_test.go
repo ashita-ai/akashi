@@ -259,8 +259,6 @@ func authedRequestWithHeaders(method, url, token string, body any, headers map[s
 	return http.DefaultClient.Do(req)
 }
 
-func ptrFloat32(v float32) *float32 { return &v }
-
 func TestHealthEndpoint(t *testing.T) {
 	resp, err := http.Get(testSrv.URL + "/health")
 	require.NoError(t, err)
@@ -495,8 +493,8 @@ func TestTraceConvenience(t *testing.T) {
 				Confidence:   0.9,
 				Reasoning:    &reasoning,
 				Alternatives: []model.TraceAlternative{
-					{Label: "Approve", Selected: true},
-					{Label: "Deny", Selected: false},
+					{Label: "Approve"},
+					{Label: "Deny"},
 				},
 				Evidence: []model.TraceEvidence{
 					{SourceType: "document", Content: "Test evidence"},
@@ -1080,7 +1078,7 @@ func TestDeleteAgentData(t *testing.T) {
 				Outcome:      "delete_everything",
 				Confidence:   0.8,
 				Alternatives: []model.TraceAlternative{
-					{Label: "keep", Score: ptrFloat32(0.2)},
+					{Label: "keep"},
 				},
 				Evidence: []model.TraceEvidence{
 					{SourceType: "document", Content: "test evidence for GDPR"},

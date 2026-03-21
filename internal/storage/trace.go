@@ -161,7 +161,7 @@ func (db *DB) createTraceInTx(ctx context.Context, tx pgx.Tx, params CreateTrace
 	// from blocking the transaction indefinitely. The parent request context may
 	// have a longer deadline (WriteTimeout), but COPY should not consume it all.
 	if len(params.Alternatives) > 0 {
-		columns := []string{"id", "decision_id", "label", "score", "selected", "rejection_reason", "metadata", "created_at"}
+		columns := []string{"id", "decision_id", "label", "rejection_reason", "metadata", "created_at"}
 		rows := make([][]any, len(params.Alternatives))
 		for i, a := range params.Alternatives {
 			id := a.ID
@@ -176,7 +176,7 @@ func (db *DB) createTraceInTx(ctx context.Context, tx pgx.Tx, params CreateTrace
 			if meta == nil {
 				meta = map[string]any{}
 			}
-			rows[i] = []any{id, d.ID, a.Label, a.Score, a.Selected, a.RejectionReason, meta, createdAt}
+			rows[i] = []any{id, d.ID, a.Label, a.RejectionReason, meta, createdAt}
 		}
 		copyCtx, copyCancel := context.WithTimeout(ctx, 30*time.Second)
 		_, err := tx.CopyFrom(copyCtx, pgx.Identifier{"alternatives"}, columns, pgx.CopyFromRows(rows))

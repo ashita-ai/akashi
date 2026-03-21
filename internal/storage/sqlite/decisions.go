@@ -185,18 +185,12 @@ func createTraceInTx(ctx context.Context, tx *sql.Tx, p storage.CreateTraceParam
 		if alt.CreatedAt.IsZero() {
 			alt.CreatedAt = now
 		}
-		selected := 0
-		if alt.Selected {
-			selected = 1
-		}
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO alternatives (id, decision_id, label, score, selected, rejection_reason, metadata, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO alternatives (id, decision_id, label, rejection_reason, metadata, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
 			uuidStr(alt.ID),
 			uuidStr(d.ID),
 			alt.Label,
-			alt.Score,
-			selected,
 			alt.RejectionReason,
 			jsonStr(alt.Metadata),
 			timeStr(alt.CreatedAt),
@@ -877,7 +871,7 @@ func (l *LiteDB) loadAlternatives(ctx context.Context, decisions []model.Decisio
 		ids[i] = uuidStr(d.ID)
 	}
 	q := fmt.Sprintf( //nolint:gosec // G201
-		`SELECT id, decision_id, label, score, selected, rejection_reason, metadata, created_at
+		`SELECT id, decision_id, label, rejection_reason, metadata, created_at
 		 FROM alternatives WHERE decision_id IN (%s)`,
 		placeholders(len(ids)),
 	)
@@ -893,17 +887,15 @@ func (l *LiteDB) loadAlternatives(ctx context.Context, decisions []model.Decisio
 			a          model.Alternative
 			idStr      string
 			decIDStr   string
-			selected   int
 			metaJSON   sql.NullString
 			createdStr string
 		)
-		if err := rows.Scan(&idStr, &decIDStr, &a.Label, &a.Score, &selected,
+		if err := rows.Scan(&idStr, &decIDStr, &a.Label,
 			&a.RejectionReason, &metaJSON, &createdStr); err != nil {
 			return fmt.Errorf("sqlite: scan alternative: %w", err)
 		}
 		a.ID = parseUUID(idStr)
 		a.DecisionID = parseUUID(decIDStr)
-		a.Selected = selected != 0
 		a.Metadata = map[string]any{}
 		_ = scanJSON(metaJSON, &a.Metadata)
 		a.CreatedAt = parseTime(createdStr)

@@ -165,8 +165,8 @@ func TestCreateTraceTx(t *testing.T) {
 			Metadata:     map[string]any{},
 		},
 		Alternatives: []model.Alternative{
-			{Label: "reject", Score: ptrFloat32(0.1), Selected: false, Metadata: map[string]any{}},
-			{Label: "approve", Score: ptrFloat32(0.9), Selected: true, Metadata: map[string]any{}},
+			{Label: "reject", Metadata: map[string]any{}},
+			{Label: "approve", Metadata: map[string]any{}},
 		},
 		Evidence: []model.Evidence{
 			{
@@ -828,8 +828,8 @@ func TestQueryDecisions_WithIncludeAlternativesAndEvidence(t *testing.T) {
 			Reasoning: &reasoning, Metadata: map[string]any{},
 		},
 		Alternatives: []model.Alternative{
-			{Label: "opt-a", Score: ptrFloat32(0.3), Selected: false, Metadata: map[string]any{}},
-			{Label: "opt-b", Score: ptrFloat32(0.7), Selected: true, Metadata: map[string]any{}},
+			{Label: "opt-a", Metadata: map[string]any{}},
+			{Label: "opt-b", Metadata: map[string]any{}},
 		},
 		Evidence: []model.Evidence{
 			{SourceType: model.SourceAPIResponse, Content: "test data", Metadata: map[string]any{}},
@@ -1288,10 +1288,6 @@ func TestCreateTraceTx_WithSupersession(t *testing.T) {
 func TestIsDuplicateKey_NilError(t *testing.T) {
 	db := newTestDB(t)
 	assert.False(t, db.IsDuplicateKey(nil))
-}
-
-func ptrFloat32(f float32) *float32 {
-	return &f
 }
 
 // ---------------------------------------------------------------------------
@@ -2732,7 +2728,7 @@ func TestTraceHealth_WithDecisions(t *testing.T) {
 			Confidence: 0.7, Reasoning: &reasoning, Metadata: map[string]any{},
 		},
 		Alternatives: []model.Alternative{
-			{Label: "opt-a", Score: ptrFloat32(0.3), Selected: false, Metadata: map[string]any{}},
+			{Label: "opt-a", Metadata: map[string]any{}},
 		},
 		Evidence: []model.Evidence{
 			{SourceType: "document", Content: "test evidence", Metadata: map[string]any{}},
@@ -2883,7 +2879,7 @@ func TestQueryDecisions_IncludeAll(t *testing.T) {
 			Confidence: 0.5, Metadata: map[string]any{},
 		},
 		Alternatives: []model.Alternative{
-			{Label: "alt-1", Score: ptrFloat32(0.5), Selected: true, Metadata: map[string]any{}},
+			{Label: "alt-1", Metadata: map[string]any{}},
 		},
 		Evidence: []model.Evidence{
 			{SourceType: "document", Content: "evidence content", Metadata: map[string]any{}},
@@ -3995,8 +3991,8 @@ func TestCreateTraceTx_WithAlternativesAndEvidence(t *testing.T) {
 			Confidence: 0.85, Metadata: map[string]any{},
 		},
 		Alternatives: []model.Alternative{
-			{Label: "option B", Selected: false, Metadata: altMeta},
-			{Label: "option C", Selected: false, Metadata: altMeta},
+			{Label: "option B", Metadata: altMeta},
+			{Label: "option C", Metadata: altMeta},
 		},
 		Evidence: []model.Evidence{
 			{SourceType: model.SourceDocument, Content: "spec says X", Metadata: evMeta},
@@ -4301,7 +4297,7 @@ func TestQueryDecisions_IncludeAlternativesOnly(t *testing.T) {
 			Confidence: 0.5, Metadata: map[string]any{},
 		},
 		Alternatives: []model.Alternative{
-			{Label: "alt1", Selected: true, Metadata: map[string]any{}},
+			{Label: "alt1", Metadata: map[string]any{}},
 		},
 		Evidence: []model.Evidence{
 			{SourceType: model.SourceDocument, Content: "some evidence", Metadata: map[string]any{}},
@@ -4852,7 +4848,7 @@ func TestGetDecisionQualityStats_WithData(t *testing.T) {
 			Metadata: map[string]any{},
 		},
 		Alternatives: []model.Alternative{
-			{Label: "Alt A", Selected: false, Metadata: map[string]any{}},
+			{Label: "Alt A", Metadata: map[string]any{}},
 		},
 	})
 	require.NoError(t, err)
@@ -5537,8 +5533,8 @@ func TestQueryDecisions_IncludeAlternativesAndEvidence(t *testing.T) {
 			Confidence: 0.7, Metadata: map[string]any{},
 		},
 		Alternatives: []model.Alternative{
-			{Label: "Option A", Selected: true, Metadata: map[string]any{}},
-			{Label: "Option B", Selected: false, Metadata: map[string]any{}},
+			{Label: "Option A", Metadata: map[string]any{}},
+			{Label: "Option B", Metadata: map[string]any{}},
 		},
 		Evidence: []model.Evidence{
 			{SourceType: model.SourceDocument, Content: "proof A", Metadata: map[string]any{}},
@@ -6573,7 +6569,6 @@ func TestCreateTraceTx_AlternativeWithPresetIDAndTime(t *testing.T) {
 
 	altID := uuid.New()
 	altTime := time.Date(2024, 3, 15, 10, 0, 0, 0, time.UTC)
-	altScore := float32(0.7)
 
 	_, dec, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
 		AgentID: "alt-preset-agent",
@@ -6587,8 +6582,6 @@ func TestCreateTraceTx_AlternativeWithPresetIDAndTime(t *testing.T) {
 			{
 				ID:        altID,
 				Label:     "Option A",
-				Score:     &altScore,
-				Selected:  true,
 				CreatedAt: altTime,
 			},
 		},
