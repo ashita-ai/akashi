@@ -25,6 +25,18 @@ if [ -z "${AKASHI_HOOKS_API_KEY:-}" ] && [ -f "$HOME/.akashi/hooks.key" ]; then
   AKASHI_HOOKS_API_KEY=$(cat "$HOME/.akashi/hooks.key")
 fi
 
+# Extract agent_id from AKASHI_API_KEY (format: "agent_id:secret").
+# This lets the server gate checks per-agent rather than per-machine.
+AGENT_ID=""
+if [ -n "${AKASHI_API_KEY:-}" ]; then
+  AGENT_ID="${AKASHI_API_KEY%%:*}"
+fi
+
+# Inject agent_id into the hook JSON payload if we have one.
+if [ -n "$AGENT_ID" ]; then
+  INPUT=$(echo "$INPUT" | jq --arg aid "$AGENT_ID" '. + {agent_id: $aid}' 2>/dev/null || echo "$INPUT")
+fi
+
 # Determine the hook event from the input JSON or the AKASHI_HOOK_EVENT env var.
 # Claude Code sets hook_event_name in the JSON; Cursor uses similar conventions.
 HOOK_EVENT="${AKASHI_HOOK_EVENT:-}"
@@ -112,12 +124,12 @@ case "$HOOK_EVENT" in
     TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null || true)
     case "$TOOL_NAME" in
       Edit|Write|MultiEdit)
-        # Check a session-scoped marker written by the PostToolUse fallback path.
-        # Scoping by session_id (when available) prevents one session's check from
-        # unlocking edits in a different session started hours later.
-        SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)
-        if [ -n "$SESSION_ID" ]; then
-          MARKER="/tmp/akashi-checked-${SESSION_ID}"
+        # Check an agent-scoped marker written by the PostToolUse fallback path.
+        # Scoping by agent_id prevents one agent's check from unlocking edits
+        # for a different agent on the same machine.
+        FALLBACK_AGENT=$(echo "$INPUT" | jq -r '.agent_id // empty' 2>/dev/null || true)
+        if [ -n "$FALLBACK_AGENT" ]; then
+          MARKER="/tmp/akashi-checked-${FALLBACK_AGENT}"
         else
           MARKER="/tmp/akashi-checked-$(whoami)"
         fi
@@ -145,10 +157,10 @@ case "$HOOK_EVENT" in
     TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null || true)
     case "$TOOL_NAME" in
       mcp__akashi__*)
-        # Write a session-scoped marker for the precheck fallback gate.
-        SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)
-        if [ -n "$SESSION_ID" ]; then
-          touch "/tmp/akashi-checked-${SESSION_ID}"
+        # Write an agent-scoped marker for the precheck fallback gate.
+        FALLBACK_AGENT=$(echo "$INPUT" | jq -r '.agent_id // empty' 2>/dev/null || true)
+        if [ -n "$FALLBACK_AGENT" ]; then
+          touch "/tmp/akashi-checked-${FALLBACK_AGENT}"
         else
           touch "/tmp/akashi-checked-$(whoami)"
         fi
