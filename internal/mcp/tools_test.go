@@ -2855,6 +2855,31 @@ func TestHandleResolve_WinnerNotInConflict(t *testing.T) {
 	assert.Contains(t, parseToolText(t, result), "must be one of the two decisions")
 }
 
+func TestComputeMissingFields_TaskTip(t *testing.T) {
+	reasoning := "detailed reasoning that is over one hundred characters long so it passes the threshold requirement here"
+	// Without task: tip should be present.
+	tips := computeMissingFields("architecture", "chose Redis with 5min TTL", 0.7, &reasoning, nil, nil, false, false, false)
+	found := false
+	for _, tip := range tips {
+		if strings.Contains(tip, "Add task") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "should include task tip when hasTask is false")
+
+	// With task: tip should be absent.
+	tips = computeMissingFields("architecture", "chose Redis with 5min TTL", 0.7, &reasoning, nil, nil, false, false, true)
+	found = false
+	for _, tip := range tips {
+		if strings.Contains(tip, "Add task") {
+			found = true
+			break
+		}
+	}
+	assert.False(t, found, "should not include task tip when hasTask is true")
+}
+
 // ===========================================================================
 // inferModelFromToolName unit tests
 // ===========================================================================
@@ -2935,7 +2960,7 @@ func TestComputeMissingFields_EvidenceTips(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			tips := computeMissingFields("architecture", "chose X", 0.7, &reasoning, fullAlts, tc.evidence, true, true)
+			tips := computeMissingFields("architecture", "chose X", 0.7, &reasoning, fullAlts, tc.evidence, true, true, true)
 
 			// Filter to only evidence-related tips.
 			var evidenceTips []string
@@ -2964,14 +2989,14 @@ func TestComputeMissingFields_ModelTip(t *testing.T) {
 	reasoning := "some reasoning that is long enough to pass the 100 char threshold -- padding padding padding padding padding"
 
 	t.Run("no model tip when model present", func(t *testing.T) {
-		tips := computeMissingFields("architecture", "chose postgres", 0.8, &reasoning, nil, nil, false, true)
+		tips := computeMissingFields("architecture", "chose postgres", 0.8, &reasoning, nil, nil, false, true, true)
 		for _, tip := range tips {
 			assert.NotContains(t, tip, "model")
 		}
 	})
 
 	t.Run("model tip when model absent and not inferred", func(t *testing.T) {
-		tips := computeMissingFields("architecture", "chose postgres", 0.8, &reasoning, nil, nil, false, false)
+		tips := computeMissingFields("architecture", "chose postgres", 0.8, &reasoning, nil, nil, false, false, true)
 		found := false
 		for _, tip := range tips {
 			if assert.ObjectsAreEqual(tip, `Pass "model" (e.g. "claude-opus-4-6") so decisions can be correlated by model capability tier`) {

@@ -31,7 +31,7 @@ func TestCompactDecision(t *testing.T) {
 		ValidFrom:         time.Now(),
 		CreatedAt:         time.Now(),
 		SessionID:         &sessionID,
-		AgentContext:      map[string]any{"tool": "claude-code", "model": "claude-opus-4-6", "operator": "System Admin"},
+		AgentContext:      map[string]any{"tool": "claude-code", "model": "claude-opus-4-6", "task": "session infra redesign", "operator": "System Admin"},
 	}
 
 	m := compactDecision(d)
@@ -46,6 +46,7 @@ func TestCompactDecision(t *testing.T) {
 	assert.Equal(t, &sessionID, m["session_id"])
 	assert.Equal(t, "claude-code", m["tool"])
 	assert.Equal(t, "claude-opus-4-6", m["model"])
+	assert.Equal(t, "session infra redesign", m["task"])
 
 	// Dropped fields.
 	_, hasRunID := m["run_id"]
@@ -936,6 +937,33 @@ func TestCompactDecision_ContextNote(t *testing.T) {
 	note, ok := m["context_note"]
 	assert.True(t, ok, "context_note should be present for decisions with citations")
 	assert.Contains(t, note, "Cited as precedent 3 times")
+}
+
+// TestCompactDecision_TaskIncludedWhenSet verifies task is surfaced from AgentContext.
+func TestCompactDecision_TaskIncludedWhenSet(t *testing.T) {
+	d := model.Decision{
+		ID:           uuid.New(),
+		AgentID:      "coder",
+		DecisionType: "architecture",
+		Outcome:      "chose Redis",
+		AgentContext: map[string]any{"task": "codebase review"},
+	}
+	m := compactDecision(d)
+	assert.Equal(t, "codebase review", m["task"])
+}
+
+// TestCompactDecision_TaskOmittedWhenAbsent verifies task is not in output when not in AgentContext.
+func TestCompactDecision_TaskOmittedWhenAbsent(t *testing.T) {
+	d := model.Decision{
+		ID:           uuid.New(),
+		AgentID:      "coder",
+		DecisionType: "architecture",
+		Outcome:      "chose Redis",
+		AgentContext: map[string]any{"tool": "claude-code"},
+	}
+	m := compactDecision(d)
+	_, hasTask := m["task"]
+	assert.False(t, hasTask, "task should be omitted when not in agent_context")
 }
 
 // TestCompactDecision_NoContextNoteWhenNoSignals verifies that context_note is

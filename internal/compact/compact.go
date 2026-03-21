@@ -43,6 +43,9 @@ func Decision(d model.Decision) map[string]any {
 	if mdl, ok := d.AgentContext["model"]; ok {
 		m["model"] = mdl
 	}
+	if task, ok := d.AgentContext["task"]; ok {
+		m["task"] = task
+	}
 
 	// Consensus weight: [0.5, 1.0]; only include when there's meaningful data.
 	total := d.AgreementCount + d.ConflictCount
