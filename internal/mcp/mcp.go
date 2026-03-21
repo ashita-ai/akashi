@@ -59,6 +59,7 @@ type Server struct {
 	grantCache  *authz.GrantCache  // optional cache for LoadGrantedSet
 	logger      *slog.Logger
 	rootsCache  *rootsCache          // caches MCP roots per session (one request per session)
+	checkCache  *checkCache          // caches last akashi_check response per session for evidence auto-attach
 	onCheck     func(agentID string) // called when akashi_check is invoked; wires IDE hook gate
 }
 
@@ -77,6 +78,7 @@ func New(db storage.Store, decisionSvc *decisions.Service, grantCache *authz.Gra
 		grantCache:  grantCache,
 		logger:      logger,
 		rootsCache:  newRootsCache(),
+		checkCache:  newCheckCache(),
 	}
 
 	s.mcpServer = mcpserver.NewMCPServer(
