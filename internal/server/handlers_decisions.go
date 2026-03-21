@@ -480,11 +480,6 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 
 // HandleCheck handles POST /v1/check.
 func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
-	// Record that akashi_check was called so the IDE hook gate (PreToolUse for
-	// Edit/Write) can confirm a check happened before edits. Recorded here
-	// rather than in the PostToolUse hook because Claude Code does not reliably
-	// fire PostToolUse hooks for MCP tool calls.
-	h.hookChecks.Record("")
 	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
 
@@ -492,6 +487,11 @@ func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
 		handleDecodeError(w, r, err)
 		return
+	}
+
+	// Record after request validation so a malformed body can't open the gate.
+	if claims != nil {
+		h.hookChecks.Record(claims.AgentID)
 	}
 
 	if req.DecisionType == "" {

@@ -116,6 +116,13 @@ type Config struct {
 	HooksEnabled bool   // Enable /hooks/* IDE integration endpoints (default: true).
 	HooksAPIKey  string // Optional API key for non-localhost hook access (default: "" = localhost only).
 	AutoTrace    bool   // Auto-trace git commits from PostToolUse hooks (default: true).
+
+	// Completeness profile overrides (tip filtering, not scoring).
+	// JSON map of decision_type → profile overrides. Merges with built-in defaults
+	// in internal/service/quality. Controls which completeness tips are surfaced
+	// to agents for each decision type. Scoring is always uniform. Example:
+	//   {"security":{"min_evidence":3,"alternatives_expected":true,"max_confidence_no_evidence":0.70}}
+	CompletenessProfilesJSON string
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -124,29 +131,30 @@ type Config struct {
 func Load() (Config, error) {
 	var errs []error
 	cfg := Config{
-		DatabaseURL:        envStr("DATABASE_URL", "postgres://akashi:akashi@localhost:6432/akashi?sslmode=disable"),
-		NotifyURL:          envStr("NOTIFY_URL", "postgres://akashi:akashi@localhost:5432/akashi?sslmode=disable"),
-		JWTPrivateKeyPath:  envStr("AKASHI_JWT_PRIVATE_KEY", ""),
-		JWTPublicKeyPath:   envStr("AKASHI_JWT_PUBLIC_KEY", ""),
-		AdminAPIKey:        envStr("AKASHI_ADMIN_API_KEY", ""),
-		EmbeddingProvider:  envStr("AKASHI_EMBEDDING_PROVIDER", "auto"),
-		OpenAIAPIKey:       envStr("OPENAI_API_KEY", ""),
-		EmbeddingModel:     envStr("AKASHI_EMBEDDING_MODEL", "text-embedding-3-small"),
-		OllamaURL:          envStr("OLLAMA_URL", "http://localhost:11434"),
-		OllamaModel:        envStr("OLLAMA_MODEL", "mxbai-embed-large"),
-		OTELEndpoint:       envStr("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
-		ServiceName:        envStr("OTEL_SERVICE_NAME", "akashi"),
-		QdrantURL:          envStr("QDRANT_URL", ""),
-		QdrantAPIKey:       envStr("QDRANT_API_KEY", ""),
-		QdrantCollection:   envStr("QDRANT_COLLECTION", "akashi_decisions"),
-		ConflictLLMModel:   envStr("AKASHI_CONFLICT_LLM_MODEL", ""),
-		CrossEncoderURL:    envStr("AKASHI_CONFLICT_CROSS_ENCODER_URL", ""),
-		NLIURL:             envStr("AKASHI_CONFLICT_NLI_URL", ""),
-		WALDir:             envStr("AKASHI_WAL_DIR", "./data/wal"),
-		WALSyncMode:        envStr("AKASHI_WAL_SYNC_MODE", "batch"),
-		LogLevel:           envStr("AKASHI_LOG_LEVEL", "info"),
-		CORSAllowedOrigins: envStrSlice("AKASHI_CORS_ALLOWED_ORIGINS", nil),
-		HooksAPIKey:        envStr("AKASHI_HOOKS_API_KEY", ""),
+		DatabaseURL:              envStr("DATABASE_URL", "postgres://akashi:akashi@localhost:6432/akashi?sslmode=disable"),
+		NotifyURL:                envStr("NOTIFY_URL", "postgres://akashi:akashi@localhost:5432/akashi?sslmode=disable"),
+		JWTPrivateKeyPath:        envStr("AKASHI_JWT_PRIVATE_KEY", ""),
+		JWTPublicKeyPath:         envStr("AKASHI_JWT_PUBLIC_KEY", ""),
+		AdminAPIKey:              envStr("AKASHI_ADMIN_API_KEY", ""),
+		EmbeddingProvider:        envStr("AKASHI_EMBEDDING_PROVIDER", "auto"),
+		OpenAIAPIKey:             envStr("OPENAI_API_KEY", ""),
+		EmbeddingModel:           envStr("AKASHI_EMBEDDING_MODEL", "text-embedding-3-small"),
+		OllamaURL:                envStr("OLLAMA_URL", "http://localhost:11434"),
+		OllamaModel:              envStr("OLLAMA_MODEL", "mxbai-embed-large"),
+		OTELEndpoint:             envStr("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		ServiceName:              envStr("OTEL_SERVICE_NAME", "akashi"),
+		QdrantURL:                envStr("QDRANT_URL", ""),
+		QdrantAPIKey:             envStr("QDRANT_API_KEY", ""),
+		QdrantCollection:         envStr("QDRANT_COLLECTION", "akashi_decisions"),
+		ConflictLLMModel:         envStr("AKASHI_CONFLICT_LLM_MODEL", ""),
+		CrossEncoderURL:          envStr("AKASHI_CONFLICT_CROSS_ENCODER_URL", ""),
+		NLIURL:                   envStr("AKASHI_CONFLICT_NLI_URL", ""),
+		WALDir:                   envStr("AKASHI_WAL_DIR", "./data/wal"),
+		WALSyncMode:              envStr("AKASHI_WAL_SYNC_MODE", "batch"),
+		LogLevel:                 envStr("AKASHI_LOG_LEVEL", "info"),
+		CORSAllowedOrigins:       envStrSlice("AKASHI_CORS_ALLOWED_ORIGINS", nil),
+		HooksAPIKey:              envStr("AKASHI_HOOKS_API_KEY", ""),
+		CompletenessProfilesJSON: envStr("AKASHI_COMPLETENESS_PROFILES", ""),
 	}
 
 	// Integer fields.

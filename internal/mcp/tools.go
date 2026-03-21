@@ -297,7 +297,7 @@ exist in the decision trail. Useful for understanding where agents
 disagree and what needs resolution.
 
 Returns conflicts filtered by type, agent, status, severity, or category.
-Only open/acknowledged conflicts are shown by default.`),
+All statuses are shown by default; pass status to narrow results.`),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithIdempotentHintAnnotation(true),
 			mcplib.WithOpenWorldHintAnnotation(false),
@@ -308,7 +308,7 @@ Only open/acknowledged conflicts are shown by default.`),
 				mcplib.Description("Filter by agent involved in the conflict"),
 			),
 			mcplib.WithString("status",
-				mcplib.Description("Filter by status: open, acknowledged, resolved, wont_fix. Defaults to showing open+acknowledged."),
+				mcplib.Description("Filter by status: open, acknowledged, resolved, wont_fix. Shows all statuses by default."),
 			),
 			mcplib.WithString("severity",
 				mcplib.Description("Filter by severity: critical, high, medium, low"),
@@ -435,15 +435,16 @@ func (s *Server) resolveProjectFilter(ctx context.Context, request mcplib.CallTo
 }
 
 func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-	// Notify the IDE hook gate that akashi_check was called.
-	if s.onCheck != nil {
-		s.onCheck()
-	}
 	orgID := ctxutil.OrgIDFromContext(ctx)
 	claims := ctxutil.ClaimsFromContext(ctx)
 
 	if claims == nil {
 		return errorResult("authentication required"), nil
+	}
+
+	// Notify the IDE hook gate that this agent called akashi_check.
+	if s.onCheck != nil {
+		s.onCheck(claims.AgentID)
 	}
 
 	// decision_type is optional — normalize if provided.
@@ -934,47 +935,67 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 
 // computeMissingFields returns actionable tips for improving trace completeness.
 // Each tip tells the agent exactly what to add next time. Tips are ordered by
-// completeness score impact (highest first). hasModel is true when the model
-// field is either explicitly provided or successfully inferred from session
-// metadata / HTTP headers; tips are only surfaced when neither source produced
-// a value.
+// completeness score impact (highest first) and are profile-aware: decision types
+// that don't expect alternatives or evidence won't get tips for those factors.
+// hasModel is true when the model field is either explicitly provided or
+// successfully inferred from session metadata / HTTP headers; tips are only
+// surfaced when neither source produced a value.
 func computeMissingFields(decisionType, outcome string, confidence float32, reasoning *string, alternatives []model.TraceAlternative, evidence []model.TraceEvidence, hasPrecedentRef, hasModel, hasTask bool) []string {
+	profile := quality.ProfileFor(decisionType, nil)
 	var tips []string
 
-	// Reasoning: biggest single factor (up to 0.25).
+	// Reasoning: biggest single factor (up to 0.25). When alternatives and
+	// evidence tips are suppressed by the profile, reasoning becomes the
+	// primary way to improve the score — reflect that in the label.
+	reasoningPctLabel := "25"
+	if !profile.AlternativesExpected && profile.MinEvidence == 0 {
+		// Both alts (20%) and evidence (15%) are suppressed, so reasoning +
+		// outcome + type + confidence are the only levers. Reasoning is the
+		// biggest at 25%.
+		reasoningPctLabel = "25 — reasoning is the primary factor for this decision type"
+	}
 	if reasoning == nil || len(strings.TrimSpace(*reasoning)) <= 100 {
 		if reasoning == nil || len(strings.TrimSpace(*reasoning)) <= 20 {
-			tips = append(tips, "Add reasoning (>100 chars) explaining why you chose this over alternatives (+25%)")
+			tips = append(tips, fmt.Sprintf("Add reasoning (>100 chars) explaining why you chose this over alternatives (+%s%%)", reasoningPctLabel))
 		} else {
 			tips = append(tips, "Expand reasoning to >100 chars for full credit (+5-15%)")
 		}
 	}
 
 	// Alternatives with substantive rejection reasons (up to 0.20).
-	substantive := 0
-	for _, alt := range alternatives {
-		if alt.RejectionReason != nil && len(strings.TrimSpace(*alt.RejectionReason)) > 20 {
-			substantive++
+	// Only suggest when the profile expects alternatives.
+	if profile.AlternativesExpected {
+		substantive := 0
+		for _, alt := range alternatives {
+			if alt.RejectionReason != nil && len(strings.TrimSpace(*alt.RejectionReason)) > 20 {
+				substantive++
+			}
+		}
+		if substantive < 3 {
+			tips = append(tips, fmt.Sprintf("Add %d more rejected alternatives with rejection_reason >20 chars (+%d%%)", 3-substantive, (3-substantive)*5))
 		}
 	}
-	if substantive < 3 {
-		tips = append(tips, fmt.Sprintf("Add %d more rejected alternatives with rejection_reason >20 chars (+%d%%)", 3-substantive, (3-substantive)*5))
-	}
 
-	// Evidence (up to 0.15). Be specific about what counts as evidence so
-	// agents know what to attach — file paths, error messages, test output,
-	// benchmark numbers, or the constraint that drove the choice.
-	if len(evidence) < 2 {
-		if len(evidence) == 0 {
-			tips = append(tips, "Add evidence to make this trace verifiable: attach file paths, error messages, test output, benchmark numbers, or the constraint that drove the choice (source_type + content, 2+ items for +15%)")
-		} else {
-			tips = append(tips, "Add 1 more evidence item for full credit — e.g. a file path, error message, test result, or benchmark number (+5%)")
+	// Evidence (up to 0.15). Only suggest when the profile expects evidence.
+	if profile.MinEvidence > 0 {
+		if len(evidence) < 2 {
+			if len(evidence) == 0 {
+				tips = append(tips, "Add evidence to make this trace verifiable: attach file paths, error messages, test output, benchmark numbers, or the constraint that drove the choice (source_type + content, 2+ items for +15%)")
+			} else {
+				tips = append(tips, "Add 1 more evidence item for full credit — e.g. a file path, error message, test result, or benchmark number (+5%)")
+			}
 		}
 	}
 
 	// Confidence calibration nudge.
 	if confidence >= 0.95 || confidence <= 0.05 {
 		tips = append(tips, "Confidence is at an extreme — values between 0.4 and 0.8 are more informative")
+	}
+
+	// Profile-specific confidence penalty warning.
+	if len(evidence) == 0 && confidence > profile.MaxConfidenceNoEvidence {
+		tips = append(tips, fmt.Sprintf("Confidence %.2f exceeds max %.2f for %s without evidence — add evidence or lower confidence to avoid penalty",
+			confidence, profile.MaxConfidenceNoEvidence, decisionType))
 	}
 
 	// Standard decision type (0.10).
@@ -1183,11 +1204,13 @@ func (s *Server) handleConflicts(ctx context.Context, request mcplib.CallToolReq
 	limit := request.GetInt("limit", 10)
 	format := request.GetString("format", "concise")
 
-	// Build group filters. The MCP tool defaults to open+acknowledged groups so
-	// agents see actionable disagreements, not resolved history.
+	// Build group filters. By default the MCP tool shows all groups so agents
+	// see both open and acknowledged conflicts (both are actionable). Agents
+	// can pass status="open", "resolved", etc. to narrow results.
 	statusFilter := request.GetString("status", "")
-	groupFilters := storage.ConflictGroupFilters{
-		OpenOnly: statusFilter == "" || statusFilter == "open" || statusFilter == "acknowledged",
+	groupFilters := storage.ConflictGroupFilters{}
+	if statusFilter != "" && statusFilter != "all" {
+		groupFilters.Status = &statusFilter
 	}
 	if dt := request.GetString("decision_type", ""); dt != "" {
 		groupFilters.DecisionType = &dt

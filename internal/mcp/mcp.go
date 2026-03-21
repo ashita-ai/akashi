@@ -58,16 +58,16 @@ type Server struct {
 	decisionSvc                 *decisions.Service // for tools (shared business logic)
 	grantCache                  *authz.GrantCache  // optional cache for LoadGrantedSet
 	logger                      *slog.Logger
-	rootsCache                  *rootsCache // caches MCP roots per session (one request per session)
-	checkCache                  *checkCache // caches last akashi_check response per session for evidence auto-attach
-	onCheck                     func()      // called when akashi_check is invoked; wires IDE hook gate
-	highConfidenceWarnThreshold float32     // confidence above this with no evidence triggers a warning
+	rootsCache                  *rootsCache          // caches MCP roots per session (one request per session)
+	checkCache                  *checkCache          // caches last akashi_check response per session for evidence auto-attach
+	onCheck                     func(agentID string) // called when akashi_check is invoked; wires IDE hook gate
+	highConfidenceWarnThreshold float32              // confidence above this with no evidence triggers a warning
 }
 
 // SetCheckNotify registers a callback that fires whenever akashi_check is called.
-// Used to signal the IDE hook gate (PreToolUse for Edit/Write) that a check
-// has been performed, without creating a circular import between mcp and server.
-func (s *Server) SetCheckNotify(f func()) {
+// The callback receives the authenticated agent_id so the hook gate can track
+// checks per-agent rather than per-machine.
+func (s *Server) SetCheckNotify(f func(agentID string)) {
 	s.onCheck = f
 }
 

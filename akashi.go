@@ -505,6 +505,7 @@ func (a *App) Run(ctx context.Context) error {
 	go a.conflictRefreshLoop(ctx)
 	go a.integrityProofLoop(ctx)
 	go a.idempotencyCleanupLoop(ctx)
+	go a.hookCheckCleanupLoop(ctx)
 	go a.retentionLoop(ctx)
 	go a.claimEmbeddingRetryLoop(ctx)
 	go a.percentileRefreshLoop(ctx)
@@ -744,6 +745,20 @@ func (a *App) idempotencyCleanupLoop(ctx context.Context) {
 			if deleted > 0 {
 				a.logger.Info("idempotency cleanup deleted rows", "deleted", deleted)
 			}
+		}
+	}
+}
+
+func (a *App) hookCheckCleanupLoop(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.srv.Handlers().CleanupHookChecks()
 		}
 	}
 }
