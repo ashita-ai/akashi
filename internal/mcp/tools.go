@@ -1148,11 +1148,13 @@ func (s *Server) handleConflicts(ctx context.Context, request mcplib.CallToolReq
 	limit := request.GetInt("limit", 10)
 	format := request.GetString("format", "concise")
 
-	// Build group filters. The MCP tool defaults to open+acknowledged groups so
-	// agents see actionable disagreements, not resolved history.
+	// Build group filters. By default the MCP tool shows all groups so agents
+	// see both open and acknowledged conflicts (both are actionable). Agents
+	// can pass status="open", "resolved", etc. to narrow results.
 	statusFilter := request.GetString("status", "")
-	groupFilters := storage.ConflictGroupFilters{
-		OpenOnly: statusFilter == "" || statusFilter == "open" || statusFilter == "acknowledged",
+	groupFilters := storage.ConflictGroupFilters{}
+	if statusFilter != "" && statusFilter != "all" {
+		groupFilters.Status = &statusFilter
 	}
 	if dt := request.GetString("decision_type", ""); dt != "" {
 		groupFilters.DecisionType = &dt

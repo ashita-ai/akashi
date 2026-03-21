@@ -77,10 +77,29 @@ func (l *LiteDB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, filter
 
 	where := "WHERE " + strings.Join(conds, " AND ")
 
-	// For open-only, add a HAVING filter after aggregation.
+	// Status filter semantics:
+	//   - "open"/"acknowledged": groups with at least one conflict in that status
+	//   - "resolved": groups with no open/acknowledged conflicts (fully closed)
+	//   - "wont_fix": groups with no open/acknowledged conflicts and at least one wont_fix
+	// Uses EXISTS subqueries so the conflict_count/open_count aggregations
+	// still reflect the full group, not just the filtered status.
 	having := ""
-	if filters.OpenOnly {
-		having = "HAVING SUM(CASE WHEN sc.status IN ('open','acknowledged') THEN 1 ELSE 0 END) > 0"
+	var havingArgs []any
+	if filters.Status != nil {
+		switch *filters.Status {
+		case "open", "acknowledged":
+			having = "HAVING EXISTS (SELECT 1 FROM scored_conflicts sc2 WHERE sc2.group_id = cg.id AND sc2.status = ?)"
+			havingArgs = append(havingArgs, *filters.Status)
+		case "resolved":
+			having = "HAVING NOT EXISTS (SELECT 1 FROM scored_conflicts sc2 WHERE sc2.group_id = cg.id AND sc2.status IN ('open','acknowledged'))" +
+				" AND COUNT(DISTINCT sc.id) > 0"
+		case "wont_fix":
+			having = "HAVING NOT EXISTS (SELECT 1 FROM scored_conflicts sc2 WHERE sc2.group_id = cg.id AND sc2.status IN ('open','acknowledged'))" +
+				" AND EXISTS (SELECT 1 FROM scored_conflicts sc3 WHERE sc3.group_id = cg.id AND sc3.status = 'wont_fix')"
+		default:
+			having = "HAVING EXISTS (SELECT 1 FROM scored_conflicts sc2 WHERE sc2.group_id = cg.id AND sc2.status = ?)"
+			havingArgs = append(havingArgs, *filters.Status)
+		}
 	}
 
 	q := fmt.Sprintf( //nolint:gosec // G201
@@ -98,6 +117,7 @@ func (l *LiteDB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, filter
 		 LIMIT ? OFFSET ?`,
 		where, having,
 	)
+	args = append(args, havingArgs...)
 	args = append(args, limit, offset)
 
 	rows, err := l.db.QueryContext(ctx, q, args...)

@@ -5199,11 +5199,12 @@ func TestCountConflictGroups(t *testing.T) {
 	assert.GreaterOrEqual(t, count, 0)
 }
 
-func TestCountConflictGroups_OpenOnly(t *testing.T) {
+func TestCountConflictGroups_StatusFilter(t *testing.T) {
 	ctx := context.Background()
 
+	st := "open"
 	count, err := testDB.CountConflictGroups(ctx, uuid.Nil, storage.ConflictGroupFilters{
-		OpenOnly: true,
+		Status: &st,
 	})
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, count, 0)
