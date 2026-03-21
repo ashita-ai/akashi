@@ -199,6 +199,9 @@ func New(cfg ServerConfig) *Server {
 	// Decision conflicts (reader+).
 	mux.Handle("GET /v1/decisions/{id}/conflicts", readRole(http.HandlerFunc(h.HandleDecisionConflicts)))
 
+	// Decision lineage: precedent chain visualization (reader+).
+	mux.Handle("GET /v1/decisions/{id}/lineage", readRole(http.HandlerFunc(h.HandleGetDecisionLineage)))
+
 	// Decision assessments: explicit outcome feedback (spec 29 / ADR-020 Tier 2).
 	mux.Handle("POST /v1/decisions/{id}/assess", writeRole(http.HandlerFunc(h.HandleAssessDecision)))
 	mux.Handle("GET /v1/decisions/{id}/assessments", readRole(http.HandlerFunc(h.HandleListAssessments)))

@@ -193,6 +193,15 @@ func (h *Handlers) buildTraceAgentContext(
 		}
 	}
 
+	// Server-inferred model from X-Model header. Only set when the client
+	// hasn't already self-reported a model in the request body context, so
+	// explicit values always take priority (generated column: client > server > flat).
+	if _, hasClientModel := clientCtx["model"]; !hasClientModel {
+		if xm := r.Header.Get("X-Model"); xm != "" {
+			serverCtx["model"] = xm
+		}
+	}
+
 	// API key prefix for server-verified attribution.
 	if claims.APIKeyID != nil {
 		key, keyErr := h.db.GetAPIKeyByID(r.Context(), orgID, *claims.APIKeyID)
@@ -1048,4 +1057,28 @@ func (h *Handlers) HandleDecisionFacets(w http.ResponseWriter, r *http.Request) 
 		Types:    types,
 		Projects: projects,
 	})
+}
+
+// HandleGetDecisionLineage handles GET /v1/decisions/{id}/lineage (reader+).
+// Returns the precedent chain: the decision this one cites and decisions that cite it.
+func (h *Handlers) HandleGetDecisionLineage(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+
+	id, err := parsePathUUID(r, "id")
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid decision ID")
+		return
+	}
+
+	lineage, err := h.db.GetDecisionLineage(r.Context(), id, orgID, 20)
+	if err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "decision not found")
+			return
+		}
+		h.writeInternalError(w, r, "failed to get decision lineage", err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, lineage)
 }
