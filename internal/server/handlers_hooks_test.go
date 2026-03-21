@@ -67,13 +67,13 @@ func TestHookCheckStore(t *testing.T) {
 		assert.False(t, s.IsAnyRecent())
 	})
 
-	t.Run("empty agent_id is a valid key", func(t *testing.T) {
-		// When MCP/REST records with agent_id="" (e.g. unauthenticated path),
-		// a subsequent IsRecent("") should match.
+	t.Run("empty agent_id is ignored by Record", func(t *testing.T) {
+		// Recording with agent_id="" is a no-op to prevent a single "" entry
+		// from satisfying IsAnyRecent for all legacy callers.
 		s := newHookCheckStore()
 		s.Record("")
-		assert.True(t, s.IsRecent(""))
-		assert.True(t, s.IsAnyRecent())
+		assert.False(t, s.IsRecent(""))
+		assert.False(t, s.IsAnyRecent())
 	})
 }
 

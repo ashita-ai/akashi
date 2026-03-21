@@ -31,14 +31,19 @@ type hookCheckStore struct {
 	checks map[string]time.Time // agent_id → last check time
 }
 
-const hookCheckTTL = 15 * time.Minute
+const hookCheckTTL = 10 * time.Minute
 
 func newHookCheckStore() *hookCheckStore {
 	return &hookCheckStore{checks: make(map[string]time.Time)}
 }
 
 // Record stores a check timestamp for the given agent.
+// Empty agentID is ignored — recording "" would let any legacy caller
+// (which also has agentID="") pass IsAnyRecent, defeating per-agent isolation.
 func (s *hookCheckStore) Record(agentID string) {
+	if agentID == "" {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.checks[agentID] = time.Now()

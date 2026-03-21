@@ -477,17 +477,17 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 // HandleCheck handles POST /v1/check.
 func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
-	// Record that this specific agent called akashi_check so the IDE hook gate
-	// (PreToolUse for Edit/Write) can confirm the agent performed a check.
-	if claims != nil {
-		h.hookChecks.Record(claims.AgentID)
-	}
 	orgID := OrgIDFromContext(r.Context())
 
 	var req model.CheckRequest
 	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
 		handleDecodeError(w, r, err)
 		return
+	}
+
+	// Record after request validation so a malformed body can't open the gate.
+	if claims != nil {
+		h.hookChecks.Record(claims.AgentID)
 	}
 
 	if req.DecisionType == "" {

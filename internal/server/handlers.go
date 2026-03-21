@@ -430,6 +430,12 @@ func (h *Handlers) NotifyCheckCalled(agentID string) {
 	h.hookChecks.Record(agentID)
 }
 
+// CleanupHookChecks evicts expired entries from the hook check store.
+// Called periodically by the background cleanup loop in akashi.go.
+func (h *Handlers) CleanupHookChecks() {
+	h.hookChecks.Cleanup()
+}
+
 func (h *Handlers) SeedAdmin(ctx context.Context, adminAPIKey string) error {
 	if adminAPIKey == "" {
 		totalAgents, err := h.db.CountAgentsGlobal(ctx)
