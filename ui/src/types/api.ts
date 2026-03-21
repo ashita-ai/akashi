@@ -86,8 +86,6 @@ export interface Alternative {
   id: string;
   decision_id: string;
   label: string;
-  score: number | null;
-  selected: boolean;
   rejection_reason: string | null;
   metadata: Record<string, unknown> | null;
   created_at: string;
@@ -432,6 +430,27 @@ export interface ConflictTrendPoint {
   date: string;
   detected: number;
   resolved: number;
+}
+
+// Lineage
+export interface LineageEntry {
+  id: string;
+  run_id: string;
+  agent_id: string;
+  decision_type: string;
+  outcome: string;
+  confidence: number;
+  project?: string | null;
+  created_at: string;
+  valid_from: string;
+  valid_to?: string | null;
+}
+
+export interface DecisionLineage {
+  decision_id: string;
+  preceded_by: LineageEntry | null;
+  cited_by: LineageEntry[];
+  cited_by_has_more: boolean;
 }
 
 // Health

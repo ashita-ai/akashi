@@ -87,8 +87,6 @@ type Alternative struct {
 	ID              uuid.UUID      `json:"id"`
 	DecisionID      uuid.UUID      `json:"decision_id"`
 	Label           string         `json:"label"`
-	Score           *float32       `json:"score,omitempty"`
-	Selected        bool           `json:"selected"`
 	RejectionReason *string        `json:"rejection_reason,omitempty"`
 	Metadata        map[string]any `json:"metadata"`
 	CreatedAt       time.Time      `json:"created_at"`
@@ -207,6 +205,12 @@ type DecisionConflict struct {
 	// whose winning side this new conflict contradicts. When set, the conflict
 	// was auto-escalated to critical severity.
 	ReopensResolutionID *uuid.UUID `json:"reopens_resolution_id,omitempty"`
+
+	// EarliestPossibleAt is max(decision_a.transaction_time, decision_b.transaction_time).
+	// A conflict cannot exist before both decisions exist. Used as first_detected_at
+	// when creating a new conflict group, instead of now().
+	// Not persisted — computed by the scorer and passed through to storage.
+	EarliestPossibleAt *time.Time `json:"-"`
 }
 
 // ConflictGroup is a canonical conflict cluster scoped to a semantic topic

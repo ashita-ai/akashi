@@ -31,6 +31,8 @@ type mockStore struct {
 	confidenceErr          error
 	highConfOutcomeSignals storage.HighConfOutcomeSignals
 	highConfOutcomeErr     error
+	calibration            storage.ConfidenceCalibration
+	calibrationErr         error
 	typeDist               []storage.DecisionTypeCount
 	typeDistErr            error
 }
@@ -59,15 +61,22 @@ func (m *mockStore) GetHighConfOutcomeSignals(_ context.Context, _ uuid.UUID, _,
 	return m.highConfOutcomeSignals, m.highConfOutcomeErr
 }
 
+func (m *mockStore) GetConfidenceCalibration(_ context.Context, _ uuid.UUID) (storage.ConfidenceCalibration, error) {
+	return m.calibration, m.calibrationErr
+}
+
 func (m *mockStore) GetDecisionTypeDistribution(_ context.Context, _ uuid.UUID) ([]storage.DecisionTypeCount, error) {
 	return m.typeDist, m.typeDistErr
 }
+
+// emptyCal is a convenience zero-value calibration for tests that don't care about it.
+var emptyCal = storage.ConfidenceCalibration{}
 
 func TestComputeGaps_AllHealthy(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.8, BelowHalf: 2, BelowThird: 0, WithReasoning: 95,
 	}
-	gaps := computeGaps(qs, 5, 0, storage.OutcomeSignalsSummary{})
+	gaps := computeGaps(qs, 5, 0, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{}, emptyCal)
 
 	assert.LessOrEqual(t, len(gaps), 3)
 	for _, g := range gaps {
@@ -81,7 +90,7 @@ func TestComputeGaps_LowQuality(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 50, AvgCompleteness: 0.2, BelowHalf: 30, BelowThird: 20, WithReasoning: 10,
 	}
-	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{})
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{}, emptyCal)
 
 	assert.GreaterOrEqual(t, len(gaps), 1)
 	assert.Contains(t, gaps[0], "Average completeness score")
@@ -91,7 +100,7 @@ func TestComputeGaps_UnresolvedConflicts(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.7, BelowHalf: 5, BelowThird: 0, WithReasoning: 90,
 	}
-	gaps := computeGaps(qs, 10, 7, storage.OutcomeSignalsSummary{})
+	gaps := computeGaps(qs, 10, 7, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{}, emptyCal)
 
 	found := false
 	for _, g := range gaps {
@@ -108,7 +117,7 @@ func TestComputeGaps_EvidenceNeverSurfaces(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.7, BelowHalf: 5, BelowThird: 0, WithReasoning: 90,
 	}
-	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{})
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{}, emptyCal)
 
 	for _, g := range gaps {
 		assert.NotContains(t, g, "evidence")
@@ -119,18 +128,18 @@ func TestComputeGaps_MaxThree(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.1, BelowHalf: 80, BelowThird: 60, WithReasoning: 10,
 	}
-	gaps := computeGaps(qs, 20, 15, storage.OutcomeSignalsSummary{})
+	gaps := computeGaps(qs, 20, 15, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{}, emptyCal)
 
 	assert.LessOrEqual(t, len(gaps), 3, "should return at most 3 gaps")
 }
 
-// Confidence calibration data is surfaced in the response but never
-// generates a gap — operators interpret it, the system doesn't.
-func TestComputeGaps_ConfidenceNeverGeneratesGap(t *testing.T) {
+// When confidence is well-calibrated, no gap is generated.
+func TestComputeGaps_CalibratedConfidenceNoGap(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.9,
 	}
-	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{})
+	cd := storage.ConfidenceDistribution{TotalDecisions: 100, AvgConfidence: 0.65, OverconfidentPct: 20}
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd, emptyCal)
 
 	for _, g := range gaps {
 		assert.NotContains(t, g, "confidence")
@@ -282,6 +291,9 @@ func TestCompute_HealthyOrg(t *testing.T) {
 	assert.Equal(t, 8, m.HighConfOutcomeSignals.AssessedCount)
 	assert.InDelta(t, 0.85, m.HighConfOutcomeSignals.AvgOutcomeScore, 0.001)
 
+	// Confidence calibration populated when total > 0.
+	require.NotNil(t, m.ConfidenceCalibration)
+
 	// Decision type distribution populated.
 	require.Len(t, m.DecisionTypeDistribution, 3)
 	assert.Equal(t, "architecture", m.DecisionTypeDistribution[0].DecisionType)
@@ -402,6 +414,21 @@ func TestCompute_HighConfOutcomeSignalsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "high-conf outcome signals")
 }
 
+func TestCompute_ConfidenceCalibrationError(t *testing.T) {
+	ms := &mockStore{
+		qualityStats:   storage.DecisionQualityStats{Total: 5, AvgCompleteness: 0.5},
+		evidenceStats:  storage.EvidenceCoverageStats{TotalDecisions: 5},
+		conflictCounts: storage.ConflictStatusCounts{},
+		outcomeSignals: storage.OutcomeSignalsSummary{DecisionsTotal: 5},
+		calibrationErr: errors.New("query failed"),
+	}
+	svc := New(ms)
+
+	_, err := svc.Compute(context.Background(), uuid.New(), nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "confidence calibration")
+}
+
 func TestCompute_DecisionTypeDistributionError(t *testing.T) {
 	ms := &mockStore{
 		qualityStats:   storage.DecisionQualityStats{Total: 5, AvgCompleteness: 0.5},
@@ -425,7 +452,7 @@ func TestComputeGaps_OutcomeSignals_RevisedWithin48h(t *testing.T) {
 		DecisionsTotal:   100,
 		RevisedWithin48h: 15, // 15% > 10% threshold
 	}
-	gaps := computeGaps(qs, 0, 0, os)
+	gaps := computeGaps(qs, 0, 0, os, storage.ConfidenceDistribution{}, emptyCal)
 
 	found := false
 	for _, g := range gaps {
@@ -444,7 +471,7 @@ func TestComputeGaps_OutcomeSignals_NeverCited(t *testing.T) {
 		DecisionsTotal: 100,
 		NeverCited:     80, // 80% > 70% threshold
 	}
-	gaps := computeGaps(qs, 0, 0, os)
+	gaps := computeGaps(qs, 0, 0, os, storage.ConfidenceDistribution{}, emptyCal)
 
 	found := false
 	for _, g := range gaps {
@@ -464,10 +491,222 @@ func TestComputeGaps_OutcomeSignals_BelowThresholds(t *testing.T) {
 		RevisedWithin48h: 5,  // 5% <= 10% threshold
 		NeverCited:       60, // 60% <= 70% threshold
 	}
-	gaps := computeGaps(qs, 0, 0, os)
+	gaps := computeGaps(qs, 0, 0, os, storage.ConfidenceDistribution{}, emptyCal)
 
 	for _, g := range gaps {
 		assert.NotContains(t, g, "revised within 48 hours")
 		assert.NotContains(t, g, "never been cited")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Confidence calibration gap tests — three tiers of evidence
+// ---------------------------------------------------------------------------
+
+func ptrFloat(f float64) *float64 { return &f }
+
+// Tier 1: Assessment-based calibration detects miscalibration.
+// When high-confidence decisions have lower outcome scores than mid-range,
+// the gap message should cite the actual outcome scores.
+func TestConfidenceCalibrationGap_OutcomeBased_Miscalibrated(t *testing.T) {
+	cal := storage.ConfidenceCalibration{
+		HasOutcomeData: true,
+		Tiers: []storage.ConfidenceTier{
+			{Tier: "high", Total: 40, AssessedCount: 10, AvgOutcome: ptrFloat(0.55), RevisionRate: 5},
+			{Tier: "mid", Total: 50, AssessedCount: 15, AvgOutcome: ptrFloat(0.72), RevisionRate: 3},
+			{Tier: "low", Total: 10, AssessedCount: 3, AvgOutcome: ptrFloat(0.60), RevisionRate: 10},
+		},
+	}
+	g := confidenceCalibrationGap(cal, storage.ConfidenceDistribution{})
+
+	assert.Contains(t, g, "avg outcome score 0.55")
+	assert.Contains(t, g, "0.72 for mid-range")
+	assert.Contains(t, g, "confidence is not predicting outcomes")
+}
+
+// Tier 1: Assessment-based calibration passes when high >= mid.
+func TestConfidenceCalibrationGap_OutcomeBased_Calibrated(t *testing.T) {
+	cal := storage.ConfidenceCalibration{
+		HasOutcomeData: true,
+		Tiers: []storage.ConfidenceTier{
+			{Tier: "high", Total: 40, AssessedCount: 10, AvgOutcome: ptrFloat(0.80), RevisionRate: 5},
+			{Tier: "mid", Total: 50, AssessedCount: 15, AvgOutcome: ptrFloat(0.72), RevisionRate: 3},
+		},
+	}
+	g := confidenceCalibrationGap(cal, storage.ConfidenceDistribution{})
+
+	assert.Empty(t, g, "calibrated by outcome data — no gap expected")
+}
+
+// Tier 1: Requires minimum 3 assessed decisions per tier to avoid noise.
+func TestConfidenceCalibrationGap_OutcomeBased_InsufficientAssessments(t *testing.T) {
+	cal := storage.ConfidenceCalibration{
+		HasOutcomeData: true,
+		Tiers: []storage.ConfidenceTier{
+			{Tier: "high", Total: 40, AssessedCount: 2, AvgOutcome: ptrFloat(0.30), RevisionRate: 20},
+			{Tier: "mid", Total: 50, AssessedCount: 15, AvgOutcome: ptrFloat(0.72), RevisionRate: 3},
+		},
+	}
+	// Should fall through to tier 2 (revision rate) because high has < 3 assessments.
+	g := confidenceCalibrationGap(cal, storage.ConfidenceDistribution{})
+
+	// With 20% vs 3% revision rate and enough samples, tier 2 should trigger.
+	assert.Contains(t, g, "revised within 48h")
+}
+
+// Tier 2: Revision-rate proxy detects miscalibration without assessments.
+func TestConfidenceCalibrationGap_RevisionRate_Miscalibrated(t *testing.T) {
+	cal := storage.ConfidenceCalibration{
+		HasOutcomeData: false,
+		Tiers: []storage.ConfidenceTier{
+			{Tier: "high", Total: 30, RevisionRate: 18},
+			{Tier: "mid", Total: 50, RevisionRate: 4},
+			{Tier: "low", Total: 20, RevisionRate: 8},
+		},
+	}
+	g := confidenceCalibrationGap(cal, storage.ConfidenceDistribution{})
+
+	assert.Contains(t, g, "revised within 48h at 18%")
+	assert.Contains(t, g, "4% for mid-range")
+	assert.Contains(t, g, "over-committing")
+}
+
+// Tier 2: Revision rate passes when high <= mid.
+func TestConfidenceCalibrationGap_RevisionRate_Calibrated(t *testing.T) {
+	cal := storage.ConfidenceCalibration{
+		HasOutcomeData: false,
+		Tiers: []storage.ConfidenceTier{
+			{Tier: "high", Total: 30, RevisionRate: 3},
+			{Tier: "mid", Total: 50, RevisionRate: 5},
+		},
+	}
+	g := confidenceCalibrationGap(cal, storage.ConfidenceDistribution{})
+
+	assert.Empty(t, g, "calibrated by revision rate — no gap expected")
+}
+
+// Tier 2: Requires >= 5 decisions per tier to avoid noise.
+func TestConfidenceCalibrationGap_RevisionRate_InsufficientData(t *testing.T) {
+	cal := storage.ConfidenceCalibration{
+		HasOutcomeData: false,
+		Tiers: []storage.ConfidenceTier{
+			{Tier: "high", Total: 3, RevisionRate: 33}, // too few decisions
+			{Tier: "mid", Total: 50, RevisionRate: 2},
+		},
+	}
+	// Should fall through to tier 3 (distribution shape).
+	g := confidenceCalibrationGap(cal, storage.ConfidenceDistribution{TotalDecisions: 53, AvgConfidence: 0.85, OverconfidentPct: 70})
+
+	assert.Contains(t, g, "Avg confidence is 0.85")
+}
+
+// Tier 2: High revision rate must exceed 5% absolute to trigger.
+// This prevents noise when both tiers have low revision rates (e.g. 2% vs 1%).
+func TestConfidenceCalibrationGap_RevisionRate_BelowAbsoluteThreshold(t *testing.T) {
+	cal := storage.ConfidenceCalibration{
+		HasOutcomeData: false,
+		Tiers: []storage.ConfidenceTier{
+			{Tier: "high", Total: 30, RevisionRate: 4}, // higher than mid but below 5% absolute
+			{Tier: "mid", Total: 50, RevisionRate: 2},
+		},
+	}
+	g := confidenceCalibrationGap(cal, storage.ConfidenceDistribution{})
+
+	assert.Empty(t, g, "revision rates too low overall to be meaningful")
+}
+
+// Tier 3: Distribution shape fallback — high avg confidence.
+func TestConfidenceCalibrationGap_Fallback_HighAvg(t *testing.T) {
+	cal := emptyCal // no tiers at all
+	cd := storage.ConfidenceDistribution{
+		TotalDecisions:   100,
+		AvgConfidence:    0.89,
+		OverconfidentPct: 50,
+	}
+	g := confidenceCalibrationGap(cal, cd)
+
+	assert.Contains(t, g, "Avg confidence is 0.89")
+	assert.Contains(t, g, "above the recommended 0.4")
+}
+
+// Tier 3: Distribution shape fallback — high overconfident percentage.
+func TestConfidenceCalibrationGap_Fallback_HighPct(t *testing.T) {
+	cal := emptyCal
+	cd := storage.ConfidenceDistribution{
+		TotalDecisions:   100,
+		AvgConfidence:    0.78,
+		OverconfidentPct: 65,
+	}
+	g := confidenceCalibrationGap(cal, cd)
+
+	assert.Contains(t, g, "65% of decisions have confidence >= 0.85")
+}
+
+// Tier 3: Below both thresholds — no gap.
+func TestConfidenceCalibrationGap_Fallback_BelowThresholds(t *testing.T) {
+	cal := emptyCal
+	cd := storage.ConfidenceDistribution{
+		TotalDecisions:   100,
+		AvgConfidence:    0.72,
+		OverconfidentPct: 40,
+	}
+	g := confidenceCalibrationGap(cal, cd)
+
+	assert.Empty(t, g)
+}
+
+// Tier 3: Exact boundary values — strict inequality (> not >=).
+func TestConfidenceCalibrationGap_Fallback_ExactThresholds(t *testing.T) {
+	cal := emptyCal
+	cd := storage.ConfidenceDistribution{
+		TotalDecisions:   100,
+		AvgConfidence:    0.82, // exactly at threshold — should NOT trigger
+		OverconfidentPct: 60,   // exactly at threshold — should NOT trigger
+	}
+	g := confidenceCalibrationGap(cal, cd)
+
+	assert.Empty(t, g, "exactly-at-threshold should not trigger")
+}
+
+// Zero confidence distribution decisions — no gap.
+func TestConfidenceCalibrationGap_Fallback_ZeroDecisions(t *testing.T) {
+	cal := emptyCal
+	cd := storage.ConfidenceDistribution{
+		TotalDecisions: 0,
+		AvgConfidence:  0.95,
+	}
+	g := confidenceCalibrationGap(cal, cd)
+
+	assert.Empty(t, g, "should not trigger with zero decisions")
+}
+
+// Tier priority: outcome data takes precedence over revision rate,
+// even if revision rate would trigger.
+func TestConfidenceCalibrationGap_OutcomeTakesPrecedenceOverRevision(t *testing.T) {
+	cal := storage.ConfidenceCalibration{
+		HasOutcomeData: true,
+		Tiers: []storage.ConfidenceTier{
+			{Tier: "high", Total: 30, AssessedCount: 5, AvgOutcome: ptrFloat(0.80), RevisionRate: 25},
+			{Tier: "mid", Total: 50, AssessedCount: 10, AvgOutcome: ptrFloat(0.70), RevisionRate: 2},
+		},
+	}
+	g := confidenceCalibrationGap(cal, storage.ConfidenceDistribution{})
+
+	// Outcome says calibrated (0.80 >= 0.70), even though revision rate is terrible.
+	// Outcome data is ground truth and should win.
+	assert.Empty(t, g)
+}
+
+// Missing "mid" tier — not enough data to compare, should not flag.
+func TestConfidenceCalibrationGap_MissingMidTier(t *testing.T) {
+	cal := storage.ConfidenceCalibration{
+		HasOutcomeData: false,
+		Tiers: []storage.ConfidenceTier{
+			{Tier: "high", Total: 30, RevisionRate: 25},
+			{Tier: "low", Total: 50, RevisionRate: 2},
+		},
+	}
+	g := confidenceCalibrationGap(cal, storage.ConfidenceDistribution{})
+
+	assert.Empty(t, g, "cannot calibrate without mid tier")
 }

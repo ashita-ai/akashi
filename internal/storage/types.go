@@ -220,14 +220,13 @@ type AgentConfidenceStats struct {
 
 // ConfidenceDistribution holds histogram buckets and per-agent breakdowns.
 type ConfidenceDistribution struct {
-	TotalDecisions          int                    `json:"total_decisions"`
-	AvgConfidence           float64                `json:"avg_confidence"`
-	MedianConfidence        float64                `json:"median_confidence"`
-	Buckets                 []ConfidenceBucket     `json:"buckets"`
-	HighConfidencePct       float64                `json:"high_confidence_pct"`        // % of decisions with confidence >= 0.90
-	OverconfidentPct        float64                `json:"overconfident_pct"`          // % of decisions with confidence >= 0.85
-	HighConfAvgCompleteness float64                `json:"high_conf_avg_completeness"` // avg completeness_score of decisions with confidence >= 0.85
-	ByAgent                 []AgentConfidenceStats `json:"by_agent"`
+	TotalDecisions    int                    `json:"total_decisions"`
+	AvgConfidence     float64                `json:"avg_confidence"`
+	MedianConfidence  float64                `json:"median_confidence"`
+	Buckets           []ConfidenceBucket     `json:"buckets"`
+	HighConfidencePct float64                `json:"high_confidence_pct"` // % of decisions with confidence >= 0.90
+	OverconfidentPct  float64                `json:"overconfident_pct"`   // % of decisions with confidence >= 0.85
+	ByAgent           []AgentConfidenceStats `json:"by_agent"`
 }
 
 // ---------------------------------------------------------------------------
@@ -256,6 +255,39 @@ type HighConfOutcomeSignals struct {
 	ConflictsLost    int     `json:"conflicts_lost"`     // count that lost a resolved/wont_fix conflict
 	AssessedCount    int     `json:"assessed_count"`     // count that have a non-NULL outcome_score
 	AvgOutcomeScore  float64 `json:"avg_outcome_score"`  // mean outcome_score where outcome_score IS NOT NULL; 0 if none
+}
+
+// ---------------------------------------------------------------------------
+// Confidence calibration types
+// ---------------------------------------------------------------------------
+
+// ConfidenceTier holds outcome signals for a single confidence band.
+// Used to measure whether declared confidence predicts actual outcomes.
+type ConfidenceTier struct {
+	Tier          string   `json:"tier"`           // "low" (<0.5), "mid" (0.5–0.85), "high" (>=0.85)
+	Total         int      `json:"total"`          // decisions in this tier
+	RevisionRate  float64  `json:"revision_rate"`  // % revised within 48h
+	AvgOutcome    *float64 `json:"avg_outcome"`    // avg outcome_score (nil if no assessments)
+	AssessedCount int      `json:"assessed_count"` // decisions with outcome_score
+}
+
+// AgentCalibration holds per-agent calibration signals.
+type AgentCalibration struct {
+	AgentID       string   `json:"agent_id"`
+	Total         int      `json:"total"`
+	AvgConfidence float64  `json:"avg_confidence"`
+	RevisionRate  float64  `json:"revision_rate"`
+	AvgOutcome    *float64 `json:"avg_outcome"`
+	AssessedCount int      `json:"assessed_count"`
+}
+
+// ConfidenceCalibration measures whether declared confidence actually predicts
+// decision outcomes, using both assessment data and temporal proxy signals.
+type ConfidenceCalibration struct {
+	Tiers          []ConfidenceTier   `json:"tiers"`
+	ByAgent        []AgentCalibration `json:"by_agent"`
+	Calibrated     bool               `json:"calibrated"`       // true if high-conf outcomes >= mid-conf
+	HasOutcomeData bool               `json:"has_outcome_data"` // true if any outcome_score IS NOT NULL
 }
 
 // ---------------------------------------------------------------------------

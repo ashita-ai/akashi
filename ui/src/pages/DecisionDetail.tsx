@@ -1,7 +1,7 @@
 import { useParams, Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
-import { getRun, getDecision, getDecisionRevisions, getDecisionConflicts, verifyDecisionIntegrity } from "@/lib/api";
-import type { Decision, DecisionConflict } from "@/types/api";
+import { getRun, getDecision, getDecisionLineage, getDecisionRevisions, getDecisionConflicts, verifyDecisionIntegrity } from "@/lib/api";
+import type { Decision, DecisionConflict, LineageEntry } from "@/types/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge, decisionTypeBadgeVariant } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -233,6 +233,98 @@ function DecisionConflicts({ decisionId }: { decisionId: string }) {
               </div>
             );
           })}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function LineageEntryRow({ entry }: { entry: LineageEntry }) {
+  return (
+    <Link
+      to={`/decisions/${entry.run_id}`}
+      className="flex items-start gap-3 rounded-md border p-3 text-sm hover:bg-accent/50 transition-colors"
+    >
+      <GitBranch className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground" />
+      <div className="min-w-0 flex-1 space-y-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Badge variant={decisionTypeBadgeVariant(entry.decision_type)} className="text-xs">
+            {entry.decision_type}
+          </Badge>
+          <Badge variant="secondary" className="text-xs">
+            {(entry.confidence * 100).toFixed(0)}%
+          </Badge>
+          <span className="font-mono text-xs text-muted-foreground">
+            {entry.agent_id}
+          </span>
+          {entry.project && (
+            <span className="font-mono text-xs text-muted-foreground">
+              {entry.project}
+            </span>
+          )}
+          <span className="text-xs text-muted-foreground ml-auto shrink-0">
+            {formatRelativeTime(entry.created_at)}
+          </span>
+        </div>
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          {truncate(entry.outcome, 200)}
+        </p>
+      </div>
+    </Link>
+  );
+}
+
+function DecisionLineage({ decisionId }: { decisionId: string }) {
+  const { data, isPending } = useQuery({
+    queryKey: ["lineage", decisionId],
+    queryFn: () => getDecisionLineage(decisionId),
+    staleTime: 60_000,
+  });
+
+  if (isPending) return <Skeleton className="h-24 w-full" />;
+  if (!data || (!data.preceded_by && data.cited_by.length === 0)) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-sm font-medium">
+          <GitBranch className="h-4 w-4" />
+          Lineage
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Preceded by */}
+        <div>
+          <h4 className="text-xs font-medium text-muted-foreground mb-2">Preceded by</h4>
+          {data.preceded_by ? (
+            <LineageEntryRow entry={data.preceded_by} />
+          ) : (
+            <p className="text-xs text-muted-foreground italic">No precedents recorded</p>
+          )}
+        </div>
+
+        {/* Cited by */}
+        <div>
+          <h4 className="text-xs font-medium text-muted-foreground mb-2">
+            Cited by
+            {data.cited_by.length > 0 && (
+              <span className="ml-1 text-foreground">({data.cited_by.length}{data.cited_by_has_more ? "+" : ""})</span>
+            )}
+          </h4>
+          {data.cited_by.length > 0 ? (
+            <div className="space-y-2">
+              {data.cited_by.map((entry) => (
+                <LineageEntryRow key={entry.id} entry={entry} />
+              ))}
+              {data.cited_by_has_more && (
+                <p className="text-xs text-muted-foreground italic text-center pt-1">
+                  More citations exist
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground italic">Not yet cited</p>
+          )}
         </div>
       </CardContent>
     </Card>
@@ -498,8 +590,6 @@ export default function DecisionDetail() {
                       <TableHeader>
                         <TableRow>
                           <TableHead>Option</TableHead>
-                          <TableHead className="text-right">Score</TableHead>
-                          <TableHead>Selected</TableHead>
                           <TableHead>Rejection Reason</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -508,18 +598,6 @@ export default function DecisionDetail() {
                           <TableRow key={alt.id}>
                             <TableCell className="font-medium">
                               {alt.label}
-                            </TableCell>
-                            <TableCell className="text-right font-mono">
-                              {alt.score != null
-                                ? (alt.score * 100).toFixed(0) + "%"
-                                : "\u2014"}
-                            </TableCell>
-                            <TableCell>
-                              {alt.selected ? (
-                                <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                              ) : (
-                                <span className="text-muted-foreground">{"—"}</span>
-                              )}
                             </TableCell>
                             <TableCell className="text-sm text-muted-foreground">
                               {alt.rejection_reason ?? "\u2014"}
@@ -577,6 +655,9 @@ export default function DecisionDetail() {
 
                 {/* Revision chain */}
                 <RevisionChain decisionId={decision.id} />
+
+                {/* Lineage: precedent chain */}
+                <DecisionLineage decisionId={decision.id} />
 
                 {/* Related conflicts */}
                 <DecisionConflicts decisionId={decision.id} />

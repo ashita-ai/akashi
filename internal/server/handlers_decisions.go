@@ -157,6 +157,7 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	if result.EmbeddingSkipped {
 		resp["embedding_skipped"] = true
 	}
+
 	h.completeIdempotentWriteBestEffort(r, orgID, idem, http.StatusCreated, resp)
 	writeJSON(w, r, http.StatusCreated, resp)
 }
@@ -190,6 +191,15 @@ func (h *Handlers) buildTraceAgentContext(
 		serverCtx["tool"] = parts[0]
 		if len(parts) > 1 {
 			serverCtx["tool_version"] = parts[1]
+		}
+	}
+
+	// Server-inferred model from X-Model header. Only set when the client
+	// hasn't already self-reported a model in the request body context, so
+	// explicit values always take priority (generated column: client > server > flat).
+	if _, hasClientModel := clientCtx["model"]; !hasClientModel {
+		if xm := r.Header.Get("X-Model"); xm != "" {
+			serverCtx["model"] = xm
 		}
 	}
 
@@ -1048,4 +1058,28 @@ func (h *Handlers) HandleDecisionFacets(w http.ResponseWriter, r *http.Request) 
 		Types:    types,
 		Projects: projects,
 	})
+}
+
+// HandleGetDecisionLineage handles GET /v1/decisions/{id}/lineage (reader+).
+// Returns the precedent chain: the decision this one cites and decisions that cite it.
+func (h *Handlers) HandleGetDecisionLineage(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+
+	id, err := parsePathUUID(r, "id")
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid decision ID")
+		return
+	}
+
+	lineage, err := h.db.GetDecisionLineage(r.Context(), id, orgID, 20)
+	if err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "decision not found")
+			return
+		}
+		h.writeInternalError(w, r, "failed to get decision lineage", err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, lineage)
 }

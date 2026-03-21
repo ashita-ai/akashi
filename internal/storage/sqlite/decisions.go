@@ -185,18 +185,12 @@ func createTraceInTx(ctx context.Context, tx *sql.Tx, p storage.CreateTraceParam
 		if alt.CreatedAt.IsZero() {
 			alt.CreatedAt = now
 		}
-		selected := 0
-		if alt.Selected {
-			selected = 1
-		}
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO alternatives (id, decision_id, label, score, selected, rejection_reason, metadata, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO alternatives (id, decision_id, label, rejection_reason, metadata, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
 			uuidStr(alt.ID),
 			uuidStr(d.ID),
 			alt.Label,
-			alt.Score,
-			selected,
 			alt.RejectionReason,
 			jsonStr(alt.Metadata),
 			timeStr(alt.CreatedAt),
@@ -410,7 +404,7 @@ func (l *LiteDB) GetDecisionsByAgent(ctx context.Context, orgID uuid.UUID, agent
 func (l *LiteDB) GetDecisionForScoring(ctx context.Context, id, orgID uuid.UUID) (model.Decision, error) {
 	row := l.db.QueryRowContext(ctx,
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		        valid_from, embedding, outcome_embedding, session_id, agent_context, project
+		        valid_from, embedding, outcome_embedding, session_id, agent_context, project, transaction_time
 		 FROM decisions WHERE id = ? AND org_id = ? AND valid_to IS NULL`,
 		uuidStr(id), uuidStr(orgID),
 	)
@@ -426,11 +420,12 @@ func (l *LiteDB) GetDecisionForScoring(ctx context.Context, id, orgID uuid.UUID)
 		sessionIDStr sql.NullString
 		agentCtxJSON sql.NullString
 		project      sql.NullString
+		txTimeStr    string
 	)
 	err := row.Scan(&idStr, &runIDStr, &d.AgentID, &orgIDStr, &d.DecisionType,
 		&d.Outcome, &d.Confidence, &d.Reasoning,
 		&validFromStr, &embBlob, &outEmbBlob,
-		&sessionIDStr, &agentCtxJSON, &project)
+		&sessionIDStr, &agentCtxJSON, &project, &txTimeStr)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return model.Decision{}, storage.ErrNotFound
@@ -442,6 +437,7 @@ func (l *LiteDB) GetDecisionForScoring(ctx context.Context, id, orgID uuid.UUID)
 	d.RunID = parseUUID(runIDStr)
 	d.OrgID = parseUUID(orgIDStr)
 	d.ValidFrom = parseTime(validFromStr)
+	d.TransactionTime = parseTime(txTimeStr)
 	d.Embedding = blobToVector(embBlob)
 	d.OutcomeEmbedding = blobToVector(outEmbBlob)
 	d.SessionID = parseNullUUID(sessionIDStr)
@@ -875,7 +871,7 @@ func (l *LiteDB) loadAlternatives(ctx context.Context, decisions []model.Decisio
 		ids[i] = uuidStr(d.ID)
 	}
 	q := fmt.Sprintf( //nolint:gosec // G201
-		`SELECT id, decision_id, label, score, selected, rejection_reason, metadata, created_at
+		`SELECT id, decision_id, label, rejection_reason, metadata, created_at
 		 FROM alternatives WHERE decision_id IN (%s)`,
 		placeholders(len(ids)),
 	)
@@ -891,17 +887,15 @@ func (l *LiteDB) loadAlternatives(ctx context.Context, decisions []model.Decisio
 			a          model.Alternative
 			idStr      string
 			decIDStr   string
-			selected   int
 			metaJSON   sql.NullString
 			createdStr string
 		)
-		if err := rows.Scan(&idStr, &decIDStr, &a.Label, &a.Score, &selected,
+		if err := rows.Scan(&idStr, &decIDStr, &a.Label,
 			&a.RejectionReason, &metaJSON, &createdStr); err != nil {
 			return fmt.Errorf("sqlite: scan alternative: %w", err)
 		}
 		a.ID = parseUUID(idStr)
 		a.DecisionID = parseUUID(decIDStr)
-		a.Selected = selected != 0
 		a.Metadata = map[string]any{}
 		_ = scanJSON(metaJSON, &a.Metadata)
 		a.CreatedAt = parseTime(createdStr)

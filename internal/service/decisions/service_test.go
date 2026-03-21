@@ -53,8 +53,6 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func ptr[T any](v T) *T { return &v }
-
 func createAgent(t *testing.T, agentID string) {
 	t.Helper()
 	_, err := testDB.CreateAgent(context.Background(), model.Agent{
@@ -99,8 +97,8 @@ func TestTrace_WithAlternativesAndEvidence(t *testing.T) {
 			Outcome:      "chose Redis over Memcached",
 			Confidence:   0.75,
 			Alternatives: []model.TraceAlternative{
-				{Label: "Memcached", Score: ptr(float32(0.6)), Selected: false},
-				{Label: "Redis", Score: ptr(float32(0.9)), Selected: true},
+				{Label: "Memcached"},
+				{Label: "Redis"},
 			},
 			Evidence: []model.TraceEvidence{
 				{SourceType: "document", Content: "Redis supports pub/sub which we need"},
@@ -563,8 +561,8 @@ func TestHydrateAndReScore(t *testing.T) {
 			Confidence:   0.85,
 			Reasoning:    &reasoning,
 			Alternatives: []model.TraceAlternative{
-				{Label: "Option A", Score: ptr(float32(0.3)), Selected: false},
-				{Label: "Option B", Score: ptr(float32(0.9)), Selected: true},
+				{Label: "Option A"},
+				{Label: "Option B"},
 			},
 			Evidence: []model.TraceEvidence{
 				{SourceType: "document", Content: "benchmark results for caching layers"},
@@ -763,8 +761,8 @@ func TestSearch_QdrantPath(t *testing.T) {
 			Confidence:   0.9,
 			Reasoning:    &reasoning,
 			Alternatives: []model.TraceAlternative{
-				{Label: "Option X", Score: ptr(float32(0.4)), Selected: false},
-				{Label: "Option Y", Score: ptr(float32(0.9)), Selected: true},
+				{Label: "Option X"},
+				{Label: "Option Y"},
 			},
 			Evidence: []model.TraceEvidence{
 				{SourceType: "document", Content: "supporting evidence text"},
@@ -931,8 +929,8 @@ func TestSearch_HydrateAndReScore_WithAlternativesAndEvidence(t *testing.T) {
 			Confidence:   0.9,
 			Reasoning:    &reasoning1,
 			Alternatives: []model.TraceAlternative{
-				{Label: "Alt A", Score: ptr(float32(0.3)), Selected: false},
-				{Label: "Alt B", Score: ptr(float32(0.9)), Selected: true},
+				{Label: "Alt A"},
+				{Label: "Alt B"},
 			},
 			Evidence: []model.TraceEvidence{
 				{SourceType: "document", Content: "evidence for option B"},

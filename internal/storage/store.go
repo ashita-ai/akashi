@@ -129,6 +129,9 @@ type Store interface {
 	GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (ConfidenceDistribution, error)
 	// GetHighConfOutcomeSignals returns behavioral signals for decisions with confidence >= 0.85. from/to scope by valid_from.
 	GetHighConfOutcomeSignals(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (HighConfOutcomeSignals, error)
+	// GetConfidenceCalibration returns per-tier and per-agent calibration signals
+	// correlating declared confidence with revision rates and assessment outcomes.
+	GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID) (ConfidenceCalibration, error)
 	GetDecisionTypeDistribution(ctx context.Context, orgID uuid.UUID) ([]DecisionTypeCount, error)
 
 	// ---- Error classification ----

@@ -543,15 +543,9 @@ paths:
                 reasoning: "Redis handles expected QPS with sub-ms latency. TTL-based expiry prevents stale sessions without manual cleanup."
                 alternatives:
                   - label: "Redis"
-                    score: 0.85
-                    selected: true
                   - label: "Memcached"
-                    score: 0.6
-                    selected: false
                     rejection_reason: "No persistence — sessions lost on restart"
                   - label: "Database sessions"
-                    score: 0.3
-                    selected: false
                     rejection_reason: "Adds read load to primary database"
                 evidence:
                   - source_type: document
@@ -643,15 +637,11 @@ paths:
                         - id: "11111111-1111-1111-1111-111111111111"
                           decision_id: "f9e8d7c6-b5a4-3210-fedc-ba9876543210"
                           label: "Redis"
-                          score: 0.85
-                          selected: true
                           metadata: {}
                           created_at: "2026-01-15T10:30:00Z"
                         - id: "22222222-2222-2222-2222-222222222222"
                           decision_id: "f9e8d7c6-b5a4-3210-fedc-ba9876543210"
                           label: "Memcached"
-                          score: 0.6
-                          selected: false
                           rejection_reason: "No persistence — sessions lost on restart"
                           metadata: {}
                           created_at: "2026-01-15T10:30:00Z"
@@ -902,6 +892,35 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/APIResponse_RevisionsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/decisions/{id}/lineage:
+    get:
+      operationId: getDecisionLineage
+      tags: [Query]
+      summary: Get decision precedent lineage
+      description: |
+        Returns the precedent chain for a decision: the decision it cites
+        as a precedent (`preceded_by`) and decisions that cite it (`cited_by`).
+        Requires `reader` role or higher.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The decision ID to get lineage for.
+      responses:
+        "200":
+          description: Lineage chain for the decision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_DecisionLineage"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -2865,7 +2884,7 @@ components:
 
     Alternative:
       type: object
-      required: [id, decision_id, label, selected, metadata, created_at]
+      required: [id, decision_id, label, metadata, created_at]
       properties:
         id:
           type: string
@@ -2875,11 +2894,6 @@ components:
           format: uuid
         label:
           type: string
-        score:
-          type: number
-          format: float
-        selected:
-          type: boolean
         rejection_reason:
           type: string
         metadata:
@@ -3410,15 +3424,10 @@ components:
 
     TraceAlternative:
       type: object
-      required: [label, selected]
+      required: [label]
       properties:
         label:
           type: string
-        score:
-          type: number
-          format: float
-        selected:
-          type: boolean
         rejection_reason:
           type: string
 
@@ -4147,6 +4156,65 @@ components:
           $ref: "#/components/schemas/RevisionsResponse"
         meta:
           $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_DecisionLineage:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/DecisionLineage"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    DecisionLineage:
+      type: object
+      required: [decision_id, preceded_by, cited_by, cited_by_has_more]
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+        preceded_by:
+          nullable: true
+          $ref: "#/components/schemas/LineageEntry"
+        cited_by:
+          type: array
+          items:
+            $ref: "#/components/schemas/LineageEntry"
+        cited_by_has_more:
+          type: boolean
+
+    LineageEntry:
+      type: object
+      required: [id, run_id, agent_id, decision_type, outcome, confidence, created_at, valid_from]
+      properties:
+        id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+        decision_type:
+          type: string
+        outcome:
+          type: string
+        confidence:
+          type: number
+          format: float
+        project:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        valid_from:
+          type: string
+          format: date-time
+        valid_to:
+          type: string
+          format: date-time
+          nullable: true
 
     VerifyResponse:
       type: object

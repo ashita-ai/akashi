@@ -23,6 +23,7 @@ type Metrics struct {
 	OutcomeSignals           *storage.OutcomeSignalsSummary  `json:"outcome_signals,omitempty"`
 	ConfidenceDistribution   *storage.ConfidenceDistribution `json:"confidence_distribution,omitempty"`
 	HighConfOutcomeSignals   *storage.HighConfOutcomeSignals `json:"high_conf_outcome_signals,omitempty"`
+	ConfidenceCalibration    *storage.ConfidenceCalibration  `json:"confidence_calibration,omitempty"`
 	DecisionTypeDistribution []storage.DecisionTypeCount     `json:"decision_type_distribution,omitempty"`
 	Gaps                     []string                        `json:"gaps"`
 }
@@ -172,6 +173,15 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 		m.HighConfOutcomeSignals = &hcos
 	}
 
+	// Confidence calibration: correlates confidence with outcomes.
+	cal, err := s.db.GetConfidenceCalibration(ctx, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("tracehealth: confidence calibration: %w", err)
+	}
+	if qs.Total > 0 {
+		m.ConfidenceCalibration = &cal
+	}
+
 	// Decision type distribution.
 	dtd, err := s.db.GetDecisionTypeDistribution(ctx, orgID)
 	if err != nil {
@@ -182,7 +192,7 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 	}
 
 	// Gap detection: rule-based, max 3 gaps, ordered by severity.
-	m.Gaps = computeGaps(qs, cc.Total, cc.Open, os)
+	m.Gaps = computeGaps(qs, cc.Total, cc.Open, os, cd, cal)
 
 	// Overall status.
 	m.Status = computeStatus(qs, cc.Open)
@@ -192,12 +202,7 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 
 // computeGaps identifies the most important areas for improvement.
 // Returns at most 3 gaps, ordered by severity.
-//
-// Confidence calibration is intentionally NOT flagged as a gap. The raw data
-// (ConfidenceDistribution, HighConfOutcomeSignals) is surfaced in the response
-// for operators to interpret — org-level aggregates lack the context to
-// programmatically declare miscalibration.
-func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts int, os storage.OutcomeSignalsSummary) []string {
+func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts int, os storage.OutcomeSignalsSummary, cd storage.ConfidenceDistribution, cal storage.ConfidenceCalibration) []string {
 	var gaps []string
 
 	// Most severe first.
@@ -214,6 +219,15 @@ func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts 
 	if len(gaps) < 3 && qs.BelowHalf > 0 {
 		gaps = append(gaps, fmt.Sprintf(
 			"%d decisions have completeness scores below 0.5.", qs.BelowHalf))
+	}
+
+	// Confidence calibration gap: uses outcome data or revision-rate proxy
+	// to flag when declared confidence doesn't predict actual outcomes.
+	// Falls back to distribution shape when insufficient behavioral data exists.
+	if len(gaps) < 3 {
+		if g := confidenceCalibrationGap(cal, cd); g != "" {
+			gaps = append(gaps, g)
+		}
 	}
 
 	// Outcome signal gaps (Spec 35).
@@ -238,6 +252,58 @@ func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts 
 		gaps = gaps[:3]
 	}
 	return gaps
+}
+
+// confidenceCalibrationGap returns a gap message if confidence is miscalibrated,
+// or "" if calibration looks acceptable. Uses three tiers of evidence:
+//  1. Assessment outcomes (ground truth) — when available
+//  2. Revision rates (temporal proxy) — always available with enough data
+//  3. Distribution shape (static fallback) — when behavioral data is insufficient
+func confidenceCalibrationGap(cal storage.ConfidenceCalibration, cd storage.ConfidenceDistribution) string {
+	// Build tier lookup for readable access.
+	tiers := make(map[string]storage.ConfidenceTier, len(cal.Tiers))
+	for _, t := range cal.Tiers {
+		tiers[t.Tier] = t
+	}
+
+	high, hasHigh := tiers["high"]
+	mid, hasMid := tiers["mid"]
+
+	// Tier 1: Assessment-based calibration (highest signal).
+	if cal.HasOutcomeData && hasHigh && hasMid && high.AvgOutcome != nil && mid.AvgOutcome != nil && high.AssessedCount >= 3 && mid.AssessedCount >= 3 {
+		if *high.AvgOutcome < *mid.AvgOutcome {
+			return fmt.Sprintf(
+				"High-confidence decisions (>= 0.85) have avg outcome score %.2f vs %.2f for mid-range — confidence is not predicting outcomes.",
+				*high.AvgOutcome, *mid.AvgOutcome)
+		}
+		return "" // calibrated by outcome data
+	}
+
+	// Tier 2: Revision-rate proxy (temporal signal).
+	if hasHigh && hasMid && high.Total >= 5 && mid.Total >= 5 {
+		if high.RevisionRate > mid.RevisionRate && high.RevisionRate > 5 {
+			return fmt.Sprintf(
+				"High-confidence decisions (>= 0.85) are revised within 48h at %.0f%% vs %.0f%% for mid-range — agents may be over-committing.",
+				high.RevisionRate, mid.RevisionRate)
+		}
+		return "" // calibrated by revision rate
+	}
+
+	// Tier 3: Distribution shape fallback (static, least signal).
+	if cd.TotalDecisions > 0 {
+		if cd.AvgConfidence > 0.82 {
+			return fmt.Sprintf(
+				"Avg confidence is %.2f (%.0f%% of decisions >= 0.85) — above the recommended 0.4–0.8 range. Over-confident scoring reduces signal quality.",
+				cd.AvgConfidence, cd.OverconfidentPct)
+		}
+		if cd.OverconfidentPct > 60 {
+			return fmt.Sprintf(
+				"%.0f%% of decisions have confidence >= 0.85 (avg %.2f). A heavy tail of over-confident scores reduces signal quality.",
+				cd.OverconfidentPct, cd.AvgConfidence)
+		}
+	}
+
+	return ""
 }
 
 // computeStatus determines the overall health status.
