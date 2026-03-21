@@ -2055,3 +2055,105 @@ func (db *DB) GetCitationPercentilesForOrg(ctx context.Context, orgID uuid.UUID)
 	}
 	return breakpoints, nil
 }
+
+// LineageEntry is a compact summary of a decision in a lineage chain.
+type LineageEntry struct {
+	ID           uuid.UUID  `json:"id"`
+	RunID        uuid.UUID  `json:"run_id"`
+	AgentID      string     `json:"agent_id"`
+	DecisionType string     `json:"decision_type"`
+	Outcome      string     `json:"outcome"`
+	Confidence   float32    `json:"confidence"`
+	Project      *string    `json:"project,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	ValidFrom    time.Time  `json:"valid_from"`
+	ValidTo      *time.Time `json:"valid_to,omitempty"`
+}
+
+// DecisionLineage holds the upstream precedent and downstream citations for a decision.
+type DecisionLineage struct {
+	DecisionID  uuid.UUID      `json:"decision_id"`
+	PrecededBy  *LineageEntry  `json:"preceded_by"`
+	CitedBy     []LineageEntry `json:"cited_by"`
+	CitedByMore bool           `json:"cited_by_has_more"`
+}
+
+const lineageCols = `id, run_id, agent_id, decision_type, outcome, confidence, project, created_at, valid_from, valid_to`
+
+func scanLineageEntry(row pgxRowScanner) (LineageEntry, error) {
+	var e LineageEntry
+	if err := row.Scan(
+		&e.ID, &e.RunID, &e.AgentID, &e.DecisionType, &e.Outcome,
+		&e.Confidence, &e.Project, &e.CreatedAt, &e.ValidFrom, &e.ValidTo,
+	); err != nil {
+		return LineageEntry{}, fmt.Errorf("storage: scan lineage entry: %w", err)
+	}
+	return e, nil
+}
+
+// GetDecisionLineage returns the precedent chain for a decision: the decision it
+// cites (preceded_by) and decisions that cite it (cited_by), scoped by org_id.
+// cited_by is capped at limit+1 rows so the caller can detect has_more.
+func (db *DB) GetDecisionLineage(ctx context.Context, id, orgID uuid.UUID, limit int) (DecisionLineage, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	result := DecisionLineage{DecisionID: id}
+
+	// Look up this decision's precedent_ref.
+	var precedentRef *uuid.UUID
+	if err := db.pool.QueryRow(ctx,
+		`SELECT precedent_ref FROM decisions WHERE id = $1 AND org_id = $2`,
+		id, orgID).Scan(&precedentRef); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return result, fmt.Errorf("storage: decision %s not found: %w", id, err)
+		}
+		return result, fmt.Errorf("storage: lineage lookup: %w", err)
+	}
+
+	// Fetch the precedent decision summary if one exists.
+	if precedentRef != nil {
+		row := db.pool.QueryRow(ctx,
+			`SELECT `+lineageCols+` FROM decisions WHERE id = $1 AND org_id = $2`,
+			*precedentRef, orgID)
+		entry, err := scanLineageEntry(row)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return result, fmt.Errorf("storage: precedent fetch: %w", err)
+		}
+		if err == nil {
+			result.PrecededBy = &entry
+		}
+	}
+
+	// Fetch decisions that cite this one as their precedent, most recent first.
+	rows, err := db.pool.Query(ctx,
+		`SELECT `+lineageCols+` FROM decisions
+		 WHERE precedent_ref = $1 AND org_id = $2 AND valid_to IS NULL
+		 ORDER BY created_at DESC
+		 LIMIT $3`,
+		id, orgID, limit+1)
+	if err != nil {
+		return result, fmt.Errorf("storage: cited_by query: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		entry, err := scanLineageEntry(rows)
+		if err != nil {
+			return result, err
+		}
+		result.CitedBy = append(result.CitedBy, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return result, fmt.Errorf("storage: cited_by rows: %w", err)
+	}
+
+	// Trim to limit and set has_more flag.
+	if len(result.CitedBy) > limit {
+		result.CitedBy = result.CitedBy[:limit]
+		result.CitedByMore = true
+	}
+
+	return result, nil
+}
