@@ -34,7 +34,8 @@ func openTestDB(t *testing.T) *sql.DB {
 			embedding BLOB,
 			valid_from TEXT NOT NULL,
 			valid_to TEXT,
-			project TEXT
+			project TEXT,
+			transaction_time TEXT NOT NULL DEFAULT (datetime('now'))
 		);
 		CREATE TABLE scored_conflicts (
 			id TEXT PRIMARY KEY,
