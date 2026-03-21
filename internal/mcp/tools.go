@@ -126,6 +126,8 @@ OPTIONAL FIELDS (each improves completeness score and future usefulness):
   Enables project-scoped queries. Auto-detected from working directory if omitted.
 - precedent_ref: Copy the value of precedent_ref_hint from akashi_check's response.
   Wires the attribution graph so the audit trail shows how decisions evolved.
+- precedent_reason: When setting precedent_ref, briefly explain WHY the prior decision
+  applies. This makes the attribution chain self-documenting for future agents.
 
 EXAMPLE: After choosing a caching strategy, record decision_type="architecture",
 outcome="chose Redis with 5min TTL for session cache", confidence=0.7,
@@ -133,6 +135,7 @@ reasoning="Redis handles our expected QPS, TTL prevents stale reads. Memcached l
 task="session infrastructure redesign",
 project="my-service",
 precedent_ref="<paste precedent_ref_hint from akashi_check here, if applicable>",
+precedent_reason="extends ADR-003 shared-nothing mandate to session storage layer",
 alternatives='[{"label":"in-memory cache","rejection_reason":"not shared across instances, would require sticky sessions"},{"label":"Memcached","rejection_reason":"no native clustering in our stack, adds operational overhead"}]',
 evidence='[{"source_type":"tool_output","content":"load test showed 8k req/s with Redis, 2k with DB"},{"source_type":"document","content":"ADR-003 mandates shared-nothing architecture"}]'
 
@@ -181,6 +184,9 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 			),
 			mcplib.WithString("precedent_ref",
 				mcplib.Description("UUID of the prior decision this one directly builds on. Copy the value from akashi_check's precedent_ref_hint field. Wires the attribution graph so the audit trail shows how decisions evolved over time. Omit if there is no clear antecedent."),
+			),
+			mcplib.WithString("precedent_reason",
+				mcplib.Description("Brief explanation of why the cited precedent_ref applies to this decision. Helps future agents understand the reasoning lineage without re-reading both decisions. Example: \"extends the first_detected_at fix to also handle rescored decisions\". Omit if precedent_ref is not set."),
 			),
 		),
 		s.handleTrace,
@@ -696,6 +702,16 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		}
 	}
 
+	// Parse precedent_reason: only meaningful when precedent_ref is set.
+	var precedentReason *string
+	if pr := request.GetString("precedent_reason", ""); pr != "" && precedentRef != nil {
+		reason := pr
+		if len(reason) > model.MaxPrecedentReasonLen {
+			reason = reason[:model.MaxPrecedentReasonLen]
+		}
+		precedentReason = &reason
+	}
+
 	// Build agent_context with server/client namespace split.
 	// "server" contains values the server extracted or verified (MCP session,
 	// client info, roots, API key prefix). "client" contains self-reported
@@ -829,12 +845,13 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	}
 
 	result, err := s.decisionSvc.Trace(ctx, orgID, decisions.TraceInput{
-		AgentID:      agentID,
-		SessionID:    sessionID,
-		AgentContext: agentContext,
-		APIKeyID:     apiKeyID,
-		AuditMeta:    auditMeta,
-		PrecedentRef: precedentRef,
+		AgentID:         agentID,
+		SessionID:       sessionID,
+		AgentContext:    agentContext,
+		APIKeyID:        apiKeyID,
+		AuditMeta:       auditMeta,
+		PrecedentRef:    precedentRef,
+		PrecedentReason: precedentReason,
 		Decision: model.TraceDecision{
 			DecisionType: decisionType,
 			Outcome:      outcome,

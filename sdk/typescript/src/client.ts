@@ -72,6 +72,10 @@ function buildTraceBody(
   if (request.evidence !== undefined) decision.evidence = request.evidence;
 
   const body: Record<string, unknown> = { agent_id: agentId, decision };
+  if (request.precedentRef !== undefined)
+    body.precedent_ref = request.precedentRef;
+  if (request.precedentReason !== undefined)
+    body.precedent_reason = request.precedentReason;
   if (request.metadata !== undefined) body.metadata = request.metadata;
   if (request.context !== undefined) body.context = request.context;
   return body;

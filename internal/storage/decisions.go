@@ -20,11 +20,11 @@ import (
 	"github.com/ashita-ai/akashi/internal/search"
 )
 
-// decisionCols is the SELECT column list for the standard 24-column decision query.
+// decisionCols is the SELECT column list for the standard 25-column decision query.
 // Every function that scans into model.Decision via scanOneDecision must SELECT
 // exactly these columns in this order.
 const decisionCols = `id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-	metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
+	metadata, completeness_score, outcome_score, precedent_ref, precedent_reason, supersedes_id, content_hash,
 	valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id, tool, model, project`
 
 // pgxRowScanner is satisfied by both pgx.Row (single-row) and pgx.Rows (multi-row).
@@ -32,13 +32,13 @@ type pgxRowScanner interface {
 	Scan(dest ...any) error
 }
 
-// scanOneDecision scans the 24-column decisionCols from a single row.
+// scanOneDecision scans the 25-column decisionCols from a single row.
 func scanOneDecision(row pgxRowScanner) (model.Decision, error) {
 	var d model.Decision
 	if err := row.Scan(
 		&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence,
 		&d.Reasoning, &d.Metadata, &d.CompletenessScore, &d.OutcomeScore, &d.PrecedentRef,
-		&d.SupersedesID, &d.ContentHash,
+		&d.PrecedentReason, &d.SupersedesID, &d.ContentHash,
 		&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
 		&d.SessionID, &d.AgentContext, &d.APIKeyID,
 		&d.Tool, &d.Model, &d.Project,
@@ -98,12 +98,12 @@ func (db *DB) CreateDecision(ctx context.Context, d model.Decision) (model.Decis
 
 	_, err = tx.Exec(ctx,
 		`INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome, confidence,
-		 reasoning, embedding, outcome_embedding, metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
+		 reasoning, embedding, outcome_embedding, metadata, completeness_score, outcome_score, precedent_ref, precedent_reason, supersedes_id, content_hash,
 		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
 		d.ID, d.RunID, d.AgentID, d.OrgID, d.DecisionType, d.Outcome, d.Confidence,
 		d.Reasoning, d.Embedding, d.OutcomeEmbedding, d.Metadata, d.CompletenessScore, d.OutcomeScore, d.PrecedentRef,
-		d.SupersedesID, d.ContentHash,
+		d.PrecedentReason, d.SupersedesID, d.ContentHash,
 		d.ValidFrom, d.ValidTo, d.TransactionTime, d.CreatedAt,
 		d.SessionID, d.AgentContext, d.APIKeyID,
 	)
@@ -207,12 +207,12 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 
 	_, err = tx.Exec(ctx,
 		`INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome, confidence,
-		 reasoning, embedding, outcome_embedding, metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
+		 reasoning, embedding, outcome_embedding, metadata, completeness_score, outcome_score, precedent_ref, precedent_reason, supersedes_id, content_hash,
 		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
 		revised.ID, revised.RunID, revised.AgentID, revised.OrgID, revised.DecisionType, revised.Outcome,
 		revised.Confidence, revised.Reasoning, revised.Embedding, revised.OutcomeEmbedding, revised.Metadata,
-		revised.CompletenessScore, revised.OutcomeScore, revised.PrecedentRef, revised.SupersedesID, revised.ContentHash,
+		revised.CompletenessScore, revised.OutcomeScore, revised.PrecedentRef, revised.PrecedentReason, revised.SupersedesID, revised.ContentHash,
 		revised.ValidFrom, revised.ValidTo, revised.TransactionTime, revised.CreatedAt,
 		revised.SessionID, revised.AgentContext, revised.APIKeyID,
 	)
@@ -749,7 +749,7 @@ func (db *DB) searchByFTS(ctx context.Context, orgID uuid.UUID, query string, fi
 
 	sql := fmt.Sprintf(
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
+		 metadata, completeness_score, outcome_score, precedent_ref, precedent_reason, supersedes_id, content_hash,
 		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context,
 		 ts_rank(search_vector, websearch_to_tsquery('english', $%d))
 		   * (0.5 + 0.2 * COALESCE(completeness_score, 0) + 0.3 * COALESCE(outcome_score, 0))
@@ -791,7 +791,7 @@ func (db *DB) searchByILIKE(ctx context.Context, orgID uuid.UUID, query string, 
 
 	sql := fmt.Sprintf(
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		 metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
+		 metadata, completeness_score, outcome_score, precedent_ref, precedent_reason, supersedes_id, content_hash,
 		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context,
 		 (0.5 + 0.2 * COALESCE(completeness_score, 0) + 0.3 * COALESCE(outcome_score, 0))
 		   * (1.0 / (1.0 + EXTRACT(EPOCH FROM (NOW() - valid_from)) / 86400.0 / 90.0))
@@ -819,7 +819,7 @@ func (db *DB) execSearchQuery(ctx context.Context, sql string, args []any) ([]mo
 		if err := rows.Scan(
 			&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence,
 			&d.Reasoning, &d.Metadata, &d.CompletenessScore, &d.OutcomeScore, &d.PrecedentRef,
-			&d.SupersedesID, &d.ContentHash,
+			&d.PrecedentReason, &d.SupersedesID, &d.ContentHash,
 			&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
 			&d.SessionID, &d.AgentContext,
 			&relevance,
@@ -1282,7 +1282,7 @@ func (db *DB) GetDecisionRevisions(ctx context.Context, orgID, id uuid.UUID) ([]
 	forward_chain AS (
 		-- Anchor: the target decision.
 		SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		       metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
+		       metadata, completeness_score, outcome_score, precedent_ref, precedent_reason, supersedes_id, content_hash,
 		       valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id, tool, model, project, 0 AS depth
 		FROM decisions
 		WHERE id = $1 AND org_id = $2
@@ -1291,7 +1291,7 @@ func (db *DB) GetDecisionRevisions(ctx context.Context, orgID, id uuid.UUID) ([]
 
 		-- Walk forward: find decisions that supersede the current one.
 		SELECT d.id, d.run_id, d.agent_id, d.org_id, d.decision_type, d.outcome, d.confidence, d.reasoning,
-		       d.metadata, d.completeness_score, d.outcome_score, d.precedent_ref, d.supersedes_id, d.content_hash,
+		       d.metadata, d.completeness_score, d.outcome_score, d.precedent_ref, d.precedent_reason, d.supersedes_id, d.content_hash,
 		       d.valid_from, d.valid_to, d.transaction_time, d.created_at, d.session_id, d.agent_context, d.api_key_id, d.tool, d.model, d.project, fc.depth + 1
 		FROM decisions d
 		INNER JOIN forward_chain fc ON d.supersedes_id = fc.id
@@ -1300,7 +1300,7 @@ func (db *DB) GetDecisionRevisions(ctx context.Context, orgID, id uuid.UUID) ([]
 	backward_chain AS (
 		-- Anchor: the target decision.
 		SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		       metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
+		       metadata, completeness_score, outcome_score, precedent_ref, precedent_reason, supersedes_id, content_hash,
 		       valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id, tool, model, project, 0 AS depth
 		FROM decisions
 		WHERE id = $1 AND org_id = $2
@@ -1309,7 +1309,7 @@ func (db *DB) GetDecisionRevisions(ctx context.Context, orgID, id uuid.UUID) ([]
 
 		-- Walk backward: follow supersedes_id links.
 		SELECT d.id, d.run_id, d.agent_id, d.org_id, d.decision_type, d.outcome, d.confidence, d.reasoning,
-		       d.metadata, d.completeness_score, d.outcome_score, d.precedent_ref, d.supersedes_id, d.content_hash,
+		       d.metadata, d.completeness_score, d.outcome_score, d.precedent_ref, d.precedent_reason, d.supersedes_id, d.content_hash,
 		       d.valid_from, d.valid_to, d.transaction_time, d.created_at, d.session_id, d.agent_context, d.api_key_id, d.tool, d.model, d.project, bc.depth + 1
 		FROM decisions d
 		INNER JOIN backward_chain bc ON bc.supersedes_id = d.id
@@ -1317,17 +1317,17 @@ func (db *DB) GetDecisionRevisions(ctx context.Context, orgID, id uuid.UUID) ([]
 	),
 	all_revisions AS (
 		SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		       metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
+		       metadata, completeness_score, outcome_score, precedent_ref, precedent_reason, supersedes_id, content_hash,
 		       valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id, tool, model, project
 		FROM forward_chain
 		UNION
 		SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-		       metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
+		       metadata, completeness_score, outcome_score, precedent_ref, precedent_reason, supersedes_id, content_hash,
 		       valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id, tool, model, project
 		FROM backward_chain
 	)
 	SELECT DISTINCT ON (id) id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
-	       metadata, completeness_score, outcome_score, precedent_ref, supersedes_id, content_hash,
+	       metadata, completeness_score, outcome_score, precedent_ref, precedent_reason, supersedes_id, content_hash,
 	       valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id, tool, model, project
 	FROM all_revisions
 	ORDER BY id, valid_from ASC`
@@ -2058,16 +2058,17 @@ func (db *DB) GetCitationPercentilesForOrg(ctx context.Context, orgID uuid.UUID)
 
 // LineageEntry is a compact summary of a decision in a lineage chain.
 type LineageEntry struct {
-	ID           uuid.UUID  `json:"id"`
-	RunID        uuid.UUID  `json:"run_id"`
-	AgentID      string     `json:"agent_id"`
-	DecisionType string     `json:"decision_type"`
-	Outcome      string     `json:"outcome"`
-	Confidence   float32    `json:"confidence"`
-	Project      *string    `json:"project,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	ValidFrom    time.Time  `json:"valid_from"`
-	ValidTo      *time.Time `json:"valid_to,omitempty"`
+	ID              uuid.UUID  `json:"id"`
+	RunID           uuid.UUID  `json:"run_id"`
+	AgentID         string     `json:"agent_id"`
+	DecisionType    string     `json:"decision_type"`
+	Outcome         string     `json:"outcome"`
+	Confidence      float32    `json:"confidence"`
+	PrecedentReason *string    `json:"precedent_reason,omitempty"`
+	Project         *string    `json:"project,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	ValidFrom       time.Time  `json:"valid_from"`
+	ValidTo         *time.Time `json:"valid_to,omitempty"`
 }
 
 // DecisionLineage holds the upstream precedent and downstream citations for a decision.
@@ -2078,13 +2079,13 @@ type DecisionLineage struct {
 	CitedByMore bool           `json:"cited_by_has_more"`
 }
 
-const lineageCols = `id, run_id, agent_id, decision_type, outcome, confidence, project, created_at, valid_from, valid_to`
+const lineageCols = `id, run_id, agent_id, decision_type, outcome, confidence, precedent_reason, project, created_at, valid_from, valid_to`
 
 func scanLineageEntry(row pgxRowScanner) (LineageEntry, error) {
 	var e LineageEntry
 	if err := row.Scan(
 		&e.ID, &e.RunID, &e.AgentID, &e.DecisionType, &e.Outcome,
-		&e.Confidence, &e.Project, &e.CreatedAt, &e.ValidFrom, &e.ValidTo,
+		&e.Confidence, &e.PrecedentReason, &e.Project, &e.CreatedAt, &e.ValidFrom, &e.ValidTo,
 	); err != nil {
 		return LineageEntry{}, fmt.Errorf("storage: scan lineage entry: %w", err)
 	}

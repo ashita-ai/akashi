@@ -26,6 +26,7 @@ const (
 	MaxRejectionReasonLen  = 8 * 1024  // 8 KB — explanation text, not full reasoning
 	MaxAlternativeCount    = 20        // prevent combinatorial explosion in conflict detection
 	MaxEvidenceCount       = 20        // each evidence item triggers an embedding call
+	MaxPrecedentReasonLen  = 4 * 1024  // 4 KB — brief explanation of why a precedent applies
 	MaxMetadataBytes       = 16 * 1024 // 16 KB — serialized JSON cap for any metadata map
 )
 
@@ -243,12 +244,13 @@ type CompleteRunRequest struct {
 
 // TraceRequest is the convenience request for POST /v1/trace.
 type TraceRequest struct {
-	AgentID      string         `json:"agent_id"`
-	TraceID      *string        `json:"trace_id,omitempty"`
-	Decision     TraceDecision  `json:"decision"`
-	PrecedentRef *uuid.UUID     `json:"precedent_ref,omitempty"` // decision that influenced this one
-	Metadata     map[string]any `json:"metadata,omitempty"`
-	Context      map[string]any `json:"context,omitempty"` // Agent context (model, task, repo, branch).
+	AgentID         string         `json:"agent_id"`
+	TraceID         *string        `json:"trace_id,omitempty"`
+	Decision        TraceDecision  `json:"decision"`
+	PrecedentRef    *uuid.UUID     `json:"precedent_ref,omitempty"`    // decision that influenced this one
+	PrecedentReason *string        `json:"precedent_reason,omitempty"` // why the precedent applies
+	Metadata        map[string]any `json:"metadata,omitempty"`
+	Context         map[string]any `json:"context,omitempty"` // Agent context (model, task, repo, branch).
 }
 
 // TraceDecision is the decision portion of a trace convenience request.

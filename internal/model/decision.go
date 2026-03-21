@@ -33,7 +33,8 @@ type Decision struct {
 	OutcomeScore *float32 `json:"outcome_score,omitempty"`
 
 	// Precedent reference: decision that influenced this one.
-	PrecedentRef *uuid.UUID `json:"precedent_ref,omitempty"`
+	PrecedentRef    *uuid.UUID `json:"precedent_ref,omitempty"`
+	PrecedentReason *string    `json:"precedent_reason,omitempty"`
 
 	// Revision chain: ID of the decision this one supersedes.
 	SupersedesID *uuid.UUID `json:"supersedes_id,omitempty"`
