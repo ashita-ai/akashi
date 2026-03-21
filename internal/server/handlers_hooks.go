@@ -20,40 +20,61 @@ import (
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
-// hookCheckStore tracks when akashi_check was last called from this machine.
+// hookCheckStore tracks when each agent last called akashi_check.
 //
-// Claude Code assigns different session IDs to MCP tool calls (e.g.
-// mcp__akashi__akashi_check) and to built-in tool calls (e.g. Edit, Bash).
-// Per-session tracking therefore cannot work — the session_id in the
-// PostToolUse for akashi_check will never match the session_id in the
-// PreToolUse for Edit. We use a single machine-global timestamp instead:
-// "was any akashi tool called recently?" with a 10-minute TTL. That covers
-// the normal call-check-then-edit flow without being permissively open for hours.
+// Keyed by agent_id so that one agent's check does not unlock edits for a
+// different agent running on the same machine. When the caller does not
+// supply an agent_id (e.g. legacy hook scripts), IsAnyRecent provides a
+// backwards-compatible fallback that behaves like the old global timestamp.
 type hookCheckStore struct {
-	mu        sync.RWMutex
-	lastCheck time.Time
+	mu     sync.RWMutex
+	checks map[string]time.Time // agent_id → last check time
 }
 
-const hookCheckTTL = 10 * time.Minute
+const hookCheckTTL = 15 * time.Minute
 
 func newHookCheckStore() *hookCheckStore {
-	return &hookCheckStore{}
+	return &hookCheckStore{checks: make(map[string]time.Time)}
 }
 
-func (s *hookCheckStore) Record(_ string) {
+// Record stores a check timestamp for the given agent.
+func (s *hookCheckStore) Record(agentID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.lastCheck = time.Now()
+	s.checks[agentID] = time.Now()
 }
 
-func (s *hookCheckStore) IsRecent(_ string) bool {
+// IsRecent returns true if the given agent called akashi_check within the TTL.
+func (s *hookCheckStore) IsRecent(agentID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return !s.lastCheck.IsZero() && time.Since(s.lastCheck) < hookCheckTTL
+	t, ok := s.checks[agentID]
+	return ok && time.Since(t) < hookCheckTTL
 }
 
-// Cleanup is a no-op — no map to clean with the global timestamp design.
-func (s *hookCheckStore) Cleanup() {}
+// IsAnyRecent returns true if any agent called akashi_check within the TTL.
+// Used as a fallback when the hook request does not include an agent_id.
+func (s *hookCheckStore) IsAnyRecent() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, t := range s.checks {
+		if time.Since(t) < hookCheckTTL {
+			return true
+		}
+	}
+	return false
+}
+
+// Cleanup evicts expired entries from the map.
+func (s *hookCheckStore) Cleanup() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, t := range s.checks {
+		if time.Since(t) >= hookCheckTTL {
+			delete(s.checks, id)
+		}
+	}
+}
 
 // hookSessionStartInput is the JSON body sent by Claude Code / Cursor on SessionStart.
 type hookSessionStartInput struct {
@@ -66,6 +87,7 @@ type hookSessionStartInput struct {
 // hookPreToolUseInput is the JSON body sent on PreToolUse events.
 type hookPreToolUseInput struct {
 	SessionID     string         `json:"session_id"`
+	AgentID       string         `json:"agent_id"`
 	ToolName      string         `json:"tool_name"`
 	ToolInput     map[string]any `json:"tool_input"`
 	HookEventName string         `json:"hook_event_name"`
@@ -75,6 +97,7 @@ type hookPreToolUseInput struct {
 // hookPostToolUseInput is the JSON body sent on PostToolUse events.
 type hookPostToolUseInput struct {
 	SessionID     string         `json:"session_id"`
+	AgentID       string         `json:"agent_id"`
 	ToolName      string         `json:"tool_name"`
 	ToolInput     map[string]any `json:"tool_input"`
 	ToolResponse  string         `json:"tool_response"`
@@ -134,7 +157,15 @@ func (h *Handlers) HandleHookPreToolUse(w http.ResponseWriter, r *http.Request) 
 
 	switch {
 	case isEditTool(input.ToolName):
-		if h.hookChecks.IsRecent(input.SessionID) {
+		allowed := false
+		if input.AgentID != "" {
+			allowed = h.hookChecks.IsRecent(input.AgentID)
+		} else {
+			// No agent_id in request — fall back to checking any agent.
+			// This preserves backwards compatibility with older hook scripts.
+			allowed = h.hookChecks.IsAnyRecent()
+		}
+		if allowed {
 			writeHookJSON(w, hookResponse{Continue: true, SuppressOutput: true})
 			return
 		}
@@ -172,7 +203,7 @@ func (h *Handlers) HandleHookPostToolUse(w http.ResponseWriter, r *http.Request)
 
 	switch {
 	case isAkashiTool(input.ToolName):
-		h.hookChecks.Record(input.SessionID)
+		h.hookChecks.Record(input.AgentID)
 		writeHookJSON(w, hookResponse{Continue: true, SuppressOutput: true})
 
 	case isBashTool(input.ToolName) && isGitCommit(input.ToolInput):

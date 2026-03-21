@@ -15,29 +15,65 @@ import (
 func TestHookCheckStore(t *testing.T) {
 	t.Run("empty store returns false", func(t *testing.T) {
 		s := newHookCheckStore()
-		assert.False(t, s.IsRecent("any-session"))
+		assert.False(t, s.IsRecent("any-agent"))
 	})
 
-	t.Run("record makes IsRecent true for any session id", func(t *testing.T) {
-		// Claude Code uses different session IDs for MCP tool calls vs built-in
-		// tool calls, so the store is global — any recorded check unblocks any
-		// session within the TTL window.
+	t.Run("record makes IsRecent true for same agent", func(t *testing.T) {
 		s := newHookCheckStore()
-		s.Record("mcp-session-id")
-		assert.True(t, s.IsRecent("editor-session-id"))
+		s.Record("agent-a")
+		assert.True(t, s.IsRecent("agent-a"))
+	})
+
+	t.Run("record does not unlock different agent", func(t *testing.T) {
+		s := newHookCheckStore()
+		s.Record("agent-a")
+		assert.False(t, s.IsRecent("agent-b"), "agent-b should not be unlocked by agent-a's check")
+	})
+
+	t.Run("IsAnyRecent returns true when any agent checked", func(t *testing.T) {
+		s := newHookCheckStore()
+		assert.False(t, s.IsAnyRecent())
+		s.Record("agent-a")
+		assert.True(t, s.IsAnyRecent())
 	})
 
 	t.Run("expired check returns false", func(t *testing.T) {
 		s := newHookCheckStore()
-		s.lastCheck = time.Now().Add(-(hookCheckTTL + time.Second))
-		assert.False(t, s.IsRecent("any-session"))
+		s.mu.Lock()
+		s.checks["old-agent"] = time.Now().Add(-(hookCheckTTL + time.Second))
+		s.mu.Unlock()
+		assert.False(t, s.IsRecent("old-agent"))
+		assert.False(t, s.IsAnyRecent())
 	})
 
-	t.Run("cleanup is safe to call", func(t *testing.T) {
+	t.Run("cleanup evicts expired entries", func(t *testing.T) {
 		s := newHookCheckStore()
-		s.Record("session-1")
-		s.Cleanup() // no-op, must not panic
-		assert.True(t, s.IsRecent("session-1"))
+		s.Record("fresh-agent")
+		s.mu.Lock()
+		s.checks["stale-agent"] = time.Now().Add(-(hookCheckTTL + time.Second))
+		s.mu.Unlock()
+		s.Cleanup()
+		s.mu.RLock()
+		_, staleExists := s.checks["stale-agent"]
+		_, freshExists := s.checks["fresh-agent"]
+		s.mu.RUnlock()
+		assert.False(t, staleExists, "stale entry should be evicted")
+		assert.True(t, freshExists, "fresh entry should survive cleanup")
+	})
+
+	t.Run("cleanup on empty store is safe", func(t *testing.T) {
+		s := newHookCheckStore()
+		s.Cleanup() // must not panic
+		assert.False(t, s.IsAnyRecent())
+	})
+
+	t.Run("empty agent_id is a valid key", func(t *testing.T) {
+		// When MCP/REST records with agent_id="" (e.g. unauthenticated path),
+		// a subsequent IsRecent("") should match.
+		s := newHookCheckStore()
+		s.Record("")
+		assert.True(t, s.IsRecent(""))
+		assert.True(t, s.IsAnyRecent())
 	})
 }
 
@@ -95,12 +131,9 @@ func TestLocalhostOnly(t *testing.T) {
 }
 
 func TestHandleHookPreToolUse_EditGate(t *testing.T) {
-	h := &Handlers{
-		hookChecks: newHookCheckStore(),
-	}
-
 	t.Run("edit blocked without check", func(t *testing.T) {
-		body := `{"session_id":"sess-1","tool_name":"Edit","tool_input":{},"cwd":"/tmp"}`
+		h := &Handlers{hookChecks: newHookCheckStore()}
+		body := `{"session_id":"sess-1","agent_id":"agent-a","tool_name":"Edit","tool_input":{},"cwd":"/tmp"}`
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/hooks/pre-tool-use", strings.NewReader(body))
 		h.HandleHookPreToolUse(rec, req)
@@ -111,8 +144,39 @@ func TestHandleHookPreToolUse_EditGate(t *testing.T) {
 		assert.Equal(t, "deny", resp.HookSpecificOutput.PermissionDecision)
 	})
 
-	t.Run("edit allowed after check", func(t *testing.T) {
-		h.hookChecks.Record("sess-1")
+	t.Run("edit allowed after check for same agent", func(t *testing.T) {
+		h := &Handlers{hookChecks: newHookCheckStore()}
+		h.hookChecks.Record("agent-a")
+		body := `{"session_id":"sess-1","agent_id":"agent-a","tool_name":"Edit","tool_input":{},"cwd":"/tmp"}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/hooks/pre-tool-use", strings.NewReader(body))
+		h.HandleHookPreToolUse(rec, req)
+
+		var resp hookResponse
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+		assert.True(t, resp.Continue)
+		assert.True(t, resp.SuppressOutput)
+	})
+
+	t.Run("edit blocked for different agent even after another agent's check", func(t *testing.T) {
+		h := &Handlers{hookChecks: newHookCheckStore()}
+		h.hookChecks.Record("agent-a")
+		body := `{"session_id":"sess-2","agent_id":"agent-b","tool_name":"Edit","tool_input":{},"cwd":"/tmp"}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/hooks/pre-tool-use", strings.NewReader(body))
+		h.HandleHookPreToolUse(rec, req)
+
+		var resp hookResponse
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+		require.NotNil(t, resp.HookSpecificOutput)
+		assert.Equal(t, "deny", resp.HookSpecificOutput.PermissionDecision)
+	})
+
+	t.Run("edit allowed via fallback when no agent_id in request", func(t *testing.T) {
+		// Backwards compatibility: if hook script doesn't send agent_id,
+		// falls back to IsAnyRecent.
+		h := &Handlers{hookChecks: newHookCheckStore()}
+		h.hookChecks.Record("agent-a")
 		body := `{"session_id":"sess-1","tool_name":"Edit","tool_input":{},"cwd":"/tmp"}`
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/hooks/pre-tool-use", strings.NewReader(body))
@@ -124,14 +188,12 @@ func TestHandleHookPreToolUse_EditGate(t *testing.T) {
 		assert.True(t, resp.SuppressOutput)
 	})
 
-	t.Run("Write tool also gated", func(t *testing.T) {
-		// Use a fresh handler — the store is global, so a prior Record() in a
-		// sibling subtest would make IsRecent return true for any session ID.
-		fresh := &Handlers{hookChecks: newHookCheckStore()}
-		body := `{"session_id":"sess-new","tool_name":"Write","tool_input":{},"cwd":"/tmp"}`
+	t.Run("Write tool also gated per-agent", func(t *testing.T) {
+		h := &Handlers{hookChecks: newHookCheckStore()}
+		body := `{"session_id":"sess-new","agent_id":"agent-x","tool_name":"Write","tool_input":{},"cwd":"/tmp"}`
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/hooks/pre-tool-use", strings.NewReader(body))
-		fresh.HandleHookPreToolUse(rec, req)
+		h.HandleHookPreToolUse(rec, req)
 
 		var resp hookResponse
 		require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
@@ -140,6 +202,7 @@ func TestHandleHookPreToolUse_EditGate(t *testing.T) {
 	})
 
 	t.Run("non-edit tool passes through", func(t *testing.T) {
+		h := &Handlers{hookChecks: newHookCheckStore()}
 		body := `{"session_id":"sess-1","tool_name":"Read","tool_input":{},"cwd":"/tmp"}`
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/hooks/pre-tool-use", strings.NewReader(body))
@@ -174,12 +237,13 @@ func TestHandleHookPostToolUse_AkashiCheckMarker(t *testing.T) {
 		hookChecks: newHookCheckStore(),
 	}
 
-	body := `{"session_id":"sess-1","tool_name":"mcp__akashi__akashi_check","tool_input":{},"cwd":"/tmp"}`
+	body := `{"session_id":"sess-1","agent_id":"agent-a","tool_name":"mcp__akashi__akashi_check","tool_input":{},"cwd":"/tmp"}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/hooks/post-tool-use", strings.NewReader(body))
 	h.HandleHookPostToolUse(rec, req)
 
-	assert.True(t, h.hookChecks.IsRecent("sess-1"))
+	assert.True(t, h.hookChecks.IsRecent("agent-a"))
+	assert.False(t, h.hookChecks.IsRecent("agent-b"), "unrelated agent should not be marked")
 
 	var resp hookResponse
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
@@ -426,7 +490,7 @@ func TestHandleHookPreToolUse_MultiEditGate(t *testing.T) {
 		hookChecks: newHookCheckStore(),
 	}
 
-	body := `{"session_id":"sess-me","tool_name":"MultiEdit","tool_input":{},"cwd":"/tmp"}`
+	body := `{"session_id":"sess-me","agent_id":"agent-me","tool_name":"MultiEdit","tool_input":{},"cwd":"/tmp"}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/hooks/pre-tool-use", strings.NewReader(body))
 	h.HandleHookPreToolUse(rec, req)
@@ -470,13 +534,13 @@ func TestHandleHookPostToolUse_AkashiTraceMarker(t *testing.T) {
 		hookChecks: newHookCheckStore(),
 	}
 
-	// akashi_trace should also record the check marker.
-	body := `{"session_id":"sess-trace","tool_name":"mcp__akashi__akashi_trace","tool_input":{},"cwd":"/tmp"}`
+	// akashi_trace should also record the check marker for the agent.
+	body := `{"session_id":"sess-trace","agent_id":"tracer","tool_name":"mcp__akashi__akashi_trace","tool_input":{},"cwd":"/tmp"}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/hooks/post-tool-use", strings.NewReader(body))
 	h.HandleHookPostToolUse(rec, req)
 
-	assert.True(t, h.hookChecks.IsRecent("sess-trace"))
+	assert.True(t, h.hookChecks.IsRecent("tracer"))
 }
 
 func TestHandleHookPostToolUse_NonBashNonAkashi(t *testing.T) {
@@ -497,20 +561,28 @@ func TestHandleHookPostToolUse_NonBashNonAkashi(t *testing.T) {
 }
 
 func TestHookCheckStore_TTLExpiry(t *testing.T) {
-	// The store now tracks a single machine-global timestamp, not per-session
-	// entries. Test expired and valid states with separate store instances.
-	expired := &hookCheckStore{lastCheck: time.Now().Add(-(hookCheckTTL + time.Second))}
-	assert.False(t, expired.IsRecent("any"), "check just past TTL should not be recent")
+	t.Run("just past TTL is not recent", func(t *testing.T) {
+		s := newHookCheckStore()
+		s.mu.Lock()
+		s.checks["agent-old"] = time.Now().Add(-(hookCheckTTL + time.Second))
+		s.mu.Unlock()
+		assert.False(t, s.IsRecent("agent-old"))
+	})
 
-	valid := &hookCheckStore{lastCheck: time.Now().Add(-(hookCheckTTL - time.Minute))}
-	assert.True(t, valid.IsRecent("any"), "check just within TTL should be recent")
+	t.Run("just within TTL is recent", func(t *testing.T) {
+		s := newHookCheckStore()
+		s.mu.Lock()
+		s.checks["agent-ok"] = time.Now().Add(-(hookCheckTTL - time.Minute))
+		s.mu.Unlock()
+		assert.True(t, s.IsRecent("agent-ok"))
+	})
 }
 
 func TestHookCheckStore_CleanupEmpty(t *testing.T) {
 	s := newHookCheckStore()
 	// Cleanup on empty store should not panic.
 	s.Cleanup()
-	assert.False(t, s.IsRecent("anything"))
+	assert.False(t, s.IsAnyRecent())
 }
 
 func TestHandlePostCommit_NonAutoTrace(t *testing.T) {
@@ -609,11 +681,11 @@ func TestHandleHookPreToolUse_EditAfterCheck(t *testing.T) {
 		hookChecks: newHookCheckStore(),
 	}
 
-	// Record a check first
-	h.hookChecks.Record("sess-edit-ok")
+	// Record a check for the specific agent
+	h.hookChecks.Record("agent-edit-ok")
 
-	// Now Edit should be allowed
-	body := `{"session_id":"sess-edit-ok","tool_name":"Edit","tool_input":{},"cwd":"/tmp"}`
+	// Edit should be allowed for that agent
+	body := `{"session_id":"sess-edit-ok","agent_id":"agent-edit-ok","tool_name":"Edit","tool_input":{},"cwd":"/tmp"}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/hooks/pre-tool-use", strings.NewReader(body))
 	h.HandleHookPreToolUse(rec, req)
