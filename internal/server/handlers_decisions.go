@@ -691,11 +691,32 @@ func (h *Handlers) HandleVerifyDecision(w http.ResponseWriter, r *http.Request) 
 
 // HandleTraceHealth handles GET /v1/trace-health.
 // Returns aggregate health metrics for the caller's organization.
+// Optional query params: from, to (RFC3339) scope metrics to a time window.
 func (h *Handlers) HandleTraceHealth(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
+	var from, to *time.Time
+	if v := r.URL.Query().Get("from"); v != "" {
+		parsed, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid 'from' timestamp")
+			return
+		}
+		t := parsed.UTC()
+		from = &t
+	}
+	if v := r.URL.Query().Get("to"); v != "" {
+		parsed, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid 'to' timestamp")
+			return
+		}
+		t := parsed.UTC()
+		to = &t
+	}
+
 	svc := tracehealth.New(h.db)
-	metrics, err := svc.Compute(r.Context(), orgID)
+	metrics, err := svc.Compute(r.Context(), orgID, from, to)
 	if err != nil {
 		h.writeInternalError(w, r, "failed to compute trace health", err)
 		return

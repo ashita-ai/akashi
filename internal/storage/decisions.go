@@ -1796,9 +1796,10 @@ func (db *DB) CountUnvalidatedConflicts(ctx context.Context) (int, error) {
 }
 
 // GetDecisionQualityStats returns aggregate quality metrics for current decisions in an org.
-func (db *DB) GetDecisionQualityStats(ctx context.Context, orgID uuid.UUID) (DecisionQualityStats, error) {
+// When from/to are non-nil, only decisions with valid_from in [from, to) are included.
+func (db *DB) GetDecisionQualityStats(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (DecisionQualityStats, error) {
 	var s DecisionQualityStats
-	err := db.pool.QueryRow(ctx, `
+	q := `
 		SELECT count(*),
 		       COALESCE(avg(completeness_score), 0),
 		       count(*) FILTER (WHERE completeness_score < 0.5),
@@ -1808,7 +1809,17 @@ func (db *DB) GetDecisionQualityStats(ctx context.Context, orgID uuid.UUID) (Dec
 		           SELECT 1 FROM alternatives a WHERE a.decision_id = decisions.id
 		       ))
 		FROM decisions
-		WHERE org_id = $1 AND valid_to IS NULL`, orgID).Scan(
+		WHERE org_id = $1 AND valid_to IS NULL`
+	args := []any{orgID}
+	if from != nil {
+		args = append(args, *from)
+		q += fmt.Sprintf(" AND valid_from >= $%d", len(args))
+	}
+	if to != nil {
+		args = append(args, *to)
+		q += fmt.Sprintf(" AND valid_from < $%d", len(args))
+	}
+	err := db.pool.QueryRow(ctx, q, args...).Scan(
 		&s.Total, &s.AvgCompleteness, &s.BelowHalf, &s.BelowThird, &s.WithReasoning, &s.WithAlternatives)
 	if err != nil {
 		return s, fmt.Errorf("storage: decision quality stats: %w", err)

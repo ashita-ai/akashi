@@ -115,11 +115,16 @@ type Store interface {
 
 	// ---- Trace health ----
 
-	GetDecisionQualityStats(ctx context.Context, orgID uuid.UUID) (DecisionQualityStats, error)
-	GetEvidenceCoverageStats(ctx context.Context, orgID uuid.UUID) (EvidenceCoverageStats, error)
-	GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID) (ConflictStatusCounts, error)
+	// GetDecisionQualityStats returns aggregate quality metrics. When from/to are non-nil
+	// only decisions with valid_from in [from, to) are included; nil means no bound.
+	GetDecisionQualityStats(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (DecisionQualityStats, error)
+	// GetEvidenceCoverageStats returns evidence coverage metrics. from/to scope decisions by valid_from.
+	GetEvidenceCoverageStats(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (EvidenceCoverageStats, error)
+	// GetConflictStatusCounts returns conflict status breakdown. from/to scope conflicts by detected_at.
+	GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (ConflictStatusCounts, error)
 	GetWontFixRate(ctx context.Context, orgID uuid.UUID) (WontFixRate, error)
-	GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID) (OutcomeSignalsSummary, error)
+	// GetOutcomeSignalsSummary returns outcome signals. from/to scope decisions by valid_from.
+	GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (OutcomeSignalsSummary, error)
 	GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (ConfidenceDistribution, error)
 	GetDecisionTypeDistribution(ctx context.Context, orgID uuid.UUID) ([]DecisionTypeCount, error)
 

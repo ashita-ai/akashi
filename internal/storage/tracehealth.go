@@ -5,14 +5,28 @@ package storage
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 // GetOutcomeSignalsSummary returns org-level aggregate outcome signal counts
 // for use in GET /v1/trace-health.
-func (db *DB) GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID) (OutcomeSignalsSummary, error) {
+// When from/to are non-nil, only decisions with valid_from in [from, to) are included.
+func (db *DB) GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (OutcomeSignalsSummary, error) {
 	var s OutcomeSignalsSummary
+
+	// Build optional time-range clause for the anchor decision (d).
+	timeFilter := ""
+	args := []any{orgID}
+	if from != nil {
+		args = append(args, *from)
+		timeFilter += fmt.Sprintf(" AND d.valid_from >= $%d", len(args))
+	}
+	if to != nil {
+		args = append(args, *to)
+		timeFilter += fmt.Sprintf(" AND d.valid_from < $%d", len(args))
+	}
 
 	// Decision-level counts: total, never_superseded, revised_within_48h, citation coverage.
 	// Uses EXISTS subqueries to avoid joins that would multiply rows.
@@ -38,7 +52,7 @@ func (db *DB) GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID) (Ou
 		        WHERE cit.precedent_ref = d.id AND cit.org_id = d.org_id AND cit.valid_to IS NULL
 		    ))::int
 		FROM decisions d
-		WHERE d.org_id = $1 AND d.valid_to IS NULL`, orgID).Scan(
+		WHERE d.org_id = $1 AND d.valid_to IS NULL`+timeFilter, args...).Scan(
 		&s.DecisionsTotal,
 		&s.NeverSuperseded,
 		&s.RevisedWithin48h,

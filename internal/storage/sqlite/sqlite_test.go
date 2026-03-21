@@ -476,21 +476,21 @@ func TestTraceHealth(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("decision quality", func(t *testing.T) {
-		stats, err := db.GetDecisionQualityStats(ctx, orgID)
+		stats, err := db.GetDecisionQualityStats(ctx, orgID, nil, nil)
 		require.NoError(t, err)
 		assert.Equal(t, 1, stats.Total)
 		assert.Equal(t, 1, stats.WithReasoning)
 	})
 
 	t.Run("evidence coverage", func(t *testing.T) {
-		stats, err := db.GetEvidenceCoverageStats(ctx, orgID)
+		stats, err := db.GetEvidenceCoverageStats(ctx, orgID, nil, nil)
 		require.NoError(t, err)
 		assert.Equal(t, 1, stats.TotalDecisions)
 		assert.Equal(t, 0, stats.WithEvidence) // no evidence attached
 	})
 
 	t.Run("conflict status counts", func(t *testing.T) {
-		counts, err := db.GetConflictStatusCounts(ctx, orgID)
+		counts, err := db.GetConflictStatusCounts(ctx, orgID, nil, nil)
 		require.NoError(t, err)
 		assert.Equal(t, 0, counts.Total)
 	})
@@ -504,7 +504,7 @@ func TestTraceHealth(t *testing.T) {
 	})
 
 	t.Run("outcome signals summary", func(t *testing.T) {
-		summary, err := db.GetOutcomeSignalsSummary(ctx, orgID)
+		summary, err := db.GetOutcomeSignalsSummary(ctx, orgID, nil, nil)
 		require.NoError(t, err)
 		assert.Equal(t, 1, summary.DecisionsTotal)
 		assert.Equal(t, 1, summary.NeverSuperseded)
@@ -2743,14 +2743,14 @@ func TestTraceHealth_WithDecisions(t *testing.T) {
 	// Quality stats should reflect the decision. Note: completeness_score
 	// defaults to 0.0 because it's computed by the service layer (quality.Score),
 	// not by CreateTraceTx.
-	qs, err := db.GetDecisionQualityStats(ctx, orgID)
+	qs, err := db.GetDecisionQualityStats(ctx, orgID, nil, nil)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, qs.Total, 1)
 	assert.GreaterOrEqual(t, qs.WithReasoning, 1)
 	assert.GreaterOrEqual(t, qs.WithAlternatives, 1)
 
 	// Evidence coverage should reflect the evidence.
-	ec, err := db.GetEvidenceCoverageStats(ctx, orgID)
+	ec, err := db.GetEvidenceCoverageStats(ctx, orgID, nil, nil)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, ec.TotalDecisions, 1)
 	assert.GreaterOrEqual(t, ec.WithEvidence, 1)
@@ -2758,12 +2758,12 @@ func TestTraceHealth_WithDecisions(t *testing.T) {
 	assert.GreaterOrEqual(t, ec.TotalRecords, 1)
 
 	// Conflict status counts with no conflicts.
-	cc, err := db.GetConflictStatusCounts(ctx, orgID)
+	cc, err := db.GetConflictStatusCounts(ctx, orgID, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, cc.Total)
 
 	// Outcome signals summary.
-	os, err := db.GetOutcomeSignalsSummary(ctx, orgID)
+	os, err := db.GetOutcomeSignalsSummary(ctx, orgID, nil, nil)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, os.DecisionsTotal, 1)
 }
@@ -4441,7 +4441,7 @@ func TestGetOutcomeSignalsSummary_WithData(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	summary, err := db.GetOutcomeSignalsSummary(ctx, orgID)
+	summary, err := db.GetOutcomeSignalsSummary(ctx, orgID, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 3, summary.DecisionsTotal)
 	assert.Equal(t, 3, summary.NeverSuperseded)
@@ -4533,7 +4533,7 @@ func TestGetConflictStatusCounts_WithData(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	counts, err := db.GetConflictStatusCounts(ctx, orgID)
+	counts, err := db.GetConflictStatusCounts(ctx, orgID, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 2, counts.Total)
 	assert.Equal(t, 1, counts.Open)
@@ -4580,7 +4580,7 @@ func TestGetEvidenceCoverageStats_WithData(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	stats, err := db.GetEvidenceCoverageStats(ctx, orgID)
+	stats, err := db.GetEvidenceCoverageStats(ctx, orgID, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 2, stats.TotalDecisions)
 	assert.Equal(t, 1, stats.WithEvidence)
@@ -4818,7 +4818,7 @@ func TestGetDecisionQualityStats_EmptyOrg(t *testing.T) {
 	require.NoError(t, db.EnsureDefaultOrg(ctx))
 	orgID := uuid.Nil
 
-	stats, err := db.GetDecisionQualityStats(ctx, orgID)
+	stats, err := db.GetDecisionQualityStats(ctx, orgID, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, stats.Total)
 	assert.Equal(t, 0.0, stats.AvgCompleteness)
@@ -4868,7 +4868,7 @@ func TestGetDecisionQualityStats_WithData(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	stats, err := db.GetDecisionQualityStats(ctx, orgID)
+	stats, err := db.GetDecisionQualityStats(ctx, orgID, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 2, stats.Total)
 	assert.Equal(t, 1, stats.WithReasoning, "only one decision has reasoning")
@@ -4885,7 +4885,7 @@ func TestGetOutcomeSignalsSummary_EmptyOrg(t *testing.T) {
 	require.NoError(t, db.EnsureDefaultOrg(ctx))
 	orgID := uuid.Nil
 
-	summary, err := db.GetOutcomeSignalsSummary(ctx, orgID)
+	summary, err := db.GetOutcomeSignalsSummary(ctx, orgID, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, summary.DecisionsTotal)
 }
@@ -6384,7 +6384,7 @@ func TestGetEvidenceCoverageStats_EmptyOrg(t *testing.T) {
 	require.NoError(t, db.EnsureDefaultOrg(ctx))
 	orgID := uuid.Nil
 
-	stats, err := db.GetEvidenceCoverageStats(ctx, orgID)
+	stats, err := db.GetEvidenceCoverageStats(ctx, orgID, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, stats.TotalDecisions)
 	assert.Equal(t, float64(0), stats.CoveragePercent)

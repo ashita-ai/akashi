@@ -97,16 +97,27 @@ func (db *DB) CountConflicts(ctx context.Context, orgID uuid.UUID, filters Confl
 }
 
 // GetConflictStatusCounts returns the number of conflicts per resolution status for an org.
-func (db *DB) GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID) (ConflictStatusCounts, error) {
+// When from/to are non-nil, only conflicts with detected_at in [from, to) are included.
+func (db *DB) GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (ConflictStatusCounts, error) {
 	var c ConflictStatusCounts
-	err := db.pool.QueryRow(ctx, `
+	q := `
 		SELECT count(*),
 		       count(*) FILTER (WHERE status = 'open'),
 		       count(*) FILTER (WHERE status = 'acknowledged'),
 		       count(*) FILTER (WHERE status = 'resolved'),
 		       count(*) FILTER (WHERE status = 'wont_fix')
 		FROM scored_conflicts
-		WHERE org_id = $1`, orgID).Scan(
+		WHERE org_id = $1`
+	args := []any{orgID}
+	if from != nil {
+		args = append(args, *from)
+		q += fmt.Sprintf(" AND detected_at >= $%d", len(args))
+	}
+	if to != nil {
+		args = append(args, *to)
+		q += fmt.Sprintf(" AND detected_at < $%d", len(args))
+	}
+	err := db.pool.QueryRow(ctx, q, args...).Scan(
 		&c.Total, &c.Open, &c.Acknowledged, &c.Resolved, &c.WontFix)
 	if err != nil {
 		return c, fmt.Errorf("storage: conflict status counts: %w", err)

@@ -376,8 +376,15 @@ export async function adjudicateConflict(
 }
 
 // Trace health
-export async function getTraceHealth(): Promise<TraceHealth> {
-  return request<TraceHealth>("/v1/trace-health");
+export async function getTraceHealth(params?: {
+  from?: string;
+  to?: string;
+}): Promise<TraceHealth> {
+  const searchParams = new URLSearchParams();
+  if (params?.from) searchParams.set("from", params.from);
+  if (params?.to) searchParams.set("to", params.to);
+  const qs = searchParams.toString();
+  return request<TraceHealth>(`/v1/trace-health${qs ? `?${qs}` : ""}`);
 }
 
 // Conflict analytics
