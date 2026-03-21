@@ -1,4 +1,4 @@
--- 069: Extend model generated column to include server-inferred values.
+-- 070: Extend model generated column to include server-inferred values.
 --
 -- Background: the model field was only extracted from client-reported
 -- agent_context ('client'->>'model' or flat ->>'model'). With server-side

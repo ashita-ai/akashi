@@ -631,30 +631,39 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		// Always store full outcomes on the conflict record, even when the
 		// claim method won (claim fragments are used as OutcomeA/B in the
 		// ValidateInput for LLM comparison only).
+		// A conflict cannot exist before both decisions exist. Use the later
+		// decision's transaction_time as the earliest possible detection time
+		// for group creation (instead of now()).
+		earliestAt := d.TransactionTime
+		if cand.TransactionTime.After(earliestAt) {
+			earliestAt = cand.TransactionTime
+		}
+
 		c := model.DecisionConflict{
-			ConflictKind:      kind,
-			DecisionAID:       decisionID,
-			DecisionBID:       cand.ID,
-			OrgID:             orgID,
-			AgentA:            d.AgentID,
-			AgentB:            cand.AgentID,
-			DecisionTypeA:     d.DecisionType,
-			DecisionTypeB:     cand.DecisionType,
-			OutcomeA:          d.Outcome,
-			OutcomeB:          cand.Outcome,
-			TopicSimilarity:   ptr(sc.topicSim),
-			OutcomeDivergence: ptr(sc.bestDiv),
-			Significance:      ptr(sc.bestSig),
-			ScoringMethod:     bestMethod,
-			Explanation:       explanation,
-			Category:          category,
-			Severity:          severity,
-			Relationship:      relationship,
-			ConfidenceWeight:  ptr(sc.confWeight),
-			TemporalDecay:     ptr(sc.decay),
-			Status:            "open",
-			ClaimTextA:        sc.claimFragA,
-			ClaimTextB:        sc.claimFragB,
+			ConflictKind:       kind,
+			DecisionAID:        decisionID,
+			DecisionBID:        cand.ID,
+			OrgID:              orgID,
+			AgentA:             d.AgentID,
+			AgentB:             cand.AgentID,
+			DecisionTypeA:      d.DecisionType,
+			DecisionTypeB:      cand.DecisionType,
+			OutcomeA:           d.Outcome,
+			OutcomeB:           cand.Outcome,
+			TopicSimilarity:    ptr(sc.topicSim),
+			OutcomeDivergence:  ptr(sc.bestDiv),
+			Significance:       ptr(sc.bestSig),
+			ScoringMethod:      bestMethod,
+			Explanation:        explanation,
+			Category:           category,
+			Severity:           severity,
+			Relationship:       relationship,
+			ConfidenceWeight:   ptr(sc.confWeight),
+			TemporalDecay:      ptr(sc.decay),
+			Status:             "open",
+			ClaimTextA:         sc.claimFragA,
+			ClaimTextB:         sc.claimFragB,
+			EarliestPossibleAt: &earliestAt,
 		}
 
 		// Topic-aware group assignment: find or create a group whose
@@ -664,6 +673,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			groupID, grpErr := s.db.FindOrCreateTopicGroup(ctx,
 				orgID, d.AgentID, cand.AgentID, kind,
 				d.DecisionType, *d.OutcomeEmbedding, topicLabel,
+				c.EarliestPossibleAt,
 			)
 			if grpErr != nil {
 				s.logger.Warn("conflict scorer: topic group lookup failed, falling back",

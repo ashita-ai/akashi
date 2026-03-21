@@ -113,23 +113,25 @@ func (s *LiteScorer) ScoreForDecision(ctx context.Context, decisionID, orgID uui
 }
 
 type liteDecision struct {
-	id           uuid.UUID
-	agentID      string
-	decisionType string
-	outcome      string
-	project      *string
+	id              uuid.UUID
+	agentID         string
+	decisionType    string
+	outcome         string
+	project         *string
+	transactionTime time.Time
 }
 
 func (s *LiteScorer) loadDecision(ctx context.Context, id, orgID uuid.UUID) (liteDecision, error) {
 	var d liteDecision
 	var idStr string
 	var project sql.NullString
+	var txTime string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, agent_id, decision_type, outcome, project
+		`SELECT id, agent_id, decision_type, outcome, project, transaction_time
 		 FROM decisions WHERE id = ? AND org_id = ? AND valid_to IS NULL`,
 		id.String(), orgID.String(),
-	).Scan(&idStr, &d.agentID, &d.decisionType, &d.outcome, &project)
+	).Scan(&idStr, &d.agentID, &d.decisionType, &d.outcome, &project, &txTime)
 	if err != nil {
 		return liteDecision{}, fmt.Errorf("load decision: %w", err)
 	}
@@ -137,13 +139,14 @@ func (s *LiteScorer) loadDecision(ctx context.Context, id, orgID uuid.UUID) (lit
 	if project.Valid {
 		d.project = &project.String
 	}
+	d.transactionTime, _ = time.Parse(time.RFC3339Nano, txTime)
 	return d, nil
 }
 
 func (s *LiteScorer) loadCandidates(ctx context.Context, orgID uuid.UUID, src liteDecision) ([]liteDecision, error) {
 	// Load recent same-type decisions (last 50) from any agent.
 	// Excludes the source decision and superseded decisions.
-	q := `SELECT id, agent_id, decision_type, outcome, project
+	q := `SELECT id, agent_id, decision_type, outcome, project, transaction_time
 	      FROM decisions
 	      WHERE org_id = ? AND decision_type = ? AND id != ?
 	        AND valid_to IS NULL`
@@ -168,13 +171,15 @@ func (s *LiteScorer) loadCandidates(ctx context.Context, orgID uuid.UUID, src li
 		var d liteDecision
 		var idStr string
 		var project sql.NullString
-		if err := rows.Scan(&idStr, &d.agentID, &d.decisionType, &d.outcome, &project); err != nil {
+		var txTime string
+		if err := rows.Scan(&idStr, &d.agentID, &d.decisionType, &d.outcome, &project, &txTime); err != nil {
 			return nil, err
 		}
 		d.id, _ = uuid.Parse(idStr)
 		if project.Valid {
 			d.project = &project.String
 		}
+		d.transactionTime, _ = time.Parse(time.RFC3339Nano, txTime)
 		out = append(out, d)
 	}
 	return out, rows.Err()
@@ -250,14 +255,23 @@ func (s *LiteScorer) findOrCreateGroup(ctx context.Context, orgID uuid.UUID, a, 
 		return uuid.Nil, err
 	}
 
-	// Create new group.
+	// Create new group. Use the later decision's transaction_time as
+	// first_detected_at — a conflict can't exist before both decisions exist.
 	groupID := uuid.New()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	firstDetected := now
+	if !a.transactionTime.IsZero() && !b.transactionTime.IsZero() {
+		earliest := a.transactionTime
+		if b.transactionTime.After(earliest) {
+			earliest = b.transactionTime
+		}
+		firstDetected = earliest.Format(time.RFC3339Nano)
+	}
 	topicLabel := storage.TruncateOutcome(a.outcome, 120)
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO conflict_groups (id, org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic, first_detected_at, last_detected_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		groupID.String(), orgID.String(), agentA, agentB, conflictKind, a.decisionType, topicLabel, now, now,
+		groupID.String(), orgID.String(), agentA, agentB, conflictKind, a.decisionType, topicLabel, firstDetected, now,
 	)
 	if err != nil {
 		return uuid.Nil, err
