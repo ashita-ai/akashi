@@ -218,14 +218,45 @@ func (h *Handlers) handlePostCommit(w http.ResponseWriter, input hookPostToolUse
 // autoTraceCommit records a decision for a git commit in the background.
 // Uses the default org (uuid.Nil) and "admin" agent since hook endpoints
 // are unauthenticated.
+//
+// Enrichments over a bare trace:
+//   - Evidence: changed file paths from git diff HEAD~1
+//   - Task: branch name (common prefixes stripped)
+//   - Reasoning: commit message body (lines after the subject), if present
+//   - Confidence: 0.5 (mechanical auto-trace, not a judgment call)
 func (h *Handlers) autoTraceCommit(input hookPostToolUseInput, commitMsg string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	project := inferProjectFromCWD(input.CWD)
-	reasoning := "auto-traced from git commit via IDE hook"
 
-	// Use the default org (uuid.Nil) which is created during admin seed.
+	// Extract reasoning from the commit body. Fall back to generic label.
+	reasoning := "auto-traced from git commit via IDE hook"
+	if body := gitCommitBody(input.CWD); body != "" {
+		reasoning = body
+	}
+
+	// Build evidence from the changed file list.
+	var evidence []model.TraceEvidence
+	if diff := gitDiffNameOnly(input.CWD); diff != "" {
+		sourceURI := "git:diff"
+		evidence = append(evidence, model.TraceEvidence{
+			SourceType: "tool_output",
+			SourceURI:  &sourceURI,
+			Content:    diff,
+		})
+	}
+
+	// Use branch name (stripped of prefix) as the task label.
+	agentCtx := map[string]any{
+		"source":  "auto-hook",
+		"tool":    "ide-hook",
+		"project": project,
+	}
+	if task := gitBranchTask(input.CWD); task != "" {
+		agentCtx["task"] = task
+	}
+
 	orgID := uuid.Nil
 	agentID := "admin"
 
@@ -234,19 +265,91 @@ func (h *Handlers) autoTraceCommit(input hookPostToolUseInput, commitMsg string)
 		Decision: model.TraceDecision{
 			DecisionType: "implementation",
 			Outcome:      commitMsg,
-			Confidence:   0.7,
+			Confidence:   0.5,
 			Reasoning:    &reasoning,
+			Evidence:     evidence,
 		},
-		AgentContext: map[string]any{
-			"source":  "auto-hook",
-			"tool":    "ide-hook",
-			"project": project,
-		},
+		AgentContext: agentCtx,
 	}
 
 	if _, err := h.decisionSvc.Trace(ctx, orgID, traceInput); err != nil {
 		h.logger.Warn("auto-trace failed", "error", err, "commit", truncateHook(commitMsg, 60))
 	}
+}
+
+// gitDiffNameOnly returns the newline-separated list of files changed in
+// the most recent commit, or "" on any error.
+func gitDiffNameOnly(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", cwd, "diff", "--name-only", "HEAD~1").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// gitCommitBody returns the body (lines after the subject) of the most
+// recent commit, or "" if there is no body or on error.
+func gitCommitBody(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", cwd, "log", "-1", "--format=%b").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// gitBranchTask returns the current branch name with common prefixes
+// (feature/, fix/, evanvolgas/, etc.) stripped, suitable for use as a
+// task label. Returns "" on error or detached HEAD.
+func gitBranchTask(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", cwd, "branch", "--show-current").Output()
+	if err != nil {
+		return ""
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "" {
+		return "" // detached HEAD
+	}
+	return stripBranchPrefix(branch)
+}
+
+// stripBranchPrefix removes conventional branch prefixes so the task
+// label reflects the intent, not the workflow convention.
+func stripBranchPrefix(branch string) string {
+	prefixes := []string{
+		"feature/", "fix/", "bugfix/", "hotfix/",
+		"chore/", "refactor/", "docs/", "test/",
+	}
+	// Also strip username prefixes like "evanvolgas/".
+	if i := strings.Index(branch, "/"); i > 0 && i < len(branch)-1 {
+		prefix := branch[:i+1]
+		for _, p := range prefixes {
+			if prefix == p {
+				return branch[i+1:]
+			}
+		}
+		// If it looks like a username prefix (no second slash in the
+		// remainder), strip it too. e.g. "evanvolgas/enrich-auto-trace".
+		remainder := branch[i+1:]
+		if !strings.Contains(remainder, "/") {
+			return remainder
+		}
+	}
+	return branch
 }
 
 // buildSessionContext creates a compact text summary of recent decisions and conflicts

@@ -568,6 +568,65 @@ func TestInferProjectFromCWD_Empty(t *testing.T) {
 	assert.Empty(t, inferProjectFromCWD(""))
 }
 
+func TestStripBranchPrefix(t *testing.T) {
+	tests := []struct {
+		name   string
+		branch string
+		want   string
+	}{
+		{"feature prefix", "feature/add-widget", "add-widget"},
+		{"fix prefix", "fix/null-pointer", "null-pointer"},
+		{"bugfix prefix", "bugfix/crash-on-start", "crash-on-start"},
+		{"hotfix prefix", "hotfix/security-patch", "security-patch"},
+		{"chore prefix", "chore/update-deps", "update-deps"},
+		{"refactor prefix", "refactor/clean-handlers", "clean-handlers"},
+		{"docs prefix", "docs/update-readme", "update-readme"},
+		{"test prefix", "test/add-coverage", "add-coverage"},
+		{"username prefix", "evanvolgas/enrich-auto-trace", "enrich-auto-trace"},
+		{"no prefix", "main", "main"},
+		{"no prefix with hyphens", "enrich-auto-trace", "enrich-auto-trace"},
+		{"nested known prefix", "feature/auth/token-refresh", "auth/token-refresh"},
+		{"empty string", "", ""},
+		{"slash only", "/", "/"},
+		{"trailing slash", "feature/", "feature/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, stripBranchPrefix(tt.branch))
+		})
+	}
+}
+
+func TestGitDiffNameOnly_EmptyCWD(t *testing.T) {
+	assert.Empty(t, gitDiffNameOnly(""))
+}
+
+func TestGitDiffNameOnly_InvalidPath(t *testing.T) {
+	assert.Empty(t, gitDiffNameOnly("/nonexistent/path/that/does/not/exist"))
+}
+
+func TestGitCommitBody_EmptyCWD(t *testing.T) {
+	assert.Empty(t, gitCommitBody(""))
+}
+
+func TestGitCommitBody_InvalidPath(t *testing.T) {
+	assert.Empty(t, gitCommitBody("/nonexistent/path/that/does/not/exist"))
+}
+
+func TestGitBranchTask_EmptyCWD(t *testing.T) {
+	assert.Empty(t, gitBranchTask(""))
+}
+
+func TestGitBranchTask_InvalidPath(t *testing.T) {
+	assert.Empty(t, gitBranchTask("/nonexistent/path/that/does/not/exist"))
+}
+
+func TestGitBranchTask_CurrentRepo(t *testing.T) {
+	// Running in a real git repo should return something non-empty
+	// (unless detached HEAD in CI). Just verify no panic.
+	_ = gitBranchTask(".")
+}
+
 func TestInferProjectFromCWD_NonGitDir(t *testing.T) {
 	result := inferProjectFromCWD("/tmp")
 	// Falls back to filepath.Base
