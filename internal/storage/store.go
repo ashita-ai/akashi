@@ -125,7 +125,8 @@ type Store interface {
 	GetWontFixRate(ctx context.Context, orgID uuid.UUID) (WontFixRate, error)
 	// GetOutcomeSignalsSummary returns outcome signals. from/to scope decisions by valid_from.
 	GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (OutcomeSignalsSummary, error)
-	GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (ConfidenceDistribution, error)
+	// GetConfidenceDistribution returns confidence histogram and per-agent stats. from/to scope decisions by valid_from.
+	GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (ConfidenceDistribution, error)
 	GetDecisionTypeDistribution(ctx context.Context, orgID uuid.UUID) ([]DecisionTypeCount, error)
 
 	// ---- Error classification ----

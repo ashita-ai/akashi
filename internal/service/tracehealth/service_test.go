@@ -49,7 +49,7 @@ func (m *mockStore) GetOutcomeSignalsSummary(_ context.Context, _ uuid.UUID, _, 
 	return m.outcomeSignals, m.outcomeErr
 }
 
-func (m *mockStore) GetConfidenceDistribution(_ context.Context, _ uuid.UUID) (storage.ConfidenceDistribution, error) {
+func (m *mockStore) GetConfidenceDistribution(_ context.Context, _ uuid.UUID, _, _ *time.Time) (storage.ConfidenceDistribution, error) {
 	return m.confidenceDist, m.confidenceErr
 }
 
@@ -61,7 +61,7 @@ func TestComputeGaps_AllHealthy(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.8, BelowHalf: 2, BelowThird: 0, WithReasoning: 95,
 	}
-	gaps := computeGaps(qs, 5, 0, storage.OutcomeSignalsSummary{})
+	gaps := computeGaps(qs, 5, 0, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{})
 
 	assert.LessOrEqual(t, len(gaps), 3)
 	for _, g := range gaps {
@@ -75,7 +75,7 @@ func TestComputeGaps_LowQuality(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 50, AvgCompleteness: 0.2, BelowHalf: 30, BelowThird: 20, WithReasoning: 10,
 	}
-	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{})
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{})
 
 	assert.GreaterOrEqual(t, len(gaps), 1)
 	assert.Contains(t, gaps[0], "Average completeness score")
@@ -85,7 +85,7 @@ func TestComputeGaps_UnresolvedConflicts(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.7, BelowHalf: 5, BelowThird: 0, WithReasoning: 90,
 	}
-	gaps := computeGaps(qs, 10, 7, storage.OutcomeSignalsSummary{})
+	gaps := computeGaps(qs, 10, 7, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{})
 
 	found := false
 	for _, g := range gaps {
@@ -102,7 +102,7 @@ func TestComputeGaps_EvidenceNeverSurfaces(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.7, BelowHalf: 5, BelowThird: 0, WithReasoning: 90,
 	}
-	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{})
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{})
 
 	for _, g := range gaps {
 		assert.NotContains(t, g, "evidence")
@@ -113,7 +113,7 @@ func TestComputeGaps_MaxThree(t *testing.T) {
 	qs := storage.DecisionQualityStats{
 		Total: 100, AvgCompleteness: 0.1, BelowHalf: 80, BelowThird: 60, WithReasoning: 10,
 	}
-	gaps := computeGaps(qs, 20, 15, storage.OutcomeSignalsSummary{})
+	gaps := computeGaps(qs, 20, 15, storage.OutcomeSignalsSummary{}, storage.ConfidenceDistribution{})
 
 	assert.LessOrEqual(t, len(gaps), 3, "should return at most 3 gaps")
 }
@@ -359,11 +359,11 @@ func TestComputeGaps_OutcomeSignals_RevisedWithin48h(t *testing.T) {
 		DecisionsTotal:   100,
 		RevisedWithin48h: 15, // 15% > 10% threshold
 	}
-	gaps := computeGaps(qs, 0, 0, os)
+	gaps := computeGaps(qs, 0, 0, os, storage.ConfidenceDistribution{})
 
 	found := false
 	for _, g := range gaps {
-		if assert.ObjectsAreEqual("15 decisions (15%) were revised within 48 hours.", g) {
+		if g == "15 decisions (15%) were revised within 48 hours." {
 			found = true
 		}
 	}
@@ -378,11 +378,11 @@ func TestComputeGaps_OutcomeSignals_NeverCited(t *testing.T) {
 		DecisionsTotal: 100,
 		NeverCited:     80, // 80% > 70% threshold
 	}
-	gaps := computeGaps(qs, 0, 0, os)
+	gaps := computeGaps(qs, 0, 0, os, storage.ConfidenceDistribution{})
 
 	found := false
 	for _, g := range gaps {
-		if assert.ObjectsAreEqual("80 decisions (80%) have never been cited as a precedent. Set precedent_ref when tracing to build the attribution graph.", g) {
+		if g == "80 decisions (80%) have never been cited as a precedent. Set precedent_ref when tracing to build the attribution graph." {
 			found = true
 		}
 	}
@@ -398,10 +398,95 @@ func TestComputeGaps_OutcomeSignals_BelowThresholds(t *testing.T) {
 		RevisedWithin48h: 5,  // 5% <= 10% threshold
 		NeverCited:       60, // 60% <= 70% threshold
 	}
-	gaps := computeGaps(qs, 0, 0, os)
+	gaps := computeGaps(qs, 0, 0, os, storage.ConfidenceDistribution{})
 
 	for _, g := range gaps {
 		assert.NotContains(t, g, "revised within 48 hours")
 		assert.NotContains(t, g, "never been cited")
+	}
+}
+
+// Confidence calibration gap: avg confidence above the recommended 0.4–0.8 range.
+func TestComputeGaps_HighAvgConfidence(t *testing.T) {
+	qs := storage.DecisionQualityStats{
+		Total: 100, AvgCompleteness: 0.9,
+	}
+	cd := storage.ConfidenceDistribution{
+		TotalDecisions:   100,
+		AvgConfidence:    0.89,
+		OverconfidentPct: 75,
+	}
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
+
+	found := false
+	for _, g := range gaps {
+		if g == "Avg confidence is 0.89 — the recommended range is 0.4–0.8. Over-confident scoring reduces the signal value of the confidence field." {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected confidence calibration gap, got: %v", gaps)
+}
+
+// Confidence calibration gap: avg within range but high clustering at >= 0.85.
+func TestComputeGaps_HighOverconfidentPct(t *testing.T) {
+	qs := storage.DecisionQualityStats{
+		Total: 100, AvgCompleteness: 0.9,
+	}
+	cd := storage.ConfidenceDistribution{
+		TotalDecisions:   100,
+		AvgConfidence:    0.75,
+		OverconfidentPct: 65,
+	}
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
+
+	found := false
+	for _, g := range gaps {
+		if g == "65% of decisions have confidence >= 0.85 — the recommended range is 0.4–0.8. Over-confident scoring reduces the signal value of the confidence field." {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected overconfident pct gap, got: %v", gaps)
+}
+
+// Confidence within the healthy range should not trigger a gap.
+func TestComputeGaps_ConfidenceWithinRange(t *testing.T) {
+	qs := storage.DecisionQualityStats{
+		Total: 100, AvgCompleteness: 0.9,
+	}
+	cd := storage.ConfidenceDistribution{
+		TotalDecisions:   100,
+		AvgConfidence:    0.70,
+		OverconfidentPct: 40,
+	}
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
+
+	for _, g := range gaps {
+		assert.NotContains(t, g, "confidence")
+	}
+}
+
+// When both conditions are true, the avg-based message takes priority.
+func TestComputeGaps_BothConfidenceTriggersPicksAvg(t *testing.T) {
+	qs := storage.DecisionQualityStats{
+		Total: 100, AvgCompleteness: 0.9,
+	}
+	cd := storage.ConfidenceDistribution{
+		TotalDecisions:   100,
+		AvgConfidence:    0.88,
+		OverconfidentPct: 70,
+	}
+	gaps := computeGaps(qs, 0, 0, storage.OutcomeSignalsSummary{}, cd)
+
+	found := false
+	for _, g := range gaps {
+		if g == "Avg confidence is 0.88 — the recommended range is 0.4–0.8. Over-confident scoring reduces the signal value of the confidence field." {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected avg-based message when both triggers fire, got: %v", gaps)
+
+	// Should NOT also contain the pct-based message.
+	for _, g := range gaps {
+		assert.NotContains(t, g, "% of decisions have confidence")
 	}
 }

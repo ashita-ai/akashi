@@ -511,7 +511,7 @@ func TestTraceHealth(t *testing.T) {
 	})
 
 	t.Run("confidence distribution", func(t *testing.T) {
-		dist, err := db.GetConfidenceDistribution(ctx, orgID)
+		dist, err := db.GetConfidenceDistribution(ctx, orgID, nil, nil)
 		require.NoError(t, err)
 		assert.Equal(t, 1, dist.TotalDecisions)
 		assert.InDelta(t, 0.8, dist.AvgConfidence, 0.01)

@@ -225,6 +225,7 @@ type ConfidenceDistribution struct {
 	MedianConfidence  float64                `json:"median_confidence"`
 	Buckets           []ConfidenceBucket     `json:"buckets"`
 	HighConfidencePct float64                `json:"high_confidence_pct"` // % of decisions with confidence >= 0.90
+	OverconfidentPct  float64                `json:"overconfident_pct"`   // % of decisions with confidence >= 0.85
 	ByAgent           []AgentConfidenceStats `json:"by_agent"`
 }
 

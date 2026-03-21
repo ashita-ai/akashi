@@ -83,9 +83,22 @@ func (db *DB) GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID, fro
 }
 
 // GetConfidenceDistribution returns confidence histogram buckets and per-agent
-// confidence statistics for all current decisions in an org.
-func (db *DB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (ConfidenceDistribution, error) {
+// confidence statistics for current decisions in an org.
+// When from/to are non-nil, only decisions with valid_from in [from, to) are included.
+func (db *DB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (ConfidenceDistribution, error) {
 	var d ConfidenceDistribution
+
+	// Build optional time-range clause.
+	timeFilter := ""
+	args := []any{orgID}
+	if from != nil {
+		args = append(args, *from)
+		timeFilter += fmt.Sprintf(" AND valid_from >= $%d", len(args))
+	}
+	if to != nil {
+		args = append(args, *to)
+		timeFilter += fmt.Sprintf(" AND valid_from < $%d", len(args))
+	}
 
 	// Aggregate stats + histogram in a single query. The FILTER clause counts
 	// decisions in each 0.1-wide bucket, and percentile_cont gives the median.
@@ -104,22 +117,24 @@ func (db *DB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (C
 		    COUNT(*) FILTER (WHERE confidence >= 0.7 AND confidence < 0.8)::int,
 		    COUNT(*) FILTER (WHERE confidence >= 0.8 AND confidence < 0.9)::int,
 		    COUNT(*) FILTER (WHERE confidence >= 0.9 AND confidence <= 1.0)::int,
-		    COALESCE(COUNT(*) FILTER (WHERE confidence >= 0.9) * 100.0 / NULLIF(COUNT(*), 0), 0)
+		    COALESCE(COUNT(*) FILTER (WHERE confidence >= 0.9) * 100.0 / NULLIF(COUNT(*), 0), 0),
+		    COALESCE(COUNT(*) FILTER (WHERE confidence >= 0.85) * 100.0 / NULLIF(COUNT(*), 0), 0)
 		FROM decisions
-		WHERE org_id = $1 AND valid_to IS NULL`, orgID).Scan(
+		WHERE org_id = $1 AND valid_to IS NULL`+timeFilter, args...).Scan(
 		&d.TotalDecisions, &d.AvgConfidence, &d.MedianConfidence,
 		&bucketCount{&d, 0}, &bucketCount{&d, 1}, &bucketCount{&d, 2},
 		&bucketCount{&d, 3}, &bucketCount{&d, 4}, &bucketCount{&d, 5},
 		&bucketCount{&d, 6}, &bucketCount{&d, 7}, &bucketCount{&d, 8},
 		&bucketCount{&d, 9},
 		&d.HighConfidencePct,
+		&d.OverconfidentPct,
 	)
 	if err != nil {
 		return d, fmt.Errorf("storage: confidence distribution: %w", err)
 	}
 
 	// Per-agent confidence breakdown, ordered by avg descending so the most
-	// confident agents appear first.
+	// confident agents appear first. Same time-range filter applies.
 	rows, err := db.pool.Query(ctx, `
 		SELECT agent_id,
 		       AVG(confidence),
@@ -127,9 +142,9 @@ func (db *DB) GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (C
 		       MAX(confidence),
 		       COUNT(*)::int
 		FROM decisions
-		WHERE org_id = $1 AND valid_to IS NULL
+		WHERE org_id = $1 AND valid_to IS NULL`+timeFilter+`
 		GROUP BY agent_id
-		ORDER BY AVG(confidence) DESC`, orgID)
+		ORDER BY AVG(confidence) DESC`, args...)
 	if err != nil {
 		return d, fmt.Errorf("storage: confidence by agent: %w", err)
 	}

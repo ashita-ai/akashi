@@ -154,7 +154,7 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 	}
 
 	// Confidence distribution: histogram + per-agent breakdown.
-	cd, err := s.db.GetConfidenceDistribution(ctx, orgID)
+	cd, err := s.db.GetConfidenceDistribution(ctx, orgID, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("tracehealth: confidence distribution: %w", err)
 	}
@@ -172,7 +172,7 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 	}
 
 	// Gap detection: rule-based, max 3 gaps, ordered by severity.
-	m.Gaps = computeGaps(qs, cc.Total, cc.Open, os)
+	m.Gaps = computeGaps(qs, cc.Total, cc.Open, os, cd)
 
 	// Overall status.
 	m.Status = computeStatus(qs, cc.Open)
@@ -182,7 +182,7 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 
 // computeGaps identifies the most important areas for improvement.
 // Returns at most 3 gaps, ordered by severity.
-func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts int, os storage.OutcomeSignalsSummary) []string {
+func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts int, os storage.OutcomeSignalsSummary, cd storage.ConfidenceDistribution) []string {
 	var gaps []string
 
 	// Most severe first.
@@ -199,6 +199,20 @@ func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts 
 	if len(gaps) < 3 && qs.BelowHalf > 0 {
 		gaps = append(gaps, fmt.Sprintf(
 			"%d decisions have completeness scores below 0.5.", qs.BelowHalf))
+	}
+
+	// Confidence calibration gap: flag distributions that cluster above the
+	// recommended 0.4–0.8 range, which degrades the signal value of confidence.
+	if len(gaps) < 3 && cd.TotalDecisions > 0 {
+		if cd.AvgConfidence > 0.82 {
+			gaps = append(gaps, fmt.Sprintf(
+				"Avg confidence is %.2f — the recommended range is 0.4–0.8. Over-confident scoring reduces the signal value of the confidence field.",
+				cd.AvgConfidence))
+		} else if cd.OverconfidentPct > 60 {
+			gaps = append(gaps, fmt.Sprintf(
+				"%.0f%% of decisions have confidence >= 0.85 — the recommended range is 0.4–0.8. Over-confident scoring reduces the signal value of the confidence field.",
+				cd.OverconfidentPct))
+		}
 	}
 
 	// Outcome signal gaps (Spec 35).
