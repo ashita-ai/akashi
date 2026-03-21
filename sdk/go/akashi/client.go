@@ -485,6 +485,18 @@ type traceDecision struct {
 }
 
 func buildTraceBody(agentID string, req TraceRequest) traceBody {
+	ctx := req.Context
+	// Auto-detect project from git remote when not explicitly set.
+	// This prevents workspace/directory names from leaking as project names.
+	if ctx == nil || ctx["project"] == nil || ctx["project"] == "" {
+		if detected := inferProjectFromGit(); detected != "" {
+			if ctx == nil {
+				ctx = map[string]any{}
+			}
+			ctx["project"] = detected
+		}
+	}
+
 	return traceBody{
 		AgentID: agentID,
 		Decision: traceDecision{
@@ -497,7 +509,7 @@ func buildTraceBody(agentID string, req TraceRequest) traceBody {
 		},
 		PrecedentRef: req.PrecedentRef,
 		Metadata:     req.Metadata,
-		Context:      req.Context,
+		Context:      ctx,
 	}
 }
 
