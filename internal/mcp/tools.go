@@ -906,12 +906,14 @@ func computeMissingFields(decisionType, outcome string, confidence float32, reas
 		tips = append(tips, fmt.Sprintf("Add %d more rejected alternatives with rejection_reason >20 chars (+%d%%)", 3-substantive, (3-substantive)*5))
 	}
 
-	// Evidence (up to 0.15).
+	// Evidence (up to 0.15). Be specific about what counts as evidence so
+	// agents know what to attach — file paths, error messages, test output,
+	// benchmark numbers, or the constraint that drove the choice.
 	if len(evidence) < 2 {
 		if len(evidence) == 0 {
-			tips = append(tips, "Add 2+ evidence items (source_type + content) to support your decision (+15%)")
+			tips = append(tips, "Add evidence to make this trace verifiable: attach file paths, error messages, test output, benchmark numbers, or the constraint that drove the choice (source_type + content, 2+ items for +15%)")
 		} else {
-			tips = append(tips, "Add 1 more evidence item for full credit (+5%)")
+			tips = append(tips, "Add 1 more evidence item for full credit — e.g. a file path, error message, test result, or benchmark number (+5%)")
 		}
 	}
 
