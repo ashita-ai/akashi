@@ -57,6 +57,39 @@ function buildCheckBody(
   return body;
 }
 
+/** Cache for the git-inferred project name (undefined = not yet computed). */
+let inferredProjectCache: string | undefined;
+
+/**
+ * Resolve the canonical project name from git remote origin.
+ * Runs `git remote get-url origin`, strips `.git`, and returns the basename.
+ * Cached for the process lifetime. Returns "" on any failure.
+ */
+function inferProjectFromGit(): string {
+  if (inferredProjectCache !== undefined) return inferredProjectCache;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { execSync } = require("node:child_process");
+    const remote = (
+      execSync("git remote get-url origin", {
+        timeout: 2000,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }) as string
+    ).trim();
+    if (!remote) {
+      inferredProjectCache = "";
+      return "";
+    }
+    const name = remote.replace(/\.git$/, "").split("/").pop() ?? "";
+    inferredProjectCache = name;
+    return name;
+  } catch {
+    inferredProjectCache = "";
+    return "";
+  }
+}
+
 function buildTraceBody(
   agentId: string,
   request: TraceRequest,
@@ -71,9 +104,17 @@ function buildTraceBody(
     decision.alternatives = request.alternatives;
   if (request.evidence !== undefined) decision.evidence = request.evidence;
 
+  // Auto-detect project from git remote when not explicitly set.
+  // This prevents workspace/directory names from leaking as project names.
+  const ctx: Record<string, unknown> = { ...(request.context ?? {}) };
+  if (!ctx.project) {
+    const detected = inferProjectFromGit();
+    if (detected) ctx.project = detected;
+  }
+
   const body: Record<string, unknown> = { agent_id: agentId, decision };
   if (request.metadata !== undefined) body.metadata = request.metadata;
-  if (request.context !== undefined) body.context = request.context;
+  if (Object.keys(ctx).length > 0) body.context = ctx;
   return body;
 }
 

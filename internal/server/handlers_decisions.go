@@ -225,6 +225,21 @@ func (h *Handlers) buildTraceAgentContext(
 		}
 	}
 
+	// Normalize project name: resolve workspace aliases, repo_url parsing,
+	// and server-inferred values to a canonical project name.
+	normalizeTraceProject(
+		clientCtx,
+		"", // HTTP handler has no server-inferred project (can't run git on client's machine)
+		func(project string) string {
+			canonical, err := h.db.ResolveProjectAlias(r.Context(), orgID, project)
+			if err != nil {
+				return ""
+			}
+			return canonical
+		},
+		h.logger,
+	)
+
 	agentContext := map[string]any{}
 	if len(serverCtx) > 0 {
 		agentContext["server"] = serverCtx

@@ -767,6 +767,30 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		}
 	}
 
+	// Normalize project: prefer server-inferred (from MCP roots + git remote)
+	// over client self-report (which may be a workspace name, not the repo).
+	serverProject, _ := serverCtx["project"].(string)
+	clientProject, _ := clientCtx["project"].(string)
+	if serverProject != "" && clientProject != "" && serverProject != clientProject {
+		s.logger.Info("project normalized from server inference",
+			"original", clientProject,
+			"canonical", serverProject,
+		)
+		clientCtx["project_submitted"] = clientProject
+		clientCtx["project"] = serverProject
+	} else if clientProject != "" && serverProject == "" {
+		// No server inference available — try alias lookup as fallback.
+		canonical, aliasErr := s.db.ResolveProjectAlias(ctx, orgID, clientProject)
+		if aliasErr == nil && canonical != "" {
+			s.logger.Info("project normalized from alias",
+				"original", clientProject,
+				"canonical", canonical,
+			)
+			clientCtx["project_submitted"] = clientProject
+			clientCtx["project"] = canonical
+		}
+	}
+
 	// Assemble namespaced agent_context.
 	agentContext := map[string]any{}
 	if len(serverCtx) > 0 {

@@ -10811,3 +10811,147 @@ func TestHandleTrace_ExplicitModelTakesPriorityOverXModelHeader(t *testing.T) {
 	require.NotNil(t, result.Data.Model, "model should be populated")
 	assert.Equal(t, "gpt-4o", *result.Data.Model, "explicit model in body must take priority over X-Model header")
 }
+
+// ===========================================================================
+// Project normalization: workspace names resolved to canonical repo names
+// ===========================================================================
+
+func TestHandleTrace_ProjectNormalizedFromRepoURL(t *testing.T) {
+	// When the client sends a workspace name as the project but also includes
+	// a repo_url in context, the server should normalize to the canonical repo name.
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken,
+		map[string]any{
+			"agent_id": "test-agent",
+			"decision": map[string]any{
+				"decision_type": "implementation",
+				"outcome":       "traced with workspace name and repo_url",
+				"confidence":    0.7,
+			},
+			"context": map[string]any{
+				"project":  "cairo-v1",
+				"repo_url": "https://github.com/ashita-ai/akashi.git",
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var traceResp struct {
+		Data struct {
+			DecisionID string `json:"decision_id"`
+		} `json:"data"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(body, &traceResp))
+	require.NotEmpty(t, traceResp.Data.DecisionID)
+
+	// Fetch the decision and verify the project was normalized.
+	getResp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/"+traceResp.Data.DecisionID, adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = getResp.Body.Close() }()
+	require.Equal(t, http.StatusOK, getResp.StatusCode)
+
+	var result struct {
+		Data model.Decision `json:"data"`
+	}
+	body, _ = io.ReadAll(getResp.Body)
+	require.NoError(t, json.Unmarshal(body, &result))
+	require.NotNil(t, result.Data.Project, "project should be set")
+	assert.Equal(t, "akashi", *result.Data.Project, "workspace name should be normalized to repo name via repo_url")
+}
+
+func TestHandleTrace_ProjectUnchangedWhenCanonical(t *testing.T) {
+	// When the client sends a proper project name, it should be preserved as-is.
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken,
+		map[string]any{
+			"agent_id": "test-agent",
+			"decision": map[string]any{
+				"decision_type": "implementation",
+				"outcome":       "traced with canonical project",
+				"confidence":    0.7,
+			},
+			"context": map[string]any{
+				"project": "akashi",
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var traceResp struct {
+		Data struct {
+			DecisionID string `json:"decision_id"`
+		} `json:"data"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(body, &traceResp))
+	require.NotEmpty(t, traceResp.Data.DecisionID)
+
+	getResp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/"+traceResp.Data.DecisionID, adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = getResp.Body.Close() }()
+	require.Equal(t, http.StatusOK, getResp.StatusCode)
+
+	var result struct {
+		Data model.Decision `json:"data"`
+	}
+	body, _ = io.ReadAll(getResp.Body)
+	require.NoError(t, json.Unmarshal(body, &result))
+	require.NotNil(t, result.Data.Project)
+	assert.Equal(t, "akashi", *result.Data.Project)
+}
+
+func TestHandleTrace_WorkspaceNamesSameRepoGetSameProject(t *testing.T) {
+	// Two decisions traced with different workspace names but the same repo_url
+	// should both resolve to the same canonical project name, making them
+	// eligible for conflict comparison.
+	repoURL := "https://github.com/ashita-ai/akashi.git"
+	workspaceNames := []string{"dubai", "bamako"}
+	var decisionIDs []string
+
+	for _, ws := range workspaceNames {
+		resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken,
+			map[string]any{
+				"agent_id": "test-agent",
+				"decision": map[string]any{
+					"decision_type": "architecture",
+					"outcome":       "decision from workspace " + ws,
+					"confidence":    0.7,
+				},
+				"context": map[string]any{
+					"project":  ws,
+					"repo_url": repoURL,
+				},
+			})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+		var traceResp struct {
+			Data struct {
+				DecisionID string `json:"decision_id"`
+			} `json:"data"`
+		}
+		body, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(body, &traceResp))
+		require.NotEmpty(t, traceResp.Data.DecisionID)
+		decisionIDs = append(decisionIDs, traceResp.Data.DecisionID)
+	}
+
+	// Verify both decisions have the same canonical project name.
+	for i, id := range decisionIDs {
+		getResp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/"+id, adminToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = getResp.Body.Close() }()
+		require.Equal(t, http.StatusOK, getResp.StatusCode)
+
+		var result struct {
+			Data model.Decision `json:"data"`
+		}
+		body, _ := io.ReadAll(getResp.Body)
+		require.NoError(t, json.Unmarshal(body, &result))
+		require.NotNil(t, result.Data.Project, "decision %d should have project set", i)
+		assert.Equal(t, "akashi", *result.Data.Project,
+			"workspace %q should be normalized to 'akashi' via repo_url", workspaceNames[i])
+	}
+}

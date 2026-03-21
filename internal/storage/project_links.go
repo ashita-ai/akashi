@@ -163,6 +163,28 @@ func (db *DB) LinkedProjects(ctx context.Context, orgID uuid.UUID, project, link
 	return projects, rows.Err()
 }
 
+// ResolveProjectAlias looks up a canonical project name for the given alias.
+// Alias links use link_type='alias' with project_a as the alias and project_b
+// as the canonical name (unidirectional, unlike conflict_scope links).
+// Returns "" if no alias mapping exists for the given name.
+func (db *DB) ResolveProjectAlias(ctx context.Context, orgID uuid.UUID, alias string) (string, error) {
+	var canonical string
+	err := db.pool.QueryRow(ctx,
+		`SELECT project_b
+		 FROM project_links
+		 WHERE org_id = $1 AND link_type = 'alias' AND project_a = $2
+		 LIMIT 1`,
+		orgID, alias,
+	).Scan(&canonical)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("storage: resolve project alias: %w", err)
+	}
+	return canonical, nil
+}
+
 // DistinctDecisionTypes returns all distinct decision_type values used in decisions within an org.
 func (db *DB) DistinctDecisionTypes(ctx context.Context, orgID uuid.UUID) ([]string, error) {
 	rows, err := db.pool.Query(ctx,
