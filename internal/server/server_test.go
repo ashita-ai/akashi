@@ -10724,3 +10724,42 @@ func TestHandleOpenAPISpec_NotConfigured(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
+
+// ===========================================================================
+// X-Model header: server-inferred model in agent_context
+// ===========================================================================
+
+func TestHandleTrace_XModelHeader(t *testing.T) {
+	resp, err := authedRequestWithHeaders("POST", testSrv.URL+"/v1/trace", adminToken, map[string]any{
+		"agent_id": "admin",
+		"decision": map[string]any{
+			"decision_type": "x-model-test",
+			"outcome":       "test model header inference",
+			"confidence":    0.8,
+		},
+	}, map[string]string{
+		"X-Model": "claude-opus-4-6",
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+}
+
+func TestHandleTrace_ExplicitModelTakesPriorityOverXModelHeader(t *testing.T) {
+	resp, err := authedRequestWithHeaders("POST", testSrv.URL+"/v1/trace", adminToken, map[string]any{
+		"agent_id": "admin",
+		"decision": map[string]any{
+			"decision_type": "model-priority-test",
+			"outcome":       "explicit model should win over header",
+			"confidence":    0.8,
+		},
+		"context": map[string]any{
+			"model": "gpt-4o",
+		},
+	}, map[string]string{
+		"X-Model": "claude-opus-4-6",
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+}

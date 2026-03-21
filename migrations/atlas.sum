@@ -1,4 +1,4 @@
-h1:vykKuQ3ofwghJxH8RedMrcHogz9mkUwKO7iDyPlJSj4=
+h1:TOV1F4b3sX3OzZQr8tpQFnLom/2JLHH4cqmQx4wfP7g=
 001_initial.sql h1:uhyGXto+QacAaGYb9ZTGjsBs5chlKi8O0eHz9aCQsrY=
 022_full_text_search.sql h1:9iwtA8MgCzAxDV9YkUBn0CLT9ePSmj3GcPoMGg8TXf0=
 023_fix_outbox_index.sql h1:OtMEFBcMRWej02+ghnBXlPr6BVq+LoA62Id9XUWfDNI=
@@ -47,3 +47,4 @@ h1:vykKuQ3ofwghJxH8RedMrcHogz9mkUwKO7iDyPlJSj4=
 066_performance_indexes.sql h1:wvBV0q6JgrtlPubDCyla9J35URbeDq+NKD6ptaT3+S8=
 067_precedent_escalation.sql h1:b20zVZLpiLH2lmYfJAt9WWTOY6yxHeBiBGE4TI0If4c=
 068_cascade_delete_alternatives_evidence.sql h1:XSxpNbHG1wV4KtULVA7wda0M+biDDIcChMrdTm95nDs=
+069_model_server_inference.sql h1:c32g25JIAXt4sh9JE9lvkY5wOjxawn4ON+tcixlmphM=

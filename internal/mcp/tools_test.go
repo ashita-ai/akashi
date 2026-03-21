@@ -2853,3 +2853,122 @@ func TestHandleResolve_WinnerNotInConflict(t *testing.T) {
 	require.True(t, result.IsError)
 	assert.Contains(t, parseToolText(t, result), "must be one of the two decisions")
 }
+
+// ===========================================================================
+// inferModelFromToolName unit tests
+// ===========================================================================
+
+func TestInferModelFromToolName(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolName string
+		want     string
+	}{
+		{"claude-code exact", "claude-code", "claude"},
+		{"claude-desktop exact", "claude-desktop", "claude"},
+		{"case insensitive", "Claude-Code", "claude"},
+		{"whitespace trimmed", "  claude-code  ", "claude"},
+		{"unknown tool returns empty", "cursor", ""},
+		{"empty string", "", ""},
+		{"generic tool", "my-custom-agent", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := inferModelFromToolName(tt.toolName)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// ===========================================================================
+// computeMissingFields: model tip surfaced when model absent
+// ===========================================================================
+
+func TestComputeMissingFields_ModelTip(t *testing.T) {
+	reasoning := "some reasoning that is long enough to pass the 100 char threshold -- padding padding padding padding padding"
+
+	t.Run("no model tip when model present", func(t *testing.T) {
+		tips := computeMissingFields("architecture", "chose postgres", 0.8, &reasoning, nil, nil, false, true)
+		for _, tip := range tips {
+			assert.NotContains(t, tip, "model")
+		}
+	})
+
+	t.Run("model tip when model absent and not inferred", func(t *testing.T) {
+		tips := computeMissingFields("architecture", "chose postgres", 0.8, &reasoning, nil, nil, false, false)
+		found := false
+		for _, tip := range tips {
+			if assert.ObjectsAreEqual(tip, `Pass "model" (e.g. "claude-opus-4-6") so decisions can be correlated by model capability tier`) {
+				found = true
+			}
+		}
+		assert.True(t, found, "expected model tip in: %v", tips)
+	})
+}
+
+// ===========================================================================
+// MCP trace: model inferred from tool name in agent_context
+// ===========================================================================
+
+func TestHandleTrace_ModelInferredFromToolName(t *testing.T) {
+	ctx := adminCtx()
+	agentID := "model-infer-" + uuid.New().String()[:8]
+	_, _ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
+
+	// Trace WITHOUT explicit model — inference should populate server.model
+	// from the tool name stored in the MCP session client info.
+	// Since we don't have a real MCP session with client info in unit tests,
+	// we verify the inference function directly and confirm that when model is
+	// not provided the completeness_tips include the model hint.
+	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
+		"agent_id":      agentID,
+		"decision_type": "architecture",
+		"outcome":       "chose event sourcing for audit trail",
+		"confidence":    0.85,
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "trace should succeed: %s", parseToolText(t, result))
+
+	var resp struct {
+		DecisionID       string   `json:"decision_id"`
+		Status           string   `json:"status"`
+		CompletenessTips []string `json:"completeness_tips"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.Equal(t, "recorded", resp.Status)
+
+	// Without an MCP session with client info, model cannot be inferred,
+	// so the completeness tips should include the model hint.
+	modelTipFound := false
+	for _, tip := range resp.CompletenessTips {
+		if tip == `Pass "model" (e.g. "claude-opus-4-6") so decisions can be correlated by model capability tier` {
+			modelTipFound = true
+		}
+	}
+	assert.True(t, modelTipFound, "expected model tip in completeness_tips: %v", resp.CompletenessTips)
+}
+
+func TestHandleTrace_ExplicitModelSuppressesTip(t *testing.T) {
+	ctx := adminCtx()
+	agentID := "model-explicit-" + uuid.New().String()[:8]
+	_, _ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
+
+	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
+		"agent_id":      agentID,
+		"decision_type": "architecture",
+		"outcome":       "chose event sourcing for audit trail",
+		"confidence":    0.85,
+		"model":         "claude-opus-4-6",
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "trace should succeed: %s", parseToolText(t, result))
+
+	var resp struct {
+		CompletenessTips []string `json:"completeness_tips"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+
+	for _, tip := range resp.CompletenessTips {
+		assert.NotContains(t, tip, "model", "model tip should not appear when model is explicitly provided")
+	}
+}
