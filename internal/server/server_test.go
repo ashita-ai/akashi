@@ -124,7 +124,7 @@ func TestMain(m *testing.M) {
 	buf.Start(ctx)
 	testBuf = buf
 
-	mcpSrv := mcp.New(db, decisionSvc, nil, logger, "test")
+	mcpSrv := mcp.New(db, decisionSvc, nil, logger, "test", 0.85)
 	srv := server.New(server.ServerConfig{
 		DB:                  db,
 		JWTMgr:              jwtMgr,
@@ -137,7 +137,8 @@ func TestMain(m *testing.M) {
 		Version:             "test",
 		MaxRequestBodyBytes: 1 * 1024 * 1024,
 		// Explicitly enabled for tests that exercise GDPR delete behavior.
-		EnableDestructiveDelete: true,
+		EnableDestructiveDelete:     true,
+		HighConfidenceWarnThreshold: 0.85,
 	})
 
 	// Seed admin.
@@ -10812,4 +10813,90 @@ func TestHandleTrace_ExplicitModelTakesPriorityOverXModelHeader(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &result))
 	require.NotNil(t, result.Data.Model, "model should be populated")
 	assert.Equal(t, "gpt-4o", *result.Data.Model, "explicit model in body must take priority over X-Model header")
+}
+
+// ---- High confidence warning in trace response ----------------------------
+
+func TestHandleTrace_HighConfidenceNoEvidenceWarning(t *testing.T) {
+	agentID := "warn-agent-" + uuid.New().String()[:8]
+
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken,
+		model.TraceRequest{
+			AgentID: agentID,
+			Decision: model.TraceDecision{
+				DecisionType: "architecture",
+				Outcome:      "chose high confidence without evidence",
+				Confidence:   0.9,
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var envelope struct {
+		Data struct {
+			DecisionID string   `json:"decision_id"`
+			Warnings   []string `json:"warnings"`
+		} `json:"data"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(body, &envelope))
+	require.Len(t, envelope.Data.Warnings, 1, "should include one warning for high confidence without evidence")
+	assert.Contains(t, envelope.Data.Warnings[0], "high confidence claim")
+	assert.Contains(t, envelope.Data.Warnings[0], "without supporting evidence")
+}
+
+func TestHandleTrace_HighConfidenceWithEvidenceNoWarning(t *testing.T) {
+	agentID := "nowarn-agent-" + uuid.New().String()[:8]
+
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken,
+		model.TraceRequest{
+			AgentID: agentID,
+			Decision: model.TraceDecision{
+				DecisionType: "architecture",
+				Outcome:      "chose with evidence attached",
+				Confidence:   0.9,
+				Evidence: []model.TraceEvidence{
+					{SourceType: "document", Content: "supporting analysis"},
+				},
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var envelope struct {
+		Data struct {
+			Warnings []string `json:"warnings"`
+		} `json:"data"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(body, &envelope))
+	assert.Empty(t, envelope.Data.Warnings, "should not warn when evidence is present")
+}
+
+func TestHandleTrace_LowConfidenceNoWarning(t *testing.T) {
+	agentID := "low-conf-" + uuid.New().String()[:8]
+
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken,
+		model.TraceRequest{
+			AgentID: agentID,
+			Decision: model.TraceDecision{
+				DecisionType: "architecture",
+				Outcome:      "low confidence decision",
+				Confidence:   0.5,
+			},
+		})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var envelope struct {
+		Data struct {
+			Warnings []string `json:"warnings"`
+		} `json:"data"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(body, &envelope))
+	assert.Empty(t, envelope.Data.Warnings, "should not warn for confidence below threshold")
 }

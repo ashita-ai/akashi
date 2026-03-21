@@ -382,3 +382,42 @@ func TestValidateMetadataSize_OverMax(t *testing.T) {
 	assert.Contains(t, err.Error(), "metadata")
 	assert.Contains(t, err.Error(), "exceeds maximum size")
 }
+
+// ---- HighConfidenceWarnings ------------------------------------------------
+
+func TestHighConfidenceWarnings_HighConfidenceNoEvidence(t *testing.T) {
+	warnings := model.HighConfidenceWarnings(0.9, 0, 0.85)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "high confidence claim")
+	assert.Contains(t, warnings[0], "0.9")
+	assert.Contains(t, warnings[0], "without supporting evidence")
+}
+
+func TestHighConfidenceWarnings_HighConfidenceWithEvidence(t *testing.T) {
+	warnings := model.HighConfidenceWarnings(0.9, 2, 0.85)
+	assert.Nil(t, warnings, "should not warn when evidence is present")
+}
+
+func TestHighConfidenceWarnings_LowConfidenceNoEvidence(t *testing.T) {
+	warnings := model.HighConfidenceWarnings(0.5, 0, 0.85)
+	assert.Nil(t, warnings, "should not warn when confidence is below threshold")
+}
+
+func TestHighConfidenceWarnings_ExactlyAtThreshold(t *testing.T) {
+	warnings := model.HighConfidenceWarnings(0.85, 0, 0.85)
+	assert.Nil(t, warnings, "threshold is exclusive — 0.85 is not > 0.85")
+}
+
+func TestHighConfidenceWarnings_JustAboveThreshold(t *testing.T) {
+	warnings := model.HighConfidenceWarnings(0.86, 0, 0.85)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "0.86")
+}
+
+func TestHighConfidenceWarnings_CustomThreshold(t *testing.T) {
+	warnings := model.HighConfidenceWarnings(0.75, 0, 0.70)
+	require.Len(t, warnings, 1, "should fire with a lower custom threshold")
+
+	warnings = model.HighConfidenceWarnings(0.75, 0, 0.80)
+	assert.Nil(t, warnings, "should not fire when confidence is below custom threshold")
+}

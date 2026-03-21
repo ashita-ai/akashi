@@ -56,54 +56,59 @@ type Handlers struct {
 	// conflictValidator classifies relationships between decision pairs.
 	// Nil-safe: eval endpoint returns 501 when not configured.
 	conflictValidator conflicts.Validator
+	// highConfidenceWarnThreshold triggers a response warning when confidence
+	// exceeds this value and no evidence items are provided.
+	highConfidenceWarnThreshold float64
 }
 
 // HandlersDeps holds all dependencies for constructing Handlers.
 // Optional (nil-safe): Broker, Searcher, GrantCache, OpenAPISpec, DecisionHooks.
 type HandlersDeps struct {
-	DB                      *storage.DB
-	JWTMgr                  *auth.JWTManager
-	DecisionSvc             *decisions.Service
-	Buffer                  *trace.Buffer
-	Broker                  *Broker
-	Searcher                search.Searcher
-	GrantCache              *authz.GrantCache
-	Logger                  *slog.Logger
-	Version                 string
-	MaxRequestBodyBytes     int64
-	OpenAPISpec             []byte
-	EnableDestructiveDelete bool
-	RetentionInterval       time.Duration
-	DecisionHooks           []DecisionHook
-	AutoTrace               bool
-	TrustProxy              bool
-	ResolutionRecorder      conflicts.ResolutionRecorder
-	ConflictValidator       conflicts.Validator
+	DB                          *storage.DB
+	JWTMgr                      *auth.JWTManager
+	DecisionSvc                 *decisions.Service
+	Buffer                      *trace.Buffer
+	Broker                      *Broker
+	Searcher                    search.Searcher
+	GrantCache                  *authz.GrantCache
+	Logger                      *slog.Logger
+	Version                     string
+	MaxRequestBodyBytes         int64
+	OpenAPISpec                 []byte
+	EnableDestructiveDelete     bool
+	RetentionInterval           time.Duration
+	DecisionHooks               []DecisionHook
+	AutoTrace                   bool
+	TrustProxy                  bool
+	ResolutionRecorder          conflicts.ResolutionRecorder
+	ConflictValidator           conflicts.Validator
+	HighConfidenceWarnThreshold float64
 }
 
 // NewHandlers creates a new Handlers with all dependencies.
 func NewHandlers(d HandlersDeps) *Handlers {
 	return &Handlers{
-		db:                      d.DB,
-		jwtMgr:                  d.JWTMgr,
-		decisionSvc:             d.DecisionSvc,
-		buffer:                  d.Buffer,
-		broker:                  d.Broker,
-		searcher:                d.Searcher,
-		grantCache:              d.GrantCache,
-		logger:                  d.Logger,
-		startedAt:               time.Now(),
-		version:                 d.Version,
-		maxRequestBodyBytes:     d.MaxRequestBodyBytes,
-		openapiSpec:             d.OpenAPISpec,
-		enableDestructiveDelete: d.EnableDestructiveDelete,
-		retentionInterval:       d.RetentionInterval,
-		decisionHooks:           d.DecisionHooks,
-		hookChecks:              newHookCheckStore(),
-		autoTrace:               d.AutoTrace,
-		trustProxy:              d.TrustProxy,
-		resolutionRecorder:      d.ResolutionRecorder,
-		conflictValidator:       d.ConflictValidator,
+		db:                          d.DB,
+		jwtMgr:                      d.JWTMgr,
+		decisionSvc:                 d.DecisionSvc,
+		buffer:                      d.Buffer,
+		broker:                      d.Broker,
+		searcher:                    d.Searcher,
+		grantCache:                  d.GrantCache,
+		logger:                      d.Logger,
+		startedAt:                   time.Now(),
+		version:                     d.Version,
+		maxRequestBodyBytes:         d.MaxRequestBodyBytes,
+		openapiSpec:                 d.OpenAPISpec,
+		enableDestructiveDelete:     d.EnableDestructiveDelete,
+		retentionInterval:           d.RetentionInterval,
+		decisionHooks:               d.DecisionHooks,
+		hookChecks:                  newHookCheckStore(),
+		autoTrace:                   d.AutoTrace,
+		trustProxy:                  d.TrustProxy,
+		resolutionRecorder:          d.ResolutionRecorder,
+		conflictValidator:           d.ConflictValidator,
+		highConfidenceWarnThreshold: d.HighConfidenceWarnThreshold,
 	}
 }
 

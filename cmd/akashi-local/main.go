@@ -86,7 +86,7 @@ func run() int {
 	decisionSvc := decisions.New(db, embedder, searcher, logger, conflictScorer)
 
 	// nil grantCache: no caching needed for single-user local mode.
-	mcpSrv := mcp.New(db, decisionSvc, nil, logger, version)
+	mcpSrv := mcp.New(db, decisionSvc, nil, logger, version, 0.85)
 
 	// Fixed local identity: platform_admin on the default org.
 	// This bypasses all RBAC checks and gives full access.

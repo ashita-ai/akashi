@@ -69,7 +69,7 @@ func setupAndRun(m *testing.M, tc *testutil.TestContainer) int {
 
 	embedder := embedding.NewNoopProvider(1024)
 	testSvc = decisions.New(testDB, embedder, nil, logger, nil)
-	testServer = New(testDB, testSvc, nil, logger, "test")
+	testServer = New(testDB, testSvc, nil, logger, "test", 0.85)
 
 	return m.Run()
 }
@@ -1433,7 +1433,7 @@ func TestMCPTraceHash_WithPrecedentRef(t *testing.T) {
 // ---------- New() constructor ----------
 
 func TestMCPServerNew(t *testing.T) {
-	s := New(testDB, testSvc, nil, testutil.TestLogger(), "test-version")
+	s := New(testDB, testSvc, nil, testutil.TestLogger(), "test-version", 0.85)
 	require.NotNil(t, s)
 	require.NotNil(t, s.MCPServer())
 	// Verify the server has the expected name by checking it's non-nil.
@@ -3077,4 +3077,57 @@ func TestHandleTrace_ExplicitModelSuppressesTip(t *testing.T) {
 // containsEvidence returns true if the tip string relates to evidence.
 func containsEvidence(tip string) bool {
 	return strings.Contains(tip, "evidence") || strings.Contains(tip, "verifiable")
+}
+
+// ---------- High confidence warning in MCP trace response ------------------
+
+func TestHandleTrace_HighConfidenceNoEvidenceWarning(t *testing.T) {
+	ctx := adminCtx()
+	agentID := "warn-mcp-" + uuid.New().String()[:8]
+	_, _ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
+
+	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
+		"agent_id":      agentID,
+		"decision_type": "architecture",
+		"outcome":       "chose approach without evidence",
+		"confidence":    0.9,
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	text := parseToolText(t, result)
+	var resp struct {
+		Warnings []string `json:"warnings"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(text), &resp))
+	require.Len(t, resp.Warnings, 1, "should include warning for high confidence without evidence")
+	assert.Contains(t, resp.Warnings[0], "high confidence claim")
+}
+
+func TestHandleTrace_HighConfidenceWithEvidenceNoWarning(t *testing.T) {
+	ctx := adminCtx()
+	agentID := "nowarn-mcp-" + uuid.New().String()[:8]
+	_, _ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
+
+	evJSON, _ := json.Marshal([]model.TraceEvidence{
+		{SourceType: "document", Content: "supporting data"},
+		{SourceType: "test_output", Content: "all tests passed"},
+	})
+
+	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
+		"agent_id":      agentID,
+		"decision_type": "architecture",
+		"outcome":       "chose approach with evidence",
+		"confidence":    0.9,
+		"evidence":      string(evJSON),
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	text := parseToolText(t, result)
+	var resp struct {
+		Warnings []string `json:"warnings"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(text), &resp))
+	assert.Empty(t, resp.Warnings, "should not warn when evidence is present")
 }

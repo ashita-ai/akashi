@@ -3644,6 +3644,14 @@ components:
           format: uuid
         event_count:
           type: integer
+        embedding_skipped:
+          type: boolean
+          description: True when the embedding provider is unavailable or errored.
+        warnings:
+          type: array
+          items:
+            type: string
+          description: Quality warnings (e.g. high confidence without evidence). Present only when applicable.
 
     AppendEventsResponse:
       type: object
