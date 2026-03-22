@@ -63,7 +63,7 @@ func (db *DB) GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID, fro
 		return s, fmt.Errorf("storage: outcome signals summary: %w", err)
 	}
 
-	// Conflict fate: org-level counts from resolved/wont_fix conflicts.
+	// Conflict fate: org-level counts from resolved/false_positive conflicts.
 	// ConflictsWon = conflicts where a winner was declared (= ConflictsLost, symmetric).
 	// ConflictsNoWinner = conflicts resolved without declaring a winner.
 	err = db.pool.QueryRow(ctx, `
@@ -71,7 +71,7 @@ func (db *DB) GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID, fro
 		    COUNT(*) FILTER (WHERE winning_decision_id IS NOT NULL)::int,
 		    COUNT(*) FILTER (WHERE winning_decision_id IS NULL AND status = 'resolved')::int
 		FROM scored_conflicts
-		WHERE org_id = $1 AND status IN ('resolved', 'wont_fix')`, orgID).Scan(
+		WHERE org_id = $1 AND status IN ('resolved', 'false_positive')`, orgID).Scan(
 		&s.ConflictsWon, &s.ConflictsNoWinner,
 	)
 	if err != nil {
@@ -194,7 +194,7 @@ func (db *DB) GetHighConfOutcomeSignals(ctx context.Context, orgID uuid.UUID, fr
 		        SELECT 1 FROM scored_conflicts sc
 		        WHERE sc.org_id = d.org_id
 		          AND (sc.decision_a_id = d.id OR sc.decision_b_id = d.id)
-		          AND sc.status IN ('resolved', 'wont_fix')
+		          AND sc.status IN ('resolved', 'false_positive')
 		          AND sc.winning_decision_id IS NOT NULL
 		          AND sc.winning_decision_id != d.id
 		    ))::int,

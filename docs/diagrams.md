@@ -435,7 +435,7 @@ erDiagram
         text relationship "nullable, from LLM"
         text category "nullable"
         text severity "nullable"
-        text status "open | acknowledged | resolved | wont_fix"
+        text status "open | resolved | false_positive"
         uuid winning_decision_id FK "nullable"
         uuid resolution_decision_id FK "nullable"
         text resolution_note "nullable"

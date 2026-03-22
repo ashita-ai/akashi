@@ -66,7 +66,7 @@ type Conflict struct {
 	Explanation string
 	Category    string // factual | assessment | strategic | temporal
 	Severity    string // critical | high | medium | low
-	Status      string // open | acknowledged | resolved | wont_fix
+	Status      string // open | resolved | false_positive
 	DetectedAt  time.Time
 }
 

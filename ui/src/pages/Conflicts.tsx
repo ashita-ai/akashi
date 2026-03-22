@@ -140,7 +140,7 @@ function ConflictPairRow({
 
   const hasReasoning = !!(left.reasoning || right.reasoning);
 
-  const canAdjudicate = c.status === "open" || c.status === "acknowledged";
+  const canAdjudicate = c.status === "open";
 
   function Side({
     side,
@@ -249,7 +249,7 @@ function ConflictGroupCard({
   const decisionCount = countDistinctDecisions(openConflicts);
 
   const canAdjudicate =
-    rep && (rep.status === "open" || rep.status === "acknowledged");
+    rep && rep.status === "open";
 
   return (
     <Card>
@@ -501,7 +501,7 @@ export default function Conflicts() {
   const [adjudicateTarget, setAdjudicateTarget] =
     useState<DecisionConflict | null>(null);
   const [adjudicateStatus, setAdjudicateStatus] =
-    useState<string>("acknowledged");
+    useState<string>("resolved");
   const [adjudicateNote, setAdjudicateNote] = useState("");
   const [adjudicateWinner, setAdjudicateWinner] = useState<string | null>(null);
   const [adjudicateError, setAdjudicateError] = useState<string | null>(null);
@@ -582,7 +582,7 @@ export default function Conflicts() {
 
   function openAdjudicateDialog(conflict: DecisionConflict) {
     setAdjudicateTarget(conflict);
-    setAdjudicateStatus("acknowledged");
+    setAdjudicateStatus("resolved");
     setAdjudicateNote("");
     setAdjudicateWinner(null);
     setAdjudicateError(null);
@@ -640,9 +640,8 @@ export default function Conflicts() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="open">Open</SelectItem>
-              <SelectItem value="acknowledged">Acknowledged</SelectItem>
               <SelectItem value="resolved">Resolved</SelectItem>
-              <SelectItem value="wont_fix">Won&apos;t Fix</SelectItem>
+              <SelectItem value="false_positive">False Positive</SelectItem>
               <SelectItem value="all">All statuses</SelectItem>
             </SelectContent>
           </Select>
@@ -825,16 +824,6 @@ export default function Conflicts() {
               <div className="flex gap-2">
                 <Button
                   variant={
-                    adjudicateStatus === "acknowledged" ? "default" : "outline"
-                  }
-                  size="sm"
-                  onClick={() => setAdjudicateStatus("acknowledged")}
-                >
-                  <Eye className="h-3.5 w-3.5 mr-1.5" />
-                  Acknowledge
-                </Button>
-                <Button
-                  variant={
                     adjudicateStatus === "resolved" ? "default" : "outline"
                   }
                   size="sm"
@@ -845,13 +834,13 @@ export default function Conflicts() {
                 </Button>
                 <Button
                   variant={
-                    adjudicateStatus === "wont_fix" ? "default" : "outline"
+                    adjudicateStatus === "false_positive" ? "default" : "outline"
                   }
                   size="sm"
-                  onClick={() => setAdjudicateStatus("wont_fix")}
+                  onClick={() => setAdjudicateStatus("false_positive")}
                 >
                   <XCircle className="h-3.5 w-3.5 mr-1.5" />
-                  Won&apos;t Fix
+                  False Positive
                 </Button>
               </div>
             </div>

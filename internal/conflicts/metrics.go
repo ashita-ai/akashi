@@ -73,7 +73,7 @@ func (s *Scorer) registerMetrics() {
 	}
 
 	s.metrics.resolved, err = meter.Int64Counter("akashi.conflicts.resolved",
-		metric.WithDescription("Total conflicts resolved (resolved, wont_fix, or acknowledged)"),
+		metric.WithDescription("Total conflicts resolved (resolved or false_positive)"),
 	)
 	if err != nil {
 		s.logger.Warn("conflicts: failed to create akashi.conflicts.resolved metric", "error", err)
@@ -156,7 +156,7 @@ func (s *Scorer) registerMetrics() {
 // registerObservableGauges registers callback-driven gauges that query the database.
 func registerObservableGauges(meter metric.Meter, db gaugeQuerier, logger *slog.Logger) {
 	_, err := meter.Int64ObservableGauge("akashi.conflicts.open_total",
-		metric.WithDescription("Current total of open and acknowledged conflicts"),
+		metric.WithDescription("Current total of open conflicts"),
 		metric.WithInt64Callback(func(ctx context.Context, o metric.Int64Observer) error {
 			count, err := db.GetGlobalOpenConflictCount(ctx)
 			if err != nil {
@@ -187,12 +187,12 @@ func registerObservableGauges(meter metric.Meter, db gaugeQuerier, logger *slog.
 		logger.Warn("conflicts: failed to create akashi.conflicts.backfill_remaining gauge", "error", err)
 	}
 
-	_, err = meter.Float64ObservableGauge("akashi.conflicts.wont_fix_rate",
-		metric.WithDescription("Rolling 30-day wont_fix rate: wont_fix / (resolved + wont_fix). Signals LLM validator drift when elevated."),
+	_, err = meter.Float64ObservableGauge("akashi.conflicts.false_positive_rate",
+		metric.WithDescription("Rolling 30-day false-positive rate: false_positive / (resolved + false_positive). Signals LLM validator drift when elevated."),
 		metric.WithFloat64Callback(func(ctx context.Context, o metric.Float64Observer) error {
-			rate, err := db.GetGlobalWontFixRate(ctx)
+			rate, err := db.GetGlobalFalsePositiveRate(ctx)
 			if err != nil {
-				logger.Debug("conflicts: wont_fix_rate gauge query failed", "error", err)
+				logger.Debug("conflicts: false_positive_rate gauge query failed", "error", err)
 				return nil // non-fatal: skip this observation
 			}
 			o.Observe(rate)
@@ -200,7 +200,7 @@ func registerObservableGauges(meter metric.Meter, db gaugeQuerier, logger *slog.
 		}),
 	)
 	if err != nil {
-		logger.Warn("conflicts: failed to create akashi.conflicts.wont_fix_rate gauge", "error", err)
+		logger.Warn("conflicts: failed to create akashi.conflicts.false_positive_rate gauge", "error", err)
 	}
 }
 
@@ -208,5 +208,5 @@ func registerObservableGauges(meter metric.Meter, db gaugeQuerier, logger *slog.
 type gaugeQuerier interface {
 	GetGlobalOpenConflictCount(ctx context.Context) (int64, error)
 	CountUnscoredDecisions(ctx context.Context) (int64, error)
-	GetGlobalWontFixRate(ctx context.Context) (float64, error)
+	GetGlobalFalsePositiveRate(ctx context.Context) (float64, error)
 }

@@ -79,28 +79,28 @@ type ConflictFilters struct {
 	DecisionType *string
 	AgentID      *string
 	ConflictKind *string    // "cross_agent" or "self_contradiction"
-	Status       *string    // "open", "acknowledged", "resolved", "wont_fix"
+	Status       *string    // "open", "resolved", "false_positive"
 	StatusIn     []string   // Multi-value status filter (OR). Takes precedence over Status when set.
 	Severity     *string    // "critical", "high", "medium", "low"
 	Category     *string    // "factual", "assessment", "strategic", "temporal"
 	DecisionID   *uuid.UUID // conflicts involving this decision (A or B side)
+	GroupID      *uuid.UUID // conflicts belonging to this conflict group
 }
 
 // ConflictStatusCounts holds the number of conflicts in each resolution status.
 type ConflictStatusCounts struct {
-	Total        int
-	Open         int
-	Acknowledged int
-	Resolved     int
-	WontFix      int
+	Total         int
+	Open          int
+	Resolved      int
+	FalsePositive int
 }
 
-// WontFixRate holds the wont_fix false-positive rate over a rolling 30-day window.
-// Rate = WontFix / (Resolved + WontFix). Zero when the denominator is zero.
-type WontFixRate struct {
-	Resolved int     `json:"resolved"`
-	WontFix  int     `json:"wont_fix"`
-	Rate     float64 `json:"rate"`
+// FalsePositiveRate holds the false-positive rate over a rolling 30-day window.
+// Rate = FalsePositive / (Resolved + FalsePositive). Zero when the denominator is zero.
+type FalsePositiveRate struct {
+	Resolved      int     `json:"resolved"`
+	FalsePositive int     `json:"false_positive"`
+	Rate          float64 `json:"rate"`
 }
 
 // ConflictGroupFilters holds optional filters for conflict group queries.
@@ -109,8 +109,8 @@ type ConflictGroupFilters struct {
 	AgentID      *string
 	ConflictKind *string
 	// Status restricts results to groups that have at least one member
-	// conflict matching this exact status (e.g. "open", "acknowledged",
-	// "resolved", "wont_fix"). When nil, all groups are returned.
+	// conflict matching this exact status (e.g. "open", "resolved",
+	// "false_positive"). When nil, all groups are returned.
 	Status *string
 }
 
@@ -253,7 +253,7 @@ type OutcomeSignalsSummary struct {
 type HighConfOutcomeSignals struct {
 	Total            int     `json:"total"`              // total high-confidence decisions in the window
 	RevisedWithin48h int     `json:"revised_within_48h"` // count revised by a successor within 48 hours
-	ConflictsLost    int     `json:"conflicts_lost"`     // count that lost a resolved/wont_fix conflict
+	ConflictsLost    int     `json:"conflicts_lost"`     // count that lost a resolved/false_positive conflict
 	AssessedCount    int     `json:"assessed_count"`     // count that have a non-NULL outcome_score
 	AvgOutcomeScore  float64 `json:"avg_outcome_score"`  // mean outcome_score where outcome_score IS NOT NULL; 0 if none
 }

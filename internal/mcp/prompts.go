@@ -156,7 +156,7 @@ can learn from it, and so the decision is provable later.
 - akashi_trace: Record a decision to the audit trail (use AFTER deciding)
 - akashi_query: Query the audit trail — structured filters or natural-language query for semantic search
 - akashi_conflicts: List open conflicts between agents
-- akashi_resolve: Resolve, dismiss, or acknowledge a conflict (set winner, wont_fix, or acknowledged)
+- akashi_resolve: Resolve a conflict or mark it as a false positive (set winner or false_positive)
 - akashi_assess: Record whether a past decision turned out to be correct
 - akashi_stats: Aggregate health metrics for the decision trail
 

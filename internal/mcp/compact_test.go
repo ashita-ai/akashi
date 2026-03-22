@@ -167,7 +167,7 @@ func TestActionNeeded(t *testing.T) {
 		{"no conflicts", nil, false},
 		{"medium only", []model.DecisionConflict{{Status: "open", Severity: &medium}}, false},
 		{"high open", []model.DecisionConflict{{Status: "open", Severity: &high}}, true},
-		{"critical acknowledged", []model.DecisionConflict{{Status: "acknowledged", Severity: &critical}}, true},
+		{"critical open", []model.DecisionConflict{{Status: "open", Severity: &critical}}, true},
 		{"high resolved", []model.DecisionConflict{{Status: "resolved", Severity: &high}}, false},
 	}
 
@@ -372,7 +372,7 @@ func TestCompactConflictGroup(t *testing.T) {
 			Representative: &model.DecisionConflict{
 				OutcomeA: "deploy now",
 				OutcomeB: "wait",
-				Status:   "acknowledged",
+				Status:   "open",
 			},
 		}
 		m := compactConflictGroup(g)
@@ -382,7 +382,7 @@ func TestCompactConflictGroup(t *testing.T) {
 		assert.False(t, hasSev)
 		assert.False(t, hasCat)
 		assert.False(t, hasExpl)
-		assert.Equal(t, "acknowledged", m["status"])
+		assert.Equal(t, "open", m["status"])
 	})
 }
 
@@ -805,9 +805,9 @@ func TestGenerateCheckSummary_ResolvedConflicts(t *testing.T) {
 		assert.Contains(t, s, "1 conflict(s) resolved.")
 	})
 
-	t.Run("wont_fix counts as resolved", func(t *testing.T) {
+	t.Run("false_positive counts as resolved", func(t *testing.T) {
 		conflicts := []model.DecisionConflict{
-			{Status: "wont_fix"},
+			{Status: "false_positive"},
 		}
 		s := generateCheckSummary(decs, conflicts)
 		assert.Contains(t, s, "1 conflict(s) resolved.")

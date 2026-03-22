@@ -1242,7 +1242,7 @@ func DefaultEvalDataset() []EvalPair {
 			Label: "refinement: design sketch then full spec",
 			Input: ValidateInput{
 				OutcomeA: "We need a conflict resolution workflow — agents should be able to acknowledge, resolve, or dismiss conflicts",
-				OutcomeB: "Implemented conflict lifecycle: open → acknowledged → resolved, open → wont_fix. PATCH /v1/conflicts/{id} accepts status and resolution_note. Requires agent+ role.",
+				OutcomeB: "Implemented conflict lifecycle: open → resolved, open → false_positive. PATCH /v1/conflicts/{id} accepts status and resolution_note. Requires agent+ role.",
 				TypeA:    "planning", TypeB: "architecture",
 				AgentA: "planner", AgentB: "coder",
 				CreatedA: now, CreatedB: now.Add(72 * h),
@@ -1335,7 +1335,7 @@ func DefaultEvalDataset() []EvalPair {
 			Label: "unrelated: Decision A focuses on identifying and validating code iss...",
 			Input: ValidateInput{
 				OutcomeA: "Reviewed PR #343 (feat: ground truth dataset for conflict detection precision/recall). Found 2 validated high-signal issues: (1) UpsertConflictLabel has a multi-tenancy bypass — ON CONFLICT (scored_conflict_id) DO UPDATE lacks org_id guard, allowi...",
-				OutcomeB: "Marked 9 conflict groups as resolved/wont_fix to clean contaminated conflict queue: 6 false positives (demo/cross-project data) as wont_fix, 3 intentional evolutions (admin vs admin: audit readiness→trace health refactoring, mat view→scored_confli...",
+				OutcomeB: "Marked 9 conflict groups as resolved/false_positive to clean contaminated conflict queue: 6 false positives (demo/cross-project data) as false_positive, 3 intentional evolutions (admin vs admin: audit readiness→trace health refactoring, mat view→scored_confli...",
 				TypeA:    "code_review", TypeB: "assessment",
 				AgentA: "admin", AgentB: "reviewer",
 				CreatedA: now, CreatedB: now.Add(7 * h),

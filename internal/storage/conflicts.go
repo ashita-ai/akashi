@@ -76,6 +76,12 @@ func conflictWhere(filters ConflictFilters, argOffset int) (string, []any) {
 	if filters.DecisionID != nil {
 		clause += fmt.Sprintf(" AND (sc.decision_a_id = $%d OR sc.decision_b_id = $%d)", argOffset, argOffset)
 		args = append(args, *filters.DecisionID)
+		argOffset++
+	}
+	if filters.GroupID != nil {
+		clause += fmt.Sprintf(" AND sc.group_id = $%d", argOffset)
+		args = append(args, *filters.GroupID)
+		argOffset++ //nolint:ineffassign // keep argOffset consistent so future additions don't miscount
 	}
 	return clause, args
 }
@@ -103,9 +109,8 @@ func (db *DB) GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID, from
 	q := `
 		SELECT count(*),
 		       count(*) FILTER (WHERE status = 'open'),
-		       count(*) FILTER (WHERE status = 'acknowledged'),
 		       count(*) FILTER (WHERE status = 'resolved'),
-		       count(*) FILTER (WHERE status = 'wont_fix')
+		       count(*) FILTER (WHERE status = 'false_positive')
 		FROM scored_conflicts
 		WHERE org_id = $1`
 	args := []any{orgID}
@@ -118,7 +123,7 @@ func (db *DB) GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID, from
 		q += fmt.Sprintf(" AND detected_at < $%d", len(args))
 	}
 	err := db.pool.QueryRow(ctx, q, args...).Scan(
-		&c.Total, &c.Open, &c.Acknowledged, &c.Resolved, &c.WontFix)
+		&c.Total, &c.Open, &c.Resolved, &c.FalsePositive)
 	if err != nil {
 		return c, fmt.Errorf("storage: conflict status counts: %w", err)
 	}
@@ -314,9 +319,9 @@ func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.
 
 	var tag pgconn.CommandTag
 	switch status {
-	case "resolved", "wont_fix":
-		// winning_decision_id is only meaningful for "resolved"; for wont_fix it
-		// is intentionally left NULL (no winner declared on a "we don't care" close).
+	case "resolved", "false_positive":
+		// winning_decision_id is only meaningful for "resolved"; for false_positive
+		// it is intentionally left NULL (no winner when the conflict is spurious).
 		var winner *uuid.UUID
 		if status == "resolved" {
 			winner = winningDecisionID
@@ -624,7 +629,7 @@ func (db *DB) FindOrCreateTopicGroup(
 		     FROM scored_conflicts sc
 		     WHERE sc.group_id = cg.id
 		     ORDER BY
-		         CASE WHEN sc.status IN ('open', 'acknowledged') THEN 0 ELSE 1 END,
+		         CASE WHEN sc.status = 'open' THEN 0 ELSE 1 END,
 		         sc.significance DESC NULLS LAST,
 		         sc.detected_at DESC
 		     LIMIT 1
@@ -693,7 +698,7 @@ func TruncateOutcome(s string, maxLen int) string {
 	return string(runes[:maxLen])
 }
 
-// listOpenConflictsByGroupIDs batch-fetches all open or acknowledged conflicts
+// listOpenConflictsByGroupIDs batch-fetches all open conflicts
 // for the given set of conflict_group IDs within an org. Returns conflicts ordered
 // by group_id then significance DESC so callers can attach them in display order
 // without additional sorting.
@@ -704,7 +709,7 @@ func (db *DB) listOpenConflictsByGroupIDs(ctx context.Context, orgID uuid.UUID, 
 	rows, err := db.pool.Query(ctx,
 		conflictSelectBase+`
 		 WHERE sc.group_id = ANY($1) AND sc.org_id = $2
-		   AND sc.status IN ('open', 'acknowledged')
+		   AND sc.status = 'open'
 		 ORDER BY sc.group_id, sc.significance DESC NULLS LAST, sc.detected_at DESC`,
 		groupIDs, orgID,
 	)
@@ -740,9 +745,9 @@ func conflictGroupWhere(f ConflictGroupFilters, argOffset int) (string, []any) {
 // CountConflictGroups returns the total number of conflict groups matching the filters.
 //
 // Status filter semantics:
-//   - "open"/"acknowledged": groups with at least one conflict in that status
-//   - "resolved": groups with no open/acknowledged conflicts (fully closed)
-//   - "wont_fix": groups with no open/acknowledged conflicts and at least one wont_fix
+//   - "open": groups with at least one open conflict
+//   - "resolved": groups with no open conflicts (fully closed)
+//   - "false_positive": groups with no open conflicts and at least one false_positive
 func (db *DB) CountConflictGroups(ctx context.Context, orgID uuid.UUID, f ConflictGroupFilters) (int, error) {
 	args := []any{orgID}
 
@@ -761,15 +766,15 @@ func (db *DB) CountConflictGroups(ctx context.Context, orgID uuid.UUID, f Confli
 	// Status filter requires aggregation over member conflicts.
 	var havingClause string
 	switch *f.Status {
-	case "open", "acknowledged":
+	case "open":
 		havingClause = fmt.Sprintf(
 			"HAVING COUNT(CASE WHEN sc.status = $%d THEN 1 END) > 0", len(args)+1)
 		args = append(args, *f.Status)
 	case "resolved":
-		havingClause = "HAVING COUNT(CASE WHEN sc.status IN ('open', 'acknowledged') THEN 1 END) = 0 AND COUNT(sc.id) > 0"
-	case "wont_fix":
-		havingClause = "HAVING COUNT(CASE WHEN sc.status IN ('open', 'acknowledged') THEN 1 END) = 0" +
-			" AND COUNT(CASE WHEN sc.status = 'wont_fix' THEN 1 END) > 0"
+		havingClause = "HAVING COUNT(CASE WHEN sc.status = 'open' THEN 1 END) = 0 AND COUNT(sc.id) > 0"
+	case "false_positive":
+		havingClause = "HAVING COUNT(CASE WHEN sc.status = 'open' THEN 1 END) = 0" +
+			" AND COUNT(CASE WHEN sc.status = 'false_positive' THEN 1 END) > 0"
 	default:
 		havingClause = fmt.Sprintf(
 			"HAVING COUNT(CASE WHEN sc.status = $%d THEN 1 END) > 0", len(args)+1)
@@ -800,7 +805,7 @@ func (db *DB) CountConflictGroups(ctx context.Context, orgID uuid.UUID, f Confli
 // conflict per group. Uses a LATERAL JOIN to pick the representative in a single
 // query — no N+1.
 //
-// The representative is the highest-significance open/acknowledged conflict in the
+// The representative is the highest-significance open conflict in the
 // group, falling back to the highest-significance conflict overall when all are
 // closed. This ensures expanding a group shows the conflict that needs attention.
 func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f ConflictGroupFilters, limit, offset int) ([]model.ConflictGroup, error) {
@@ -821,20 +826,20 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 	statusArgs := []any{}
 	if f.Status != nil {
 		switch *f.Status {
-		case "open", "acknowledged":
-			// Groups with at least one conflict in this exact status.
+		case "open":
+			// Groups with at least one open conflict.
 			statusHaving = " HAVING COUNT(DISTINCT sc_all.id) FILTER (WHERE sc_all.status = $2) > 0"
 			statusArgs = append(statusArgs, *f.Status)
 		case "resolved":
-			// Groups with no actionable conflicts remaining (fully closed).
+			// Groups with no open conflicts remaining (fully closed).
 			statusHaving = " HAVING COUNT(DISTINCT sc_all.id) FILTER (" +
-				"WHERE sc_all.status IN ('open', 'acknowledged'))::int = 0" +
+				"WHERE sc_all.status = 'open')::int = 0" +
 				" AND COUNT(DISTINCT sc_all.id)::int > 0"
-		case "wont_fix":
-			// Groups with no actionable conflicts and at least one wont_fix.
+		case "false_positive":
+			// Groups with no open conflicts and at least one false_positive.
 			statusHaving = " HAVING COUNT(DISTINCT sc_all.id) FILTER (" +
-				"WHERE sc_all.status IN ('open', 'acknowledged'))::int = 0" +
-				" AND COUNT(DISTINCT sc_all.id) FILTER (WHERE sc_all.status = 'wont_fix') > 0"
+				"WHERE sc_all.status = 'open')::int = 0" +
+				" AND COUNT(DISTINCT sc_all.id) FILTER (WHERE sc_all.status = 'false_positive') > 0"
 		default:
 			statusHaving = " HAVING COUNT(DISTINCT sc_all.id) FILTER (WHERE sc_all.status = $2) > 0"
 			statusArgs = append(statusArgs, *f.Status)
@@ -849,8 +854,8 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 		    cg.times_reopened,
 		    COUNT(DISTINCT sc_all.id)::int                                                AS conflict_count,
 		    COUNT(DISTINCT sc_all.id) FILTER (
-		        WHERE sc_all.status IN ('open', 'acknowledged'))::int                     AS open_count,
-		    -- Representative: the highest-significance open/acknowledged conflict, or highest-significance overall.
+		        WHERE sc_all.status = 'open')::int                     AS open_count,
+		    -- Representative: the highest-significance open conflict, or highest-significance overall.
 		    rep.id, rep.conflict_kind, rep.decision_a_id, rep.decision_b_id,
 		    rep.agent_a, rep.agent_b,
 		    rep.decision_type_a, rep.decision_type_b, rep.outcome_a, rep.outcome_b,
@@ -874,7 +879,7 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 		    WHERE sc2.group_id = cg.id
 		    ORDER BY
 		        -- Prefer actionable conflicts so expanding a group shows what needs attention.
-		        CASE WHEN sc2.status IN ('open', 'acknowledged') THEN 0 ELSE 1 END ASC,
+		        CASE WHEN sc2.status = 'open' THEN 0 ELSE 1 END ASC,
 		        sc2.significance DESC NULLS LAST,
 		        sc2.detected_at DESC
 		    LIMIT 1
@@ -1059,7 +1064,7 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 		return nil, fmt.Errorf("storage: conflict groups rows: %w", err)
 	}
 
-	// Batch-fetch all open/acknowledged conflicts for the returned groups so
+	// Batch-fetch all open conflicts for the returned groups so
 	// the UI can show every open conflict, not just the single representative.
 	if len(groups) > 0 {
 		groupIDs := make([]uuid.UUID, len(groups))
@@ -1087,7 +1092,7 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 	return groups, nil
 }
 
-// ResolveConflictGroup batch-resolves all open or acknowledged conflicts in a
+// ResolveConflictGroup batch-resolves all open conflicts in a
 // conflict group. When winningAgent is non-nil, each conflict's winning_decision_id
 // is set to the decision from that agent (decision_a_id when agent_a matches,
 // decision_b_id when agent_b matches). Returns the number of conflicts updated.
@@ -1119,7 +1124,7 @@ func (db *DB) ResolveConflictGroup(
 
 	// Build the UPDATE. When winning_agent is set, derive winning_decision_id
 	// per-row from the agent columns. Only "resolved" sets a winner;
-	// "wont_fix" intentionally leaves winning_decision_id NULL.
+	// "false_positive" intentionally leaves winning_decision_id NULL.
 	var tag pgconn.CommandTag
 	if winningAgent != nil && status == "resolved" {
 		tag, err = tx.Exec(ctx,
@@ -1134,7 +1139,7 @@ func (db *DB) ResolveConflictGroup(
 			         ELSE NULL
 			     END
 			 WHERE group_id = $5 AND org_id = $6
-			   AND status IN ('open', 'acknowledged')`,
+			   AND status = 'open'`,
 			status, resolvedBy, resolutionNote, *winningAgent, groupID, orgID)
 	} else {
 		tag, err = tx.Exec(ctx,
@@ -1144,7 +1149,7 @@ func (db *DB) ResolveConflictGroup(
 			     resolved_at = now(),
 			     resolution_note = $3
 			 WHERE group_id = $4 AND org_id = $5
-			   AND status IN ('open', 'acknowledged')`,
+			   AND status = 'open'`,
 			status, resolvedBy, resolutionNote, groupID, orgID)
 	}
 	if err != nil {
@@ -1169,7 +1174,7 @@ func (db *DB) ResolveConflictGroup(
 	return affected, nil
 }
 
-// AutoResolveSupersededConflictsTx resolves all open/acknowledged conflicts
+// AutoResolveSupersededConflictsTx resolves all open conflicts
 // involving the superseded decision, within the caller's transaction. This is
 // called from ReviseDecision so the auto-resolution is atomic with the
 // revision itself.
@@ -1192,7 +1197,7 @@ func AutoResolveSupersededConflictsTx(ctx context.Context, tx pgx.Tx, orgID, sup
 		     resolution_decision_id = $2
 		 WHERE org_id = $3
 		   AND (decision_a_id = $4 OR decision_b_id = $4)
-		   AND status IN ('open', 'acknowledged')`,
+		   AND status = 'open'`,
 		note, revisedID, orgID, supersededID,
 	)
 	if err != nil {
@@ -1259,7 +1264,7 @@ func (db *DB) CascadeResolveByOutcome(
 			WHERE sc.group_id = $3
 			  AND sc.org_id = $2
 			  AND sc.id != $4
-			  AND sc.status IN ('open', 'acknowledged')
+			  AND sc.status = 'open'
 		)
 		UPDATE scored_conflicts sc
 		SET status = 'resolved',
@@ -1424,12 +1429,12 @@ func (db *DB) GetConflictAnalytics(ctx context.Context, orgID uuid.UUID, filters
 	summaryQuery := fmt.Sprintf(`
 		SELECT
 			count(*),
-			count(*) FILTER (WHERE sc.status IN ('resolved', 'wont_fix')),
+			count(*) FILTER (WHERE sc.status IN ('resolved', 'false_positive')),
 			avg(EXTRACT(EPOCH FROM (sc.resolved_at - sc.detected_at)) / 3600)
 				FILTER (WHERE sc.resolved_at IS NOT NULL),
 			COALESCE(
-				count(*) FILTER (WHERE sc.status = 'wont_fix')::double precision
-				/ NULLIF(count(*) FILTER (WHERE sc.status IN ('resolved', 'wont_fix')), 0),
+				count(*) FILTER (WHERE sc.status = 'false_positive')::double precision
+				/ NULLIF(count(*) FILTER (WHERE sc.status IN ('resolved', 'false_positive')), 0),
 				0
 			)
 		FROM scored_conflicts sc
@@ -1448,8 +1453,8 @@ func (db *DB) GetConflictAnalytics(ctx context.Context, orgID uuid.UUID, filters
 	pairQuery := fmt.Sprintf(`
 		SELECT sc.agent_a, sc.agent_b,
 			count(*),
-			count(*) FILTER (WHERE sc.status IN ('open', 'acknowledged')),
-			count(*) FILTER (WHERE sc.status IN ('resolved', 'wont_fix'))
+			count(*) FILTER (WHERE sc.status = 'open'),
+			count(*) FILTER (WHERE sc.status IN ('resolved', 'false_positive'))
 		FROM scored_conflicts sc
 		WHERE %s
 		GROUP BY sc.agent_a, sc.agent_b
@@ -1593,62 +1598,62 @@ func (db *DB) GetConflictAnalytics(ctx context.Context, orgID uuid.UUID, filters
 	return result, nil
 }
 
-// GetGlobalOpenConflictCount returns the total number of open and acknowledged
+// GetGlobalOpenConflictCount returns the total number of open
 // conflicts across all organizations. Used by the OpenTelemetry observable
 // gauge callback (runs every ~15s).
 // SECURITY: Intentionally global — aggregate metric with no tenant data exposed.
 func (db *DB) GetGlobalOpenConflictCount(ctx context.Context) (int64, error) {
 	var count int64
 	err := db.pool.QueryRow(ctx,
-		`SELECT count(*) FROM scored_conflicts WHERE status IN ('open', 'acknowledged')`).Scan(&count)
+		`SELECT count(*) FROM scored_conflicts WHERE status = 'open'`).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("storage: global open conflict count: %w", err)
 	}
 	return count, nil
 }
 
-// GetWontFixRate computes the wont_fix false-positive rate for an org over the
-// last 30 days: wont_fix / (resolved + wont_fix). Only conflicts with a
-// resolved_at timestamp in the window are counted; open/acknowledged conflicts
+// GetFalsePositiveRate computes the false-positive rate for an org over the
+// last 30 days: false_positive / (resolved + false_positive). Only conflicts
+// with a resolved_at timestamp in the window are counted; open conflicts
 // are excluded because they haven't been triaged yet.
-func (db *DB) GetWontFixRate(ctx context.Context, orgID uuid.UUID) (WontFixRate, error) {
-	var r WontFixRate
+func (db *DB) GetFalsePositiveRate(ctx context.Context, orgID uuid.UUID) (FalsePositiveRate, error) {
+	var r FalsePositiveRate
 	err := db.pool.QueryRow(ctx, `
 		SELECT
 			count(*) FILTER (WHERE status = 'resolved'),
-			count(*) FILTER (WHERE status = 'wont_fix'),
+			count(*) FILTER (WHERE status = 'false_positive'),
 			COALESCE(
-				count(*) FILTER (WHERE status = 'wont_fix')::double precision
-				/ NULLIF(count(*) FILTER (WHERE status IN ('resolved', 'wont_fix')), 0),
+				count(*) FILTER (WHERE status = 'false_positive')::double precision
+				/ NULLIF(count(*) FILTER (WHERE status IN ('resolved', 'false_positive')), 0),
 				0
 			)
 		FROM scored_conflicts
 		WHERE org_id = $1
-		  AND status IN ('resolved', 'wont_fix')
+		  AND status IN ('resolved', 'false_positive')
 		  AND resolved_at >= now() - interval '30 days'`,
-		orgID).Scan(&r.Resolved, &r.WontFix, &r.Rate)
+		orgID).Scan(&r.Resolved, &r.FalsePositive, &r.Rate)
 	if err != nil {
-		return r, fmt.Errorf("storage: wont_fix rate: %w", err)
+		return r, fmt.Errorf("storage: false positive rate: %w", err)
 	}
 	return r, nil
 }
 
-// GetGlobalWontFixRate computes the global wont_fix false-positive rate across
+// GetGlobalFalsePositiveRate computes the global false-positive rate across
 // all orgs over the last 30 days. Used by the OpenTelemetry observable gauge.
 // SECURITY: Intentionally global — aggregate metric with no tenant data exposed.
-func (db *DB) GetGlobalWontFixRate(ctx context.Context) (float64, error) {
+func (db *DB) GetGlobalFalsePositiveRate(ctx context.Context) (float64, error) {
 	var rate float64
 	err := db.pool.QueryRow(ctx, `
 		SELECT COALESCE(
-			count(*) FILTER (WHERE status = 'wont_fix')::double precision
-			/ NULLIF(count(*) FILTER (WHERE status IN ('resolved', 'wont_fix')), 0),
+			count(*) FILTER (WHERE status = 'false_positive')::double precision
+			/ NULLIF(count(*) FILTER (WHERE status IN ('resolved', 'false_positive')), 0),
 			0
 		)
 		FROM scored_conflicts
-		WHERE status IN ('resolved', 'wont_fix')
+		WHERE status IN ('resolved', 'false_positive')
 		  AND resolved_at >= now() - interval '30 days'`).Scan(&rate)
 	if err != nil {
-		return 0, fmt.Errorf("storage: global wont_fix rate: %w", err)
+		return 0, fmt.Errorf("storage: global false positive rate: %w", err)
 	}
 	return rate, nil
 }

@@ -202,13 +202,13 @@ func TestRecommend_ResolvedConflictReturnsNil(t *testing.T) {
 	assert.Nil(t, rec, "should return nil for resolved conflicts")
 }
 
-func TestRecommend_WontFixConflictReturnsNil(t *testing.T) {
+func TestRecommend_FalsePositiveConflictReturnsNil(t *testing.T) {
 	c := baseConflict()
-	c.Status = "wont_fix"
+	c.Status = "false_positive"
 
 	rec := Recommend(RecommendationInput{Conflict: c})
 
-	assert.Nil(t, rec, "should return nil for wont_fix conflicts")
+	assert.Nil(t, rec, "should return nil for false_positive conflicts")
 }
 
 func TestRecommend_SelfContradictionSkipsWinRate(t *testing.T) {
@@ -252,15 +252,15 @@ func TestRecommend_ConfidenceCappedAt099(t *testing.T) {
 	assert.LessOrEqual(t, rec.Confidence, 0.99, "confidence should be capped at 0.99")
 }
 
-func TestRecommend_AcknowledgedStatusGetsRecommendation(t *testing.T) {
+func TestRecommend_OpenStatusGetsRecommendation(t *testing.T) {
 	c := baseConflict()
-	c.Status = "acknowledged"
+	c.Status = "open"
 	c.ConfidenceA = 0.30
 	c.ConfidenceB = 0.95
 
 	rec := Recommend(RecommendationInput{Conflict: c})
 
-	require.NotNil(t, rec, "acknowledged conflicts should still get recommendations")
+	require.NotNil(t, rec, "open conflicts should still get recommendations")
 }
 
 func TestRecommend_ReasonsOrderedByContribution(t *testing.T) {

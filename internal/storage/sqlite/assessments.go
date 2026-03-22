@@ -185,12 +185,12 @@ func (l *LiteDB) GetDecisionOutcomeSignalsBatch(ctx context.Context, ids []uuid.
 		`WITH sides AS (
 		     SELECT decision_a_id AS target_id, winning_decision_id, status
 		     FROM scored_conflicts
-		     WHERE org_id = ? AND status IN ('resolved', 'wont_fix')
+		     WHERE org_id = ? AND status IN ('resolved', 'false_positive')
 		       AND decision_a_id IN (SELECT value FROM json_each(?))
 		     UNION ALL
 		     SELECT decision_b_id AS target_id, winning_decision_id, status
 		     FROM scored_conflicts
-		     WHERE org_id = ? AND status IN ('resolved', 'wont_fix')
+		     WHERE org_id = ? AND status IN ('resolved', 'false_positive')
 		       AND decision_b_id IN (SELECT value FROM json_each(?))
 		 )
 		 SELECT target_id,
@@ -230,7 +230,7 @@ func (l *LiteDB) GetDecisionOutcomeSignalsBatch(ctx context.Context, ids []uuid.
 		     WHERE org_id = ? AND decision_b_id IN (SELECT value FROM json_each(?))
 		 )
 		 SELECT target_id,
-		     SUM(CASE WHEN status IN ('open','acknowledged') THEN 1 ELSE 0 END),
+		     SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END),
 		     SUM(CASE WHEN relationship = 'complementary' THEN 1 ELSE 0 END)
 		 FROM sides GROUP BY target_id`,
 		uuidStr(orgID), idsJSON, uuidStr(orgID), idsJSON,

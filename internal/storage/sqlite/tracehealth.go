@@ -92,9 +92,8 @@ func (l *LiteDB) GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID, f
 	q := `SELECT
 		     COUNT(*),
 		     COALESCE(SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END), 0),
-		     COALESCE(SUM(CASE WHEN status = 'acknowledged' THEN 1 ELSE 0 END), 0),
 		     COALESCE(SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END), 0),
-		     COALESCE(SUM(CASE WHEN status = 'wont_fix' THEN 1 ELSE 0 END), 0)
+		     COALESCE(SUM(CASE WHEN status = 'false_positive' THEN 1 ELSE 0 END), 0)
 		 FROM scored_conflicts WHERE org_id = ?`
 	args := []any{uuidStr(orgID)}
 	if from != nil {
@@ -106,33 +105,33 @@ func (l *LiteDB) GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID, f
 		args = append(args, to.UTC().Format("2006-01-02T15:04:05.999999999Z"))
 	}
 	err := l.db.QueryRowContext(ctx, q, args...).Scan(
-		&cc.Total, &cc.Open, &cc.Acknowledged, &cc.Resolved, &cc.WontFix)
+		&cc.Total, &cc.Open, &cc.Resolved, &cc.FalsePositive)
 	if err != nil {
 		return storage.ConflictStatusCounts{}, fmt.Errorf("sqlite: conflict status counts: %w", err)
 	}
 	return cc, nil
 }
 
-// GetWontFixRate computes the wont_fix false-positive rate for an org over the
-// last 30 days.
-func (l *LiteDB) GetWontFixRate(ctx context.Context, orgID uuid.UUID) (storage.WontFixRate, error) {
-	var r storage.WontFixRate
+// GetFalsePositiveRate computes the false-positive rate for an org over the
+// last 30 days. Rate = FalsePositive / (Resolved + FalsePositive).
+func (l *LiteDB) GetFalsePositiveRate(ctx context.Context, orgID uuid.UUID) (storage.FalsePositiveRate, error) {
+	var r storage.FalsePositiveRate
 	err := l.db.QueryRowContext(ctx,
 		`SELECT
 		     COALESCE(SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END), 0),
-		     COALESCE(SUM(CASE WHEN status = 'wont_fix' THEN 1 ELSE 0 END), 0)
+		     COALESCE(SUM(CASE WHEN status = 'false_positive' THEN 1 ELSE 0 END), 0)
 		 FROM scored_conflicts
 		 WHERE org_id = ?
-		   AND status IN ('resolved', 'wont_fix')
+		   AND status IN ('resolved', 'false_positive')
 		   AND resolved_at >= datetime('now', '-30 days')`,
 		uuidStr(orgID),
-	).Scan(&r.Resolved, &r.WontFix)
+	).Scan(&r.Resolved, &r.FalsePositive)
 	if err != nil {
-		return r, fmt.Errorf("sqlite: wont_fix rate: %w", err)
+		return r, fmt.Errorf("sqlite: false positive rate: %w", err)
 	}
-	denom := r.Resolved + r.WontFix
+	denom := r.Resolved + r.FalsePositive
 	if denom > 0 {
-		r.Rate = float64(r.WontFix) / float64(denom)
+		r.Rate = float64(r.FalsePositive) / float64(denom)
 	}
 	return r, nil
 }
@@ -447,7 +446,7 @@ func (l *LiteDB) GetHighConfOutcomeSignals(ctx context.Context, orgID uuid.UUID,
 	             SELECT 1 FROM scored_conflicts sc
 	             WHERE sc.org_id = d.org_id
 	               AND (sc.decision_a_id = d.id OR sc.decision_b_id = d.id)
-	               AND sc.status IN ('resolved', 'wont_fix')
+	               AND sc.status IN ('resolved', 'false_positive')
 	               AND sc.winning_decision_id IS NOT NULL
 	               AND sc.winning_decision_id != d.id
 	         ) THEN 1 ELSE 0 END), 0),
