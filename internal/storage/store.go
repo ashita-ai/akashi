@@ -70,6 +70,7 @@ type Store interface {
 	GetResolvedConflictsByType(ctx context.Context, orgID uuid.UUID, decisionType string, limit int) ([]model.ConflictResolution, error)
 	UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, audit MutationAuditEntry) (oldStatus string, err error)
 	CascadeResolveByOutcome(ctx context.Context, orgID, groupID, winningDecisionID, triggerID uuid.UUID, threshold float64, audit MutationAuditEntry) (int, error)
+	UpsertConflictLabel(ctx context.Context, cl ConflictLabel) error
 
 	// ---- Embeddings ----
 
@@ -129,7 +130,7 @@ type Store interface {
 	GetEvidenceCoverageStats(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (EvidenceCoverageStats, error)
 	// GetConflictStatusCounts returns conflict status breakdown. from/to scope conflicts by detected_at.
 	GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (ConflictStatusCounts, error)
-	GetWontFixRate(ctx context.Context, orgID uuid.UUID) (WontFixRate, error)
+	GetFalsePositiveRate(ctx context.Context, orgID uuid.UUID) (FalsePositiveRate, error)
 	// GetOutcomeSignalsSummary returns outcome signals. from/to scope decisions by valid_from.
 	GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (OutcomeSignalsSummary, error)
 	// GetConfidenceDistribution returns confidence histogram and per-agent stats. from/to scope decisions by valid_from.

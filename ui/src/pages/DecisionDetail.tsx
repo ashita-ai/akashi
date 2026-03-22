@@ -155,16 +155,14 @@ function RevisionChain({ decisionId }: { decisionId: string }) {
 
 const conflictStatusLabel: Record<string, string> = {
   open: "Open",
-  acknowledged: "Acknowledged",
   resolved: "Resolved",
-  wont_fix: "Won't Fix",
+  false_positive: "False Positive",
 };
 
 const conflictStatusVariant: Record<string, "warning" | "secondary" | "success" | "outline"> = {
   open: "warning",
-  acknowledged: "secondary",
   resolved: "success",
-  wont_fix: "outline",
+  false_positive: "outline",
 };
 
 function DecisionConflicts({ decisionId }: { decisionId: string }) {

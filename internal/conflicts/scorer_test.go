@@ -1850,8 +1850,8 @@ func TestRecordResolution(t *testing.T) {
 	// The noop meter instruments accept writes silently.
 	ctx := context.Background()
 	scorer.RecordResolution(ctx, "resolved", "cross_agent", 1)
-	scorer.RecordResolution(ctx, "acknowledged", "self_contradiction", 3)
-	scorer.RecordResolution(ctx, "wont_fix", "cross_agent", 0)
+	scorer.RecordResolution(ctx, "false_positive", "self_contradiction", 3)
+	scorer.RecordResolution(ctx, "resolved", "cross_agent", 0)
 	// If we reach here without panic, the metrics instruments are properly initialized.
 }
 
@@ -2062,12 +2062,12 @@ func TestClearAllConflicts_PreservesResolvedConflicts(t *testing.T) {
 
 // mockGaugeQuerier implements gaugeQuerier for testing observable gauge registration.
 type mockGaugeQuerier struct {
-	openCount      int64
-	openErr        error
-	unscoredCount  int64
-	unscoredErr    error
-	wontFixRate    float64
-	wontFixRateErr error
+	openCount            int64
+	openErr              error
+	unscoredCount        int64
+	unscoredErr          error
+	falsePositiveRate    float64
+	falsePositiveRateErr error
 }
 
 func (m *mockGaugeQuerier) GetGlobalOpenConflictCount(_ context.Context) (int64, error) {
@@ -2078,8 +2078,8 @@ func (m *mockGaugeQuerier) CountUnscoredDecisions(_ context.Context) (int64, err
 	return m.unscoredCount, m.unscoredErr
 }
 
-func (m *mockGaugeQuerier) GetGlobalWontFixRate(_ context.Context) (float64, error) {
-	return m.wontFixRate, m.wontFixRateErr
+func (m *mockGaugeQuerier) GetGlobalFalsePositiveRate(_ context.Context) (float64, error) {
+	return m.falsePositiveRate, m.falsePositiveRateErr
 }
 
 func TestRegisterObservableGauges_Success(t *testing.T) {

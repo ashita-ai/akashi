@@ -3693,7 +3693,7 @@ func TestGetConflictStatusCounts(t *testing.T) {
 	counts, err := testDB.GetConflictStatusCounts(ctx, uuid.Nil, nil, nil)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, counts.Total, 0)
-	assert.Equal(t, counts.Total, counts.Open+counts.Acknowledged+counts.Resolved+counts.WontFix)
+	assert.Equal(t, counts.Total, counts.Open+counts.Resolved+counts.FalsePositive)
 }
 
 func TestGetOutcomeSignalsSummary(t *testing.T) {
@@ -4092,22 +4092,26 @@ func TestUpdateConflictStatusWithAudit(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Transition to acknowledged.
+	// Transition to false_positive (terminal status, sets resolved_by/resolved_at).
+	fpNote := "Not a real conflict."
 	oldStatus, err := testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
-		"acknowledged", "admin-agent", nil, nil,
+		"false_positive", "admin-agent", &fpNote, nil,
 		storage.MutationAuditEntry{
-			RequestID: "ack-" + suffix, OrgID: uuid.Nil,
+			RequestID: "fp-" + suffix, OrgID: uuid.Nil,
 			ActorAgentID: "admin-agent", ActorRole: "admin",
-			Operation: "acknowledge_conflict", ResourceType: "conflict",
+			Operation: "false_positive_conflict", ResourceType: "conflict",
 		})
 	require.NoError(t, err)
 	assert.Equal(t, "open", oldStatus)
 
 	got, err := testDB.GetConflict(ctx, conflictID, uuid.Nil)
 	require.NoError(t, err)
-	assert.Equal(t, "acknowledged", got.Status)
+	assert.Equal(t, "false_positive", got.Status)
+	require.NotNil(t, got.ResolvedBy)
+	assert.Equal(t, "admin-agent", *got.ResolvedBy)
+	assert.Nil(t, got.WinningDecisionID, "false_positive should not set winner")
 
-	// Transition to resolved with a winner.
+	// Transition to resolved with a winner (overriding false_positive).
 	resNote := "Right approach is better."
 	oldStatus2, err := testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
 		"resolved", "admin-agent", &resNote, &dB.ID,
@@ -4117,7 +4121,7 @@ func TestUpdateConflictStatusWithAudit(t *testing.T) {
 			Operation: "resolve_conflict", ResourceType: "conflict",
 		})
 	require.NoError(t, err)
-	assert.Equal(t, "acknowledged", oldStatus2)
+	assert.Equal(t, "false_positive", oldStatus2)
 
 	got2, err := testDB.GetConflict(ctx, conflictID, uuid.Nil)
 	require.NoError(t, err)
@@ -5029,21 +5033,21 @@ func TestGetConflictGroupKind(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestGetWontFixRate(t *testing.T) {
+func TestGetFalsePositiveRate(t *testing.T) {
 	ctx := context.Background()
 
-	// With no resolved/wont_fix conflicts, rate should be 0.
-	rate, err := testDB.GetWontFixRate(ctx, uuid.Nil)
+	// With no resolved/false_positive conflicts, rate should be 0.
+	rate, err := testDB.GetFalsePositiveRate(ctx, uuid.Nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0.0, rate.Rate)
 	assert.GreaterOrEqual(t, rate.Resolved, 0)
-	assert.GreaterOrEqual(t, rate.WontFix, 0)
+	assert.GreaterOrEqual(t, rate.FalsePositive, 0)
 }
 
-func TestGetGlobalWontFixRate(t *testing.T) {
+func TestGetGlobalFalsePositiveRate(t *testing.T) {
 	ctx := context.Background()
 
-	rate, err := testDB.GetGlobalWontFixRate(ctx)
+	rate, err := testDB.GetGlobalFalsePositiveRate(ctx)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, rate, 0.0)
 	assert.LessOrEqual(t, rate, 1.0)
@@ -5610,7 +5614,7 @@ func TestResolveConflictGroup_WithWinner(t *testing.T) {
 	assert.True(t, found, "conflict should be resolved after group resolution")
 }
 
-func TestResolveConflictGroup_WontFix(t *testing.T) {
+func TestResolveConflictGroup_FalsePositive(t *testing.T) {
 	ctx := context.Background()
 	suffix := uuid.New().String()[:8]
 
@@ -5665,7 +5669,7 @@ func TestResolveConflictGroup_WontFix(t *testing.T) {
 	resNote := "not worth resolving"
 	affected, err := testDB.ResolveConflictGroup(ctx,
 		*conflict.GroupID, uuid.Nil,
-		"wont_fix", "test-admin", &resNote, nil,
+		"false_positive", "test-admin", &resNote, nil,
 		storage.MutationAuditEntry{
 			RequestID:    uuid.New().String(),
 			OrgID:        uuid.Nil,
@@ -9610,9 +9614,8 @@ func TestGetConflictStatusCounts_StructureVerification(t *testing.T) {
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, counts.Total, 0)
 	assert.GreaterOrEqual(t, counts.Open, 0)
-	assert.GreaterOrEqual(t, counts.Acknowledged, 0)
 	assert.GreaterOrEqual(t, counts.Resolved, 0)
-	assert.GreaterOrEqual(t, counts.WontFix, 0)
+	assert.GreaterOrEqual(t, counts.FalsePositive, 0)
 }
 
 // ---------------------------------------------------------------------------
