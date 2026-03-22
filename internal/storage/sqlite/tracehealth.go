@@ -446,7 +446,7 @@ func (l *LiteDB) GetHighConfOutcomeSignals(ctx context.Context, orgID uuid.UUID,
 	             SELECT 1 FROM scored_conflicts sc
 	             WHERE sc.org_id = d.org_id
 	               AND (sc.decision_a_id = d.id OR sc.decision_b_id = d.id)
-	               AND sc.status IN ('resolved', 'wont_fix')
+	               AND sc.status IN ('resolved', 'false_positive')
 	               AND sc.winning_decision_id IS NOT NULL
 	               AND sc.winning_decision_id != d.id
 	         ) THEN 1 ELSE 0 END), 0),

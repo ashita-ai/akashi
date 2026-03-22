@@ -4420,7 +4420,7 @@ components:
           description: Count of high-confidence decisions revised by a successor within 48 hours.
         conflicts_lost:
           type: integer
-          description: Count of high-confidence decisions that lost a resolved or wont_fix conflict.
+          description: Count of high-confidence decisions that lost a resolved or false_positive conflict.
         assessed_count:
           type: integer
           description: Count of high-confidence decisions that have a non-null outcome_score.

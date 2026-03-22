@@ -81,7 +81,7 @@ func conflictWhere(filters ConflictFilters, argOffset int) (string, []any) {
 	if filters.GroupID != nil {
 		clause += fmt.Sprintf(" AND sc.group_id = $%d", argOffset)
 		args = append(args, *filters.GroupID)
-		argOffset++
+		argOffset++ //nolint:ineffassign // keep argOffset consistent so future additions don't miscount
 	}
 	return clause, args
 }
