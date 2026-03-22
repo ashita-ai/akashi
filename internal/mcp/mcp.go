@@ -13,6 +13,7 @@ import (
 
 	"github.com/ashita-ai/akashi/internal/authz"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
+	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
@@ -62,6 +63,7 @@ type Server struct {
 	checkCache                  *checkCache          // caches last akashi_check response per session for evidence auto-attach
 	onCheck                     func(agentID string) // called when akashi_check is invoked; wires IDE hook gate
 	highConfidenceWarnThreshold float32              // confidence above this with no evidence triggers a warning
+	standardTypes               map[string]bool      // configurable set of standard decision types for tips
 }
 
 // SetCheckNotify registers a callback that fires whenever akashi_check is called.
@@ -72,7 +74,12 @@ func (s *Server) SetCheckNotify(f func(agentID string)) {
 }
 
 // New creates and configures a new MCP server with all resources, tools, and prompts.
-func New(db storage.Store, decisionSvc *decisions.Service, grantCache *authz.GrantCache, logger *slog.Logger, version string, highConfWarnThreshold float32) *Server {
+// standardTypes controls which decision types are suggested in completeness tips.
+// Pass nil to use quality.DefaultStandardDecisionTypes.
+func New(db storage.Store, decisionSvc *decisions.Service, grantCache *authz.GrantCache, logger *slog.Logger, version string, highConfWarnThreshold float32, standardTypes map[string]bool) *Server {
+	if standardTypes == nil {
+		standardTypes = quality.DefaultStandardDecisionTypes
+	}
 	s := &Server{
 		db:                          db,
 		decisionSvc:                 decisionSvc,
@@ -81,6 +88,7 @@ func New(db storage.Store, decisionSvc *decisions.Service, grantCache *authz.Gra
 		rootsCache:                  newRootsCache(),
 		checkCache:                  newCheckCache(),
 		highConfidenceWarnThreshold: highConfWarnThreshold,
+		standardTypes:               standardTypes,
 	}
 
 	s.mcpServer = mcpserver.NewMCPServer(

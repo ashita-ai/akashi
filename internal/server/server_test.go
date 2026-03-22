@@ -124,7 +124,7 @@ func TestMain(m *testing.M) {
 	buf.Start(ctx)
 	testBuf = buf
 
-	mcpSrv := mcp.New(db, decisionSvc, nil, logger, "test", 0.85)
+	mcpSrv := mcp.New(db, decisionSvc, nil, logger, "test", 0.85, nil)
 	srv := server.New(server.ServerConfig{
 		DB:                  db,
 		JWTMgr:              jwtMgr,

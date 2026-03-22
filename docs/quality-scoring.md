@@ -17,11 +17,10 @@ comparability and prevents stored score discontinuities.
 | Factor | Max contribution | Scoring tiers |
 |--------|-----------------|---------------|
 | **Confidence** | 0.15 | 0.15 if mid-range (0.05 < c < 0.95); 0.10 at edges (0 < c ≤ 0.05 or 0.95 ≤ c < 1); 0.0 if exactly 0 or 1 |
-| **Reasoning** | 0.25 | 0.25 if > 100 chars; 0.20 if > 50; 0.10 if > 20; 0.0 otherwise |
+| **Reasoning** | 0.30 | 0.30 if > 100 chars; 0.24 if > 50; 0.12 if > 20; 0.0 otherwise |
 | **Alternatives** | 0.20 | Counts non-selected alternatives with substantive rejection reasons (> 20 chars). 0.20 for ≥ 3; 0.15 for 2; 0.10 for 1; 0.0 for none |
 | **Evidence** | 0.15 | 0.15 for ≥ 2 items; 0.10 for 1; 0.0 for none |
-| **Decision type** | 0.10 | 0.10 for standard types; 0.0 for custom |
-| **Outcome** | 0.05 | 0.05 if > 20 chars; 0.0 otherwise |
+| **Outcome** | 0.10 | 0.10 if > 20 chars; 0.0 otherwise |
 | **Precedent ref** | 0.10 | 0.10 if precedent_ref set; 0.0 otherwise |
 
 **Maximum possible score: 1.00** (0.90 from content + 0.10 from precedent_ref)
@@ -71,9 +70,14 @@ investigation averaging 0.35 shows as "healthy." Same score, different expectati
 
 ### Standard decision types
 
-These types receive the 0.10 bonus: `model_selection`, `architecture`, `data_source`,
-`error_handling`, `feature_scope`, `trade_off`, `deployment`, `security`, `code_review`,
-`investigation`, `planning`, `assessment`.
+The following types are considered "standard" for suggestion purposes: `model_selection`,
+`architecture`, `data_source`, `error_handling`, `feature_scope`, `trade_off`, `deployment`,
+`security`, `code_review`, `investigation`, `planning`, `assessment`.
+
+Custom types are fully supported with no scoring penalty. When a non-standard type is close
+to a standard one (e.g. `trade-off` vs `trade_off`), a suggestion tip is shown.
+
+Override the standard list per org via `AKASHI_STANDARD_DECISION_TYPES` (comma-separated).
 
 ### Anti-gaming measures
 

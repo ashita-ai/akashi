@@ -227,6 +227,10 @@ func (s *Service) AdjudicateConflictWithTrace(ctx context.Context, orgID uuid.UU
 // scoring, alternatives, evidence, and audit entry construction. Returns the
 // fully-prepared CreateTraceParams ready for a transactional write.
 func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input TraceInput) (storage.CreateTraceParams, error) {
+	// 0. Normalize decision_type to lowercase. This is the canonical
+	// normalization point — all paths (HTTP, MCP, SDK) converge here.
+	input.Decision.DecisionType = strings.ToLower(strings.TrimSpace(input.Decision.DecisionType))
+
 	// 0a. Set OTEL span attributes for trace correlation.
 	span := trace.SpanFromContext(ctx)
 	span.SetAttributes(

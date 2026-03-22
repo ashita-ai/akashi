@@ -24,10 +24,10 @@ func TestScore_ZeroInput(t *testing.T) {
 func TestScore_MaximumScore(t *testing.T) {
 	// Every factor at its maximum tier, including precedent_ref.
 	d := model.TraceDecision{
-		DecisionType: "architecture",                        // standard type → 0.10
-		Outcome:      "chose Redis for session caching now", // >20 chars → 0.05
+		DecisionType: "architecture",
+		Outcome:      "chose Redis for session caching now", // >20 chars → 0.10
 		Confidence:   0.85,                                  // mid-range → 0.15
-		Reasoning:    strPtr(repeat('x', 101)),              // >100 chars → 0.25
+		Reasoning:    strPtr(repeat('x', 101)),              // >100 chars → 0.30
 		Alternatives: []model.TraceAlternative{
 			{Label: "a"},
 			{Label: "b", RejectionReason: strPtr("not viable because of latency overhead issues")},
@@ -82,7 +82,7 @@ func TestScore_Factor1_ConfidenceEdge(t *testing.T) {
 
 func TestScore_Factor2_ReasoningLong(t *testing.T) {
 	d := model.TraceDecision{Reasoning: strPtr(repeat('a', 101))}
-	assert.InDelta(t, float32(0.25), Score(d, false), 0.001)
+	assert.InDelta(t, float32(0.30), Score(d, false), 0.001)
 }
 
 func TestScore_Factor3_SubstantiveRejections(t *testing.T) {
@@ -133,22 +133,25 @@ func TestScore_Factor4_TwoEvidence(t *testing.T) {
 	assert.InDelta(t, float32(0.15), Score(d, false), 0.001)
 }
 
-func TestScore_Factor5_StandardType(t *testing.T) {
-	d := model.TraceDecision{DecisionType: "security"}
+func TestScore_StandardTypeNoBonus(t *testing.T) {
+	// Standard and custom types score identically — no type bonus.
+	standard := model.TraceDecision{DecisionType: "security"}
+	custom := model.TraceDecision{DecisionType: "custom_workflow"}
+	assert.Equal(t, Score(standard, false), Score(custom, false),
+		"standard and custom types should score the same")
+}
+
+func TestScore_Factor5_SubstantiveOutcome(t *testing.T) {
+	d := model.TraceDecision{Outcome: "chose Redis for session caching now"} // >20 chars
 	assert.InDelta(t, float32(0.10), Score(d, false), 0.001)
 }
 
-func TestScore_Factor6_SubstantiveOutcome(t *testing.T) {
-	d := model.TraceDecision{Outcome: "chose Redis for session caching now"} // >20 chars
-	assert.InDelta(t, float32(0.05), Score(d, false), 0.001)
-}
-
-func TestScore_Factor7_PrecedentRef(t *testing.T) {
+func TestScore_Factor6_PrecedentRef(t *testing.T) {
 	d := model.TraceDecision{}
 	assert.InDelta(t, float32(0.10), Score(d, true), 0.001)
 }
 
-func TestScore_Factor7_NoPrecedentRef(t *testing.T) {
+func TestScore_Factor6_NoPrecedentRef(t *testing.T) {
 	d := model.TraceDecision{}
 	assert.InDelta(t, float32(0.0), Score(d, false), 0.001)
 }
@@ -194,11 +197,11 @@ func TestScore_ReasoningBoundaries(t *testing.T) {
 		{"empty string", 0, 0.0},
 		{"1 char", 1, 0.0},
 		{"exactly 20 chars", 20, 0.0},    // not > 20
-		{"21 chars", 21, 0.10},           // > 20
-		{"exactly 50 chars", 50, 0.10},   // not > 50
-		{"51 chars", 51, 0.20},           // > 50
-		{"exactly 100 chars", 100, 0.20}, // not > 100
-		{"101 chars", 101, 0.25},         // > 100
+		{"21 chars", 21, 0.12},           // > 20, 0.30 * 0.40
+		{"exactly 50 chars", 50, 0.12},   // not > 50
+		{"51 chars", 51, 0.24},           // > 50, 0.30 * 0.80
+		{"exactly 100 chars", 100, 0.24}, // not > 100
+		{"101 chars", 101, 0.30},         // > 100, 0.30 * 1.00
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -362,11 +365,13 @@ func TestScore_NonStandardDecisionType(t *testing.T) {
 	assert.InDelta(t, float32(0.0), Score(d, false), 0.001)
 }
 
-func TestScore_AllStandardDecisionTypes(t *testing.T) {
-	for dt := range StandardDecisionTypes {
+func TestScore_AllDefaultStandardDecisionTypes_NoBonus(t *testing.T) {
+	// Standard types no longer get a scoring bonus.
+	for dt := range DefaultStandardDecisionTypes {
 		t.Run(dt, func(t *testing.T) {
 			d := model.TraceDecision{DecisionType: dt}
-			assert.InDelta(t, float32(0.10), Score(d, false), 0.001)
+			assert.InDelta(t, float32(0.0), Score(d, false), 0.001,
+				"type-only decision should score 0 regardless of standard status")
 		})
 	}
 }
@@ -383,9 +388,9 @@ func TestScore_OutcomeBoundaries(t *testing.T) {
 	}{
 		{"empty", "", 0.0},
 		{"exactly 20 chars", repeat('x', 20), 0.0},
-		{"21 chars", repeat('x', 21), 0.05},
+		{"21 chars", repeat('x', 21), 0.10},
 		{"whitespace padded to 25 but trimmed to 15", "   " + repeat('x', 15) + "       ", 0.0},
-		{"whitespace padded to 30 with 21 content", "    " + repeat('x', 21) + "     ", 0.05},
+		{"whitespace padded to 30 with 21 content", "    " + repeat('x', 21) + "     ", 0.10},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -400,16 +405,16 @@ func TestScore_OutcomeBoundaries(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestScore_TwoFactorsCombined(t *testing.T) {
-	// Confidence mid-range (0.15) + standard type (0.10) = 0.25
+	// Confidence mid-range (0.15) + outcome >20 chars (0.10) = 0.25
 	d := model.TraceDecision{
-		DecisionType: "trade_off",
-		Confidence:   0.70,
+		Outcome:    "chose latency over throughput for user-facing endpoint",
+		Confidence: 0.70,
 	}
 	assert.InDelta(t, float32(0.25), Score(d, false), 0.001)
 }
 
 func TestScore_ThreeFactorsCombined(t *testing.T) {
-	// Confidence mid-range (0.15) + reasoning >100 (0.25) + 2 evidence (0.15) = 0.55
+	// Confidence mid-range (0.15) + reasoning >100 (0.30) + 2 evidence (0.15) = 0.60
 	d := model.TraceDecision{
 		Confidence: 0.60,
 		Reasoning:  strPtr(repeat('r', 101)),
@@ -418,7 +423,7 @@ func TestScore_ThreeFactorsCombined(t *testing.T) {
 			{SourceType: "document", Content: "b"},
 		},
 	}
-	assert.InDelta(t, float32(0.55), Score(d, false), 0.001)
+	assert.InDelta(t, float32(0.60), Score(d, false), 0.001)
 }
 
 // ---------------------------------------------------------------------------
@@ -442,7 +447,7 @@ func TestScore_UniformAcrossTypes(t *testing.T) {
 		scores[dt] = Score(d, false)
 	}
 
-	// All standard types get type credit (0.10), so all should be equal.
+	// Scoring is uniform — no type-specific bonus or penalty.
 	first := scores[types[0]]
 	for _, dt := range types[1:] {
 		assert.InDelta(t, first, scores[dt], 0.001,
@@ -451,26 +456,26 @@ func TestScore_UniformAcrossTypes(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// StandardDecisionTypes map completeness
+// DefaultStandardDecisionTypes map completeness
 // ---------------------------------------------------------------------------
 
-func TestStandardDecisionTypes_Contains(t *testing.T) {
+func TestDefaultStandardDecisionTypes_Contains(t *testing.T) {
 	expected := []string{
 		"model_selection", "architecture", "data_source", "error_handling",
 		"feature_scope", "trade_off", "deployment", "security",
 		"code_review", "investigation", "planning", "assessment",
 	}
-	assert.Equal(t, len(expected), len(StandardDecisionTypes),
-		"StandardDecisionTypes should have exactly %d entries", len(expected))
+	assert.Equal(t, len(expected), len(DefaultStandardDecisionTypes),
+		"DefaultStandardDecisionTypes should have exactly %d entries", len(expected))
 	for _, dt := range expected {
-		assert.True(t, StandardDecisionTypes[dt], "%q should be a standard decision type", dt)
+		assert.True(t, DefaultStandardDecisionTypes[dt], "%q should be a standard decision type", dt)
 	}
 }
 
-func TestStandardDecisionTypes_ExcludesUnknown(t *testing.T) {
+func TestDefaultStandardDecisionTypes_ExcludesUnknown(t *testing.T) {
 	bogus := []string{"", "unknown", "custom", "MODEL_SELECTION", "Architecture"}
 	for _, dt := range bogus {
-		assert.False(t, StandardDecisionTypes[dt], "%q should not be a standard decision type", dt)
+		assert.False(t, DefaultStandardDecisionTypes[dt], "%q should not be a standard decision type", dt)
 	}
 }
 
@@ -574,7 +579,93 @@ func TestExpectationFor_UnknownType(t *testing.T) {
 func TestExpectationFor_AllStandardTypesHaveExpectations(t *testing.T) {
 	// Verify that every type with an expectation is a standard type.
 	for dt := range DefaultExpectations {
-		assert.True(t, StandardDecisionTypes[dt],
+		assert.True(t, DefaultStandardDecisionTypes[dt],
 			"type %q has an expectation but is not a standard decision type", dt)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BuildStandardTypes tests
+// ---------------------------------------------------------------------------
+
+func TestBuildStandardTypes_NilReturnsDefaults(t *testing.T) {
+	result := BuildStandardTypes(nil)
+	assert.Equal(t, DefaultStandardDecisionTypes, result)
+}
+
+func TestBuildStandardTypes_EmptyReturnsDefaults(t *testing.T) {
+	result := BuildStandardTypes([]string{})
+	assert.Equal(t, DefaultStandardDecisionTypes, result)
+}
+
+func TestBuildStandardTypes_CustomList(t *testing.T) {
+	result := BuildStandardTypes([]string{"data_pipeline", "Access_Control", "  security  "})
+	assert.True(t, result["data_pipeline"])
+	assert.True(t, result["access_control"], "should be lowercased")
+	assert.True(t, result["security"], "should be trimmed")
+	assert.False(t, result["architecture"], "should not include defaults")
+	assert.Equal(t, 3, len(result))
+}
+
+func TestBuildStandardTypes_IgnoresEmpty(t *testing.T) {
+	result := BuildStandardTypes([]string{"architecture", "", "  ", "security"})
+	assert.Equal(t, 2, len(result))
+	assert.True(t, result["architecture"])
+	assert.True(t, result["security"])
+}
+
+// ---------------------------------------------------------------------------
+// SuggestStandardType tests
+// ---------------------------------------------------------------------------
+
+func TestSuggestStandardType_ExactMatch(t *testing.T) {
+	// Exact match returns empty — no suggestion needed.
+	result := SuggestStandardType("architecture", DefaultStandardDecisionTypes, 3)
+	assert.Equal(t, "", result, "exact match should not produce a suggestion")
+}
+
+func TestSuggestStandardType_Typo(t *testing.T) {
+	result := SuggestStandardType("arhitecture", DefaultStandardDecisionTypes, 3)
+	assert.Equal(t, "architecture", result)
+}
+
+func TestSuggestStandardType_DelimiterVariant(t *testing.T) {
+	result := SuggestStandardType("trade-off", DefaultStandardDecisionTypes, 3)
+	assert.Equal(t, "trade_off", result)
+}
+
+func TestSuggestStandardType_NoMatch(t *testing.T) {
+	result := SuggestStandardType("completely_different_thing", DefaultStandardDecisionTypes, 3)
+	assert.Equal(t, "", result, "distant types should not produce a suggestion")
+}
+
+func TestSuggestStandardType_MissingUnderscore(t *testing.T) {
+	result := SuggestStandardType("tradeoff", DefaultStandardDecisionTypes, 3)
+	assert.Equal(t, "trade_off", result)
+}
+
+// ---------------------------------------------------------------------------
+// levenshtein tests
+// ---------------------------------------------------------------------------
+
+func TestLevenshtein(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want int
+	}{
+		{"", "", 0},
+		{"a", "", 1},
+		{"", "a", 1},
+		{"abc", "abc", 0},
+		{"abc", "abd", 1},
+		{"trade_off", "trade-off", 1},
+		{"trade_off", "tradeoff", 1},
+		{"architecture", "arhitecture", 1},
+		{"kitten", "sitting", 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.a+"_"+tt.b, func(t *testing.T) {
+			assert.Equal(t, tt.want, levenshtein(tt.a, tt.b))
+		})
 	}
 }

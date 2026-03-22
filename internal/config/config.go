@@ -123,6 +123,12 @@ type Config struct {
 	// to agents for each decision type. Scoring is always uniform. Example:
 	//   {"security":{"min_evidence":3,"alternatives_expected":true,"max_confidence_no_evidence":0.70}}
 	CompletenessProfilesJSON string
+
+	// Standard decision types override.
+	// Comma-separated list of types considered "standard" for suggestion tips.
+	// When set, replaces the built-in 12 defaults. Example:
+	//   "architecture,security,data_pipeline,access_control"
+	StandardDecisionTypes []string
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -155,6 +161,7 @@ func Load() (Config, error) {
 		CORSAllowedOrigins:       envStrSlice("AKASHI_CORS_ALLOWED_ORIGINS", nil),
 		HooksAPIKey:              envStr("AKASHI_HOOKS_API_KEY", ""),
 		CompletenessProfilesJSON: envStr("AKASHI_COMPLETENESS_PROFILES", ""),
+		StandardDecisionTypes:    envStrSlice("AKASHI_STANDARD_DECISION_TYPES", nil),
 	}
 
 	// Integer fields.
