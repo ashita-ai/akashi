@@ -521,12 +521,12 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, input CheckInput) 
 		}
 	}()
 
-	// 2. List open/acknowledged conflicts (filtered in SQL via StatusIn).
+	// 2. List open conflicts (filtered in SQL via StatusIn).
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		conflictFilter := storage.ConflictFilters{
-			StatusIn: []string{"open", "acknowledged"},
+			StatusIn: []string{"open"},
 		}
 		if input.DecisionType != "" {
 			dt := input.DecisionType

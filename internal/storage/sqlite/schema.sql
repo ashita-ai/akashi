@@ -250,6 +250,15 @@ CREATE TABLE IF NOT EXISTS api_keys (
     revoked_at   TEXT
 );
 
+CREATE TABLE IF NOT EXISTS conflict_labels (
+    scored_conflict_id TEXT PRIMARY KEY REFERENCES scored_conflicts(id),
+    org_id             TEXT NOT NULL,
+    label              TEXT NOT NULL,
+    labeled_by         TEXT NOT NULL,
+    labeled_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    notes              TEXT
+);
+
 CREATE TABLE IF NOT EXISTS mutation_audit_log (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     request_id     TEXT,

@@ -50,12 +50,11 @@ type EvidenceMetrics struct {
 
 // ConflictMetrics tracks conflict detection and resolution rates.
 type ConflictMetrics struct {
-	Total        int     `json:"total"`
-	Open         int     `json:"open"`
-	Acknowledged int     `json:"acknowledged"`
-	Resolved     int     `json:"resolved"`
-	WontFix      int     `json:"wont_fix"`
-	ResolvedPct  float64 `json:"resolved_pct"`
+	Total         int     `json:"total"`
+	Open          int     `json:"open"`
+	Resolved      int     `json:"resolved"`
+	FalsePositive int     `json:"false_positive"`
+	ResolvedPct   float64 `json:"resolved_pct"`
 }
 
 // Service computes trace health metrics.
@@ -135,12 +134,11 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 
 	if cc.Total > 0 {
 		m.Conflicts = &ConflictMetrics{
-			Total:        cc.Total,
-			Open:         cc.Open,
-			Acknowledged: cc.Acknowledged,
-			Resolved:     cc.Resolved,
-			WontFix:      cc.WontFix,
-			ResolvedPct:  resolvedPct,
+			Total:         cc.Total,
+			Open:          cc.Open,
+			Resolved:      cc.Resolved,
+			FalsePositive: cc.FalsePositive,
+			ResolvedPct:   resolvedPct,
 		}
 	}
 

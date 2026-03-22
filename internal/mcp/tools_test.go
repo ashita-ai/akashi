@@ -1630,11 +1630,11 @@ func TestHandleTrace_WithProjectContext(t *testing.T) {
 
 // ---------- handleConflicts severity/category filtering ----------
 
-func TestHandleConflicts_StatusAcknowledged(t *testing.T) {
+func TestHandleConflicts_StatusFalsePositive(t *testing.T) {
 	ctx := adminCtx()
 
 	result, err := testServer.handleConflicts(ctx, conflictsRequest(map[string]any{
-		"status": "acknowledged",
+		"status": "false_positive",
 	}))
 	require.NoError(t, err)
 	require.False(t, result.IsError)
@@ -2758,41 +2758,23 @@ func TestHandleResolve_WithWinner(t *testing.T) {
 	assert.Equal(t, testAdminID, resp.ResolvedBy)
 }
 
-func TestHandleResolve_WontFix(t *testing.T) {
+func TestHandleResolve_FalsePositive(t *testing.T) {
 	ctx := adminCtx()
 	conflictID, _, _ := seedConflictWithDecisions(t)
 
 	result, err := testServer.handleResolve(ctx, resolveRequest(map[string]any{
 		"conflict_id":     conflictID.String(),
-		"status":          "wont_fix",
-		"resolution_note": "false positive",
+		"status":          "false_positive",
+		"resolution_note": "detector was wrong",
 	}))
 	require.NoError(t, err)
-	require.False(t, result.IsError, "wont_fix should succeed: %s", parseToolText(t, result))
+	require.False(t, result.IsError, "false_positive should succeed: %s", parseToolText(t, result))
 
 	var resp struct {
 		NewStatus string `json:"new_status"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
-	assert.Equal(t, "wont_fix", resp.NewStatus)
-}
-
-func TestHandleResolve_Acknowledged(t *testing.T) {
-	ctx := adminCtx()
-	conflictID, _, _ := seedConflictWithDecisions(t)
-
-	result, err := testServer.handleResolve(ctx, resolveRequest(map[string]any{
-		"conflict_id": conflictID.String(),
-		"status":      "acknowledged",
-	}))
-	require.NoError(t, err)
-	require.False(t, result.IsError, "acknowledged should succeed: %s", parseToolText(t, result))
-
-	var resp struct {
-		NewStatus string `json:"new_status"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
-	assert.Equal(t, "acknowledged", resp.NewStatus)
+	assert.Equal(t, "false_positive", resp.NewStatus)
 }
 
 func TestHandleResolve_NilClaims(t *testing.T) {
@@ -2833,7 +2815,7 @@ func TestHandleResolve_WinnerWithNonResolvedStatus(t *testing.T) {
 
 	result, err := testServer.handleResolve(ctx, resolveRequest(map[string]any{
 		"conflict_id":         uuid.New().String(),
-		"status":              "wont_fix",
+		"status":              "false_positive",
 		"winning_decision_id": uuid.New().String(),
 	}))
 	require.NoError(t, err)

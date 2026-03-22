@@ -1701,8 +1701,8 @@ func TestCheck_FiltersResolvedConflicts(t *testing.T) {
 		conflicts: []model.DecisionConflict{
 			{Status: "open"},
 			{Status: "resolved"},
-			{Status: "acknowledged"},
-			{Status: "wont_fix"},
+			{Status: "open"},
+			{Status: "false_positive"},
 		},
 	}
 	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
@@ -1712,7 +1712,7 @@ func TestCheck_FiltersResolvedConflicts(t *testing.T) {
 	assert.Len(t, resp.Conflicts, 2)
 	for _, c := range resp.Conflicts {
 		assert.NotEqual(t, "resolved", c.Status)
-		assert.NotEqual(t, "wont_fix", c.Status)
+		assert.NotEqual(t, "false_positive", c.Status)
 	}
 }
 

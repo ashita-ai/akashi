@@ -69,9 +69,9 @@ func (h *Handlers) HandleListConflictGroups(w http.ResponseWriter, r *http.Reque
 	if ck := r.URL.Query().Get("conflict_kind"); ck != "" {
 		filters.ConflictKind = &ck
 	}
-	// status=open (or acknowledged) maps to OpenOnly. Any other value (resolved, wont_fix)
-	// is not yet supported at the group level — fall through to all groups.
-	if st := r.URL.Query().Get("status"); st == "open" || st == "acknowledged" {
+	// status=open maps to OpenOnly. Other values (resolved, false_positive)
+	// are not yet supported at the group level — fall through to all groups.
+	if st := r.URL.Query().Get("status"); st == "open" {
 		filters.OpenOnly = true
 	}
 
@@ -106,9 +106,8 @@ const cascadeSimilarityThreshold = 0.80
 
 // validConflictStatuses defines the allowed values for conflict status transitions.
 var validConflictStatuses = map[string]bool{
-	"acknowledged": true,
-	"resolved":     true,
-	"wont_fix":     true,
+	"resolved":       true,
+	"false_positive": true,
 }
 
 // HandlePatchConflict handles PATCH /v1/conflicts/{id}.
@@ -131,7 +130,7 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 
 	if !validConflictStatuses[req.Status] {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
-			"status must be one of: acknowledged, resolved, wont_fix")
+			"status must be one of: resolved, false_positive")
 		return
 	}
 
@@ -187,6 +186,23 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 		h.resolutionRecorder.RecordResolution(r.Context(), req.Status, string(conflict.ConflictKind), 1)
 	}
 
+	// Auto-label false positives into ground truth for detector training.
+	if req.Status == "false_positive" {
+		label := "unrelated_false_positive"
+		if req.FalsePositiveLabel != nil && *req.FalsePositiveLabel == "related_not_contradicting" {
+			label = *req.FalsePositiveLabel
+		}
+		if labelErr := h.db.UpsertConflictLabel(r.Context(), storage.ConflictLabel{
+			ScoredConflictID: id,
+			OrgID:            orgID,
+			Label:            label,
+			LabeledBy:        resolvedBy,
+			LabeledAt:        time.Now(),
+		}); labelErr != nil {
+			h.logger.Warn("failed to auto-label false_positive conflict", "conflict_id", id, "error", labelErr)
+		}
+	}
+
 	// Resolution cascade: when a conflict is resolved with a winner and belongs
 	// to a group, auto-resolve other open conflicts in the same group whose
 	// outcome embeddings align with the winning decision.
@@ -218,14 +234,13 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 }
 
 // validGroupResolveStatuses defines the allowed values for batch conflict group resolution.
-// "acknowledged" is excluded because batch-acknowledging a group is not a resolution action.
 var validGroupResolveStatuses = map[string]bool{
-	"resolved": true,
-	"wont_fix": true,
+	"resolved":       true,
+	"false_positive": true,
 }
 
 // HandleResolveConflictGroup handles PATCH /v1/conflict-groups/{id}/resolve.
-// Batch-resolves all open or acknowledged conflicts in a conflict group.
+// Batch-resolves all open conflicts in a conflict group.
 func (h *Handlers) HandleResolveConflictGroup(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
@@ -244,7 +259,7 @@ func (h *Handlers) HandleResolveConflictGroup(w http.ResponseWriter, r *http.Req
 
 	if !validGroupResolveStatuses[req.Status] {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
-			"status must be one of: resolved, wont_fix")
+			"status must be one of: resolved, false_positive")
 		return
 	}
 
@@ -279,6 +294,31 @@ func (h *Handlers) HandleResolveConflictGroup(w http.ResponseWriter, r *http.Req
 		groupKind, kindErr := h.db.GetConflictGroupKind(r.Context(), groupID, orgID)
 		if kindErr == nil {
 			h.resolutionRecorder.RecordResolution(r.Context(), req.Status, groupKind, affected)
+		}
+	}
+
+	// Auto-label false positives in the group for detector training.
+	if req.Status == "false_positive" && affected > 0 {
+		fpStatus := "false_positive"
+		fpConflicts, fpErr := h.db.ListConflicts(r.Context(), orgID, storage.ConflictFilters{
+			Status:  &fpStatus,
+			GroupID: &groupID,
+		}, affected+100, 0)
+		if fpErr != nil {
+			h.logger.Warn("failed to list false_positive conflicts for auto-labeling", "group_id", groupID, "error", fpErr)
+		} else {
+			for _, c := range fpConflicts {
+				if labelErr := h.db.UpsertConflictLabel(r.Context(), storage.ConflictLabel{
+					ScoredConflictID: c.ID,
+					OrgID:            orgID,
+					Label:            "unrelated_false_positive",
+					LabeledBy:        resolvedBy,
+					LabeledAt:        time.Now(),
+				}); labelErr != nil {
+					h.logger.Warn("failed to auto-label false_positive conflict in group",
+						"conflict_id", c.ID, "group_id", groupID, "error", labelErr)
+				}
+			}
 		}
 	}
 
@@ -465,8 +505,8 @@ func (h *Handlers) HandleGetConflict(w http.ResponseWriter, r *http.Request) {
 
 	detail := model.ConflictDetail{DecisionConflict: *conflict}
 
-	// Compute recommendation for unresolved conflicts only.
-	if conflict.Status == "open" || conflict.Status == "acknowledged" {
+	// Compute recommendation for open conflicts only.
+	if conflict.Status == "open" {
 		detail.Recommendation = h.computeRecommendation(r.Context(), *conflict, orgID)
 	}
 

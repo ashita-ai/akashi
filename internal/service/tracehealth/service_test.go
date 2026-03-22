@@ -195,7 +195,7 @@ func TestCompute_HealthyOrg(t *testing.T) {
 			AvgPerDecision:       2.4,
 		},
 		conflictCounts: storage.ConflictStatusCounts{
-			Total: 10, Open: 1, Acknowledged: 2, Resolved: 6, WontFix: 1,
+			Total: 10, Open: 1, Resolved: 6, FalsePositive: 3,
 		},
 		outcomeSignals: storage.OutcomeSignalsSummary{
 			DecisionsTotal:   100,
@@ -236,9 +236,8 @@ func TestCompute_HealthyOrg(t *testing.T) {
 	require.NotNil(t, m.Conflicts)
 	assert.Equal(t, 10, m.Conflicts.Total)
 	assert.Equal(t, 1, m.Conflicts.Open)
-	assert.Equal(t, 2, m.Conflicts.Acknowledged)
 	assert.Equal(t, 6, m.Conflicts.Resolved)
-	assert.Equal(t, 1, m.Conflicts.WontFix)
+	assert.Equal(t, 3, m.Conflicts.FalsePositive)
 	assert.InDelta(t, 60.0, m.Conflicts.ResolvedPct, 0.1)
 
 	// Outcome signals populated when total > 0.

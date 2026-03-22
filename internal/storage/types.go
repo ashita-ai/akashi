@@ -79,28 +79,28 @@ type ConflictFilters struct {
 	DecisionType *string
 	AgentID      *string
 	ConflictKind *string    // "cross_agent" or "self_contradiction"
-	Status       *string    // "open", "acknowledged", "resolved", "wont_fix"
+	Status       *string    // "open", "resolved", "false_positive"
 	StatusIn     []string   // Multi-value status filter (OR). Takes precedence over Status when set.
 	Severity     *string    // "critical", "high", "medium", "low"
 	Category     *string    // "factual", "assessment", "strategic", "temporal"
 	DecisionID   *uuid.UUID // conflicts involving this decision (A or B side)
+	GroupID      *uuid.UUID // conflicts belonging to this conflict group
 }
 
 // ConflictStatusCounts holds the number of conflicts in each resolution status.
 type ConflictStatusCounts struct {
-	Total        int
-	Open         int
-	Acknowledged int
-	Resolved     int
-	WontFix      int
+	Total         int
+	Open          int
+	Resolved      int
+	FalsePositive int
 }
 
-// WontFixRate holds the wont_fix false-positive rate over a rolling 30-day window.
-// Rate = WontFix / (Resolved + WontFix). Zero when the denominator is zero.
-type WontFixRate struct {
-	Resolved int     `json:"resolved"`
-	WontFix  int     `json:"wont_fix"`
-	Rate     float64 `json:"rate"`
+// FalsePositiveRate holds the false-positive rate over a rolling 30-day window.
+// Rate = FalsePositive / (Resolved + FalsePositive). Zero when the denominator is zero.
+type FalsePositiveRate struct {
+	Resolved      int     `json:"resolved"`
+	FalsePositive int     `json:"false_positive"`
+	Rate          float64 `json:"rate"`
 }
 
 // ConflictGroupFilters holds optional filters for conflict group queries.
@@ -108,8 +108,8 @@ type ConflictGroupFilters struct {
 	DecisionType *string
 	AgentID      *string
 	ConflictKind *string
-	// OpenOnly restricts results to groups that have at least one open or
-	// acknowledged member conflict. When false, all groups are returned.
+	// OpenOnly restricts results to groups that have at least one open
+	// member conflict. When false, all groups are returned.
 	OpenOnly bool
 }
 

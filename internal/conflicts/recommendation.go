@@ -58,7 +58,7 @@ type scoredReason struct {
 // Returns nil when the conflict is already resolved or when composite signal
 // strength is below the minimum threshold.
 func Recommend(input RecommendationInput) *model.Recommendation {
-	if input.Conflict.Status == "resolved" || input.Conflict.Status == "wont_fix" {
+	if input.Conflict.Status == "resolved" || input.Conflict.Status == "false_positive" {
 		return nil
 	}
 

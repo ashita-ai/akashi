@@ -280,7 +280,7 @@ func GenerateCheckSummary(decisions []model.Decision, conflicts []model.Decision
 
 		for _, c := range conflicts {
 			switch c.Status {
-			case "open", "acknowledged":
+			case "open":
 				open++
 				if c.Severity != nil {
 					if r := severityRank[*c.Severity]; r > maxRank {
@@ -288,7 +288,7 @@ func GenerateCheckSummary(decisions []model.Decision, conflicts []model.Decision
 						maxSeverity = *c.Severity
 					}
 				}
-			case "resolved", "wont_fix":
+			case "resolved", "false_positive":
 				resolved++
 				if c.WinningDecisionID != nil {
 					resolvedWithWinner++
@@ -320,7 +320,7 @@ func BuildOpenConflictSummary(open int, maxSeverity string, decisions []model.De
 
 	// Check for consensus asymmetry.
 	for _, c := range conflicts {
-		if c.Status != "open" && c.Status != "acknowledged" {
+		if c.Status != "open" {
 			continue
 		}
 		aCount := DecisionAgreementCount(decisions, c.DecisionAID)
@@ -374,7 +374,7 @@ func Resolution(r model.ConflictResolution) map[string]any {
 // ActionNeeded returns true if there are open critical/high conflicts.
 func ActionNeeded(conflicts []model.DecisionConflict) bool {
 	for _, c := range conflicts {
-		if c.Status != "open" && c.Status != "acknowledged" {
+		if c.Status != "open" {
 			continue
 		}
 		if c.Severity != nil && (*c.Severity == "critical" || *c.Severity == "high") {

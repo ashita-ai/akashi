@@ -36,7 +36,7 @@ TOOLS:
 - akashi_trace: record a decision after making it (always call after)
 - akashi_query: filter or search the audit trail by type, agent, confidence, or free-text
 - akashi_conflicts: list and filter open conflicts between agents
-- akashi_resolve: resolve, dismiss, or acknowledge a conflict (set winner, wont_fix, or acknowledged)
+- akashi_resolve: resolve a conflict or mark it as a false positive (set winner or false_positive)
 - akashi_assess: record whether a prior decision turned out to be correct
 - akashi_stats: aggregate health metrics for the decision trail
 

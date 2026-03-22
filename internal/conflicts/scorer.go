@@ -870,7 +870,7 @@ func (s *Scorer) Validator() Validator {
 // Returns the number of rows deleted.
 // SECURITY: Intentionally global — one-time startup migration that clears stale
 // conflicts across all orgs when transitioning to LLM validation.
-// Only open/acknowledged conflicts are removed; resolved and wont_fix conflicts
+// Only open conflicts are removed; resolved and false_positive conflicts
 // represent explicit human decisions and are preserved.
 func (s *Scorer) ClearUnvalidatedConflicts(ctx context.Context) (int, error) {
 	tx, err := s.db.Pool().Begin(ctx)
@@ -882,7 +882,7 @@ func (s *Scorer) ClearUnvalidatedConflicts(ctx context.Context) (int, error) {
 	tag, err := tx.Exec(ctx,
 		`DELETE FROM scored_conflicts
 		 WHERE scoring_method NOT IN ('llm_v2')
-		   AND status IN ('open', 'acknowledged')`)
+		   AND status = 'open'`)
 	if err != nil {
 		return 0, fmt.Errorf("conflicts: clear unvalidated: %w", err)
 	}
@@ -932,9 +932,9 @@ func cosineSimilarity(a, b []float32) float64 {
 	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }
 
-// ClearAllConflicts deletes open and acknowledged scored_conflicts regardless
+// ClearAllConflicts deletes open scored_conflicts regardless
 // of scoring method, forcing re-evaluation of all pending decision pairs.
-// Conflicts with status 'resolved' or 'wont_fix' represent explicit human
+// Conflicts with status 'resolved' or 'false_positive' represent explicit human
 // decisions and are preserved — they are never wiped by this operation.
 // Returns the number of rows deleted.
 // SECURITY: Intentionally global — one-time startup operation across all orgs.
@@ -947,7 +947,7 @@ func (s *Scorer) ClearAllConflicts(ctx context.Context) (int, error) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	tag, err := tx.Exec(ctx,
-		`DELETE FROM scored_conflicts WHERE status IN ('open', 'acknowledged')`)
+		`DELETE FROM scored_conflicts WHERE status = 'open'`)
 	if err != nil {
 		return 0, fmt.Errorf("conflicts: clear all: %w", err)
 	}
@@ -970,7 +970,7 @@ func (s *Scorer) ClearAllConflicts(ctx context.Context) (int, error) {
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("conflicts: commit clear all: %w", err)
 	}
-	s.logger.Warn("startup: cleared all open/acknowledged conflicts", "deleted", n, "reason", "AKASHI_FORCE_CONFLICT_RESCORE")
+	s.logger.Warn("startup: cleared all open conflicts", "deleted", n, "reason", "AKASHI_FORCE_CONFLICT_RESCORE")
 	return n, nil
 }
 

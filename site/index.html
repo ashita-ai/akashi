@@ -685,9 +685,8 @@
     }
 
     .ls-open     { border-color: var(--yellow);  color: var(--yellow);  background: rgba(251,191,36,0.07); }
-    .ls-ack      { border-color: var(--text-muted); color: var(--text-dim); background: transparent; }
-    .ls-resolved { border-color: var(--green); color: var(--green); background: rgba(52,211,153,0.07); }
-    .ls-wontfix  { border-color: var(--text-muted); color: var(--text-muted); background: transparent; }
+    .ls-resolved      { border-color: var(--green); color: var(--green); background: rgba(52,211,153,0.07); }
+    .ls-falsepositive { border-color: var(--text-muted); color: var(--text-muted); background: transparent; }
 
     .la { color: var(--text-muted); font-size: 0.8rem; font-family: var(--font-mono); }
 
@@ -1379,11 +1378,9 @@
     <div class="lifecycle" data-reveal data-reveal-delay="4">
       <div class="lstate ls-open">open</div>
       <div class="la">→</div>
-      <div class="lstate ls-ack">acknowledged</div>
-      <div class="la">→</div>
       <div class="lstate ls-resolved">resolved</div>
       <div class="la">or</div>
-      <div class="lstate ls-wontfix">wont_fix</div>
+      <div class="lstate ls-falsepositive">false_positive</div>
     </div>
   </div>
 </section>

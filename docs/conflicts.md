@@ -128,10 +128,9 @@ detection. The scorer walks both forward and backward through the revision chain
 
 | Status | Meaning | Transitions to |
 |--------|---------|----------------|
-| `open` | Detected, awaiting action | `acknowledged`, `resolved`, `wont_fix` |
-| `acknowledged` | Reviewed but no action taken | `resolved`, `wont_fix` |
+| `open` | Detected, awaiting action | `resolved`, `false_positive` |
 | `resolved` | Resolved with declared winner | Terminal |
-| `wont_fix` | Dismissed as not a real conflict | Terminal |
+| `false_positive` | Dismissed as not a real conflict | Terminal |
 
 ## Resolution methods
 
@@ -169,7 +168,7 @@ The adjudication itself becomes part of the audit trail.
 ### Batch group resolution
 
 Conflicts between the same agent pair, decision type, and conflict kind are grouped.
-Resolve all open/acknowledged conflicts in a group with one call:
+Resolve all open conflicts in a group with one call:
 
 ```
 PATCH /v1/conflict-groups/{id}/resolve
@@ -260,7 +259,7 @@ When OpenTelemetry is configured, the conflict pipeline emits these metrics:
 
 | Metric | Description |
 |--------|-------------|
-| `akashi.conflicts.open_total` | Current open + acknowledged conflicts |
+| `akashi.conflicts.open_total` | Current open conflicts |
 | `akashi.conflicts.backfill_remaining` | Decisions with embeddings not yet conflict-scored |
 
 ### Alerting recommendations

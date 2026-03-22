@@ -269,11 +269,12 @@ EXAMPLES:
 WHEN TO USE: To understand the overall health and usage of the decision
 trail at a glance. Returns trace health metrics (completeness, evidence
 coverage, conflict summary), agent count, decision quality statistics,
-and the rolling 30-day wont_fix rate (false positive rate for conflict
+and the rolling 30-day false_positive_rate (false positive rate for conflict
 detection).
 
-The wont_fix_rate field shows resolved/wont_fix counts and the ratio
-wont_fix/(resolved+wont_fix). An elevated rate signals LLM validator drift.
+The false_positive_rate field shows resolved/false_positive counts and the
+ratio false_positive/(resolved+false_positive). An elevated rate signals
+LLM validator drift.
 
 Useful at the start of a session for situational awareness, or when
 reporting on the state of decision tracking.`),
@@ -294,7 +295,7 @@ exist in the decision trail. Useful for understanding where agents
 disagree and what needs resolution.
 
 Returns conflicts filtered by type, agent, status, severity, or category.
-Only open/acknowledged conflicts are shown by default.`),
+Only open conflicts are shown by default.`),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithIdempotentHintAnnotation(true),
 			mcplib.WithOpenWorldHintAnnotation(false),
@@ -305,7 +306,7 @@ Only open/acknowledged conflicts are shown by default.`),
 				mcplib.Description("Filter by agent involved in the conflict"),
 			),
 			mcplib.WithString("status",
-				mcplib.Description("Filter by status: open, acknowledged, resolved, wont_fix. Defaults to showing open+acknowledged."),
+				mcplib.Description("Filter by status: open, resolved, false_positive. Defaults to showing open."),
 			),
 			mcplib.WithString("severity",
 				mcplib.Description("Filter by severity: critical, high, medium, low"),
@@ -361,18 +362,20 @@ After testing, the coder calls akashi_assess to mark it correct:
 		s.handleAssess,
 	)
 
-	// akashi_resolve — resolve or acknowledge a conflict.
+	// akashi_resolve — resolve or mark a conflict as false positive.
 	s.mcpServer.AddTool(
 		mcplib.NewTool("akashi_resolve",
-			mcplib.WithDescription(`Resolve, dismiss, or acknowledge a conflict between decisions.
+			mcplib.WithDescription(`Resolve a conflict or mark it as a false positive.
 
 WHEN TO USE: When you or the user decides the outcome of a conflict detected
 by akashi. For example, after reviewing two contradictory decisions, you can
-declare one the winner or dismiss the conflict as a false positive.
+declare one the winner or mark the conflict as a false positive if the
+detector was wrong.
 
 Use the conflict id from akashi_check or akashi_conflicts results. You must
-provide a status: "resolved" (with a winner), "wont_fix" (dismiss), or
-"acknowledged" (note it without resolving).
+provide a status: "resolved" (with a winner) or "false_positive" (the
+detector was wrong — automatically labels the conflict for ground truth
+tracking so the detector can be improved).
 
 When status is "resolved" and winning_decision_id is provided, the system
 will also cascade-resolve other open conflicts in the same group whose
@@ -390,11 +393,14 @@ EXAMPLE: After a user says "go with approach A", call akashi_resolve with
 				mcplib.Required(),
 			),
 			mcplib.WithString("status",
-				mcplib.Description(`New status: "resolved", "wont_fix", or "acknowledged"`),
+				mcplib.Description(`New status: "resolved" or "false_positive"`),
 				mcplib.Required(),
 			),
 			mcplib.WithString("winning_decision_id",
 				mcplib.Description("UUID of the winning decision. Only valid when status is \"resolved\". Must be one of the two decisions in the conflict."),
+			),
+			mcplib.WithString("false_positive_label",
+				mcplib.Description(`Optional label when status is "false_positive": "unrelated_false_positive" (default) or "related_not_contradicting"`),
 			),
 			mcplib.WithString("resolution_note",
 				mcplib.Description("Optional explanation of why the conflict was resolved this way"),
@@ -1148,11 +1154,11 @@ func (s *Server) handleConflicts(ctx context.Context, request mcplib.CallToolReq
 	limit := request.GetInt("limit", 10)
 	format := request.GetString("format", "concise")
 
-	// Build group filters. The MCP tool defaults to open+acknowledged groups so
+	// Build group filters. The MCP tool defaults to open groups so
 	// agents see actionable disagreements, not resolved history.
 	statusFilter := request.GetString("status", "")
 	groupFilters := storage.ConflictGroupFilters{
-		OpenOnly: statusFilter == "" || statusFilter == "open" || statusFilter == "acknowledged",
+		OpenOnly: statusFilter == "" || statusFilter == "open",
 	}
 	if dt := request.GetString("decision_type", ""); dt != "" {
 		groupFilters.DecisionType = &dt
@@ -1326,10 +1332,10 @@ func (s *Server) handleResolve(ctx context.Context, request mcplib.CallToolReque
 	// Parse and validate status.
 	status := request.GetString("status", "")
 	switch status {
-	case "resolved", "wont_fix", "acknowledged":
+	case "resolved", "false_positive":
 		// valid
 	default:
-		return errorResult(`status must be one of: "resolved", "wont_fix", "acknowledged"`), nil
+		return errorResult(`status must be one of: "resolved", "false_positive"`), nil
 	}
 
 	// Parse optional winning_decision_id.
@@ -1388,6 +1394,23 @@ func (s *Server) handleResolve(ctx context.Context, request mcplib.CallToolReque
 		return errorResult(fmt.Sprintf("failed to update conflict: %v", err)), nil
 	}
 
+	// Auto-label false positives into ground truth for detector training.
+	if status == "false_positive" {
+		label := "unrelated_false_positive"
+		if fpLabel := request.GetString("false_positive_label", ""); fpLabel == "related_not_contradicting" {
+			label = fpLabel
+		}
+		if labelErr := s.db.UpsertConflictLabel(ctx, storage.ConflictLabel{
+			ScoredConflictID: conflictID,
+			OrgID:            orgID,
+			Label:            label,
+			LabeledBy:        resolvedBy,
+			LabeledAt:        time.Now(),
+		}); labelErr != nil {
+			s.logger.Warn("failed to auto-label false_positive conflict", "conflict_id", conflictID, "error", labelErr)
+		}
+	}
+
 	// Cascade resolution when resolving with a winner in a group.
 	var cascaded int
 	if status == "resolved" && winningDecisionID != nil {
@@ -1443,15 +1466,15 @@ func (s *Server) handleStats(ctx context.Context, _ mcplib.CallToolRequest) (*mc
 		return errorResult(fmt.Sprintf("failed to count agents: %v", err)), nil
 	}
 
-	wontFixRate, err := s.db.GetWontFixRate(ctx, orgID)
+	falsePositiveRate, err := s.db.GetFalsePositiveRate(ctx, orgID)
 	if err != nil {
-		return errorResult(fmt.Sprintf("failed to get wont_fix rate: %v", err)), nil
+		return errorResult(fmt.Sprintf("failed to get false positive rate: %v", err)), nil
 	}
 
 	resultData, _ := json.MarshalIndent(map[string]any{
-		"trace_health":  metrics,
-		"agents":        agentCount,
-		"wont_fix_rate": wontFixRate,
+		"trace_health":        metrics,
+		"agents":              agentCount,
+		"false_positive_rate": falsePositiveRate,
 	}, "", "  ")
 
 	return &mcplib.CallToolResult{

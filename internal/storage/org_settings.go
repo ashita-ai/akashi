@@ -96,14 +96,14 @@ func (db *DB) GetOrgsWithAutoResolution(ctx context.Context) ([]OrgAutoResolveCo
 	return out, rows.Err()
 }
 
-// AutoResolvableConflicts returns open/acknowledged conflicts that have been
+// AutoResolvableConflicts returns open conflicts that have been
 // open longer than afterDays and whose severity is eligible for auto-resolution.
 func (db *DB) AutoResolvableConflicts(ctx context.Context, orgID uuid.UUID, maxSeverity string, neverSeverities []string, afterDays int) ([]model.DecisionConflict, error) {
 	maxRank := model.SeverityRank(maxSeverity)
 
 	query := conflictSelectBase + `
 		WHERE sc.org_id = $1
-		  AND sc.status IN ('open', 'acknowledged')
+		  AND sc.status = 'open'
 		  AND sc.detected_at < now() - ($2 * interval '1 day')
 		  AND (
 		      sc.severity IS NULL

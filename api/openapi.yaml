@@ -949,7 +949,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [open, acknowledged, resolved, wont_fix]
+            enum: [open, resolved, false_positive]
           description: Filter by conflict status.
       responses:
         "200":
@@ -1248,7 +1248,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [open, acknowledged, resolved, wont_fix]
+            enum: [open, resolved, false_positive]
           description: Filter by lifecycle status. Omit to return conflicts of all statuses.
         - name: severity
           in: query
@@ -1292,7 +1292,7 @@ paths:
         Returns the full conflict detail including a lazily-computed resolution
         recommendation based on confidence, recency, agent track record, and
         revision depth. The recommendation is only present for unresolved conflicts
-        (status `open` or `acknowledged`).
+        (status `open`).
         Requires `reader` role or higher.
       parameters:
         - name: id
@@ -1316,8 +1316,8 @@ paths:
       tags: [Query]
       summary: Update conflict lifecycle status
       description: |
-        Transition a conflict to a new lifecycle state (acknowledged, resolved,
-        wont_fix). Resolution requires `agent` role or higher.
+        Transition a conflict to a new lifecycle state (resolved,
+        false_positive). Resolution requires `agent` role or higher.
       parameters:
         - name: id
           in: path
@@ -1387,7 +1387,7 @@ paths:
       tags: [Query]
       summary: Batch-resolve all open conflicts in a conflict group
       description: |
-        Resolves all open or acknowledged conflicts in a conflict group at once.
+        Resolves all open conflicts in a conflict group at once.
         When `winning_agent` is provided with status "resolved", each conflict's
         `winning_decision_id` is set to the decision from that agent.
         Requires `agent` role or higher.
@@ -2862,7 +2862,7 @@ components:
         conflict_count:
           type: integer
           description: |
-            Number of open or acknowledged conflicts involving this decision.
+            Number of open conflicts involving this decision.
             Computed at query time.
         consensus_weight:
           type: number
@@ -3099,7 +3099,7 @@ components:
           description: Severity of the conflict.
         status:
           type: string
-          enum: [open, acknowledged, resolved, wont_fix]
+          enum: [open, resolved, false_positive]
           description: Lifecycle status of the conflict.
         resolved_by:
           type: string
@@ -3188,7 +3188,13 @@ components:
       properties:
         status:
           type: string
-          enum: [acknowledged, resolved, wont_fix]
+          enum: [resolved, false_positive]
+        false_positive_label:
+          type: string
+          enum: [unrelated_false_positive, related_not_contradicting]
+          description: |
+            Label for false positive ground truth. Defaults to unrelated_false_positive
+            when status is false_positive.
         resolution_note:
           type: string
         winning_decision_id:
@@ -3205,8 +3211,8 @@ components:
       properties:
         status:
           type: string
-          enum: [resolved, wont_fix]
-          description: Target status for all open/acknowledged conflicts in the group.
+          enum: [resolved, false_positive]
+          description: Target status for all open conflicts in the group.
         resolution_note:
           type: string
           description: Explanation applied to every conflict in the group.
@@ -3226,7 +3232,7 @@ components:
           format: uuid
         status:
           type: string
-          enum: [resolved, wont_fix]
+          enum: [resolved, false_positive]
         resolved:
           type: integer
           description: Number of conflicts that were resolved.
@@ -4369,7 +4375,7 @@ components:
 
     TraceHealthConflictMetrics:
       type: object
-      required: [total, open, acknowledged, resolved, wont_fix, resolved_pct]
+      required: [total, open, resolved, false_positive, resolved_pct]
       properties:
         total:
           type: integer
@@ -4377,15 +4383,12 @@ components:
         open:
           type: integer
           description: Number of unresolved conflicts.
-        acknowledged:
-          type: integer
-          description: Number of acknowledged but not yet resolved conflicts.
         resolved:
           type: integer
           description: Number of resolved conflicts.
-        wont_fix:
+        false_positive:
           type: integer
-          description: Number of conflicts closed as won't fix.
+          description: Number of conflicts dismissed as false positives.
         resolved_pct:
           type: number
           format: double

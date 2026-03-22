@@ -1645,14 +1645,14 @@ func (db *DB) GetDecisionEmbeddings(ctx context.Context, ids []uuid.UUID, orgID 
 	return result, rows.Err()
 }
 
-// GetConflictCount returns the number of open or acknowledged conflicts involving a decision.
+// GetConflictCount returns the number of open conflicts involving a decision.
 func (db *DB) GetConflictCount(ctx context.Context, decisionID, orgID uuid.UUID) (int, error) {
 	var count int
 	err := db.pool.QueryRow(ctx,
 		`SELECT COUNT(*)
 		 FROM scored_conflicts
 		 WHERE org_id = $2
-		   AND status IN ('open', 'acknowledged')
+		   AND status = 'open'
 		   AND (decision_a_id = $1 OR decision_b_id = $1)`,
 		decisionID, orgID,
 	).Scan(&count)
@@ -1663,7 +1663,7 @@ func (db *DB) GetConflictCount(ctx context.Context, decisionID, orgID uuid.UUID)
 }
 
 // GetConflictCountsBatch returns conflict counts for a batch of decisions.
-// A conflict is counted if there is an open or acknowledged entry in scored_conflicts.
+// A conflict is counted if there is an open entry in scored_conflicts.
 // Decisions with no conflicts are absent from the returned map.
 func (db *DB) GetConflictCountsBatch(ctx context.Context, ids []uuid.UUID, orgID uuid.UUID) (map[uuid.UUID]int, error) {
 	if len(ids) == 0 {
@@ -1677,7 +1677,7 @@ func (db *DB) GetConflictCountsBatch(ctx context.Context, ids []uuid.UUID, orgID
 		JOIN scored_conflicts sc
 		     ON (sc.decision_a_id = b.id OR sc.decision_b_id = b.id)
 		     AND sc.org_id = $2
-		     AND sc.status IN ('open', 'acknowledged')
+		     AND sc.status = 'open'
 		GROUP BY b.id`, ids, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("storage: conflict counts batch: %w", err)
@@ -1913,7 +1913,7 @@ func (db *DB) GetDecisionOutcomeSignals(ctx context.Context, id, orgID uuid.UUID
 		    COUNT(*) FILTER (WHERE winning_decision_id IS NULL AND status = 'resolved')::int
 		FROM scored_conflicts
 		WHERE org_id = $2
-		  AND status IN ('resolved', 'wont_fix')
+		  AND status IN ('resolved', 'false_positive')
 		  AND (decision_a_id = $1 OR decision_b_id = $1)`,
 		id, orgID).Scan(
 		&signals.ConflictFate.Won,
@@ -1993,13 +1993,13 @@ func (db *DB) GetDecisionOutcomeSignalsBatch(ctx context.Context, ids []uuid.UUI
 		    SELECT decision_a_id AS target_id, winning_decision_id, status
 		    FROM scored_conflicts
 		    WHERE org_id = $2
-		      AND status IN ('resolved', 'wont_fix')
+		      AND status IN ('resolved', 'false_positive')
 		      AND decision_a_id = ANY($1)
 		    UNION ALL
 		    SELECT decision_b_id AS target_id, winning_decision_id, status
 		    FROM scored_conflicts
 		    WHERE org_id = $2
-		      AND status IN ('resolved', 'wont_fix')
+		      AND status IN ('resolved', 'false_positive')
 		      AND decision_b_id = ANY($1)
 		)
 		SELECT

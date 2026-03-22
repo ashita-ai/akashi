@@ -253,7 +253,7 @@ export interface ConflictGroup {
   conflict_count: number;
   open_count: number;
   representative?: DecisionConflict;
-  /** All open/acknowledged conflicts in this group, ordered by significance DESC. */
+  /** All open conflicts in this group, ordered by significance DESC. */
   open_conflicts?: DecisionConflict[];
 }
 
@@ -274,7 +274,7 @@ export interface SearchResponse {
 }
 
 // Conflict lifecycle
-export type ConflictStatus = "open" | "acknowledged" | "resolved" | "wont_fix";
+export type ConflictStatus = "open" | "resolved" | "false_positive";
 export type ConflictCategory = "factual" | "assessment" | "strategic" | "temporal";
 export type ConflictSeverity = "critical" | "high" | "medium" | "low";
 
@@ -341,9 +341,8 @@ export interface TraceHealthEvidence {
 export interface TraceHealthConflicts {
   total: number;
   open: number;
-  acknowledged: number;
   resolved: number;
-  wont_fix: number;
+  false_positive: number;
   resolved_pct: number;
 }
 

@@ -2734,7 +2734,7 @@ func TestHandleTraceHealth(t *testing.T) {
 func TestHandlePatchConflict(t *testing.T) {
 	t.Run("invalid UUID returns 400", func(t *testing.T) {
 		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflicts/not-a-uuid", adminToken,
-			model.ConflictStatusUpdate{Status: "acknowledged"})
+			model.ConflictStatusUpdate{Status: "false_positive"})
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -2755,7 +2755,7 @@ func TestHandlePatchConflict(t *testing.T) {
 
 	t.Run("nonexistent conflict returns 404", func(t *testing.T) {
 		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflicts/"+uuid.New().String(), adminToken,
-			model.ConflictStatusUpdate{Status: "acknowledged"})
+			model.ConflictStatusUpdate{Status: "false_positive"})
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -2977,12 +2977,12 @@ func TestMCPStatsTool(t *testing.T) {
 		TraceHealth struct {
 			Status string `json:"status"`
 		} `json:"trace_health"`
-		Agents      int `json:"agents"`
-		WontFixRate struct {
-			Resolved int     `json:"resolved"`
-			WontFix  int     `json:"wont_fix"`
-			Rate     float64 `json:"rate"`
-		} `json:"wont_fix_rate"`
+		Agents            int `json:"agents"`
+		FalsePositiveRate struct {
+			Resolved      int     `json:"resolved"`
+			FalsePositive int     `json:"false_positive"`
+			Rate          float64 `json:"rate"`
+		} `json:"false_positive_rate"`
 	}
 	for _, content := range result.Content {
 		if tc, ok := content.(mcplib.TextContent); ok {
@@ -2992,8 +2992,8 @@ func TestMCPStatsTool(t *testing.T) {
 	}
 	assert.Contains(t, []string{"healthy", "needs_attention", "insufficient_data"}, statsResp.TraceHealth.Status)
 	assert.GreaterOrEqual(t, statsResp.Agents, 0)
-	assert.GreaterOrEqual(t, statsResp.WontFixRate.Rate, 0.0)
-	assert.LessOrEqual(t, statsResp.WontFixRate.Rate, 1.0)
+	assert.GreaterOrEqual(t, statsResp.FalsePositiveRate.Rate, 0.0)
+	assert.LessOrEqual(t, statsResp.FalsePositiveRate.Rate, 1.0)
 }
 
 // ---- MCP: akashi_trace with idempotency_key (exercises mcpTraceHash) -----
@@ -3128,7 +3128,7 @@ func TestHandlePatchConflict_WinningDecisionID(t *testing.T) {
 
 	t.Run("winning_decision_id without resolved status returns 400", func(t *testing.T) {
 		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflicts/"+conflictID.String(), adminToken,
-			model.ConflictStatusUpdate{Status: "acknowledged", WinningDecisionID: &decisionAID})
+			model.ConflictStatusUpdate{Status: "false_positive", WinningDecisionID: &decisionAID})
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -3402,10 +3402,10 @@ func TestHandleResolveConflictGroup(t *testing.T) {
 		assert.Equal(t, model.ErrCodeInvalidInput, errResp.Error.Code)
 	})
 
-	t.Run("winning_agent with wont_fix returns 400", func(t *testing.T) {
+	t.Run("winning_agent with false_positive returns 400", func(t *testing.T) {
 		agent := "alpha"
 		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+uuid.New().String()+"/resolve", adminToken,
-			model.ConflictGroupResolveRequest{Status: "wont_fix", WinningAgent: &agent})
+			model.ConflictGroupResolveRequest{Status: "false_positive", WinningAgent: &agent})
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -3467,11 +3467,11 @@ func TestHandleResolveConflictGroup(t *testing.T) {
 		}
 	})
 
-	t.Run("wont_fix resolves without winner", func(t *testing.T) {
+	t.Run("false_positive resolves without winner", func(t *testing.T) {
 		groupID, conflictIDs, _ := seedConflictGroup(t)
 
 		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+groupID.String()+"/resolve", adminToken,
-			model.ConflictGroupResolveRequest{Status: "wont_fix"})
+			model.ConflictGroupResolveRequest{Status: "false_positive"})
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 		require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -3481,15 +3481,15 @@ func TestHandleResolveConflictGroup(t *testing.T) {
 		}
 		b, _ := io.ReadAll(resp.Body)
 		require.NoError(t, json.Unmarshal(b, &envelope))
-		assert.Equal(t, "wont_fix", envelope.Data.Status)
+		assert.Equal(t, "false_positive", envelope.Data.Status)
 		assert.Equal(t, 2, envelope.Data.Resolved)
 
 		for _, cid := range conflictIDs {
 			conflict, cErr := testDB.GetConflict(context.Background(), cid, uuid.Nil)
 			require.NoError(t, cErr)
 			require.NotNil(t, conflict)
-			assert.Equal(t, "wont_fix", conflict.Status)
-			assert.Nil(t, conflict.WinningDecisionID, "wont_fix should not set winner")
+			assert.Equal(t, "false_positive", conflict.Status)
+			assert.Nil(t, conflict.WinningDecisionID, "false_positive should not set winner")
 		}
 	})
 
@@ -4980,17 +4980,17 @@ func TestHandleGetConflict_WithRealConflict(t *testing.T) {
 	// confidence means insufficient signal), but the code path is exercised.
 }
 
-func TestHandleGetConflict_AcknowledgedConflict(t *testing.T) {
+func TestHandleGetConflict_FalsePositiveConflict(t *testing.T) {
 	_, _, conflictID := seedConflict(t)
 
-	// Acknowledge the conflict.
+	// Mark the conflict as false_positive.
 	resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflicts/"+conflictID.String(), adminToken,
-		map[string]any{"status": "acknowledged"})
+		map[string]any{"status": "false_positive"})
 	require.NoError(t, err)
 	_ = resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	// GET should still exercise computeRecommendation for acknowledged conflicts.
+	// GET should return 200 without computing a recommendation for false_positive conflicts.
 	resp, err = authedRequest("GET", testSrv.URL+"/v1/conflicts/"+conflictID.String(), adminToken, nil)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -7579,7 +7579,7 @@ func TestHandlePatchConflict_BadStatus(t *testing.T) {
 
 func TestHandlePatchConflict_WinnerOnNonResolvedStatus(t *testing.T) {
 	resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflicts/"+uuid.New().String(), adminToken,
-		map[string]any{"status": "acknowledged", "winning_decision_id": uuid.New().String()})
+		map[string]any{"status": "false_positive", "winning_decision_id": uuid.New().String()})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -7626,12 +7626,12 @@ func TestHandleResolveConflictGroup_AcknowledgedNotAllowed(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	b, _ := io.ReadAll(resp.Body)
-	assert.Contains(t, string(b), "status must be one of: resolved, wont_fix")
+	assert.Contains(t, string(b), "status must be one of: resolved, false_positive")
 }
 
-func TestHandleResolveConflictGroup_WinningAgentOnWontFix(t *testing.T) {
+func TestHandleResolveConflictGroup_WinningAgentOnFalsePositive(t *testing.T) {
 	resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflict-groups/"+uuid.New().String()+"/resolve", adminToken,
-		map[string]any{"status": "wont_fix", "winning_agent": "admin"})
+		map[string]any{"status": "false_positive", "winning_agent": "admin"})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -8969,7 +8969,7 @@ func TestHandleRevokeKey_NotFoundCov(t *testing.T) {
 
 func TestHandlePatchConflict_InvalidUUID(t *testing.T) {
 	resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflicts/not-a-uuid", agentToken,
-		map[string]any{"status": "acknowledged"})
+		map[string]any{"status": "false_positive"})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -8977,7 +8977,7 @@ func TestHandlePatchConflict_InvalidUUID(t *testing.T) {
 
 func TestHandlePatchConflict_NotFound(t *testing.T) {
 	resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflicts/"+uuid.NewString(), agentToken,
-		map[string]any{"status": "acknowledged"})
+		map[string]any{"status": "false_positive"})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -9530,8 +9530,8 @@ func TestHandleCreateAgent_DuplicateID(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, resp.StatusCode)
 }
 
-func TestHandleListConflictGroups_AcknowledgedStatus(t *testing.T) {
-	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflict-groups?status=acknowledged", adminToken, nil)
+func TestHandleListConflictGroups_FalsePositiveStatus(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflict-groups?status=false_positive", adminToken, nil)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -9657,7 +9657,7 @@ func TestHandleGetRun_NotFound(t *testing.T) {
 func TestHandlePatchConflict_WinnerOnNonResolved(t *testing.T) {
 	winnerID := uuid.NewString()
 	resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflicts/"+uuid.NewString(), adminToken,
-		map[string]any{"status": "acknowledged", "winning_decision_id": winnerID})
+		map[string]any{"status": "false_positive", "winning_decision_id": winnerID})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	// winning_decision_id is only valid when status is "resolved".

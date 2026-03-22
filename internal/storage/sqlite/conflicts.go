@@ -80,14 +80,14 @@ func (l *LiteDB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, filter
 	// For open-only, add a HAVING filter after aggregation.
 	having := ""
 	if filters.OpenOnly {
-		having = "HAVING SUM(CASE WHEN sc.status IN ('open','acknowledged') THEN 1 ELSE 0 END) > 0"
+		having = "HAVING SUM(CASE WHEN sc.status = 'open' THEN 1 ELSE 0 END) > 0"
 	}
 
 	q := fmt.Sprintf( //nolint:gosec // G201
 		`SELECT cg.id, cg.org_id, cg.agent_a, cg.agent_b, cg.conflict_kind, cg.decision_type,
 		        cg.first_detected_at, cg.last_detected_at,
 		        COUNT(DISTINCT sc.id) AS conflict_count,
-		        SUM(CASE WHEN sc.status IN ('open','acknowledged') THEN 1 ELSE 0 END) AS open_count
+		        SUM(CASE WHEN sc.status = 'open' THEN 1 ELSE 0 END) AS open_count
 		 FROM conflict_groups cg
 		 LEFT JOIN scored_conflicts sc ON sc.group_id = cg.id
 		 %s
@@ -147,7 +147,7 @@ func (l *LiteDB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, filter
 	return groups, nil
 }
 
-// loadRepresentativeConflict loads the most significant open/acknowledged conflict in a group.
+// loadRepresentativeConflict loads the most significant open conflict in a group.
 func (l *LiteDB) loadRepresentativeConflict(ctx context.Context, groupID uuid.UUID) (*model.DecisionConflict, error) {
 	rows, err := l.db.QueryContext(ctx,
 		`SELECT sc.id, sc.conflict_kind, sc.decision_a_id, sc.decision_b_id, sc.org_id,
@@ -166,7 +166,7 @@ func (l *LiteDB) loadRepresentativeConflict(ctx context.Context, groupID uuid.UU
 		 LEFT JOIN decisions db ON db.id = sc.decision_b_id
 		 WHERE sc.group_id = ?
 		 ORDER BY
-		     CASE WHEN sc.status IN ('open','acknowledged') THEN 0 ELSE 1 END ASC,
+		     CASE WHEN sc.status = 'open' THEN 0 ELSE 1 END ASC,
 		     sc.significance DESC,
 		     sc.detected_at DESC
 		 LIMIT 1`,
@@ -187,12 +187,12 @@ func (l *LiteDB) loadRepresentativeConflict(ctx context.Context, groupID uuid.UU
 	return &conflicts[0], nil
 }
 
-// GetConflictCount returns the number of open/acknowledged conflicts for a decision.
+// GetConflictCount returns the number of open conflicts for a decision.
 func (l *LiteDB) GetConflictCount(ctx context.Context, decisionID, orgID uuid.UUID) (int, error) {
 	var count int
 	err := l.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM scored_conflicts
-		 WHERE org_id = ? AND status IN ('open', 'acknowledged')
+		 WHERE org_id = ? AND status = 'open'
 		   AND (decision_a_id = ? OR decision_b_id = ?)`,
 		uuidStr(orgID), uuidStr(decisionID), uuidStr(decisionID),
 	).Scan(&count)
@@ -215,7 +215,7 @@ func (l *LiteDB) GetConflictCountsBatch(ctx context.Context, ids []uuid.UUID, or
 		 JOIN scored_conflicts sc
 		      ON (sc.decision_a_id = b.id OR sc.decision_b_id = b.id)
 		      AND sc.org_id = ?
-		      AND sc.status IN ('open', 'acknowledged')
+		      AND sc.status = 'open'
 		 GROUP BY b.id`,
 		idsJSON, uuidStr(orgID),
 	)
@@ -343,7 +343,7 @@ func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uu
 	}
 
 	switch status {
-	case "resolved", "wont_fix":
+	case "resolved", "false_positive":
 		var winIDVal any
 		if winningDecisionID != nil {
 			winIDVal = uuidStr(*winningDecisionID)
@@ -413,6 +413,10 @@ func conflictWhere(orgID uuid.UUID, f storage.ConflictFilters) (string, []any) {
 	if f.DecisionID != nil {
 		conds = append(conds, "(sc.decision_a_id = ? OR sc.decision_b_id = ?)")
 		args = append(args, uuidStr(*f.DecisionID), uuidStr(*f.DecisionID))
+	}
+	if f.GroupID != nil {
+		conds = append(conds, "sc.group_id = ?")
+		args = append(args, uuidStr(*f.GroupID))
 	}
 
 	return "WHERE " + strings.Join(conds, " AND "), args
@@ -530,4 +534,33 @@ func scanConflictRows(rows *sql.Rows) ([]model.DecisionConflict, error) {
 		conflicts = []model.DecisionConflict{}
 	}
 	return conflicts, nil
+}
+
+// UpsertConflictLabel inserts or updates a ground truth label for a scored conflict.
+// Mirrors the Postgres version: only inserts if the conflict belongs to the given org,
+// and the ON CONFLICT update is guarded by org_id to prevent cross-tenant overwrites.
+func (l *LiteDB) UpsertConflictLabel(ctx context.Context, cl storage.ConflictLabel) error {
+	res, err := l.db.ExecContext(ctx,
+		`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at, notes)
+		 SELECT ?, ?, ?, ?, ?, ?
+		 FROM scored_conflicts
+		 WHERE id = ? AND org_id = ?
+		 ON CONFLICT (scored_conflict_id) DO UPDATE SET
+		   label = excluded.label,
+		   labeled_by = excluded.labeled_by,
+		   labeled_at = excluded.labeled_at,
+		   notes = excluded.notes
+		 WHERE conflict_labels.org_id = excluded.org_id`,
+		uuidStr(cl.ScoredConflictID), uuidStr(cl.OrgID),
+		cl.Label, cl.LabeledBy, cl.LabeledAt, cl.Notes,
+		uuidStr(cl.ScoredConflictID), uuidStr(cl.OrgID),
+	)
+	if err != nil {
+		return fmt.Errorf("sqlite: upsert conflict label: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("sqlite: upsert conflict label: conflict not found or org mismatch")
+	}
+	return nil
 }

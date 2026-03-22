@@ -177,7 +177,7 @@ type DecisionConflict struct {
 	// Conflict lifecycle fields: category, severity, and resolution state.
 	Category       *string    `json:"category,omitempty"` // factual, assessment, strategic, temporal
 	Severity       *string    `json:"severity,omitempty"` // critical, high, medium, low
-	Status         string     `json:"status"`             // open, acknowledged, resolved, wont_fix
+	Status         string     `json:"status"`             // open, resolved, false_positive
 	ResolvedBy     *string    `json:"resolved_by,omitempty"`
 	ResolvedAt     *time.Time `json:"resolved_at,omitempty"`
 	ResolutionNote *string    `json:"resolution_note,omitempty"`
@@ -231,12 +231,12 @@ type ConflictGroup struct {
 	LastDetectedAt  time.Time `json:"last_detected_at"`
 	// ConflictCount is the total number of pairwise conflicts in this group.
 	ConflictCount int `json:"conflict_count"`
-	// OpenCount is the number of pairwise conflicts with status open or acknowledged.
+	// OpenCount is the number of pairwise conflicts with status open.
 	OpenCount int `json:"open_count"`
 	// Representative is the highest-significance conflict in the group.
 	// Populated by ListConflictGroups; nil when the group has no scored pairs yet.
 	Representative *DecisionConflict `json:"representative,omitempty"`
-	// OpenConflicts contains all open or acknowledged pairwise conflicts in this group,
+	// OpenConflicts contains all open pairwise conflicts in this group,
 	// ordered by significance DESC. Populated by ListConflictGroups; nil when none exist.
 	OpenConflicts []DecisionConflict `json:"open_conflicts,omitempty"`
 	// TimesReopened (migration 067): how many times a conflict in this group
@@ -263,18 +263,21 @@ type ConflictDetail struct {
 
 // ConflictStatusUpdate is the request body for PATCH /v1/conflicts/{id}.
 type ConflictStatusUpdate struct {
-	Status         string  `json:"status"` // acknowledged, resolved, wont_fix
+	Status         string  `json:"status"` // resolved, false_positive
 	ResolutionNote *string `json:"resolution_note,omitempty"`
 	// WinningDecisionID identifies which side prevailed. Only valid when status is
 	// "resolved"; must be decision_a_id or decision_b_id of the conflict.
 	WinningDecisionID *uuid.UUID `json:"winning_decision_id,omitempty"`
+	// FalsePositiveLabel classifies why this conflict is a false positive.
+	// "unrelated_false_positive" or "related_not_contradicting"; defaults to "unrelated_false_positive".
+	FalsePositiveLabel *string `json:"false_positive_label,omitempty"`
 }
 
 // ConflictGroupResolveRequest is the request body for
-// PATCH /v1/conflict-groups/{id}/resolve. It batch-resolves all open or
-// acknowledged conflicts in a conflict group.
+// PATCH /v1/conflict-groups/{id}/resolve. It batch-resolves all open
+// conflicts in a conflict group.
 type ConflictGroupResolveRequest struct {
-	Status         string  `json:"status"` // resolved or wont_fix
+	Status         string  `json:"status"` // resolved or false_positive
 	ResolutionNote *string `json:"resolution_note,omitempty"`
 	// WinningAgent optionally declares the agent whose decisions prevail for
 	// every conflict in the group. When set, each conflict's winning_decision_id
