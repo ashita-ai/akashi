@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     completeness_score REAL NOT NULL DEFAULT 0,
     outcome_score REAL,
     precedent_ref      TEXT,
+    precedent_reason   TEXT,
     supersedes_id      TEXT,
     content_hash       TEXT,
     valid_from         TEXT NOT NULL DEFAULT (datetime('now')),

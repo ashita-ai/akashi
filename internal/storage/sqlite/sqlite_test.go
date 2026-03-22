@@ -511,7 +511,7 @@ func TestTraceHealth(t *testing.T) {
 	})
 
 	t.Run("confidence distribution", func(t *testing.T) {
-		dist, err := db.GetConfidenceDistribution(ctx, orgID)
+		dist, err := db.GetConfidenceDistribution(ctx, orgID, nil, nil)
 		require.NoError(t, err)
 		assert.Equal(t, 1, dist.TotalDecisions)
 		assert.InDelta(t, 0.8, dist.AvgConfidence, 0.01)
@@ -1647,7 +1647,8 @@ func TestListConflictGroups_WithData(t *testing.T) {
 	})
 
 	t.Run("open only", func(t *testing.T) {
-		groups, err := db.ListConflictGroups(ctx, orgID, storage.ConflictGroupFilters{OpenOnly: true}, 10, 0)
+		st := "open"
+		groups, err := db.ListConflictGroups(ctx, orgID, storage.ConflictGroupFilters{Status: &st}, 10, 0)
 		require.NoError(t, err)
 		assert.Len(t, groups, 1)
 	})
@@ -4920,7 +4921,7 @@ func TestListConflictGroups_WithFilters(t *testing.T) {
 		DecisionType: &decType,
 		AgentID:      &agentID,
 		ConflictKind: &kind,
-		OpenOnly:     true,
+		Status:       strPtr("open"),
 	}, 0, 0) // limit 0 to exercise the default-limit branch
 	require.NoError(t, err)
 	assert.Empty(t, groups)
@@ -5826,17 +5827,17 @@ func TestListConflicts_DefaultLimit(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ListConflictGroups — with OpenOnly filter
+// ListConflictGroups — with Status filter
 // ---------------------------------------------------------------------------
 
-func TestListConflictGroups_OpenOnlyFilter(t *testing.T) {
+func TestListConflictGroups_StatusFilter(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	require.NoError(t, db.EnsureDefaultOrg(ctx))
 	orgID := uuid.Nil
 
 	groups, err := db.ListConflictGroups(ctx, orgID, storage.ConflictGroupFilters{
-		OpenOnly: true,
+		Status: strPtr("open"),
 	}, 10, 0)
 	require.NoError(t, err)
 	assert.Empty(t, groups)

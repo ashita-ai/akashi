@@ -118,14 +118,19 @@ OPTIONAL FIELDS (each improves completeness score and future usefulness):
   This is the single biggest driver of completeness after reasoning.
 - evidence: JSON array of supporting facts.
   Format: [{"source_type":"tool_output","content":"test suite passed with 0 failures"},
-           {"source_type":"document","content":"ADR-007 requires event sourcing","source_uri":"adrs/007.md"}]
+           {"source_type":"document","content":"ADR-007 requires event sourcing","source_uri":"adrs/007.md"},
+           {"source_type":"metrics","content":"NER benchmark","metrics":{"accuracy":0.93,"f1":0.87}}]
   source_type values: document, api_response, agent_output, user_input, search_result,
-                      tool_output, memory, database_query
+                      tool_output, memory, database_query, metrics
+  For source_type "metrics", include a "metrics" object with numeric key-value pairs.
+  The "content" field is optional for metrics (used as a human-readable summary).
   Include at least 2 pieces of evidence to maximize completeness.
 - project: The project or app this belongs to (e.g. "akashi", "my-langchain-app").
   Enables project-scoped queries. Auto-detected from working directory if omitted.
 - precedent_ref: Copy the value of precedent_ref_hint from akashi_check's response.
   Wires the attribution graph so the audit trail shows how decisions evolved.
+- precedent_reason: When setting precedent_ref, briefly explain WHY the prior decision
+  applies. This makes the attribution chain self-documenting for future agents.
 
 EXAMPLE: After choosing a caching strategy, record decision_type="architecture",
 outcome="chose Redis with 5min TTL for session cache", confidence=0.7,
@@ -133,6 +138,7 @@ reasoning="Redis handles our expected QPS, TTL prevents stale reads. Memcached l
 task="session infrastructure redesign",
 project="my-service",
 precedent_ref="<paste precedent_ref_hint from akashi_check here, if applicable>",
+precedent_reason="extends ADR-003 shared-nothing mandate to session storage layer",
 alternatives='[{"label":"in-memory cache","rejection_reason":"not shared across instances, would require sticky sessions"},{"label":"Memcached","rejection_reason":"no native clustering in our stack, adds operational overhead"}]',
 evidence='[{"source_type":"tool_output","content":"load test showed 8k req/s with Redis, 2k with DB"},{"source_type":"document","content":"ADR-003 mandates shared-nothing architecture"}]'
 
@@ -181,6 +187,9 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 			),
 			mcplib.WithString("precedent_ref",
 				mcplib.Description("UUID of the prior decision this one directly builds on. Copy the value from akashi_check's precedent_ref_hint field. Wires the attribution graph so the audit trail shows how decisions evolved over time. Omit if there is no clear antecedent."),
+			),
+			mcplib.WithString("precedent_reason",
+				mcplib.Description("Brief explanation of why the cited precedent_ref applies to this decision. Helps future agents understand the reasoning lineage without re-reading both decisions. Example: \"extends the first_detected_at fix to also handle rescored decisions\". Omit if precedent_ref is not set."),
 			),
 		),
 		s.handleTrace,
@@ -295,7 +304,7 @@ exist in the decision trail. Useful for understanding where agents
 disagree and what needs resolution.
 
 Returns conflicts filtered by type, agent, status, severity, or category.
-Only open conflicts are shown by default.`),
+All statuses are shown by default; pass status to narrow results.`),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithIdempotentHintAnnotation(true),
 			mcplib.WithOpenWorldHintAnnotation(false),
@@ -306,7 +315,7 @@ Only open conflicts are shown by default.`),
 				mcplib.Description("Filter by agent involved in the conflict"),
 			),
 			mcplib.WithString("status",
-				mcplib.Description("Filter by status: open, resolved, false_positive. Defaults to showing open."),
+				mcplib.Description("Filter by status: open, resolved, false_positive. Shows all statuses by default."),
 			),
 			mcplib.WithString("severity",
 				mcplib.Description("Filter by severity: critical, high, medium, low"),
@@ -438,15 +447,16 @@ func (s *Server) resolveProjectFilter(ctx context.Context, request mcplib.CallTo
 }
 
 func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-	// Notify the IDE hook gate that akashi_check was called.
-	if s.onCheck != nil {
-		s.onCheck()
-	}
 	orgID := ctxutil.OrgIDFromContext(ctx)
 	claims := ctxutil.ClaimsFromContext(ctx)
 
 	if claims == nil {
 		return errorResult("authentication required"), nil
+	}
+
+	// Notify the IDE hook gate that this agent called akashi_check.
+	if s.onCheck != nil {
+		s.onCheck(claims.AgentID)
 	}
 
 	// decision_type is optional — normalize if provided.
@@ -577,6 +587,15 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 	}
 
 	resultData, _ := json.MarshalIndent(result, "", "  ")
+
+	// Cache the compact check response so handleTrace can auto-inject it
+	// as evidence. Both handlers share the same MCP session.
+	if session := mcpserver.ClientSessionFromContext(ctx); session != nil {
+		if sid := session.SessionID(); sid != "" {
+			s.checkCache.Store(sid, string(resultData))
+		}
+	}
+
 	return &mcplib.CallToolResult{
 		Content: []mcplib.Content{
 			mcplib.TextContent{Type: "text", Text: string(resultData)},
@@ -593,7 +612,9 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	}
 
 	agentID := request.GetString("agent_id", "")
-	// Normalize decision_type to lowercase for consistent storage and retrieval.
+	// Normalize decision_type for validation and hash computation. The service
+	// layer performs canonical normalization, but we normalize here too so the
+	// idempotency hash matches regardless of casing.
 	decisionType := strings.ToLower(strings.TrimSpace(request.GetString("decision_type", "")))
 	outcome := request.GetString("outcome", "")
 	confidence := float32(request.GetFloat("confidence", 0.5))
@@ -702,6 +723,16 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		}
 	}
 
+	// Parse precedent_reason: only meaningful when precedent_ref is set.
+	var precedentReason *string
+	if pr := request.GetString("precedent_reason", ""); pr != "" && precedentRef != nil {
+		reason := pr
+		if len(reason) > model.MaxPrecedentReasonLen {
+			reason = reason[:model.MaxPrecedentReasonLen]
+		}
+		precedentReason = &reason
+	}
+
 	// Build agent_context with server/client namespace split.
 	// "server" contains values the server extracted or verified (MCP session,
 	// client info, roots, API key prefix). "client" contains self-reported
@@ -773,6 +804,30 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		}
 	}
 
+	// Normalize project: prefer server-inferred (from MCP roots + git remote)
+	// over client self-report (which may be a workspace name, not the repo).
+	serverProject, _ := serverCtx["project"].(string)
+	clientProject, _ := clientCtx["project"].(string)
+	if serverProject != "" && clientProject != "" && serverProject != clientProject {
+		s.logger.Info("project normalized from server inference",
+			"original", clientProject,
+			"canonical", serverProject,
+		)
+		clientCtx["project_submitted"] = clientProject
+		clientCtx["project"] = serverProject
+	} else if clientProject != "" && serverProject == "" {
+		// No server inference available — try alias lookup as fallback.
+		canonical, aliasErr := s.db.ResolveProjectAlias(ctx, orgID, clientProject)
+		if aliasErr == nil && canonical != "" {
+			s.logger.Info("project normalized from alias",
+				"original", clientProject,
+				"canonical", canonical,
+			)
+			clientCtx["project_submitted"] = clientProject
+			clientCtx["project"] = canonical
+		}
+	}
+
 	// Assemble namespaced agent_context.
 	agentContext := map[string]any{}
 	if len(serverCtx) > 0 {
@@ -834,13 +889,34 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		apiKeyID = claims.APIKeyID
 	}
 
+	// Auto-attach the preceding akashi_check response as evidence when the
+	// agent provided none. This injects the research step into the decision
+	// record automatically, rather than suggesting it after the fact.
+	if len(evidence) == 0 {
+		if session := mcpserver.ClientSessionFromContext(ctx); session != nil {
+			if sid := session.SessionID(); sid != "" {
+				if checkResult := s.checkCache.Drain(sid); checkResult != "" {
+					relevance := float32(0.6)
+					sourceURI := "akashi://check"
+					evidence = []model.TraceEvidence{{
+						SourceType:     "tool_output",
+						SourceURI:      &sourceURI,
+						Content:        checkResult,
+						RelevanceScore: &relevance,
+					}}
+				}
+			}
+		}
+	}
+
 	result, err := s.decisionSvc.Trace(ctx, orgID, decisions.TraceInput{
-		AgentID:      agentID,
-		SessionID:    sessionID,
-		AgentContext: agentContext,
-		APIKeyID:     apiKeyID,
-		AuditMeta:    auditMeta,
-		PrecedentRef: precedentRef,
+		AgentID:         agentID,
+		SessionID:       sessionID,
+		AgentContext:    agentContext,
+		APIKeyID:        apiKeyID,
+		AuditMeta:       auditMeta,
+		PrecedentRef:    precedentRef,
+		PrecedentReason: precedentReason,
 		Decision: model.TraceDecision{
 			DecisionType: decisionType,
 			Outcome:      outcome,
@@ -867,7 +943,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		Evidence:     evidence,
 	}, precedentRef != nil)
 	hasModel := clientCtx["model"] != nil || serverCtx["model"] != nil
-	missing := computeMissingFields(decisionType, outcome, confidence, reasoningPtr, alternatives, evidence, precedentRef != nil, hasModel, request.GetString("task", "") != "")
+	missing := computeMissingFields(decisionType, outcome, confidence, reasoningPtr, alternatives, evidence, precedentRef != nil, hasModel, request.GetString("task", "") != "", s.standardTypes)
 
 	responseMap := map[string]any{
 		"run_id":             result.RunID,
@@ -877,6 +953,9 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	}
 	if len(missing) > 0 {
 		responseMap["completeness_tips"] = missing
+	}
+	if warnings := model.HighConfidenceWarnings(confidence, len(evidence), s.highConfidenceWarnThreshold); len(warnings) > 0 {
+		responseMap["warnings"] = warnings
 	}
 
 	resultData, _ := json.Marshal(responseMap)
@@ -905,41 +984,51 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 
 // computeMissingFields returns actionable tips for improving trace completeness.
 // Each tip tells the agent exactly what to add next time. Tips are ordered by
-// completeness score impact (highest first). hasModel is true when the model
-// field is either explicitly provided or successfully inferred from session
-// metadata / HTTP headers; tips are only surfaced when neither source produced
-// a value.
-func computeMissingFields(decisionType, outcome string, confidence float32, reasoning *string, alternatives []model.TraceAlternative, evidence []model.TraceEvidence, hasPrecedentRef, hasModel, hasTask bool) []string {
+// completeness score impact (highest first) and are profile-aware: decision types
+// that don't expect alternatives or evidence won't get tips for those factors.
+// hasModel is true when the model field is either explicitly provided or
+// successfully inferred from session metadata / HTTP headers; tips are only
+// surfaced when neither source produced a value.
+func computeMissingFields(decisionType, outcome string, confidence float32, reasoning *string, alternatives []model.TraceAlternative, evidence []model.TraceEvidence, hasPrecedentRef, hasModel, hasTask bool, standardTypes map[string]bool) []string {
+	profile := quality.ProfileFor(decisionType, nil)
 	var tips []string
 
-	// Reasoning: biggest single factor (up to 0.25).
+	// Reasoning: biggest single factor. Weight increases when alternatives
+	// or evidence weight is redistributed to reasoning by the profile.
+	reasoningPctLabel := "30"
+	if !profile.AlternativesExpected || profile.MinEvidence == 0 {
+		reasoningPctLabel = "up to 65"
+	}
 	if reasoning == nil || len(strings.TrimSpace(*reasoning)) <= 100 {
 		if reasoning == nil || len(strings.TrimSpace(*reasoning)) <= 20 {
-			tips = append(tips, "Add reasoning (>100 chars) explaining why you chose this over alternatives (+25%)")
+			tips = append(tips, fmt.Sprintf("Add reasoning (>100 chars) explaining why you chose this over alternatives (+%s%%)", reasoningPctLabel))
 		} else {
 			tips = append(tips, "Expand reasoning to >100 chars for full credit (+5-15%)")
 		}
 	}
 
 	// Alternatives with substantive rejection reasons (up to 0.20).
-	substantive := 0
-	for _, alt := range alternatives {
-		if alt.RejectionReason != nil && len(strings.TrimSpace(*alt.RejectionReason)) > 20 {
-			substantive++
+	// Only suggest when the profile expects alternatives.
+	if profile.AlternativesExpected {
+		substantive := 0
+		for _, alt := range alternatives {
+			if alt.RejectionReason != nil && len(strings.TrimSpace(*alt.RejectionReason)) > 20 {
+				substantive++
+			}
+		}
+		if substantive < 3 {
+			tips = append(tips, fmt.Sprintf("Add %d more rejected alternatives with rejection_reason >20 chars (+%d%%)", 3-substantive, (3-substantive)*5))
 		}
 	}
-	if substantive < 3 {
-		tips = append(tips, fmt.Sprintf("Add %d more rejected alternatives with rejection_reason >20 chars (+%d%%)", 3-substantive, (3-substantive)*5))
-	}
 
-	// Evidence (up to 0.15). Be specific about what counts as evidence so
-	// agents know what to attach — file paths, error messages, test output,
-	// benchmark numbers, or the constraint that drove the choice.
-	if len(evidence) < 2 {
-		if len(evidence) == 0 {
-			tips = append(tips, "Add evidence to make this trace verifiable: attach file paths, error messages, test output, benchmark numbers, or the constraint that drove the choice (source_type + content, 2+ items for +15%)")
-		} else {
-			tips = append(tips, "Add 1 more evidence item for full credit — e.g. a file path, error message, test result, or benchmark number (+5%)")
+	// Evidence (up to 0.15). Only suggest when the profile expects evidence.
+	if profile.MinEvidence > 0 {
+		if len(evidence) < 2 {
+			if len(evidence) == 0 {
+				tips = append(tips, "Add evidence to make this trace verifiable: attach file paths, error messages, test output, benchmark numbers, or the constraint that drove the choice (source_type + content, 2+ items for +15%)")
+			} else {
+				tips = append(tips, "Add 1 more evidence item for full credit — e.g. a file path, error message, test result, or benchmark number (+5%)")
+			}
 		}
 	}
 
@@ -948,9 +1037,18 @@ func computeMissingFields(decisionType, outcome string, confidence float32, reas
 		tips = append(tips, "Confidence is at an extreme — values between 0.4 and 0.8 are more informative")
 	}
 
-	// Standard decision type (0.10).
-	if !quality.StandardDecisionTypes[decisionType] {
-		tips = append(tips, "Use a standard decision_type (architecture, security, trade_off, etc.) for +10%")
+	// Profile-specific confidence penalty warning.
+	if len(evidence) == 0 && confidence > profile.MaxConfidenceNoEvidence {
+		tips = append(tips, fmt.Sprintf("Confidence %.2f exceeds max %.2f for %s without evidence — add evidence or lower confidence to avoid penalty",
+			confidence, profile.MaxConfidenceNoEvidence, decisionType))
+	}
+
+	// Suggest standard type when the input is close to one (typo, delimiter variant).
+	// No scoring penalty for custom types — this is purely informational.
+	if !standardTypes[decisionType] {
+		if suggestion := quality.SuggestStandardType(decisionType, standardTypes, 3); suggestion != "" {
+			tips = append(tips, fmt.Sprintf("Did you mean %q? Your type %q is close to a standard type", suggestion, decisionType))
+		}
 	}
 
 	// Precedent reference (0.10).
@@ -963,9 +1061,9 @@ func computeMissingFields(decisionType, outcome string, confidence float32, reas
 		tips = append(tips, `Pass "model" (e.g. "claude-opus-4-6") so decisions can be correlated by model capability tier`)
 	}
 
-	// Substantive outcome (0.05).
+	// Substantive outcome (0.10).
 	if len(strings.TrimSpace(outcome)) <= 20 {
-		tips = append(tips, "Make outcome more specific (>20 chars) for +5%")
+		tips = append(tips, "Make outcome more specific (>20 chars) for +10%")
 	}
 
 	// Task label: not a scoring factor, but useful for grouping related decisions.
@@ -1154,11 +1252,13 @@ func (s *Server) handleConflicts(ctx context.Context, request mcplib.CallToolReq
 	limit := request.GetInt("limit", 10)
 	format := request.GetString("format", "concise")
 
-	// Build group filters. The MCP tool defaults to open groups so
-	// agents see actionable disagreements, not resolved history.
+	// Build group filters. By default the MCP tool shows all groups so agents
+	// see both open and resolved conflicts. Agents can pass status="open",
+	// "resolved", etc. to narrow results.
 	statusFilter := request.GetString("status", "")
-	groupFilters := storage.ConflictGroupFilters{
-		OpenOnly: statusFilter == "" || statusFilter == "open",
+	groupFilters := storage.ConflictGroupFilters{}
+	if statusFilter != "" && statusFilter != "all" {
+		groupFilters.Status = &statusFilter
 	}
 	if dt := request.GetString("decision_type", ""); dt != "" {
 		groupFilters.DecisionType = &dt

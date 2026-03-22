@@ -20,6 +20,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
+	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/storage"
 	"github.com/ashita-ai/akashi/internal/testutil"
 )
@@ -69,7 +70,7 @@ func setupAndRun(m *testing.M, tc *testutil.TestContainer) int {
 
 	embedder := embedding.NewNoopProvider(1024)
 	testSvc = decisions.New(testDB, embedder, nil, logger, nil)
-	testServer = New(testDB, testSvc, nil, logger, "test")
+	testServer = New(testDB, testSvc, nil, logger, "test", 0.85, nil)
 
 	return m.Run()
 }
@@ -1433,7 +1434,7 @@ func TestMCPTraceHash_WithPrecedentRef(t *testing.T) {
 // ---------- New() constructor ----------
 
 func TestMCPServerNew(t *testing.T) {
-	s := New(testDB, testSvc, nil, testutil.TestLogger(), "test-version")
+	s := New(testDB, testSvc, nil, testutil.TestLogger(), "test-version", 0.85, nil)
 	require.NotNil(t, s)
 	require.NotNil(t, s.MCPServer())
 	// Verify the server has the expected name by checking it's non-nil.
@@ -2840,7 +2841,7 @@ func TestHandleResolve_WinnerNotInConflict(t *testing.T) {
 func TestComputeMissingFields_TaskTip(t *testing.T) {
 	reasoning := "detailed reasoning that is over one hundred characters long so it passes the threshold requirement here"
 	// Without task: tip should be present.
-	tips := computeMissingFields("architecture", "chose Redis with 5min TTL", 0.7, &reasoning, nil, nil, false, false, false)
+	tips := computeMissingFields("architecture", "chose Redis with 5min TTL", 0.7, &reasoning, nil, nil, false, false, false, quality.DefaultStandardDecisionTypes)
 	found := false
 	for _, tip := range tips {
 		if strings.Contains(tip, "Add task") {
@@ -2851,7 +2852,7 @@ func TestComputeMissingFields_TaskTip(t *testing.T) {
 	assert.True(t, found, "should include task tip when hasTask is false")
 
 	// With task: tip should be absent.
-	tips = computeMissingFields("architecture", "chose Redis with 5min TTL", 0.7, &reasoning, nil, nil, false, false, true)
+	tips = computeMissingFields("architecture", "chose Redis with 5min TTL", 0.7, &reasoning, nil, nil, false, false, true, quality.DefaultStandardDecisionTypes)
 	found = false
 	for _, tip := range tips {
 		if strings.Contains(tip, "Add task") {
@@ -2942,7 +2943,7 @@ func TestComputeMissingFields_EvidenceTips(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			tips := computeMissingFields("architecture", "chose X", 0.7, &reasoning, fullAlts, tc.evidence, true, true, true)
+			tips := computeMissingFields("architecture", "chose X", 0.7, &reasoning, fullAlts, tc.evidence, true, true, true, quality.DefaultStandardDecisionTypes)
 
 			// Filter to only evidence-related tips.
 			var evidenceTips []string
@@ -2971,14 +2972,14 @@ func TestComputeMissingFields_ModelTip(t *testing.T) {
 	reasoning := "some reasoning that is long enough to pass the 100 char threshold -- padding padding padding padding padding"
 
 	t.Run("no model tip when model present", func(t *testing.T) {
-		tips := computeMissingFields("architecture", "chose postgres", 0.8, &reasoning, nil, nil, false, true, true)
+		tips := computeMissingFields("architecture", "chose postgres", 0.8, &reasoning, nil, nil, false, true, true, quality.DefaultStandardDecisionTypes)
 		for _, tip := range tips {
 			assert.NotContains(t, tip, "model")
 		}
 	})
 
 	t.Run("model tip when model absent and not inferred", func(t *testing.T) {
-		tips := computeMissingFields("architecture", "chose postgres", 0.8, &reasoning, nil, nil, false, false, true)
+		tips := computeMissingFields("architecture", "chose postgres", 0.8, &reasoning, nil, nil, false, false, true, quality.DefaultStandardDecisionTypes)
 		found := false
 		for _, tip := range tips {
 			if assert.ObjectsAreEqual(tip, `Pass "model" (e.g. "claude-opus-4-6") so decisions can be correlated by model capability tier`) {
@@ -3059,4 +3060,154 @@ func TestHandleTrace_ExplicitModelSuppressesTip(t *testing.T) {
 // containsEvidence returns true if the tip string relates to evidence.
 func containsEvidence(tip string) bool {
 	return strings.Contains(tip, "evidence") || strings.Contains(tip, "verifiable")
+}
+
+// ---------- High-confidence warning (#468) ----------
+
+func TestHandleTrace_HighConfNoEvidence_Warning(t *testing.T) {
+	ctx := adminCtx()
+	agentID := "high-conf-warn-" + uuid.New().String()[:8]
+	_, _ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
+
+	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
+		"agent_id":      agentID,
+		"decision_type": "architecture",
+		"outcome":       "high confidence no evidence warning test",
+		"confidence":    0.9,
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	var resp struct {
+		Warnings []string `json:"warnings"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	require.Len(t, resp.Warnings, 1)
+	assert.Contains(t, resp.Warnings[0], "high confidence")
+}
+
+func TestHandleTrace_HighConfWithEvidence_NoWarning(t *testing.T) {
+	ctx := adminCtx()
+	agentID := "high-conf-ev-" + uuid.New().String()[:8]
+	_, _ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
+
+	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
+		"agent_id":      agentID,
+		"decision_type": "architecture",
+		"outcome":       "high confidence with evidence",
+		"confidence":    0.9,
+		"evidence":      `[{"source_type":"benchmark","content":"latency p99 < 50ms"}]`,
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	text := parseToolText(t, result)
+	assert.NotContains(t, text, "warnings")
+}
+
+func TestHandleTrace_BelowThreshold_NoWarning(t *testing.T) {
+	ctx := adminCtx()
+	agentID := "low-conf-" + uuid.New().String()[:8]
+	_, _ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
+
+	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
+		"agent_id":      agentID,
+		"decision_type": "implementation",
+		"outcome":       "low confidence decision",
+		"confidence":    0.6,
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	text := parseToolText(t, result)
+	assert.NotContains(t, text, "warnings")
+}
+
+// ===========================================================================
+// Profile-aware tip filtering: decision types suppress irrelevant tips
+// ===========================================================================
+
+func TestComputeMissingFields_InvestigationSuppressesAltsAndEvidence(t *testing.T) {
+	// Investigation profile: no alternatives expected, no evidence expected.
+	// Tips for alternatives and evidence should not appear.
+	reasoning := "long enough reasoning that exceeds the 100 char threshold for testing purposes padding padding pad"
+	tips := computeMissingFields("investigation", "root cause identified", 0.7, &reasoning, nil, nil, false, true, true, quality.DefaultStandardDecisionTypes)
+
+	for _, tip := range tips {
+		assert.NotContains(t, tip, "alternative", "investigation should not get alternatives tip")
+		assert.NotContains(t, tip, "evidence", "investigation should not get evidence tip")
+		assert.NotContains(t, tip, "verifiable", "investigation should not get evidence tip")
+	}
+}
+
+func TestComputeMissingFields_SecurityGetsAltsAndEvidence(t *testing.T) {
+	// Security profile: alternatives expected, evidence expected.
+	// Tips for both should appear when missing.
+	reasoning := "long enough reasoning that exceeds the 100 char threshold for testing purposes padding padding pad"
+	tips := computeMissingFields("security", "chose Argon2id for hashing", 0.7, &reasoning, nil, nil, false, true, true, quality.DefaultStandardDecisionTypes)
+
+	hasAlts := false
+	hasEvidence := false
+	for _, tip := range tips {
+		if strings.Contains(tip, "alternative") {
+			hasAlts = true
+		}
+		if containsEvidence(tip) {
+			hasEvidence = true
+		}
+	}
+	assert.True(t, hasAlts, "security should get alternatives tip")
+	assert.True(t, hasEvidence, "security should get evidence tip")
+}
+
+func TestComputeMissingFields_ConfidencePenaltyWarning(t *testing.T) {
+	// Security max_confidence_no_evidence = 0.75.
+	// Confidence 0.80 with no evidence should trigger a warning tip.
+	reasoning := "long enough reasoning that exceeds the 100 char threshold for testing purposes padding padding pad"
+	tips := computeMissingFields("security", "chose Argon2id for hashing", 0.80, &reasoning, nil, nil, false, true, true, quality.DefaultStandardDecisionTypes)
+
+	found := false
+	for _, tip := range tips {
+		if strings.Contains(tip, "exceeds max") {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected confidence penalty warning for security with 0.80 confidence and no evidence")
+}
+
+func TestComputeMissingFields_NoConfidencePenaltyWithEvidence(t *testing.T) {
+	// Even though confidence exceeds threshold, having evidence should suppress the warning.
+	reasoning := "long enough reasoning that exceeds the 100 char threshold for testing purposes padding padding pad"
+	evidence := []model.TraceEvidence{{SourceType: "document", Content: "OWASP guideline"}}
+	tips := computeMissingFields("security", "chose Argon2id for hashing", 0.80, &reasoning, nil, evidence, false, true, true, quality.DefaultStandardDecisionTypes)
+
+	for _, tip := range tips {
+		assert.NotContains(t, tip, "exceeds max", "confidence penalty should not appear when evidence is provided")
+	}
+}
+
+func TestComputeMissingFields_PlanningReasoningIsPrimaryFactor(t *testing.T) {
+	// Planning profile: no alternatives, no evidence → reasoning is the primary factor.
+	tips := computeMissingFields("planning", "split into phases", 0.7, nil, nil, nil, false, true, true, quality.DefaultStandardDecisionTypes)
+
+	found := false
+	for _, tip := range tips {
+		if strings.Contains(tip, "up to 65%") {
+			found = true
+		}
+	}
+	assert.True(t, found, "planning should show elevated reasoning weight label, got: %v", tips)
+}
+
+func TestComputeMissingFields_ArchitectureReasoningWeightLabel(t *testing.T) {
+	// Architecture profile: alternatives and evidence expected → plain 25%.
+	tips := computeMissingFields("architecture", "chose Redis", 0.7, nil, nil, nil, false, true, true, quality.DefaultStandardDecisionTypes)
+
+	found := false
+	for _, tip := range tips {
+		if strings.Contains(tip, "+30%") {
+			found = true
+		}
+	}
+	assert.True(t, found, "architecture should show '+25%%' without primary factor qualifier, got: %v", tips)
 }

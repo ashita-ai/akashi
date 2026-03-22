@@ -1,4 +1,4 @@
--- 072: Simplify conflict statuses to open/resolved/false_positive.
+-- 075: Simplify conflict statuses to open/resolved/false_positive.
 --
 -- Drops acknowledged (unused triage marker, identical to open in practice)
 -- and wont_fix (conflated false positives with accepted divergence).

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -57,6 +58,16 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := model.ValidateMetadataSize("context", req.Context); err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
+	if req.PrecedentReason != nil && len(*req.PrecedentReason) > model.MaxPrecedentReasonLen {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			fmt.Sprintf("precedent_reason exceeds maximum length of %d bytes", model.MaxPrecedentReasonLen))
+		return
+	}
+	if req.PrecedentReason != nil && req.PrecedentRef == nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"precedent_reason requires precedent_ref to be set")
 		return
 	}
 
@@ -116,15 +127,16 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	ctxWg.Wait()
 
 	result, err := h.decisionSvc.Trace(r.Context(), orgID, decisions.TraceInput{
-		AgentID:      req.AgentID,
-		TraceID:      req.TraceID,
-		Metadata:     req.Metadata,
-		Decision:     req.Decision,
-		PrecedentRef: req.PrecedentRef,
-		SessionID:    sessionID,
-		AgentContext: agentContext,
-		APIKeyID:     claims.APIKeyID,
-		AuditMeta:    h.buildAuditMeta(r, orgID),
+		AgentID:         req.AgentID,
+		TraceID:         req.TraceID,
+		Metadata:        req.Metadata,
+		Decision:        req.Decision,
+		PrecedentRef:    req.PrecedentRef,
+		PrecedentReason: req.PrecedentReason,
+		SessionID:       sessionID,
+		AgentContext:    agentContext,
+		APIKeyID:        claims.APIKeyID,
+		AuditMeta:       h.buildAuditMeta(r, orgID),
 	})
 	if err != nil {
 		h.clearIdempotentWrite(r, orgID, idem)
@@ -157,6 +169,10 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	if result.EmbeddingSkipped {
 		resp["embedding_skipped"] = true
 	}
+	if warnings := model.HighConfidenceWarnings(req.Decision.Confidence, len(req.Decision.Evidence), h.highConfidenceWarnThreshold); len(warnings) > 0 {
+		resp["warnings"] = warnings
+	}
+
 	h.completeIdempotentWriteBestEffort(r, orgID, idem, http.StatusCreated, resp)
 	writeJSON(w, r, http.StatusCreated, resp)
 }
@@ -224,6 +240,21 @@ func (h *Handlers) buildTraceAgentContext(
 			clientCtx["operator"] = callerAgent.Name
 		}
 	}
+
+	// Normalize project name: resolve workspace aliases, repo_url parsing,
+	// and server-inferred values to a canonical project name.
+	normalizeTraceProject(
+		clientCtx,
+		"", // HTTP handler has no server-inferred project (can't run git on client's machine)
+		func(project string) string {
+			canonical, err := h.db.ResolveProjectAlias(r.Context(), orgID, project)
+			if err != nil {
+				return ""
+			}
+			return canonical
+		},
+		h.logger,
+	)
 
 	agentContext := map[string]any{}
 	if len(serverCtx) > 0 {
@@ -476,11 +507,6 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 
 // HandleCheck handles POST /v1/check.
 func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
-	// Record that akashi_check was called so the IDE hook gate (PreToolUse for
-	// Edit/Write) can confirm a check happened before edits. Recorded here
-	// rather than in the PostToolUse hook because Claude Code does not reliably
-	// fire PostToolUse hooks for MCP tool calls.
-	h.hookChecks.Record("")
 	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
 
@@ -488,6 +514,11 @@ func (h *Handlers) HandleCheck(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
 		handleDecodeError(w, r, err)
 		return
+	}
+
+	// Record after request validation so a malformed body can't open the gate.
+	if claims != nil {
+		h.hookChecks.Record(claims.AgentID)
 	}
 
 	if req.DecisionType == "" {

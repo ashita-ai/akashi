@@ -328,11 +328,35 @@ function ConflictGroupCard({
           </div>
         </div>
 
-        {/* ── LLM explanation — always shown, this is the narrative ── */}
-        {rep?.explanation && (
-          <p className="text-sm text-muted-foreground leading-relaxed">
-            {rep.explanation}
-          </p>
+        {/* ── Competing outcomes — show what actually conflicts ── */}
+        {rep && (rep.outcome_a || rep.outcome_b) && (
+          <div className="space-y-1.5 text-xs">
+            {rep.outcome_a && (
+              <div className="flex gap-2 items-start">
+                <Badge variant="outline" className="font-mono text-[10px] shrink-0 mt-0.5">
+                  {group.agent_a}
+                </Badge>
+                <span className="text-muted-foreground leading-snug">
+                  {truncate(rep.outcome_a, 140)}
+                </span>
+              </div>
+            )}
+            {rep.outcome_b && (
+              <div className="flex gap-2 items-start">
+                <Badge variant="outline" className="font-mono text-[10px] shrink-0 mt-0.5">
+                  {!isSelf ? group.agent_b : group.agent_a}
+                </Badge>
+                <span className="text-muted-foreground leading-snug">
+                  {truncate(rep.outcome_b, 140)}
+                </span>
+              </div>
+            )}
+            {rep.explanation && (
+              <p className="text-[11px] text-muted-foreground/70 leading-snug italic">
+                {truncate(rep.explanation, 180)}
+              </p>
+            )}
+          </div>
         )}
       </CardHeader>
 
@@ -341,9 +365,64 @@ function ConflictGroupCard({
         <CardContent className="pt-0">
           <div className="border-t pt-4 space-y-3">
             {openConflicts.length === 0 ? (
-              <p className="text-xs text-muted-foreground italic">
-                All conflicts in this group have been resolved.
-              </p>
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground italic">
+                  All conflicts in this group have been resolved.
+                </p>
+                {rep && (
+                  <div className="rounded border overflow-hidden text-xs">
+                    <div className="grid grid-cols-[1fr,auto,1fr]">
+                      <Link
+                        to={`/decisions/${rep.run_a ?? rep.decision_a_id}`}
+                        className="p-3 block transition-colors hover:bg-muted/50 min-w-0"
+                      >
+                        <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                          <Badge variant="outline" className="font-mono text-[10px] shrink-0">
+                            {rep.agent_a}
+                          </Badge>
+                          {rep.decided_at_a && (
+                            <span className="text-[10px] text-muted-foreground tabular-nums">
+                              {formatDate(rep.decided_at_a)}
+                            </span>
+                          )}
+                        </div>
+                        <p className="leading-snug text-foreground/80">
+                          {truncate(rep.outcome_a, 120)}
+                        </p>
+                      </Link>
+                      <div className="flex items-center justify-center px-2 border-x bg-muted/30">
+                        <span className="text-[10px] font-medium text-muted-foreground">vs</span>
+                      </div>
+                      <Link
+                        to={`/decisions/${rep.run_b ?? rep.decision_b_id}`}
+                        className="p-3 block transition-colors hover:bg-muted/50 min-w-0"
+                      >
+                        <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                          <Badge variant="outline" className="font-mono text-[10px] shrink-0">
+                            {rep.agent_b}
+                          </Badge>
+                          {rep.decided_at_b && (
+                            <span className="text-[10px] text-muted-foreground tabular-nums">
+                              {formatDate(rep.decided_at_b)}
+                            </span>
+                          )}
+                        </div>
+                        <p className="leading-snug text-foreground/80">
+                          {truncate(rep.outcome_b, 120)}
+                        </p>
+                      </Link>
+                    </div>
+                    {rep.resolution_note && (
+                      <div className="border-t px-3 py-2 bg-muted/20">
+                        <span className="text-[10px] text-muted-foreground">
+                          <CheckCircle2 className="h-3 w-3 inline mr-1 text-emerald-500" />
+                          {rep.resolution_note}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             ) : (
               <>
                 <p className="text-[10px] text-muted-foreground">

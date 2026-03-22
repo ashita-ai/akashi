@@ -96,6 +96,13 @@ type Store interface {
 	ClearClaimEmbeddingFailure(ctx context.Context, decisionID, orgID uuid.UUID) error
 	FindRetriableClaimFailures(ctx context.Context, maxAttempts, limit int) ([]ClaimRetryRef, error)
 
+	// ---- Project Links ----
+
+	// ResolveProjectAlias returns the canonical project name for the given
+	// alias (via project_links with link_type='alias'). Returns "" if no
+	// alias mapping exists.
+	ResolveProjectAlias(ctx context.Context, orgID uuid.UUID, alias string) (string, error)
+
 	// ---- Idempotency ----
 
 	BeginIdempotency(ctx context.Context, orgID uuid.UUID, agentID, endpoint, key, requestHash string) (IdempotencyLookup, error)
@@ -126,8 +133,17 @@ type Store interface {
 	GetFalsePositiveRate(ctx context.Context, orgID uuid.UUID) (FalsePositiveRate, error)
 	// GetOutcomeSignalsSummary returns outcome signals. from/to scope decisions by valid_from.
 	GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (OutcomeSignalsSummary, error)
-	GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID) (ConfidenceDistribution, error)
+	// GetConfidenceDistribution returns confidence histogram and per-agent stats. from/to scope decisions by valid_from.
+	GetConfidenceDistribution(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (ConfidenceDistribution, error)
+	// GetHighConfOutcomeSignals returns behavioral signals for decisions with confidence >= 0.85. from/to scope by valid_from.
+	GetHighConfOutcomeSignals(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (HighConfOutcomeSignals, error)
+	// GetConfidenceCalibration returns per-tier and per-agent calibration signals
+	// correlating declared confidence with revision rates and assessment outcomes.
+	GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID) (ConfidenceCalibration, error)
 	GetDecisionTypeDistribution(ctx context.Context, orgID uuid.UUID) ([]DecisionTypeCount, error)
+	// GetCompletenessByDecisionType returns per-type average completeness for current decisions.
+	// Ordered by avg completeness ascending so the worst types surface first.
+	GetCompletenessByDecisionType(ctx context.Context, orgID uuid.UUID, from, to *time.Time) ([]DecisionTypeCompleteness, error)
 
 	// ---- Error classification ----
 

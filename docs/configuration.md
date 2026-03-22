@@ -235,7 +235,20 @@ Operational idempotency settings:
 | `AKASHI_HOOKS_API_KEY` | _(empty)_ | Optional API key for non-localhost hook access. When set, remote clients can authenticate with `X-Akashi-Hook-Key` header. Empty = localhost-only (recommended for local dev) |
 | `AKASHI_AUTO_TRACE` | `true` | Automatically trace git commits detected in `PostToolUse` hooks as decisions with `confidence: 0.7`. Set to `false` to disable auto-tracing |
 
+### Completeness profiles
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AKASHI_COMPLETENESS_PROFILES` | _(empty)_ | JSON map of decision_type → profile overrides for completeness scoring. Each profile has `min_evidence` (int), `alternatives_expected` (bool), `max_confidence_no_evidence` (float). See [quality-scoring.md](quality-scoring.md) for details |
+| `AKASHI_STANDARD_DECISION_TYPES` | _(built-in 12)_ | Comma-separated list of decision types considered "standard" for suggestion tips. Replaces the built-in defaults when set. Example: `architecture,security,data_pipeline,access_control` |
+
 Hook endpoints (`/hooks/session-start`, `/hooks/pre-tool-use`, `/hooks/post-tool-use`) are unauthenticated but restricted to localhost by default. They enable IDE agents to receive context injection, edit gating, and automatic decision tracing without shell-script marker files.
+
+## Trace quality warnings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AKASHI_HIGH_CONFIDENCE_WARN_THRESHOLD` | `0.85` | Confidence above this with zero evidence items triggers a `warnings` array in the trace response. Set to `1.0` to disable |
 
 ## Data retention
 

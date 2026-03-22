@@ -34,6 +34,12 @@ func Decision(d model.Decision) map[string]any {
 	if d.Reasoning != nil && *d.Reasoning != "" {
 		m["reasoning"] = Truncate(*d.Reasoning, MaxCompactReasoning)
 	}
+	if d.PrecedentRef != nil {
+		m["precedent_ref"] = d.PrecedentRef
+		if d.PrecedentReason != nil && *d.PrecedentReason != "" {
+			m["precedent_reason"] = *d.PrecedentReason
+		}
+	}
 	if d.SessionID != nil {
 		m["session_id"] = d.SessionID
 	}

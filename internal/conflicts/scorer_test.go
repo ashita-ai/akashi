@@ -2422,11 +2422,159 @@ func TestIsComplementaryWorkflowPair_PrecedentChain(t *testing.T) {
 			},
 			expected: false,
 		},
+		{
+			name: "precedent-linked with supersession keyword 'switched' → NOT filtered (#452)",
+			d: model.Decision{
+				ID: idA, DecisionType: "architecture", AgentID: "planner",
+				Outcome: "Chose Python for Mimir", ValidFrom: now,
+			},
+			cand: model.Decision{
+				ID: idB, DecisionType: "architecture", AgentID: "coder",
+				Outcome: "Switched to Go, superseding Python", ValidFrom: now.Add(time.Hour),
+				PrecedentRef: &idA,
+			},
+			expected: false,
+		},
+		{
+			name: "precedent-linked with supersession keyword 'replaced' → NOT filtered (#452)",
+			d: model.Decision{
+				ID: idA, DecisionType: "architecture", AgentID: "planner",
+				Outcome: "Use dual database approach", ValidFrom: now,
+			},
+			cand: model.Decision{
+				ID: idB, DecisionType: "architecture", AgentID: "coder",
+				Outcome: "Replaced dual DB with PostgreSQL only", ValidFrom: now.Add(time.Hour),
+				PrecedentRef: &idA,
+			},
+			expected: false,
+		},
+		{
+			name: "precedent-linked with 'instead of' → NOT filtered (#452)",
+			d: model.Decision{
+				ID: idA, DecisionType: "architecture", AgentID: "agent-a",
+				Outcome: "Use Redis for caching", ValidFrom: now,
+			},
+			cand: model.Decision{
+				ID: idB, DecisionType: "architecture", AgentID: "agent-a",
+				Outcome: "Use Memcached instead of Redis", ValidFrom: now.Add(time.Hour),
+				PrecedentRef: &idA,
+			},
+			expected: false,
+		},
+		{
+			name: "precedent-linked with 'no longer' → NOT filtered (#452)",
+			d: model.Decision{
+				ID: idA, DecisionType: "architecture", AgentID: "agent-a",
+				Outcome: "Use microservices architecture", ValidFrom: now,
+			},
+			cand: model.Decision{
+				ID: idB, DecisionType: "architecture", AgentID: "agent-a",
+				Outcome: "No longer using microservices, consolidating to monolith", ValidFrom: now.Add(time.Hour),
+				PrecedentRef: &idA,
+			},
+			expected: false,
+		},
+		{
+			name: "precedent-linked d cites cand with supersession keyword → NOT filtered (#452)",
+			d: model.Decision{
+				ID: idA, DecisionType: "architecture", AgentID: "coder",
+				Outcome: "Reverted to REST after gRPC proved problematic", ValidFrom: now.Add(time.Hour),
+				PrecedentRef: &idB,
+			},
+			cand: model.Decision{
+				ID: idB, DecisionType: "architecture", AgentID: "planner",
+				Outcome: "Use gRPC for all services", ValidFrom: now,
+			},
+			expected: false,
+		},
+		{
+			name: "precedent-linked refinement without supersession keywords → filtered",
+			d: model.Decision{
+				ID: idA, DecisionType: "architecture", AgentID: "planner",
+				Outcome: "Use PostgreSQL with connection pooling", ValidFrom: now,
+			},
+			cand: model.Decision{
+				ID: idB, DecisionType: "implementation", AgentID: "coder",
+				Outcome: "Implemented PostgreSQL connection pooling with pgbouncer", ValidFrom: now.Add(time.Hour),
+				PrecedentRef: &idA,
+			},
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.expected, isComplementaryWorkflowPair(tt.d, tt.cand))
+		})
+	}
+}
+
+func TestContainsSupersessionKeyword(t *testing.T) {
+	tests := []struct {
+		outcome  string
+		expected bool
+	}{
+		{"Switched to Go, superseding Python", true},
+		{"Replaced dual DB with PostgreSQL only", true},
+		{"Reversed the earlier caching decision", true},
+		{"Reverted to the original approach", true},
+		{"Migrated from MySQL to PostgreSQL", true},
+		{"Use Memcached instead of Redis", true},
+		{"No longer using microservices", true},
+		{"Abandoned the event-sourcing approach", true},
+		{"Implemented the planned feature", false},
+		{"Fixed the bug identified in review", false},
+		{"Completed the migration to new schema", false},
+		{"Added connection pooling as planned", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.outcome, func(t *testing.T) {
+			assert.Equal(t, tt.expected, containsSupersessionKeyword(tt.outcome))
+		})
+	}
+}
+
+func TestIsPrecedentLinked(t *testing.T) {
+	idA := uuid.New()
+	idB := uuid.New()
+
+	tests := []struct {
+		name     string
+		d        model.Decision
+		cand     model.Decision
+		expected bool
+	}{
+		{
+			name:     "cand cites d",
+			d:        model.Decision{ID: idA},
+			cand:     model.Decision{ID: idB, PrecedentRef: &idA},
+			expected: true,
+		},
+		{
+			name:     "d cites cand",
+			d:        model.Decision{ID: idA, PrecedentRef: &idB},
+			cand:     model.Decision{ID: idB},
+			expected: true,
+		},
+		{
+			name:     "no link",
+			d:        model.Decision{ID: idA},
+			cand:     model.Decision{ID: idB},
+			expected: false,
+		},
+		{
+			name:     "cites unrelated",
+			d:        model.Decision{ID: idA},
+			cand:     model.Decision{ID: idB, PrecedentRef: ptr(uuid.New())},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, isPrecedentLinked(tt.d, tt.cand))
 		})
 	}
 }

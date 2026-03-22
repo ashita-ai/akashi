@@ -13,6 +13,7 @@ import (
 
 	"github.com/ashita-ai/akashi/internal/authz"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
+	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
@@ -53,30 +54,41 @@ Be honest about confidence — most decisions warrant 0.4-0.8, not 0.9+. Referen
 
 // Server wraps the MCP server with Akashi's service layer.
 type Server struct {
-	mcpServer   *mcpserver.MCPServer
-	db          storage.Store      // for resources (read-only queries)
-	decisionSvc *decisions.Service // for tools (shared business logic)
-	grantCache  *authz.GrantCache  // optional cache for LoadGrantedSet
-	logger      *slog.Logger
-	rootsCache  *rootsCache // caches MCP roots per session (one request per session)
-	onCheck     func()      // called when akashi_check is invoked; wires IDE hook gate
+	mcpServer                   *mcpserver.MCPServer
+	db                          storage.Store      // for resources (read-only queries)
+	decisionSvc                 *decisions.Service // for tools (shared business logic)
+	grantCache                  *authz.GrantCache  // optional cache for LoadGrantedSet
+	logger                      *slog.Logger
+	rootsCache                  *rootsCache          // caches MCP roots per session (one request per session)
+	checkCache                  *checkCache          // caches last akashi_check response per session for evidence auto-attach
+	onCheck                     func(agentID string) // called when akashi_check is invoked; wires IDE hook gate
+	highConfidenceWarnThreshold float32              // confidence above this with no evidence triggers a warning
+	standardTypes               map[string]bool      // configurable set of standard decision types for tips
 }
 
 // SetCheckNotify registers a callback that fires whenever akashi_check is called.
-// Used to signal the IDE hook gate (PreToolUse for Edit/Write) that a check
-// has been performed, without creating a circular import between mcp and server.
-func (s *Server) SetCheckNotify(f func()) {
+// The callback receives the authenticated agent_id so the hook gate can track
+// checks per-agent rather than per-machine.
+func (s *Server) SetCheckNotify(f func(agentID string)) {
 	s.onCheck = f
 }
 
 // New creates and configures a new MCP server with all resources, tools, and prompts.
-func New(db storage.Store, decisionSvc *decisions.Service, grantCache *authz.GrantCache, logger *slog.Logger, version string) *Server {
+// standardTypes controls which decision types are suggested in completeness tips.
+// Pass nil to use quality.DefaultStandardDecisionTypes.
+func New(db storage.Store, decisionSvc *decisions.Service, grantCache *authz.GrantCache, logger *slog.Logger, version string, highConfWarnThreshold float32, standardTypes map[string]bool) *Server {
+	if standardTypes == nil {
+		standardTypes = quality.DefaultStandardDecisionTypes
+	}
 	s := &Server{
-		db:          db,
-		decisionSvc: decisionSvc,
-		grantCache:  grantCache,
-		logger:      logger,
-		rootsCache:  newRootsCache(),
+		db:                          db,
+		decisionSvc:                 decisionSvc,
+		grantCache:                  grantCache,
+		logger:                      logger,
+		rootsCache:                  newRootsCache(),
+		checkCache:                  newCheckCache(),
+		highConfidenceWarnThreshold: highConfWarnThreshold,
+		standardTypes:               standardTypes,
 	}
 
 	s.mcpServer = mcpserver.NewMCPServer(

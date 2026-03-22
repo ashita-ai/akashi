@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { AkashiClient } from "../src/client.js";
+import { AkashiClient, _resetProjectCache } from "../src/client.js";
 import { withAkashi } from "../src/middleware.js";
 import {
   AkashiError,
@@ -62,6 +62,9 @@ describe("AkashiClient", () => {
 
   beforeEach(() => {
     mockFetch.mockReset();
+    // Disable git project auto-detection so tests run deterministically
+    // regardless of whether they execute inside a git repo.
+    _resetProjectCache("");
     client = new AkashiClient({
       baseUrl: "http://localhost:8080",
       agentId: "test-agent",

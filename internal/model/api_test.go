@@ -1,6 +1,7 @@
 package model_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -359,6 +360,84 @@ func TestValidateTraceDecision_MaxAlternativesAndEvidencePass(t *testing.T) {
 	assert.NoError(t, model.ValidateTraceDecision(d), "exactly at max should pass")
 }
 
+// ---- Metrics evidence validation -------------------------------------------
+
+func TestValidateTraceDecision_MetricsSourceTypeRequiresMetrics(t *testing.T) {
+	d := model.TraceDecision{
+		DecisionType: "arch",
+		Outcome:      "ok",
+		Evidence: []model.TraceEvidence{
+			{SourceType: "metrics", Content: "benchmark results"},
+		},
+	}
+	err := model.ValidateTraceDecision(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "metrics is required")
+}
+
+func TestValidateTraceDecision_MetricsSourceTypeWithMetricsPass(t *testing.T) {
+	d := model.TraceDecision{
+		DecisionType: "arch",
+		Outcome:      "ok",
+		Evidence: []model.TraceEvidence{
+			{
+				SourceType: "metrics",
+				Content:    "NER benchmark",
+				Metrics:    map[string]float64{"accuracy": 0.93, "f1": 0.87},
+			},
+		},
+	}
+	assert.NoError(t, model.ValidateTraceDecision(d))
+}
+
+func TestValidateTraceDecision_MetricsOnNonMetricsSourceTypeRejected(t *testing.T) {
+	d := model.TraceDecision{
+		DecisionType: "arch",
+		Outcome:      "ok",
+		Evidence: []model.TraceEvidence{
+			{
+				SourceType: "document",
+				Content:    "some doc",
+				Metrics:    map[string]float64{"accuracy": 0.93},
+			},
+		},
+	}
+	err := model.ValidateTraceDecision(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only allowed when source_type is \"metrics\"")
+}
+
+func TestValidateTraceDecision_MetricsTooManyKeys(t *testing.T) {
+	m := make(map[string]float64, model.MaxMetricsKeys+1)
+	for i := range model.MaxMetricsKeys + 1 {
+		m[fmt.Sprintf("metric_%d", i)] = float64(i)
+	}
+	d := model.TraceDecision{
+		DecisionType: "arch",
+		Outcome:      "ok",
+		Evidence: []model.TraceEvidence{
+			{SourceType: "metrics", Content: "too many", Metrics: m},
+		},
+	}
+	err := model.ValidateTraceDecision(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "maximum is")
+}
+
+func TestValidateTraceDecision_MetricsEmptyContentAllowed(t *testing.T) {
+	d := model.TraceDecision{
+		DecisionType: "arch",
+		Outcome:      "ok",
+		Evidence: []model.TraceEvidence{
+			{
+				SourceType: "metrics",
+				Metrics:    map[string]float64{"latency_ms": 234},
+			},
+		},
+	}
+	assert.NoError(t, model.ValidateTraceDecision(d), "content is optional for metrics source type")
+}
+
 // ---- ValidateMetadataSize -------------------------------------------------
 
 func TestValidateMetadataSize_NilMap(t *testing.T) {
@@ -381,4 +460,36 @@ func TestValidateMetadataSize_OverMax(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "metadata")
 	assert.Contains(t, err.Error(), "exceeds maximum size")
+}
+
+// ---- HighConfidenceWarnings -----------------------------------------------
+
+func TestHighConfidenceWarnings_HighConfNoEvidence(t *testing.T) {
+	warnings := model.HighConfidenceWarnings(0.9, 0, 0.85)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "high confidence")
+	assert.Contains(t, warnings[0], "0.9")
+}
+
+func TestHighConfidenceWarnings_HighConfWithEvidence(t *testing.T) {
+	warnings := model.HighConfidenceWarnings(0.9, 1, 0.85)
+	assert.Nil(t, warnings, "evidence present — no warning expected")
+}
+
+func TestHighConfidenceWarnings_BelowThreshold(t *testing.T) {
+	warnings := model.HighConfidenceWarnings(0.7, 0, 0.85)
+	assert.Nil(t, warnings, "confidence below threshold — no warning expected")
+}
+
+func TestHighConfidenceWarnings_ExactlyAtThreshold(t *testing.T) {
+	// 0.85 is not > 0.85, so no warning.
+	warnings := model.HighConfidenceWarnings(0.85, 0, 0.85)
+	assert.Nil(t, warnings, "confidence == threshold is not >, so no warning")
+}
+
+func TestHighConfidenceWarnings_CustomThreshold(t *testing.T) {
+	// Lower threshold: 0.7 confidence with threshold 0.6 should warn.
+	warnings := model.HighConfidenceWarnings(0.7, 0, 0.6)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "0.7")
 }

@@ -47,6 +47,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/service/autoresolve"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
+	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/service/trace"
 	"github.com/ashita-ai/akashi/internal/storage"
 	"github.com/ashita-ai/akashi/internal/telemetry"
@@ -358,7 +359,7 @@ func New(opts ...Option) (*App, error) {
 	grantCache := authz.NewGrantCache(30 * time.Second)
 
 	// MCP server.
-	mcpSrv := mcp.New(db, decisionSvc, grantCache, logger, version)
+	mcpSrv := mcp.New(db, decisionSvc, grantCache, logger, version, cfg.HighConfidenceWarnThreshold, quality.BuildStandardTypes(cfg.StandardDecisionTypes))
 
 	// SSE broker.
 	var broker *server.Broker
@@ -414,36 +415,37 @@ func New(opts ...Option) (*App, error) {
 
 	// Create HTTP server.
 	srv := server.New(server.ServerConfig{
-		DB:                      db,
-		JWTMgr:                  jwtMgr,
-		DecisionSvc:             decisionSvc,
-		Buffer:                  buf,
-		Broker:                  broker,
-		Searcher:                searcher,
-		GrantCache:              grantCache,
-		Logger:                  logger,
-		Port:                    cfg.Port,
-		ReadTimeout:             cfg.ReadTimeout,
-		WriteTimeout:            cfg.WriteTimeout,
-		MCPServer:               mcpSrv.MCPServer(),
-		Version:                 version,
-		MaxRequestBodyBytes:     cfg.MaxRequestBodyBytes,
-		RateLimiter:             limiter,
-		TrustProxy:              cfg.TrustProxy,
-		CORSAllowedOrigins:      cfg.CORSAllowedOrigins,
-		EnableDestructiveDelete: cfg.EnableDestructiveDelete,
-		RetentionInterval:       cfg.RetentionInterval,
-		UIFS:                    uiFS,
-		OpenAPISpec:             api.OpenAPISpec,
-		ExtraRoutes:             extraRoutes,
-		Middlewares:             middlewares,
-		DecisionHooks:           decisionHooks,
-		HooksEnabled:            cfg.HooksEnabled,
-		HooksAPIKey:             cfg.HooksAPIKey,
-		AutoTrace:               cfg.AutoTrace,
-		SignupEnabled:           cfg.SignupEnabled,
-		ResolutionRecorder:      conflictScorer,
-		ConflictValidator:       conflictValidator,
+		DB:                          db,
+		JWTMgr:                      jwtMgr,
+		DecisionSvc:                 decisionSvc,
+		Buffer:                      buf,
+		Broker:                      broker,
+		Searcher:                    searcher,
+		GrantCache:                  grantCache,
+		Logger:                      logger,
+		Port:                        cfg.Port,
+		ReadTimeout:                 cfg.ReadTimeout,
+		WriteTimeout:                cfg.WriteTimeout,
+		MCPServer:                   mcpSrv.MCPServer(),
+		Version:                     version,
+		MaxRequestBodyBytes:         cfg.MaxRequestBodyBytes,
+		RateLimiter:                 limiter,
+		TrustProxy:                  cfg.TrustProxy,
+		CORSAllowedOrigins:          cfg.CORSAllowedOrigins,
+		EnableDestructiveDelete:     cfg.EnableDestructiveDelete,
+		RetentionInterval:           cfg.RetentionInterval,
+		UIFS:                        uiFS,
+		OpenAPISpec:                 api.OpenAPISpec,
+		ExtraRoutes:                 extraRoutes,
+		Middlewares:                 middlewares,
+		DecisionHooks:               decisionHooks,
+		HooksEnabled:                cfg.HooksEnabled,
+		HooksAPIKey:                 cfg.HooksAPIKey,
+		AutoTrace:                   cfg.AutoTrace,
+		SignupEnabled:               cfg.SignupEnabled,
+		ResolutionRecorder:          conflictScorer,
+		ConflictValidator:           conflictValidator,
+		HighConfidenceWarnThreshold: cfg.HighConfidenceWarnThreshold,
 	})
 
 	// Wire akashi_check → IDE hook gate.
@@ -504,6 +506,7 @@ func (a *App) Run(ctx context.Context) error {
 	go a.conflictRefreshLoop(ctx)
 	go a.integrityProofLoop(ctx)
 	go a.idempotencyCleanupLoop(ctx)
+	go a.hookCheckCleanupLoop(ctx)
 	go a.retentionLoop(ctx)
 	go a.claimEmbeddingRetryLoop(ctx)
 	go a.percentileRefreshLoop(ctx)
@@ -743,6 +746,20 @@ func (a *App) idempotencyCleanupLoop(ctx context.Context) {
 			if deleted > 0 {
 				a.logger.Info("idempotency cleanup deleted rows", "deleted", deleted)
 			}
+		}
+	}
+}
+
+func (a *App) hookCheckCleanupLoop(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.srv.Handlers().CleanupHookChecks()
 		}
 	}
 }

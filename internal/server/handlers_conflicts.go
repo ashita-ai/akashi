@@ -69,10 +69,8 @@ func (h *Handlers) HandleListConflictGroups(w http.ResponseWriter, r *http.Reque
 	if ck := r.URL.Query().Get("conflict_kind"); ck != "" {
 		filters.ConflictKind = &ck
 	}
-	// status=open maps to OpenOnly. Other values (resolved, false_positive)
-	// are not yet supported at the group level — fall through to all groups.
-	if st := r.URL.Query().Get("status"); st == "open" {
-		filters.OpenOnly = true
+	if st := r.URL.Query().Get("status"); st != "" {
+		filters.Status = &st
 	}
 
 	limit := queryLimit(r, 25)
