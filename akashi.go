@@ -47,6 +47,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/service/autoresolve"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
+	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/service/trace"
 	"github.com/ashita-ai/akashi/internal/storage"
 	"github.com/ashita-ai/akashi/internal/telemetry"
@@ -358,7 +359,7 @@ func New(opts ...Option) (*App, error) {
 	grantCache := authz.NewGrantCache(30 * time.Second)
 
 	// MCP server.
-	mcpSrv := mcp.New(db, decisionSvc, grantCache, logger, version, cfg.HighConfidenceWarnThreshold)
+	mcpSrv := mcp.New(db, decisionSvc, grantCache, logger, version, cfg.HighConfidenceWarnThreshold, quality.BuildStandardTypes(cfg.StandardDecisionTypes))
 
 	// SSE broker.
 	var broker *server.Broker
