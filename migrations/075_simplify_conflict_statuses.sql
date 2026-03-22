@@ -8,9 +8,12 @@
 --   resolved would inflate ConflictsNoWinner since those rows have
 --   winning_decision_id IS NULL and would match the resolved-no-winner filter).
 
+-- Drop the old constraint first so the UPDATEs can write 'false_positive',
+-- which is not in the original CHECK list.
+ALTER TABLE scored_conflicts DROP CONSTRAINT scored_conflicts_status_check;
+
 UPDATE scored_conflicts SET status = 'open' WHERE status = 'acknowledged';
 UPDATE scored_conflicts SET status = 'false_positive' WHERE status = 'wont_fix';
 
-ALTER TABLE scored_conflicts DROP CONSTRAINT scored_conflicts_status_check;
 ALTER TABLE scored_conflicts ADD CONSTRAINT scored_conflicts_status_check
     CHECK (status IN ('open', 'resolved', 'false_positive'));
