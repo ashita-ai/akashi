@@ -21,9 +21,9 @@ import (
 	"github.com/ashita-ai/akashi/internal/model"
 )
 
-// StandardDecisionTypes are the canonical types from prompt templates.
+// DefaultStandardDecisionTypes are the canonical types from prompt templates.
 // Using standard types improves discoverability and consistency.
-var StandardDecisionTypes = map[string]bool{
+var DefaultStandardDecisionTypes = map[string]bool{
 	"model_selection": true,
 	"architecture":    true,
 	"data_source":     true,
@@ -36,6 +36,73 @@ var StandardDecisionTypes = map[string]bool{
 	"investigation":   true,
 	"planning":        true,
 	"assessment":      true,
+}
+
+// BuildStandardTypes returns a standard types set from a custom list.
+// If overrides is nil or empty, returns DefaultStandardDecisionTypes.
+// Entries are normalized to lowercase and trimmed.
+func BuildStandardTypes(overrides []string) map[string]bool {
+	if len(overrides) == 0 {
+		return DefaultStandardDecisionTypes
+	}
+	m := make(map[string]bool, len(overrides))
+	for _, t := range overrides {
+		t = strings.ToLower(strings.TrimSpace(t))
+		if t != "" {
+			m[t] = true
+		}
+	}
+	return m
+}
+
+// SuggestStandardType returns the closest standard type if the edit distance
+// is <= maxDist, or empty string if no close match exists. Exact matches
+// (distance 0) are not returned since they need no suggestion.
+func SuggestStandardType(input string, standardTypes map[string]bool, maxDist int) string {
+	best := ""
+	bestDist := maxDist + 1
+	for std := range standardTypes {
+		d := levenshtein(input, std)
+		if d > 0 && d < bestDist {
+			bestDist = d
+			best = std
+		}
+	}
+	return best
+}
+
+// levenshtein computes the Levenshtein edit distance between two strings.
+func levenshtein(a, b string) int {
+	if len(a) == 0 {
+		return len(b)
+	}
+	if len(b) == 0 {
+		return len(a)
+	}
+
+	// Use single-row DP to minimize allocations.
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+
+	for i := range len(a) {
+		curr := make([]int, len(b)+1)
+		curr[0] = i + 1
+		for j := range len(b) {
+			cost := 1
+			if a[i] == b[j] {
+				cost = 0
+			}
+			curr[j+1] = min(
+				curr[j]+1,    // insertion
+				prev[j+1]+1,  // deletion
+				prev[j]+cost, // substitution
+			)
+		}
+		prev = curr
+	}
+	return prev[len(b)]
 }
 
 // CompletenessProfile defines per-decision-type expectations for tip filtering.
@@ -137,12 +204,14 @@ func ExpectationFor(decisionType string) TypeExpectation {
 //
 // Scoring factors:
 //   - Confidence present and reasonable (0.05-0.95): 0.15
-//   - Reasoning substantive (>50 chars): up to 0.25
+//   - Reasoning substantive (>50 chars): up to 0.30
 //   - Alternatives with substantive rejection reasons: up to 0.20
 //   - Evidence provided: up to 0.15
-//   - Standard decision type: 0.10
-//   - Outcome substantive (>20 chars): 0.05
+//   - Outcome substantive (>20 chars): 0.10
 //   - Precedent reference set: 0.10
+//
+// The former "standard decision type" factor (0.10) was removed; its weight
+// was redistributed to reasoning (+0.05) and outcome (+0.05).
 func Score(d model.TraceDecision, hasPrecedentRef bool) float32 {
 	var score float32
 
@@ -151,7 +220,7 @@ func Score(d model.TraceDecision, hasPrecedentRef bool) float32 {
 	// Strict inequality: exactly 0.05 and 0.95 fall to edge tier (0.10).
 	score += confidenceFactor(d.Confidence)
 
-	// Factor 2: Reasoning is substantive (up to 0.25).
+	// Factor 2: Reasoning is substantive (up to 0.30).
 	score += reasoningFactor(d.Reasoning)
 
 	// Factor 3: Alternatives with substantive rejection reasons (up to 0.20).
@@ -160,17 +229,12 @@ func Score(d model.TraceDecision, hasPrecedentRef bool) float32 {
 	// Factor 4: Evidence provided (up to 0.15).
 	score += evidenceFactor(d.Evidence)
 
-	// Factor 5: Decision type is from standard taxonomy (0.10).
-	if StandardDecisionTypes[d.DecisionType] {
+	// Factor 5: Outcome is substantive (0.10).
+	if len(strings.TrimSpace(d.Outcome)) > 20 {
 		score += 0.10
 	}
 
-	// Factor 6: Outcome is substantive (0.05).
-	if len(strings.TrimSpace(d.Outcome)) > 20 {
-		score += 0.05
-	}
-
-	// Factor 7: Precedent reference links this decision to a prior one (0.10).
+	// Factor 6: Precedent reference links this decision to a prior one (0.10).
 	if hasPrecedentRef {
 		score += 0.10
 	}
@@ -189,7 +253,8 @@ func confidenceFactor(confidence float32) float32 {
 	return 0
 }
 
-// reasoningFactor returns the reasoning contribution (0, 0.10, 0.20, or 0.25).
+// reasoningFactor returns the reasoning contribution (0, 0.12, 0.24, or 0.30).
+// Tiers are 40%, 80%, and 100% of the 0.30 weight.
 func reasoningFactor(reasoning *string) float32 {
 	if reasoning == nil {
 		return 0
@@ -197,11 +262,11 @@ func reasoningFactor(reasoning *string) float32 {
 	reasoningLen := len(strings.TrimSpace(*reasoning))
 	switch {
 	case reasoningLen > 100:
-		return 0.25
+		return 0.30
 	case reasoningLen > 50:
-		return 0.20
+		return 0.24
 	case reasoningLen > 20:
-		return 0.10
+		return 0.12
 	}
 	return 0
 }

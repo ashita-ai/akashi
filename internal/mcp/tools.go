@@ -606,7 +606,9 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	}
 
 	agentID := request.GetString("agent_id", "")
-	// Normalize decision_type to lowercase for consistent storage and retrieval.
+	// Normalize decision_type for validation and hash computation. The service
+	// layer performs canonical normalization, but we normalize here too so the
+	// idempotency hash matches regardless of casing.
 	decisionType := strings.ToLower(strings.TrimSpace(request.GetString("decision_type", "")))
 	outcome := request.GetString("outcome", "")
 	confidence := float32(request.GetFloat("confidence", 0.5))
@@ -935,7 +937,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		Evidence:     evidence,
 	}, precedentRef != nil)
 	hasModel := clientCtx["model"] != nil || serverCtx["model"] != nil
-	missing := computeMissingFields(decisionType, outcome, confidence, reasoningPtr, alternatives, evidence, precedentRef != nil, hasModel, request.GetString("task", "") != "")
+	missing := computeMissingFields(decisionType, outcome, confidence, reasoningPtr, alternatives, evidence, precedentRef != nil, hasModel, request.GetString("task", "") != "", s.standardTypes)
 
 	responseMap := map[string]any{
 		"run_id":             result.RunID,
@@ -981,19 +983,15 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 // hasModel is true when the model field is either explicitly provided or
 // successfully inferred from session metadata / HTTP headers; tips are only
 // surfaced when neither source produced a value.
-func computeMissingFields(decisionType, outcome string, confidence float32, reasoning *string, alternatives []model.TraceAlternative, evidence []model.TraceEvidence, hasPrecedentRef, hasModel, hasTask bool) []string {
+func computeMissingFields(decisionType, outcome string, confidence float32, reasoning *string, alternatives []model.TraceAlternative, evidence []model.TraceEvidence, hasPrecedentRef, hasModel, hasTask bool, standardTypes map[string]bool) []string {
 	profile := quality.ProfileFor(decisionType, nil)
 	var tips []string
 
-	// Reasoning: biggest single factor (up to 0.25). When alternatives and
-	// evidence tips are suppressed by the profile, reasoning becomes the
-	// primary way to improve the score — reflect that in the label.
-	reasoningPctLabel := "25"
-	if !profile.AlternativesExpected && profile.MinEvidence == 0 {
-		// Both alts (20%) and evidence (15%) are suppressed, so reasoning +
-		// outcome + type + confidence are the only levers. Reasoning is the
-		// biggest at 25%.
-		reasoningPctLabel = "25 — reasoning is the primary factor for this decision type"
+	// Reasoning: biggest single factor. Weight increases when alternatives
+	// or evidence weight is redistributed to reasoning by the profile.
+	reasoningPctLabel := "30"
+	if !profile.AlternativesExpected || profile.MinEvidence == 0 {
+		reasoningPctLabel = "up to 65"
 	}
 	if reasoning == nil || len(strings.TrimSpace(*reasoning)) <= 100 {
 		if reasoning == nil || len(strings.TrimSpace(*reasoning)) <= 20 {
@@ -1039,9 +1037,12 @@ func computeMissingFields(decisionType, outcome string, confidence float32, reas
 			confidence, profile.MaxConfidenceNoEvidence, decisionType))
 	}
 
-	// Standard decision type (0.10).
-	if !quality.StandardDecisionTypes[decisionType] {
-		tips = append(tips, "Use a standard decision_type (architecture, security, trade_off, etc.) for +10%")
+	// Suggest standard type when the input is close to one (typo, delimiter variant).
+	// No scoring penalty for custom types — this is purely informational.
+	if !standardTypes[decisionType] {
+		if suggestion := quality.SuggestStandardType(decisionType, standardTypes, 3); suggestion != "" {
+			tips = append(tips, fmt.Sprintf("Did you mean %q? Your type %q is close to a standard type", suggestion, decisionType))
+		}
 	}
 
 	// Precedent reference (0.10).
@@ -1054,9 +1055,9 @@ func computeMissingFields(decisionType, outcome string, confidence float32, reas
 		tips = append(tips, `Pass "model" (e.g. "claude-opus-4-6") so decisions can be correlated by model capability tier`)
 	}
 
-	// Substantive outcome (0.05).
+	// Substantive outcome (0.10).
 	if len(strings.TrimSpace(outcome)) <= 20 {
-		tips = append(tips, "Make outcome more specific (>20 chars) for +5%")
+		tips = append(tips, "Make outcome more specific (>20 chars) for +10%")
 	}
 
 	// Task label: not a scoring factor, but useful for grouping related decisions.

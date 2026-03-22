@@ -240,6 +240,7 @@ Operational idempotency settings:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AKASHI_COMPLETENESS_PROFILES` | _(empty)_ | JSON map of decision_type → profile overrides for completeness scoring. Each profile has `min_evidence` (int), `alternatives_expected` (bool), `max_confidence_no_evidence` (float). See [quality-scoring.md](quality-scoring.md) for details |
+| `AKASHI_STANDARD_DECISION_TYPES` | _(built-in 12)_ | Comma-separated list of decision types considered "standard" for suggestion tips. Replaces the built-in defaults when set. Example: `architecture,security,data_pipeline,access_control` |
 
 Hook endpoints (`/hooks/session-start`, `/hooks/pre-tool-use`, `/hooks/post-tool-use`) are unauthenticated but restricted to localhost by default. They enable IDE agents to receive context injection, edit gating, and automatic decision tracing without shell-script marker files.
 
