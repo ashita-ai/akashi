@@ -2143,7 +2143,7 @@ func (db *DB) GetDecisionLineage(ctx context.Context, id, orgID uuid.UUID, limit
 		limit = 20
 	}
 
-	result := DecisionLineage{DecisionID: id}
+	result := DecisionLineage{DecisionID: id, CitedBy: []LineageEntry{}}
 
 	// Look up this decision's precedent_ref.
 	var precedentRef *uuid.UUID

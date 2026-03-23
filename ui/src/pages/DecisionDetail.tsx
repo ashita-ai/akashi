@@ -280,7 +280,7 @@ function DecisionLineage({ decisionId }: { decisionId: string }) {
   });
 
   if (isPending) return <Skeleton className="h-24 w-full" />;
-  if (!data || (!data.preceded_by && data.cited_by.length === 0)) return null;
+  if (!data || (!data.preceded_by && (!data.cited_by || data.cited_by.length === 0))) return null;
 
   return (
     <Card>
@@ -305,11 +305,11 @@ function DecisionLineage({ decisionId }: { decisionId: string }) {
         <div>
           <h4 className="text-xs font-medium text-muted-foreground mb-2">
             Cited by
-            {data.cited_by.length > 0 && (
+            {data.cited_by && data.cited_by.length > 0 && (
               <span className="ml-1 text-foreground">({data.cited_by.length}{data.cited_by_has_more ? "+" : ""})</span>
             )}
           </h4>
-          {data.cited_by.length > 0 ? (
+          {data.cited_by && data.cited_by.length > 0 ? (
             <div className="space-y-2">
               {data.cited_by.map((entry) => (
                 <LineageEntryRow key={entry.id} entry={entry} />
