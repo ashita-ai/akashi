@@ -79,6 +79,19 @@ export interface Decision {
   transaction_time: string;
   created_at: string;
   alternatives?: Alternative[];
+  // Outcome signals
+  agreement_count?: number;
+  conflict_count?: number;
+  supersession_velocity?: number | null;
+  precedent_citation_count?: number;
+  conflict_fate?: ConflictFate;
+  // Assessment summary
+  assessment_summary?: AssessmentSummary | null;
+  // Precedent
+  precedent_reason?: string | null;
+  supersedes_id?: string | null;
+  // Content hash
+  content_hash?: string;
   evidence?: Evidence[];
 }
 
@@ -102,6 +115,19 @@ export interface Evidence {
   created_at: string;
 }
 
+export interface ConflictFate {
+  won: number;
+  lost: number;
+  resolved_no_winner: number;
+}
+
+export interface AssessmentSummary {
+  total: number;
+  correct: number;
+  incorrect: number;
+  partially_correct: number;
+}
+
 // Run
 export type RunStatus = "running" | "completed" | "failed";
 
@@ -118,6 +144,7 @@ export interface AgentRun {
   created_at: string;
   events?: AgentEvent[];
   decisions?: Decision[];
+  decision_enrichments?: Record<string, DecisionEnrichments>;
 }
 
 // Event
@@ -450,6 +477,20 @@ export interface DecisionLineage {
   preceded_by: LineageEntry | null;
   cited_by: LineageEntry[];
   cited_by_has_more: boolean;
+}
+
+// Decision enrichments (returned by GET /v1/runs/{run_id}?include=enrichments)
+export interface IntegrityStatus {
+  decision_id: string;
+  status: "verified" | "tampered" | "no_hash";
+  content_hash?: string;
+}
+
+export interface DecisionEnrichments {
+  revisions: { items: Decision[]; count: number };
+  lineage: DecisionLineage;
+  conflicts: { items: DecisionConflict[]; count: number };
+  integrity: IntegrityStatus;
 }
 
 // Health

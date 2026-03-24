@@ -27,6 +27,7 @@ import type {
   SessionView,
   TraceHealth,
   AgentRun,
+  DecisionEnrichments,
 } from "@/types/api";
 
 class ApiError extends Error {
@@ -175,13 +176,17 @@ export async function getRecentDecisions(params?: {
 
 // Runs
 export async function getRun(runId: string): Promise<AgentRun> {
-  const result = await request<{ run: AgentRun; decisions: Decision[] | null; events: AgentEvent[] | null }>(
-    `/v1/runs/${runId}`,
-  );
+  const result = await request<{
+    run: AgentRun;
+    decisions: Decision[] | null;
+    events: AgentEvent[] | null;
+    decision_enrichments?: Record<string, DecisionEnrichments>;
+  }>(`/v1/runs/${runId}?include=enrichments`);
   return {
     ...result.run,
     decisions: result.decisions ?? undefined,
     events: result.events ?? undefined,
+    decision_enrichments: result.decision_enrichments ?? undefined,
   };
 }
 

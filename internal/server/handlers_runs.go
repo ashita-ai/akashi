@@ -3,13 +3,17 @@ package server
 import (
 	"errors"
 	"net/http"
+	"sync"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/errgroup"
 
+	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/model"
 	tracesvc "github.com/ashita-ai/akashi/internal/service/trace"
+	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 // HandleCreateRun handles POST /v1/runs.
@@ -275,6 +279,84 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// When ?include=enrichments is set, concurrently fetch revisions, lineage,
+	// conflicts, and integrity status for every decision in the run.
+	var enrichments map[string]map[string]any
+	if r.URL.Query().Get("include") == "enrichments" && len(decisions) > 0 {
+		enrichments = make(map[string]map[string]any, len(decisions))
+		var mu sync.Mutex
+
+		g, gctx := errgroup.WithContext(r.Context())
+		g.SetLimit(8)
+
+		for _, d := range decisions {
+			d := d // capture loop variable
+			g.Go(func() error {
+				decID := d.ID
+				entry := make(map[string]any, 4)
+
+				// --- Revisions ---
+				revisions, err := h.db.GetDecisionRevisions(gctx, orgID, decID)
+				if err != nil {
+					if !isNotFoundError(err) {
+						h.logger.Warn("enrichment: failed to get revisions",
+							"decision_id", decID, "error", err)
+					}
+					entry["revisions"] = map[string]any{"items": []any{}, "count": 0}
+				} else {
+					revisions, _ = filterDecisionsByAccess(gctx, h.db, claims, revisions, h.grantCache)
+					entry["revisions"] = map[string]any{"items": revisions, "count": len(revisions)}
+				}
+
+				// --- Lineage ---
+				lineage, err := h.db.GetDecisionLineage(gctx, decID, orgID, 20)
+				if err != nil {
+					if !isNotFoundError(err) {
+						h.logger.Warn("enrichment: failed to get lineage",
+							"decision_id", decID, "error", err)
+					}
+					entry["lineage"] = storage.DecisionLineage{DecisionID: decID}
+				} else {
+					entry["lineage"] = lineage
+				}
+
+				// --- Conflicts ---
+				conflicts, err := h.db.ListConflicts(gctx, orgID, storage.ConflictFilters{DecisionID: &decID}, 50, 0)
+				if err != nil {
+					if !isNotFoundError(err) {
+						h.logger.Warn("enrichment: failed to get conflicts",
+							"decision_id", decID, "error", err)
+					}
+					entry["conflicts"] = map[string]any{"items": []any{}, "count": 0}
+				} else {
+					conflicts, _ = filterConflictsByAccess(gctx, h.db, claims, conflicts, h.grantCache)
+					entry["conflicts"] = map[string]any{"items": conflicts, "count": len(conflicts)}
+				}
+
+				// --- Integrity ---
+				if d.ContentHash == "" {
+					entry["integrity"] = map[string]any{"status": "no_hash"}
+				} else {
+					valid := integrity.VerifyContentHash(d.ContentHash, d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
+					status := "tampered"
+					if valid {
+						status = "verified"
+					}
+					entry["integrity"] = map[string]any{"status": status, "content_hash": d.ContentHash}
+				}
+
+				mu.Lock()
+				enrichments[decID.String()] = entry
+				mu.Unlock()
+				return nil
+			})
+		}
+
+		// Errors are logged per-decision above; the group itself never returns
+		// a non-nil error, but we call Wait to ensure all goroutines complete.
+		_ = g.Wait()
+	}
+
 	resp := map[string]any{
 		"run":       run,
 		"events":    events,
@@ -292,6 +374,9 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if truncated {
 		resp["truncated"] = true
+	}
+	if enrichments != nil {
+		resp["decision_enrichments"] = enrichments
 	}
 	writeJSON(w, r, http.StatusOK, resp)
 }
