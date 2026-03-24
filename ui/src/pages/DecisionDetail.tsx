@@ -125,8 +125,8 @@ function IntegrityBadge({ enrichments }: { enrichments?: DecisionEnrichments }) 
 
 function RevisionChain({ enrichments }: { enrichments?: DecisionEnrichments }) {
   if (!enrichments) return null;
-  const { items, count } = enrichments.revisions;
-  if (count <= 1) return null;
+  const { items, count, degraded } = enrichments.revisions;
+  if (count <= 1 && !degraded) return null;
 
   return (
     <Card>
@@ -137,6 +137,12 @@ function RevisionChain({ enrichments }: { enrichments?: DecisionEnrichments }) {
         </CardTitle>
       </CardHeader>
       <CardContent>
+        {degraded && (
+          <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1 mb-3">
+            <AlertTriangle className="h-3 w-3" />
+            Revision data may be incomplete due to an authorization error.
+          </p>
+        )}
         <div className="relative space-y-3 pl-6 before:absolute before:left-[11px] before:top-2 before:h-[calc(100%-16px)] before:w-px before:bg-gradient-to-b before:from-primary/60 before:to-border">
           {items.map((rev: Decision, idx: number) => (
             <div key={rev.id} className="relative">
@@ -185,8 +191,8 @@ const conflictStatusVariant: Record<string, "warning" | "secondary" | "success" 
 
 function DecisionConflicts({ decisionId, enrichments }: { decisionId: string; enrichments?: DecisionEnrichments }) {
   if (!enrichments) return null;
-  const { items, count } = enrichments.conflicts;
-  if (count === 0) return null;
+  const { items, count, has_more, degraded } = enrichments.conflicts;
+  if (count === 0 && !degraded) return null;
 
   return (
     <Card>
@@ -197,6 +203,12 @@ function DecisionConflicts({ decisionId, enrichments }: { decisionId: string; en
         </CardTitle>
       </CardHeader>
       <CardContent>
+        {degraded && (
+          <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1 mb-3">
+            <AlertTriangle className="h-3 w-3" />
+            Conflict data may be incomplete due to an authorization error.
+          </p>
+        )}
         <div className="space-y-3">
           {items.map((c: DecisionConflict) => {
             const isA = c.decision_a_id === decisionId;
@@ -242,6 +254,11 @@ function DecisionConflicts({ decisionId, enrichments }: { decisionId: string; en
               </div>
             );
           })}
+          {has_more && (
+            <p className="text-xs text-muted-foreground italic text-center pt-2">
+              More conflicts exist than are shown here.
+            </p>
+          )}
         </div>
       </CardContent>
     </Card>
@@ -593,6 +610,14 @@ export default function DecisionDetail() {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* Enrichment truncation warning */}
+      {run.truncated_enrichments && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950 p-3 flex items-center gap-2 text-sm text-amber-700 dark:text-amber-300">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          Enrichments were computed for the first {run.enriched_count} of {run.decisions?.length} decisions.
+        </div>
       )}
 
       {/* Decisions */}

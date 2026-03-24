@@ -441,6 +441,17 @@ paths:
         Requires `reader` role or higher.
       parameters:
         - $ref: "#/components/parameters/RunIDPath"
+        - name: include
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [enrichments]
+          description: |
+            Set to `enrichments` to include revision chains, lineage,
+            conflicts, and integrity verification for each decision.
+            Enrichments are capped at 200 decisions; when exceeded,
+            `truncated_enrichments` and `enriched_count` are set.
       responses:
         "200":
           description: Run details with events and decisions.
@@ -3674,6 +3685,84 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Decision"
+        decision_enrichments:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/DecisionEnrichment"
+          description: |
+            Keyed by decision ID. Present only when `?include=enrichments`
+            is set. Each entry contains revisions, lineage, conflicts,
+            and integrity verification for the decision.
+        truncated:
+          type: boolean
+          description: True when any response section was truncated.
+        truncated_events:
+          type: boolean
+        truncated_decisions:
+          type: boolean
+        total_decisions:
+          type: integer
+          description: Total decision count when truncated_decisions is true.
+        truncated_enrichments:
+          type: boolean
+          description: True when enrichments were capped at 200 decisions.
+        enriched_count:
+          type: integer
+          description: Number of decisions that received enrichments when truncated.
+
+    DecisionEnrichment:
+      type: object
+      required: [revisions, lineage, conflicts, integrity]
+      properties:
+        revisions:
+          $ref: "#/components/schemas/EnrichmentRevisions"
+        lineage:
+          $ref: "#/components/schemas/DecisionLineage"
+        conflicts:
+          $ref: "#/components/schemas/EnrichmentConflicts"
+        integrity:
+          $ref: "#/components/schemas/IntegrityStatus"
+
+    EnrichmentRevisions:
+      type: object
+      required: [items, count]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Decision"
+        count:
+          type: integer
+        degraded:
+          type: boolean
+          description: True when revision data could not be fully retrieved due to an authorization error.
+
+    EnrichmentConflicts:
+      type: object
+      required: [items, count, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DecisionConflict"
+        count:
+          type: integer
+        has_more:
+          type: boolean
+          description: True when more conflicts exist than the 50 returned.
+        degraded:
+          type: boolean
+          description: True when conflict data could not be fully retrieved due to an authorization error.
+
+    IntegrityStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [verified, tampered, no_hash]
+        content_hash:
+          type: string
 
     QueryResponse:
       type: object

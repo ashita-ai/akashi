@@ -182,12 +182,18 @@ export async function getRun(runId: string, opts?: { includeEnrichments?: boolea
     decisions: Decision[] | null;
     events: AgentEvent[] | null;
     decision_enrichments?: Record<string, DecisionEnrichments>;
+    truncated?: boolean;
+    truncated_enrichments?: boolean;
+    enriched_count?: number;
   }>(`/v1/runs/${runId}${qs}`);
   return {
     ...result.run,
     decisions: result.decisions ?? undefined,
     events: result.events ?? undefined,
     decision_enrichments: result.decision_enrichments ?? undefined,
+    truncated: result.truncated,
+    truncated_enrichments: result.truncated_enrichments,
+    enriched_count: result.enriched_count,
   };
 }
 

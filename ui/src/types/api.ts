@@ -145,6 +145,9 @@ export interface AgentRun {
   events?: AgentEvent[];
   decisions?: Decision[];
   decision_enrichments?: Record<string, DecisionEnrichments>;
+  truncated?: boolean;
+  truncated_enrichments?: boolean;
+  enriched_count?: number;
 }
 
 // Event
@@ -485,10 +488,23 @@ export interface IntegrityStatus {
   content_hash?: string;
 }
 
+export interface EnrichmentRevisions {
+  items: Decision[];
+  count: number;
+  degraded?: boolean;
+}
+
+export interface EnrichmentConflicts {
+  items: DecisionConflict[];
+  count: number;
+  has_more: boolean;
+  degraded?: boolean;
+}
+
 export interface DecisionEnrichments {
-  revisions: { items: Decision[]; count: number };
+  revisions: EnrichmentRevisions;
   lineage: DecisionLineage;
-  conflicts: { items: DecisionConflict[]; count: number };
+  conflicts: EnrichmentConflicts;
   integrity: IntegrityStatus;
 }
 
