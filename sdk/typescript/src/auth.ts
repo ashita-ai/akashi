@@ -4,6 +4,7 @@ export class TokenManager {
   private token = "";
   private expiresAt = 0;
   private readonly refreshMarginMs = 30_000;
+  private refreshPromise: Promise<void> | null = null;
 
   constructor(
     private readonly baseUrl: string,
@@ -12,12 +13,19 @@ export class TokenManager {
     private readonly timeoutMs: number,
   ) {}
 
-  /** Return a valid token, refreshing if necessary. */
+  /** Return a valid token, refreshing if necessary.
+   *  Concurrent callers share a single in-flight refresh to avoid redundant
+   *  token requests. */
   async getToken(signal?: AbortSignal): Promise<string> {
     if (this.token && Date.now() < this.expiresAt - this.refreshMarginMs) {
       return this.token;
     }
-    await this.refresh(signal);
+    if (!this.refreshPromise) {
+      this.refreshPromise = this.refresh(signal).finally(() => {
+        this.refreshPromise = null;
+      });
+    }
+    await this.refreshPromise;
     return this.token;
   }
 

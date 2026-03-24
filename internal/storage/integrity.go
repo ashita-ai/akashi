@@ -60,6 +60,32 @@ func (db *DB) CreateIntegrityProof(ctx context.Context, p IntegrityProof) error 
 	return nil
 }
 
+// GetRecentIntegrityProofs returns the N most recent integrity proofs for an org,
+// ordered newest-first. Used by the background integrity audit to verify chain linkage.
+func (db *DB) GetRecentIntegrityProofs(ctx context.Context, orgID uuid.UUID, limit int) ([]IntegrityProof, error) {
+	rows, err := db.pool.Query(ctx,
+		`SELECT id, org_id, batch_start, batch_end, decision_count, root_hash, previous_root, created_at
+		 FROM integrity_proofs
+		 WHERE org_id = $1
+		 ORDER BY created_at DESC
+		 LIMIT $2`, orgID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("storage: get recent integrity proofs: %w", err)
+	}
+	defer rows.Close()
+
+	var proofs []IntegrityProof
+	for rows.Next() {
+		var p IntegrityProof
+		if err := rows.Scan(&p.ID, &p.OrgID, &p.BatchStart, &p.BatchEnd, &p.DecisionCount, &p.RootHash, &p.PreviousRoot, &p.CreatedAt); err != nil {
+			return nil, fmt.Errorf("storage: scan integrity proof: %w", err)
+		}
+		proofs = append(proofs, p)
+	}
+	return proofs, rows.Err()
+}
+
 // GetDecisionHashesForBatch returns content_hash values for decisions in an org
 // created between since (exclusive) and until (inclusive), ordered lexicographically.
 //

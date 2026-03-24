@@ -520,6 +520,11 @@ func TestValidate_NegativeTimeouts(t *testing.T) {
 			errStr: "AKASHI_SHUTDOWN_HTTP_TIMEOUT",
 		},
 		{
+			name:   "negative shutdown async drain timeout",
+			setter: func(c *Config) { c.ShutdownAsyncDrainTimeout = -1 * time.Second },
+			errStr: "AKASHI_SHUTDOWN_ASYNC_DRAIN_TIMEOUT",
+		},
+		{
 			name:   "negative shutdown buffer drain timeout",
 			setter: func(c *Config) { c.ShutdownBufferDrainTimeout = -1 * time.Second },
 			errStr: "AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT",
@@ -685,6 +690,11 @@ func TestValidate_ZeroIntervals(t *testing.T) {
 			setter: func(c *Config) { c.IntegrityProofInterval = 0 },
 			errStr: "AKASHI_INTEGRITY_PROOF_INTERVAL",
 		},
+		{
+			name:   "zero integrity audit interval",
+			setter: func(c *Config) { c.IntegrityAuditInterval = 0 },
+			errStr: "AKASHI_INTEGRITY_AUDIT_INTERVAL",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -747,11 +757,13 @@ func validBaseConfig() Config {
 		EventBufferSize:            1000,
 		EventFlushTimeout:          100 * time.Millisecond,
 		ShutdownHTTPTimeout:        10 * time.Second,
+		ShutdownAsyncDrainTimeout:  30 * time.Second,
 		ShutdownBufferDrainTimeout: 30 * time.Second,
 		ShutdownOutboxDrainTimeout: 0,
 		OutboxPollInterval:         1 * time.Second,
 		ConflictRefreshInterval:    30 * time.Second,
 		IntegrityProofInterval:     5 * time.Minute,
+		IntegrityAuditInterval:     15 * time.Minute,
 		IdempotencyCleanupInterval: 1 * time.Hour,
 		IdempotencyCompletedTTL:    7 * 24 * time.Hour,
 		IdempotencyAbandonedTTL:    24 * time.Hour,

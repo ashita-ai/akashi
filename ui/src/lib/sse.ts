@@ -11,7 +11,7 @@ const MAX_RETRY_MS = 30000;
  * EventSource doesn't support custom Authorization headers,
  * so we use the streaming fetch API instead.
  */
-export function useSSE(token: string | null) {
+export function useSSE(token: string | null, onAuthError?: () => void) {
   const [status, setStatus] = useState<SSEStatus>("disconnected");
   const queryClient = useQueryClient();
   const abortRef = useRef<AbortController | null>(null);
@@ -31,6 +31,12 @@ export function useSSE(token: string | null) {
         headers: { Authorization: `Bearer ${token}` },
         signal: controller.signal,
       });
+
+      if (res.status === 401) {
+        setStatus("disconnected");
+        onAuthError?.();
+        return;
+      }
 
       if (!res.ok || !res.body) {
         throw new Error(`SSE connect failed: ${res.status}`);
@@ -72,7 +78,7 @@ export function useSSE(token: string | null) {
         setTimeout(() => connect(), delay);
       }
     }
-  }, [token, queryClient]);
+  }, [token, queryClient, onAuthError]);
 
   useEffect(() => {
     connect();
