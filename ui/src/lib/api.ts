@@ -175,13 +175,14 @@ export async function getRecentDecisions(params?: {
 }
 
 // Runs
-export async function getRun(runId: string): Promise<AgentRun> {
+export async function getRun(runId: string, opts?: { includeEnrichments?: boolean }): Promise<AgentRun> {
+  const qs = opts?.includeEnrichments ? "?include=enrichments" : "";
   const result = await request<{
     run: AgentRun;
     decisions: Decision[] | null;
     events: AgentEvent[] | null;
     decision_enrichments?: Record<string, DecisionEnrichments>;
-  }>(`/v1/runs/${runId}?include=enrichments`);
+  }>(`/v1/runs/${runId}${qs}`);
   return {
     ...result.run,
     decisions: result.decisions ?? undefined,

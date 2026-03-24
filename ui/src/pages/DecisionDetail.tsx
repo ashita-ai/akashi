@@ -471,7 +471,7 @@ export default function DecisionDetail() {
 
   const { data: run, isPending, error } = useQuery({
     queryKey: ["run", runId],
-    queryFn: () => getRun(runId!),
+    queryFn: () => getRun(runId!, { includeEnrichments: true }),
     enabled: !!runId,
   });
 

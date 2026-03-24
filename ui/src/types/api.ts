@@ -481,7 +481,6 @@ export interface DecisionLineage {
 
 // Decision enrichments (returned by GET /v1/runs/{run_id}?include=enrichments)
 export interface IntegrityStatus {
-  decision_id: string;
   status: "verified" | "tampered" | "no_hash";
   content_hash?: string;
 }

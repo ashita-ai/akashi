@@ -281,16 +281,29 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 
 	// When ?include=enrichments is set, concurrently fetch revisions, lineage,
 	// conflicts, and integrity status for every decision in the run.
+	//
+	// Cap the number of enriched decisions to avoid unbounded fan-out: each
+	// decision triggers 4 DB round-trips (revisions via recursive CTE, lineage,
+	// conflicts, integrity recompute). Without a cap, a 10K-decision run would
+	// issue ~40K queries from a single GET.
+	const maxEnrichedDecisions = 200
+
 	var enrichments map[string]map[string]any
+	var enrichmentsTruncated bool
 	if r.URL.Query().Get("include") == "enrichments" && len(decisions) > 0 {
-		enrichments = make(map[string]map[string]any, len(decisions))
+		toEnrich := decisions
+		if len(toEnrich) > maxEnrichedDecisions {
+			toEnrich = toEnrich[:maxEnrichedDecisions]
+			enrichmentsTruncated = true
+		}
+
+		enrichments = make(map[string]map[string]any, len(toEnrich))
 		var mu sync.Mutex
 
 		g, gctx := errgroup.WithContext(r.Context())
 		g.SetLimit(8)
 
-		for _, d := range decisions {
-			d := d // capture loop variable
+		for _, d := range toEnrich {
 			g.Go(func() error {
 				decID := d.ID
 				entry := make(map[string]any, 4)
@@ -304,8 +317,14 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 					}
 					entry["revisions"] = map[string]any{"items": []any{}, "count": 0}
 				} else {
-					revisions, _ = filterDecisionsByAccess(gctx, h.db, claims, revisions, h.grantCache)
-					entry["revisions"] = map[string]any{"items": revisions, "count": len(revisions)}
+					revisions, filterErr := filterDecisionsByAccess(gctx, h.db, claims, revisions, h.grantCache)
+					if filterErr != nil {
+						h.logger.Warn("enrichment: access filter failed for revisions",
+							"decision_id", decID, "error", filterErr)
+						entry["revisions"] = map[string]any{"items": []any{}, "count": 0, "degraded": true}
+					} else {
+						entry["revisions"] = map[string]any{"items": revisions, "count": len(revisions)}
+					}
 				}
 
 				// --- Lineage ---
@@ -329,8 +348,14 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 					}
 					entry["conflicts"] = map[string]any{"items": []any{}, "count": 0}
 				} else {
-					conflicts, _ = filterConflictsByAccess(gctx, h.db, claims, conflicts, h.grantCache)
-					entry["conflicts"] = map[string]any{"items": conflicts, "count": len(conflicts)}
+					conflicts, filterErr := filterConflictsByAccess(gctx, h.db, claims, conflicts, h.grantCache)
+					if filterErr != nil {
+						h.logger.Warn("enrichment: access filter failed for conflicts",
+							"decision_id", decID, "error", filterErr)
+						entry["conflicts"] = map[string]any{"items": []any{}, "count": 0, "degraded": true}
+					} else {
+						entry["conflicts"] = map[string]any{"items": conflicts, "count": len(conflicts)}
+					}
 				}
 
 				// --- Integrity ---
@@ -372,11 +397,16 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 		resp["total_decisions"] = total
 		truncated = true
 	}
-	if truncated {
-		resp["truncated"] = true
-	}
 	if enrichments != nil {
 		resp["decision_enrichments"] = enrichments
+		if enrichmentsTruncated {
+			resp["truncated_enrichments"] = true
+			resp["enriched_count"] = maxEnrichedDecisions
+			truncated = true
+		}
+	}
+	if truncated {
+		resp["truncated"] = true
 	}
 	writeJSON(w, r, http.StatusOK, resp)
 }
