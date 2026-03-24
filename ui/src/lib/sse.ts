@@ -35,6 +35,7 @@ export function useSSE(token: string | null, onAuthError?: () => void) {
       if (res.status === 401) {
         setStatus("disconnected");
         onAuthError?.();
+        controller.abort();
         return;
       }
 

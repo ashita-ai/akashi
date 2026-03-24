@@ -16,12 +16,12 @@ export class TokenManager {
   /** Return a valid token, refreshing if necessary.
    *  Concurrent callers share a single in-flight refresh to avoid redundant
    *  token requests. */
-  async getToken(signal?: AbortSignal): Promise<string> {
+  async getToken(): Promise<string> {
     if (this.token && Date.now() < this.expiresAt - this.refreshMarginMs) {
       return this.token;
     }
     if (!this.refreshPromise) {
-      this.refreshPromise = this.refresh(signal).finally(() => {
+      this.refreshPromise = this.refresh().finally(() => {
         this.refreshPromise = null;
       });
     }
@@ -29,7 +29,7 @@ export class TokenManager {
     return this.token;
   }
 
-  private async refresh(signal?: AbortSignal): Promise<void> {
+  private async refresh(): Promise<void> {
     const resp = await fetch(`${this.baseUrl}/auth/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -37,7 +37,7 @@ export class TokenManager {
         agent_id: this.agentId,
         api_key: this.apiKey,
       }),
-      signal: signal ?? AbortSignal.timeout(this.timeoutMs),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
 
     if (!resp.ok) {

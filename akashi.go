@@ -745,12 +745,19 @@ func (a *App) integrityAuditLoop(ctx context.Context) {
 	}
 }
 
-// auditIntegrityProofs picks a random org and verifies its recent Merkle proofs:
-// (1) recomputes each root from decision content hashes, and
-// (2) checks chain linkage via previous_root.
+// auditIntegrityProofs picks one org per tick (sampling-based, not exhaustive)
+// and verifies its most recent Merkle proofs by:
+// (1) recomputing each root from decision content hashes, and
+// (2) checking chain linkage via previous_root.
+// Coverage is probabilistic: with N orgs, each org is audited roughly every
+// N * IntegrityAuditInterval. Only the 10 newest proofs per org are checked.
 func (a *App) auditIntegrityProofs(ctx context.Context) {
 	orgIDs, err := a.db.ListOrganizationIDs(ctx)
-	if err != nil || len(orgIDs) == 0 {
+	if err != nil {
+		a.logger.Warn("integrity audit: list orgs failed", "error", err)
+		return
+	}
+	if len(orgIDs) == 0 {
 		return
 	}
 
@@ -791,13 +798,18 @@ func (a *App) auditIntegrityProofs(ctx context.Context) {
 		// next-older proof's root_hash (proofs are newest-first).
 		if i+1 < len(proofs) {
 			older := proofs[i+1]
-			if p.PreviousRoot != nil && *p.PreviousRoot != older.RootHash {
+			if p.PreviousRoot == nil {
+				a.logger.Warn("integrity audit: proof has nil previous_root but older proof exists — chain may be broken",
+					"org_id", orgID, "proof_id", p.ID, "older_proof_id", older.ID)
+			} else if *p.PreviousRoot != older.RootHash {
 				a.logger.Error("INTEGRITY VIOLATION: chain linkage broken — previous_root does not match prior proof",
 					"org_id", orgID, "proof_id", p.ID,
 					"expected_previous", older.RootHash, "actual_previous", *p.PreviousRoot)
 			}
 		}
 	}
+
+	a.logger.Info("integrity audit completed", "org_id", orgID, "proofs_checked", len(proofs))
 }
 
 func (a *App) idempotencyCleanupLoop(ctx context.Context) {
