@@ -3405,6 +3405,69 @@ func TestHandleResolve_GroupID_NotFound(t *testing.T) {
 	assert.Contains(t, parseToolText(t, result), "conflict not found")
 }
 
+func TestHandleResolve_GroupID_WinningAgentMismatch(t *testing.T) {
+	ctx := adminCtx()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "mismatch-a-" + suffix
+	agentB := "mismatch-b-" + suffix
+	agentC := "mismatch-c-" + suffix // unrelated agent
+	decType := "mismatch-type-" + suffix
+
+	// Create a conflict between agents A and B.
+	decAID := mustTrace(t, agentA, decType, "approach A: "+suffix, 0.8)
+	decBID := mustTrace(t, agentB, decType, "approach B: "+suffix, 0.7)
+	// Create a decision by agent C — not a participant in the conflict.
+	decCID := mustTrace(t, agentC, decType, "unrelated approach: "+suffix, 0.9)
+
+	parsedA, _ := uuid.Parse(decAID)
+	parsedB, _ := uuid.Parse(decBID)
+	_ = decCID
+
+	topicSim := 0.85
+	outcomDiv := 0.9
+	sig := 0.87
+
+	_, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: parsedA, DecisionBID: parsedB,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: decType, DecisionTypeB: decType, DecisionType: decType,
+		OutcomeA: "approach A", OutcomeB: "approach B",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomDiv, Significance: &sig,
+		ScoringMethod: "text", Status: "open",
+	})
+	require.NoError(t, err)
+
+	// Find the group ID.
+	openStatus := "open"
+	conflicts, err := testDB.ListConflicts(ctx, uuid.Nil, storage.ConflictFilters{
+		Status:  &openStatus,
+		AgentID: &agentA,
+	}, 10, 0)
+	require.NoError(t, err)
+	var groupID uuid.UUID
+	for _, c := range conflicts {
+		if c.AgentA == agentA || c.AgentB == agentA {
+			if c.GroupID != nil {
+				groupID = *c.GroupID
+				break
+			}
+		}
+	}
+	require.NotEqual(t, uuid.Nil, groupID, "should find group for the conflict")
+
+	// Try resolving the group with agent C's decision as winner — should fail.
+	result, err := testServer.handleResolve(ctx, resolveRequest(map[string]any{
+		"conflict_id":         groupID.String(),
+		"status":              "resolved",
+		"winning_decision_id": decCID,
+		"resolution_note":     "this should fail",
+	}))
+	require.NoError(t, err)
+	require.True(t, result.IsError, "should reject winning_decision_id from non-participant agent")
+	assert.Contains(t, parseToolText(t, result), "not a participant")
+}
+
 func TestComputeMissingFields_ArchitectureReasoningWeightLabel(t *testing.T) {
 	// Architecture profile: alternatives and evidence expected → plain 25%.
 	tips := computeMissingFields("architecture", "chose Redis", 0.7, nil, nil, nil, false, true, true, quality.DefaultStandardDecisionTypes)

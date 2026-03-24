@@ -1563,7 +1563,8 @@ func (s *Server) resolveSingleConflict(
 
 // resolveGroup atomically resolves all open conflicts in a conflict group
 // by delegating to the storage layer's ResolveConflictGroup, which performs
-// the entire operation in a single transaction with one audit entry.
+// the entire operation — including false_positive labeling — in a single
+// transaction with one audit entry.
 func (s *Server) resolveGroup(
 	ctx context.Context,
 	request mcplib.CallToolRequest,
@@ -1588,6 +1589,17 @@ func (s *Server) resolveGroup(
 		winningAgent = &dec.AgentID
 	}
 
+	// Compute false_positive label so the storage layer can insert it
+	// atomically in the same transaction as the resolution.
+	var fpLabel *string
+	if status == "false_positive" {
+		label := "unrelated_false_positive"
+		if fp := request.GetString("false_positive_label", ""); fp == "related_not_contradicting" {
+			label = fp
+		}
+		fpLabel = &label
+	}
+
 	audit := storage.MutationAuditEntry{
 		OrgID:        orgID,
 		ActorAgentID: resolvedBy,
@@ -1599,17 +1611,15 @@ func (s *Server) resolveGroup(
 		Metadata:     map[string]any{"new_status": status, "resolved_by": resolvedBy},
 	}
 
-	affected, err := s.db.ResolveConflictGroup(ctx, groupID, orgID, status, resolvedBy, resolutionNote, winningAgent, audit)
+	affected, err := s.db.ResolveConflictGroup(ctx, groupID, orgID, status, resolvedBy, resolutionNote, winningAgent, fpLabel, audit)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			return errorResult("conflict not found (no scored_conflict or conflict_group matches this ID)"), nil
 		}
+		if errors.Is(err, storage.ErrWinningAgentNotInGroup) {
+			return errorResult("winning_decision_id belongs to an agent that is not a participant in this conflict group"), nil
+		}
 		return errorResult(fmt.Sprintf("failed to resolve conflict group: %v", err)), nil
-	}
-
-	// Auto-label false positives for detector training, matching the HTTP handler.
-	if status == "false_positive" && affected > 0 {
-		s.labelGroupFalsePositives(ctx, request, groupID, orgID, resolvedBy)
 	}
 
 	if affected > 0 {
@@ -1621,6 +1631,7 @@ func (s *Server) resolveGroup(
 
 	resultData, _ := json.MarshalIndent(map[string]any{
 		"group_id":       groupID,
+		"old_status":     "open",
 		"new_status":     status,
 		"resolved_by":    resolvedBy,
 		"resolved_count": affected,
@@ -1631,37 +1642,6 @@ func (s *Server) resolveGroup(
 			mcplib.TextContent{Type: "text", Text: string(resultData)},
 		},
 	}, nil
-}
-
-// labelGroupFalsePositives labels all false_positive conflicts in a group for
-// detector training. Called after ResolveConflictGroup commits so the conflicts
-// are already in false_positive status.
-func (s *Server) labelGroupFalsePositives(ctx context.Context, request mcplib.CallToolRequest, groupID, orgID uuid.UUID, resolvedBy string) {
-	label := "unrelated_false_positive"
-	if fpLabel := request.GetString("false_positive_label", ""); fpLabel == "related_not_contradicting" {
-		label = fpLabel
-	}
-	fpStatus := "false_positive"
-	fpConflicts, err := s.db.ListConflicts(ctx, orgID, storage.ConflictFilters{
-		Status:  &fpStatus,
-		GroupID: &groupID,
-	}, 1000, 0)
-	if err != nil {
-		s.logger.Warn("failed to list false_positive conflicts for auto-labeling", "group_id", groupID, "error", err)
-		return
-	}
-	for _, c := range fpConflicts {
-		if labelErr := s.db.UpsertConflictLabel(ctx, storage.ConflictLabel{
-			ScoredConflictID: c.ID,
-			OrgID:            orgID,
-			Label:            label,
-			LabeledBy:        resolvedBy,
-			LabeledAt:        time.Now(),
-		}); labelErr != nil {
-			s.logger.Warn("failed to auto-label false_positive conflict in group",
-				"conflict_id", c.ID, "group_id", groupID, "error", labelErr)
-		}
-	}
 }
 
 // labelFalsePositive auto-labels a conflict as a false positive for detector training.

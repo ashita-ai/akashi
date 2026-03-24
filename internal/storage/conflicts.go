@@ -5,6 +5,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -720,13 +721,6 @@ func (db *DB) listOpenConflictsByGroupIDs(ctx context.Context, orgID uuid.UUID, 
 	return scanConflictRows(rows)
 }
 
-// ListOpenConflictsByGroupID returns all open scored_conflicts belonging to a
-// single conflict group. Returns nil, nil if the group has no open conflicts
-// (or does not exist).
-func (db *DB) ListOpenConflictsByGroupID(ctx context.Context, orgID, groupID uuid.UUID) ([]model.DecisionConflict, error) {
-	return db.listOpenConflictsByGroupIDs(ctx, orgID, []uuid.UUID{groupID})
-}
-
 // conflictGroupWhere builds the WHERE clause suffix and args for ConflictGroupFilters.
 // argOffset is the next positional parameter index.
 func conflictGroupWhere(f ConflictGroupFilters, argOffset int) (string, []any) {
@@ -1099,16 +1093,22 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 	return groups, nil
 }
 
-// ResolveConflictGroup batch-resolves all open conflicts in a
-// conflict group. When winningAgent is non-nil, each conflict's winning_decision_id
-// is set to the decision from that agent (decision_a_id when agent_a matches,
-// decision_b_id when agent_b matches). Returns the number of conflicts updated.
+// ResolveConflictGroup batch-resolves all open conflicts in a conflict group.
+// When winningAgent is non-nil, each conflict's winning_decision_id is set to
+// the decision from that agent (decision_a_id when agent_a matches,
+// decision_b_id when agent_b matches). Returns ErrWinningAgentNotInGroup if
+// winningAgent does not match agent_a or agent_b in the group.
+//
+// When fpLabel is non-nil (status must be "false_positive"), ground truth
+// labels are inserted atomically in the same transaction — ensuring labels
+// are never lost if the process crashes after resolution.
 func (db *DB) ResolveConflictGroup(
 	ctx context.Context,
 	groupID, orgID uuid.UUID,
 	status, resolvedBy string,
 	resolutionNote *string,
 	winningAgent *string,
+	fpLabel *string,
 	audit MutationAuditEntry,
 ) (int, error) {
 	tx, err := db.pool.Begin(ctx)
@@ -1117,36 +1117,48 @@ func (db *DB) ResolveConflictGroup(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Verify the group exists and belongs to this org.
-	var exists bool
+	// Verify the group exists and belongs to this org. Fetch the agent pair
+	// so we can validate the winning agent if provided.
+	var agentA, agentB string
 	if err := tx.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM conflict_groups WHERE id = $1 AND org_id = $2)`,
+		`SELECT agent_a, agent_b FROM conflict_groups WHERE id = $1 AND org_id = $2`,
 		groupID, orgID,
-	).Scan(&exists); err != nil {
+	).Scan(&agentA, &agentB); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, fmt.Errorf("storage: conflict group: %w", ErrNotFound)
+		}
 		return 0, fmt.Errorf("storage: check conflict group: %w", err)
 	}
-	if !exists {
-		return 0, fmt.Errorf("storage: conflict group: %w", ErrNotFound)
+
+	// Validate winning agent matches one of the group's participants.
+	if winningAgent != nil && *winningAgent != agentA && *winningAgent != agentB {
+		return 0, fmt.Errorf("storage: agent %q not in group (agent_a=%q, agent_b=%q): %w",
+			*winningAgent, agentA, agentB, ErrWinningAgentNotInGroup)
 	}
 
 	// Build the UPDATE. When winning_agent is set, derive winning_decision_id
-	// per-row from the agent columns. Only "resolved" sets a winner;
-	// "false_positive" intentionally leaves winning_decision_id NULL.
+	// per-row by JOINing the decisions table to check actual agent ownership.
+	// We cannot rely on agent_a corresponding to decision_a_id because
+	// InsertScoredConflict canonicalizes decisions by UUID bytes and agents
+	// by string sort independently — breaking positional correspondence.
 	var tag pgconn.CommandTag
 	if winningAgent != nil && status == "resolved" {
 		tag, err = tx.Exec(ctx,
-			`UPDATE scored_conflicts
+			`UPDATE scored_conflicts sc
 			 SET status = $1,
 			     resolved_by = $2,
 			     resolved_at = now(),
 			     resolution_note = $3,
 			     winning_decision_id = CASE
-			         WHEN agent_a = $4 THEN decision_a_id
-			         WHEN agent_b = $4 THEN decision_b_id
+			         WHEN da.agent_id = $4 THEN sc.decision_a_id
+			         WHEN db.agent_id = $4 THEN sc.decision_b_id
 			         ELSE NULL
 			     END
-			 WHERE group_id = $5 AND org_id = $6
-			   AND status = 'open'`,
+			 FROM decisions da, decisions db
+			 WHERE da.id = sc.decision_a_id AND da.valid_to IS NULL
+			   AND db.id = sc.decision_b_id AND db.valid_to IS NULL
+			   AND sc.group_id = $5 AND sc.org_id = $6
+			   AND sc.status = 'open'`,
 			status, resolvedBy, resolutionNote, *winningAgent, groupID, orgID)
 	} else {
 		tag, err = tx.Exec(ctx,
@@ -1165,10 +1177,33 @@ func (db *DB) ResolveConflictGroup(
 
 	affected := int(tag.RowsAffected())
 
+	// Insert false_positive labels atomically in the same transaction.
+	// The bulk INSERT...SELECT matches all conflicts we just updated,
+	// ensuring no labels are lost if the process crashes after commit.
+	if fpLabel != nil && status == "false_positive" && affected > 0 {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
+			 SELECT id, org_id, $1, $2, now()
+			 FROM scored_conflicts
+			 WHERE group_id = $3 AND org_id = $4 AND status = 'false_positive'
+			 ON CONFLICT (scored_conflict_id)
+			 DO UPDATE SET label = EXCLUDED.label,
+			               labeled_by = EXCLUDED.labeled_by,
+			               labeled_at = EXCLUDED.labeled_at
+			 WHERE conflict_labels.org_id = EXCLUDED.org_id`,
+			*fpLabel, resolvedBy, groupID, orgID,
+		); err != nil {
+			return 0, fmt.Errorf("storage: label false positives in resolve group tx: %w", err)
+		}
+	}
+
 	audit.BeforeData = map[string]any{"group_id": groupID.String(), "open_count": affected}
 	afterData := map[string]any{"status": status, "resolved_by": resolvedBy, "resolved_count": affected}
 	if winningAgent != nil {
 		afterData["winning_agent"] = *winningAgent
+	}
+	if fpLabel != nil {
+		afterData["fp_label"] = *fpLabel
 	}
 	audit.AfterData = afterData
 	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {

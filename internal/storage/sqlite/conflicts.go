@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -345,32 +346,6 @@ func (l *LiteDB) GetConflict(ctx context.Context, id, orgID uuid.UUID) (*model.D
 	return &conflicts[0], nil
 }
 
-// ListOpenConflictsByGroupID returns all open scored_conflicts for a group.
-func (l *LiteDB) ListOpenConflictsByGroupID(ctx context.Context, orgID, groupID uuid.UUID) ([]model.DecisionConflict, error) {
-	q := `SELECT sc.id, sc.conflict_kind, sc.decision_a_id, sc.decision_b_id, sc.org_id,
-		        sc.agent_a, sc.agent_b, sc.decision_type_a, sc.decision_type_b,
-		        sc.outcome_a, sc.outcome_b,
-		        sc.topic_similarity, sc.outcome_divergence, sc.significance, sc.scoring_method,
-		        sc.explanation, sc.detected_at,
-		        sc.category, sc.severity, sc.status,
-		        sc.resolved_by, sc.resolved_at, sc.resolution_note,
-		        sc.relationship, sc.confidence_weight, sc.temporal_decay,
-		        sc.resolution_decision_id, sc.winning_decision_id, sc.group_id,
-		        da.run_id, db.run_id, da.confidence, db.confidence,
-		        da.reasoning, db.reasoning, da.valid_from, db.valid_from
-		 FROM scored_conflicts sc
-		 LEFT JOIN decisions da ON da.id = sc.decision_a_id
-		 LEFT JOIN decisions db ON db.id = sc.decision_b_id
-		 WHERE sc.group_id = ? AND sc.org_id = ? AND sc.status = 'open'
-		 ORDER BY sc.significance DESC, sc.detected_at DESC`
-	rows, err := l.db.QueryContext(ctx, q, uuidStr(groupID), uuidStr(orgID))
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: list open conflicts by group: %w", err)
-	}
-	defer rows.Close() //nolint:errcheck
-	return scanConflictRows(rows)
-}
-
 // UpdateConflictStatusWithAudit transitions a conflict to a new lifecycle state.
 func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, _ storage.MutationAuditEntry) (string, error) {
 	tx, err := l.db.BeginTx(ctx, nil)
@@ -419,35 +394,51 @@ func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uu
 }
 
 // ResolveConflictGroup atomically resolves all open conflicts in a group.
-func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningAgent *string, _ storage.MutationAuditEntry) (int, error) {
+// Validates winningAgent against the group's agent pair. When fpLabel is
+// non-nil (status must be "false_positive"), ground truth labels are inserted
+// in the same transaction.
+func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningAgent *string, fpLabel *string, _ storage.MutationAuditEntry) (int, error) {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("sqlite: begin resolve group tx: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	// Verify the group exists and belongs to this org.
-	var exists bool
+	// Verify the group exists, belongs to this org, and fetch agent pair
+	// for winning agent validation.
+	var agentA, agentB string
 	err = tx.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM conflict_groups WHERE id = ? AND org_id = ?)`,
+		`SELECT agent_a, agent_b FROM conflict_groups WHERE id = ? AND org_id = ?`,
 		uuidStr(groupID), uuidStr(orgID),
-	).Scan(&exists)
+	).Scan(&agentA, &agentB)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, fmt.Errorf("sqlite: conflict group: %w", storage.ErrNotFound)
+		}
 		return 0, fmt.Errorf("sqlite: check conflict group: %w", err)
 	}
-	if !exists {
-		return 0, fmt.Errorf("sqlite: conflict group: %w", storage.ErrNotFound)
+
+	// Validate winning agent matches one of the group's participants.
+	if winningAgent != nil && *winningAgent != agentA && *winningAgent != agentB {
+		return 0, fmt.Errorf("sqlite: agent %q not in group (agent_a=%q, agent_b=%q): %w",
+			*winningAgent, agentA, agentB, storage.ErrWinningAgentNotInGroup)
 	}
 
 	var result sql.Result
 	if winningAgent != nil && status == "resolved" {
+		// Use correlated subqueries to determine which decision belongs to
+		// the winning agent. We cannot rely on agent_a corresponding to
+		// decision_a_id because InsertScoredConflict canonicalizes decisions
+		// by UUID bytes and agents by string sort independently.
 		result, err = tx.ExecContext(ctx,
 			`UPDATE scored_conflicts
 			 SET status = ?, resolved_by = ?, resolved_at = datetime('now'),
 			     resolution_note = ?,
 			     winning_decision_id = CASE
-			         WHEN agent_a = ? THEN decision_a_id
-			         WHEN agent_b = ? THEN decision_b_id
+			         WHEN (SELECT agent_id FROM decisions WHERE id = scored_conflicts.decision_a_id) = ?
+			             THEN decision_a_id
+			         WHEN (SELECT agent_id FROM decisions WHERE id = scored_conflicts.decision_b_id) = ?
+			             THEN decision_b_id
 			         ELSE NULL
 			     END
 			 WHERE group_id = ? AND org_id = ? AND status = 'open'`,
@@ -470,6 +461,26 @@ func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.U
 	}
 
 	affected, _ := result.RowsAffected()
+
+	// Insert false_positive labels atomically in the same transaction.
+	if fpLabel != nil && status == "false_positive" && affected > 0 {
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
+			 SELECT id, org_id, ?, ?, datetime('now')
+			 FROM scored_conflicts
+			 WHERE group_id = ? AND org_id = ? AND status = 'false_positive'
+			 ON CONFLICT (scored_conflict_id)
+			 DO UPDATE SET label = excluded.label,
+			               labeled_by = excluded.labeled_by,
+			               labeled_at = excluded.labeled_at
+			 WHERE conflict_labels.org_id = excluded.org_id`,
+			*fpLabel, resolvedBy, uuidStr(groupID), uuidStr(orgID),
+		)
+		if err != nil {
+			return 0, fmt.Errorf("sqlite: label false positives in resolve group tx: %w", err)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("sqlite: commit resolve group: %w", err)
 	}

@@ -5582,7 +5582,7 @@ func TestResolveConflictGroup_WithWinner(t *testing.T) {
 	resNote := "agent B had higher confidence"
 	affected, err := testDB.ResolveConflictGroup(ctx,
 		*conflict.GroupID, uuid.Nil,
-		"resolved", "test-admin", &resNote, &agentB,
+		"resolved", "test-admin", &resNote, &agentB, nil,
 		storage.MutationAuditEntry{
 			RequestID:    uuid.New().String(),
 			OrgID:        uuid.Nil,
@@ -5667,9 +5667,10 @@ func TestResolveConflictGroup_FalsePositive(t *testing.T) {
 	require.NotNil(t, conflict.GroupID)
 
 	resNote := "not worth resolving"
+	fpLabel := "unrelated_false_positive"
 	affected, err := testDB.ResolveConflictGroup(ctx,
 		*conflict.GroupID, uuid.Nil,
-		"false_positive", "test-admin", &resNote, nil,
+		"false_positive", "test-admin", &resNote, nil, &fpLabel,
 		storage.MutationAuditEntry{
 			RequestID:    uuid.New().String(),
 			OrgID:        uuid.Nil,
@@ -5690,7 +5691,7 @@ func TestResolveConflictGroup_NotFound(t *testing.T) {
 
 	_, err := testDB.ResolveConflictGroup(ctx,
 		uuid.New(), uuid.Nil,
-		"resolved", "test-admin", nil, nil,
+		"resolved", "test-admin", nil, nil, nil,
 		storage.MutationAuditEntry{
 			RequestID:    uuid.New().String(),
 			OrgID:        uuid.Nil,
