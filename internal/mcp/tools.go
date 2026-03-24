@@ -381,9 +381,13 @@ by akashi. For example, after reviewing two contradictory decisions, you can
 declare one the winner or mark the conflict as a false positive if the
 detector was wrong.
 
-Use the conflict id from akashi_check or akashi_conflicts results. You must
-provide a status: "resolved" (with a winner) or "false_positive" (the
-detector was wrong — automatically labels the conflict for ground truth
+Use the conflict id from akashi_check or akashi_conflicts results. The id
+can be either a scored_conflict ID or a conflict_group ID — both work.
+When a group ID is provided, all open conflicts in the group are resolved
+with the same status and resolution note.
+
+You must provide a status: "resolved" (with a winner) or "false_positive"
+(the detector was wrong — automatically labels the conflict for ground truth
 tracking so the detector can be improved).
 
 When status is "resolved" and winning_decision_id is provided, the system
@@ -398,7 +402,7 @@ EXAMPLE: After a user says "go with approach A", call akashi_resolve with
 			mcplib.WithIdempotentHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 			mcplib.WithString("conflict_id",
-				mcplib.Description("UUID of the conflict to resolve"),
+				mcplib.Description("UUID of the conflict or conflict group to resolve"),
 				mcplib.Required(),
 			),
 			mcplib.WithString("status",
@@ -1453,17 +1457,6 @@ func (s *Server) handleResolve(ctx context.Context, request mcplib.CallToolReque
 		return errorResult("winning_decision_id can only be set when status is 'resolved'"), nil
 	}
 
-	// Validate winning_decision_id belongs to this conflict.
-	if winningDecisionID != nil {
-		conflict, cErr := s.db.GetConflict(ctx, conflictID, orgID)
-		if cErr != nil || conflict == nil {
-			return errorResult("conflict not found"), nil
-		}
-		if *winningDecisionID != conflict.DecisionAID && *winningDecisionID != conflict.DecisionBID {
-			return errorResult("winning_decision_id must be one of the two decisions in this conflict"), nil
-		}
-	}
-
 	// Parse optional resolution note.
 	var resolutionNote *string
 	if n := request.GetString("resolution_note", ""); n != "" {
@@ -1475,10 +1468,49 @@ func (s *Server) handleResolve(ctx context.Context, request mcplib.CallToolReque
 		resolvedBy = claims.Subject
 	}
 
+	actorRole := string(claims.Role)
+
+	// Try resolving as a scored_conflict ID first.
+	conflict, _ := s.db.GetConflict(ctx, conflictID, orgID)
+	if conflict != nil {
+		return s.resolveSingleConflict(ctx, request, conflict, orgID, status, resolvedBy, actorRole, resolutionNote, winningDecisionID)
+	}
+
+	// Not a scored_conflict ID — check if it's a conflict_group ID.
+	groupConflicts, gErr := s.db.ListOpenConflictsByGroupID(ctx, orgID, conflictID)
+	if gErr != nil {
+		return errorResult(fmt.Sprintf("failed to look up conflict group: %v", gErr)), nil
+	}
+	if len(groupConflicts) == 0 {
+		return errorResult("conflict not found (no scored_conflict or conflict_group with open conflicts matches this ID)"), nil
+	}
+
+	return s.resolveGroup(ctx, request, groupConflicts, conflictID, orgID, status, resolvedBy, actorRole, resolutionNote, winningDecisionID)
+}
+
+// resolveSingleConflict handles resolution of a single scored_conflict.
+func (s *Server) resolveSingleConflict(
+	ctx context.Context,
+	request mcplib.CallToolRequest,
+	conflict *model.DecisionConflict,
+	orgID uuid.UUID,
+	status, resolvedBy, actorRole string,
+	resolutionNote *string,
+	winningDecisionID *uuid.UUID,
+) (*mcplib.CallToolResult, error) {
+	conflictID := conflict.ID
+
+	// Validate winning_decision_id belongs to this conflict.
+	if winningDecisionID != nil {
+		if *winningDecisionID != conflict.DecisionAID && *winningDecisionID != conflict.DecisionBID {
+			return errorResult("winning_decision_id must be one of the two decisions in this conflict"), nil
+		}
+	}
+
 	audit := storage.MutationAuditEntry{
 		OrgID:        orgID,
 		ActorAgentID: resolvedBy,
-		ActorRole:    string(claims.Role),
+		ActorRole:    actorRole,
 		Endpoint:     "mcp/akashi_resolve",
 		Operation:    "conflict_status_changed",
 		ResourceType: "conflict",
@@ -1494,46 +1526,28 @@ func (s *Server) handleResolve(ctx context.Context, request mcplib.CallToolReque
 		return errorResult(fmt.Sprintf("failed to update conflict: %v", err)), nil
 	}
 
-	// Auto-label false positives into ground truth for detector training.
-	if status == "false_positive" {
-		label := "unrelated_false_positive"
-		if fpLabel := request.GetString("false_positive_label", ""); fpLabel == "related_not_contradicting" {
-			label = fpLabel
-		}
-		if labelErr := s.db.UpsertConflictLabel(ctx, storage.ConflictLabel{
-			ScoredConflictID: conflictID,
-			OrgID:            orgID,
-			Label:            label,
-			LabeledBy:        resolvedBy,
-			LabeledAt:        time.Now(),
-		}); labelErr != nil {
-			s.logger.Warn("failed to auto-label false_positive conflict", "conflict_id", conflictID, "error", labelErr)
-		}
-	}
+	s.labelFalsePositive(ctx, request, status, conflictID, orgID, resolvedBy)
 
 	// Cascade resolution when resolving with a winner in a group.
 	var cascaded int
-	if status == "resolved" && winningDecisionID != nil {
-		conflict, cErr := s.db.GetConflict(ctx, conflictID, orgID)
-		if cErr == nil && conflict != nil && conflict.GroupID != nil {
-			cascadeAudit := storage.MutationAuditEntry{
-				OrgID:        orgID,
-				ActorAgentID: resolvedBy,
-				ActorRole:    string(claims.Role),
-				Endpoint:     "mcp/akashi_resolve",
-				Operation:    "conflict_cascade_resolved",
-				ResourceType: "conflict",
-				ResourceID:   conflictID.String(),
-				Metadata:     map[string]any{"trigger_conflict_id": conflictID.String(), "winning_decision_id": winningDecisionID.String()},
-			}
-			cascaded, _ = s.db.CascadeResolveByOutcome(ctx, orgID, *conflict.GroupID, *winningDecisionID, conflictID, cascadeSimilarityThreshold, cascadeAudit)
-			if cascaded > 0 {
-				s.logger.Info("mcp: resolution cascade resolved conflicts",
-					"trigger_conflict_id", conflictID,
-					"group_id", conflict.GroupID,
-					"cascade_resolved", cascaded,
-				)
-			}
+	if status == "resolved" && winningDecisionID != nil && conflict.GroupID != nil {
+		cascadeAudit := storage.MutationAuditEntry{
+			OrgID:        orgID,
+			ActorAgentID: resolvedBy,
+			ActorRole:    actorRole,
+			Endpoint:     "mcp/akashi_resolve",
+			Operation:    "conflict_cascade_resolved",
+			ResourceType: "conflict",
+			ResourceID:   conflictID.String(),
+			Metadata:     map[string]any{"trigger_conflict_id": conflictID.String(), "winning_decision_id": winningDecisionID.String()},
+		}
+		cascaded, _ = s.db.CascadeResolveByOutcome(ctx, orgID, *conflict.GroupID, *winningDecisionID, conflictID, cascadeSimilarityThreshold, cascadeAudit)
+		if cascaded > 0 {
+			s.logger.Info("mcp: resolution cascade resolved conflicts",
+				"trigger_conflict_id", conflictID,
+				"group_id", conflict.GroupID,
+				"cascade_resolved", cascaded,
+			)
 		}
 	}
 
@@ -1550,6 +1564,95 @@ func (s *Server) handleResolve(ctx context.Context, request mcplib.CallToolReque
 			mcplib.TextContent{Type: "text", Text: string(resultData)},
 		},
 	}, nil
+}
+
+// resolveGroup resolves all open conflicts in a conflict group.
+func (s *Server) resolveGroup(
+	ctx context.Context,
+	request mcplib.CallToolRequest,
+	groupConflicts []model.DecisionConflict,
+	groupID, orgID uuid.UUID,
+	status, resolvedBy, actorRole string,
+	resolutionNote *string,
+	winningDecisionID *uuid.UUID,
+) (*mcplib.CallToolResult, error) {
+	var resolved int
+	var lastErr error
+
+	for _, c := range groupConflicts {
+		// For winning_decision_id: only set the winner on conflicts where it
+		// matches one of the two decisions. Skip winner for others.
+		var winner *uuid.UUID
+		if winningDecisionID != nil {
+			if *winningDecisionID == c.DecisionAID || *winningDecisionID == c.DecisionBID {
+				winner = winningDecisionID
+			}
+		}
+
+		audit := storage.MutationAuditEntry{
+			OrgID:        orgID,
+			ActorAgentID: resolvedBy,
+			ActorRole:    actorRole,
+			Endpoint:     "mcp/akashi_resolve",
+			Operation:    "conflict_status_changed",
+			ResourceType: "conflict",
+			ResourceID:   c.ID.String(),
+			Metadata:     map[string]any{"new_status": status, "resolved_by": resolvedBy, "group_id": groupID.String()},
+		}
+
+		_, err := s.db.UpdateConflictStatusWithAudit(ctx, c.ID, orgID, status, resolvedBy, resolutionNote, winner, audit)
+		if err != nil {
+			lastErr = err
+			s.logger.Warn("failed to resolve group conflict member", "conflict_id", c.ID, "group_id", groupID, "error", err)
+			continue
+		}
+
+		s.labelFalsePositive(ctx, request, status, c.ID, orgID, resolvedBy)
+		resolved++
+	}
+
+	if resolved == 0 && lastErr != nil {
+		return errorResult(fmt.Sprintf("failed to resolve any conflicts in group: %v", lastErr)), nil
+	}
+
+	s.logger.Info("mcp: resolved conflict group",
+		"group_id", groupID,
+		"resolved_count", resolved,
+		"total_open", len(groupConflicts),
+	)
+
+	resultData, _ := json.MarshalIndent(map[string]any{
+		"group_id":       groupID,
+		"new_status":     status,
+		"resolved_by":    resolvedBy,
+		"resolved_count": resolved,
+	}, "", "  ")
+
+	return &mcplib.CallToolResult{
+		Content: []mcplib.Content{
+			mcplib.TextContent{Type: "text", Text: string(resultData)},
+		},
+	}, nil
+}
+
+// labelFalsePositive auto-labels a conflict as a false positive for detector training.
+func (s *Server) labelFalsePositive(ctx context.Context, request mcplib.CallToolRequest, status string, conflictID, orgID uuid.UUID, resolvedBy string) {
+	if status != "false_positive" {
+		return
+	}
+	label := "unrelated_false_positive"
+	if fpLabel := request.GetString("false_positive_label", ""); fpLabel == "related_not_contradicting" {
+		label = fpLabel
+	}
+	if labelErr := s.db.UpsertConflictLabel(ctx, storage.ConflictLabel{
+		ScoredConflictID: conflictID,
+		OrgID:            orgID,
+		Label:            label,
+		LabeledBy:        resolvedBy,
+		LabeledAt:        time.Now(),
+	}); labelErr != nil {
+		s.logger.Warn("failed to auto-label false_positive conflict", "conflict_id", conflictID, "error", labelErr)
+	}
 }
 
 func (s *Server) handleStats(ctx context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {

@@ -345,6 +345,32 @@ func (l *LiteDB) GetConflict(ctx context.Context, id, orgID uuid.UUID) (*model.D
 	return &conflicts[0], nil
 }
 
+// ListOpenConflictsByGroupID returns all open scored_conflicts for a group.
+func (l *LiteDB) ListOpenConflictsByGroupID(ctx context.Context, orgID, groupID uuid.UUID) ([]model.DecisionConflict, error) {
+	q := `SELECT sc.id, sc.conflict_kind, sc.decision_a_id, sc.decision_b_id, sc.org_id,
+		        sc.agent_a, sc.agent_b, sc.decision_type_a, sc.decision_type_b,
+		        sc.outcome_a, sc.outcome_b,
+		        sc.topic_similarity, sc.outcome_divergence, sc.significance, sc.scoring_method,
+		        sc.explanation, sc.detected_at,
+		        sc.category, sc.severity, sc.status,
+		        sc.resolved_by, sc.resolved_at, sc.resolution_note,
+		        sc.relationship, sc.confidence_weight, sc.temporal_decay,
+		        sc.resolution_decision_id, sc.winning_decision_id, sc.group_id,
+		        da.run_id, db.run_id, da.confidence, db.confidence,
+		        da.reasoning, db.reasoning, da.valid_from, db.valid_from
+		 FROM scored_conflicts sc
+		 LEFT JOIN decisions da ON da.id = sc.decision_a_id
+		 LEFT JOIN decisions db ON db.id = sc.decision_b_id
+		 WHERE sc.group_id = ? AND sc.org_id = ? AND sc.status = 'open'
+		 ORDER BY sc.significance DESC, sc.detected_at DESC`
+	rows, err := l.db.QueryContext(ctx, q, uuidStr(groupID), uuidStr(orgID))
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list open conflicts by group: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+	return scanConflictRows(rows)
+}
+
 // UpdateConflictStatusWithAudit transitions a conflict to a new lifecycle state.
 func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, _ storage.MutationAuditEntry) (string, error) {
 	tx, err := l.db.BeginTx(ctx, nil)

@@ -720,6 +720,13 @@ func (db *DB) listOpenConflictsByGroupIDs(ctx context.Context, orgID uuid.UUID, 
 	return scanConflictRows(rows)
 }
 
+// ListOpenConflictsByGroupID returns all open scored_conflicts belonging to a
+// single conflict group. Returns nil, nil if the group has no open conflicts
+// (or does not exist).
+func (db *DB) ListOpenConflictsByGroupID(ctx context.Context, orgID, groupID uuid.UUID) ([]model.DecisionConflict, error) {
+	return db.listOpenConflictsByGroupIDs(ctx, orgID, []uuid.UUID{groupID})
+}
+
 // conflictGroupWhere builds the WHERE clause suffix and args for ConflictGroupFilters.
 // argOffset is the next positional parameter index.
 func conflictGroupWhere(f ConflictGroupFilters, argOffset int) (string, []any) {

@@ -3199,6 +3199,124 @@ func TestComputeMissingFields_PlanningReasoningIsPrimaryFactor(t *testing.T) {
 	assert.True(t, found, "planning should show elevated reasoning weight label, got: %v", tips)
 }
 
+func TestHandleResolve_GroupID(t *testing.T) {
+	ctx := adminCtx()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "grp-resolve-a-" + suffix
+	agentB := "grp-resolve-b-" + suffix
+	decType := "grp-resolve-type-" + suffix
+
+	// Create two decisions per conflict (4 total) — two conflicts, same agent pair + type.
+	decAID1 := mustTrace(t, agentA, decType, "approach A1: "+suffix, 0.8)
+	decBID1 := mustTrace(t, agentB, decType, "approach B1: "+suffix, 0.7)
+	decAID2 := mustTrace(t, agentA, decType, "approach A2: "+suffix, 0.6)
+	decBID2 := mustTrace(t, agentB, decType, "approach B2: "+suffix, 0.5)
+
+	parsedA1, _ := uuid.Parse(decAID1)
+	parsedB1, _ := uuid.Parse(decBID1)
+	parsedA2, _ := uuid.Parse(decAID2)
+	parsedB2, _ := uuid.Parse(decBID2)
+
+	topicSim := 0.85
+	outcomDiv := 0.9
+	sig := 0.87
+
+	conflictID1, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind:      model.ConflictKindCrossAgent,
+		DecisionAID:       parsedA1,
+		DecisionBID:       parsedB1,
+		OrgID:             uuid.Nil,
+		AgentA:            agentA,
+		AgentB:            agentB,
+		DecisionTypeA:     decType,
+		DecisionTypeB:     decType,
+		DecisionType:      decType,
+		OutcomeA:          "approach A1",
+		OutcomeB:          "approach B1",
+		TopicSimilarity:   &topicSim,
+		OutcomeDivergence: &outcomDiv,
+		Significance:      &sig,
+		ScoringMethod:     "text",
+		Status:            "open",
+	})
+	require.NoError(t, err)
+
+	conflictID2, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind:      model.ConflictKindCrossAgent,
+		DecisionAID:       parsedA2,
+		DecisionBID:       parsedB2,
+		OrgID:             uuid.Nil,
+		AgentA:            agentA,
+		AgentB:            agentB,
+		DecisionTypeA:     decType,
+		DecisionTypeB:     decType,
+		DecisionType:      decType,
+		OutcomeA:          "approach A2",
+		OutcomeB:          "approach B2",
+		TopicSimilarity:   &topicSim,
+		OutcomeDivergence: &outcomDiv,
+		Significance:      &sig,
+		ScoringMethod:     "text",
+		Status:            "open",
+	})
+	require.NoError(t, err)
+
+	// Both conflicts should be in the same group.
+	c1, err := testDB.GetConflict(ctx, conflictID1, uuid.Nil)
+	require.NoError(t, err)
+	require.NotNil(t, c1.GroupID, "conflict 1 should have a group_id")
+
+	c2, err := testDB.GetConflict(ctx, conflictID2, uuid.Nil)
+	require.NoError(t, err)
+	require.NotNil(t, c2.GroupID, "conflict 2 should have a group_id")
+	assert.Equal(t, *c1.GroupID, *c2.GroupID, "both conflicts should share the same group")
+
+	groupID := *c1.GroupID
+
+	// Resolve using the group ID — this is the core of the bug fix.
+	result, err := testServer.handleResolve(ctx, resolveRequest(map[string]any{
+		"conflict_id":     groupID.String(),
+		"status":          "false_positive",
+		"resolution_note": "all false positives in this group",
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "group resolve should succeed: %s", parseToolText(t, result))
+
+	var resp struct {
+		GroupID       string `json:"group_id"`
+		NewStatus     string `json:"new_status"`
+		ResolvedBy    string `json:"resolved_by"`
+		ResolvedCount int    `json:"resolved_count"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.Equal(t, groupID.String(), resp.GroupID)
+	assert.Equal(t, "false_positive", resp.NewStatus)
+	assert.Equal(t, 2, resp.ResolvedCount, "should resolve both conflicts in the group")
+
+	// Verify both conflicts are now false_positive.
+	c1After, err := testDB.GetConflict(ctx, conflictID1, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, "false_positive", c1After.Status)
+
+	c2After, err := testDB.GetConflict(ctx, conflictID2, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, "false_positive", c2After.Status)
+}
+
+func TestHandleResolve_GroupID_NotFound(t *testing.T) {
+	ctx := adminCtx()
+
+	// A random UUID that matches neither a scored_conflict nor a conflict_group.
+	result, err := testServer.handleResolve(ctx, resolveRequest(map[string]any{
+		"conflict_id": uuid.New().String(),
+		"status":      "false_positive",
+	}))
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, parseToolText(t, result), "conflict not found")
+}
+
 func TestComputeMissingFields_ArchitectureReasoningWeightLabel(t *testing.T) {
 	// Architecture profile: alternatives and evidence expected → plain 25%.
 	tips := computeMissingFields("architecture", "chose Redis", 0.7, nil, nil, nil, false, true, true, quality.DefaultStandardDecisionTypes)
