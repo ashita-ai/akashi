@@ -146,6 +146,8 @@ export interface AgentRun {
   decisions?: Decision[];
   decision_enrichments?: Record<string, DecisionEnrichments>;
   truncated?: boolean;
+  truncated_decisions?: boolean;
+  total_decisions?: number;
   truncated_enrichments?: boolean;
   enriched_count?: number;
 }
@@ -506,6 +508,7 @@ export interface DecisionEnrichments {
   lineage: DecisionLineage;
   conflicts: EnrichmentConflicts;
   integrity: IntegrityStatus;
+  degraded?: boolean;
 }
 
 // Health

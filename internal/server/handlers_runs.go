@@ -47,6 +47,7 @@ type decisionEnrichment struct {
 	Lineage   storage.DecisionLineage `json:"lineage"`
 	Conflicts enrichmentConflicts     `json:"conflicts"`
 	Integrity enrichmentIntegrity     `json:"integrity"`
+	Degraded  bool                    `json:"degraded,omitempty"`
 }
 
 // getRunResponse is the typed response for GET /v1/runs/{run_id}.
@@ -338,6 +339,9 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 
 	var enrichments map[string]decisionEnrichment
 	var enrichmentsTruncated bool
+	// TODO: if more include options are added, switch to comma-split or
+	// repeated ?include= params (e.g. "enrichments,metrics") instead of
+	// equality check — the current form won't compose.
 	if r.URL.Query().Get("include") == "enrichments" && len(decisions) > 0 {
 		toEnrich := decisions
 		if len(toEnrich) > maxEnrichedDecisions {
@@ -362,14 +366,18 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 					if !isNotFoundError(err) {
 						h.logger.Warn("enrichment: failed to get revisions",
 							"decision_id", decID, "error", err)
+						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}, Degraded: true}
+						entry.Degraded = true
+					} else {
+						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}}
 					}
-					entry.Revisions = enrichmentRevisions{Items: []model.Decision{}}
 				} else {
 					revisions, filterErr := filterDecisionsByAccess(gctx, h.db, claims, revisions, h.grantCache)
 					if filterErr != nil {
 						h.logger.Warn("enrichment: access filter failed for revisions",
 							"decision_id", decID, "error", filterErr)
 						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}, Degraded: true}
+						entry.Degraded = true
 					} else {
 						entry.Revisions = enrichmentRevisions{Items: revisions, Count: len(revisions)}
 					}
@@ -381,6 +389,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 					if !isNotFoundError(err) {
 						h.logger.Warn("enrichment: failed to get lineage",
 							"decision_id", decID, "error", err)
+						entry.Degraded = true
 					}
 					entry.Lineage = storage.DecisionLineage{DecisionID: decID}
 				} else {
@@ -394,14 +403,18 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 					if !isNotFoundError(err) {
 						h.logger.Warn("enrichment: failed to get conflicts",
 							"decision_id", decID, "error", err)
+						entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}, Degraded: true}
+						entry.Degraded = true
+					} else {
+						entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}}
 					}
-					entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}}
 				} else {
 					conflicts, filterErr := filterConflictsByAccess(gctx, h.db, claims, conflicts, h.grantCache)
 					if filterErr != nil {
 						h.logger.Warn("enrichment: access filter failed for conflicts",
 							"decision_id", decID, "error", filterErr)
 						entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}, Degraded: true}
+						entry.Degraded = true
 					} else {
 						hasMore := len(conflicts) > maxEnrichmentConflicts
 						if hasMore {
@@ -448,7 +461,11 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 		resp.TruncatedEvents = true
 		resp.Truncated = true
 	}
-	if total > maxRunDecisions {
+	// Compare against len(decisions), NOT the requested limit. The storage
+	// layer may silently cap the limit (e.g. QueryDecisions caps at 1000),
+	// so comparing against maxRunDecisions would miss truncation whenever
+	// the actual row count falls between the storage cap and our ceiling.
+	if total > len(decisions) {
 		resp.TruncatedDecisions = true
 		resp.TotalDecisions = total
 		resp.Truncated = true

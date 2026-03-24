@@ -612,11 +612,19 @@ export default function DecisionDetail() {
         </Card>
       )}
 
+      {/* Decision truncation warning */}
+      {run.truncated_decisions && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950 p-3 flex items-center gap-2 text-sm text-amber-700 dark:text-amber-300">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          Showing {run.decisions?.length} of {run.total_decisions} decisions. The full set exceeds the display limit.
+        </div>
+      )}
+
       {/* Enrichment truncation warning */}
       {run.truncated_enrichments && (
         <div className="rounded-md border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950 p-3 flex items-center gap-2 text-sm text-amber-700 dark:text-amber-300">
           <AlertTriangle className="h-4 w-4 shrink-0" />
-          Enrichments were computed for the first {run.enriched_count} of {run.decisions?.length} decisions.
+          Enrichments were computed for the first {run.enriched_count} of {run.total_decisions ?? run.decisions?.length} decisions.
         </div>
       )}
 

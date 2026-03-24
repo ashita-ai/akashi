@@ -3722,6 +3722,9 @@ components:
           $ref: "#/components/schemas/EnrichmentConflicts"
         integrity:
           $ref: "#/components/schemas/IntegrityStatus"
+        degraded:
+          type: boolean
+          description: True when one or more enrichment sub-queries failed. Individual sub-fields may also carry their own degraded flag.
 
     EnrichmentRevisions:
       type: object
@@ -3735,7 +3738,7 @@ components:
           type: integer
         degraded:
           type: boolean
-          description: True when revision data could not be fully retrieved due to an authorization error.
+          description: True when revision data could not be fully retrieved due to a storage or authorization error.
 
     EnrichmentConflicts:
       type: object
@@ -3752,7 +3755,7 @@ components:
           description: True when more conflicts exist than the 50 returned.
         degraded:
           type: boolean
-          description: True when conflict data could not be fully retrieved due to an authorization error.
+          description: True when conflict data could not be fully retrieved due to a storage or authorization error.
 
     IntegrityStatus:
       type: object

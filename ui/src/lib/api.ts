@@ -183,6 +183,8 @@ export async function getRun(runId: string, opts?: { includeEnrichments?: boolea
     events: AgentEvent[] | null;
     decision_enrichments?: Record<string, DecisionEnrichments>;
     truncated?: boolean;
+    truncated_decisions?: boolean;
+    total_decisions?: number;
     truncated_enrichments?: boolean;
     enriched_count?: number;
   }>(`/v1/runs/${runId}${qs}`);
@@ -192,6 +194,8 @@ export async function getRun(runId: string, opts?: { includeEnrichments?: boolea
     events: result.events ?? undefined,
     decision_enrichments: result.decision_enrichments ?? undefined,
     truncated: result.truncated,
+    truncated_decisions: result.truncated_decisions,
+    total_decisions: result.total_decisions,
     truncated_enrichments: result.truncated_enrichments,
     enriched_count: result.enriched_count,
   };
