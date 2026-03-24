@@ -418,6 +418,64 @@ func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uu
 	return oldStatus, nil
 }
 
+// ResolveConflictGroup atomically resolves all open conflicts in a group.
+func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningAgent *string, _ storage.MutationAuditEntry) (int, error) {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: begin resolve group tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	// Verify the group exists and belongs to this org.
+	var exists bool
+	err = tx.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM conflict_groups WHERE id = ? AND org_id = ?)`,
+		uuidStr(groupID), uuidStr(orgID),
+	).Scan(&exists)
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: check conflict group: %w", err)
+	}
+	if !exists {
+		return 0, fmt.Errorf("sqlite: conflict group: %w", storage.ErrNotFound)
+	}
+
+	var result sql.Result
+	if winningAgent != nil && status == "resolved" {
+		result, err = tx.ExecContext(ctx,
+			`UPDATE scored_conflicts
+			 SET status = ?, resolved_by = ?, resolved_at = datetime('now'),
+			     resolution_note = ?,
+			     winning_decision_id = CASE
+			         WHEN agent_a = ? THEN decision_a_id
+			         WHEN agent_b = ? THEN decision_b_id
+			         ELSE NULL
+			     END
+			 WHERE group_id = ? AND org_id = ? AND status = 'open'`,
+			status, resolvedBy, resolutionNote,
+			*winningAgent, *winningAgent,
+			uuidStr(groupID), uuidStr(orgID),
+		)
+	} else {
+		result, err = tx.ExecContext(ctx,
+			`UPDATE scored_conflicts
+			 SET status = ?, resolved_by = ?, resolved_at = datetime('now'),
+			     resolution_note = ?
+			 WHERE group_id = ? AND org_id = ? AND status = 'open'`,
+			status, resolvedBy, resolutionNote,
+			uuidStr(groupID), uuidStr(orgID),
+		)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: resolve conflict group: %w", err)
+	}
+
+	affected, _ := result.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("sqlite: commit resolve group: %w", err)
+	}
+	return int(affected), nil
+}
+
 // CascadeResolveByOutcome is a no-op in SQLite mode (no pgvector for embedding similarity).
 func (l *LiteDB) CascadeResolveByOutcome(_ context.Context, _, _, _, _ uuid.UUID, _ float64, _ storage.MutationAuditEntry) (int, error) {
 	return 0, nil

@@ -3304,6 +3304,94 @@ func TestHandleResolve_GroupID(t *testing.T) {
 	assert.Equal(t, "false_positive", c2After.Status)
 }
 
+func TestHandleResolve_GroupID_ResolvedWithWinner(t *testing.T) {
+	ctx := adminCtx()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "grpwin-a-" + suffix
+	agentB := "grpwin-b-" + suffix
+	decType := "grpwin-type-" + suffix
+
+	decAID1 := mustTrace(t, agentA, decType, "winner approach: "+suffix, 0.9)
+	decBID1 := mustTrace(t, agentB, decType, "loser approach: "+suffix, 0.5)
+	decAID2 := mustTrace(t, agentA, decType, "winner approach 2: "+suffix, 0.8)
+	decBID2 := mustTrace(t, agentB, decType, "loser approach 2: "+suffix, 0.4)
+
+	parsedA1, _ := uuid.Parse(decAID1)
+	parsedB1, _ := uuid.Parse(decBID1)
+	parsedA2, _ := uuid.Parse(decAID2)
+	parsedB2, _ := uuid.Parse(decBID2)
+
+	topicSim := 0.85
+	outcomDiv := 0.9
+	sig := 0.87
+
+	conflictID1, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: parsedA1, DecisionBID: parsedB1,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: decType, DecisionTypeB: decType, DecisionType: decType,
+		OutcomeA: "winner", OutcomeB: "loser",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomDiv, Significance: &sig,
+		ScoringMethod: "text", Status: "open",
+	})
+	require.NoError(t, err)
+
+	conflictID2, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: parsedA2, DecisionBID: parsedB2,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: decType, DecisionTypeB: decType, DecisionType: decType,
+		OutcomeA: "winner 2", OutcomeB: "loser 2",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomDiv, Significance: &sig,
+		ScoringMethod: "text", Status: "open",
+	})
+	require.NoError(t, err)
+
+	c1, err := testDB.GetConflict(ctx, conflictID1, uuid.Nil)
+	require.NoError(t, err)
+	require.NotNil(t, c1.GroupID)
+	groupID := *c1.GroupID
+
+	// Resolve using group ID with winning_decision_id — agentA should win.
+	result, err := testServer.handleResolve(ctx, resolveRequest(map[string]any{
+		"conflict_id":         groupID.String(),
+		"status":              "resolved",
+		"winning_decision_id": decAID1,
+		"resolution_note":     "agentA approach is correct",
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "group resolve with winner should succeed: %s", parseToolText(t, result))
+
+	var resp struct {
+		GroupID       string `json:"group_id"`
+		NewStatus     string `json:"new_status"`
+		ResolvedCount int    `json:"resolved_count"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.Equal(t, groupID.String(), resp.GroupID)
+	assert.Equal(t, "resolved", resp.NewStatus)
+	assert.Equal(t, 2, resp.ResolvedCount)
+
+	// Verify both conflicts resolved with agentA's decision as winner.
+	// InsertScoredConflict canonicalizes pair ordering by UUID bytes, so we
+	// can't assume which side is decision_a vs decision_b. Instead verify
+	// the winner is one of agentA's decisions.
+	agentADecisions := map[uuid.UUID]bool{parsedA1: true, parsedA2: true}
+
+	c1After, err := testDB.GetConflict(ctx, conflictID1, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, "resolved", c1After.Status)
+	require.NotNil(t, c1After.WinningDecisionID, "conflict 1 should have a winner")
+	assert.True(t, agentADecisions[*c1After.WinningDecisionID],
+		"conflict 1 winner %s should be one of agentA's decisions", c1After.WinningDecisionID)
+
+	c2After, err := testDB.GetConflict(ctx, conflictID2, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, "resolved", c2After.Status)
+	require.NotNil(t, c2After.WinningDecisionID, "conflict 2 should have a winner")
+	assert.True(t, agentADecisions[*c2After.WinningDecisionID],
+		"conflict 2 winner %s should be one of agentA's decisions", c2After.WinningDecisionID)
+}
+
 func TestHandleResolve_GroupID_NotFound(t *testing.T) {
 	ctx := adminCtx()
 

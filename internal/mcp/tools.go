@@ -1471,21 +1471,16 @@ func (s *Server) handleResolve(ctx context.Context, request mcplib.CallToolReque
 	actorRole := string(claims.Role)
 
 	// Try resolving as a scored_conflict ID first.
-	conflict, _ := s.db.GetConflict(ctx, conflictID, orgID)
+	conflict, cErr := s.db.GetConflict(ctx, conflictID, orgID)
+	if cErr != nil {
+		return errorResult(fmt.Sprintf("failed to look up conflict: %v", cErr)), nil
+	}
 	if conflict != nil {
 		return s.resolveSingleConflict(ctx, request, conflict, orgID, status, resolvedBy, actorRole, resolutionNote, winningDecisionID)
 	}
 
-	// Not a scored_conflict ID — check if it's a conflict_group ID.
-	groupConflicts, gErr := s.db.ListOpenConflictsByGroupID(ctx, orgID, conflictID)
-	if gErr != nil {
-		return errorResult(fmt.Sprintf("failed to look up conflict group: %v", gErr)), nil
-	}
-	if len(groupConflicts) == 0 {
-		return errorResult("conflict not found (no scored_conflict or conflict_group with open conflicts matches this ID)"), nil
-	}
-
-	return s.resolveGroup(ctx, request, groupConflicts, conflictID, orgID, status, resolvedBy, actorRole, resolutionNote, winningDecisionID)
+	// Not a scored_conflict ID — try resolving as a conflict_group ID.
+	return s.resolveGroup(ctx, request, conflictID, orgID, status, resolvedBy, actorRole, resolutionNote, winningDecisionID)
 }
 
 // resolveSingleConflict handles resolution of a single scored_conflict.
@@ -1566,66 +1561,69 @@ func (s *Server) resolveSingleConflict(
 	}, nil
 }
 
-// resolveGroup resolves all open conflicts in a conflict group.
+// resolveGroup atomically resolves all open conflicts in a conflict group
+// by delegating to the storage layer's ResolveConflictGroup, which performs
+// the entire operation in a single transaction with one audit entry.
 func (s *Server) resolveGroup(
 	ctx context.Context,
 	request mcplib.CallToolRequest,
-	groupConflicts []model.DecisionConflict,
 	groupID, orgID uuid.UUID,
 	status, resolvedBy, actorRole string,
 	resolutionNote *string,
 	winningDecisionID *uuid.UUID,
 ) (*mcplib.CallToolResult, error) {
-	var resolved int
-	var lastErr error
-
-	for _, c := range groupConflicts {
-		// For winning_decision_id: only set the winner on conflicts where it
-		// matches one of the two decisions. Skip winner for others.
-		var winner *uuid.UUID
-		if winningDecisionID != nil {
-			if *winningDecisionID == c.DecisionAID || *winningDecisionID == c.DecisionBID {
-				winner = winningDecisionID
-			}
-		}
-
-		audit := storage.MutationAuditEntry{
-			OrgID:        orgID,
-			ActorAgentID: resolvedBy,
-			ActorRole:    actorRole,
-			Endpoint:     "mcp/akashi_resolve",
-			Operation:    "conflict_status_changed",
-			ResourceType: "conflict",
-			ResourceID:   c.ID.String(),
-			Metadata:     map[string]any{"new_status": status, "resolved_by": resolvedBy, "group_id": groupID.String()},
-		}
-
-		_, err := s.db.UpdateConflictStatusWithAudit(ctx, c.ID, orgID, status, resolvedBy, resolutionNote, winner, audit)
+	// Convert winning_decision_id → winning agent. The storage method resolves
+	// per-conflict winners atomically via SQL CASE on agent_a/agent_b, which is
+	// correct because a group is defined by a fixed (agent_a, agent_b) pair.
+	var winningAgent *string
+	if winningDecisionID != nil {
+		decs, err := s.db.GetDecisionsByIDs(ctx, orgID, []uuid.UUID{*winningDecisionID})
 		if err != nil {
-			lastErr = err
-			s.logger.Warn("failed to resolve group conflict member", "conflict_id", c.ID, "group_id", groupID, "error", err)
-			continue
+			return errorResult(fmt.Sprintf("failed to look up winning decision: %v", err)), nil
 		}
-
-		s.labelFalsePositive(ctx, request, status, c.ID, orgID, resolvedBy)
-		resolved++
+		dec, ok := decs[*winningDecisionID]
+		if !ok {
+			return errorResult("winning_decision_id not found"), nil
+		}
+		winningAgent = &dec.AgentID
 	}
 
-	if resolved == 0 && lastErr != nil {
-		return errorResult(fmt.Sprintf("failed to resolve any conflicts in group: %v", lastErr)), nil
+	audit := storage.MutationAuditEntry{
+		OrgID:        orgID,
+		ActorAgentID: resolvedBy,
+		ActorRole:    actorRole,
+		Endpoint:     "mcp/akashi_resolve",
+		Operation:    "conflict_group_resolved",
+		ResourceType: "conflict_group",
+		ResourceID:   groupID.String(),
+		Metadata:     map[string]any{"new_status": status, "resolved_by": resolvedBy},
 	}
 
-	s.logger.Info("mcp: resolved conflict group",
-		"group_id", groupID,
-		"resolved_count", resolved,
-		"total_open", len(groupConflicts),
-	)
+	affected, err := s.db.ResolveConflictGroup(ctx, groupID, orgID, status, resolvedBy, resolutionNote, winningAgent, audit)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return errorResult("conflict not found (no scored_conflict or conflict_group matches this ID)"), nil
+		}
+		return errorResult(fmt.Sprintf("failed to resolve conflict group: %v", err)), nil
+	}
+
+	// Auto-label false positives for detector training, matching the HTTP handler.
+	if status == "false_positive" && affected > 0 {
+		s.labelGroupFalsePositives(ctx, request, groupID, orgID, resolvedBy)
+	}
+
+	if affected > 0 {
+		s.logger.Info("mcp: resolved conflict group",
+			"group_id", groupID,
+			"resolved_count", affected,
+		)
+	}
 
 	resultData, _ := json.MarshalIndent(map[string]any{
 		"group_id":       groupID,
 		"new_status":     status,
 		"resolved_by":    resolvedBy,
-		"resolved_count": resolved,
+		"resolved_count": affected,
 	}, "", "  ")
 
 	return &mcplib.CallToolResult{
@@ -1633,6 +1631,37 @@ func (s *Server) resolveGroup(
 			mcplib.TextContent{Type: "text", Text: string(resultData)},
 		},
 	}, nil
+}
+
+// labelGroupFalsePositives labels all false_positive conflicts in a group for
+// detector training. Called after ResolveConflictGroup commits so the conflicts
+// are already in false_positive status.
+func (s *Server) labelGroupFalsePositives(ctx context.Context, request mcplib.CallToolRequest, groupID, orgID uuid.UUID, resolvedBy string) {
+	label := "unrelated_false_positive"
+	if fpLabel := request.GetString("false_positive_label", ""); fpLabel == "related_not_contradicting" {
+		label = fpLabel
+	}
+	fpStatus := "false_positive"
+	fpConflicts, err := s.db.ListConflicts(ctx, orgID, storage.ConflictFilters{
+		Status:  &fpStatus,
+		GroupID: &groupID,
+	}, 1000, 0)
+	if err != nil {
+		s.logger.Warn("failed to list false_positive conflicts for auto-labeling", "group_id", groupID, "error", err)
+		return
+	}
+	for _, c := range fpConflicts {
+		if labelErr := s.db.UpsertConflictLabel(ctx, storage.ConflictLabel{
+			ScoredConflictID: c.ID,
+			OrgID:            orgID,
+			Label:            label,
+			LabeledBy:        resolvedBy,
+			LabeledAt:        time.Now(),
+		}); labelErr != nil {
+			s.logger.Warn("failed to auto-label false_positive conflict in group",
+				"conflict_id", c.ID, "group_id", groupID, "error", labelErr)
+		}
+	}
 }
 
 // labelFalsePositive auto-labels a conflict as a false positive for detector training.

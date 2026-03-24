@@ -70,6 +70,7 @@ type Store interface {
 	GetConflictCountsBatch(ctx context.Context, ids []uuid.UUID, orgID uuid.UUID) (map[uuid.UUID]int, error)
 	GetResolvedConflictsByType(ctx context.Context, orgID uuid.UUID, decisionType string, limit int) ([]model.ConflictResolution, error)
 	UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, audit MutationAuditEntry) (oldStatus string, err error)
+	ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningAgent *string, audit MutationAuditEntry) (int, error)
 	CascadeResolveByOutcome(ctx context.Context, orgID, groupID, winningDecisionID, triggerID uuid.UUID, threshold float64, audit MutationAuditEntry) (int, error)
 	UpsertConflictLabel(ctx context.Context, cl ConflictLabel) error
 
