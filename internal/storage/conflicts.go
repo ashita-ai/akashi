@@ -1095,13 +1095,17 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 // ResolveConflictGroup batch-resolves all open conflicts in a
 // conflict group. When winningAgent is non-nil, each conflict's winning_decision_id
 // is set to the decision from that agent (decision_a_id when agent_a matches,
-// decision_b_id when agent_b matches). Returns the number of conflicts updated.
+// decision_b_id when agent_b matches). When fpLabel is non-nil and status is
+// "false_positive", ground truth labels are inserted atomically within the same
+// transaction — preventing partial-label states on crash. Returns the number of
+// conflicts updated.
 func (db *DB) ResolveConflictGroup(
 	ctx context.Context,
 	groupID, orgID uuid.UUID,
 	status, resolvedBy string,
 	resolutionNote *string,
 	winningAgent *string,
+	fpLabel *string,
 	audit MutationAuditEntry,
 ) (int, error) {
 	tx, err := db.pool.Begin(ctx)
@@ -1158,10 +1162,36 @@ func (db *DB) ResolveConflictGroup(
 
 	affected := int(tag.RowsAffected())
 
+	// Atomically label all just-resolved conflicts as false positives for
+	// ground truth training. The WHERE clause targets only rows updated in
+	// this transaction (status = $1 AND resolved_by = $2 AND group match),
+	// so previously resolved conflicts are never re-labeled.
+	if fpLabel != nil && status == "false_positive" && affected > 0 {
+		_, err = tx.Exec(ctx,
+			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
+			 SELECT sc.id, sc.org_id, $1, $2, now()
+			 FROM scored_conflicts sc
+			 WHERE sc.group_id = $3 AND sc.org_id = $4
+			   AND sc.status = 'false_positive'
+			   AND sc.resolved_by = $5
+			 ON CONFLICT (scored_conflict_id) DO UPDATE SET
+			   label = excluded.label,
+			   labeled_by = excluded.labeled_by,
+			   labeled_at = excluded.labeled_at
+			 WHERE conflict_labels.org_id = excluded.org_id`,
+			*fpLabel, resolvedBy, groupID, orgID, resolvedBy)
+		if err != nil {
+			return 0, fmt.Errorf("storage: label false positives in resolve group tx: %w", err)
+		}
+	}
+
 	audit.BeforeData = map[string]any{"group_id": groupID.String(), "open_count": affected}
 	afterData := map[string]any{"status": status, "resolved_by": resolvedBy, "resolved_count": affected}
 	if winningAgent != nil {
 		afterData["winning_agent"] = *winningAgent
+	}
+	if fpLabel != nil {
+		afterData["fp_label"] = *fpLabel
 	}
 	audit.AfterData = afterData
 	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {

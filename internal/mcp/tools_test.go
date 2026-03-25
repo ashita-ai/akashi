@@ -2838,6 +2838,191 @@ func TestHandleResolve_WinnerNotInConflict(t *testing.T) {
 	assert.Contains(t, parseToolText(t, result), "must be one of the two decisions")
 }
 
+// ---------- handleResolve: group resolution tests ----------
+
+// seedConflictGroup creates two decisions and two conflicts in the same group,
+// returning the group ID, both conflict IDs, and agent names.
+func seedConflictGroup(t *testing.T) (groupID uuid.UUID, conflictIDs [2]uuid.UUID, agentA, agentB string) {
+	t.Helper()
+	ctx := adminCtx()
+
+	suffix := uuid.New().String()[:8]
+	agentA = "grp-a-" + suffix
+	agentB = "grp-b-" + suffix
+	decType := "grp-type-" + suffix
+
+	decAID1 := mustTrace(t, agentA, decType, "approach A1: "+suffix, 0.8)
+	decBID1 := mustTrace(t, agentB, decType, "approach B1: "+suffix, 0.7)
+	decAID2 := mustTrace(t, agentA, decType, "approach A2: "+suffix, 0.85)
+	decBID2 := mustTrace(t, agentB, decType, "approach B2: "+suffix, 0.75)
+
+	parsedA1, err := uuid.Parse(decAID1)
+	require.NoError(t, err)
+	parsedB1, err := uuid.Parse(decBID1)
+	require.NoError(t, err)
+	parsedA2, err := uuid.Parse(decAID2)
+	require.NoError(t, err)
+	parsedB2, err := uuid.Parse(decBID2)
+	require.NoError(t, err)
+
+	topicSim := 0.85
+	outcomDiv := 0.9
+	sig := 0.87
+	explanation := "test conflict for group resolution"
+	severity := "high"
+	category := "strategic"
+
+	for i, pair := range [][2]uuid.UUID{{parsedA1, parsedB1}, {parsedA2, parsedB2}} {
+		cid, insertErr := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+			ConflictKind:      model.ConflictKindCrossAgent,
+			DecisionAID:       pair[0],
+			DecisionBID:       pair[1],
+			OrgID:             uuid.Nil,
+			AgentA:            agentA,
+			AgentB:            agentB,
+			DecisionTypeA:     decType,
+			DecisionTypeB:     decType,
+			DecisionType:      decType,
+			OutcomeA:          "approach A",
+			OutcomeB:          "approach B",
+			TopicSimilarity:   &topicSim,
+			OutcomeDivergence: &outcomDiv,
+			Significance:      &sig,
+			ScoringMethod:     "embedding",
+			Explanation:       &explanation,
+			Severity:          &severity,
+			Category:          &category,
+			Status:            "open",
+		})
+		require.NoError(t, insertErr)
+		conflictIDs[i] = cid
+	}
+
+	conflict, err := testDB.GetConflict(ctx, conflictIDs[0], uuid.Nil)
+	require.NoError(t, err)
+	require.NotNil(t, conflict.GroupID, "InsertScoredConflict must set group_id")
+	groupID = *conflict.GroupID
+
+	return groupID, conflictIDs, agentA, agentB
+}
+
+func TestHandleResolve_GroupFalsePositive(t *testing.T) {
+	ctx := adminCtx()
+	groupID, conflictIDs, _, _ := seedConflictGroup(t)
+
+	result, err := testServer.handleResolve(ctx, resolveRequest(map[string]any{
+		"conflict_id":     groupID.String(),
+		"status":          "false_positive",
+		"resolution_note": "all conflicts in this group are false positives",
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "group resolve should succeed: %s", parseToolText(t, result))
+
+	var resp struct {
+		GroupID       string `json:"group_id"`
+		NewStatus     string `json:"new_status"`
+		ResolvedBy    string `json:"resolved_by"`
+		ResolvedCount int    `json:"resolved_count"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.Equal(t, groupID.String(), resp.GroupID)
+	assert.Equal(t, "false_positive", resp.NewStatus)
+	assert.Equal(t, testAdminID, resp.ResolvedBy)
+	assert.Equal(t, 2, resp.ResolvedCount, "both open conflicts should be resolved")
+
+	// Verify both conflicts are now false_positive.
+	for _, cid := range conflictIDs {
+		c, cErr := testDB.GetConflict(ctx, cid, uuid.Nil)
+		require.NoError(t, cErr)
+		assert.Equal(t, "false_positive", c.Status)
+	}
+}
+
+func TestHandleResolve_GroupResolved(t *testing.T) {
+	ctx := adminCtx()
+	groupID, _, _, _ := seedConflictGroup(t)
+
+	result, err := testServer.handleResolve(ctx, resolveRequest(map[string]any{
+		"conflict_id":     groupID.String(),
+		"status":          "resolved",
+		"resolution_note": "resolved at group level",
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "group resolve should succeed: %s", parseToolText(t, result))
+
+	var resp struct {
+		GroupID       string `json:"group_id"`
+		NewStatus     string `json:"new_status"`
+		ResolvedCount int    `json:"resolved_count"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.Equal(t, groupID.String(), resp.GroupID)
+	assert.Equal(t, "resolved", resp.NewStatus)
+	assert.Equal(t, 2, resp.ResolvedCount)
+}
+
+func TestHandleResolve_GroupRejectsWinningDecisionID(t *testing.T) {
+	ctx := adminCtx()
+	groupID, _, _, _ := seedConflictGroup(t)
+
+	result, err := testServer.handleResolve(ctx, resolveRequest(map[string]any{
+		"conflict_id":         groupID.String(),
+		"status":              "resolved",
+		"winning_decision_id": uuid.New().String(),
+	}))
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, parseToolText(t, result), "winning_decision_id is not supported for group resolution")
+}
+
+func TestHandleResolve_GroupNotFound(t *testing.T) {
+	ctx := adminCtx()
+
+	result, err := testServer.handleResolve(ctx, resolveRequest(map[string]any{
+		"conflict_id": uuid.New().String(),
+		"status":      "resolved",
+	}))
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, parseToolText(t, result), "conflict not found")
+}
+
+func TestHandleResolve_GroupDoesNotRelabelPriorResolutions(t *testing.T) {
+	ctx := adminCtx()
+	groupID, conflictIDs, _, _ := seedConflictGroup(t)
+
+	// First, resolve one conflict individually as "resolved" with no label.
+	_, err := testDB.UpdateConflictStatusWithAudit(ctx, conflictIDs[0], uuid.Nil,
+		"resolved", testAdminID, nil, nil,
+		storage.MutationAuditEntry{
+			RequestID: uuid.New().String(), OrgID: uuid.Nil,
+			ActorAgentID: testAdminID, ActorRole: "admin",
+			Endpoint: "test", Operation: "resolve", ResourceType: "conflict",
+			ResourceID: conflictIDs[0].String(),
+		})
+	require.NoError(t, err)
+
+	// Now resolve the group as false_positive. Only the remaining open
+	// conflict should be resolved and labeled.
+	result, resolveErr := testServer.handleResolve(ctx, resolveRequest(map[string]any{
+		"conflict_id": groupID.String(),
+		"status":      "false_positive",
+	}))
+	require.NoError(t, resolveErr)
+	require.False(t, result.IsError, "group resolve should succeed: %s", parseToolText(t, result))
+
+	var resp struct {
+		ResolvedCount int `json:"resolved_count"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.Equal(t, 1, resp.ResolvedCount, "only the open conflict should be resolved")
+
+	// The first conflict should still be "resolved", not relabeled.
+	c0, err := testDB.GetConflict(ctx, conflictIDs[0], uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, "resolved", c0.Status, "previously resolved conflict should not be changed")
+}
+
 func TestComputeMissingFields_TaskTip(t *testing.T) {
 	reasoning := "detailed reasoning that is over one hundred characters long so it passes the threshold requirement here"
 	// Without task: tip should be present.

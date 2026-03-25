@@ -272,13 +272,20 @@ func (h *Handlers) HandleResolveConflictGroup(w http.ResponseWriter, r *http.Req
 		resolvedBy = claims.Subject
 	}
 
+	// Derive false_positive label for atomic insertion in the storage tx.
+	var fpLabel *string
+	if req.Status == "false_positive" {
+		label := "unrelated_false_positive"
+		fpLabel = &label
+	}
+
 	audit := h.buildAuditEntry(r, orgID,
 		"conflict_group_resolved", "conflict_group", groupID.String(),
 		nil, nil,
 		map[string]any{"new_status": req.Status, "resolved_by": resolvedBy},
 	)
 
-	affected, err := h.db.ResolveConflictGroup(r.Context(), groupID, orgID, req.Status, resolvedBy, req.ResolutionNote, req.WinningAgent, audit)
+	affected, err := h.db.ResolveConflictGroup(r.Context(), groupID, orgID, req.Status, resolvedBy, req.ResolutionNote, req.WinningAgent, fpLabel, audit)
 	if err != nil {
 		if isNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict group not found")
@@ -292,31 +299,6 @@ func (h *Handlers) HandleResolveConflictGroup(w http.ResponseWriter, r *http.Req
 		groupKind, kindErr := h.db.GetConflictGroupKind(r.Context(), groupID, orgID)
 		if kindErr == nil {
 			h.resolutionRecorder.RecordResolution(r.Context(), req.Status, groupKind, affected)
-		}
-	}
-
-	// Auto-label false positives in the group for detector training.
-	if req.Status == "false_positive" && affected > 0 {
-		fpStatus := "false_positive"
-		fpConflicts, fpErr := h.db.ListConflicts(r.Context(), orgID, storage.ConflictFilters{
-			Status:  &fpStatus,
-			GroupID: &groupID,
-		}, affected+100, 0)
-		if fpErr != nil {
-			h.logger.Warn("failed to list false_positive conflicts for auto-labeling", "group_id", groupID, "error", fpErr)
-		} else {
-			for _, c := range fpConflicts {
-				if labelErr := h.db.UpsertConflictLabel(r.Context(), storage.ConflictLabel{
-					ScoredConflictID: c.ID,
-					OrgID:            orgID,
-					Label:            "unrelated_false_positive",
-					LabeledBy:        resolvedBy,
-					LabeledAt:        time.Now(),
-				}); labelErr != nil {
-					h.logger.Warn("failed to auto-label false_positive conflict in group",
-						"conflict_id", c.ID, "group_id", groupID, "error", labelErr)
-				}
-			}
 		}
 	}
 
