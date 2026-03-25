@@ -991,6 +991,7 @@ func (h *Handlers) HandleEraseDecision(w http.ResponseWriter, r *http.Request) {
 		"erased_hash":         result.Erasure.ErasedHash,
 		"alternatives_erased": result.AlternativesErased,
 		"evidence_erased":     result.EvidenceErased,
+		"claims_erased":       result.ClaimsErased,
 	})
 }
 

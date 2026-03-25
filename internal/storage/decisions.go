@@ -351,6 +351,7 @@ type DecisionErasureResult struct {
 	Erasure            model.DecisionErasure
 	AlternativesErased int64
 	EvidenceErased     int64
+	ClaimsErased       int64
 }
 
 // EraseDecision scrubs PII from a decision in-place (GDPR Art. 17 tombstone erasure).
@@ -358,10 +359,11 @@ type DecisionErasureResult struct {
 //  1. Activates the immutability trigger bypass via SET LOCAL
 //  2. Scrubs outcome/reasoning to "[erased]" and recomputes the content hash
 //  3. Scrubs alternatives (label, rejection_reason) and evidence (content, source_uri)
-//  4. Nulls out embeddings (contain semantic PII)
-//  5. Inserts a decision_erasures row with the original hash
-//  6. Records a DecisionErased event and mutation audit entry
-//  7. Queues a search index deletion
+//  4. Scrubs claims (claim_text derived from reasoning contains PII)
+//  5. Nulls out embeddings (contain semantic PII)
+//  6. Inserts a decision_erasures row with the original hash
+//  7. Records a DecisionErased event and mutation audit entry
+//  8. Queues a search index deletion
 //
 // Does NOT set valid_to — the decision remains "active" but scrubbed.
 func (db *DB) EraseDecision(
@@ -457,6 +459,17 @@ func (db *DB) EraseDecision(
 		return DecisionErasureResult{}, fmt.Errorf("storage: scrub evidence: %w", err)
 	}
 
+	// Scrub claims (claim_text is derived from reasoning and may contain PII).
+	claimTag, err := tx.Exec(ctx,
+		`UPDATE decision_claims
+		 SET claim_text = $1, embedding = NULL
+		 WHERE decision_id = $2 AND org_id = $3`,
+		ErasedSentinel, decisionID, orgID,
+	)
+	if err != nil {
+		return DecisionErasureResult{}, fmt.Errorf("storage: scrub claims: %w", err)
+	}
+
 	// Queue search index deletion.
 	if err := queueSearchOutbox(ctx, tx, decisionID, orgID, "delete"); err != nil {
 		return DecisionErasureResult{}, fmt.Errorf("storage: queue search outbox delete in erasure: %w", err)
@@ -530,6 +543,7 @@ func (db *DB) EraseDecision(
 		Erasure:            erasure,
 		AlternativesErased: altTag.RowsAffected(),
 		EvidenceErased:     evTag.RowsAffected(),
+		ClaimsErased:       claimTag.RowsAffected(),
 	}, nil
 }
 
