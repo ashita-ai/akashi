@@ -4,6 +4,7 @@ package server
 import (
 	"compress/gzip"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -719,7 +720,7 @@ func localhostOnly(apiKey string, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if apiKey != "" && r.Header.Get("X-Akashi-Hook-Key") == apiKey {
+		if apiKey != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Akashi-Hook-Key")), []byte(apiKey)) == 1 {
 			next.ServeHTTP(w, r)
 			return
 		}
