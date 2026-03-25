@@ -219,6 +219,65 @@ func scanConflictRows(rows pgx.Rows) ([]model.DecisionConflict, error) {
 	return conflicts, rows.Err()
 }
 
+// ListConflictsByDecisionIDs fetches conflicts involving any of the given decision
+// IDs in a single query. Returns a map keyed by decision ID, where each entry
+// contains the conflicts that involve that decision (on either the A or B side).
+// A conflict may appear under multiple keys if both sides are in the input set.
+// Results per decision are capped at perDecisionLimit.
+func (db *DB) ListConflictsByDecisionIDs(ctx context.Context, orgID uuid.UUID, decisionIDs []uuid.UUID, perDecisionLimit int) (map[uuid.UUID][]model.DecisionConflict, error) {
+	if len(decisionIDs) == 0 {
+		return nil, nil
+	}
+	if perDecisionLimit <= 0 {
+		perDecisionLimit = 50
+	}
+
+	// Global cap prevents unbounded result sets. Each decision can appear on
+	// the A or B side, so the theoretical max is 2 * len(decisionIDs) * (perDecisionLimit+1),
+	// but we use a tighter bound: len(decisionIDs) * (perDecisionLimit+1).
+	globalLimit := len(decisionIDs) * (perDecisionLimit + 1)
+	rows, err := db.pool.Query(ctx,
+		conflictSelectBase+` WHERE sc.org_id = $1
+		  AND (sc.decision_a_id = ANY($2) OR sc.decision_b_id = ANY($2))
+		  ORDER BY sc.detected_at DESC
+		  LIMIT $3`,
+		orgID, decisionIDs, globalLimit)
+	if err != nil {
+		return nil, fmt.Errorf("storage: list conflicts by decision IDs: %w", err)
+	}
+	defer rows.Close()
+
+	all, err := scanConflictRows(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build a set for fast lookup.
+	idSet := make(map[uuid.UUID]struct{}, len(decisionIDs))
+	for _, id := range decisionIDs {
+		idSet[id] = struct{}{}
+	}
+
+	// Group by decision ID — a conflict can appear under both sides.
+	result := make(map[uuid.UUID][]model.DecisionConflict, len(decisionIDs))
+	for _, c := range all {
+		if _, ok := idSet[c.DecisionAID]; ok {
+			if len(result[c.DecisionAID]) < perDecisionLimit+1 {
+				result[c.DecisionAID] = append(result[c.DecisionAID], c)
+			}
+		}
+		if _, ok := idSet[c.DecisionBID]; ok {
+			if c.DecisionBID != c.DecisionAID { // avoid double-adding self-contradictions
+				if len(result[c.DecisionBID]) < perDecisionLimit+1 {
+					result[c.DecisionBID] = append(result[c.DecisionBID], c)
+				}
+			}
+		}
+	}
+
+	return result, nil
+}
+
 // NewConflictsSinceByOrg returns conflicts detected after the given time for one
 // organization from scored_conflicts.
 func (db *DB) NewConflictsSinceByOrg(ctx context.Context, orgID uuid.UUID, since time.Time, limit int) ([]model.DecisionConflict, error) {
@@ -310,7 +369,9 @@ func (db *DB) GetConflict(ctx context.Context, id, orgID uuid.UUID) (*model.Deci
 // UpdateConflictStatusWithAudit transitions a conflict to a new lifecycle
 // state and inserts a mutation audit entry, atomically in a single transaction.
 // winningDecisionID is optional; when provided it is written only for "resolved" transitions.
-func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, audit MutationAuditEntry) (oldStatus string, err error) {
+// fpLabel is optional; when non-nil and status is "false_positive", a ground-truth
+// label is inserted atomically within the same transaction.
+func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, fpLabel *string, audit MutationAuditEntry) (oldStatus string, err error) {
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
 		return "", fmt.Errorf("storage: begin conflict status tx: %w", err)
@@ -351,10 +412,31 @@ func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.
 		return "", fmt.Errorf("storage: conflict: %w", ErrNotFound)
 	}
 
+	// Atomically label the conflict as a false positive for ground-truth
+	// training. Inserted in the same tx so a crash between status update
+	// and label insert can never leave an unlabeled false_positive.
+	if fpLabel != nil && status == "false_positive" {
+		_, err = tx.Exec(ctx,
+			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
+			 VALUES ($1, $2, $3, $4, now())
+			 ON CONFLICT (scored_conflict_id) DO UPDATE SET
+			   label = excluded.label,
+			   labeled_by = excluded.labeled_by,
+			   labeled_at = excluded.labeled_at
+			 WHERE conflict_labels.org_id = excluded.org_id`,
+			id, orgID, *fpLabel, resolvedBy)
+		if err != nil {
+			return "", fmt.Errorf("storage: label false positive in conflict status tx: %w", err)
+		}
+	}
+
 	audit.BeforeData = map[string]any{"status": oldStatus}
 	afterData := map[string]any{"status": status, "resolved_by": resolvedBy}
 	if winningDecisionID != nil && status == "resolved" {
 		afterData["winning_decision_id"] = winningDecisionID.String()
+	}
+	if fpLabel != nil {
+		afterData["fp_label"] = *fpLabel
 	}
 	audit.AfterData = afterData
 	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
@@ -1121,13 +1203,17 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 // ResolveConflictGroup batch-resolves all open conflicts in a
 // conflict group. When winningAgent is non-nil, each conflict's winning_decision_id
 // is set to the decision from that agent (decision_a_id when agent_a matches,
-// decision_b_id when agent_b matches). Returns the number of conflicts updated.
+// decision_b_id when agent_b matches). When fpLabel is non-nil and status is
+// "false_positive", ground truth labels are inserted atomically within the same
+// transaction — preventing partial-label states on crash. Returns the number of
+// conflicts updated.
 func (db *DB) ResolveConflictGroup(
 	ctx context.Context,
 	groupID, orgID uuid.UUID,
 	status, resolvedBy string,
 	resolutionNote *string,
 	winningAgent *string,
+	fpLabel *string,
 	audit MutationAuditEntry,
 ) (int, error) {
 	tx, err := db.pool.Begin(ctx)
@@ -1184,10 +1270,36 @@ func (db *DB) ResolveConflictGroup(
 
 	affected := int(tag.RowsAffected())
 
+	// Atomically label all just-resolved conflicts as false positives for
+	// ground truth training. The WHERE clause targets only rows updated in
+	// this transaction (status = $1 AND resolved_by = $2 AND group match),
+	// so previously resolved conflicts are never re-labeled.
+	if fpLabel != nil && status == "false_positive" && affected > 0 {
+		_, err = tx.Exec(ctx,
+			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
+			 SELECT sc.id, sc.org_id, $1, $2, now()
+			 FROM scored_conflicts sc
+			 WHERE sc.group_id = $3 AND sc.org_id = $4
+			   AND sc.status = 'false_positive'
+			   AND sc.resolved_by = $5
+			 ON CONFLICT (scored_conflict_id) DO UPDATE SET
+			   label = excluded.label,
+			   labeled_by = excluded.labeled_by,
+			   labeled_at = excluded.labeled_at
+			 WHERE conflict_labels.org_id = excluded.org_id`,
+			*fpLabel, resolvedBy, groupID, orgID, resolvedBy)
+		if err != nil {
+			return 0, fmt.Errorf("storage: label false positives in resolve group tx: %w", err)
+		}
+	}
+
 	audit.BeforeData = map[string]any{"group_id": groupID.String(), "open_count": affected}
 	afterData := map[string]any{"status": status, "resolved_by": resolvedBy, "resolved_count": affected}
 	if winningAgent != nil {
 		afterData["winning_agent"] = *winningAgent
+	}
+	if fpLabel != nil {
+		afterData["fp_label"] = *fpLabel
 	}
 	audit.AfterData = afterData
 	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {

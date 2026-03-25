@@ -120,29 +120,40 @@ func (db *DB) GetDecisionHashesForBatch(ctx context.Context, orgID uuid.UUID, si
 	return hashes, rows.Err()
 }
 
-// IntegrityAuditResult records the outcome of a single integrity proof verification.
-// Both pass and fail results are persisted for positive attestation.
+// IntegrityAuditResult records the outcome of a single integrity check
+// (Merkle root verification or chain linkage verification) for a proof.
 type IntegrityAuditResult struct {
-	ID            uuid.UUID      `json:"id"`
-	OrgID         uuid.UUID      `json:"org_id"`
-	ProofID       uuid.UUID      `json:"proof_id"`
-	ViolationType string         `json:"violation_type"` // "pass", "merkle_root_mismatch", "chain_linkage_broken", "chain_linkage_nil_previous"
-	Details       map[string]any `json:"details,omitempty"`
-	CheckedAt     time.Time      `json:"checked_at"`
+	ID        uuid.UUID
+	OrgID     uuid.UUID
+	ProofID   uuid.UUID
+	CheckType string // "merkle_root" or "chain_linkage"
+	Passed    bool
+	SweepType string // "sample" or "full"
+	Detail    string // human-readable context on failure
+	CheckedAt time.Time
 }
 
-// RecordIntegrityAuditResult persists the outcome of an integrity proof verification.
-func (db *DB) RecordIntegrityAuditResult(ctx context.Context, r IntegrityAuditResult) error {
-	if r.ID == uuid.Nil {
-		r.ID = uuid.New()
+// InsertIntegrityAuditResults batch-inserts audit results. Each row records
+// whether a specific integrity check passed or failed, providing a durable
+// paper trail that survives log rotation.
+func (db *DB) InsertIntegrityAuditResults(ctx context.Context, results []IntegrityAuditResult) error {
+	if len(results) == 0 {
+		return nil
 	}
-	_, err := db.pool.Exec(ctx,
-		`INSERT INTO integrity_audit_results (id, org_id, proof_id, violation_type, details, checked_at)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		r.ID, r.OrgID, r.ProofID, r.ViolationType, r.Details, r.CheckedAt,
+	_, err := db.pool.CopyFrom(ctx,
+		pgx.Identifier{"integrity_audit_results"},
+		[]string{"id", "org_id", "proof_id", "check_type", "passed", "sweep_type", "detail", "checked_at"},
+		pgx.CopyFromSlice(len(results), func(i int) ([]any, error) {
+			r := results[i]
+			id := r.ID
+			if id == uuid.Nil {
+				id = uuid.New()
+			}
+			return []any{id, r.OrgID, r.ProofID, r.CheckType, r.Passed, r.SweepType, r.Detail, r.CheckedAt}, nil
+		}),
 	)
 	if err != nil {
-		return fmt.Errorf("storage: record integrity audit result: %w", err)
+		return fmt.Errorf("storage: insert integrity audit results: %w", err)
 	}
 	return nil
 }

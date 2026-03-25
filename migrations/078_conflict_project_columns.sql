@@ -1,4 +1,4 @@
--- 077: Add project columns to scored_conflicts for project-scoped queries.
+-- 078: Add project columns to scored_conflicts for project-scoped queries.
 --
 -- The session hook and MCP akashi_conflicts tool need to filter conflicts by
 -- project. Currently scored_conflicts has no project information; it lives only

@@ -93,7 +93,9 @@ type Config struct {
 	ConflictSignificanceThreshold float64       // Minimum significance to store (default 0.30).
 	IntegrityProofInterval        time.Duration // How often to build Merkle tree proofs.
 	IntegrityAuditInterval        time.Duration // How often to verify stored Merkle proofs.
-	IntegrityAuditTimeout         time.Duration // Max duration per audit tick.
+	IntegrityAuditTimeout         time.Duration // Timeout for each integrity audit tick (default 5m).
+	IntegrityFullAuditInterval    time.Duration // How often to run exhaustive integrity audit across all orgs (default 24h, 0 disables).
+	IntegrityFullAuditProofs      int           // Number of proofs to check per org in full sweep (default 50).
 	EventBufferSize               int
 	EventFlushTimeout             time.Duration
 	ShutdownHTTPTimeout           time.Duration // 0 disables timeout (wait indefinitely).
@@ -239,6 +241,8 @@ func Load() (Config, error) {
 	cfg.IntegrityProofInterval, errs = collectDuration(errs, "AKASHI_INTEGRITY_PROOF_INTERVAL", 5*time.Minute)
 	cfg.IntegrityAuditInterval, errs = collectDuration(errs, "AKASHI_INTEGRITY_AUDIT_INTERVAL", 15*time.Minute)
 	cfg.IntegrityAuditTimeout, errs = collectDuration(errs, "AKASHI_INTEGRITY_AUDIT_TIMEOUT", 5*time.Minute)
+	cfg.IntegrityFullAuditInterval, errs = collectDuration(errs, "AKASHI_INTEGRITY_FULL_AUDIT_INTERVAL", 24*time.Hour)
+	cfg.IntegrityFullAuditProofs, errs = collectInt(errs, "AKASHI_INTEGRITY_FULL_AUDIT_PROOFS", 50)
 	cfg.EventFlushTimeout, errs = collectDuration(errs, "AKASHI_EVENT_FLUSH_TIMEOUT", 100*time.Millisecond)
 	cfg.WALSyncInterval, errs = collectDuration(errs, "AKASHI_WAL_SYNC_INTERVAL", 10*time.Millisecond)
 	cfg.ShutdownHTTPTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_HTTP_TIMEOUT", 10*time.Second)
@@ -362,6 +366,12 @@ func (c Config) Validate() error {
 	}
 	if c.IntegrityAuditTimeout <= 0 {
 		errs = append(errs, errors.New("config: AKASHI_INTEGRITY_AUDIT_TIMEOUT must be positive"))
+	}
+	if c.IntegrityFullAuditInterval < 0 {
+		errs = append(errs, errors.New("config: AKASHI_INTEGRITY_FULL_AUDIT_INTERVAL must be >= 0 (0 disables)"))
+	}
+	if c.IntegrityFullAuditProofs <= 0 {
+		errs = append(errs, errors.New("config: AKASHI_INTEGRITY_FULL_AUDIT_PROOFS must be positive"))
 	}
 	if c.RateLimitEnabled {
 		if c.RateLimitRPS <= 0 {

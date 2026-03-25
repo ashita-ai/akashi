@@ -183,8 +183,10 @@ Existing deployments that set `AKASHI_WAL_DIR` explicitly will continue to work 
 | `AKASHI_EVENT_BUFFER_SIZE` | `1000` | In-memory event buffer capacity before COPY flush |
 | `AKASHI_EVENT_FLUSH_TIMEOUT` | `100ms` | Max time between buffer flushes |
 | `AKASHI_INTEGRITY_PROOF_INTERVAL` | `5m` | How often Merkle tree proofs are built for new decisions |
-| `AKASHI_INTEGRITY_AUDIT_INTERVAL` | `15m` | How often stored Merkle proofs are verified by recomputing roots from decision hashes and checking chain linkage |
-| `AKASHI_INTEGRITY_AUDIT_TIMEOUT` | `5m` | Maximum duration per integrity audit tick. Increase for deployments with many proofs per org |
+| `AKASHI_INTEGRITY_AUDIT_INTERVAL` | `15m` | How often a sampling integrity audit runs. Each tick picks one random org and verifies its 10 newest proofs. With N orgs, each org is audited roughly every N × 15 min. Set `AKASHI_INTEGRITY_FULL_AUDIT_INTERVAL` > 0 to guarantee periodic exhaustive coverage |
+| `AKASHI_INTEGRITY_AUDIT_TIMEOUT` | `5m` | Timeout for each integrity audit tick (both sampling and full sweep per-org) |
+| `AKASHI_INTEGRITY_FULL_AUDIT_INTERVAL` | `24h` | How often the exhaustive integrity audit runs across all orgs. `0` = disabled |
+| `AKASHI_INTEGRITY_FULL_AUDIT_PROOFS` | `50` | Number of proofs to check per org during a full audit sweep |
 | `AKASHI_ENABLE_DESTRUCTIVE_DELETE` | `false` | Enables irreversible `DELETE /v1/agents/{agent_id}`. Keep `false` in production unless explicitly needed for GDPR workflows |
 | `AKASHI_SHUTDOWN_HTTP_TIMEOUT` | `10s` | HTTP shutdown grace timeout (`0` = wait indefinitely) |
 | `AKASHI_SHUTDOWN_ASYNC_DRAIN_TIMEOUT` | `30s` | Maximum time to drain in-flight post-trace async work (claim generation, conflict scoring) during shutdown. `0` = wait indefinitely |

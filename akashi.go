@@ -34,7 +34,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
+	otelmetric "go.opentelemetry.io/otel/metric"
 
 	"github.com/ashita-ai/akashi/api"
 	"github.com/ashita-ai/akashi/internal/auth"
@@ -61,24 +61,27 @@ import (
 // App is the Akashi server lifecycle. Construct with New(), run with Run().
 // App has no public fields — use New() options to configure it.
 type App struct {
-	cfg                        config.Config
-	db                         *storage.DB
-	srv                        *server.Server
-	buf                        *trace.Buffer
-	outbox                     *search.OutboxWorker
-	qdrantIndex                *search.QdrantIndex // nil when Qdrant is not configured
-	grantCache                 *authz.GrantCache
-	conflictScorer             *conflicts.Scorer
-	decisionSvc                *decisions.Service
-	percentileCache            *search.PercentileCache
-	broker                     *server.Broker // nil when no notify connection
-	otelShutdown               func(context.Context) error
-	limiter                    ratelimit.Limiter // rate limiter; closed on shutdown to stop cleanup goroutine
-	decisionHooks              []server.DecisionHook
-	logger                     *slog.Logger
-	autoResolver               *autoresolve.Service
-	integrityViolationsCounter metric.Int64Counter
-	version                    string
+	cfg             config.Config
+	db              *storage.DB
+	srv             *server.Server
+	buf             *trace.Buffer
+	outbox          *search.OutboxWorker
+	qdrantIndex     *search.QdrantIndex // nil when Qdrant is not configured
+	grantCache      *authz.GrantCache
+	conflictScorer  *conflicts.Scorer
+	decisionSvc     *decisions.Service
+	percentileCache *search.PercentileCache
+	broker          *server.Broker // nil when no notify connection
+	otelShutdown    func(context.Context) error
+	limiter         ratelimit.Limiter // rate limiter; closed on shutdown to stop cleanup goroutine
+	decisionHooks   []server.DecisionHook
+	logger          *slog.Logger
+	autoResolver    *autoresolve.Service
+	version         string
+
+	// OTEL metrics for integrity audit violations. Incremented by
+	// verifyProofsForOrg on Merkle root mismatch or chain linkage failure.
+	integrityViolations otelmetric.Int64Counter
 }
 
 // New initialises the Akashi server. It connects to the database, runs
@@ -124,6 +127,16 @@ func New(opts ...Option) (*App, error) {
 	otelShutdown, err := telemetry.Init(ctx(opts), cfg.OTELEndpoint, cfg.ServiceName, version, cfg.OTELInsecure)
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: %w", err)
+	}
+
+	// Initialize integrity violation counter.
+	meter := telemetry.Meter("akashi/integrity")
+	integrityViolations, err := meter.Int64Counter("akashi.integrity.violations",
+		otelmetric.WithDescription("Count of integrity audit failures (Merkle root mismatch or chain linkage broken)"),
+	)
+	if err != nil {
+		logger.Warn("failed to create integrity violations counter", "error", err)
+		integrityViolations, _ = meter.Int64Counter("akashi.integrity.violations")
 	}
 
 	// Connect to database.
@@ -472,24 +485,24 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	return &App{
-		cfg:                        cfg,
-		db:                         db,
-		srv:                        srv,
-		buf:                        buf,
-		outbox:                     outboxWorker,
-		qdrantIndex:                qdrantIndex,
-		grantCache:                 grantCache,
-		conflictScorer:             conflictScorer,
-		decisionSvc:                decisionSvc,
-		percentileCache:            pctCache,
-		broker:                     broker,
-		otelShutdown:               otelShutdown,
-		integrityViolationsCounter: newIntegrityViolationsCounter(logger),
-		limiter:                    limiter,
-		decisionHooks:              decisionHooks,
-		logger:                     logger,
-		autoResolver:               autoresolve.New(db, logger),
-		version:                    version,
+		cfg:                 cfg,
+		db:                  db,
+		srv:                 srv,
+		buf:                 buf,
+		outbox:              outboxWorker,
+		qdrantIndex:         qdrantIndex,
+		grantCache:          grantCache,
+		conflictScorer:      conflictScorer,
+		decisionSvc:         decisionSvc,
+		percentileCache:     pctCache,
+		broker:              broker,
+		otelShutdown:        otelShutdown,
+		limiter:             limiter,
+		decisionHooks:       decisionHooks,
+		logger:              logger,
+		autoResolver:        autoresolve.New(db, logger),
+		version:             version,
+		integrityViolations: integrityViolations,
 	}, nil
 }
 
@@ -511,6 +524,7 @@ func (a *App) Run(ctx context.Context) error {
 	go a.conflictRefreshLoop(ctx)
 	go a.integrityProofLoop(ctx)
 	go a.integrityAuditLoop(ctx)
+	go a.integrityFullAuditLoop(ctx)
 	go a.idempotencyCleanupLoop(ctx)
 	go a.hookCheckCleanupLoop(ctx)
 	go a.retentionLoop(ctx)
@@ -734,18 +748,6 @@ func (a *App) integrityProofLoop(ctx context.Context) {
 	}
 }
 
-func newIntegrityViolationsCounter(logger *slog.Logger) metric.Int64Counter {
-	meter := telemetry.Meter("akashi/integrity")
-	c, err := meter.Int64Counter("akashi.integrity.violations",
-		metric.WithDescription("Total integrity violations detected by the background Merkle audit loop"),
-	)
-	if err != nil {
-		logger.Warn("failed to create akashi.integrity.violations metric", "error", err)
-		c, _ = meter.Int64Counter("akashi.integrity.violations.fallback")
-	}
-	return c
-}
-
 func (a *App) integrityAuditLoop(ctx context.Context) {
 	ticker := time.NewTicker(a.cfg.IntegrityAuditInterval)
 	defer ticker.Stop()
@@ -762,15 +764,36 @@ func (a *App) integrityAuditLoop(ctx context.Context) {
 	}
 }
 
+// integrityFullAuditLoop runs an exhaustive integrity audit across all orgs
+// at a lower frequency (default: every 24h). Unlike the sampling audit, this
+// checks IntegrityFullAuditProofs proofs per org for every org.
+// Disabled when IntegrityFullAuditInterval is 0.
+func (a *App) integrityFullAuditLoop(ctx context.Context) {
+	if a.cfg.IntegrityFullAuditInterval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(a.cfg.IntegrityFullAuditInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			opCtx, cancel := context.WithTimeout(ctx, a.cfg.IntegrityAuditTimeout)
+			a.fullIntegrityAudit(opCtx)
+			cancel()
+		}
+	}
+}
+
 // auditIntegrityProofs picks one org per tick (sampling-based, not exhaustive)
 // and verifies its most recent Merkle proofs by:
 // (1) recomputing each root from decision content hashes, and
 // (2) checking chain linkage via previous_root.
 // Coverage is probabilistic: with N orgs, each org is audited roughly every
 // N * IntegrityAuditInterval. Only the 10 newest proofs per org are checked.
-//
-// Every check result — pass or fail — is durably persisted to
-// integrity_audit_results so the paper trail is itself tamper-evident.
+// All results (pass and fail) are persisted to integrity_audit_results.
 func (a *App) auditIntegrityProofs(ctx context.Context) {
 	orgIDs, err := a.db.ListOrganizationIDs(ctx)
 	if err != nil {
@@ -781,9 +804,7 @@ func (a *App) auditIntegrityProofs(ctx context.Context) {
 		return
 	}
 
-	// Pick one org per tick to spread load (uniform distribution).
-	// Cryptographic randomness is not needed for load-spreading; math/rand/v2 is sufficient.
-	orgID := orgIDs[rand.IntN(len(orgIDs))] //nolint:gosec // non-security sampling
+	orgID := orgIDs[rand.IntN(len(orgIDs))] //nolint:gosec // sampling, not security
 
 	proofs, err := a.db.GetRecentIntegrityProofs(ctx, orgID, 10)
 	if err != nil {
@@ -794,13 +815,77 @@ func (a *App) auditIntegrityProofs(ctx context.Context) {
 		return
 	}
 
+	results := a.verifyProofsForOrg(ctx, orgID, proofs, "sample")
+	if err := a.db.InsertIntegrityAuditResults(ctx, results); err != nil {
+		a.logger.Warn("integrity audit: failed to persist results", "org_id", orgID, "error", err)
+	}
+
+	a.logger.Info("integrity audit completed", "org_id", orgID, "proofs_checked", len(proofs))
+}
+
+// fullIntegrityAudit checks every org exhaustively using IntegrityFullAuditProofs
+// proofs per org. All results are persisted.
+func (a *App) fullIntegrityAudit(ctx context.Context) {
+	orgIDs, err := a.db.ListOrganizationIDs(ctx)
+	if err != nil {
+		a.logger.Warn("integrity full audit: list orgs failed", "error", err)
+		return
+	}
+
+	var totalProofs, totalFailures int
+	for _, orgID := range orgIDs {
+		if ctx.Err() != nil {
+			a.logger.Warn("integrity full audit: cancelled before completing all orgs",
+				"completed", totalProofs, "remaining_orgs", len(orgIDs))
+			return
+		}
+
+		proofs, err := a.db.GetRecentIntegrityProofs(ctx, orgID, a.cfg.IntegrityFullAuditProofs)
+		if err != nil {
+			a.logger.Warn("integrity full audit: failed to fetch proofs",
+				"org_id", orgID, "error", err)
+			continue
+		}
+		if len(proofs) == 0 {
+			continue
+		}
+
+		results := a.verifyProofsForOrg(ctx, orgID, proofs, "full")
+		if err := a.db.InsertIntegrityAuditResults(ctx, results); err != nil {
+			a.logger.Warn("integrity full audit: failed to persist results",
+				"org_id", orgID, "error", err)
+		}
+
+		totalProofs += len(proofs)
+		for _, r := range results {
+			if !r.Passed {
+				totalFailures++
+			}
+		}
+	}
+
+	a.logger.Info("integrity full audit completed",
+		"orgs_checked", len(orgIDs), "proofs_checked", totalProofs, "failures", totalFailures)
+}
+
+// verifyProofsForOrg checks Merkle roots and chain linkage for the given proofs,
+// returning audit results for every check. Both the sampling and full-sweep
+// audit loops call this.
+func (a *App) verifyProofsForOrg(ctx context.Context, orgID uuid.UUID, proofs []storage.IntegrityProof, sweepType string) []storage.IntegrityAuditResult {
 	now := time.Now().UTC()
+	var results []storage.IntegrityAuditResult
+
 	for i, p := range proofs {
 		// Verify Merkle root.
 		hashes, err := a.db.GetDecisionHashesForBatch(ctx, orgID, p.BatchStart, p.BatchEnd)
 		if err != nil {
 			a.logger.Warn("integrity audit: failed to fetch hashes for batch",
 				"org_id", orgID, "proof_id", p.ID, "error", err)
+			results = append(results, storage.IntegrityAuditResult{
+				OrgID: orgID, ProofID: p.ID, CheckType: "merkle_root",
+				Passed: false, SweepType: sweepType,
+				Detail: fmt.Sprintf("failed to fetch hashes: %v", err), CheckedAt: now,
+			})
 			continue
 		}
 
@@ -808,63 +893,62 @@ func (a *App) auditIntegrityProofs(ctx context.Context) {
 		if err != nil {
 			a.logger.Error("integrity audit: merkle verification error",
 				"org_id", orgID, "proof_id", p.ID, "error", err)
+			results = append(results, storage.IntegrityAuditResult{
+				OrgID: orgID, ProofID: p.ID, CheckType: "merkle_root",
+				Passed: false, SweepType: sweepType,
+				Detail: fmt.Sprintf("verification error: %v", err), CheckedAt: now,
+			})
 			continue
 		}
 		if !ok {
 			a.logger.Error("INTEGRITY VIOLATION: Merkle root mismatch — stored root does not match recomputed root",
 				"org_id", orgID, "proof_id", p.ID,
 				"stored_root", p.RootHash, "decision_count", p.DecisionCount)
-			a.integrityViolationsCounter.Add(ctx, 1,
-				metric.WithAttributes(attribute.String("violation_type", "merkle_root_mismatch")))
-			a.recordAuditResult(ctx, orgID, p.ID, "merkle_root_mismatch", map[string]any{
-				"stored_root":    p.RootHash,
-				"decision_count": p.DecisionCount,
-			}, now)
-		} else {
-			a.recordAuditResult(ctx, orgID, p.ID, "pass", nil, now)
+			a.integrityViolations.Add(ctx, 1, otelmetric.WithAttributes(
+				attribute.String("violation_type", "merkle_root_mismatch"),
+				attribute.String("sweep_type", sweepType),
+			))
 		}
+		results = append(results, storage.IntegrityAuditResult{
+			OrgID: orgID, ProofID: p.ID, CheckType: "merkle_root",
+			Passed: ok, SweepType: sweepType, CheckedAt: now,
+		})
 
 		// Verify chain linkage: this proof's previous_root should match the
 		// next-older proof's root_hash (proofs are newest-first).
 		if i+1 < len(proofs) {
 			older := proofs[i+1]
-			if p.PreviousRoot == nil {
+			var linkPassed bool
+			var detail string
+			switch {
+			case p.PreviousRoot == nil:
 				a.logger.Warn("integrity audit: proof has nil previous_root but older proof exists — chain may be broken",
 					"org_id", orgID, "proof_id", p.ID, "older_proof_id", older.ID)
-				a.recordAuditResult(ctx, orgID, p.ID, "chain_linkage_nil_previous", map[string]any{
-					"older_proof_id": older.ID,
-				}, now)
-			} else if *p.PreviousRoot != older.RootHash {
+				detail = fmt.Sprintf("nil previous_root but older proof %s exists", older.ID)
+				a.integrityViolations.Add(ctx, 1, otelmetric.WithAttributes(
+					attribute.String("violation_type", "chain_linkage_broken"),
+					attribute.String("sweep_type", sweepType),
+				))
+			case *p.PreviousRoot != older.RootHash:
 				a.logger.Error("INTEGRITY VIOLATION: chain linkage broken — previous_root does not match prior proof",
 					"org_id", orgID, "proof_id", p.ID,
 					"expected_previous", older.RootHash, "actual_previous", *p.PreviousRoot)
-				a.integrityViolationsCounter.Add(ctx, 1,
-					metric.WithAttributes(attribute.String("violation_type", "chain_linkage_broken")))
-				a.recordAuditResult(ctx, orgID, p.ID, "chain_linkage_broken", map[string]any{
-					"expected_previous": older.RootHash,
-					"actual_previous":   *p.PreviousRoot,
-				}, now)
+				detail = fmt.Sprintf("expected %s, got %s", older.RootHash, *p.PreviousRoot)
+				a.integrityViolations.Add(ctx, 1, otelmetric.WithAttributes(
+					attribute.String("violation_type", "chain_linkage_broken"),
+					attribute.String("sweep_type", sweepType),
+				))
+			default:
+				linkPassed = true
 			}
+			results = append(results, storage.IntegrityAuditResult{
+				OrgID: orgID, ProofID: p.ID, CheckType: "chain_linkage",
+				Passed: linkPassed, SweepType: sweepType, Detail: detail, CheckedAt: now,
+			})
 		}
 	}
 
-	a.logger.Info("integrity audit completed", "org_id", orgID, "proofs_checked", len(proofs))
-}
-
-// recordAuditResult persists an integrity audit check to the durable audit trail.
-// Failures are logged but do not halt the audit loop — the OTel metric still fires.
-func (a *App) recordAuditResult(ctx context.Context, orgID, proofID uuid.UUID, violationType string, details map[string]any, checkedAt time.Time) {
-	if err := a.db.RecordIntegrityAuditResult(ctx, storage.IntegrityAuditResult{
-		OrgID:         orgID,
-		ProofID:       proofID,
-		ViolationType: violationType,
-		Details:       details,
-		CheckedAt:     checkedAt,
-	}); err != nil {
-		a.logger.Error("integrity audit: failed to persist audit result",
-			"org_id", orgID, "proof_id", proofID,
-			"violation_type", violationType, "error", err)
-	}
+	return results
 }
 
 func (a *App) idempotencyCleanupLoop(ctx context.Context) {
