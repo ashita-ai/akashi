@@ -111,7 +111,7 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 	// Also clear precedent_ref from OTHER agents that reference this agent's decisions.
 	_, err = tx.Exec(ctx,
 		`UPDATE decisions SET precedent_ref = NULL
-		 WHERE precedent_ref IN (SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2)`,
+		 WHERE org_id = $1 AND precedent_ref IN (SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2)`,
 		orgID, agentID)
 	if err != nil {
 		return DeleteAgentResult{}, fmt.Errorf("storage: clear external precedent refs: %w", err)
@@ -120,7 +120,7 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 	// Also clear supersedes_id from OTHER agents that reference this agent's decisions.
 	_, err = tx.Exec(ctx,
 		`UPDATE decisions SET supersedes_id = NULL
-		 WHERE supersedes_id IN (SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2)`,
+		 WHERE org_id = $1 AND supersedes_id IN (SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2)`,
 		orgID, agentID)
 	if err != nil {
 		return DeleteAgentResult{}, fmt.Errorf("storage: clear external supersedes refs: %w", err)
@@ -248,7 +248,7 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 	// Also clear parent_run_id from OTHER agents that reference this agent's runs.
 	_, err = tx.Exec(ctx,
 		`UPDATE agent_runs SET parent_run_id = NULL
-		 WHERE parent_run_id IN (SELECT id FROM agent_runs WHERE org_id = $1 AND agent_id = $2)`,
+		 WHERE org_id = $1 AND parent_run_id IN (SELECT id FROM agent_runs WHERE org_id = $1 AND agent_id = $2)`,
 		orgID, agentID)
 	if err != nil {
 		return DeleteAgentResult{}, fmt.Errorf("storage: clear external parent run refs: %w", err)
