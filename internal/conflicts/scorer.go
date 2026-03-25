@@ -1163,9 +1163,14 @@ func isCoordinatedChange(d, cand model.Decision) bool {
 		return true
 	}
 
-	// For pr_number and branch checks, require same project (or both empty).
-	// PR numbers and branch names are repo-scoped, not globally unique.
-	sameProject := derefString(d.Project) == derefString(cand.Project)
+	// For pr_number and branch checks, require same project. PR numbers and
+	// branch names are repo-scoped, not globally unique — pr_number "42" in
+	// repo-alpha is unrelated to pr_number "42" in repo-beta. When both
+	// projects are nil/empty we can't distinguish repos, so we require at
+	// least one non-empty project to avoid false suppression in multi-repo orgs.
+	projA := derefString(d.Project)
+	projB := derefString(cand.Project)
+	sameProject := projA == projB && (projA != "" || projB != "")
 
 	// Same PR number + same project → definitively coordinated.
 	prA := nestedContextString(d.AgentContext, "pr_number")

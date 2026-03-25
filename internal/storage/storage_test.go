@@ -10257,7 +10257,21 @@ func TestVerifyBatchProof_DetectsTamperingIntegration(t *testing.T) {
 	suffix := uuid.New().String()[:8]
 	agentID := "tamper-detect-" + suffix
 
-	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	// Use a dedicated org so other tests' decisions in the default org
+	// don't leak into our batch window and inflate the hash count.
+	orgID := uuid.New()
+	_, err := testDB.Pool().Exec(ctx,
+		`INSERT INTO organizations (id, name, slug) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+		orgID, "tamper-org-"+suffix, "tamper-org-"+suffix)
+	require.NoError(t, err)
+
+	// CreateRun uses the default org; we need to insert the run manually
+	// under our isolated org so decisions land in the right org_id.
+	runID := uuid.New()
+	_, err = testDB.Pool().Exec(ctx,
+		`INSERT INTO agent_runs (id, org_id, agent_id, status, created_at)
+		 VALUES ($1, $2, $3, 'running', now())`,
+		runID, orgID, agentID)
 	require.NoError(t, err)
 
 	beforeCreate := time.Now().UTC().Add(-1 * time.Second)
@@ -10268,9 +10282,9 @@ func TestVerifyBatchProof_DetectsTamperingIntegration(t *testing.T) {
 		reasoning := fmt.Sprintf("reasoning %d", i)
 		_, err := testDB.CreateDecision(ctx, model.Decision{
 			ID:           uuid.New(),
-			RunID:        run.ID,
+			RunID:        runID,
 			AgentID:      agentID,
-			OrgID:        run.OrgID,
+			OrgID:        orgID,
 			DecisionType: "tamper_test",
 			Outcome:      fmt.Sprintf("outcome %d for %s", i, suffix),
 			Confidence:   0.8,
@@ -10283,7 +10297,7 @@ func TestVerifyBatchProof_DetectsTamperingIntegration(t *testing.T) {
 	afterCreate := time.Now().UTC().Add(1 * time.Second)
 
 	// Get hashes and build a legitimate Merkle root.
-	hashes, err := testDB.GetDecisionHashesForBatch(ctx, run.OrgID, beforeCreate, afterCreate)
+	hashes, err := testDB.GetDecisionHashesForBatch(ctx, orgID, beforeCreate, afterCreate)
 	require.NoError(t, err)
 	require.Len(t, hashes, count)
 
@@ -10297,7 +10311,7 @@ func TestVerifyBatchProof_DetectsTamperingIntegration(t *testing.T) {
 
 	// Store the proof.
 	proof := storage.IntegrityProof{
-		OrgID:         run.OrgID,
+		OrgID:         orgID,
 		BatchStart:    beforeCreate,
 		BatchEnd:      afterCreate,
 		DecisionCount: count,

@@ -2696,28 +2696,44 @@ func TestIsCoordinatedChange(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "same pr_number → coordinated",
+			name: "same pr_number with project → coordinated",
 			d: model.Decision{
 				AgentContext: map[string]any{"client": map[string]any{"pr_number": "501"}},
+				Project:      strPtr("myrepo"),
 				ValidFrom:    now,
 			},
 			cand: model.Decision{
 				AgentContext: map[string]any{"client": map[string]any{"pr_number": "501"}},
+				Project:      strPtr("myrepo"),
 				ValidFrom:    now.Add(time.Hour),
 			},
 			expected: true,
 		},
 		{
-			name: "same pr_number flat layout → coordinated",
+			name: "same pr_number flat layout with project → coordinated",
 			d: model.Decision{
 				AgentContext: map[string]any{"pr_number": "501"},
+				Project:      strPtr("myrepo"),
 				ValidFrom:    now,
 			},
 			cand: model.Decision{
 				AgentContext: map[string]any{"pr_number": "501"},
+				Project:      strPtr("myrepo"),
 				ValidFrom:    now.Add(time.Hour),
 			},
 			expected: true,
+		},
+		{
+			name: "same pr_number no project → not coordinated (can't distinguish repos)",
+			d: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"pr_number": "501"}},
+				ValidFrom:    now,
+			},
+			cand: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"pr_number": "501"}},
+				ValidFrom:    now.Add(time.Hour),
+			},
+			expected: false,
 		},
 		{
 			name: "different pr_number → not coordinated",
@@ -2732,13 +2748,15 @@ func TestIsCoordinatedChange(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "same branch within 24h → coordinated",
+			name: "same branch within 24h with project → coordinated",
 			d: model.Decision{
 				AgentContext: map[string]any{"client": map[string]any{"branch": "feature/status-simplification"}},
+				Project:      strPtr("myrepo"),
 				ValidFrom:    now,
 			},
 			cand: model.Decision{
 				AgentContext: map[string]any{"client": map[string]any{"branch": "feature/status-simplification"}},
+				Project:      strPtr("myrepo"),
 				ValidFrom:    now.Add(12 * time.Hour),
 			},
 			expected: true,
@@ -2747,11 +2765,25 @@ func TestIsCoordinatedChange(t *testing.T) {
 			name: "same branch beyond 24h → not coordinated",
 			d: model.Decision{
 				AgentContext: map[string]any{"client": map[string]any{"branch": "feature/status-simplification"}},
+				Project:      strPtr("myrepo"),
 				ValidFrom:    now,
 			},
 			cand: model.Decision{
 				AgentContext: map[string]any{"client": map[string]any{"branch": "feature/status-simplification"}},
+				Project:      strPtr("myrepo"),
 				ValidFrom:    now.Add(48 * time.Hour),
+			},
+			expected: false,
+		},
+		{
+			name: "same branch within 24h no project → not coordinated",
+			d: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"branch": "feature/foo"}},
+				ValidFrom:    now,
+			},
+			cand: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"branch": "feature/foo"}},
+				ValidFrom:    now.Add(12 * time.Hour),
 			},
 			expected: false,
 		},
@@ -2818,7 +2850,7 @@ func TestIsCoordinatedChange(t *testing.T) {
 			expected: true,
 		},
 		{
-			name: "same pr_number both nil project → coordinated (backward compat)",
+			name: "same pr_number both nil project → not coordinated (can't distinguish repos)",
 			d: model.Decision{
 				AgentContext: map[string]any{"client": map[string]any{"pr_number": "42"}},
 				ValidFrom:    now,
@@ -2827,7 +2859,7 @@ func TestIsCoordinatedChange(t *testing.T) {
 				AgentContext: map[string]any{"client": map[string]any{"pr_number": "42"}},
 				ValidFrom:    now.Add(time.Hour),
 			},
-			expected: true,
+			expected: false,
 		},
 		{
 			name: "same branch different project within 24h → not coordinated",
