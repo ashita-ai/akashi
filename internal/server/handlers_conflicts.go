@@ -159,16 +159,7 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 		resolvedBy = claims.Subject
 	}
 
-	// Compute false_positive label so the storage layer can insert it
-	// atomically in the same transaction as the resolution.
-	var fpLabel *string
-	if req.Status == "false_positive" {
-		label := "unrelated_false_positive"
-		if req.FalsePositiveLabel != nil && *req.FalsePositiveLabel == "related_not_contradicting" {
-			label = *req.FalsePositiveLabel
-		}
-		fpLabel = &label
-	}
+	fpLabel := storage.ComputeFPLabel(req.Status, req.FalsePositiveLabel)
 
 	audit := h.buildAuditEntry(r, orgID,
 		"conflict_status_changed", "conflict", id.String(),
@@ -277,16 +268,7 @@ func (h *Handlers) HandleResolveConflictGroup(w http.ResponseWriter, r *http.Req
 		map[string]any{"new_status": req.Status, "resolved_by": resolvedBy},
 	)
 
-	// Compute false_positive label so the storage layer can insert it
-	// atomically in the same transaction as the resolution.
-	var fpLabel *string
-	if req.Status == "false_positive" {
-		label := "unrelated_false_positive"
-		if req.FalsePositiveLabel != nil && *req.FalsePositiveLabel == "related_not_contradicting" {
-			label = *req.FalsePositiveLabel
-		}
-		fpLabel = &label
-	}
+	fpLabel := storage.ComputeFPLabel(req.Status, req.FalsePositiveLabel)
 
 	affected, err := h.db.ResolveConflictGroup(r.Context(), groupID, orgID, req.Status, resolvedBy, req.ResolutionNote, req.WinningAgent, fpLabel, audit)
 	if err != nil {

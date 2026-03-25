@@ -1470,11 +1470,15 @@ func (s *Server) handleResolve(ctx context.Context, request mcplib.CallToolReque
 
 	actorRole := string(claims.Role)
 
+	// Compute false_positive label once — passed to both resolution paths.
+	rawFPLabel := request.GetString("false_positive_label", "")
+	fpLabel := storage.ComputeFPLabel(status, &rawFPLabel)
+
 	// Attempt single-conflict resolution first. UpdateConflictStatusWithAudit
 	// uses SELECT ... FOR UPDATE inside its transaction, so there is no
 	// read-then-write race. If the ID doesn't match a scored_conflict, fall
 	// back to group resolution.
-	singleResult, singleErr := s.resolveSingleConflict(ctx, request, conflictID, orgID, status, resolvedBy, actorRole, resolutionNote, winningDecisionID)
+	singleResult, singleErr := s.resolveSingleConflict(ctx, conflictID, orgID, status, resolvedBy, actorRole, resolutionNote, winningDecisionID, fpLabel)
 	if singleErr != nil {
 		return nil, singleErr
 	}
@@ -1483,7 +1487,7 @@ func (s *Server) handleResolve(ctx context.Context, request mcplib.CallToolReque
 	}
 
 	// Not a scored_conflict ID — try resolving as a conflict_group ID.
-	return s.resolveGroup(ctx, request, conflictID, orgID, status, resolvedBy, actorRole, resolutionNote, winningDecisionID)
+	return s.resolveGroup(ctx, conflictID, orgID, status, resolvedBy, actorRole, resolutionNote, winningDecisionID, fpLabel)
 }
 
 // resolveSingleConflict attempts to resolve the given ID as a scored_conflict.
@@ -1492,23 +1496,12 @@ func (s *Server) handleResolve(ctx context.Context, request mcplib.CallToolReque
 // race — UpdateConflictStatusWithAudit uses SELECT ... FOR UPDATE internally.
 func (s *Server) resolveSingleConflict(
 	ctx context.Context,
-	request mcplib.CallToolRequest,
 	conflictID, orgID uuid.UUID,
 	status, resolvedBy, actorRole string,
 	resolutionNote *string,
 	winningDecisionID *uuid.UUID,
+	fpLabel *string,
 ) (*mcplib.CallToolResult, error) {
-	// Compute false_positive label so the storage layer can insert it
-	// atomically in the same transaction as the resolution.
-	var fpLabel *string
-	if status == "false_positive" {
-		label := "unrelated_false_positive"
-		if fp := request.GetString("false_positive_label", ""); fp == "related_not_contradicting" {
-			label = fp
-		}
-		fpLabel = &label
-	}
-
 	audit := storage.MutationAuditEntry{
 		OrgID:        orgID,
 		ActorAgentID: resolvedBy,
@@ -1588,11 +1581,11 @@ func (s *Server) resolveSingleConflict(
 // transaction with one audit entry.
 func (s *Server) resolveGroup(
 	ctx context.Context,
-	request mcplib.CallToolRequest,
 	groupID, orgID uuid.UUID,
 	status, resolvedBy, actorRole string,
 	resolutionNote *string,
 	winningDecisionID *uuid.UUID,
+	fpLabel *string,
 ) (*mcplib.CallToolResult, error) {
 	// Convert winning_decision_id → winning agent. The storage method resolves
 	// per-conflict winners atomically via SQL CASE on agent_a/agent_b, which is
@@ -1608,17 +1601,6 @@ func (s *Server) resolveGroup(
 			return errorResult("winning_decision_id not found"), nil
 		}
 		winningAgent = &dec.AgentID
-	}
-
-	// Compute false_positive label so the storage layer can insert it
-	// atomically in the same transaction as the resolution.
-	var fpLabel *string
-	if status == "false_positive" {
-		label := "unrelated_false_positive"
-		if fp := request.GetString("false_positive_label", ""); fp == "related_not_contradicting" {
-			label = fp
-		}
-		fpLabel = &label
 	}
 
 	audit := storage.MutationAuditEntry{
