@@ -128,6 +128,18 @@ func TestLocalhostOnly(t *testing.T) {
 		handler.ServeHTTP(rec, req)
 		assert.Equal(t, http.StatusForbidden, rec.Code)
 	})
+
+	t.Run("empty header rejected even when key is configured", func(t *testing.T) {
+		// Ensures constant-time compare of empty vs non-empty returns false,
+		// not a length-mismatch short-circuit leak.
+		handler := localhostOnly("secret-key", inner)
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/hooks/session-start", nil)
+		req.RemoteAddr = "192.168.1.1:54321"
+		// No X-Akashi-Hook-Key header set.
+		handler.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusForbidden, rec.Code)
+	})
 }
 
 func TestHandleHookPreToolUse_EditGate(t *testing.T) {
@@ -482,6 +494,45 @@ func TestHelpers(t *testing.T) {
 				assert.Equal(t, tt.want, truncateHook(tt.input, tt.maxLen))
 			})
 		}
+	})
+}
+
+func TestHookMaxBytesReader(t *testing.T) {
+	// Verify that all three hook handlers reject bodies larger than hookMaxBodyBytes
+	// by returning Continue=true (graceful degradation, not an error page).
+	oversized := strings.Repeat("x", int(hookMaxBodyBytes)+1)
+
+	t.Run("SessionStart rejects oversized body", func(t *testing.T) {
+		h := &Handlers{hookChecks: newHookCheckStore()}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/hooks/session-start", strings.NewReader(oversized))
+		h.HandleHookSessionStart(rec, req)
+
+		var resp hookResponse
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+		assert.True(t, resp.Continue, "oversized body should fail gracefully with continue=true")
+	})
+
+	t.Run("PreToolUse rejects oversized body", func(t *testing.T) {
+		h := &Handlers{hookChecks: newHookCheckStore()}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/hooks/pre-tool-use", strings.NewReader(oversized))
+		h.HandleHookPreToolUse(rec, req)
+
+		var resp hookResponse
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+		assert.True(t, resp.Continue, "oversized body should fail gracefully with continue=true")
+	})
+
+	t.Run("PostToolUse rejects oversized body", func(t *testing.T) {
+		h := &Handlers{hookChecks: newHookCheckStore()}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/hooks/post-tool-use", strings.NewReader(oversized))
+		h.HandleHookPostToolUse(rec, req)
+
+		var resp hookResponse
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+		assert.True(t, resp.Continue, "oversized body should fail gracefully with continue=true")
 	})
 }
 

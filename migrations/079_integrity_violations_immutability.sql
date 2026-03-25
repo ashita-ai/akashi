@@ -1,6 +1,6 @@
--- 078: enforce append-only invariant on integrity_violations.
+-- 079: enforce append-only invariant on integrity_violations.
 --
--- Migration 077 created integrity_violations and labeled it "append-only"
+-- Migration 078 created integrity_violations and labeled it "append-only"
 -- in a comment, but unlike integrity_proofs (migration 042), there were no
 -- triggers enforcing immutability. A compromised process or careless admin
 -- could DELETE or UPDATE violation records, erasing evidence of detected

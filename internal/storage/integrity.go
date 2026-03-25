@@ -177,6 +177,44 @@ func (db *DB) GetDecisionHashesForBatch(ctx context.Context, orgID uuid.UUID, si
 	return hashes, rows.Err()
 }
 
+// IntegrityAuditResult records the outcome of a single integrity check
+// (Merkle root verification or chain linkage verification) for a proof.
+type IntegrityAuditResult struct {
+	ID        uuid.UUID
+	OrgID     uuid.UUID
+	ProofID   uuid.UUID
+	CheckType string // "merkle_root" or "chain_linkage"
+	Passed    bool
+	SweepType string // "sample" or "full"
+	Detail    string // human-readable context on failure
+	CheckedAt time.Time
+}
+
+// InsertIntegrityAuditResults batch-inserts audit results. Each row records
+// whether a specific integrity check passed or failed, providing a durable
+// paper trail that survives log rotation.
+func (db *DB) InsertIntegrityAuditResults(ctx context.Context, results []IntegrityAuditResult) error {
+	if len(results) == 0 {
+		return nil
+	}
+	_, err := db.pool.CopyFrom(ctx,
+		pgx.Identifier{"integrity_audit_results"},
+		[]string{"id", "org_id", "proof_id", "check_type", "passed", "sweep_type", "detail", "checked_at"},
+		pgx.CopyFromSlice(len(results), func(i int) ([]any, error) {
+			r := results[i]
+			id := r.ID
+			if id == uuid.Nil {
+				id = uuid.New()
+			}
+			return []any{id, r.OrgID, r.ProofID, r.CheckType, r.Passed, r.SweepType, r.Detail, r.CheckedAt}, nil
+		}),
+	)
+	if err != nil {
+		return fmt.Errorf("storage: insert integrity audit results: %w", err)
+	}
+	return nil
+}
+
 // ListOrganizationIDs returns all active organization IDs.
 func (db *DB) ListOrganizationIDs(ctx context.Context) ([]uuid.UUID, error) {
 	rows, err := db.pool.Query(ctx, `SELECT id FROM organizations ORDER BY id`)

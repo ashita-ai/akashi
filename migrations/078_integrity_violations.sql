@@ -1,4 +1,4 @@
--- 077: add integrity_violations table to durably persist detected tampering.
+-- 078: add integrity_violations table to durably persist detected tampering.
 --
 -- The background integrity audit loop detects Merkle root mismatches and
 -- chain linkage breaks but previously only logged them. Logs are ephemeral
