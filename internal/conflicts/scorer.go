@@ -43,6 +43,34 @@ func agentContextString(ctx map[string]any, key string) string {
 	return s
 }
 
+// nestedContextString extracts a string value from the agent_context JSONB map,
+// checking namespaced locations in priority order: client.<key>, server.<key>,
+// then flat <key>. This mirrors the SQL COALESCE used by generated attribution
+// columns (migration 048) and handles both namespaced (MCP/HTTP handler) and
+// legacy flat agent_context layouts.
+func nestedContextString(ctx map[string]any, key string) string {
+	if ctx == nil {
+		return ""
+	}
+	// Check client namespace first (self-reported values like commit_sha, pr_number).
+	if client, ok := ctx["client"].(map[string]any); ok {
+		if s, ok := client[key].(string); ok && s != "" {
+			return s
+		}
+	}
+	// Check server namespace (server-extracted values).
+	if server, ok := ctx["server"].(map[string]any); ok {
+		if s, ok := server[key].(string); ok && s != "" {
+			return s
+		}
+	}
+	// Fall back to flat key (legacy layout).
+	if s, ok := ctx[key].(string); ok {
+		return s
+	}
+	return ""
+}
+
 // uuidString returns the string representation of a UUID pointer, or "" if nil.
 func uuidString(id *uuid.UUID) string {
 	if id == nil {
@@ -95,6 +123,15 @@ type Scorer struct {
 	// sorted iteration (unless they qualify for the directToScorer bypass).
 	// 0 disables early exit. Default: 0.25.
 	earlyExitFloor float64
+
+	// outcomeSimFloor is the minimum outcome embedding cosine similarity above
+	// which two decisions are considered to effectively agree. Pairs at or above
+	// this threshold are suppressed as complementary without an LLM call, even
+	// when the directToScorer bypass would otherwise apply. 0 disables.
+	// Default: 0.85 (matches claim-level agreement: claimDivFloor 0.15 implies
+	// agreement at similarity >= 0.85, calibrated against 30 real mxbai-embed-large
+	// decisions — see claimDivFloor and defaultOutcomeSimFloor constants).
+	outcomeSimFloor float64
 }
 
 // WithCandidateFinder wires a Qdrant-backed CandidateFinder for conflict candidate
@@ -152,6 +189,17 @@ func (s *Scorer) WithEarlyExitFloor(floor float64) *Scorer {
 	return s
 }
 
+// WithOutcomeSimFloor overrides the outcome similarity floor. Candidate pairs
+// with outcome cosine similarity at or above this value are suppressed as
+// complementary (outcomes effectively agree). 0 disables the check. Negative
+// values are ignored. Default: 0.85.
+func (s *Scorer) WithOutcomeSimFloor(floor float64) *Scorer {
+	if floor >= 0 {
+		s.outcomeSimFloor = floor
+	}
+	return s
+}
+
 // WithCrossEncoder configures a cross-encoder reranking step between significance
 // scoring and LLM validation. Pairs scoring below the threshold are skipped
 // without an LLM call, reducing validation cost. Only active when using the
@@ -187,6 +235,7 @@ func NewScorer(db *storage.DB, logger *slog.Logger, significanceThreshold float6
 		decayLambda:           decayLambda,
 		candidateLimit:        20,
 		earlyExitFloor:        0.25,
+		outcomeSimFloor:       defaultOutcomeSimFloor,
 		claimTopicSimFloor:    claimTopicSimFloor,
 		claimDivFloor:         claimDivFloor,
 		decisionTopicSimFloor: decisionTopicSimFloor,
@@ -211,6 +260,14 @@ const claimDivFloor = 0.15
 // claim-level scoring to activate. Below this, the decisions are about
 // sufficiently different topics that claim-level analysis adds noise.
 const decisionTopicSimFloor = 0.7
+
+// defaultOutcomeSimFloor is the minimum outcome embedding cosine similarity
+// above which two decisions are considered to effectively agree. Derived from
+// the same calibration basis as claimDivFloor: claimDivFloor = 0.15 implies
+// that claims with divergence < 0.15 (similarity >= 0.85) are in agreement.
+// Full outcomes are longer and more context-rich, so the same threshold
+// applies conservatively. See claimDivFloor calibration notes above.
+const defaultOutcomeSimFloor = 0.85
 
 // pairCache tracks decision pairs that have already been evaluated within a
 // single backfill run. This prevents duplicate LLM calls when both sides of
@@ -357,6 +414,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 	type candidateScore struct {
 		cand       model.Decision
 		topicSim   float64
+		outcomeSim float64 // raw outcome embedding cosine similarity (before divergence)
 		bestSig    float64
 		bestDiv    float64
 		bestMethod string
@@ -422,6 +480,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		scored = append(scored, candidateScore{
 			cand:       cand,
 			topicSim:   topicSim,
+			outcomeSim: outcomeSim,
 			bestSig:    bestSig,
 			bestDiv:    bestDiv,
 			bestMethod: bestMethod,
@@ -485,6 +544,43 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				"decision_a", decisionID, "decision_b", sc.cand.ID,
 				"type_a", d.DecisionType, "type_b", sc.cand.DecisionType,
 				"agent_a", d.AgentID, "agent_b", sc.cand.AgentID)
+			continue
+		}
+
+		// Coordinated change filter: suppress conflict when decisions share
+		// the same commit, PR, or branch (within a temporal window). Two
+		// decisions from the same commit/PR are coordinated by definition —
+		// they implement the same change across different layers (model,
+		// handler, storage, UI, docs) and are complementary, not contradictory.
+		// See issue #517 for the false positive analysis motivating this.
+		if isCoordinatedChange(d, sc.cand) {
+			s.metrics.coordinatedFiltered.Add(ctx, 1)
+			s.logger.Debug("conflict scorer: coordinated change filter suppressed pair",
+				"decision_a", decisionID, "decision_b", sc.cand.ID,
+				"agent_a", d.AgentID, "agent_b", sc.cand.AgentID)
+			continue
+		}
+
+		// Outcome similarity floor: when outcome embeddings are nearly
+		// identical AND the pair did not qualify for the directToScorer
+		// bypass, suppress as complementary. This catches coordinated
+		// changes without PR/commit metadata (the fallback for #517).
+		// Threshold is calibrated from the same basis as claimDivFloor
+		// (see defaultOutcomeSimFloor). 0 disables.
+		//
+		// Two exceptions prevent this from suppressing genuine conflicts:
+		// 1. directToScorer pairs are exempt: the bypass exists to handle
+		//    bi-encoder stance blindness ("X is correct" vs "X is wrong"
+		//    embed close together). The LLM is the right classifier for these.
+		// 2. claim-level divergence: when claim-level scoring found genuine
+		//    disagreement, claims provide a more precise signal than
+		//    full-outcome similarity.
+		if s.outcomeSimFloor > 0 && sc.outcomeSim >= s.outcomeSimFloor &&
+			sc.bestMethod != "claim" && !directToScorer {
+			s.metrics.outcomeSimFiltered.Add(ctx, 1)
+			s.logger.Debug("conflict scorer: outcome similarity floor suppressed pair",
+				"decision_a", decisionID, "decision_b", sc.cand.ID,
+				"outcome_sim", sc.outcomeSim, "floor", s.outcomeSimFloor)
 			continue
 		}
 
@@ -568,26 +664,27 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 
 			llmStart := time.Now()
 			result, err := s.validator.Validate(ctx, ValidateInput{
-				OutcomeA:        sc.bestOutA,
-				OutcomeB:        sc.bestOutB,
-				TypeA:           d.DecisionType,
-				TypeB:           cand.DecisionType,
-				AgentA:          d.AgentID,
-				AgentB:          cand.AgentID,
-				CreatedA:        d.ValidFrom,
-				CreatedB:        cand.ValidFrom,
-				ReasoningA:      derefString(d.Reasoning),
-				ReasoningB:      derefString(cand.Reasoning),
-				ProjectA:        derefString(d.Project),
-				ProjectB:        derefString(cand.Project),
-				TaskA:           agentContextString(d.AgentContext, "task"),
-				TaskB:           agentContextString(cand.AgentContext, "task"),
-				SessionIDA:      uuidString(d.SessionID),
-				SessionIDB:      uuidString(cand.SessionID),
-				FullOutcomeA:    d.Outcome,
-				FullOutcomeB:    cand.Outcome,
-				TopicSimilarity: sc.topicSim,
-				PrecedentLinked: isPrecedentLinked(d, cand),
+				OutcomeA:          sc.bestOutA,
+				OutcomeB:          sc.bestOutB,
+				TypeA:             d.DecisionType,
+				TypeB:             cand.DecisionType,
+				AgentA:            d.AgentID,
+				AgentB:            cand.AgentID,
+				CreatedA:          d.ValidFrom,
+				CreatedB:          cand.ValidFrom,
+				ReasoningA:        derefString(d.Reasoning),
+				ReasoningB:        derefString(cand.Reasoning),
+				ProjectA:          derefString(d.Project),
+				ProjectB:          derefString(cand.Project),
+				TaskA:             agentContextString(d.AgentContext, "task"),
+				TaskB:             agentContextString(cand.AgentContext, "task"),
+				SessionIDA:        uuidString(d.SessionID),
+				SessionIDB:        uuidString(cand.SessionID),
+				FullOutcomeA:      d.Outcome,
+				FullOutcomeB:      cand.Outcome,
+				TopicSimilarity:   sc.topicSim,
+				PrecedentLinked:   isPrecedentLinked(d, cand),
+				OutcomeSimilarity: sc.outcomeSim,
 			})
 			s.metrics.llmCallDuration.Record(ctx, float64(time.Since(llmStart).Milliseconds()))
 			if err != nil {
@@ -1032,6 +1129,62 @@ func isComplementaryWorkflowPair(d, cand model.Decision) bool {
 			if strings.Contains(lowerOutcome, kw) {
 				return true
 			}
+		}
+	}
+
+	return false
+}
+
+// isCoordinatedChange returns true when two decisions share provenance metadata
+// that proves they are part of the same coordinated change — same commit, same
+// PR, or same branch within a short temporal window. This is a binary signal
+// (no thresholds) that is semantically correct: decisions from the same PR are
+// coordinated by definition, even when they implement different layers (model,
+// handler, storage, UI, docs) whose outcome text diverges.
+//
+// Checked fields (via nestedContextString, which searches client.*, server.*,
+// and flat namespaces):
+//   - commit_sha: exact match → always coordinated (globally unique)
+//   - pr_number: exact match + same project → always coordinated
+//   - branch: exact match + same project + decisions within 24h → likely coordinated
+//
+// PR numbers and branch names are scoped to a repository, not globally unique.
+// Two decisions in the same org but different repos sharing pr_number "42" are
+// not coordinated. commit_sha is exempt because SHA-256 hashes are globally unique.
+//
+// Branch alone is a weaker signal (branches are reused across PRs), so it
+// requires temporal proximity as a secondary qualifier.
+func isCoordinatedChange(d, cand model.Decision) bool {
+	// Same commit SHA → definitively coordinated.
+	// Commit SHAs are globally unique, no project scoping needed.
+	commitA := nestedContextString(d.AgentContext, "commit_sha")
+	commitB := nestedContextString(cand.AgentContext, "commit_sha")
+	if commitA != "" && commitA == commitB {
+		return true
+	}
+
+	// For pr_number and branch checks, require same project (or both empty).
+	// PR numbers and branch names are repo-scoped, not globally unique.
+	sameProject := derefString(d.Project) == derefString(cand.Project)
+
+	// Same PR number + same project → definitively coordinated.
+	prA := nestedContextString(d.AgentContext, "pr_number")
+	prB := nestedContextString(cand.AgentContext, "pr_number")
+	if prA != "" && prA == prB && sameProject {
+		return true
+	}
+
+	// Same branch + same project + temporal proximity → likely coordinated.
+	// 24h window accommodates multi-session work on a single branch
+	// while excluding branch reuse across separate PRs (which typically
+	// spans days/weeks with a merge in between).
+	branchA := nestedContextString(d.AgentContext, "branch")
+	branchB := nestedContextString(cand.AgentContext, "branch")
+	if branchA != "" && branchA == branchB && sameProject {
+		const coordinationWindow = 24 * time.Hour
+		timeDelta := d.ValidFrom.Sub(cand.ValidFrom).Abs()
+		if timeDelta <= coordinationWindow {
+			return true
 		}
 	}
 

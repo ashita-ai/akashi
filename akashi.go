@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"time"
@@ -241,7 +242,8 @@ func New(opts ...Option) (*App, error) {
 	conflictScorer := conflicts.NewScorer(db, logger, cfg.ConflictSignificanceThreshold, conflictValidator, backfillWorkers, cfg.ConflictDecayLambda).
 		WithScoringThresholds(cfg.ConflictClaimTopicSimFloor, cfg.ConflictClaimDivFloor, cfg.ConflictDecisionTopicSimFloor).
 		WithCandidateLimit(cfg.ConflictCandidateLimit).
-		WithEarlyExitFloor(cfg.ConflictEarlyExitFloor)
+		WithEarlyExitFloor(cfg.ConflictEarlyExitFloor).
+		WithOutcomeSimFloor(cfg.ConflictOutcomeSimFloor)
 	if qdrantIndex != nil {
 		conflictScorer = conflictScorer.WithCandidateFinder(qdrantIndex)
 	}
@@ -761,8 +763,9 @@ func (a *App) auditIntegrityProofs(ctx context.Context) {
 		return
 	}
 
-	// Pick one org per tick to spread load.
-	orgID := orgIDs[time.Now().UnixNano()%int64(len(orgIDs))]
+	// Pick one org per tick to spread load. rand.IntN provides uniform
+	// distribution; the prior time.Now().UnixNano()%N had modulo bias.
+	orgID := orgIDs[rand.IntN(len(orgIDs))] //nolint:gosec // uniform selection for audit sampling, not security-sensitive
 
 	proofs, err := a.db.GetRecentIntegrityProofs(ctx, orgID, 10)
 	if err != nil {
@@ -792,6 +795,13 @@ func (a *App) auditIntegrityProofs(ctx context.Context) {
 			a.logger.Error("INTEGRITY VIOLATION: Merkle root mismatch — stored root does not match recomputed root",
 				"org_id", orgID, "proof_id", p.ID,
 				"stored_root", p.RootHash, "decision_count", p.DecisionCount)
+			a.persistViolation(ctx, orgID, p.ID, "merkle_root_mismatch", map[string]any{
+				"stored_root":    p.RootHash,
+				"decision_count": p.DecisionCount,
+				"batch_start":    p.BatchStart,
+				"batch_end":      p.BatchEnd,
+				"leaf_count":     len(hashes),
+			})
 		}
 
 		// Verify chain linkage: this proof's previous_root should match the
@@ -801,15 +811,40 @@ func (a *App) auditIntegrityProofs(ctx context.Context) {
 			if p.PreviousRoot == nil {
 				a.logger.Warn("integrity audit: proof has nil previous_root but older proof exists — chain may be broken",
 					"org_id", orgID, "proof_id", p.ID, "older_proof_id", older.ID)
+				a.persistViolation(ctx, orgID, p.ID, "chain_linkage_nil_previous", map[string]any{
+					"older_proof_id": older.ID,
+					"older_root":     older.RootHash,
+				})
 			} else if *p.PreviousRoot != older.RootHash {
 				a.logger.Error("INTEGRITY VIOLATION: chain linkage broken — previous_root does not match prior proof",
 					"org_id", orgID, "proof_id", p.ID,
 					"expected_previous", older.RootHash, "actual_previous", *p.PreviousRoot)
+				a.persistViolation(ctx, orgID, p.ID, "chain_linkage_broken", map[string]any{
+					"expected_previous": older.RootHash,
+					"actual_previous":   *p.PreviousRoot,
+					"older_proof_id":    older.ID,
+				})
 			}
 		}
 	}
 
 	a.logger.Info("integrity audit completed", "org_id", orgID, "proofs_checked", len(proofs))
+}
+
+// persistViolation writes an integrity violation to the database. This is the
+// durable counterpart to the INTEGRITY VIOLATION log messages — the log is for
+// operators, this record survives log rotation and is queryable for incidents.
+func (a *App) persistViolation(ctx context.Context, orgID, proofID uuid.UUID, violationType string, details map[string]any) {
+	if err := a.db.CreateIntegrityViolation(ctx, storage.IntegrityViolation{
+		OrgID:         orgID,
+		ProofID:       proofID,
+		ViolationType: violationType,
+		Details:       details,
+		CreatedAt:     time.Now(),
+	}); err != nil {
+		a.logger.Error("integrity audit: failed to persist violation record — violation detected but not durably stored",
+			"org_id", orgID, "proof_id", proofID, "violation_type", violationType, "error", err)
+	}
 }
 
 func (a *App) idempotencyCleanupLoop(ctx context.Context) {

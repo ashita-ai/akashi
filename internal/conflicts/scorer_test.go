@@ -2598,3 +2598,291 @@ func TestIsDirectionalWorkflowPair(t *testing.T) {
 	assert.False(t, isDirectionalWorkflowPair("code_review", "assessment"))
 	assert.False(t, isDirectionalWorkflowPair("architecture", "bug_fix"))
 }
+
+func TestNestedContextString(t *testing.T) {
+	// nil map.
+	assert.Equal(t, "", nestedContextString(nil, "commit_sha"))
+
+	// Flat key (legacy layout).
+	flat := map[string]any{"commit_sha": "abc123"}
+	assert.Equal(t, "abc123", nestedContextString(flat, "commit_sha"))
+
+	// Client namespace.
+	client := map[string]any{
+		"client": map[string]any{"commit_sha": "def456", "pr_number": "42"},
+	}
+	assert.Equal(t, "def456", nestedContextString(client, "commit_sha"))
+	assert.Equal(t, "42", nestedContextString(client, "pr_number"))
+
+	// Server namespace.
+	server := map[string]any{
+		"server": map[string]any{"branch": "feature/foo"},
+	}
+	assert.Equal(t, "feature/foo", nestedContextString(server, "branch"))
+
+	// Client takes priority over server.
+	both := map[string]any{
+		"client": map[string]any{"commit_sha": "client-sha"},
+		"server": map[string]any{"commit_sha": "server-sha"},
+	}
+	assert.Equal(t, "client-sha", nestedContextString(both, "commit_sha"))
+
+	// Client takes priority over flat.
+	clientAndFlat := map[string]any{
+		"client":    map[string]any{"pr_number": "99"},
+		"pr_number": "1",
+	}
+	assert.Equal(t, "99", nestedContextString(clientAndFlat, "pr_number"))
+
+	// Server takes priority over flat.
+	serverAndFlat := map[string]any{
+		"server": map[string]any{"branch": "server-branch"},
+		"branch": "flat-branch",
+	}
+	assert.Equal(t, "server-branch", nestedContextString(serverAndFlat, "branch"))
+
+	// Missing key in all namespaces.
+	empty := map[string]any{
+		"client": map[string]any{"model": "gpt-4o"},
+		"server": map[string]any{"tool": "claude-code"},
+	}
+	assert.Equal(t, "", nestedContextString(empty, "commit_sha"))
+
+	// Wrong type (non-string value).
+	wrongType := map[string]any{
+		"client": map[string]any{"pr_number": 42},
+	}
+	assert.Equal(t, "", nestedContextString(wrongType, "pr_number"))
+
+	// Empty string is treated as missing → falls through.
+	emptyStr := map[string]any{
+		"client": map[string]any{"commit_sha": ""},
+		"server": map[string]any{"commit_sha": "server-sha"},
+	}
+	assert.Equal(t, "server-sha", nestedContextString(emptyStr, "commit_sha"))
+}
+
+func TestIsCoordinatedChange(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name     string
+		d        model.Decision
+		cand     model.Decision
+		expected bool
+	}{
+		{
+			name: "same commit_sha → coordinated",
+			d: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"commit_sha": "abc123"}},
+				ValidFrom:    now,
+			},
+			cand: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"commit_sha": "abc123"}},
+				ValidFrom:    now.Add(time.Hour),
+			},
+			expected: true,
+		},
+		{
+			name: "different commit_sha → not coordinated",
+			d: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"commit_sha": "abc123"}},
+				ValidFrom:    now,
+			},
+			cand: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"commit_sha": "def456"}},
+				ValidFrom:    now.Add(time.Hour),
+			},
+			expected: false,
+		},
+		{
+			name: "same pr_number → coordinated",
+			d: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"pr_number": "501"}},
+				ValidFrom:    now,
+			},
+			cand: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"pr_number": "501"}},
+				ValidFrom:    now.Add(time.Hour),
+			},
+			expected: true,
+		},
+		{
+			name: "same pr_number flat layout → coordinated",
+			d: model.Decision{
+				AgentContext: map[string]any{"pr_number": "501"},
+				ValidFrom:    now,
+			},
+			cand: model.Decision{
+				AgentContext: map[string]any{"pr_number": "501"},
+				ValidFrom:    now.Add(time.Hour),
+			},
+			expected: true,
+		},
+		{
+			name: "different pr_number → not coordinated",
+			d: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"pr_number": "501"}},
+				ValidFrom:    now,
+			},
+			cand: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"pr_number": "502"}},
+				ValidFrom:    now.Add(time.Hour),
+			},
+			expected: false,
+		},
+		{
+			name: "same branch within 24h → coordinated",
+			d: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"branch": "feature/status-simplification"}},
+				ValidFrom:    now,
+			},
+			cand: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"branch": "feature/status-simplification"}},
+				ValidFrom:    now.Add(12 * time.Hour),
+			},
+			expected: true,
+		},
+		{
+			name: "same branch beyond 24h → not coordinated",
+			d: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"branch": "feature/status-simplification"}},
+				ValidFrom:    now,
+			},
+			cand: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"branch": "feature/status-simplification"}},
+				ValidFrom:    now.Add(48 * time.Hour),
+			},
+			expected: false,
+		},
+		{
+			name: "no agent_context → not coordinated",
+			d: model.Decision{
+				ValidFrom: now,
+			},
+			cand: model.Decision{
+				ValidFrom: now.Add(time.Hour),
+			},
+			expected: false,
+		},
+		{
+			name: "one has commit_sha, other does not → not coordinated",
+			d: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"commit_sha": "abc123"}},
+				ValidFrom:    now,
+			},
+			cand: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"model": "gpt-4o"}},
+				ValidFrom:    now.Add(time.Hour),
+			},
+			expected: false,
+		},
+		{
+			name: "commit_sha match across namespaces → coordinated",
+			d: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"commit_sha": "abc123"}},
+				ValidFrom:    now,
+			},
+			cand: model.Decision{
+				AgentContext: map[string]any{"commit_sha": "abc123"}, // flat layout
+				ValidFrom:    now.Add(time.Hour),
+			},
+			expected: true,
+		},
+		{
+			name: "same pr_number different project → not coordinated",
+			d: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"pr_number": "42"}},
+				Project:      strPtr("repo-alpha"),
+				ValidFrom:    now,
+			},
+			cand: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"pr_number": "42"}},
+				Project:      strPtr("repo-beta"),
+				ValidFrom:    now.Add(time.Hour),
+			},
+			expected: false,
+		},
+		{
+			name: "same pr_number same project → coordinated",
+			d: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"pr_number": "42"}},
+				Project:      strPtr("repo-alpha"),
+				ValidFrom:    now,
+			},
+			cand: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"pr_number": "42"}},
+				Project:      strPtr("repo-alpha"),
+				ValidFrom:    now.Add(time.Hour),
+			},
+			expected: true,
+		},
+		{
+			name: "same pr_number both nil project → coordinated (backward compat)",
+			d: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"pr_number": "42"}},
+				ValidFrom:    now,
+			},
+			cand: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"pr_number": "42"}},
+				ValidFrom:    now.Add(time.Hour),
+			},
+			expected: true,
+		},
+		{
+			name: "same branch different project within 24h → not coordinated",
+			d: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"branch": "main"}},
+				Project:      strPtr("repo-alpha"),
+				ValidFrom:    now,
+			},
+			cand: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"branch": "main"}},
+				Project:      strPtr("repo-beta"),
+				ValidFrom:    now.Add(12 * time.Hour),
+			},
+			expected: false,
+		},
+		{
+			name: "commit_sha match ignores project difference (globally unique)",
+			d: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"commit_sha": "abc123"}},
+				Project:      strPtr("repo-alpha"),
+				ValidFrom:    now,
+			},
+			cand: model.Decision{
+				AgentContext: map[string]any{"client": map[string]any{"commit_sha": "abc123"}},
+				Project:      strPtr("repo-beta"),
+				ValidFrom:    now.Add(time.Hour),
+			},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, isCoordinatedChange(tt.d, tt.cand))
+		})
+	}
+}
+
+func TestWithOutcomeSimFloor(t *testing.T) {
+	scorer := NewScorer(nil, slog.Default(), 0.3, nil, 0, 0)
+	assert.Equal(t, defaultOutcomeSimFloor, scorer.outcomeSimFloor, "default should be 0.85")
+
+	scorer = scorer.WithOutcomeSimFloor(0.90)
+	assert.Equal(t, 0.90, scorer.outcomeSimFloor, "should accept 0.90")
+
+	scorer = scorer.WithOutcomeSimFloor(0)
+	assert.Equal(t, 0.0, scorer.outcomeSimFloor, "0 should disable")
+
+	scorer = scorer.WithOutcomeSimFloor(-0.1)
+	assert.Equal(t, 0.0, scorer.outcomeSimFloor, "negative should be ignored")
+}
+
+func TestNewScorer_DefaultOutcomeSimFloor(t *testing.T) {
+	scorer := NewScorer(nil, slog.Default(), 0.3, nil, 0, 0)
+	assert.Equal(t, 0.85, scorer.outcomeSimFloor, "default outcome sim floor should be 0.85")
+}
+
+func strPtr(s string) *string { return &s }

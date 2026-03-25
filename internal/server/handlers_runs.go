@@ -447,8 +447,12 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 
-		// Errors are logged per-decision above; the group itself never returns
-		// a non-nil error, but we call Wait to ensure all goroutines complete.
+		// Invariant: every goroutine in this errgroup returns nil — errors are
+		// logged and surfaced via per-decision degraded flags inside the closure,
+		// not propagated. We must still call Wait() to ensure all goroutines
+		// complete before reading enrichments. Do not add "return err" to the
+		// closure without also adding a response-level degraded signal, because
+		// errgroup.WithContext cancels gctx on the first non-nil error.
 		_ = g.Wait()
 	}
 
