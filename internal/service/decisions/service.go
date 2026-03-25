@@ -499,10 +499,6 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, input CheckInput) 
 		conflictErr error
 		resolutions []model.ConflictResolution
 	)
-	// Silence the linter — conflictErr is written in the goroutine and checked implicitly
-	// via the conflicts slice (nil on error). Keep the variable for future error propagation.
-	_ = conflictErr
-
 	var wg sync.WaitGroup
 
 	// 1. Search or structured query.
@@ -577,10 +573,11 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, input CheckInput) 
 	}
 
 	resp := model.CheckResponse{
-		HasPrecedent:     len(decisions) > 0,
-		Decisions:        decisions,
-		Conflicts:        conflicts,
-		PriorResolutions: resolutions,
+		HasPrecedent:         len(decisions) > 0,
+		Decisions:            decisions,
+		Conflicts:            conflicts,
+		ConflictsUnavailable: conflictErr != nil,
+		PriorResolutions:     resolutions,
 	}
 
 	return resp, nil

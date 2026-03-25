@@ -120,6 +120,10 @@ type CheckResponse struct {
 	HasPrecedent bool               `json:"has_precedent"`
 	Decisions    []Decision         `json:"decisions"`
 	Conflicts    []DecisionConflict `json:"conflicts,omitempty"`
+	// ConflictsUnavailable is true when the conflict list query failed due to
+	// a transient error. Callers should treat the conflicts slice as incomplete
+	// and exercise extra caution before proceeding.
+	ConflictsUnavailable bool `json:"conflicts_unavailable,omitempty"`
 	// PriorResolutions contains recently resolved conflicts for the requested
 	// decision type. Each entry shows which approach was formally chosen
 	// (winning_outcome / winning_agent) and which was rejected

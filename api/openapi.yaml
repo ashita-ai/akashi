@@ -3647,6 +3647,12 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/DecisionConflict"
+        conflicts_unavailable:
+          type: boolean
+          description: >
+            True when the conflict list query failed due to a transient error.
+            The conflicts array may be empty or incomplete. Callers should
+            exercise extra caution before proceeding.
 
     # ── Health schemas ───────────────────────────────────────────────
     HealthResponse:

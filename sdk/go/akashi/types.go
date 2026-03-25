@@ -167,9 +167,10 @@ type QueryOptions struct {
 
 // CheckResponse is the output of Client.Check.
 type CheckResponse struct {
-	HasPrecedent bool               `json:"has_precedent"`
-	Decisions    []Decision         `json:"decisions"`
-	Conflicts    []DecisionConflict `json:"conflicts,omitempty"`
+	HasPrecedent         bool               `json:"has_precedent"`
+	Decisions            []Decision         `json:"decisions"`
+	Conflicts            []DecisionConflict `json:"conflicts,omitempty"`
+	ConflictsUnavailable bool               `json:"conflicts_unavailable,omitempty"`
 }
 
 // TraceResponse is the output of Client.Trace.

@@ -566,6 +566,9 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 	}
 
 	summary := generateCheckSummary(resp.Decisions, resp.Conflicts)
+	if resp.ConflictsUnavailable {
+		summary += " ⚠ Conflict data unavailable due to a transient error — treat conflict list as incomplete."
+	}
 	if len(resp.PriorResolutions) > 0 {
 		summary += fmt.Sprintf(" %d prior conflict(s) for this decision type were formally resolved; winning approach(es) listed in prior_resolutions.", len(resp.PriorResolutions))
 	}
@@ -573,11 +576,15 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 	result := map[string]any{
 		"has_precedent":     resp.HasPrecedent,
 		"summary":           summary,
-		"action_needed":     actionNeeded(resp.Conflicts),
+		"action_needed":     actionNeeded(resp.Conflicts) || resp.ConflictsUnavailable,
 		"relevant_count":    len(resp.Decisions),
 		"decisions":         compactDecs,
 		"conflicts":         compactConfs,
 		"prior_resolutions": compactResolutions,
+	}
+
+	if resp.ConflictsUnavailable {
+		result["conflicts_unavailable"] = true
 	}
 
 	// precedent_ref_hint: the UUID of the best candidate for precedent_ref in the
