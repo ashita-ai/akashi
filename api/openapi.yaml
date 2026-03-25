@@ -3647,6 +3647,12 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/DecisionConflict"
+        conflicts_unavailable:
+          type: boolean
+          description: >
+            True when the conflict list query failed due to a transient error.
+            The conflicts array may be empty or incomplete. Callers should
+            exercise extra caution before proceeding.
 
     # ── Health schemas ───────────────────────────────────────────────
     HealthResponse:
@@ -4439,7 +4445,7 @@ components:
 
     ErasureResponse:
       type: object
-      required: [decision_id, erased_at, original_hash, erased_hash, alternatives_erased, evidence_erased]
+      required: [decision_id, erased_at, original_hash, erased_hash, alternatives_erased, evidence_erased, claims_erased]
       properties:
         decision_id:
           type: string
@@ -4459,6 +4465,9 @@ components:
         evidence_erased:
           type: integer
           description: Number of evidence rows scrubbed.
+        claims_erased:
+          type: integer
+          description: Number of claim rows scrubbed.
 
     APIResponse_ErasureResponse:
       type: object

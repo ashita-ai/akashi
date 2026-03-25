@@ -1,4 +1,4 @@
--- 083: Preserve Merkle leaf hashes so integrity proofs survive retention purge and GDPR erasure.
+-- 084: Preserve Merkle leaf hashes so integrity proofs survive retention purge and GDPR erasure.
 --
 -- Problem: verifyProofsForOrg re-fetches content_hash values from the decisions table,
 -- but retention purges delete those rows and GDPR erasure changes their content_hash.
