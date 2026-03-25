@@ -84,8 +84,18 @@ func tagsOverlap(a, b []string) bool {
 }
 
 // LoadGrantedSet returns the set of agent_ids the caller can access.
-// For admin+ this returns nil (meaning unrestricted). For others it merges
-// tag-based matches (agents sharing at least one tag) with per-agent grants.
+//
+// Return value semantics (used by all Filter* functions):
+//   - nil map → unrestricted access (admin+ roles). Callers MUST return
+//     unfiltered results when granted is nil.
+//   - empty non-nil map → no access at all (nil claims, or a valid agent
+//     with no grants/tag overlap). Callers iterating the map will match
+//     nothing, correctly denying access to every entry.
+//   - populated map → access limited to the keys present.
+//
+// For admin+ this returns nil (meaning unrestricted). For nil claims it
+// returns an empty map (meaning deny-all). For others it merges tag-based
+// matches (agents sharing at least one tag) with per-agent grants.
 //
 // If cache is non-nil, results are cached by org_id:subject for the cache's TTL.
 func LoadGrantedSet(ctx context.Context, db storage.Store, claims *auth.Claims, cache *GrantCache) (map[string]bool, error) {

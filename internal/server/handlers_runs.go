@@ -383,7 +383,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 
-				// --- Lineage (already org_id-scoped in the SQL query) ---
+				// --- Lineage (org_id-scoped in SQL, but RBAC post-filter needed) ---
 				lineage, err := h.db.GetDecisionLineage(gctx, decID, orgID, 20)
 				if err != nil {
 					if !isNotFoundError(err) {
@@ -393,7 +393,15 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 					}
 					entry.Lineage = storage.DecisionLineage{DecisionID: decID}
 				} else {
-					entry.Lineage = lineage
+					lineage, filterErr := filterLineageByAccess(gctx, h.db, claims, lineage, h.grantCache)
+					if filterErr != nil {
+						h.logger.Warn("enrichment: access filter failed for lineage",
+							"decision_id", decID, "error", filterErr)
+						entry.Lineage = storage.DecisionLineage{DecisionID: decID}
+						entry.Degraded = true
+					} else {
+						entry.Lineage = lineage
+					}
 				}
 
 				// --- Conflicts ---
@@ -450,6 +458,13 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 		// Errors are logged per-decision above; the group itself never returns
 		// a non-nil error, but we call Wait to ensure all goroutines complete.
 		_ = g.Wait()
+
+		// If the request was cancelled mid-flight, some enrichments may be
+		// incomplete. Mark the response so callers don't mistake a partial
+		// result for a complete one.
+		if r.Context().Err() != nil {
+			enrichmentsTruncated = true
+		}
 	}
 
 	resp := getRunResponse{

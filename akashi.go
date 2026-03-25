@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -75,6 +76,7 @@ type App struct {
 	logger          *slog.Logger
 	autoResolver    *autoresolve.Service
 	version         string
+	auditOrgCounter atomic.Uint64 // round-robin counter for integrity audit org selection
 }
 
 // New initialises the Akashi server. It connects to the database, runs
@@ -733,12 +735,20 @@ func (a *App) integrityAuditLoop(ctx context.Context) {
 	ticker := time.NewTicker(a.cfg.IntegrityAuditInterval)
 	defer ticker.Stop()
 
+	// Cap each audit at 80% of the tick interval so a slow audit cannot
+	// overlap the next tick. Floor at 1 minute to give small intervals
+	// enough time to complete at least one org's proofs.
+	timeout := a.cfg.IntegrityAuditInterval * 4 / 5
+	if timeout < time.Minute {
+		timeout = time.Minute
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			opCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			opCtx, cancel := context.WithTimeout(ctx, timeout)
 			a.auditIntegrityProofs(opCtx)
 			cancel()
 		}
@@ -761,8 +771,9 @@ func (a *App) auditIntegrityProofs(ctx context.Context) {
 		return
 	}
 
-	// Pick one org per tick to spread load.
-	orgID := orgIDs[time.Now().UnixNano()%int64(len(orgIDs))]
+	// Round-robin through orgs to guarantee every org is audited.
+	idx := a.auditOrgCounter.Add(1) - 1
+	orgID := orgIDs[idx%uint64(len(orgIDs))]
 
 	proofs, err := a.db.GetRecentIntegrityProofs(ctx, orgID, 10)
 	if err != nil {
