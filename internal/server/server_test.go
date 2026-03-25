@@ -11023,3 +11023,169 @@ func TestHandleTrace_LowConfNoEvidence_NoWarning(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	assert.NotContains(t, string(body), "warnings", "no warning expected for confidence below threshold")
 }
+
+// ===========================================================================
+// HandleGetRun — enrichments via ?include=enrichments
+// ===========================================================================
+
+func TestHandleGetRun_EnrichmentsBasic(t *testing.T) {
+	// Trace a decision (auto-creates a run).
+	reasoning := "integration test reasoning"
+	traceResp, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken,
+		model.TraceRequest{
+			AgentID: "test-agent",
+			Decision: model.TraceDecision{
+				DecisionType: "enrichment_test",
+				Outcome:      "chose enrichments",
+				Confidence:   0.85,
+				Reasoning:    &reasoning,
+			},
+		})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusCreated, traceResp.StatusCode)
+
+	var traceResult struct {
+		Data struct {
+			RunID      uuid.UUID `json:"run_id"`
+			DecisionID uuid.UUID `json:"decision_id"`
+		} `json:"data"`
+	}
+	tb, _ := io.ReadAll(traceResp.Body)
+	_ = traceResp.Body.Close()
+	require.NoError(t, json.Unmarshal(tb, &traceResult))
+	runID := traceResult.Data.RunID
+
+	// GET with enrichments.
+	resp, err := authedRequest("GET",
+		testSrv.URL+"/v1/runs/"+runID.String()+"?include=enrichments",
+		agentToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Data struct {
+			Run                 json.RawMessage            `json:"run"`
+			Decisions           []json.RawMessage          `json:"decisions"`
+			DecisionEnrichments map[string]json.RawMessage `json:"decision_enrichments"`
+		} `json:"data"`
+	}
+	b, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(b, &result))
+
+	// Must have at least one decision and a matching enrichment.
+	require.GreaterOrEqual(t, len(result.Data.Decisions), 1, "run should contain at least one decision")
+	require.NotNil(t, result.Data.DecisionEnrichments, "enrichments map must be present")
+
+	// Find our decision in the enrichments.
+	decID := traceResult.Data.DecisionID.String()
+	rawEnrichment, ok := result.Data.DecisionEnrichments[decID]
+	require.True(t, ok, "enrichment must exist for traced decision %s", decID)
+
+	// Parse and validate the enrichment structure.
+	var enrichment struct {
+		Revisions struct {
+			Items    []json.RawMessage `json:"items"`
+			Count    int               `json:"count"`
+			Degraded bool              `json:"degraded"`
+		} `json:"revisions"`
+		Lineage struct {
+			DecisionID string `json:"decision_id"`
+		} `json:"lineage"`
+		Conflicts struct {
+			Items   []json.RawMessage `json:"items"`
+			Count   int               `json:"count"`
+			HasMore bool              `json:"has_more"`
+		} `json:"conflicts"`
+		Integrity struct {
+			Status      string `json:"status"`
+			ContentHash string `json:"content_hash"`
+		} `json:"integrity"`
+	}
+	require.NoError(t, json.Unmarshal(rawEnrichment, &enrichment))
+
+	// Revisions: at least the decision itself.
+	assert.GreaterOrEqual(t, enrichment.Revisions.Count, 1, "revision chain should include at least the original decision")
+	assert.False(t, enrichment.Revisions.Degraded, "revisions should not be degraded")
+
+	// Lineage: decision_id should match.
+	assert.Equal(t, decID, enrichment.Lineage.DecisionID)
+
+	// Conflicts: no overflow expected for a single fresh decision.
+	assert.False(t, enrichment.Conflicts.HasMore)
+
+	// Integrity: decision was traced with content hash.
+	assert.Contains(t, []string{"verified", "no_hash"}, enrichment.Integrity.Status,
+		"integrity status should be verified or no_hash")
+	if enrichment.Integrity.Status == "verified" {
+		assert.NotEmpty(t, enrichment.Integrity.ContentHash,
+			"verified status must include the content_hash")
+	}
+}
+
+func TestHandleGetRun_NoEnrichmentsWithoutParam(t *testing.T) {
+	// Trace a decision to get a run.
+	traceResp, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken,
+		model.TraceRequest{
+			AgentID: "test-agent",
+			Decision: model.TraceDecision{
+				DecisionType: "no_enrichment_test",
+				Outcome:      "should not enrich",
+				Confidence:   0.5,
+			},
+		})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusCreated, traceResp.StatusCode)
+
+	var traceResult struct {
+		Data struct {
+			RunID uuid.UUID `json:"run_id"`
+		} `json:"data"`
+	}
+	tb, _ := io.ReadAll(traceResp.Body)
+	_ = traceResp.Body.Close()
+	require.NoError(t, json.Unmarshal(tb, &traceResult))
+
+	// GET without ?include=enrichments.
+	resp, err := authedRequest("GET",
+		testSrv.URL+"/v1/runs/"+traceResult.Data.RunID.String(),
+		agentToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	b, _ := io.ReadAll(resp.Body)
+	// The response should NOT contain decision_enrichments.
+	assert.NotContains(t, string(b), "decision_enrichments",
+		"enrichments should not appear without ?include=enrichments")
+}
+
+func TestHandleGetRun_EnrichmentsEmptyRun(t *testing.T) {
+	// Create a run with no decisions.
+	runResp, err := authedRequest("POST", testSrv.URL+"/v1/runs", agentToken,
+		model.CreateRunRequest{AgentID: "test-agent"})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusCreated, runResp.StatusCode)
+
+	var runResult struct {
+		Data struct {
+			ID uuid.UUID `json:"id"`
+		} `json:"data"`
+	}
+	rb, _ := io.ReadAll(runResp.Body)
+	_ = runResp.Body.Close()
+	require.NoError(t, json.Unmarshal(rb, &runResult))
+
+	// GET with ?include=enrichments on a run with zero decisions.
+	resp, err := authedRequest("GET",
+		testSrv.URL+"/v1/runs/"+runResult.Data.ID.String()+"?include=enrichments",
+		agentToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	b, _ := io.ReadAll(resp.Body)
+	// No enrichments when there are no decisions.
+	assert.NotContains(t, string(b), "decision_enrichments",
+		"enrichments should not appear when run has no decisions")
+}

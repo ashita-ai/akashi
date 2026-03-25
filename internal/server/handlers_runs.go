@@ -3,14 +3,66 @@ package server
 import (
 	"errors"
 	"net/http"
+	"sync"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/errgroup"
 
+	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/model"
 	tracesvc "github.com/ashita-ai/akashi/internal/service/trace"
+	"github.com/ashita-ai/akashi/internal/storage"
 )
+
+// ---------------------------------------------------------------------------
+// Typed enrichment response structs for GET /v1/runs/{run_id}?include=enrichments
+// ---------------------------------------------------------------------------
+
+// enrichmentRevisions holds the revision chain for a single decision.
+type enrichmentRevisions struct {
+	Items    []model.Decision `json:"items"`
+	Count    int              `json:"count"`
+	Degraded bool             `json:"degraded,omitempty"`
+}
+
+// enrichmentConflicts holds conflicts for a single decision.
+type enrichmentConflicts struct {
+	Items    []model.DecisionConflict `json:"items"`
+	Count    int                      `json:"count"`
+	HasMore  bool                     `json:"has_more"`
+	Degraded bool                     `json:"degraded,omitempty"`
+}
+
+// enrichmentIntegrity holds the integrity verification result.
+type enrichmentIntegrity struct {
+	Status      string `json:"status"`
+	ContentHash string `json:"content_hash,omitempty"`
+}
+
+// decisionEnrichment holds all enrichment data for a single decision.
+type decisionEnrichment struct {
+	Revisions enrichmentRevisions     `json:"revisions"`
+	Lineage   storage.DecisionLineage `json:"lineage"`
+	Conflicts enrichmentConflicts     `json:"conflicts"`
+	Integrity enrichmentIntegrity     `json:"integrity"`
+	Degraded  bool                    `json:"degraded,omitempty"`
+}
+
+// getRunResponse is the typed response for GET /v1/runs/{run_id}.
+type getRunResponse struct {
+	Run                  model.AgentRun                `json:"run"`
+	Events               []model.AgentEvent            `json:"events"`
+	Decisions            []model.Decision              `json:"decisions"`
+	DecisionEnrichments  map[string]decisionEnrichment `json:"decision_enrichments,omitempty"`
+	Truncated            bool                          `json:"truncated,omitempty"`
+	TruncatedEvents      bool                          `json:"truncated_events,omitempty"`
+	TruncatedDecisions   bool                          `json:"truncated_decisions,omitempty"`
+	TotalDecisions       int                           `json:"total_decisions,omitempty"`
+	TruncatedEnrichments bool                          `json:"truncated_enrichments,omitempty"`
+	EnrichedCount        int                           `json:"enriched_count,omitempty"`
+}
 
 // HandleCreateRun handles POST /v1/runs.
 func (h *Handlers) HandleCreateRun(w http.ResponseWriter, r *http.Request) {
@@ -275,23 +327,156 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := map[string]any{
-		"run":       run,
-		"events":    events,
-		"decisions": decisions,
+	// When ?include=enrichments is set, concurrently fetch revisions, lineage,
+	// conflicts, and integrity status for every decision in the run.
+	//
+	// Cap the number of enriched decisions to avoid unbounded fan-out: each
+	// decision triggers 4 DB round-trips (revisions via recursive CTE, lineage,
+	// conflicts, integrity recompute). Without a cap, a 10K-decision run would
+	// issue ~40K queries from a single GET.
+	const maxEnrichedDecisions = 200
+	const maxEnrichmentConflicts = 50
+
+	var enrichments map[string]decisionEnrichment
+	var enrichmentsTruncated bool
+	// TODO: if more include options are added, switch to comma-split or
+	// repeated ?include= params (e.g. "enrichments,metrics") instead of
+	// equality check — the current form won't compose.
+	if r.URL.Query().Get("include") == "enrichments" && len(decisions) > 0 {
+		toEnrich := decisions
+		if len(toEnrich) > maxEnrichedDecisions {
+			toEnrich = toEnrich[:maxEnrichedDecisions]
+			enrichmentsTruncated = true
+		}
+
+		enrichments = make(map[string]decisionEnrichment, len(toEnrich))
+		var mu sync.Mutex
+
+		g, gctx := errgroup.WithContext(r.Context())
+		g.SetLimit(8)
+
+		for _, d := range toEnrich {
+			g.Go(func() error {
+				decID := d.ID
+				var entry decisionEnrichment
+
+				// --- Revisions ---
+				revisions, err := h.db.GetDecisionRevisions(gctx, orgID, decID)
+				if err != nil {
+					if !isNotFoundError(err) {
+						h.logger.Warn("enrichment: failed to get revisions",
+							"decision_id", decID, "error", err)
+						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}, Degraded: true}
+						entry.Degraded = true
+					} else {
+						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}}
+					}
+				} else {
+					revisions, filterErr := filterDecisionsByAccess(gctx, h.db, claims, revisions, h.grantCache)
+					if filterErr != nil {
+						h.logger.Warn("enrichment: access filter failed for revisions",
+							"decision_id", decID, "error", filterErr)
+						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}, Degraded: true}
+						entry.Degraded = true
+					} else {
+						entry.Revisions = enrichmentRevisions{Items: revisions, Count: len(revisions)}
+					}
+				}
+
+				// --- Lineage (already org_id-scoped in the SQL query) ---
+				lineage, err := h.db.GetDecisionLineage(gctx, decID, orgID, 20)
+				if err != nil {
+					if !isNotFoundError(err) {
+						h.logger.Warn("enrichment: failed to get lineage",
+							"decision_id", decID, "error", err)
+						entry.Degraded = true
+					}
+					entry.Lineage = storage.DecisionLineage{DecisionID: decID}
+				} else {
+					entry.Lineage = lineage
+				}
+
+				// --- Conflicts ---
+				// Fetch one extra row beyond the cap so we can detect overflow.
+				conflicts, err := h.db.ListConflicts(gctx, orgID, storage.ConflictFilters{DecisionID: &decID}, maxEnrichmentConflicts+1, 0)
+				if err != nil {
+					if !isNotFoundError(err) {
+						h.logger.Warn("enrichment: failed to get conflicts",
+							"decision_id", decID, "error", err)
+						entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}, Degraded: true}
+						entry.Degraded = true
+					} else {
+						entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}}
+					}
+				} else {
+					conflicts, filterErr := filterConflictsByAccess(gctx, h.db, claims, conflicts, h.grantCache)
+					if filterErr != nil {
+						h.logger.Warn("enrichment: access filter failed for conflicts",
+							"decision_id", decID, "error", filterErr)
+						entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}, Degraded: true}
+						entry.Degraded = true
+					} else {
+						hasMore := len(conflicts) > maxEnrichmentConflicts
+						if hasMore {
+							conflicts = conflicts[:maxEnrichmentConflicts]
+						}
+						entry.Conflicts = enrichmentConflicts{
+							Items:   conflicts,
+							Count:   len(conflicts),
+							HasMore: hasMore,
+						}
+					}
+				}
+
+				// --- Integrity ---
+				if d.ContentHash == "" {
+					entry.Integrity = enrichmentIntegrity{Status: "no_hash"}
+				} else {
+					valid := integrity.VerifyContentHash(d.ContentHash, d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
+					status := "tampered"
+					if valid {
+						status = "verified"
+					}
+					entry.Integrity = enrichmentIntegrity{Status: status, ContentHash: d.ContentHash}
+				}
+
+				mu.Lock()
+				enrichments[decID.String()] = entry
+				mu.Unlock()
+				return nil
+			})
+		}
+
+		// Errors are logged per-decision above; the group itself never returns
+		// a non-nil error, but we call Wait to ensure all goroutines complete.
+		_ = g.Wait()
 	}
-	truncated := false
+
+	resp := getRunResponse{
+		Run:       run,
+		Events:    events,
+		Decisions: decisions,
+	}
 	if len(events) >= maxRunEvents {
-		resp["truncated_events"] = true
-		truncated = true
+		resp.TruncatedEvents = true
+		resp.Truncated = true
 	}
-	if total > maxRunDecisions {
-		resp["truncated_decisions"] = true
-		resp["total_decisions"] = total
-		truncated = true
+	// Compare against len(decisions), NOT the requested limit. The storage
+	// layer may silently cap the limit (e.g. QueryDecisions caps at 1000),
+	// so comparing against maxRunDecisions would miss truncation whenever
+	// the actual row count falls between the storage cap and our ceiling.
+	if total > len(decisions) {
+		resp.TruncatedDecisions = true
+		resp.TotalDecisions = total
+		resp.Truncated = true
 	}
-	if truncated {
-		resp["truncated"] = true
+	if enrichments != nil {
+		resp.DecisionEnrichments = enrichments
+		if enrichmentsTruncated {
+			resp.TruncatedEnrichments = true
+			resp.EnrichedCount = maxEnrichedDecisions
+			resp.Truncated = true
+		}
 	}
 	writeJSON(w, r, http.StatusOK, resp)
 }
