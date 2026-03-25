@@ -213,14 +213,26 @@ func scanConflictRows(rows pgx.Rows) ([]model.DecisionConflict, error) {
 	return conflicts, rows.Err()
 }
 
+// BatchConflictsResult holds the result of ListConflictsByDecisionIDs,
+// including a flag indicating whether the global row cap was hit.
+type BatchConflictsResult struct {
+	// ByDecision is keyed by decision ID. Each entry contains the conflicts
+	// that involve that decision (on either the A or B side).
+	ByDecision map[uuid.UUID][]model.DecisionConflict
+	// GlobalTruncated is true when the database query hit the global row cap,
+	// meaning some decisions may have incomplete conflict lists.
+	GlobalTruncated bool
+}
+
 // ListConflictsByDecisionIDs fetches conflicts involving any of the given decision
-// IDs in a single query. Returns a map keyed by decision ID, where each entry
-// contains the conflicts that involve that decision (on either the A or B side).
-// A conflict may appear under multiple keys if both sides are in the input set.
-// Results per decision are capped at perDecisionLimit.
-func (db *DB) ListConflictsByDecisionIDs(ctx context.Context, orgID uuid.UUID, decisionIDs []uuid.UUID, perDecisionLimit int) (map[uuid.UUID][]model.DecisionConflict, error) {
+// IDs in a single query. Returns a BatchConflictsResult with conflicts keyed by
+// decision ID, where each entry contains the conflicts that involve that decision
+// (on either the A or B side). A conflict may appear under multiple keys if both
+// sides are in the input set. Results per decision are capped at perDecisionLimit.
+// GlobalTruncated is set when the database query hit the global row cap.
+func (db *DB) ListConflictsByDecisionIDs(ctx context.Context, orgID uuid.UUID, decisionIDs []uuid.UUID, perDecisionLimit int) (BatchConflictsResult, error) {
 	if len(decisionIDs) == 0 {
-		return nil, nil
+		return BatchConflictsResult{}, nil
 	}
 	if perDecisionLimit <= 0 {
 		perDecisionLimit = 50
@@ -237,14 +249,16 @@ func (db *DB) ListConflictsByDecisionIDs(ctx context.Context, orgID uuid.UUID, d
 		  LIMIT $3`,
 		orgID, decisionIDs, globalLimit)
 	if err != nil {
-		return nil, fmt.Errorf("storage: list conflicts by decision IDs: %w", err)
+		return BatchConflictsResult{}, fmt.Errorf("storage: list conflicts by decision IDs: %w", err)
 	}
 	defer rows.Close()
 
 	all, err := scanConflictRows(rows)
 	if err != nil {
-		return nil, err
+		return BatchConflictsResult{}, err
 	}
+
+	globalTruncated := len(all) >= globalLimit
 
 	// Build a set for fast lookup.
 	idSet := make(map[uuid.UUID]struct{}, len(decisionIDs))
@@ -269,7 +283,7 @@ func (db *DB) ListConflictsByDecisionIDs(ctx context.Context, orgID uuid.UUID, d
 		}
 	}
 
-	return result, nil
+	return BatchConflictsResult{ByDecision: result, GlobalTruncated: globalTruncated}, nil
 }
 
 // NewConflictsSinceByOrg returns conflicts detected after the given time for one

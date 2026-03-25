@@ -86,6 +86,63 @@ func (db *DB) GetRecentIntegrityProofs(ctx context.Context, orgID uuid.UUID, lim
 	return proofs, rows.Err()
 }
 
+// IntegrityViolation records a detected integrity proof failure.
+// Written by the background audit loop and persisted durably so violations
+// survive log rotation and are queryable for incident response.
+type IntegrityViolation struct {
+	ID            uuid.UUID      `json:"id"`
+	OrgID         uuid.UUID      `json:"org_id"`
+	ProofID       uuid.UUID      `json:"proof_id"`
+	ViolationType string         `json:"violation_type"` // merkle_root_mismatch | chain_linkage_broken | chain_linkage_nil_previous
+	Details       map[string]any `json:"details"`
+	CreatedAt     time.Time      `json:"created_at"`
+}
+
+// CreateIntegrityViolation inserts a detected integrity violation into the
+// append-only violations table. This is the durable counterpart to the log
+// messages in auditIntegrityProofs — the log is for operators, this is for
+// the audit trail.
+func (db *DB) CreateIntegrityViolation(ctx context.Context, v IntegrityViolation) error {
+	if v.ID == uuid.Nil {
+		v.ID = uuid.New()
+	}
+	_, err := db.pool.Exec(ctx,
+		`INSERT INTO integrity_violations (id, org_id, proof_id, violation_type, details, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		v.ID, v.OrgID, v.ProofID, v.ViolationType, v.Details, v.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("storage: create integrity violation: %w", err)
+	}
+	return nil
+}
+
+// GetIntegrityViolations returns recent integrity violations for an org,
+// ordered newest-first. Used by API endpoints and incident response.
+func (db *DB) GetIntegrityViolations(ctx context.Context, orgID uuid.UUID, limit int) ([]IntegrityViolation, error) {
+	rows, err := db.pool.Query(ctx,
+		`SELECT id, org_id, proof_id, violation_type, details, created_at
+		 FROM integrity_violations
+		 WHERE org_id = $1
+		 ORDER BY created_at DESC
+		 LIMIT $2`, orgID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("storage: get integrity violations: %w", err)
+	}
+	defer rows.Close()
+
+	var violations []IntegrityViolation
+	for rows.Next() {
+		var v IntegrityViolation
+		if err := rows.Scan(&v.ID, &v.OrgID, &v.ProofID, &v.ViolationType, &v.Details, &v.CreatedAt); err != nil {
+			return nil, fmt.Errorf("storage: scan integrity violation: %w", err)
+		}
+		violations = append(violations, v)
+	}
+	return violations, rows.Err()
+}
+
 // GetDecisionHashesForBatch returns content_hash values for decisions in an org
 // created between since (exclusive) and until (inclusive), ordered lexicographically.
 //
@@ -175,4 +232,32 @@ func (db *DB) ListOrganizationIDs(ctx context.Context) ([]uuid.UUID, error) {
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// GetOrgIDByOffset returns the single organization ID at the given offset
+// within a deterministic (ORDER BY id) ordering. Returns uuid.Nil and no error
+// when the offset exceeds the number of organizations. This replaces loading
+// the entire org table for the audit loop's round-robin selection.
+func (db *DB) GetOrgIDByOffset(ctx context.Context, offset int) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := db.pool.QueryRow(ctx,
+		`SELECT id FROM organizations ORDER BY id LIMIT 1 OFFSET $1`, offset,
+	).Scan(&id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, nil
+		}
+		return uuid.Nil, fmt.Errorf("storage: get org by offset: %w", err)
+	}
+	return id, nil
+}
+
+// CountOrganizations returns the total number of organizations.
+func (db *DB) CountOrganizations(ctx context.Context) (int, error) {
+	var count int
+	err := db.pool.QueryRow(ctx, `SELECT count(*) FROM organizations`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("storage: count organizations: %w", err)
+	}
+	return count, nil
 }
