@@ -551,7 +551,19 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 		// CTE step 2: update last_detected_at when reusing an existing group.
 		// CTE step 3: if none exists, create a new one with decision-derived timestamp.
 		// CTE step 4: pick whichever returned a row (existing preferred).
-		`WITH existing AS (
+		// CTE step 0: archive resolution metadata before the upsert overwrites it.
+		// When the existing conflict is resolved, its resolution_by, resolved_at,
+		// resolution_note, and winning_decision_id are copied to the history table.
+		// If no resolved conflict exists for this pair, the CTE inserts zero rows.
+		`WITH archive_resolution AS (
+		     INSERT INTO conflict_resolutions
+		         (conflict_id, org_id, resolved_by, resolved_at, resolution_note, winning_decision_id)
+		     SELECT id, org_id, resolved_by, resolved_at, resolution_note, winning_decision_id
+		     FROM scored_conflicts
+		     WHERE decision_a_id = $1 AND decision_b_id = $2
+		       AND org_id = $3
+		       AND status = 'resolved' AND resolved_by IS NOT NULL
+		 ), existing AS (
 		     SELECT id FROM conflict_groups
 		     WHERE org_id = $3 AND agent_a = $5 AND agent_b = $6
 		       AND conflict_kind = $4 AND decision_type = $8
@@ -609,7 +621,9 @@ func (db *DB) InsertScoredConflict(ctx context.Context, c model.DecisionConflict
 		     resolved_at         = CASE WHEN scored_conflicts.status = 'resolved' THEN NULL
 		                                ELSE scored_conflicts.resolved_at END,
 		     resolution_note     = CASE WHEN scored_conflicts.status = 'resolved' THEN NULL
-		                                ELSE scored_conflicts.resolution_note END
+		                                ELSE scored_conflicts.resolution_note END,
+		     winning_decision_id = CASE WHEN scored_conflicts.status = 'resolved' THEN NULL
+		                                ELSE scored_conflicts.winning_decision_id END
 		 RETURNING id`,
 		da, dbID, c.OrgID, string(c.ConflictKind),
 		grpAgentA, grpAgentB, typeA, typeB, outcomeA, outcomeB,
@@ -653,6 +667,22 @@ func (db *DB) insertScoredConflictWithGroup(
 		return uuid.Nil, fmt.Errorf("storage: update group timestamp: %w", err)
 	}
 
+	// Archive resolution metadata before the upsert can overwrite it.
+	// If the existing conflict isn't resolved, the WHERE clause matches
+	// zero rows and the INSERT is a no-op.
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO conflict_resolutions
+		     (conflict_id, org_id, resolved_by, resolved_at, resolution_note, winning_decision_id)
+		 SELECT id, org_id, resolved_by, resolved_at, resolution_note, winning_decision_id
+		 FROM scored_conflicts
+		 WHERE decision_a_id = $1 AND decision_b_id = $2
+		   AND org_id = $3
+		   AND status = 'resolved' AND resolved_by IS NOT NULL`,
+		da, dbID, orgID,
+	); err != nil {
+		return uuid.Nil, fmt.Errorf("storage: archive conflict resolution: %w", err)
+	}
+
 	var id uuid.UUID
 	err = tx.QueryRow(ctx,
 		`INSERT INTO scored_conflicts
@@ -690,7 +720,9 @@ func (db *DB) insertScoredConflictWithGroup(
 		     resolved_at         = CASE WHEN scored_conflicts.status = 'resolved' THEN NULL
 		                                ELSE scored_conflicts.resolved_at END,
 		     resolution_note     = CASE WHEN scored_conflicts.status = 'resolved' THEN NULL
-		                                ELSE scored_conflicts.resolution_note END
+		                                ELSE scored_conflicts.resolution_note END,
+		     winning_decision_id = CASE WHEN scored_conflicts.status = 'resolved' THEN NULL
+		                                ELSE scored_conflicts.winning_decision_id END
 		 RETURNING id`,
 		da, dbID, orgID, string(conflictKind),
 		agentA, agentB, typeA, typeB, outcomeA, outcomeB,

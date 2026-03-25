@@ -4135,6 +4135,261 @@ func TestUpdateConflictStatusWithAudit(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Tests: Conflict reopening archives resolution metadata
+// ---------------------------------------------------------------------------
+
+func TestInsertScoredConflict_ReopenArchivesResolution(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "reopen-a-" + suffix
+	agentB := "reopen-b-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: "reopen_test",
+		Outcome: "use Redis", Confidence: 0.8,
+	})
+	require.NoError(t, err)
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: "reopen_test",
+		Outcome: "use Memcached", Confidence: 0.7,
+	})
+	require.NoError(t, err)
+
+	// Step 1: Insert a conflict (starts as open).
+	topicSim := 0.9
+	outcomeDiv := 0.85
+	sig := topicSim * outcomeDiv
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "reopen_test", DecisionTypeB: "reopen_test",
+		OutcomeA: "use Redis", OutcomeB: "use Memcached",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+
+	// Step 2: Resolve the conflict with a winner.
+	resNote := "Redis preferred — already running in prod."
+	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
+		"resolved", "human-reviewer", &resNote, &dA.ID, nil,
+		storage.MutationAuditEntry{
+			RequestID: "resolve-" + suffix, OrgID: uuid.Nil,
+			ActorAgentID: "human-reviewer", ActorRole: "admin",
+			Operation: "resolve_conflict", ResourceType: "conflict",
+		})
+	require.NoError(t, err)
+
+	// Verify it's resolved with full metadata.
+	resolved, err := testDB.GetConflict(ctx, conflictID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, "resolved", resolved.Status)
+	require.NotNil(t, resolved.ResolvedBy)
+	assert.Equal(t, "human-reviewer", *resolved.ResolvedBy)
+	require.NotNil(t, resolved.WinningDecisionID)
+	assert.Equal(t, dA.ID, *resolved.WinningDecisionID)
+
+	// Step 3: Re-insert the same conflict pair (simulating scorer re-detection).
+	newSig := 0.95
+	conflictID2, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "reopen_test", DecisionTypeB: "reopen_test",
+		OutcomeA: "use Redis", OutcomeB: "use Memcached",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &newSig, ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, conflictID, conflictID2, "upsert should return the same conflict ID")
+
+	// Step 4: Verify the conflict is reopened with NULLed resolution fields.
+	reopened, err := testDB.GetConflict(ctx, conflictID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, "open", reopened.Status, "conflict should be reopened")
+	assert.Nil(t, reopened.ResolvedBy, "resolved_by should be NULL after reopening")
+	assert.Nil(t, reopened.ResolvedAt, "resolved_at should be NULL after reopening")
+	assert.Nil(t, reopened.ResolutionNote, "resolution_note should be NULL after reopening")
+	assert.Nil(t, reopened.WinningDecisionID, "winning_decision_id should be NULL after reopening")
+
+	// Step 5: Verify the resolution was archived in conflict_resolutions.
+	var archivedResolvedBy string
+	var archivedResNote *string
+	var archivedWinner *uuid.UUID
+	var archivedResolvedAt time.Time
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT resolved_by, resolution_note, winning_decision_id, resolved_at
+		 FROM conflict_resolutions
+		 WHERE conflict_id = $1 AND org_id = $2`,
+		conflictID, uuid.Nil,
+	).Scan(&archivedResolvedBy, &archivedResNote, &archivedWinner, &archivedResolvedAt)
+	require.NoError(t, err, "should find archived resolution in conflict_resolutions")
+	assert.Equal(t, "human-reviewer", archivedResolvedBy)
+	require.NotNil(t, archivedResNote)
+	assert.Equal(t, "Redis preferred — already running in prod.", *archivedResNote)
+	require.NotNil(t, archivedWinner)
+	assert.Equal(t, dA.ID, *archivedWinner)
+	assert.False(t, archivedResolvedAt.IsZero(), "archived resolved_at should be non-zero")
+}
+
+func TestInsertScoredConflict_ReopenWithGroupIDArchivesResolution(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "reopen-grp-a-" + suffix
+	agentB := "reopen-grp-b-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: "reopen_grp_test",
+		Outcome: "use Postgres", Confidence: 0.8,
+	})
+	require.NoError(t, err)
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: "reopen_grp_test",
+		Outcome: "use MySQL", Confidence: 0.7,
+	})
+	require.NoError(t, err)
+
+	// Pre-create a group (simulates FindOrCreateTopicGroup).
+	var groupID uuid.UUID
+	err = testDB.Pool().QueryRow(ctx,
+		`INSERT INTO conflict_groups (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic)
+		 VALUES ($1, $2, $3, 'cross_agent', 'reopen_grp_test', 'database choice')
+		 RETURNING id`,
+		uuid.Nil, agentA, agentB,
+	).Scan(&groupID)
+	require.NoError(t, err)
+
+	// Insert conflict with pre-computed group_id.
+	topicSim := 0.88
+	outcomeDiv := 0.9
+	sig := topicSim * outcomeDiv
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "reopen_grp_test", DecisionTypeB: "reopen_grp_test",
+		OutcomeA: "use Postgres", OutcomeB: "use MySQL",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text",
+		GroupID: &groupID,
+	})
+	require.NoError(t, err)
+
+	// Resolve it.
+	resNote := "Postgres wins — better JSON support."
+	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
+		"resolved", "tech-lead", &resNote, &dA.ID, nil,
+		storage.MutationAuditEntry{
+			RequestID: "resolve-grp-" + suffix, OrgID: uuid.Nil,
+			ActorAgentID: "tech-lead", ActorRole: "admin",
+			Operation: "resolve_conflict", ResourceType: "conflict",
+		})
+	require.NoError(t, err)
+
+	// Re-insert with the same GroupID (triggers insertScoredConflictWithGroup path).
+	conflictID2, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "reopen_grp_test", DecisionTypeB: "reopen_grp_test",
+		OutcomeA: "use Postgres", OutcomeB: "use MySQL",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text",
+		GroupID: &groupID,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, conflictID, conflictID2)
+
+	// Verify reopened.
+	reopened, err := testDB.GetConflict(ctx, conflictID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, "open", reopened.Status)
+	assert.Nil(t, reopened.WinningDecisionID)
+
+	// Verify archive.
+	var archivedResolvedBy string
+	var archivedWinner *uuid.UUID
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT resolved_by, winning_decision_id
+		 FROM conflict_resolutions
+		 WHERE conflict_id = $1 AND org_id = $2`,
+		conflictID, uuid.Nil,
+	).Scan(&archivedResolvedBy, &archivedWinner)
+	require.NoError(t, err, "should find archived resolution for group-path reopening")
+	assert.Equal(t, "tech-lead", archivedResolvedBy)
+	require.NotNil(t, archivedWinner)
+	assert.Equal(t, dA.ID, *archivedWinner)
+}
+
+func TestInsertScoredConflict_NoArchiveWhenNotResolved(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "noarch-a-" + suffix
+	agentB := "noarch-b-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: "noarch_test",
+		Outcome: "approach A", Confidence: 0.8,
+	})
+	require.NoError(t, err)
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: "noarch_test",
+		Outcome: "approach B", Confidence: 0.7,
+	})
+	require.NoError(t, err)
+
+	// Insert a conflict (open).
+	topicSim := 0.9
+	outcomeDiv := 0.8
+	sig := topicSim * outcomeDiv
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "noarch_test", DecisionTypeB: "noarch_test",
+		OutcomeA: "approach A", OutcomeB: "approach B",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+
+	// Re-insert without resolving first.
+	newSig := 0.95
+	_, err = testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "noarch_test", DecisionTypeB: "noarch_test",
+		OutcomeA: "approach A", OutcomeB: "approach B",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &newSig, ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+
+	// Verify no archive was created (the conflict was never resolved).
+	var count int
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT count(*) FROM conflict_resolutions WHERE conflict_id = $1 AND org_id = $2`,
+		conflictID, uuid.Nil,
+	).Scan(&count)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "no archive should exist for a conflict that was never resolved")
+}
+
+// ---------------------------------------------------------------------------
 // Tests: Events (InsertEventsIdempotent)
 // ---------------------------------------------------------------------------
 
