@@ -32,6 +32,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/ashita-ai/akashi/api"
 	"github.com/ashita-ai/akashi/internal/auth"
@@ -58,23 +60,24 @@ import (
 // App is the Akashi server lifecycle. Construct with New(), run with Run().
 // App has no public fields — use New() options to configure it.
 type App struct {
-	cfg             config.Config
-	db              *storage.DB
-	srv             *server.Server
-	buf             *trace.Buffer
-	outbox          *search.OutboxWorker
-	qdrantIndex     *search.QdrantIndex // nil when Qdrant is not configured
-	grantCache      *authz.GrantCache
-	conflictScorer  *conflicts.Scorer
-	decisionSvc     *decisions.Service
-	percentileCache *search.PercentileCache
-	broker          *server.Broker // nil when no notify connection
-	otelShutdown    func(context.Context) error
-	limiter         ratelimit.Limiter // rate limiter; closed on shutdown to stop cleanup goroutine
-	decisionHooks   []server.DecisionHook
-	logger          *slog.Logger
-	autoResolver    *autoresolve.Service
-	version         string
+	cfg                        config.Config
+	db                         *storage.DB
+	srv                        *server.Server
+	buf                        *trace.Buffer
+	outbox                     *search.OutboxWorker
+	qdrantIndex                *search.QdrantIndex // nil when Qdrant is not configured
+	grantCache                 *authz.GrantCache
+	conflictScorer             *conflicts.Scorer
+	decisionSvc                *decisions.Service
+	percentileCache            *search.PercentileCache
+	broker                     *server.Broker // nil when no notify connection
+	otelShutdown               func(context.Context) error
+	limiter                    ratelimit.Limiter // rate limiter; closed on shutdown to stop cleanup goroutine
+	decisionHooks              []server.DecisionHook
+	logger                     *slog.Logger
+	autoResolver               *autoresolve.Service
+	integrityViolationsCounter metric.Int64Counter
+	version                    string
 }
 
 // New initialises the Akashi server. It connects to the database, runs
@@ -468,23 +471,24 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	return &App{
-		cfg:             cfg,
-		db:              db,
-		srv:             srv,
-		buf:             buf,
-		outbox:          outboxWorker,
-		qdrantIndex:     qdrantIndex,
-		grantCache:      grantCache,
-		conflictScorer:  conflictScorer,
-		decisionSvc:     decisionSvc,
-		percentileCache: pctCache,
-		broker:          broker,
-		otelShutdown:    otelShutdown,
-		limiter:         limiter,
-		decisionHooks:   decisionHooks,
-		logger:          logger,
-		autoResolver:    autoresolve.New(db, logger),
-		version:         version,
+		cfg:                        cfg,
+		db:                         db,
+		srv:                        srv,
+		buf:                        buf,
+		outbox:                     outboxWorker,
+		qdrantIndex:                qdrantIndex,
+		grantCache:                 grantCache,
+		conflictScorer:             conflictScorer,
+		decisionSvc:                decisionSvc,
+		percentileCache:            pctCache,
+		broker:                     broker,
+		otelShutdown:               otelShutdown,
+		integrityViolationsCounter: newIntegrityViolationsCounter(logger),
+		limiter:                    limiter,
+		decisionHooks:              decisionHooks,
+		logger:                     logger,
+		autoResolver:               autoresolve.New(db, logger),
+		version:                    version,
 	}, nil
 }
 
@@ -729,6 +733,18 @@ func (a *App) integrityProofLoop(ctx context.Context) {
 	}
 }
 
+func newIntegrityViolationsCounter(logger *slog.Logger) metric.Int64Counter {
+	meter := telemetry.Meter("akashi/integrity")
+	c, err := meter.Int64Counter("akashi.integrity.violations",
+		metric.WithDescription("Total integrity violations detected by the background Merkle audit loop"),
+	)
+	if err != nil {
+		logger.Warn("failed to create akashi.integrity.violations metric", "error", err)
+		c, _ = meter.Int64Counter("akashi.integrity.violations.fallback")
+	}
+	return c
+}
+
 func (a *App) integrityAuditLoop(ctx context.Context) {
 	ticker := time.NewTicker(a.cfg.IntegrityAuditInterval)
 	defer ticker.Stop()
@@ -792,6 +808,8 @@ func (a *App) auditIntegrityProofs(ctx context.Context) {
 			a.logger.Error("INTEGRITY VIOLATION: Merkle root mismatch — stored root does not match recomputed root",
 				"org_id", orgID, "proof_id", p.ID,
 				"stored_root", p.RootHash, "decision_count", p.DecisionCount)
+			a.integrityViolationsCounter.Add(ctx, 1,
+				metric.WithAttributes(attribute.String("violation_type", "merkle_root_mismatch")))
 		}
 
 		// Verify chain linkage: this proof's previous_root should match the
@@ -805,6 +823,8 @@ func (a *App) auditIntegrityProofs(ctx context.Context) {
 				a.logger.Error("INTEGRITY VIOLATION: chain linkage broken — previous_root does not match prior proof",
 					"org_id", orgID, "proof_id", p.ID,
 					"expected_previous", older.RootHash, "actual_previous", *p.PreviousRoot)
+				a.integrityViolationsCounter.Add(ctx, 1,
+					metric.WithAttributes(attribute.String("violation_type", "chain_linkage_broken")))
 			}
 		}
 	}

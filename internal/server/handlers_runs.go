@@ -23,14 +23,16 @@ import (
 // enrichmentRevisions holds the revision chain for a single decision.
 type enrichmentRevisions struct {
 	Items    []model.Decision `json:"items"`
-	Count    int              `json:"count"`
+	Count    int              `json:"count"` // Number of items returned (may be filtered by access grants).
+	Total    int              `json:"total"` // Total revisions before access filtering.
 	Degraded bool             `json:"degraded,omitempty"`
 }
 
 // enrichmentConflicts holds conflicts for a single decision.
 type enrichmentConflicts struct {
 	Items    []model.DecisionConflict `json:"items"`
-	Count    int                      `json:"count"`
+	Count    int                      `json:"count"` // Number of items returned (may be capped and access-filtered).
+	Total    int                      `json:"total"` // Total conflicts before truncation and access filtering.
 	HasMore  bool                     `json:"has_more"`
 	Degraded bool                     `json:"degraded,omitempty"`
 }
@@ -372,6 +374,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}}
 					}
 				} else {
+					totalRevisions := len(revisions)
 					revisions, filterErr := filterDecisionsByAccess(gctx, h.db, claims, revisions, h.grantCache)
 					if filterErr != nil {
 						h.logger.Warn("enrichment: access filter failed for revisions",
@@ -379,7 +382,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}, Degraded: true}
 						entry.Degraded = true
 					} else {
-						entry.Revisions = enrichmentRevisions{Items: revisions, Count: len(revisions)}
+						entry.Revisions = enrichmentRevisions{Items: revisions, Count: len(revisions), Total: totalRevisions}
 					}
 				}
 
@@ -409,6 +412,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 						entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}}
 					}
 				} else {
+					totalConflicts := len(conflicts)
 					conflicts, filterErr := filterConflictsByAccess(gctx, h.db, claims, conflicts, h.grantCache)
 					if filterErr != nil {
 						h.logger.Warn("enrichment: access filter failed for conflicts",
@@ -423,6 +427,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 						entry.Conflicts = enrichmentConflicts{
 							Items:   conflicts,
 							Count:   len(conflicts),
+							Total:   totalConflicts,
 							HasMore: hasMore,
 						}
 					}
@@ -474,7 +479,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 		resp.DecisionEnrichments = enrichments
 		if enrichmentsTruncated {
 			resp.TruncatedEnrichments = true
-			resp.EnrichedCount = maxEnrichedDecisions
+			resp.EnrichedCount = len(enrichments)
 			resp.Truncated = true
 		}
 	}

@@ -3728,7 +3728,7 @@ components:
 
     EnrichmentRevisions:
       type: object
-      required: [items, count]
+      required: [items, count, total]
       properties:
         items:
           type: array
@@ -3736,13 +3736,17 @@ components:
             $ref: "#/components/schemas/Decision"
         count:
           type: integer
+          description: Number of revisions returned (may be less than total due to access filtering).
+        total:
+          type: integer
+          description: Total revisions in the chain before access filtering.
         degraded:
           type: boolean
           description: True when revision data could not be fully retrieved due to a storage or authorization error.
 
     EnrichmentConflicts:
       type: object
-      required: [items, count, has_more]
+      required: [items, count, total, has_more]
       properties:
         items:
           type: array
@@ -3750,6 +3754,10 @@ components:
             $ref: "#/components/schemas/DecisionConflict"
         count:
           type: integer
+          description: Number of conflicts returned (may be less than total due to cap and access filtering).
+        total:
+          type: integer
+          description: Total conflicts fetched from storage before truncation and access filtering.
         has_more:
           type: boolean
           description: True when more conflicts exist than the 50 returned.
