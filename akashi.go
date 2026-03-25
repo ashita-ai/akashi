@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"sync/atomic"
@@ -752,6 +753,14 @@ func (a *App) integrityProofLoop(ctx context.Context) {
 }
 
 func (a *App) integrityAuditLoop(ctx context.Context) {
+	// Jitter the first tick so multiple replicas don't audit at the same wall-clock time.
+	jitter := time.Duration(rand.IntN(int(a.cfg.IntegrityAuditInterval))) //nolint:gosec // jitter, not security
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(jitter):
+	}
+
 	ticker := time.NewTicker(a.cfg.IntegrityAuditInterval)
 	defer ticker.Stop()
 
@@ -775,6 +784,15 @@ func (a *App) integrityFullAuditLoop(ctx context.Context) {
 	if a.cfg.IntegrityFullAuditInterval <= 0 {
 		return
 	}
+
+	// Jitter the first tick so multiple replicas don't all run the full sweep simultaneously.
+	jitter := time.Duration(rand.IntN(int(a.cfg.IntegrityFullAuditInterval))) //nolint:gosec // jitter, not security
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(jitter):
+	}
+
 	ticker := time.NewTicker(a.cfg.IntegrityFullAuditInterval)
 	defer ticker.Stop()
 
@@ -832,15 +850,24 @@ func (a *App) auditIntegrityProofs(ctx context.Context) {
 	}
 
 	results := a.verifyProofsForOrg(ctx, orgID, proofs, "sample")
-	if err := a.db.InsertIntegrityAuditResults(ctx, results); err != nil {
-		a.logger.Warn("integrity audit: failed to persist results", "org_id", orgID, "error", err)
+
+	// Persist results with a dedicated context so that a timeout during
+	// verification doesn't cause us to lose the audit record. An audit that
+	// detected tampering but failed to persist it is worse than one that
+	// never ran — it creates a false sense of coverage.
+	persistCtx, persistCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer persistCancel()
+	if err := a.db.InsertIntegrityAuditResults(persistCtx, results); err != nil {
+		a.logger.Error("integrity audit: FAILED TO PERSIST results — audit ran but paper trail is missing",
+			"org_id", orgID, "proofs_checked", len(proofs), "error", err)
 	}
 
 	a.logger.Info("integrity audit completed", "org_id", orgID, "proofs_checked", len(proofs))
 }
 
 // fullIntegrityAudit checks every org exhaustively using IntegrityFullAuditProofs
-// proofs per org. All results are persisted.
+// proofs per org. All results are persisted. Each org gets its own timeout
+// (IntegrityAuditTimeout) so that slow orgs don't starve later ones.
 func (a *App) fullIntegrityAudit(ctx context.Context) {
 	orgIDs, err := a.db.ListOrganizationIDs(ctx)
 	if err != nil {
@@ -856,21 +883,32 @@ func (a *App) fullIntegrityAudit(ctx context.Context) {
 			return
 		}
 
-		proofs, err := a.db.GetRecentIntegrityProofs(ctx, orgID, a.cfg.IntegrityFullAuditProofs)
+		// Per-org timeout prevents one large org from consuming the entire sweep budget.
+		orgCtx, orgCancel := context.WithTimeout(ctx, a.cfg.IntegrityAuditTimeout)
+
+		proofs, err := a.db.GetRecentIntegrityProofs(orgCtx, orgID, a.cfg.IntegrityFullAuditProofs)
 		if err != nil {
 			a.logger.Warn("integrity full audit: failed to fetch proofs",
 				"org_id", orgID, "error", err)
+			orgCancel()
 			continue
 		}
 		if len(proofs) == 0 {
+			orgCancel()
 			continue
 		}
 
-		results := a.verifyProofsForOrg(ctx, orgID, proofs, "full")
-		if err := a.db.InsertIntegrityAuditResults(ctx, results); err != nil {
-			a.logger.Warn("integrity full audit: failed to persist results",
-				"org_id", orgID, "error", err)
+		results := a.verifyProofsForOrg(orgCtx, orgID, proofs, "full")
+		orgCancel()
+
+		// Persist with a dedicated context — same rationale as the sampling audit:
+		// verification results must survive even if the verification context expired.
+		persistCtx, persistCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := a.db.InsertIntegrityAuditResults(persistCtx, results); err != nil {
+			a.logger.Error("integrity full audit: FAILED TO PERSIST results — audit ran but paper trail is missing",
+				"org_id", orgID, "proofs_checked", len(proofs), "error", err)
 		}
+		persistCancel()
 
 		totalProofs += len(proofs)
 		for _, r := range results {

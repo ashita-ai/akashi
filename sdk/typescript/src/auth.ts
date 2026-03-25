@@ -32,10 +32,12 @@ export class TokenManager {
         this.refreshPromise,
         new Promise<never>((_, reject) => {
           if (signal.aborted) {
-            reject(signal.reason);
+            reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
             return;
           }
-          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          signal.addEventListener("abort", () => {
+            reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+          }, { once: true });
         }),
       ]);
     } else {

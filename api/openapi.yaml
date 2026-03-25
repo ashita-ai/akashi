@@ -3778,10 +3778,10 @@ components:
             $ref: "#/components/schemas/Decision"
         count:
           type: integer
-          description: Number of revision items returned (post-access-filter).
+          description: Number of accessible revisions returned (equals total when not degraded).
         total:
           type: integer
-          description: Total revisions before access filtering. Omitted when equal to count.
+          description: Total accessible revisions after RBAC filtering.
         degraded:
           type: boolean
           description: True when revision data could not be fully retrieved due to a storage or authorization error.
@@ -3796,13 +3796,13 @@ components:
             $ref: "#/components/schemas/DecisionConflict"
         count:
           type: integer
-          description: Number of conflict items returned (post-access-filter, post-truncation).
+          description: Number of accessible conflicts returned (may be less than total due to the 50-item cap).
         total:
           type: integer
-          description: Total conflicts before access filtering. Omitted when equal to count.
+          description: Total accessible conflicts after RBAC filtering but before cap truncation.
         has_more:
           type: boolean
-          description: True when more conflicts exist than the 50 returned (based on pre-filter count).
+          description: True when more conflicts exist than the 50 returned (based on pre-RBAC-filter count).
         degraded:
           type: boolean
           description: True when conflict data could not be fully retrieved due to a storage or authorization error.

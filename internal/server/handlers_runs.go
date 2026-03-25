@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/model"
 	tracesvc "github.com/ashita-ai/akashi/internal/service/trace"
@@ -28,19 +29,20 @@ import (
 // to Count so consumers can detect hidden revisions.
 type enrichmentRevisions struct {
 	Items    []model.Decision `json:"items"`
-	Count    int              `json:"count"`
-	Total    int              `json:"total,omitempty"`
+	Count    int              `json:"count"` // Number of accessible items returned.
+	Total    int              `json:"total"` // Total accessible revisions (post access filtering).
 	Degraded bool             `json:"degraded,omitempty"`
 }
 
 // enrichmentConflicts holds conflicts for a single decision.
-// Count is the number of items returned (post-access-filter, post-truncation).
-// Total is the pre-filter count; omitted when equal to Count.
+// Count is the number of items returned (post-RBAC, post-truncation).
+// Total is the pre-RBAC count from the storage layer; omitted (zero) when
+// equal to Count so consumers can detect when RBAC or truncation hid conflicts.
 type enrichmentConflicts struct {
 	Items    []model.DecisionConflict `json:"items"`
-	Count    int                      `json:"count"`
-	Total    int                      `json:"total,omitempty"`
-	HasMore  bool                     `json:"has_more"`
+	Count    int                      `json:"count"`    // Number of accessible items returned (may be capped).
+	Total    int                      `json:"total"`    // Pre-RBAC conflict count; 0 when equal to Count.
+	HasMore  bool                     `json:"has_more"` // True when pre-RBAC count exceeds the cap.
 	Degraded bool                     `json:"degraded,omitempty"`
 }
 
@@ -336,243 +338,13 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// When ?include=enrichments is set, fetch revisions, lineage, conflicts,
-	// and integrity status for every decision in the run.
-	//
-	// Lineage and conflicts are fetched via batch queries (3 total queries
-	// instead of N*3). Revisions still use per-decision recursive CTEs but
-	// run concurrently with a concurrency cap. Integrity is CPU-only (hash
-	// recompute) and runs inline.
-	//
-	// Cap the number of enriched decisions to avoid unbounded fan-out.
-	const maxEnrichedDecisions = 200
-	const maxEnrichmentConflicts = 50
-
-	var enrichments map[string]decisionEnrichment
-	var enrichmentsTruncated bool
 	// TODO: if more include options are added, switch to comma-split or
 	// repeated ?include= params (e.g. "enrichments,metrics") instead of
 	// equality check — the current form won't compose.
+	var enrichments map[string]decisionEnrichment
+	var enrichmentsTruncated bool
 	if r.URL.Query().Get("include") == "enrichments" && len(decisions) > 0 {
-		toEnrich := decisions
-		if len(toEnrich) > maxEnrichedDecisions {
-			toEnrich = toEnrich[:maxEnrichedDecisions]
-			enrichmentsTruncated = true
-		}
-
-		decIDs := make([]uuid.UUID, len(toEnrich))
-		for i, d := range toEnrich {
-			decIDs[i] = d.ID
-		}
-
-		// Phase 1: Batch-fetch lineage and conflicts concurrently.
-		// These replace N*3 individual queries with 3+1 total queries.
-		var batchLineage map[uuid.UUID]storage.DecisionLineage
-		var batchConflicts map[uuid.UUID][]model.DecisionConflict
-		var batchConflictTotals map[uuid.UUID]int // pre-RBAC-filter counts
-		var lineageDegraded, conflictsDegraded atomic.Bool
-
-		g, gctx := errgroup.WithContext(r.Context())
-
-		g.Go(func() error {
-			var err error
-			batchLineage, err = h.db.GetDecisionLineageBatch(gctx, decIDs, orgID, 20)
-			if err != nil {
-				if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-					h.logger.Warn("enrichment: batch lineage failed", "error", err)
-				}
-				lineageDegraded.Store(true)
-			}
-			return nil
-		})
-
-		g.Go(func() error {
-			batchResult, err := h.db.ListConflictsByDecisionIDs(gctx, orgID, decIDs, maxEnrichmentConflicts)
-			if err != nil {
-				if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-					h.logger.Warn("enrichment: batch conflicts failed", "error", err)
-				}
-				conflictsDegraded.Store(true)
-				return nil
-			}
-			if batchResult.GlobalTruncated {
-				h.logger.Warn("enrichment: batch conflicts hit global row cap — some decisions may have incomplete conflict lists",
-					"decision_count", len(decIDs))
-				conflictsDegraded.Store(true)
-			}
-			raw := batchResult.ByDecision
-			// Track pre-filter totals, then apply access filtering.
-			totals := make(map[uuid.UUID]int, len(raw))
-			for decID, conflicts := range raw {
-				totals[decID] = len(conflicts)
-				filtered, filterErr := filterConflictsByAccess(gctx, h.db, claims, conflicts, h.grantCache)
-				if filterErr != nil {
-					if !errors.Is(filterErr, context.Canceled) && !errors.Is(filterErr, context.DeadlineExceeded) {
-						h.logger.Warn("enrichment: access filter failed for batch conflicts",
-							"decision_id", decID, "error", filterErr)
-					}
-					conflictsDegraded.Store(true)
-					continue
-				}
-				raw[decID] = filtered
-			}
-			batchConflictTotals = totals
-			batchConflicts = raw
-			return nil
-		})
-
-		_ = g.Wait()
-
-		// Phase 2: Fetch revisions concurrently (recursive CTE, per-decision).
-		enrichments = make(map[string]decisionEnrichment, len(toEnrich))
-		var mu sync.Mutex
-
-		g2, gctx2 := errgroup.WithContext(r.Context())
-		g2.SetLimit(8)
-
-		for _, d := range toEnrich {
-			g2.Go(func() error {
-				// Bail early if the client disconnected or the request context
-				// was cancelled — avoids spurious DB calls and warning logs
-				// when the client hangs up mid-enrichment.
-				if gctx2.Err() != nil {
-					return nil
-				}
-
-				decID := d.ID
-				var entry decisionEnrichment
-
-				// isCtxErr returns true for context cancellation/deadline
-				// errors, which should not be logged as warnings since they
-				// simply mean the client went away.
-				isCtxErr := func(err error) bool {
-					return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
-				}
-
-				// --- Revisions (per-decision recursive CTE) ---
-				revisions, err := h.db.GetDecisionRevisions(gctx2, orgID, decID)
-				if err != nil {
-					if isCtxErr(err) {
-						return nil
-					}
-					if !isNotFoundError(err) {
-						h.logger.Warn("enrichment: failed to get revisions",
-							"decision_id", decID, "error", err)
-						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}, Degraded: true}
-						entry.Degraded = true
-					} else {
-						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}}
-					}
-				} else {
-					totalRevisions := len(revisions)
-					revisions, filterErr := filterDecisionsByAccess(gctx2, h.db, claims, revisions, h.grantCache)
-					if filterErr != nil {
-						if isCtxErr(filterErr) {
-							return nil
-						}
-						h.logger.Warn("enrichment: access filter failed for revisions",
-							"decision_id", decID, "error", filterErr)
-						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}, Degraded: true}
-						entry.Degraded = true
-					} else {
-						er := enrichmentRevisions{Items: revisions, Count: len(revisions)}
-						if totalRevisions != len(revisions) {
-							er.Total = totalRevisions
-						}
-						entry.Revisions = er
-					}
-				}
-
-				// --- Lineage (from batch result) ---
-				switch {
-				case lineageDegraded.Load():
-					entry.Lineage = storage.DecisionLineage{DecisionID: decID}
-					entry.Degraded = true
-				case batchLineage != nil:
-					if l, ok := batchLineage[decID]; ok {
-						entry.Lineage = l
-					} else {
-						entry.Lineage = storage.DecisionLineage{DecisionID: decID}
-					}
-				default:
-					entry.Lineage = storage.DecisionLineage{DecisionID: decID}
-				}
-
-				// --- Conflicts (from batch result) ---
-				switch {
-				case conflictsDegraded.Load():
-					entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}, Degraded: true}
-					entry.Degraded = true
-				case batchConflicts != nil:
-					conflicts := batchConflicts[decID] // already RBAC-filtered in Phase 1
-					if conflicts == nil {
-						conflicts = []model.DecisionConflict{}
-					}
-					// Pre-filter total from Phase 1 (before RBAC).
-					preFilterTotal := batchConflictTotals[decID]
-					hasMore := preFilterTotal > maxEnrichmentConflicts
-					if len(conflicts) > maxEnrichmentConflicts {
-						conflicts = conflicts[:maxEnrichmentConflicts]
-					}
-					ec := enrichmentConflicts{
-						Items:   conflicts,
-						Count:   len(conflicts),
-						HasMore: hasMore,
-					}
-					if preFilterTotal != len(conflicts) {
-						ec.Total = preFilterTotal
-					}
-					entry.Conflicts = ec
-				default:
-					entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}}
-				}
-
-				// --- Integrity (CPU-only, no DB call) ---
-				if d.ContentHash == "" {
-					entry.Integrity = enrichmentIntegrity{Status: "no_hash"}
-				} else {
-					valid := integrity.VerifyContentHash(d.ContentHash, d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
-					status := "tampered"
-					if valid {
-						status = "verified"
-					}
-					entry.Integrity = enrichmentIntegrity{Status: status, ContentHash: d.ContentHash}
-				}
-
-				mu.Lock()
-				enrichments[decID.String()] = entry
-				mu.Unlock()
-				return nil
-			})
-		}
-
-		// Invariant: every goroutine in this errgroup returns nil — errors are
-		// logged and surfaced via per-decision degraded flags inside the closure,
-		// not propagated. We must still call Wait() to ensure all goroutines
-		// complete before reading enrichments. Do not add "return err" to the
-		// closure without also adding a response-level degraded signal, because
-		// errgroup.WithContext cancels gctx on the first non-nil error.
-		_ = g2.Wait()
-
-		// If the request was cancelled mid-flight, some enrichments may be
-		// incomplete. Insert fully-degraded stubs for any decision that never
-		// got an entry, so absence in the map is unambiguous (= not requested)
-		// rather than ambiguous (= cancelled? errored? empty?).
-		if r.Context().Err() != nil {
-			enrichmentsTruncated = true
-			for _, d := range toEnrich {
-				key := d.ID.String()
-				if _, exists := enrichments[key]; !exists {
-					enrichments[key] = decisionEnrichment{
-						Revisions: enrichmentRevisions{Items: []model.Decision{}, Degraded: true},
-						Lineage:   storage.DecisionLineage{DecisionID: d.ID},
-						Conflicts: enrichmentConflicts{Items: []model.DecisionConflict{}, Degraded: true},
-						Integrity: enrichmentIntegrity{Status: "no_hash"},
-						Degraded:  true,
-					}
-				}
-			}
-		}
+		enrichments, enrichmentsTruncated = h.buildDecisionEnrichments(r.Context(), orgID, claims, decisions)
 	}
 
 	resp := getRunResponse{
@@ -602,4 +374,276 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, r, http.StatusOK, resp)
+}
+
+// ---------------------------------------------------------------------------
+// buildDecisionEnrichments fetches revisions, lineage, conflicts, and integrity
+// status for the given decisions. Returns the enrichment map and whether the
+// enrichment set was truncated (i.e. more decisions exist than the cap).
+//
+// Lineage and conflicts are batch-fetched (3+1 queries). Revisions use
+// per-decision recursive CTEs with a concurrency cap. Integrity is CPU-only.
+// ---------------------------------------------------------------------------
+
+const (
+	maxEnrichedDecisions    = 200
+	maxEnrichmentConflicts  = 50
+	enrichmentRevisionFanIn = 8
+)
+
+func (h *Handlers) buildDecisionEnrichments(
+	ctx context.Context,
+	orgID uuid.UUID,
+	claims *auth.Claims,
+	decisions []model.Decision,
+) (map[string]decisionEnrichment, bool) {
+	toEnrich := decisions
+	truncated := false
+	if len(toEnrich) > maxEnrichedDecisions {
+		toEnrich = toEnrich[:maxEnrichedDecisions]
+		truncated = true
+	}
+
+	decIDs := make([]uuid.UUID, len(toEnrich))
+	for i, d := range toEnrich {
+		decIDs[i] = d.ID
+	}
+
+	// Phase 1: Batch-fetch lineage and conflicts concurrently.
+	var batchLineage map[uuid.UUID]storage.DecisionLineage
+	var batchConflicts map[uuid.UUID][]model.DecisionConflict
+	var batchConflictTotals map[uuid.UUID]int // pre-RBAC-filter counts
+	var lineageDegraded, conflictsDegraded atomic.Bool
+
+	g, gctx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		var err error
+		batchLineage, err = h.db.GetDecisionLineageBatch(gctx, decIDs, orgID, 20)
+		if err != nil {
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				h.logger.Warn("enrichment: batch lineage failed", "error", err)
+			}
+			lineageDegraded.Store(true)
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		batchResult, err := h.db.ListConflictsByDecisionIDs(gctx, orgID, decIDs, maxEnrichmentConflicts)
+		if err != nil {
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				h.logger.Warn("enrichment: batch conflicts failed", "error", err)
+			}
+			conflictsDegraded.Store(true)
+			return nil
+		}
+		if batchResult.GlobalTruncated {
+			h.logger.Warn("enrichment: batch conflicts hit global row cap — some decisions may have incomplete conflict lists",
+				"decision_count", len(decIDs))
+			conflictsDegraded.Store(true)
+		}
+		raw := batchResult.ByDecision
+		// Track pre-filter totals, then apply access filtering.
+		totals := make(map[uuid.UUID]int, len(raw))
+		for decID, conflicts := range raw {
+			totals[decID] = len(conflicts)
+			filtered, filterErr := filterConflictsByAccess(gctx, h.db, claims, conflicts, h.grantCache)
+			if filterErr != nil {
+				if !errors.Is(filterErr, context.Canceled) && !errors.Is(filterErr, context.DeadlineExceeded) {
+					h.logger.Warn("enrichment: access filter failed for batch conflicts",
+						"decision_id", decID, "error", filterErr)
+				}
+				conflictsDegraded.Store(true)
+				continue
+			}
+			raw[decID] = filtered
+		}
+		batchConflictTotals = totals
+		batchConflicts = raw
+		return nil
+	})
+
+	_ = g.Wait()
+
+	// Phase 2: Per-decision enrichment (revisions, lineage RBAC, conflicts assembly, integrity).
+	enrichments := make(map[string]decisionEnrichment, len(toEnrich))
+	var mu sync.Mutex
+
+	g2, gctx2 := errgroup.WithContext(ctx)
+	g2.SetLimit(enrichmentRevisionFanIn)
+
+	for _, d := range toEnrich {
+		g2.Go(func() error {
+			entry := h.buildSingleEnrichment(gctx2, orgID, claims, d,
+				batchLineage, &lineageDegraded,
+				batchConflicts, batchConflictTotals, &conflictsDegraded)
+			mu.Lock()
+			enrichments[d.ID.String()] = entry
+			mu.Unlock()
+			return nil
+		})
+	}
+
+	// Invariant: every goroutine in this errgroup returns nil — errors are
+	// logged and surfaced via per-decision degraded flags inside the closure,
+	// not propagated. We must still call Wait() to ensure all goroutines
+	// complete before reading enrichments. Do not add "return err" to the
+	// closure without also adding a response-level degraded signal, because
+	// errgroup.WithContext cancels gctx on the first non-nil error.
+	_ = g2.Wait()
+
+	// If the request was cancelled mid-flight, some enrichments may be
+	// incomplete. Insert fully-degraded stubs so absence in the map is
+	// unambiguous (= not requested) rather than ambiguous (= cancelled?).
+	if ctx.Err() != nil {
+		truncated = true
+		for _, d := range toEnrich {
+			key := d.ID.String()
+			if _, exists := enrichments[key]; !exists {
+				enrichments[key] = decisionEnrichment{
+					Revisions: enrichmentRevisions{Items: []model.Decision{}, Degraded: true},
+					Lineage:   storage.DecisionLineage{DecisionID: d.ID},
+					Conflicts: enrichmentConflicts{Items: []model.DecisionConflict{}, Degraded: true},
+					Integrity: enrichmentIntegrity{Status: "no_hash"},
+					Degraded:  true,
+				}
+			}
+		}
+	}
+
+	return enrichments, truncated
+}
+
+// buildSingleEnrichment assembles the enrichment for one decision from the
+// batch-fetched lineage/conflict data and per-decision revision queries.
+func (h *Handlers) buildSingleEnrichment(
+	ctx context.Context,
+	orgID uuid.UUID,
+	claims *auth.Claims,
+	d model.Decision,
+	batchLineage map[uuid.UUID]storage.DecisionLineage,
+	lineageDegraded *atomic.Bool,
+	batchConflicts map[uuid.UUID][]model.DecisionConflict,
+	batchConflictTotals map[uuid.UUID]int,
+	conflictsDegraded *atomic.Bool,
+) decisionEnrichment {
+	decID := d.ID
+	var entry decisionEnrichment
+
+	// Bail early if the client disconnected or the request context
+	// was cancelled — avoids spurious DB calls and warning logs
+	// when the client hangs up mid-enrichment.
+	if ctx.Err() != nil {
+		return entry
+	}
+
+	// isCtxErr returns true for context cancellation/deadline errors,
+	// which should not be logged as warnings since they simply mean the
+	// client went away.
+	isCtxErr := func(err error) bool {
+		return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+	}
+
+	// --- Revisions (per-decision recursive CTE) ---
+	revisions, err := h.db.GetDecisionRevisions(ctx, orgID, decID)
+	if err != nil {
+		if isCtxErr(err) {
+			return entry
+		}
+		if !isNotFoundError(err) {
+			h.logger.Warn("enrichment: failed to get revisions",
+				"decision_id", decID, "error", err)
+			entry.Revisions = enrichmentRevisions{Items: []model.Decision{}, Degraded: true}
+			entry.Degraded = true
+		} else {
+			entry.Revisions = enrichmentRevisions{Items: []model.Decision{}}
+		}
+	} else {
+		totalRevisions := len(revisions)
+		revisions, filterErr := filterDecisionsByAccess(ctx, h.db, claims, revisions, h.grantCache)
+		if filterErr != nil {
+			if isCtxErr(filterErr) {
+				return entry
+			}
+			h.logger.Warn("enrichment: access filter failed for revisions",
+				"decision_id", decID, "error", filterErr)
+			entry.Revisions = enrichmentRevisions{Items: []model.Decision{}, Degraded: true}
+			entry.Degraded = true
+		} else {
+			er := enrichmentRevisions{Items: revisions, Count: len(revisions)}
+			if totalRevisions != len(revisions) {
+				er.Total = totalRevisions
+			}
+			entry.Revisions = er
+		}
+	}
+
+	// --- Lineage (from batch result, then RBAC-filtered via FilterLineage) ---
+	switch {
+	case lineageDegraded.Load():
+		entry.Lineage = storage.DecisionLineage{DecisionID: decID}
+		entry.Degraded = true
+	case batchLineage != nil:
+		if lineage, ok := batchLineage[decID]; ok {
+			filtered, fErr := filterLineageByAccess(ctx, h.db, claims, lineage, h.grantCache)
+			if fErr != nil {
+				if !isCtxErr(fErr) {
+					h.logger.Warn("enrichment: access filter failed for lineage",
+						"decision_id", decID, "error", fErr)
+				}
+				entry.Lineage = storage.DecisionLineage{DecisionID: decID}
+				entry.Degraded = true
+			} else {
+				entry.Lineage = filtered
+			}
+		} else {
+			entry.Lineage = storage.DecisionLineage{DecisionID: decID}
+		}
+	default:
+		entry.Lineage = storage.DecisionLineage{DecisionID: decID}
+	}
+
+	// --- Conflicts (from batch result, already RBAC-filtered in Phase 1) ---
+	switch {
+	case conflictsDegraded.Load():
+		entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}, Degraded: true}
+		entry.Degraded = true
+	case batchConflicts != nil:
+		conflicts := batchConflicts[decID] // already RBAC-filtered in Phase 1
+		if conflicts == nil {
+			conflicts = []model.DecisionConflict{}
+		}
+		// Pre-filter total from Phase 1 (before RBAC).
+		preFilterTotal := batchConflictTotals[decID]
+		hasMore := preFilterTotal > maxEnrichmentConflicts
+		if len(conflicts) > maxEnrichmentConflicts {
+			conflicts = conflicts[:maxEnrichmentConflicts]
+		}
+		ec := enrichmentConflicts{
+			Items:   conflicts,
+			Count:   len(conflicts),
+			HasMore: hasMore,
+		}
+		if preFilterTotal != len(conflicts) {
+			ec.Total = preFilterTotal
+		}
+		entry.Conflicts = ec
+	default:
+		entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}}
+	}
+
+	// --- Integrity (CPU-only, no DB call) ---
+	if d.ContentHash == "" {
+		entry.Integrity = enrichmentIntegrity{Status: "no_hash"}
+	} else {
+		valid := integrity.VerifyContentHash(d.ContentHash, d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
+		status := "tampered"
+		if valid {
+			status = "verified"
+		}
+		entry.Integrity = enrichmentIntegrity{Status: status, ContentHash: d.ContentHash}
+	}
+
+	return entry
 }
