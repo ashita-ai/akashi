@@ -286,6 +286,9 @@ type ConflictGroupResolveRequest struct {
 	// every conflict in the group. When set, each conflict's winning_decision_id
 	// is set to the decision from this agent (decision_a or decision_b).
 	WinningAgent *string `json:"winning_agent,omitempty"`
+	// FalsePositiveLabel classifies why this group's conflicts are false positives.
+	// "unrelated_false_positive" or "related_not_contradicting"; defaults to "unrelated_false_positive".
+	FalsePositiveLabel *string `json:"false_positive_label,omitempty"`
 }
 
 // ConflictGroupResolveResult is the response body for
