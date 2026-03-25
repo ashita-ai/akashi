@@ -576,6 +576,79 @@ func TestBuffer_StartWithWALRecovery(t *testing.T) {
 	require.NoError(t, buf2.Drain(drainCtx))
 }
 
+func TestBuffer_StartWithWALRecovery_MidFlushCrash(t *testing.T) {
+	// Simulates a crash between COPY-to-Postgres and WAL checkpoint advance.
+	// Events are in BOTH Postgres and WAL. Recovery must deduplicate via the
+	// idempotent insert path without errors or duplicate rows.
+	run := createTestRun(t)
+
+	cfg := WALConfig{
+		Dir:            t.TempDir(),
+		SyncMode:       "none",
+		MaxSegmentSize: minSegmentSize,
+		MaxSegmentRecs: minSegmentRecords,
+	}
+
+	// Phase 1: Write events via buffer, flush to Postgres, then simulate crash
+	// before WAL checkpoint advances.
+	wal1, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	buf1 := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute, wal1)
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	buf1.Start(ctx1)
+
+	_, err = buf1.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(5))
+	require.NoError(t, err)
+
+	// Force flush so events are in Postgres.
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer flushCancel()
+	require.NoError(t, buf1.FlushNow(flushCtx))
+
+	// Verify events are in Postgres.
+	got, err := testDB.GetEventsByRun(context.Background(), run.OrgID, run.ID, 0)
+	require.NoError(t, err)
+	require.Len(t, got, 5, "events should be in DB after flush")
+
+	// Crash: close WAL without drain. The flush above advanced the checkpoint,
+	// so we need to re-write the events to WAL to simulate the mid-flush case
+	// (events reached Postgres but checkpoint didn't advance).
+	cancel1()
+	<-buf1.done
+	require.NoError(t, wal1.Close())
+
+	// Recreate WAL and write the same events back (simulating checkpoint not
+	// having advanced — events still in WAL segments).
+	wal2, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	// Write the same events that are already in Postgres back into the WAL.
+	// This simulates the state after a mid-flush crash: events in both places.
+	_, err = wal2.Write(got)
+	require.NoError(t, err)
+	require.NoError(t, wal2.Close())
+
+	// Phase 2: Recovery should handle duplicates gracefully.
+	wal3, err := NewWAL(testLogger(), cfg)
+	require.NoError(t, err)
+
+	buf2 := NewBuffer(testDB, testLogger(), 1000, 100*time.Millisecond, wal3)
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	buf2.Start(ctx2) // triggers recovery with idempotent dedup
+
+	// Verify no duplicates: still exactly 5 events.
+	require.Eventually(t, func() bool {
+		events, err := testDB.GetEventsByRun(context.Background(), run.OrgID, run.ID, 0)
+		return err == nil && len(events) == 5
+	}, 5*time.Second, 100*time.Millisecond, "should have exactly 5 events after dedup recovery, no duplicates")
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	require.NoError(t, buf2.Drain(drainCtx))
+}
+
 func TestBuffer_FlushOnceWithWALCheckpoint(t *testing.T) {
 	run := createTestRun(t)
 
