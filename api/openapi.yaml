@@ -3728,7 +3728,7 @@ components:
 
     EnrichmentRevisions:
       type: object
-      required: [items, count]
+      required: [items, count, total]
       properties:
         items:
           type: array
@@ -3736,13 +3736,17 @@ components:
             $ref: "#/components/schemas/Decision"
         count:
           type: integer
+          description: Number of revisions visible to the caller after RBAC filtering.
+        total:
+          type: integer
+          description: Pre-filter revision count. Differs from count when RBAC hides revisions.
         degraded:
           type: boolean
           description: True when revision data could not be fully retrieved due to a storage or authorization error.
 
     EnrichmentConflicts:
       type: object
-      required: [items, count, has_more]
+      required: [items, count, total, has_more]
       properties:
         items:
           type: array
@@ -3750,9 +3754,13 @@ components:
             $ref: "#/components/schemas/DecisionConflict"
         count:
           type: integer
+          description: Number of conflicts visible to the caller after RBAC filtering.
+        total:
+          type: integer
+          description: Pre-filter conflict count. Differs from count when RBAC hides conflicts.
         has_more:
           type: boolean
-          description: True when more conflicts exist than the 50 returned.
+          description: True when more conflicts exist than the 50 returned (based on pre-filter count).
         degraded:
           type: boolean
           description: True when conflict data could not be fully retrieved due to a storage or authorization error.

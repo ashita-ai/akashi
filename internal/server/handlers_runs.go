@@ -23,15 +23,17 @@ import (
 // enrichmentRevisions holds the revision chain for a single decision.
 type enrichmentRevisions struct {
 	Items    []model.Decision `json:"items"`
-	Count    int              `json:"count"`
+	Count    int              `json:"count"` // visible count (post-RBAC-filter)
+	Total    int              `json:"total"` // pre-filter count (0 when degraded)
 	Degraded bool             `json:"degraded,omitempty"`
 }
 
 // enrichmentConflicts holds conflicts for a single decision.
 type enrichmentConflicts struct {
 	Items    []model.DecisionConflict `json:"items"`
-	Count    int                      `json:"count"`
-	HasMore  bool                     `json:"has_more"`
+	Count    int                      `json:"count"`    // visible count (post-RBAC-filter)
+	Total    int                      `json:"total"`    // pre-filter count (0 when degraded)
+	HasMore  bool                     `json:"has_more"` // true if more exist beyond the 50 cap
 	Degraded bool                     `json:"degraded,omitempty"`
 }
 
@@ -372,6 +374,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}}
 					}
 				} else {
+					preFilterRevisions := len(revisions)
 					revisions, filterErr := filterDecisionsByAccess(gctx, h.db, claims, revisions, h.grantCache)
 					if filterErr != nil {
 						h.logger.Warn("enrichment: access filter failed for revisions",
@@ -379,7 +382,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}, Degraded: true}
 						entry.Degraded = true
 					} else {
-						entry.Revisions = enrichmentRevisions{Items: revisions, Count: len(revisions)}
+						entry.Revisions = enrichmentRevisions{Items: revisions, Count: len(revisions), Total: preFilterRevisions}
 					}
 				}
 
@@ -417,6 +420,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 						entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}}
 					}
 				} else {
+					preFilterConflicts := len(conflicts)
 					conflicts, filterErr := filterConflictsByAccess(gctx, h.db, claims, conflicts, h.grantCache)
 					if filterErr != nil {
 						h.logger.Warn("enrichment: access filter failed for conflicts",
@@ -424,13 +428,15 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 						entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}, Degraded: true}
 						entry.Degraded = true
 					} else {
-						hasMore := len(conflicts) > maxEnrichmentConflicts
+						hasMore := preFilterConflicts > maxEnrichmentConflicts
+						total := preFilterConflicts
 						if hasMore {
 							conflicts = conflicts[:maxEnrichmentConflicts]
 						}
 						entry.Conflicts = enrichmentConflicts{
 							Items:   conflicts,
 							Count:   len(conflicts),
+							Total:   total,
 							HasMore: hasMore,
 						}
 					}
@@ -460,10 +466,23 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 		_ = g.Wait()
 
 		// If the request was cancelled mid-flight, some enrichments may be
-		// incomplete. Mark the response so callers don't mistake a partial
-		// result for a complete one.
+		// incomplete. Insert fully-degraded stubs for any decision that never
+		// got an entry, so absence in the map is unambiguous (= not requested)
+		// rather than ambiguous (= cancelled? errored? empty?).
 		if r.Context().Err() != nil {
 			enrichmentsTruncated = true
+			for _, d := range toEnrich {
+				key := d.ID.String()
+				if _, exists := enrichments[key]; !exists {
+					enrichments[key] = decisionEnrichment{
+						Revisions: enrichmentRevisions{Items: []model.Decision{}, Degraded: true},
+						Lineage:   storage.DecisionLineage{DecisionID: d.ID},
+						Conflicts: enrichmentConflicts{Items: []model.DecisionConflict{}, Degraded: true},
+						Integrity: enrichmentIntegrity{Status: "no_hash"},
+						Degraded:  true,
+					}
+				}
+			}
 		}
 	}
 

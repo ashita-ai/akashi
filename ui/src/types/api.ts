@@ -493,12 +493,14 @@ export interface IntegrityStatus {
 export interface EnrichmentRevisions {
   items: Decision[];
   count: number;
+  total: number;
   degraded?: boolean;
 }
 
 export interface EnrichmentConflicts {
   items: DecisionConflict[];
   count: number;
+  total: number;
   has_more: boolean;
   degraded?: boolean;
 }

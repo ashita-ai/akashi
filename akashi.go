@@ -54,6 +54,9 @@ import (
 	"github.com/ashita-ai/akashi/internal/telemetry"
 	"github.com/ashita-ai/akashi/migrations"
 	"github.com/ashita-ai/akashi/ui"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // App is the Akashi server lifecycle. Construct with New(), run with Run().
@@ -755,25 +758,67 @@ func (a *App) integrityAuditLoop(ctx context.Context) {
 	}
 }
 
-// auditIntegrityProofs picks one org per tick (sampling-based, not exhaustive)
-// and verifies its most recent Merkle proofs by:
+// OTEL meter and counters for the integrity audit loop.
+var (
+	auditMeter           = otel.GetMeterProvider().Meter("akashi/integrity")
+	auditViolationsTotal metric.Int64Counter
+	auditProofsChecked   metric.Int64Counter
+	auditOrgsChecked     metric.Int64Counter
+)
+
+func init() {
+	var err error
+	auditViolationsTotal, err = auditMeter.Int64Counter("akashi.integrity.violations_total",
+		metric.WithDescription("Total integrity violations detected by the background audit loop"))
+	if err != nil {
+		panic("integrity metrics: " + err.Error())
+	}
+	auditProofsChecked, err = auditMeter.Int64Counter("akashi.integrity.proofs_checked_total",
+		metric.WithDescription("Total Merkle proofs verified by the background audit loop"))
+	if err != nil {
+		panic("integrity metrics: " + err.Error())
+	}
+	auditOrgsChecked, err = auditMeter.Int64Counter("akashi.integrity.orgs_audited_total",
+		metric.WithDescription("Total org audit cycles completed"))
+	if err != nil {
+		panic("integrity metrics: " + err.Error())
+	}
+}
+
+// auditIntegrityProofs picks one org per tick (round-robin) and verifies its
+// most recent Merkle proofs by:
 // (1) recomputing each root from decision content hashes, and
 // (2) checking chain linkage via previous_root.
-// Coverage is probabilistic: with N orgs, each org is audited roughly every
+//
+// Coverage is deterministic: with N orgs, each org is audited roughly every
 // N * IntegrityAuditInterval. Only the 10 newest proofs per org are checked.
+//
+// Violations are both logged and persisted to integrity_violations — logs are
+// for alerting, the table is the durable paper trail.
 func (a *App) auditIntegrityProofs(ctx context.Context) {
-	orgIDs, err := a.db.ListOrganizationIDs(ctx)
+	// Use offset-based selection instead of loading the full org table.
+	// CountOrganizations is a cheap count(*) on the PK index.
+	orgCount, err := a.db.CountOrganizations(ctx)
 	if err != nil {
-		a.logger.Warn("integrity audit: list orgs failed", "error", err)
+		a.logger.Warn("integrity audit: count orgs failed", "error", err)
 		return
 	}
-	if len(orgIDs) == 0 {
+	if orgCount == 0 {
 		return
 	}
 
-	// Round-robin through orgs to guarantee every org is audited.
+	// Round-robin through orgs using atomic counter + offset.
 	idx := a.auditOrgCounter.Add(1) - 1
-	orgID := orgIDs[idx%uint64(len(orgIDs))]
+	offset := int(idx % uint64(orgCount)) //nolint:gosec // orgCount is validated positive above; modulo result fits int
+	orgID, err := a.db.GetOrgIDByOffset(ctx, offset)
+	if err != nil {
+		a.logger.Warn("integrity audit: get org by offset failed", "offset", offset, "error", err)
+		return
+	}
+	if orgID == uuid.Nil {
+		// Org count changed between count and offset query — skip this tick.
+		return
+	}
 
 	proofs, err := a.db.GetRecentIntegrityProofs(ctx, orgID, 10)
 	if err != nil {
@@ -784,6 +829,7 @@ func (a *App) auditIntegrityProofs(ctx context.Context) {
 		return
 	}
 
+	violations := 0
 	for i, p := range proofs {
 		// Verify Merkle root.
 		hashes, err := a.db.GetDecisionHashesForBatch(ctx, orgID, p.BatchStart, p.BatchEnd)
@@ -793,16 +839,27 @@ func (a *App) auditIntegrityProofs(ctx context.Context) {
 			continue
 		}
 
-		ok, err := integrity.VerifyBatchProof(p.RootHash, hashes)
+		recomputedRoot, err := integrity.BuildMerkleRoot(hashes)
 		if err != nil {
-			a.logger.Error("integrity audit: merkle verification error",
+			a.logger.Error("integrity audit: merkle recomputation error",
 				"org_id", orgID, "proof_id", p.ID, "error", err)
 			continue
 		}
-		if !ok {
+		if recomputedRoot != p.RootHash {
 			a.logger.Error("INTEGRITY VIOLATION: Merkle root mismatch — stored root does not match recomputed root",
 				"org_id", orgID, "proof_id", p.ID,
-				"stored_root", p.RootHash, "decision_count", p.DecisionCount)
+				"stored_root", p.RootHash, "recomputed_root", recomputedRoot, "decision_count", p.DecisionCount)
+			violations++
+			if dbErr := a.db.CreateIntegrityViolation(ctx, storage.IntegrityViolation{
+				OrgID:         orgID,
+				ProofID:       p.ID,
+				ViolationType: "merkle_mismatch",
+				Expected:      p.RootHash,
+				Actual:        recomputedRoot,
+			}); dbErr != nil {
+				a.logger.Error("integrity audit: FAILED TO PERSIST VIOLATION — evidence may be lost",
+					"org_id", orgID, "proof_id", p.ID, "error", dbErr)
+			}
 		}
 
 		// Verify chain linkage: this proof's previous_root should match the
@@ -812,15 +869,42 @@ func (a *App) auditIntegrityProofs(ctx context.Context) {
 			if p.PreviousRoot == nil {
 				a.logger.Warn("integrity audit: proof has nil previous_root but older proof exists — chain may be broken",
 					"org_id", orgID, "proof_id", p.ID, "older_proof_id", older.ID)
+				violations++
+				if dbErr := a.db.CreateIntegrityViolation(ctx, storage.IntegrityViolation{
+					OrgID:         orgID,
+					ProofID:       p.ID,
+					ViolationType: "nil_previous_root",
+					Expected:      older.RootHash,
+					Actual:        "<nil>",
+				}); dbErr != nil {
+					a.logger.Error("integrity audit: FAILED TO PERSIST VIOLATION — evidence may be lost",
+						"org_id", orgID, "proof_id", p.ID, "error", dbErr)
+				}
 			} else if *p.PreviousRoot != older.RootHash {
 				a.logger.Error("INTEGRITY VIOLATION: chain linkage broken — previous_root does not match prior proof",
 					"org_id", orgID, "proof_id", p.ID,
 					"expected_previous", older.RootHash, "actual_previous", *p.PreviousRoot)
+				violations++
+				if dbErr := a.db.CreateIntegrityViolation(ctx, storage.IntegrityViolation{
+					OrgID:         orgID,
+					ProofID:       p.ID,
+					ViolationType: "chain_break",
+					Expected:      older.RootHash,
+					Actual:        *p.PreviousRoot,
+				}); dbErr != nil {
+					a.logger.Error("integrity audit: FAILED TO PERSIST VIOLATION — evidence may be lost",
+						"org_id", orgID, "proof_id", p.ID, "error", dbErr)
+				}
 			}
 		}
 	}
 
-	a.logger.Info("integrity audit completed", "org_id", orgID, "proofs_checked", len(proofs))
+	auditProofsChecked.Add(ctx, int64(len(proofs)))
+	auditOrgsChecked.Add(ctx, 1)
+	if violations > 0 {
+		auditViolationsTotal.Add(ctx, int64(violations))
+	}
+	a.logger.Info("integrity audit completed", "org_id", orgID, "proofs_checked", len(proofs), "violations", violations)
 }
 
 func (a *App) idempotencyCleanupLoop(ctx context.Context) {
