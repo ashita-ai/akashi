@@ -1497,6 +1497,16 @@ func (s *Server) resolveScoredConflict(
 		}
 	}
 
+	// Derive false_positive label for atomic insertion in the storage tx.
+	var fpLabel *string
+	if status == "false_positive" {
+		label := "unrelated_false_positive"
+		if fp := request.GetString("false_positive_label", ""); fp == "related_not_contradicting" {
+			label = fp
+		}
+		fpLabel = &label
+	}
+
 	audit := storage.MutationAuditEntry{
 		OrgID:        orgID,
 		ActorAgentID: resolvedBy,
@@ -1508,17 +1518,12 @@ func (s *Server) resolveScoredConflict(
 		Metadata:     map[string]any{"new_status": status, "resolved_by": resolvedBy},
 	}
 
-	oldStatus, err := s.db.UpdateConflictStatusWithAudit(ctx, conflictID, orgID, status, resolvedBy, resolutionNote, winningDecisionID, audit)
+	oldStatus, err := s.db.UpdateConflictStatusWithAudit(ctx, conflictID, orgID, status, resolvedBy, resolutionNote, winningDecisionID, fpLabel, audit)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			return errorResult("conflict not found"), nil
 		}
 		return errorResult(fmt.Sprintf("failed to update conflict: %v", err)), nil
-	}
-
-	// Auto-label false positives into ground truth for detector training.
-	if status == "false_positive" {
-		s.labelFalsePositive(ctx, request, conflictID, orgID, resolvedBy)
 	}
 
 	// Cascade resolution when resolving with a winner in a group.
@@ -1534,8 +1539,15 @@ func (s *Server) resolveScoredConflict(
 			ResourceID:   conflictID.String(),
 			Metadata:     map[string]any{"trigger_conflict_id": conflictID.String(), "winning_decision_id": winningDecisionID.String()},
 		}
-		cascaded, _ = s.db.CascadeResolveByOutcome(ctx, orgID, *conflict.GroupID, *winningDecisionID, conflictID, cascadeSimilarityThreshold, cascadeAudit)
-		if cascaded > 0 {
+		var cascadeErr error
+		cascaded, cascadeErr = s.db.CascadeResolveByOutcome(ctx, orgID, *conflict.GroupID, *winningDecisionID, conflictID, cascadeSimilarityThreshold, cascadeAudit)
+		if cascadeErr != nil {
+			s.logger.Warn("mcp: resolution cascade failed",
+				"trigger_conflict_id", conflictID,
+				"group_id", conflict.GroupID,
+				"error", cascadeErr,
+			)
+		} else if cascaded > 0 {
 			s.logger.Info("mcp: resolution cascade resolved conflicts",
 				"trigger_conflict_id", conflictID,
 				"group_id", conflict.GroupID,
@@ -1627,24 +1639,6 @@ func (s *Server) resolveConflictGroup(
 			mcplib.TextContent{Type: "text", Text: string(resultData)},
 		},
 	}, nil
-}
-
-// labelFalsePositive auto-labels a single scored_conflict as a false positive
-// for ground truth training.
-func (s *Server) labelFalsePositive(ctx context.Context, request mcplib.CallToolRequest, conflictID, orgID uuid.UUID, resolvedBy string) {
-	label := "unrelated_false_positive"
-	if fpLabel := request.GetString("false_positive_label", ""); fpLabel == "related_not_contradicting" {
-		label = fpLabel
-	}
-	if labelErr := s.db.UpsertConflictLabel(ctx, storage.ConflictLabel{
-		ScoredConflictID: conflictID,
-		OrgID:            orgID,
-		Label:            label,
-		LabeledBy:        resolvedBy,
-		LabeledAt:        time.Now(),
-	}); labelErr != nil {
-		s.logger.Warn("failed to auto-label false_positive conflict", "conflict_id", conflictID, "error", labelErr)
-	}
 }
 
 func (s *Server) handleStats(ctx context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {

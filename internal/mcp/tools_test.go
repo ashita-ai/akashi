@@ -2633,7 +2633,7 @@ func TestHandleCheck_WithPriorResolutions(t *testing.T) {
 	// Resolve the conflict with a winner to generate a prior resolution.
 	note := "alpha approach validated in production"
 	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
-		"resolved", testAdminID, &note, &decAID,
+		"resolved", testAdminID, &note, &decAID, nil,
 		storage.MutationAuditEntry{
 			OrgID:        uuid.Nil,
 			ActorAgentID: testAdminID,
@@ -2993,7 +2993,7 @@ func TestHandleResolve_GroupDoesNotRelabelPriorResolutions(t *testing.T) {
 
 	// First, resolve one conflict individually as "resolved" with no label.
 	_, err := testDB.UpdateConflictStatusWithAudit(ctx, conflictIDs[0], uuid.Nil,
-		"resolved", testAdminID, nil, nil,
+		"resolved", testAdminID, nil, nil, nil,
 		storage.MutationAuditEntry{
 			RequestID: uuid.New().String(), OrgID: uuid.Nil,
 			ActorAgentID: testAdminID, ActorRole: "admin",
