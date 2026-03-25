@@ -4622,6 +4622,13 @@ func TestEraseDecision(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	// Add claims (derived from reasoning, may contain PII).
+	err = testDB.InsertClaims(ctx, []storage.Claim{
+		{DecisionID: d.ID, OrgID: uuid.Nil, ClaimIdx: 0, ClaimText: "sensitive claim one"},
+		{DecisionID: d.ID, OrgID: uuid.Nil, ClaimIdx: 1, ClaimText: "sensitive claim two"},
+	})
+	require.NoError(t, err)
+
 	result, err := testDB.EraseDecision(ctx, uuid.Nil, d.ID, "GDPR request", agentID, &storage.MutationAuditEntry{
 		RequestID: "erase-" + suffix, OrgID: uuid.Nil,
 		ActorAgentID: agentID, ActorRole: "admin",
@@ -4633,12 +4640,22 @@ func TestEraseDecision(t *testing.T) {
 	assert.Equal(t, "GDPR request", result.Erasure.Reason)
 	assert.Equal(t, int64(1), result.AlternativesErased)
 	assert.Equal(t, int64(1), result.EvidenceErased)
+	assert.Equal(t, int64(2), result.ClaimsErased)
 
 	// Verify decision outcome is scrubbed.
 	got, err := testDB.GetDecision(ctx, uuid.Nil, d.ID, storage.GetDecisionOpts{})
 	require.NoError(t, err)
 	assert.Equal(t, storage.ErasedSentinel, got.Outcome)
 	assert.Equal(t, storage.ErasedSentinel, *got.Reasoning)
+
+	// Verify claims are scrubbed (claim_text replaced, embedding nulled).
+	claims, err := testDB.FindClaimsByDecision(ctx, d.ID, uuid.Nil)
+	require.NoError(t, err)
+	require.Len(t, claims, 2, "claims should still exist after erasure")
+	for _, c := range claims {
+		assert.Equal(t, storage.ErasedSentinel, c.ClaimText, "claim_text must be scrubbed")
+		assert.Nil(t, c.Embedding, "claim embedding must be nulled")
+	}
 
 	// GetDecisionErasure should return the record.
 	erasure, err := testDB.GetDecisionErasure(ctx, uuid.Nil, d.ID)
