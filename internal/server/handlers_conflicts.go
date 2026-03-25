@@ -167,15 +167,7 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 		resolvedBy = claims.Subject
 	}
 
-	// Derive false_positive label for atomic insertion in the storage tx.
-	var fpLabel *string
-	if req.Status == "false_positive" {
-		label := "unrelated_false_positive"
-		if req.FalsePositiveLabel != nil && *req.FalsePositiveLabel == "related_not_contradicting" {
-			label = *req.FalsePositiveLabel
-		}
-		fpLabel = &label
-	}
+	fpLabel := storage.ComputeFPLabel(req.Status, req.FalsePositiveLabel)
 
 	audit := h.buildAuditEntry(r, orgID,
 		"conflict_status_changed", "conflict", id.String(),
@@ -185,6 +177,11 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.db.UpdateConflictStatusWithAudit(r.Context(), id, orgID, req.Status, resolvedBy, req.ResolutionNote, req.WinningDecisionID, fpLabel, audit); err != nil {
 		if isNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
+			return
+		}
+		if errors.Is(err, storage.ErrWinningDecisionNotInConflict) {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+				"winning_decision_id must be one of the two decisions in this conflict")
 			return
 		}
 		h.writeInternalError(w, r, "failed to update conflict", err)
@@ -273,26 +270,28 @@ func (h *Handlers) HandleResolveConflictGroup(w http.ResponseWriter, r *http.Req
 		resolvedBy = claims.Subject
 	}
 
-	// Derive false_positive label for atomic insertion in the storage tx.
-	var fpLabel *string
-	if req.Status == "false_positive" {
-		label := "unrelated_false_positive"
-		if req.FalsePositiveLabel != nil && *req.FalsePositiveLabel == "related_not_contradicting" {
-			label = *req.FalsePositiveLabel
-		}
-		fpLabel = &label
-	}
-
 	audit := h.buildAuditEntry(r, orgID,
 		"conflict_group_resolved", "conflict_group", groupID.String(),
 		nil, nil,
 		map[string]any{"new_status": req.Status, "resolved_by": resolvedBy},
 	)
 
+	fpLabel := storage.ComputeFPLabel(req.Status, req.FalsePositiveLabel)
+
 	affected, err := h.db.ResolveConflictGroup(r.Context(), groupID, orgID, req.Status, resolvedBy, req.ResolutionNote, req.WinningAgent, fpLabel, audit)
 	if err != nil {
 		if isNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict group not found")
+			return
+		}
+		if errors.Is(err, storage.ErrWinningAgentNotInGroup) {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+				"winning_agent does not match either agent in this conflict group")
+			return
+		}
+		if errors.Is(err, storage.ErrRevisedDecisions) {
+			writeError(w, r, http.StatusConflict, model.ErrCodeInvalidInput,
+				"some conflicts in the group reference revised decisions and cannot be resolved with a winner")
 			return
 		}
 		h.writeInternalError(w, r, "failed to resolve conflict group", err)
