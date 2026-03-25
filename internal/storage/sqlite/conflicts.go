@@ -347,7 +347,9 @@ func (l *LiteDB) GetConflict(ctx context.Context, id, orgID uuid.UUID) (*model.D
 }
 
 // UpdateConflictStatusWithAudit transitions a conflict to a new lifecycle state.
-func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, _ storage.MutationAuditEntry) (string, error) {
+// When fpLabel is non-nil and status is "false_positive", a ground-truth label
+// is inserted in the same transaction.
+func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, fpLabel *string, _ storage.MutationAuditEntry) (string, error) {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", fmt.Errorf("sqlite: begin conflict status tx: %w", err)
@@ -385,6 +387,23 @@ func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uu
 	}
 	if err != nil {
 		return "", fmt.Errorf("sqlite: update conflict status: %w", err)
+	}
+
+	// Insert false_positive label atomically in the same transaction.
+	if fpLabel != nil && status == "false_positive" {
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
+			 VALUES (?, ?, ?, ?, datetime('now'))
+			 ON CONFLICT (scored_conflict_id)
+			 DO UPDATE SET label = excluded.label,
+			               labeled_by = excluded.labeled_by,
+			               labeled_at = excluded.labeled_at
+			 WHERE conflict_labels.org_id = excluded.org_id`,
+			uuidStr(id), uuidStr(orgID), *fpLabel, resolvedBy,
+		)
+		if err != nil {
+			return "", fmt.Errorf("sqlite: label false positive in conflict status tx: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

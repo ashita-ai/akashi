@@ -4094,8 +4094,9 @@ func TestUpdateConflictStatusWithAudit(t *testing.T) {
 
 	// Transition to false_positive (terminal status, sets resolved_by/resolved_at).
 	fpNote := "Not a real conflict."
+	fpLabel := "unrelated_false_positive"
 	oldStatus, err := testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
-		"false_positive", "admin-agent", &fpNote, nil,
+		"false_positive", "admin-agent", &fpNote, nil, &fpLabel,
 		storage.MutationAuditEntry{
 			RequestID: "fp-" + suffix, OrgID: uuid.Nil,
 			ActorAgentID: "admin-agent", ActorRole: "admin",
@@ -4114,7 +4115,7 @@ func TestUpdateConflictStatusWithAudit(t *testing.T) {
 	// Transition to resolved with a winner (overriding false_positive).
 	resNote := "Right approach is better."
 	oldStatus2, err := testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
-		"resolved", "admin-agent", &resNote, &dB.ID,
+		"resolved", "admin-agent", &resNote, &dB.ID, nil,
 		storage.MutationAuditEntry{
 			RequestID: "resolve-" + suffix, OrgID: uuid.Nil,
 			ActorAgentID: "admin-agent", ActorRole: "admin",
@@ -5472,7 +5473,7 @@ func TestGetResolvedConflictsByType(t *testing.T) {
 	// Resolve the conflict with dA as winner.
 	resNote := "alpha approach was better"
 	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
-		"resolved", "test-resolver", &resNote, &dA.ID, storage.MutationAuditEntry{
+		"resolved", "test-resolver", &resNote, &dA.ID, nil, storage.MutationAuditEntry{
 			RequestID:    uuid.New().String(),
 			OrgID:        uuid.Nil,
 			ActorAgentID: "test-resolver",
@@ -6299,7 +6300,7 @@ func TestGetDecisionOutcomeSignalsBatch_WithConflictFate(t *testing.T) {
 
 	resNote := "dA is better"
 	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
-		"resolved", "tester", &resNote, &dA.ID,
+		"resolved", "tester", &resNote, &dA.ID, nil,
 		storage.MutationAuditEntry{
 			RequestID: uuid.New().String(), OrgID: uuid.Nil,
 			ActorAgentID: "tester", ActorRole: "admin",
@@ -6641,7 +6642,7 @@ func TestGetAgentWinRates_WithResolvedConflicts(t *testing.T) {
 	// Resolve the conflict with agentA as winner.
 	resNote := "agentA wins"
 	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, dA.OrgID,
-		"resolved", "test", &resNote, &dA.ID,
+		"resolved", "test", &resNote, &dA.ID, nil,
 		storage.MutationAuditEntry{
 			OrgID: dA.OrgID, ActorAgentID: "test", ActorRole: "admin",
 			Operation: "resolve_conflict", ResourceType: "conflict",
@@ -7259,7 +7260,7 @@ func TestGetDecisionOutcomeSignals_WithConflictFate(t *testing.T) {
 	// Resolve with dA as winner.
 	resNote := "agentA wins"
 	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, dA.OrgID,
-		"resolved", "test", &resNote, &dA.ID,
+		"resolved", "test", &resNote, &dA.ID, nil,
 		storage.MutationAuditEntry{
 			OrgID: dA.OrgID, ActorAgentID: "test", ActorRole: "admin",
 			Operation: "resolve_conflict", ResourceType: "conflict",

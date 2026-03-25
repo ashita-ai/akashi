@@ -2633,7 +2633,7 @@ func TestHandleCheck_WithPriorResolutions(t *testing.T) {
 	// Resolve the conflict with a winner to generate a prior resolution.
 	note := "alpha approach validated in production"
 	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
-		"resolved", testAdminID, &note, &decAID,
+		"resolved", testAdminID, &note, &decAID, nil,
 		storage.MutationAuditEntry{
 			OrgID:        uuid.Nil,
 			ActorAgentID: testAdminID,

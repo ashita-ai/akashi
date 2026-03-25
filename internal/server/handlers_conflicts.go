@@ -159,12 +159,23 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 		resolvedBy = claims.Subject
 	}
 
+	// Compute false_positive label so the storage layer can insert it
+	// atomically in the same transaction as the resolution.
+	var fpLabel *string
+	if req.Status == "false_positive" {
+		label := "unrelated_false_positive"
+		if req.FalsePositiveLabel != nil && *req.FalsePositiveLabel == "related_not_contradicting" {
+			label = *req.FalsePositiveLabel
+		}
+		fpLabel = &label
+	}
+
 	audit := h.buildAuditEntry(r, orgID,
 		"conflict_status_changed", "conflict", id.String(),
 		nil, nil,
 		map[string]any{"new_status": req.Status, "resolved_by": resolvedBy},
 	)
-	if _, err := h.db.UpdateConflictStatusWithAudit(r.Context(), id, orgID, req.Status, resolvedBy, req.ResolutionNote, req.WinningDecisionID, audit); err != nil {
+	if _, err := h.db.UpdateConflictStatusWithAudit(r.Context(), id, orgID, req.Status, resolvedBy, req.ResolutionNote, req.WinningDecisionID, fpLabel, audit); err != nil {
 		if isNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
 			return
@@ -182,23 +193,6 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 
 	if h.resolutionRecorder != nil {
 		h.resolutionRecorder.RecordResolution(r.Context(), req.Status, string(conflict.ConflictKind), 1)
-	}
-
-	// Auto-label false positives into ground truth for detector training.
-	if req.Status == "false_positive" {
-		label := "unrelated_false_positive"
-		if req.FalsePositiveLabel != nil && *req.FalsePositiveLabel == "related_not_contradicting" {
-			label = *req.FalsePositiveLabel
-		}
-		if labelErr := h.db.UpsertConflictLabel(r.Context(), storage.ConflictLabel{
-			ScoredConflictID: id,
-			OrgID:            orgID,
-			Label:            label,
-			LabeledBy:        resolvedBy,
-			LabeledAt:        time.Now(),
-		}); labelErr != nil {
-			h.logger.Warn("failed to auto-label false_positive conflict", "conflict_id", id, "error", labelErr)
-		}
 	}
 
 	// Resolution cascade: when a conflict is resolved with a winner and belongs

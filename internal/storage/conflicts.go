@@ -304,7 +304,9 @@ func (db *DB) GetConflict(ctx context.Context, id, orgID uuid.UUID) (*model.Deci
 // UpdateConflictStatusWithAudit transitions a conflict to a new lifecycle
 // state and inserts a mutation audit entry, atomically in a single transaction.
 // winningDecisionID is optional; when provided it is written only for "resolved" transitions.
-func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, audit MutationAuditEntry) (oldStatus string, err error) {
+// fpLabel is optional; when non-nil and status is "false_positive", a ground-truth
+// label is inserted in the same transaction — ensuring the label is never lost.
+func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, fpLabel *string, audit MutationAuditEntry) (oldStatus string, err error) {
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
 		return "", fmt.Errorf("storage: begin conflict status tx: %w", err)
@@ -345,10 +347,29 @@ func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.
 		return "", fmt.Errorf("storage: conflict: %w", ErrNotFound)
 	}
 
+	// Insert false_positive label atomically in the same transaction.
+	if fpLabel != nil && status == "false_positive" {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
+			 VALUES ($1, $2, $3, $4, now())
+			 ON CONFLICT (scored_conflict_id)
+			 DO UPDATE SET label = EXCLUDED.label,
+			               labeled_by = EXCLUDED.labeled_by,
+			               labeled_at = EXCLUDED.labeled_at
+			 WHERE conflict_labels.org_id = EXCLUDED.org_id`,
+			id, orgID, *fpLabel, resolvedBy,
+		); err != nil {
+			return "", fmt.Errorf("storage: label false positive in conflict status tx: %w", err)
+		}
+	}
+
 	audit.BeforeData = map[string]any{"status": oldStatus}
 	afterData := map[string]any{"status": status, "resolved_by": resolvedBy}
 	if winningDecisionID != nil && status == "resolved" {
 		afterData["winning_decision_id"] = winningDecisionID.String()
+	}
+	if fpLabel != nil {
+		afterData["fp_label"] = *fpLabel
 	}
 	audit.AfterData = afterData
 	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
