@@ -453,10 +453,24 @@ func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.U
 
 	var result sql.Result
 	if winningAgent != nil && status == "resolved" {
+		// Count open conflicts before the UPDATE so we can detect revised decisions.
+		var openCount int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT count(*) FROM scored_conflicts WHERE group_id = ? AND org_id = ? AND status = 'open'`,
+			uuidStr(groupID), uuidStr(orgID),
+		).Scan(&openCount); err != nil {
+			return 0, fmt.Errorf("sqlite: count open conflicts: %w", err)
+		}
+
 		// Use correlated subqueries to determine which decision belongs to
 		// the winning agent. We cannot rely on agent_a corresponding to
 		// decision_a_id because InsertScoredConflict canonicalizes decisions
 		// by UUID bytes and agents by string sort independently.
+		//
+		// Unlike PostgreSQL's FROM/JOIN approach (which drops rows when
+		// decisions are revised), correlated subqueries still UPDATE the row
+		// but set winning_decision_id = NULL via the ELSE branch. We detect
+		// this after the UPDATE by counting NULL winners.
 		result, err = tx.ExecContext(ctx,
 			`UPDATE scored_conflicts
 			 SET status = ?, resolved_by = ?, resolved_at = datetime('now'),
@@ -473,6 +487,26 @@ func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.U
 			uuidStr(orgID), *winningAgent, uuidStr(orgID), *winningAgent,
 			uuidStr(groupID), uuidStr(orgID),
 		)
+
+		// Detect revised decisions: the correlated subqueries set
+		// winning_decision_id = NULL when a decision's valid_to IS NOT NULL.
+		// Roll back and return a clear error rather than committing rows with
+		// status='resolved' but no winner.
+		if err == nil && openCount > 0 {
+			var nullWinners int
+			if scanErr := tx.QueryRowContext(ctx,
+				`SELECT count(*) FROM scored_conflicts
+				 WHERE group_id = ? AND org_id = ? AND status = 'resolved'
+				   AND winning_decision_id IS NULL AND resolved_by = ?`,
+				uuidStr(groupID), uuidStr(orgID), resolvedBy,
+			).Scan(&nullWinners); scanErr != nil {
+				return 0, fmt.Errorf("sqlite: check for null winners: %w", scanErr)
+			}
+			if nullWinners > 0 {
+				return 0, fmt.Errorf("sqlite: %d of %d open conflicts reference revised decisions (valid_to IS NOT NULL): %w",
+					nullWinners, openCount, storage.ErrRevisedDecisions)
+			}
+		}
 	} else {
 		result, err = tx.ExecContext(ctx,
 			`UPDATE scored_conflicts

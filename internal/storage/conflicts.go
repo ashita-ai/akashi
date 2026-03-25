@@ -1325,11 +1325,15 @@ func (db *DB) CascadeResolveByOutcome(
 	// For each open conflict in the group, compare both sides' outcome_embeddings
 	// against the winner. If exactly one side exceeds the threshold, resolve with
 	// that side as winner. If both exceed, pick the more aligned side.
+	//
+	// All decision JOINs filter valid_to IS NULL to ensure we only compare
+	// current (non-revised) decision embeddings. A revised decision's embedding
+	// may no longer represent the agent's actual position.
 	tag, err := tx.Exec(ctx, `
 		WITH winning AS (
 			SELECT outcome_embedding
 			FROM decisions
-			WHERE id = $1 AND org_id = $2
+			WHERE id = $1 AND org_id = $2 AND valid_to IS NULL
 		),
 		candidates AS (
 			SELECT
@@ -1347,8 +1351,8 @@ func (db *DB) CascadeResolveByOutcome(
 					ELSE 0.0
 				END AS sim_b
 			FROM scored_conflicts sc
-			JOIN decisions da ON da.id = sc.decision_a_id AND da.org_id = $2
-			JOIN decisions db ON db.id = sc.decision_b_id AND db.org_id = $2
+			JOIN decisions da ON da.id = sc.decision_a_id AND da.org_id = $2 AND da.valid_to IS NULL
+			JOIN decisions db ON db.id = sc.decision_b_id AND db.org_id = $2 AND db.valid_to IS NULL
 			CROSS JOIN winning w
 			WHERE sc.group_id = $3
 			  AND sc.org_id = $2
