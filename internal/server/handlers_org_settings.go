@@ -42,7 +42,13 @@ func (h *Handlers) HandleSetOrgSettings(w http.ResponseWriter, r *http.Request) 
 		updatedBy = claims.Subject
 	}
 
-	if err := h.db.UpsertOrgSettings(r.Context(), orgID, req, updatedBy); err != nil {
+	audit := h.buildAuditEntry(r, orgID,
+		"org_settings_updated", "org_settings", orgID.String(),
+		nil, nil, // before/after populated inside the transaction
+		map[string]any{"updated_by": updatedBy},
+	)
+
+	if err := h.db.UpsertOrgSettingsWithAudit(r.Context(), orgID, req, updatedBy, audit); err != nil {
 		h.writeInternalError(w, r, "failed to update org settings", err)
 		return
 	}
