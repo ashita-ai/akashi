@@ -140,8 +140,11 @@ type Store interface {
 	GetHighConfOutcomeSignals(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (HighConfOutcomeSignals, error)
 	// GetConfidenceCalibration returns per-tier and per-agent calibration signals
 	// correlating declared confidence with revision rates and assessment outcomes.
-	GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID) (ConfidenceCalibration, error)
-	GetDecisionTypeDistribution(ctx context.Context, orgID uuid.UUID) ([]DecisionTypeCount, error)
+	// When from/to are non-nil, only decisions with valid_from in [from, to) are included.
+	GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (ConfidenceCalibration, error)
+	// GetDecisionTypeDistribution returns counts grouped by decision_type.
+	// When from/to are non-nil, only decisions with valid_from in [from, to) are included.
+	GetDecisionTypeDistribution(ctx context.Context, orgID uuid.UUID, from, to *time.Time) ([]DecisionTypeCount, error)
 	// GetCompletenessByDecisionType returns per-type average completeness for current decisions.
 	// Ordered by avg completeness ascending so the worst types surface first.
 	GetCompletenessByDecisionType(ctx context.Context, orgID uuid.UUID, from, to *time.Time) ([]DecisionTypeCompleteness, error)

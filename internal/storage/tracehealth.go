@@ -213,8 +213,21 @@ func (db *DB) GetHighConfOutcomeSignals(ctx context.Context, orgID uuid.UUID, fr
 // GetConfidenceCalibration returns per-tier and per-agent calibration signals.
 // It correlates declared confidence with revision rates (temporal proxy) and
 // assessment outcome scores (ground truth, when available).
-func (db *DB) GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID) (ConfidenceCalibration, error) {
+// When from/to are non-nil, only decisions with valid_from in [from, to) are included.
+func (db *DB) GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (ConfidenceCalibration, error) {
 	var cal ConfidenceCalibration
+
+	// Build optional time-range clause.
+	timeFilter := ""
+	args := []any{orgID}
+	if from != nil {
+		args = append(args, *from)
+		timeFilter += fmt.Sprintf(" AND d.valid_from >= $%d", len(args))
+	}
+	if to != nil {
+		args = append(args, *to)
+		timeFilter += fmt.Sprintf(" AND d.valid_from < $%d", len(args))
+	}
 
 	// Per-tier: group decisions into low/mid/high confidence bands and compute
 	// revision rate + avg outcome_score for each.
@@ -241,10 +254,10 @@ func (db *DB) GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID) (Co
 		              AND EXTRACT(EPOCH FROM (sup.valid_from - d.valid_from)) / 3600 < 48
 		        ) AS revised
 		    FROM decisions d
-		    WHERE d.org_id = $1 AND d.valid_to IS NULL
+		    WHERE d.org_id = $1 AND d.valid_to IS NULL`+timeFilter+`
 		) sub
 		GROUP BY tier
-		ORDER BY tier`, orgID)
+		ORDER BY tier`, args...)
 	if err != nil {
 		return cal, fmt.Errorf("storage: confidence calibration tiers: %w", err)
 	}
@@ -295,9 +308,9 @@ func (db *DB) GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID) (Co
 		    COUNT(*) FILTER (WHERE d.outcome_score IS NOT NULL)::int,
 		    AVG(d.outcome_score) FILTER (WHERE d.outcome_score IS NOT NULL)
 		FROM decisions d
-		WHERE d.org_id = $1 AND d.valid_to IS NULL
+		WHERE d.org_id = $1 AND d.valid_to IS NULL`+timeFilter+`
 		GROUP BY d.agent_id
-		ORDER BY AVG(d.confidence) DESC`, orgID)
+		ORDER BY AVG(d.confidence) DESC`, args...)
 	if err != nil {
 		return cal, fmt.Errorf("storage: confidence calibration by agent: %w", err)
 	}

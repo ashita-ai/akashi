@@ -272,11 +272,11 @@ func TestNoopValidator(t *testing.T) {
 		TypeB:    "architecture",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "contradiction", result.Relationship, "NoopValidator always returns contradiction")
-	assert.True(t, result.IsConflict())
-	assert.Empty(t, result.Explanation)
-	assert.Equal(t, "unknown", result.Category, "NoopValidator defaults to unknown category")
-	assert.Equal(t, "medium", result.Severity, "NoopValidator defaults to medium severity")
+	assert.Equal(t, "unvalidated", result.Relationship, "NoopValidator returns unvalidated — not a confirmed conflict")
+	assert.False(t, result.IsConflict(), "unvalidated is not an actionable conflict")
+	assert.Contains(t, result.Explanation, "no LLM validator configured")
+	assert.Empty(t, result.Category, "NoopValidator does not assign a category")
+	assert.Empty(t, result.Severity, "NoopValidator does not assign a severity")
 }
 
 // ---------------------------------------------------------------------------
