@@ -1093,6 +1093,7 @@ func (h *Handlers) HandleDecisionFacets(w http.ResponseWriter, r *http.Request) 
 // HandleGetDecisionLineage handles GET /v1/decisions/{id}/lineage (reader+).
 // Returns the precedent chain: the decision this one cites and decisions that cite it.
 func (h *Handlers) HandleGetDecisionLineage(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
 
 	id, err := parsePathUUID(r, "id")
@@ -1108,6 +1109,12 @@ func (h *Handlers) HandleGetDecisionLineage(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		h.writeInternalError(w, r, "failed to get decision lineage", err)
+		return
+	}
+
+	lineage, err = filterLineageByAccess(r.Context(), h.db, claims, lineage, h.grantCache)
+	if err != nil {
+		h.writeInternalError(w, r, "authorization check failed", err)
 		return
 	}
 

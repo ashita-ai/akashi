@@ -3728,7 +3728,7 @@ components:
 
     EnrichmentRevisions:
       type: object
-      required: [items, count]
+      required: [items, count, total]
       properties:
         items:
           type: array
@@ -3746,7 +3746,7 @@ components:
 
     EnrichmentConflicts:
       type: object
-      required: [items, count, has_more]
+      required: [items, count, total, has_more]
       properties:
         items:
           type: array
@@ -3760,7 +3760,7 @@ components:
           description: Total conflicts before access filtering. Omitted when equal to count.
         has_more:
           type: boolean
-          description: True when more conflicts exist than the 50 returned.
+          description: True when more conflicts exist than the 50 returned (based on pre-filter count).
         degraded:
           type: boolean
           description: True when conflict data could not be fully retrieved due to a storage or authorization error.

@@ -125,15 +125,17 @@ function IntegrityBadge({ enrichments }: { enrichments?: DecisionEnrichments }) 
 
 function RevisionChain({ enrichments }: { enrichments?: DecisionEnrichments }) {
   if (!enrichments) return null;
-  const { items, count, degraded } = enrichments.revisions;
+  const { items, count, total, degraded } = enrichments.revisions;
   if (count <= 1 && !degraded) return null;
+
+  const hiddenByRbac = total > 0 && total > count;
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-sm font-medium">
           <GitBranch className="h-4 w-4" />
-          Revision History ({count} versions)
+          Revision History ({count}{hiddenByRbac ? ` of ${total}` : ""} versions)
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -191,15 +193,17 @@ const conflictStatusVariant: Record<string, "warning" | "secondary" | "success" 
 
 function DecisionConflicts({ decisionId, enrichments }: { decisionId: string; enrichments?: DecisionEnrichments }) {
   if (!enrichments) return null;
-  const { items, count, has_more, degraded } = enrichments.conflicts;
+  const { items, count, total, has_more, degraded } = enrichments.conflicts;
   if (count === 0 && !degraded) return null;
+
+  const hiddenByRbac = total > 0 && total > count;
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-sm font-medium">
           <AlertTriangle className="h-4 w-4 text-amber-500" />
-          Related Conflicts ({count})
+          Related Conflicts ({count}{hiddenByRbac ? ` of ${total}` : ""})
         </CardTitle>
       </CardHeader>
       <CardContent>
