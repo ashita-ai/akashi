@@ -2034,3 +2034,59 @@ func (db *DB) GetConflictResolution(ctx context.Context, id, orgID uuid.UUID) (*
 	}
 	return &r, nil
 }
+
+// HasGroupParticipation checks whether both decisions already participate in
+// open or resolved conflicts within the same conflict group. Returns true when
+// decision A is in at least one conflict in the group AND decision B is in at
+// least one conflict in the group, making an A↔B conflict redundant — the
+// group already captures the full disagreement topology.
+//
+// Uses the existing idx_scored_conflicts_group index for efficient lookups.
+func (db *DB) HasGroupParticipation(ctx context.Context, orgID, groupID, decisionAID, decisionBID uuid.UUID) (bool, error) {
+	var result bool
+	err := db.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM scored_conflicts
+			WHERE org_id = $1 AND group_id = $2 AND status IN ('open', 'resolved')
+			  AND (decision_a_id = $3 OR decision_b_id = $3)
+		) AND EXISTS (
+			SELECT 1 FROM scored_conflicts
+			WHERE org_id = $1 AND group_id = $2 AND status IN ('open', 'resolved')
+			  AND (decision_a_id = $4 OR decision_b_id = $4)
+		)`, orgID, groupID, decisionAID, decisionBID).Scan(&result)
+	if err != nil {
+		return false, fmt.Errorf("storage: has group participation: %w", err)
+	}
+	return result, nil
+}
+
+// GetTypePairFPRate returns the false positive rate for a given decision type
+// pair based on labeled conflicts (conflict_labels table). Only meaningful when
+// the returned sampleSize is >= 5 — callers should ignore the rate otherwise.
+//
+// Rate = (related_not_contradicting + unrelated_false_positive) / total_labeled.
+// Types are compared case-insensitively and in both orderings.
+func (db *DB) GetTypePairFPRate(ctx context.Context, orgID uuid.UUID, typeA, typeB string) (rate float64, sampleSize int, err error) {
+	var fpCount, total int
+	err = db.pool.QueryRow(ctx, `
+		SELECT
+			count(*) FILTER (WHERE cl.label IN ('related_not_contradicting', 'unrelated_false_positive')),
+			count(*)
+		FROM scored_conflicts sc
+		JOIN conflict_labels cl ON cl.scored_conflict_id = sc.id AND cl.org_id = sc.org_id
+		WHERE sc.org_id = $1
+		  AND (
+			(LOWER(TRIM(sc.decision_type_a)) = LOWER(TRIM($2)) AND LOWER(TRIM(sc.decision_type_b)) = LOWER(TRIM($3)))
+			OR
+			(LOWER(TRIM(sc.decision_type_a)) = LOWER(TRIM($3)) AND LOWER(TRIM(sc.decision_type_b)) = LOWER(TRIM($2)))
+		  )
+		  AND sc.detected_at > now() - interval '90 days'`,
+		orgID, typeA, typeB).Scan(&fpCount, &total)
+	if err != nil {
+		return 0, 0, fmt.Errorf("storage: get type pair fp rate: %w", err)
+	}
+	if total == 0 {
+		return 0, 0, nil
+	}
+	return float64(fpCount) / float64(total), total, nil
+}
