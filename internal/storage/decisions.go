@@ -351,6 +351,7 @@ type DecisionErasureResult struct {
 	Erasure            model.DecisionErasure
 	AlternativesErased int64
 	EvidenceErased     int64
+	ClaimsErased       int64
 }
 
 // EraseDecision scrubs PII from a decision in-place (GDPR Art. 17 tombstone erasure).
@@ -457,6 +458,18 @@ func (db *DB) EraseDecision(
 		return DecisionErasureResult{}, fmt.Errorf("storage: scrub evidence: %w", err)
 	}
 
+	// Scrub decision_claims.claim_text — claims are extracted from decision content
+	// and frequently contain the same PII that was scrubbed from the parent decision.
+	claimTag, err := tx.Exec(ctx,
+		`UPDATE decision_claims
+		 SET claim_text = $1, embedding = NULL
+		 WHERE decision_id = $2 AND org_id = $3`,
+		ErasedSentinel, decisionID, orgID,
+	)
+	if err != nil {
+		return DecisionErasureResult{}, fmt.Errorf("storage: scrub claims: %w", err)
+	}
+
 	// Queue search index deletion.
 	if err := queueSearchOutbox(ctx, tx, decisionID, orgID, "delete"); err != nil {
 		return DecisionErasureResult{}, fmt.Errorf("storage: queue search outbox delete in erasure: %w", err)
@@ -530,6 +543,7 @@ func (db *DB) EraseDecision(
 		Erasure:            erasure,
 		AlternativesErased: altTag.RowsAffected(),
 		EvidenceErased:     evTag.RowsAffected(),
+		ClaimsErased:       claimTag.RowsAffected(),
 	}, nil
 }
 
@@ -751,6 +765,7 @@ func (db *DB) searchByFTS(ctx context.Context, orgID uuid.UUID, query string, fi
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, completeness_score, outcome_score, precedent_ref, precedent_reason, supersedes_id, content_hash,
 		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context,
+		 api_key_id, tool, model, project,
 		 ts_rank(search_vector, websearch_to_tsquery('english', $%d))
 		   * (0.5 + 0.2 * COALESCE(completeness_score, 0) + 0.3 * COALESCE(outcome_score, 0))
 		   * (1.0 / (1.0 + EXTRACT(EPOCH FROM (NOW() - valid_from)) / 86400.0 / 90.0))
@@ -793,6 +808,7 @@ func (db *DB) searchByILIKE(ctx context.Context, orgID uuid.UUID, query string, 
 		`SELECT id, run_id, agent_id, org_id, decision_type, outcome, confidence, reasoning,
 		 metadata, completeness_score, outcome_score, precedent_ref, precedent_reason, supersedes_id, content_hash,
 		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context,
+		 api_key_id, tool, model, project,
 		 (0.5 + 0.2 * COALESCE(completeness_score, 0) + 0.3 * COALESCE(outcome_score, 0))
 		   * (1.0 / (1.0 + EXTRACT(EPOCH FROM (NOW() - valid_from)) / 86400.0 / 90.0))
 		   AS relevance
@@ -821,7 +837,8 @@ func (db *DB) execSearchQuery(ctx context.Context, sql string, args []any) ([]mo
 			&d.Reasoning, &d.Metadata, &d.CompletenessScore, &d.OutcomeScore, &d.PrecedentRef,
 			&d.PrecedentReason, &d.SupersedesID, &d.ContentHash,
 			&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
-			&d.SessionID, &d.AgentContext,
+			&d.SessionID, &d.AgentContext, &d.APIKeyID,
+			&d.Tool, &d.Model, &d.Project,
 			&relevance,
 		); err != nil {
 			return nil, fmt.Errorf("storage: scan text search result: %w", err)
@@ -1829,14 +1846,23 @@ func (db *DB) GetDecisionQualityStats(ctx context.Context, orgID uuid.UUID, from
 
 // GetDecisionTypeDistribution returns the count of current decisions grouped by
 // decision_type, ordered by count descending. Only active decisions (valid_to IS NULL)
-// are included.
-func (db *DB) GetDecisionTypeDistribution(ctx context.Context, orgID uuid.UUID) ([]DecisionTypeCount, error) {
-	rows, err := db.pool.Query(ctx,
-		`SELECT decision_type, count(*)
+// are included. When from/to are non-nil, only decisions with valid_from in [from, to) are included.
+func (db *DB) GetDecisionTypeDistribution(ctx context.Context, orgID uuid.UUID, from, to *time.Time) ([]DecisionTypeCount, error) {
+	q := `SELECT decision_type, count(*)
 		 FROM decisions
-		 WHERE org_id = $1 AND valid_to IS NULL
-		 GROUP BY decision_type
-		 ORDER BY count(*) DESC`, orgID)
+		 WHERE org_id = $1 AND valid_to IS NULL`
+	args := []any{orgID}
+	if from != nil {
+		args = append(args, *from)
+		q += fmt.Sprintf(" AND valid_from >= $%d", len(args))
+	}
+	if to != nil {
+		args = append(args, *to)
+		q += fmt.Sprintf(" AND valid_from < $%d", len(args))
+	}
+	q += ` GROUP BY decision_type ORDER BY count(*) DESC`
+
+	rows, err := db.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("storage: decision type distribution: %w", err)
 	}

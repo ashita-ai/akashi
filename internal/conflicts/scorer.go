@@ -612,7 +612,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 
 		// Confirmation gate: classify the candidate pair as conflict or not.
 		// Priority: (1) external pairwise scorer, (2) built-in LLM validator, (3) noop.
-		// NoopValidator always returns "contradiction" (preserving legacy embedding-only behavior).
+		// NoopValidator returns "unvalidated" — the candidate is skipped (not inserted).
 		bestMethod := sc.bestMethod
 		var explanation *string
 		var category, severity, relationship *string

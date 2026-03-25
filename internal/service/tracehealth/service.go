@@ -174,7 +174,7 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 	}
 
 	// Confidence calibration: correlates confidence with outcomes.
-	cal, err := s.db.GetConfidenceCalibration(ctx, orgID)
+	cal, err := s.db.GetConfidenceCalibration(ctx, orgID, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("tracehealth: confidence calibration: %w", err)
 	}
@@ -183,7 +183,7 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 	}
 
 	// Decision type distribution.
-	dtd, err := s.db.GetDecisionTypeDistribution(ctx, orgID)
+	dtd, err := s.db.GetDecisionTypeDistribution(ctx, orgID, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("tracehealth: decision type distribution: %w", err)
 	}
