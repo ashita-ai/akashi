@@ -10,7 +10,7 @@
     "preToolUse": [
       {
         "command": ".cursor/hooks/akashi-hook.sh",
-        "matcher": "Edit|Write|MultiEdit|Bash",
+        "matcher": "Edit|Write|MultiEdit",
         "timeout": 10
       }
     ],

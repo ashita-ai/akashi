@@ -227,7 +227,10 @@ func TestHandleHookPreToolUse_EditGate(t *testing.T) {
 	})
 }
 
-func TestHandleHookPreToolUse_GitCommitReminder(t *testing.T) {
+func TestHandleHookPreToolUse_BashPassesThrough(t *testing.T) {
+	// Bash is intentionally excluded from the PreToolUse matcher to avoid
+	// firing on every shell command. Even if Bash somehow reaches the handler,
+	// it should pass through since it's not an edit tool.
 	h := &Handlers{
 		hookChecks: newHookCheckStore(),
 	}
@@ -240,8 +243,7 @@ func TestHandleHookPreToolUse_GitCommitReminder(t *testing.T) {
 	var resp hookResponse
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
 	assert.True(t, resp.Continue)
-	require.NotNil(t, resp.HookSpecificOutput)
-	assert.Contains(t, resp.HookSpecificOutput.AdditionalContext, "akashi_check")
+	assert.True(t, resp.SuppressOutput)
 }
 
 func TestHandleHookPostToolUse_AkashiCheckMarker(t *testing.T) {
@@ -488,6 +490,15 @@ func TestHelpers(t *testing.T) {
 			{"empty string", "", 5, ""},
 			{"max zero truncates everything", "hello", 0, "..."},
 			{"single char limit", "hello", 1, "h..."},
+			// Rune-safe: CJK characters are 3 bytes each but 1 rune.
+			// "日本語テスト" = 6 runes. Truncating at 3 runes should give "日本語..."
+			{"CJK rune-safe", "日本語テスト", 3, "日本語..."},
+			// Emoji: 🎉 is 4 bytes but 1 rune.
+			{"emoji rune-safe", "🎉🎊🎈🎆", 2, "🎉🎊..."},
+			// Mixed ASCII and multi-byte.
+			{"mixed ascii and CJK", "hi日本", 3, "hi日..."},
+			// Under limit with multi-byte — should return original string.
+			{"multi-byte under limit", "日本", 5, "日本"},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
@@ -723,6 +734,20 @@ func TestStripBranchPrefix(t *testing.T) {
 	}
 }
 
+func TestGitCommitSubject_EmptyCWD(t *testing.T) {
+	assert.Empty(t, gitCommitSubject(""))
+}
+
+func TestGitCommitSubject_InvalidPath(t *testing.T) {
+	assert.Empty(t, gitCommitSubject("/nonexistent/path/that/does/not/exist"))
+}
+
+func TestGitCommitSubject_CurrentRepo(t *testing.T) {
+	// Running in a real git repo should return the latest commit subject.
+	subject := gitCommitSubject(".")
+	assert.NotEmpty(t, subject, "current repo should have at least one commit")
+}
+
 func TestGitDiffNameOnly_EmptyCWD(t *testing.T) {
 	assert.Empty(t, gitDiffNameOnly(""))
 }
@@ -772,7 +797,9 @@ func TestWriteHookJSON_Success(t *testing.T) {
 	assert.True(t, resp.SuppressOutput)
 }
 
-func TestHandleHookPreToolUse_GitCommit(t *testing.T) {
+func TestHandleHookPreToolUse_BashGitCommitPassesThrough(t *testing.T) {
+	// Even git commit Bash commands should pass through PreToolUse — the
+	// pre-commit hint was removed to avoid intercepting every Bash call.
 	h := &Handlers{
 		hookChecks: newHookCheckStore(),
 	}
@@ -785,8 +812,7 @@ func TestHandleHookPreToolUse_GitCommit(t *testing.T) {
 	var resp hookResponse
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
 	assert.True(t, resp.Continue)
-	require.NotNil(t, resp.HookSpecificOutput)
-	assert.Contains(t, resp.HookSpecificOutput.AdditionalContext, "akashi_check")
+	assert.True(t, resp.SuppressOutput)
 }
 
 func TestHandleHookPreToolUse_EditAfterCheck(t *testing.T) {

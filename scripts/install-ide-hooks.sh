@@ -136,6 +136,15 @@ def has_command(hook_list, target_cmd):
                 return True
     return False
 
+def update_matcher(hook_list, target_cmd, old_matcher, new_matcher):
+    """Update the matcher for an existing hook registration."""
+    for entry in hook_list:
+        for h in entry.get("hooks", []):
+            if h.get("command") == target_cmd and entry.get("matcher") == old_matcher:
+                entry["matcher"] = new_matcher
+                return True
+    return False
+
 registered = []
 
 # SessionStart: context injection
@@ -144,11 +153,15 @@ if not has_command(session, cmd):
     session.append({"hooks": [{"type": "command", "command": cmd, "timeout": 5}]})
     registered.append("SessionStart")
 
-# PreToolUse: edit gate + pre-commit reminder
+# PreToolUse: edit gate (Bash intentionally excluded — see handlers_hooks.go)
 pre = hooks.setdefault("PreToolUse", [])
-if not has_command(pre, cmd):
-    pre.append({"matcher": "Bash|Edit|Write|MultiEdit", "hooks": [{"type": "command", "command": cmd, "timeout": 10}]})
-    registered.append("PreToolUse[Bash|Edit|Write|MultiEdit]")
+if has_command(pre, cmd):
+    # Migrate: remove Bash from PreToolUse matcher if present from older install.
+    if update_matcher(pre, cmd, "Bash|Edit|Write|MultiEdit", "Edit|Write|MultiEdit"):
+        registered.append("PreToolUse[Edit|Write|MultiEdit] (migrated: removed Bash)")
+else:
+    pre.append({"matcher": "Edit|Write|MultiEdit", "hooks": [{"type": "command", "command": cmd, "timeout": 10}]})
+    registered.append("PreToolUse[Edit|Write|MultiEdit]")
 
 # PostToolUse: check marker + auto-trace
 post = hooks.setdefault("PostToolUse", [])
