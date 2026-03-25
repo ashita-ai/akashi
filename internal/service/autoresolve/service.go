@@ -89,7 +89,7 @@ func (s *Service) processOrg(ctx context.Context, org storage.OrgAutoResolveConf
 		}
 
 		_, err := s.db.UpdateConflictStatusWithAudit(ctx, c.ID, org.OrgID,
-			"resolved", "system:auto_resolve", &note, winner, audit)
+			"resolved", "system:auto_resolve", &note, winner, nil, audit)
 		if err != nil {
 			s.logger.Warn("autoresolve: resolve failed",
 				"conflict_id", c.ID, "org_id", org.OrgID, "error", err)
