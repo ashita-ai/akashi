@@ -8266,6 +8266,82 @@ func TestDropEventChunks_FarPast(t *testing.T) {
 	assert.Equal(t, int64(0), dropped)
 }
 
+func TestDropEventChunks_AuditLogPopulated(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "chunk-audit-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	// Insert events with occurred_at 5 days ago so they land in an old chunk.
+	// TimescaleDB chunk interval is 1 day, so a 5-day-old event is in a chunk
+	// whose range_end is at most 4 days ago.
+	oldTime := time.Now().UTC().Add(-5 * 24 * time.Hour)
+	events := make([]model.AgentEvent, 3)
+	for i := range events {
+		events[i] = model.AgentEvent{
+			ID:          uuid.New(),
+			RunID:       run.ID,
+			OrgID:       uuid.Nil, // test org
+			EventType:   model.EventDecisionMade,
+			SequenceNum: int64(900_000 + i),
+			OccurredAt:  oldTime.Add(time.Duration(i) * time.Minute),
+			AgentID:     agentID,
+			Payload:     map[string]any{"test": true},
+			CreatedAt:   oldTime.Add(time.Duration(i) * time.Minute),
+		}
+	}
+	_, err = testDB.InsertEvents(ctx, events)
+	require.NoError(t, err)
+
+	// Record deletion_audit_log count before the drop so we can assert on net-new rows.
+	var beforeCount int64
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT COUNT(*) FROM deletion_audit_log WHERE table_name = 'agent_events'`,
+	).Scan(&beforeCount)
+	require.NoError(t, err)
+
+	// Drop chunks older than 3 days ago. The 5-day-old chunk qualifies.
+	cutoff := time.Now().UTC().Add(-3 * 24 * time.Hour)
+	dropped, err := testDB.DropEventChunks(ctx, cutoff)
+	require.NoError(t, err)
+
+	if dropped == 0 {
+		t.Skip("TimescaleDB did not create a separate chunk for the old events (chunk interval may exceed test window)")
+	}
+
+	// Verify that deletion_audit_log was populated with summary records.
+	var afterCount int64
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT COUNT(*) FROM deletion_audit_log WHERE table_name = 'agent_events'`,
+	).Scan(&afterCount)
+	require.NoError(t, err)
+	assert.Greater(t, afterCount, beforeCount, "DropEventChunks should write audit log entries")
+
+	// Verify the audit log entries contain the expected fields.
+	var recordData map[string]any
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT record_data FROM deletion_audit_log
+		 WHERE table_name = 'agent_events'
+		 ORDER BY id DESC LIMIT 1`,
+	).Scan(&recordData)
+	require.NoError(t, err)
+
+	assert.Equal(t, "retention_chunk_drop", recordData["operation"], "operation field")
+	assert.NotNil(t, recordData["chunk_name"], "chunk_name field")
+	assert.NotNil(t, recordData["event_count"], "event_count field")
+	assert.NotNil(t, recordData["min_occurred_at"], "min_occurred_at field")
+	assert.NotNil(t, recordData["max_occurred_at"], "max_occurred_at field")
+	assert.NotNil(t, recordData["event_types"], "event_types field")
+	assert.NotNil(t, recordData["cutoff"], "cutoff field")
+
+	// event_count should be a positive number.
+	eventCount, ok := recordData["event_count"].(float64)
+	assert.True(t, ok, "event_count should be a number")
+	assert.Greater(t, eventCount, float64(0), "event_count should be positive")
+}
+
 // ---------------------------------------------------------------------------
 // Tests: GetActiveAPIKeysByAgentIDGlobal — coverage
 // ---------------------------------------------------------------------------
