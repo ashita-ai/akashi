@@ -215,6 +215,53 @@ func (db *DB) InsertIntegrityAuditResults(ctx context.Context, results []Integri
 	return nil
 }
 
+// CreateProofLeaves batch-inserts the Merkle leaf hashes for a proof.
+// These are snapshotted at proof-creation time so that verification does not
+// depend on the decisions table (which may be purged by retention or mutated
+// by GDPR erasure). Leaves must already be sorted lexicographically.
+func (db *DB) CreateProofLeaves(ctx context.Context, proofID, orgID uuid.UUID, leaves []string) error {
+	if len(leaves) == 0 {
+		return nil
+	}
+	_, err := db.pool.CopyFrom(ctx,
+		pgx.Identifier{"proof_leaves"},
+		[]string{"proof_id", "org_id", "leaf_hash"},
+		pgx.CopyFromSlice(len(leaves), func(i int) ([]any, error) {
+			return []any{proofID, orgID, leaves[i]}, nil
+		}),
+	)
+	if err != nil {
+		return fmt.Errorf("storage: create proof leaves: %w", err)
+	}
+	return nil
+}
+
+// GetProofLeaves returns the leaf hashes for a proof, ordered lexicographically.
+// Falls back to GetDecisionHashesForBatch when no leaves are stored (proofs
+// created before migration 082).
+func (db *DB) GetProofLeaves(ctx context.Context, proofID uuid.UUID) ([]string, error) {
+	rows, err := db.pool.Query(ctx,
+		`SELECT leaf_hash FROM proof_leaves
+		 WHERE proof_id = $1
+		 ORDER BY leaf_hash ASC`,
+		proofID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("storage: get proof leaves: %w", err)
+	}
+	defer rows.Close()
+
+	var leaves []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, fmt.Errorf("storage: scan proof leaf: %w", err)
+		}
+		leaves = append(leaves, h)
+	}
+	return leaves, rows.Err()
+}
+
 // ListOrganizationIDs returns all active organization IDs.
 func (db *DB) ListOrganizationIDs(ctx context.Context) ([]uuid.UUID, error) {
 	rows, err := db.pool.Query(ctx, `SELECT id FROM organizations ORDER BY id`)

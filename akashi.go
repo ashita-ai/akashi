@@ -931,16 +931,32 @@ func (a *App) verifyProofsForOrg(ctx context.Context, orgID uuid.UUID, proofs []
 
 	for i, p := range proofs {
 		// Verify Merkle root.
-		hashes, err := a.db.GetDecisionHashesForBatch(ctx, orgID, p.BatchStart, p.BatchEnd)
+		// Prefer snapshotted proof_leaves (survives retention purge and GDPR erasure).
+		// Fall back to re-querying decisions for proofs created before migration 082.
+		hashes, err := a.db.GetProofLeaves(ctx, p.ID)
 		if err != nil {
-			a.logger.Warn("integrity audit: failed to fetch hashes for batch",
+			a.logger.Warn("integrity audit: failed to fetch proof leaves",
 				"org_id", orgID, "proof_id", p.ID, "error", err)
 			results = append(results, storage.IntegrityAuditResult{
 				OrgID: orgID, ProofID: p.ID, CheckType: "merkle_root",
 				Passed: false, SweepType: sweepType,
-				Detail: fmt.Sprintf("failed to fetch hashes: %v", err), CheckedAt: now,
+				Detail: fmt.Sprintf("failed to fetch proof leaves: %v", err), CheckedAt: now,
 			})
 			continue
+		}
+		if len(hashes) == 0 {
+			// No snapshotted leaves — fall back to decisions table (pre-082 proofs).
+			hashes, err = a.db.GetDecisionHashesForBatch(ctx, orgID, p.BatchStart, p.BatchEnd)
+			if err != nil {
+				a.logger.Warn("integrity audit: failed to fetch hashes for batch",
+					"org_id", orgID, "proof_id", p.ID, "error", err)
+				results = append(results, storage.IntegrityAuditResult{
+					OrgID: orgID, ProofID: p.ID, CheckType: "merkle_root",
+					Passed: false, SweepType: sweepType,
+					Detail: fmt.Sprintf("failed to fetch hashes: %v", err), CheckedAt: now,
+				})
+				continue
+			}
 		}
 
 		ok, err := integrity.VerifyBatchProof(p.RootHash, hashes)
@@ -1534,7 +1550,9 @@ func buildIntegrityProofs(ctx context.Context, db *storage.DB, logger *slog.Logg
 			continue
 		}
 
+		proofID := uuid.New()
 		proof := storage.IntegrityProof{
+			ID:            proofID,
 			OrgID:         orgID,
 			BatchStart:    batchStart,
 			BatchEnd:      now,
@@ -1547,6 +1565,14 @@ func buildIntegrityProofs(ctx context.Context, db *storage.DB, logger *slog.Logg
 		if err := db.CreateIntegrityProof(ctx, proof); err != nil {
 			logger.Warn("integrity proof: create failed", "error", err, "org_id", orgID)
 			continue
+		}
+
+		// Snapshot the leaf hashes so verification survives retention purge
+		// and GDPR erasure (which delete or mutate the decisions table).
+		if err := db.CreateProofLeaves(ctx, proofID, orgID, hashes); err != nil {
+			logger.Warn("integrity proof: save leaves failed", "error", err, "org_id", orgID, "proof_id", proofID)
+			// The proof itself was created; leaves can be backfilled later.
+			// Verification will fall back to GetDecisionHashesForBatch.
 		}
 
 		logger.Info("integrity proof created",

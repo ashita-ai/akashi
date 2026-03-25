@@ -10539,3 +10539,220 @@ func TestIntegrityViolation_ChainLinkageDetection(t *testing.T) {
 	}
 	assert.True(t, found, "chain linkage violation should be persisted and retrievable")
 }
+
+// ---------------------------------------------------------------------------
+// Tests: proof_leaves — proofs survive retention purge and GDPR erasure
+// ---------------------------------------------------------------------------
+
+func TestProofLeaves_CreateAndGet(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	orgID := uuid.New()
+	_, err := testDB.Pool().Exec(ctx,
+		`INSERT INTO organizations (id, name, slug) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+		orgID, "pl-org-"+suffix, "pl-org-"+suffix)
+	require.NoError(t, err)
+
+	proofID := uuid.New()
+	proof := storage.IntegrityProof{
+		ID:            proofID,
+		OrgID:         orgID,
+		BatchStart:    time.Now().UTC().Add(-1 * time.Hour),
+		BatchEnd:      time.Now().UTC(),
+		DecisionCount: 3,
+		RootHash:      "pl-root-" + suffix,
+		CreatedAt:     time.Now().UTC(),
+	}
+	require.NoError(t, testDB.CreateIntegrityProof(ctx, proof))
+
+	leaves := []string{"aaa_hash", "bbb_hash", "ccc_hash"}
+	require.NoError(t, testDB.CreateProofLeaves(ctx, proofID, orgID, leaves))
+
+	got, err := testDB.GetProofLeaves(ctx, proofID)
+	require.NoError(t, err)
+	assert.Equal(t, leaves, got, "leaves should round-trip in sorted order")
+
+	// No leaves for a random proof.
+	empty, err := testDB.GetProofLeaves(ctx, uuid.New())
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+}
+
+func TestProofLeaves_Empty(t *testing.T) {
+	ctx := context.Background()
+	// CreateProofLeaves with empty slice should be a no-op.
+	require.NoError(t, testDB.CreateProofLeaves(ctx, uuid.New(), uuid.Nil, nil))
+}
+
+func TestProofLeaves_SurvivesRetentionPurge(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "pl-retention-" + suffix
+
+	// Isolated org.
+	orgID := uuid.New()
+	_, err := testDB.Pool().Exec(ctx,
+		`INSERT INTO organizations (id, name, slug) VALUES ($1, $2, $3)`,
+		orgID, "pl-ret-org-"+suffix, "pl-ret-org-"+suffix)
+	require.NoError(t, err)
+
+	runID := uuid.New()
+	_, err = testDB.Pool().Exec(ctx,
+		`INSERT INTO agent_runs (id, org_id, agent_id, status, created_at)
+		 VALUES ($1, $2, $3, 'running', now())`,
+		runID, orgID, agentID)
+	require.NoError(t, err)
+
+	beforeCreate := time.Now().UTC().Add(-1 * time.Second)
+
+	// Create decisions.
+	const count = 3
+	for i := range count {
+		reasoning := fmt.Sprintf("reasoning %d %s", i, suffix)
+		_, err := testDB.CreateDecision(ctx, model.Decision{
+			ID:           uuid.New(),
+			RunID:        runID,
+			AgentID:      agentID,
+			OrgID:        orgID,
+			DecisionType: "retention_proof_test",
+			Outcome:      fmt.Sprintf("outcome %d %s", i, suffix),
+			Confidence:   0.7,
+			Reasoning:    &reasoning,
+			ValidFrom:    time.Now().UTC(),
+		})
+		require.NoError(t, err)
+	}
+
+	afterCreate := time.Now().UTC().Add(1 * time.Second)
+
+	// Build proof and snapshot leaves.
+	hashes, err := testDB.GetDecisionHashesForBatch(ctx, orgID, beforeCreate, afterCreate)
+	require.NoError(t, err)
+	require.Len(t, hashes, count)
+
+	root, err := integrity.BuildMerkleRoot(hashes)
+	require.NoError(t, err)
+
+	proofID := uuid.New()
+	proof := storage.IntegrityProof{
+		ID:            proofID,
+		OrgID:         orgID,
+		BatchStart:    beforeCreate,
+		BatchEnd:      afterCreate,
+		DecisionCount: count,
+		RootHash:      root,
+		CreatedAt:     time.Now().UTC(),
+	}
+	require.NoError(t, testDB.CreateIntegrityProof(ctx, proof))
+	require.NoError(t, testDB.CreateProofLeaves(ctx, proofID, orgID, hashes))
+
+	// Verify passes before purge.
+	ok, err := integrity.VerifyBatchProof(root, hashes)
+	require.NoError(t, err)
+	require.True(t, ok, "proof should verify before purge")
+
+	// Purge all decisions (cutoff in the future).
+	_, err = testDB.BatchDeleteDecisions(ctx, orgID, time.Now().UTC().Add(1*time.Hour), nil, nil, nil, 100)
+	require.NoError(t, err)
+
+	// Decisions should be gone.
+	remaining, err := testDB.GetDecisionHashesForBatch(ctx, orgID, beforeCreate, afterCreate)
+	require.NoError(t, err)
+	assert.Empty(t, remaining, "decisions should be purged")
+
+	// But proof_leaves survive — verification still passes.
+	savedLeaves, err := testDB.GetProofLeaves(ctx, proofID)
+	require.NoError(t, err)
+	require.Len(t, savedLeaves, count, "proof leaves should survive retention purge")
+
+	ok, err = integrity.VerifyBatchProof(root, savedLeaves)
+	require.NoError(t, err)
+	assert.True(t, ok, "proof should still verify after retention purge via saved leaves")
+}
+
+func TestProofLeaves_SurvivesGDPRErasure(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "pl-gdpr-" + suffix
+
+	// Isolated org.
+	orgID := uuid.New()
+	_, err := testDB.Pool().Exec(ctx,
+		`INSERT INTO organizations (id, name, slug) VALUES ($1, $2, $3)`,
+		orgID, "pl-gdpr-org-"+suffix, "pl-gdpr-org-"+suffix)
+	require.NoError(t, err)
+
+	runID := uuid.New()
+	_, err = testDB.Pool().Exec(ctx,
+		`INSERT INTO agent_runs (id, org_id, agent_id, status, created_at)
+		 VALUES ($1, $2, $3, 'running', now())`,
+		runID, orgID, agentID)
+	require.NoError(t, err)
+
+	beforeCreate := time.Now().UTC().Add(-1 * time.Second)
+
+	// Create a decision that will be erased.
+	decisionID := uuid.New()
+	reasoning := "sensitive reasoning " + suffix
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		ID:           decisionID,
+		RunID:        runID,
+		AgentID:      agentID,
+		OrgID:        orgID,
+		DecisionType: "gdpr_proof_test",
+		Outcome:      "sensitive outcome " + suffix,
+		Confidence:   0.9,
+		Reasoning:    &reasoning,
+		ValidFrom:    time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	afterCreate := time.Now().UTC().Add(1 * time.Second)
+
+	// Build proof and snapshot leaves.
+	hashes, err := testDB.GetDecisionHashesForBatch(ctx, orgID, beforeCreate, afterCreate)
+	require.NoError(t, err)
+	require.Len(t, hashes, 1)
+
+	root, err := integrity.BuildMerkleRoot(hashes)
+	require.NoError(t, err)
+
+	proofID := uuid.New()
+	proof := storage.IntegrityProof{
+		ID:            proofID,
+		OrgID:         orgID,
+		BatchStart:    beforeCreate,
+		BatchEnd:      afterCreate,
+		DecisionCount: 1,
+		RootHash:      root,
+		CreatedAt:     time.Now().UTC(),
+	}
+	require.NoError(t, testDB.CreateIntegrityProof(ctx, proof))
+	require.NoError(t, testDB.CreateProofLeaves(ctx, proofID, orgID, hashes))
+
+	// Erase the decision (GDPR).
+	_, err = testDB.EraseDecision(ctx, orgID, decisionID, "GDPR request", "admin-"+suffix, nil)
+	require.NoError(t, err)
+
+	// The decision's content_hash has changed.
+	postErasureHashes, err := testDB.GetDecisionHashesForBatch(ctx, orgID, beforeCreate, afterCreate)
+	require.NoError(t, err)
+	require.Len(t, postErasureHashes, 1)
+	assert.NotEqual(t, hashes[0], postErasureHashes[0], "content_hash should change after erasure")
+
+	// Verifying against the decisions table would fail (false violation).
+	ok, err := integrity.VerifyBatchProof(root, postErasureHashes)
+	require.NoError(t, err)
+	assert.False(t, ok, "verifying against mutated decisions table should fail")
+
+	// But proof_leaves preserve the original hashes — verification passes.
+	savedLeaves, err := testDB.GetProofLeaves(ctx, proofID)
+	require.NoError(t, err)
+	require.Len(t, savedLeaves, 1)
+	assert.Equal(t, hashes[0], savedLeaves[0], "proof leaves should preserve original hash")
+
+	ok, err = integrity.VerifyBatchProof(root, savedLeaves)
+	require.NoError(t, err)
+	assert.True(t, ok, "proof should still verify after GDPR erasure via saved leaves")
+}
