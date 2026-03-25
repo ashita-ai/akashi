@@ -4,6 +4,7 @@ export class TokenManager {
   private token = "";
   private expiresAt = 0;
   private readonly refreshMarginMs = 30_000;
+  private refreshPromise: Promise<void> | null = null;
 
   constructor(
     private readonly baseUrl: string,
@@ -12,16 +13,23 @@ export class TokenManager {
     private readonly timeoutMs: number,
   ) {}
 
-  /** Return a valid token, refreshing if necessary. */
-  async getToken(signal?: AbortSignal): Promise<string> {
+  /** Return a valid token, refreshing if necessary.
+   *  Concurrent callers share a single in-flight refresh to avoid redundant
+   *  token requests. */
+  async getToken(): Promise<string> {
     if (this.token && Date.now() < this.expiresAt - this.refreshMarginMs) {
       return this.token;
     }
-    await this.refresh(signal);
+    if (!this.refreshPromise) {
+      this.refreshPromise = this.refresh().finally(() => {
+        this.refreshPromise = null;
+      });
+    }
+    await this.refreshPromise;
     return this.token;
   }
 
-  private async refresh(signal?: AbortSignal): Promise<void> {
+  private async refresh(): Promise<void> {
     const resp = await fetch(`${this.baseUrl}/auth/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -29,7 +37,7 @@ export class TokenManager {
         agent_id: this.agentId,
         api_key: this.apiKey,
       }),
-      signal: signal ?? AbortSignal.timeout(this.timeoutMs),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
 
     if (!resp.ok) {

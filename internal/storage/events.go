@@ -159,8 +159,11 @@ func (db *DB) InsertEventsIdempotent(ctx context.Context, events []model.AgentEv
 	}
 
 	// Move to real table, skipping duplicates.
+	// The conflict target must match the composite primary key (id, occurred_at)
+	// because TimescaleDB hypertables require unique constraints to include the
+	// partition column.
 	tag, err := tx.Exec(ctx,
-		`INSERT INTO agent_events SELECT * FROM _recovery_events ON CONFLICT (id) DO NOTHING`)
+		`INSERT INTO agent_events SELECT * FROM _recovery_events ON CONFLICT (id, occurred_at) DO NOTHING`)
 	if err != nil {
 		return 0, fmt.Errorf("storage: insert from recovery temp table: %w", err)
 	}

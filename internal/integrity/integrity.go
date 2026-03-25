@@ -86,6 +86,18 @@ func computeV2Hash(id uuid.UUID, decisionType, outcome string, confidence float3
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// VerifyBatchProof recomputes the Merkle root from the given leaf hashes and
+// returns true if it matches the stored root. This is the verification
+// counterpart to BuildMerkleRoot — call it to confirm that a previously
+// stored proof has not been tampered with.
+func VerifyBatchProof(storedRoot string, leaves []string) (bool, error) {
+	recomputed, err := BuildMerkleRoot(leaves)
+	if err != nil {
+		return false, err
+	}
+	return recomputed == storedRoot, nil
+}
+
 // hashPair produces SHA-256(0x01 || len(a) || a || b) as a hex string.
 // The 0x01 prefix is a domain separator for internal Merkle tree nodes (per RFC 6962),
 // ensuring internal node hashes can never collide with leaf content hashes.

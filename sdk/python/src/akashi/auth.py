@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -14,10 +15,9 @@ import httpx
 class TokenManager:
     """Manages JWT token lifecycle with automatic refresh.
 
-    Uses an asyncio.Lock to prevent concurrent refresh calls from
-    racing. For the synchronous path, concurrent access is not
-    expected (httpx.Client is not thread-safe either), but the
-    logic is structured identically for consistency.
+    Uses an asyncio.Lock to prevent concurrent async refresh calls from
+    racing, and a threading.Lock for the synchronous path so that
+    multiple threads sharing a SyncClient don't duplicate refreshes.
     """
 
     base_url: str
@@ -27,6 +27,7 @@ class TokenManager:
     _expires_at: float = field(default=0.0, init=False, repr=False)
     _refresh_margin_seconds: float = field(default=30.0, init=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
+    _sync_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def _is_valid(self) -> bool:
         return bool(self._token) and time.time() < self._expires_at - self._refresh_margin_seconds
@@ -47,10 +48,13 @@ class TokenManager:
         return self._token
 
     def get_token_sync(self, client: httpx.Client) -> str:
-        """Synchronous version of get_token."""
+        """Synchronous version of get_token, protected by threading.Lock."""
         if self._is_valid():
             return self._token
-        self._refresh_sync(client)
+        with self._sync_lock:
+            if self._is_valid():
+                return self._token
+            self._refresh_sync(client)
         return self._token
 
     def _apply_token_response(self, data: dict) -> None:

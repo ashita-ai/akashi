@@ -505,6 +505,7 @@ func (a *App) Run(ctx context.Context) error {
 	go a.conflictBackfillLoop(ctx)
 	go a.conflictRefreshLoop(ctx)
 	go a.integrityProofLoop(ctx)
+	go a.integrityAuditLoop(ctx)
 	go a.idempotencyCleanupLoop(ctx)
 	go a.hookCheckCleanupLoop(ctx)
 	go a.retentionLoop(ctx)
@@ -547,10 +548,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 	// Phase 1.5: wait for in-flight post-trace async work (claim generation,
 	// conflict scoring) so goroutines finish their DB writes before pool close.
-	asyncCtx, asyncCancel := contextWithOptionalTimeout(ctx, 30*time.Second)
+	asyncCtx, asyncCancel := contextWithOptionalTimeout(ctx, a.cfg.ShutdownAsyncDrainTimeout)
 	if err := a.decisionSvc.DrainAsync(asyncCtx); err != nil {
 		a.logger.Warn("async post-trace drain incomplete — some claims or conflict scores may be missing",
 			"error", err,
+			"configured_timeout", a.cfg.ShutdownAsyncDrainTimeout,
 		)
 	}
 	asyncCancel()
@@ -725,6 +727,89 @@ func (a *App) integrityProofLoop(ctx context.Context) {
 			cancel()
 		}
 	}
+}
+
+func (a *App) integrityAuditLoop(ctx context.Context) {
+	ticker := time.NewTicker(a.cfg.IntegrityAuditInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			opCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			a.auditIntegrityProofs(opCtx)
+			cancel()
+		}
+	}
+}
+
+// auditIntegrityProofs picks one org per tick (sampling-based, not exhaustive)
+// and verifies its most recent Merkle proofs by:
+// (1) recomputing each root from decision content hashes, and
+// (2) checking chain linkage via previous_root.
+// Coverage is probabilistic: with N orgs, each org is audited roughly every
+// N * IntegrityAuditInterval. Only the 10 newest proofs per org are checked.
+func (a *App) auditIntegrityProofs(ctx context.Context) {
+	orgIDs, err := a.db.ListOrganizationIDs(ctx)
+	if err != nil {
+		a.logger.Warn("integrity audit: list orgs failed", "error", err)
+		return
+	}
+	if len(orgIDs) == 0 {
+		return
+	}
+
+	// Pick one org per tick to spread load.
+	orgID := orgIDs[time.Now().UnixNano()%int64(len(orgIDs))]
+
+	proofs, err := a.db.GetRecentIntegrityProofs(ctx, orgID, 10)
+	if err != nil {
+		a.logger.Warn("integrity audit: failed to fetch proofs", "org_id", orgID, "error", err)
+		return
+	}
+	if len(proofs) == 0 {
+		return
+	}
+
+	for i, p := range proofs {
+		// Verify Merkle root.
+		hashes, err := a.db.GetDecisionHashesForBatch(ctx, orgID, p.BatchStart, p.BatchEnd)
+		if err != nil {
+			a.logger.Warn("integrity audit: failed to fetch hashes for batch",
+				"org_id", orgID, "proof_id", p.ID, "error", err)
+			continue
+		}
+
+		ok, err := integrity.VerifyBatchProof(p.RootHash, hashes)
+		if err != nil {
+			a.logger.Error("integrity audit: merkle verification error",
+				"org_id", orgID, "proof_id", p.ID, "error", err)
+			continue
+		}
+		if !ok {
+			a.logger.Error("INTEGRITY VIOLATION: Merkle root mismatch — stored root does not match recomputed root",
+				"org_id", orgID, "proof_id", p.ID,
+				"stored_root", p.RootHash, "decision_count", p.DecisionCount)
+		}
+
+		// Verify chain linkage: this proof's previous_root should match the
+		// next-older proof's root_hash (proofs are newest-first).
+		if i+1 < len(proofs) {
+			older := proofs[i+1]
+			if p.PreviousRoot == nil {
+				a.logger.Warn("integrity audit: proof has nil previous_root but older proof exists — chain may be broken",
+					"org_id", orgID, "proof_id", p.ID, "older_proof_id", older.ID)
+			} else if *p.PreviousRoot != older.RootHash {
+				a.logger.Error("INTEGRITY VIOLATION: chain linkage broken — previous_root does not match prior proof",
+					"org_id", orgID, "proof_id", p.ID,
+					"expected_previous", older.RootHash, "actual_previous", *p.PreviousRoot)
+			}
+		}
+	}
+
+	a.logger.Info("integrity audit completed", "org_id", orgID, "proofs_checked", len(proofs))
 }
 
 func (a *App) idempotencyCleanupLoop(ctx context.Context) {

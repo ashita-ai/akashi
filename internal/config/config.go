@@ -92,9 +92,11 @@ type Config struct {
 	ConflictRefreshInterval       time.Duration
 	ConflictSignificanceThreshold float64       // Minimum significance to store (default 0.30).
 	IntegrityProofInterval        time.Duration // How often to build Merkle tree proofs.
+	IntegrityAuditInterval        time.Duration // How often to verify stored Merkle proofs.
 	EventBufferSize               int
 	EventFlushTimeout             time.Duration
 	ShutdownHTTPTimeout           time.Duration // 0 disables timeout (wait indefinitely).
+	ShutdownAsyncDrainTimeout     time.Duration // 0 disables timeout (wait indefinitely).
 	ShutdownBufferDrainTimeout    time.Duration // 0 disables timeout (wait indefinitely).
 	ShutdownOutboxDrainTimeout    time.Duration // 0 disables timeout (wait indefinitely).
 	IdempotencyCleanupInterval    time.Duration // Background cleanup cadence for idempotency keys.
@@ -234,9 +236,11 @@ func Load() (Config, error) {
 	cfg.OutboxPollInterval, errs = collectDuration(errs, "AKASHI_OUTBOX_POLL_INTERVAL", 1*time.Second)
 	cfg.ConflictRefreshInterval, errs = collectDuration(errs, "AKASHI_CONFLICT_REFRESH_INTERVAL", 30*time.Second)
 	cfg.IntegrityProofInterval, errs = collectDuration(errs, "AKASHI_INTEGRITY_PROOF_INTERVAL", 5*time.Minute)
+	cfg.IntegrityAuditInterval, errs = collectDuration(errs, "AKASHI_INTEGRITY_AUDIT_INTERVAL", 15*time.Minute)
 	cfg.EventFlushTimeout, errs = collectDuration(errs, "AKASHI_EVENT_FLUSH_TIMEOUT", 100*time.Millisecond)
 	cfg.WALSyncInterval, errs = collectDuration(errs, "AKASHI_WAL_SYNC_INTERVAL", 10*time.Millisecond)
 	cfg.ShutdownHTTPTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_HTTP_TIMEOUT", 10*time.Second)
+	cfg.ShutdownAsyncDrainTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_ASYNC_DRAIN_TIMEOUT", 30*time.Second)
 	cfg.ShutdownBufferDrainTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT", 30*time.Second)
 	cfg.ShutdownOutboxDrainTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT", 0)
 	cfg.IdempotencyCleanupInterval, errs = collectDuration(errs, "AKASHI_IDEMPOTENCY_CLEANUP_INTERVAL", time.Hour)
@@ -321,6 +325,9 @@ func (c Config) Validate() error {
 	if c.ShutdownHTTPTimeout < 0 {
 		errs = append(errs, errors.New("config: AKASHI_SHUTDOWN_HTTP_TIMEOUT must be >= 0"))
 	}
+	if c.ShutdownAsyncDrainTimeout < 0 {
+		errs = append(errs, errors.New("config: AKASHI_SHUTDOWN_ASYNC_DRAIN_TIMEOUT must be >= 0"))
+	}
 	if c.ShutdownBufferDrainTimeout < 0 {
 		errs = append(errs, errors.New("config: AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT must be >= 0"))
 	}
@@ -347,6 +354,9 @@ func (c Config) Validate() error {
 	}
 	if c.IntegrityProofInterval <= 0 {
 		errs = append(errs, errors.New("config: AKASHI_INTEGRITY_PROOF_INTERVAL must be positive"))
+	}
+	if c.IntegrityAuditInterval <= 0 {
+		errs = append(errs, errors.New("config: AKASHI_INTEGRITY_AUDIT_INTERVAL must be positive"))
 	}
 	if c.RateLimitEnabled {
 		if c.RateLimitRPS <= 0 {

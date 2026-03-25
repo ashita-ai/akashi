@@ -213,6 +213,74 @@ func TestHashPair_DomainSeparation(t *testing.T) {
 	}
 }
 
+func TestVerifyBatchProof_RoundTrip(t *testing.T) {
+	leaves := []string{"aaa", "bbb", "ccc", "ddd"}
+	root, err := BuildMerkleRoot(leaves)
+	require.NoError(t, err)
+
+	ok, err := VerifyBatchProof(root, leaves)
+	require.NoError(t, err)
+	assert.True(t, ok, "recomputed root should match stored root")
+}
+
+func TestVerifyBatchProof_DetectsTampering(t *testing.T) {
+	leaves := []string{"aaa", "bbb", "ccc"}
+	root, err := BuildMerkleRoot(leaves)
+	require.NoError(t, err)
+
+	// Tamper: replace one leaf.
+	tampered := []string{"aaa", "bbb", "zzz"}
+	ok, err := VerifyBatchProof(root, tampered)
+	require.NoError(t, err)
+	assert.False(t, ok, "tampered leaves should not match original root")
+}
+
+func TestVerifyBatchProof_DetectsInsertion(t *testing.T) {
+	leaves := []string{"aaa", "bbb"}
+	root, err := BuildMerkleRoot(leaves)
+	require.NoError(t, err)
+
+	// Insert an extra leaf.
+	extended := []string{"aaa", "aab", "bbb"}
+	ok, err := VerifyBatchProof(root, extended)
+	require.NoError(t, err)
+	assert.False(t, ok, "added leaf should change root")
+}
+
+func TestVerifyBatchProof_DetectsDeletion(t *testing.T) {
+	leaves := []string{"aaa", "bbb", "ccc"}
+	root, err := BuildMerkleRoot(leaves)
+	require.NoError(t, err)
+
+	// Remove a leaf.
+	shortened := []string{"aaa", "ccc"}
+	ok, err := VerifyBatchProof(root, shortened)
+	require.NoError(t, err)
+	assert.False(t, ok, "removed leaf should change root")
+}
+
+func TestVerifyBatchProof_Empty(t *testing.T) {
+	ok, err := VerifyBatchProof("", nil)
+	require.NoError(t, err)
+	assert.True(t, ok, "empty root should match empty leaves")
+}
+
+func TestVerifyBatchProof_SingleLeaf(t *testing.T) {
+	leaves := []string{"only_one"}
+	root, err := BuildMerkleRoot(leaves)
+	require.NoError(t, err)
+
+	ok, err := VerifyBatchProof(root, leaves)
+	require.NoError(t, err)
+	assert.True(t, ok)
+}
+
+func TestVerifyBatchProof_UnsortedReturnsError(t *testing.T) {
+	_, err := VerifyBatchProof("anything", []string{"zzz", "aaa"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnsortedLeaves)
+}
+
 func TestComputeContentHash_MicrosecondTruncation(t *testing.T) {
 	// Regression test: ComputeContentHash must truncate validFrom to microsecond
 	// precision because PostgreSQL stores timestamptz at microsecond resolution.
