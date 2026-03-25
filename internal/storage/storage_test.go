@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/storage"
 	"github.com/ashita-ai/akashi/internal/testutil"
@@ -10195,4 +10196,253 @@ func TestListRunsByAgent_LimitClamping(t *testing.T) {
 
 func strPtr(s string) *string {
 	return &s
+}
+
+// ---------------------------------------------------------------------------
+// Integrity violation persistence + tampered proof detection (Finding #1, #9)
+// ---------------------------------------------------------------------------
+
+func TestCreateIntegrityViolation_And_GetViolations(t *testing.T) {
+	ctx := context.Background()
+
+	// Use the default test org (uuid.Nil).
+	orgID := uuid.Nil
+
+	// We need a proof to reference.
+	proof := storage.IntegrityProof{
+		OrgID:         orgID,
+		BatchStart:    time.Now().UTC().Add(-1 * time.Hour),
+		BatchEnd:      time.Now().UTC(),
+		DecisionCount: 5,
+		RootHash:      "viol-test-root-" + uuid.New().String()[:8],
+		CreatedAt:     time.Now().UTC(),
+	}
+	require.NoError(t, testDB.CreateIntegrityProof(ctx, proof))
+	// Re-fetch to get the auto-generated ID.
+	fetched, err := testDB.GetLatestIntegrityProof(ctx, orgID)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+
+	// Insert a violation.
+	v := storage.IntegrityViolation{
+		OrgID:         orgID,
+		ProofID:       fetched.ID,
+		ViolationType: "merkle_root_mismatch",
+		Details: map[string]any{
+			"stored_root":    "aaaa",
+			"decision_count": 5,
+		},
+		CreatedAt: time.Now().UTC(),
+	}
+	err = testDB.CreateIntegrityViolation(ctx, v)
+	require.NoError(t, err)
+
+	// Fetch violations.
+	violations, err := testDB.GetIntegrityViolations(ctx, orgID, 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, violations)
+
+	found := false
+	for _, viol := range violations {
+		if viol.ProofID == fetched.ID && viol.ViolationType == "merkle_root_mismatch" {
+			found = true
+			assert.Equal(t, orgID, viol.OrgID)
+			assert.NotNil(t, viol.Details)
+			break
+		}
+	}
+	assert.True(t, found, "expected to find the created violation")
+}
+
+func TestVerifyBatchProof_DetectsTamperingIntegration(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "tamper-detect-" + suffix
+
+	// Use a dedicated org so other tests' decisions in the default org
+	// don't leak into our batch window and inflate the hash count.
+	orgID := uuid.New()
+	_, err := testDB.Pool().Exec(ctx,
+		`INSERT INTO organizations (id, name, slug) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+		orgID, "tamper-org-"+suffix, "tamper-org-"+suffix)
+	require.NoError(t, err)
+
+	// CreateRun uses the default org; we need to insert the run manually
+	// under our isolated org so decisions land in the right org_id.
+	runID := uuid.New()
+	_, err = testDB.Pool().Exec(ctx,
+		`INSERT INTO agent_runs (id, org_id, agent_id, status, created_at)
+		 VALUES ($1, $2, $3, 'running', now())`,
+		runID, orgID, agentID)
+	require.NoError(t, err)
+
+	beforeCreate := time.Now().UTC().Add(-1 * time.Second)
+
+	// Create 4 decisions with content hashes.
+	const count = 4
+	for i := range count {
+		reasoning := fmt.Sprintf("reasoning %d", i)
+		_, err := testDB.CreateDecision(ctx, model.Decision{
+			ID:           uuid.New(),
+			RunID:        runID,
+			AgentID:      agentID,
+			OrgID:        orgID,
+			DecisionType: "tamper_test",
+			Outcome:      fmt.Sprintf("outcome %d for %s", i, suffix),
+			Confidence:   0.8,
+			Reasoning:    &reasoning,
+			ValidFrom:    time.Now().UTC(),
+		})
+		require.NoError(t, err)
+	}
+
+	afterCreate := time.Now().UTC().Add(1 * time.Second)
+
+	// Get hashes and build a legitimate Merkle root.
+	hashes, err := testDB.GetDecisionHashesForBatch(ctx, orgID, beforeCreate, afterCreate)
+	require.NoError(t, err)
+	require.Len(t, hashes, count)
+
+	root, err := integrity.BuildMerkleRoot(hashes)
+	require.NoError(t, err)
+
+	// Verify passes with correct root.
+	ok, err := integrity.VerifyBatchProof(root, hashes)
+	require.NoError(t, err)
+	assert.True(t, ok, "legitimate proof should verify")
+
+	// Store the proof.
+	proof := storage.IntegrityProof{
+		OrgID:         orgID,
+		BatchStart:    beforeCreate,
+		BatchEnd:      afterCreate,
+		DecisionCount: count,
+		RootHash:      root,
+		CreatedAt:     time.Now().UTC(),
+	}
+	require.NoError(t, testDB.CreateIntegrityProof(ctx, proof))
+
+	// Simulate tampering: the decisions table has an immutability trigger
+	// (correctly preventing direct mutation), so we simulate what would happen
+	// if the stored root was corrupted or if a decision was inserted/deleted
+	// outside the normal write path. We verify against a wrong root.
+	wrongRoot := "0000000000000000000000000000000000000000000000000000000000000000"
+	ok, err = integrity.VerifyBatchProof(wrongRoot, hashes)
+	require.NoError(t, err)
+	assert.False(t, ok, "wrong stored root should fail verification")
+
+	// Also verify that adding an extra hash (simulating an injected decision)
+	// causes verification to fail against the original root.
+	injectedHashes := make([]string, len(hashes)+1)
+	copy(injectedHashes, hashes)
+	injectedHashes[len(hashes)] = "zzz_injected_hash"
+	ok, err = integrity.VerifyBatchProof(root, injectedHashes)
+	require.NoError(t, err)
+	assert.False(t, ok, "injected hash should cause root mismatch")
+}
+
+func TestIntegrityViolation_ChainLinkageDetection(t *testing.T) {
+	ctx := context.Background()
+	orgID := uuid.Nil
+	now := time.Now().UTC()
+
+	// Create two proofs with correct chain linkage.
+	proof1 := storage.IntegrityProof{
+		OrgID:         orgID,
+		BatchStart:    now.Add(-2 * time.Hour),
+		BatchEnd:      now.Add(-1 * time.Hour),
+		DecisionCount: 3,
+		RootHash:      "chain-root-1-" + uuid.New().String()[:8],
+		CreatedAt:     now.Add(-1 * time.Hour),
+	}
+	require.NoError(t, testDB.CreateIntegrityProof(ctx, proof1))
+
+	prevRoot := proof1.RootHash
+	proof2 := storage.IntegrityProof{
+		OrgID:         orgID,
+		BatchStart:    now.Add(-1 * time.Hour),
+		BatchEnd:      now,
+		DecisionCount: 5,
+		RootHash:      "chain-root-2-" + uuid.New().String()[:8],
+		PreviousRoot:  &prevRoot,
+		CreatedAt:     now,
+	}
+	require.NoError(t, testDB.CreateIntegrityProof(ctx, proof2))
+
+	// Fetch recent proofs (newest-first).
+	proofs, err := testDB.GetRecentIntegrityProofs(ctx, orgID, 10)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(proofs), 2)
+
+	// Find our two proofs in the result (may have other proofs from other tests).
+	var newest, older *storage.IntegrityProof
+	for i := range proofs {
+		if proofs[i].RootHash == proof2.RootHash {
+			newest = &proofs[i]
+		}
+		if proofs[i].RootHash == proof1.RootHash {
+			older = &proofs[i]
+		}
+	}
+	require.NotNil(t, newest, "should find proof2 in recent proofs")
+	require.NotNil(t, older, "should find proof1 in recent proofs")
+
+	// Chain linkage should be valid.
+	require.NotNil(t, newest.PreviousRoot)
+	assert.Equal(t, older.RootHash, *newest.PreviousRoot, "chain linkage should match")
+
+	// Now create a proof with broken chain linkage.
+	brokenPrev := "wrong-root-hash"
+	proof3 := storage.IntegrityProof{
+		OrgID:         orgID,
+		BatchStart:    now,
+		BatchEnd:      now.Add(1 * time.Hour),
+		DecisionCount: 2,
+		RootHash:      "chain-root-3-" + uuid.New().String()[:8],
+		PreviousRoot:  &brokenPrev,
+		CreatedAt:     now.Add(1 * time.Second),
+	}
+	require.NoError(t, testDB.CreateIntegrityProof(ctx, proof3))
+
+	// Verify the broken linkage is detectable.
+	proofs, err = testDB.GetRecentIntegrityProofs(ctx, orgID, 10)
+	require.NoError(t, err)
+
+	var broken *storage.IntegrityProof
+	for i := range proofs {
+		if proofs[i].RootHash == proof3.RootHash {
+			broken = &proofs[i]
+			break
+		}
+	}
+	require.NotNil(t, broken)
+	require.NotNil(t, broken.PreviousRoot)
+	// The broken proof's previous_root should NOT match proof2's root.
+	assert.NotEqual(t, proof2.RootHash, *broken.PreviousRoot,
+		"chain linkage should be broken — previous_root doesn't match prior proof")
+
+	// Record a violation for the broken linkage.
+	err = testDB.CreateIntegrityViolation(ctx, storage.IntegrityViolation{
+		OrgID:         orgID,
+		ProofID:       broken.ID,
+		ViolationType: "chain_linkage_broken",
+		Details: map[string]any{
+			"expected_previous": proof2.RootHash,
+			"actual_previous":   *broken.PreviousRoot,
+		},
+		CreatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	// Verify the violation was persisted.
+	violations, err := testDB.GetIntegrityViolations(ctx, orgID, 10)
+	require.NoError(t, err)
+	found := false
+	for _, v := range violations {
+		if v.ProofID == broken.ID && v.ViolationType == "chain_linkage_broken" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "chain linkage violation should be persisted and retrievable")
 }

@@ -814,6 +814,9 @@ func TestConflictProfileDefaults_Balanced(t *testing.T) {
 	if p.decayLambda != 0.01 {
 		t.Fatalf("expected decayLambda 0.01, got %f", p.decayLambda)
 	}
+	if p.outcomeSimFloor != 0.85 {
+		t.Fatalf("expected outcomeSimFloor 0.85, got %f", p.outcomeSimFloor)
+	}
 }
 
 func TestConflictProfileDefaults_HighPrecision(t *testing.T) {
@@ -835,6 +838,9 @@ func TestConflictProfileDefaults_HighPrecision(t *testing.T) {
 	}
 	if p.decisionTopicSimFloor != 0.75 {
 		t.Fatalf("expected decisionTopicSimFloor 0.75, got %f", p.decisionTopicSimFloor)
+	}
+	if p.outcomeSimFloor != 0.80 {
+		t.Fatalf("expected outcomeSimFloor 0.80, got %f", p.outcomeSimFloor)
 	}
 }
 
@@ -861,6 +867,9 @@ func TestConflictProfileDefaults_HighRecall(t *testing.T) {
 	}
 	if p.decayLambda != 0.005 {
 		t.Fatalf("expected decayLambda 0.005, got %f", p.decayLambda)
+	}
+	if p.outcomeSimFloor != 0.90 {
+		t.Fatalf("expected outcomeSimFloor 0.90, got %f", p.outcomeSimFloor)
 	}
 }
 

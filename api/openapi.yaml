@@ -1170,6 +1170,48 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /v1/integrity/violations:
+    get:
+      operationId: listIntegrityViolations
+      tags: [Integrity]
+      summary: List integrity violations
+      description: |
+        Returns recent integrity violations for the caller's organization,
+        ordered newest-first. Violations are detected by the background
+        integrity audit loop (Merkle root mismatches, chain linkage breaks).
+        Requires `admin` role.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+          description: Maximum number of violations to return.
+      responses:
+        "200":
+          description: List of integrity violations.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      violations:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/IntegrityViolation"
+                      count:
+                        type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
   /v1/conflicts/analytics:
     get:
       operationId: getConflictAnalytics
@@ -3774,6 +3816,29 @@ components:
           enum: [verified, tampered, no_hash]
         content_hash:
           type: string
+
+    IntegrityViolation:
+      type: object
+      required: [id, org_id, proof_id, violation_type, details, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        proof_id:
+          type: string
+          format: uuid
+        violation_type:
+          type: string
+          enum: [merkle_root_mismatch, chain_linkage_broken, chain_linkage_nil_previous]
+        details:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
 
     QueryResponse:
       type: object

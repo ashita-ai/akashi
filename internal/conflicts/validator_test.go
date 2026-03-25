@@ -1873,3 +1873,85 @@ func (rt *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	}
 	return base.RoundTrip(req)
 }
+
+func TestFormatPrompt_HighOutcomeSimilarity(t *testing.T) {
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA:          "replace acknowledged/wont_fix with open/resolved/false_positive in Go model",
+		OutcomeB:          "replace acknowledged/wont_fix with open/resolved/false_positive in React UI",
+		TypeA:             "architecture",
+		TypeB:             "architecture",
+		AgentA:            "agent-a",
+		AgentB:            "agent-b",
+		CreatedA:          now,
+		CreatedB:          now.Add(time.Hour),
+		OutcomeSimilarity: 0.92,
+	})
+	assert.Contains(t, prompt, "HIGH OUTCOME SIMILARITY")
+	assert.Contains(t, prompt, "92%")
+	assert.Contains(t, prompt, "COMPLEMENTARY")
+}
+
+func TestFormatPrompt_LowOutcomeSimilarity(t *testing.T) {
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA:          "use Redis for caching",
+		OutcomeB:          "use Memcached for caching",
+		TypeA:             "architecture",
+		TypeB:             "architecture",
+		AgentA:            "agent-a",
+		AgentB:            "agent-b",
+		CreatedA:          now,
+		CreatedB:          now.Add(time.Hour),
+		OutcomeSimilarity: 0.65,
+	})
+	assert.NotContains(t, prompt, "HIGH OUTCOME SIMILARITY")
+}
+
+func TestFormatPrompt_ZeroOutcomeSimilarity(t *testing.T) {
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA: "use Redis",
+		OutcomeB: "use Memcached",
+		TypeA:    "architecture",
+		TypeB:    "architecture",
+		AgentA:   "agent-a",
+		AgentB:   "agent-b",
+		CreatedA: now,
+		CreatedB: now.Add(time.Hour),
+		// OutcomeSimilarity defaults to 0
+	})
+	assert.NotContains(t, prompt, "HIGH OUTCOME SIMILARITY")
+}
+
+func TestFormatPrompt_OutcomeSimilarityBoundary(t *testing.T) {
+	now := time.Now()
+
+	// Exactly 0.80 → should include the hint.
+	prompt80 := formatPrompt(ValidateInput{
+		OutcomeA:          "decision A",
+		OutcomeB:          "decision B",
+		TypeA:             "architecture",
+		TypeB:             "architecture",
+		AgentA:            "a",
+		AgentB:            "b",
+		CreatedA:          now,
+		CreatedB:          now.Add(time.Hour),
+		OutcomeSimilarity: 0.80,
+	})
+	assert.Contains(t, prompt80, "HIGH OUTCOME SIMILARITY")
+
+	// Just below 0.80 → should not include.
+	prompt79 := formatPrompt(ValidateInput{
+		OutcomeA:          "decision A",
+		OutcomeB:          "decision B",
+		TypeA:             "architecture",
+		TypeB:             "architecture",
+		AgentA:            "a",
+		AgentB:            "b",
+		CreatedA:          now,
+		CreatedB:          now.Add(time.Hour),
+		OutcomeSimilarity: 0.79,
+	})
+	assert.NotContains(t, prompt79, "HIGH OUTCOME SIMILARITY")
+}

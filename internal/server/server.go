@@ -216,8 +216,9 @@ func New(cfg ServerConfig) *Server {
 	// Trace health (admin-only).
 	mux.Handle("GET /v1/trace-health", adminOnly(http.HandlerFunc(h.HandleTraceHealth)))
 
-	// Integrity verification (reader+).
+	// Integrity verification (reader+) and violations (admin-only).
 	mux.Handle("GET /v1/verify/{id}", readRole(http.HandlerFunc(h.HandleVerifyDecision)))
+	mux.Handle("GET /v1/integrity/violations", adminOnly(http.HandlerFunc(h.HandleListIntegrityViolations)))
 
 	// Subscription endpoint (reader+).
 	mux.Handle("GET /v1/subscribe", readRole(http.HandlerFunc(h.HandleSubscribe)))

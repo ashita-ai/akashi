@@ -23,18 +23,19 @@ type ValidateInput struct {
 	CreatedB time.Time
 
 	// Enrichment fields — may be empty when context is unavailable.
-	ReasoningA      string // decision reasoning
-	ReasoningB      string
-	ProjectA        string // from agent_context["project"] (or legacy "repo")
-	ProjectB        string
-	TaskA           string // from agent_context["task"]
-	TaskB           string
-	SessionIDA      string // UUID string
-	SessionIDB      string
-	FullOutcomeA    string // full outcome when OutcomeA is a claim fragment
-	FullOutcomeB    string
-	TopicSimilarity float64 // decision-level embedding similarity (0–1); 0 means unavailable
-	PrecedentLinked bool    // true when one decision cites the other via precedent_ref
+	ReasoningA        string // decision reasoning
+	ReasoningB        string
+	ProjectA          string // from agent_context["project"] (or legacy "repo")
+	ProjectB          string
+	TaskA             string // from agent_context["task"]
+	TaskB             string
+	SessionIDA        string // UUID string
+	SessionIDB        string
+	FullOutcomeA      string // full outcome when OutcomeA is a claim fragment
+	FullOutcomeB      string
+	TopicSimilarity   float64 // decision-level embedding similarity (0–1); 0 means unavailable
+	PrecedentLinked   bool    // true when one decision cites the other via precedent_ref
+	OutcomeSimilarity float64 // outcome embedding similarity (0–1); 0 means unavailable
 }
 
 // ValidationResult holds the structured output from an LLM validation call.
@@ -146,6 +147,18 @@ func formatPrompt(input ValidateInput) string {
 	if input.TopicSimilarity >= 0.70 && input.AgentA != input.AgentB {
 		fmt.Fprintf(&b, "HIGH TOPIC OVERLAP: Embeddings show %.0f%% topic similarity, meaning both decisions address the same domain. Check whether the agents take OPPOSITE STANCES on the same specific question.\n",
 			input.TopicSimilarity*100)
+	}
+
+	// --- Outcome similarity signal ---
+	// When outcome embeddings are highly similar, the decisions likely agree.
+	// This is distinct from topic similarity (which measures domain overlap):
+	// high outcome similarity means the conclusions themselves are close.
+	if input.OutcomeSimilarity >= 0.80 {
+		fmt.Fprintf(&b, "HIGH OUTCOME SIMILARITY: Outcome embeddings show %.0f%% similarity. "+
+			"When outcomes are this similar, the decisions likely AGREE on their conclusions "+
+			"even if they address different aspects or layers. "+
+			"Classify as COMPLEMENTARY unless they make genuinely incompatible claims.\n",
+			input.OutcomeSimilarity*100)
 	}
 
 	// --- Precedent chain supersession hint (#452) ---

@@ -69,6 +69,7 @@ type Config struct {
 	ConflictClaimDivFloor         float64 // Min outcome divergence for claims to count as disagreeing (default: 0.15).
 	ConflictDecisionTopicSimFloor float64 // Min decision-level topic similarity to activate claim-level scoring (default: 0.70).
 	ConflictEarlyExitFloor        float64 // Min pre-LLM significance for early exit pruning (default: 0.25, 0 disables).
+	ConflictOutcomeSimFloor       float64 // Min outcome cosine similarity to suppress as agreeing (default: 0.85, 0 disables).
 	CrossEncoderURL               string  // URL of the cross-encoder reranking service (empty = disabled).
 	CrossEncoderThreshold         float64 // Min cross-encoder score to proceed to LLM validation (default: 0.50).
 	NLIURL                        string  // URL of NLI sidecar for stance-aware pre-filtering (empty = disabled). Takes precedence over CrossEncoderURL.
@@ -214,6 +215,7 @@ func Load() (Config, error) {
 	cfg.ConflictClaimDivFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_CLAIM_DIV_FLOOR", profileDefaults.claimDivFloor)
 	cfg.ConflictDecisionTopicSimFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_DECISION_TOPIC_SIM_FLOOR", profileDefaults.decisionTopicSimFloor)
 	cfg.ConflictEarlyExitFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_EARLY_EXIT_FLOOR", profileDefaults.earlyExitFloor)
+	cfg.ConflictOutcomeSimFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_OUTCOME_SIM_FLOOR", profileDefaults.outcomeSimFloor)
 	cfg.CrossEncoderThreshold, errs = collectFloat64(errs, "AKASHI_CONFLICT_CROSS_ENCODER_THRESHOLD", profileDefaults.crossEncoderThreshold)
 	var highConfThreshF64 float64
 	highConfThreshF64, errs = collectFloat64(errs, "AKASHI_HIGH_CONFIDENCE_WARN_THRESHOLD", 0.85)
@@ -391,6 +393,9 @@ func (c Config) Validate() error {
 		errs = append(errs, fmt.Errorf("config: AKASHI_CONFLICT_EARLY_EXIT_FLOOR (%.2f) must not exceed AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD (%.2f)",
 			c.ConflictEarlyExitFloor, c.ConflictSignificanceThreshold))
 	}
+	if c.ConflictOutcomeSimFloor < 0 || c.ConflictOutcomeSimFloor > 1 {
+		errs = append(errs, errors.New("config: AKASHI_CONFLICT_OUTCOME_SIM_FLOOR must be between 0.0 and 1.0 (0 disables)"))
+	}
 
 	// JWT keys must be both set or both empty (ephemeral mode). Mismatched config
 	// would cause token validation to fail for all clients.
@@ -511,6 +516,7 @@ type conflictProfileValues struct {
 	claimDivFloor         float64
 	decisionTopicSimFloor float64
 	earlyExitFloor        float64
+	outcomeSimFloor       float64
 	crossEncoderThreshold float64
 }
 
@@ -575,6 +581,7 @@ type detectionProfileAdjustments struct {
 	claimDivDelta         float64 // added to model base
 	decisionTopicSimDelta float64 // added to model base
 	earlyExitFloor        float64 // absolute value
+	outcomeSimFloor       float64 // absolute value
 	crossEncoderThreshold float64 // absolute value
 }
 
@@ -601,6 +608,7 @@ func conflictProfileDefaults(profile string, embeddingModel string) conflictProf
 			claimDivDelta:         +0.05,
 			decisionTopicSimDelta: +0.05,
 			earlyExitFloor:        0.35,
+			outcomeSimFloor:       0.80,
 			crossEncoderThreshold: 0.60,
 		}
 	case "high_recall":
@@ -611,6 +619,7 @@ func conflictProfileDefaults(profile string, embeddingModel string) conflictProf
 			claimDivDelta:         -0.05,
 			decisionTopicSimDelta: -0.05,
 			earlyExitFloor:        0.15,
+			outcomeSimFloor:       0.90,
 			crossEncoderThreshold: 0.35,
 		}
 	default: // "balanced"
@@ -621,6 +630,7 @@ func conflictProfileDefaults(profile string, embeddingModel string) conflictProf
 			claimDivDelta:         0,
 			decisionTopicSimDelta: 0,
 			earlyExitFloor:        0.25,
+			outcomeSimFloor:       0.85,
 			crossEncoderThreshold: 0.50,
 		}
 	}
@@ -632,6 +642,7 @@ func conflictProfileDefaults(profile string, embeddingModel string) conflictProf
 		claimDivFloor:         modelBase.claimDivFloor + adj.claimDivDelta,
 		decisionTopicSimFloor: modelBase.decisionTopicSimFloor + adj.decisionTopicSimDelta,
 		earlyExitFloor:        adj.earlyExitFloor,
+		outcomeSimFloor:       adj.outcomeSimFloor,
 		crossEncoderThreshold: adj.crossEncoderThreshold,
 	}
 }

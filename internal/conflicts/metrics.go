@@ -18,6 +18,8 @@ type Metrics struct {
 	candidatesEvaluated metric.Int64Counter
 	claimLevelWins      metric.Int64Counter
 	workflowFiltered    metric.Int64Counter
+	coordinatedFiltered metric.Int64Counter
+	outcomeSimFiltered  metric.Int64Counter
 
 	scoringDuration    metric.Float64Histogram
 	llmCallDuration    metric.Float64Histogram
@@ -110,6 +112,22 @@ func (s *Scorer) registerMetrics() {
 	if err != nil {
 		s.logger.Warn("conflicts: failed to create akashi.conflicts.workflow_filtered metric", "error", err)
 		s.metrics.workflowFiltered, _ = meter.Int64Counter("akashi.conflicts.workflow_filtered.fallback")
+	}
+
+	s.metrics.coordinatedFiltered, err = meter.Int64Counter("akashi.conflicts.coordinated_filtered",
+		metric.WithDescription("Candidate pairs filtered by coordinated change detection (same commit/PR/branch)"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.coordinated_filtered metric", "error", err)
+		s.metrics.coordinatedFiltered, _ = meter.Int64Counter("akashi.conflicts.coordinated_filtered.fallback")
+	}
+
+	s.metrics.outcomeSimFiltered, err = meter.Int64Counter("akashi.conflicts.outcome_sim_filtered",
+		metric.WithDescription("Candidate pairs filtered by outcome similarity floor (outcomes effectively agree)"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.outcome_sim_filtered metric", "error", err)
+		s.metrics.outcomeSimFiltered, _ = meter.Int64Counter("akashi.conflicts.outcome_sim_filtered.fallback")
 	}
 
 	// --- Histograms ---
