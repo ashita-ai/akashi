@@ -233,3 +233,31 @@ func (db *DB) ListOrganizationIDs(ctx context.Context) ([]uuid.UUID, error) {
 	}
 	return ids, rows.Err()
 }
+
+// GetOrgIDByOffset returns the single organization ID at the given offset
+// within a deterministic (ORDER BY id) ordering. Returns uuid.Nil and no error
+// when the offset exceeds the number of organizations. This replaces loading
+// the entire org table for the audit loop's round-robin selection.
+func (db *DB) GetOrgIDByOffset(ctx context.Context, offset int) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := db.pool.QueryRow(ctx,
+		`SELECT id FROM organizations ORDER BY id LIMIT 1 OFFSET $1`, offset,
+	).Scan(&id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, nil
+		}
+		return uuid.Nil, fmt.Errorf("storage: get org by offset: %w", err)
+	}
+	return id, nil
+}
+
+// CountOrganizations returns the total number of organizations.
+func (db *DB) CountOrganizations(ctx context.Context) (int, error) {
+	var count int
+	err := db.pool.QueryRow(ctx, `SELECT count(*) FROM organizations`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("storage: count organizations: %w", err)
+	}
+	return count, nil
+}

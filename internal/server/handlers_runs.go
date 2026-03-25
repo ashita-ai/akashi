@@ -526,6 +526,26 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 		// closure without also adding a response-level degraded signal, because
 		// errgroup.WithContext cancels gctx on the first non-nil error.
 		_ = g2.Wait()
+
+		// If the request was cancelled mid-flight, some enrichments may be
+		// incomplete. Insert fully-degraded stubs for any decision that never
+		// got an entry, so absence in the map is unambiguous (= not requested)
+		// rather than ambiguous (= cancelled? errored? empty?).
+		if r.Context().Err() != nil {
+			enrichmentsTruncated = true
+			for _, d := range toEnrich {
+				key := d.ID.String()
+				if _, exists := enrichments[key]; !exists {
+					enrichments[key] = decisionEnrichment{
+						Revisions: enrichmentRevisions{Items: []model.Decision{}, Degraded: true},
+						Lineage:   storage.DecisionLineage{DecisionID: d.ID},
+						Conflicts: enrichmentConflicts{Items: []model.DecisionConflict{}, Degraded: true},
+						Integrity: enrichmentIntegrity{Status: "no_hash"},
+						Degraded:  true,
+					}
+				}
+			}
+		}
 	}
 
 	resp := getRunResponse{
