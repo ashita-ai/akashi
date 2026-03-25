@@ -53,7 +53,7 @@ const navItems = [
 
 export default function Layout() {
   const { agentId, token, logout } = useAuth();
-  const sseStatus = useSSE(token);
+  const sseStatus = useSSE(token, logout);
   const { theme, toggle: toggleTheme } = useTheme();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 

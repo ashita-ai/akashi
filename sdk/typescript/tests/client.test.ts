@@ -117,6 +117,29 @@ describe("AkashiClient", () => {
       const calls = mockFetch.mock.calls.map((c) => c[0]);
       expect(calls.filter((u) => u.includes("/auth/token"))).toHaveLength(1);
     });
+
+    it("deduplicates concurrent token refresh requests", async () => {
+      // All 3 concurrent check() calls need a token — only 1 refresh should fire.
+      const checkResponse = mockResponse(200, {
+        data: { has_precedent: false, decisions: [] },
+      });
+      mockFetch
+        .mockResolvedValueOnce(mockResponse(200, TOKEN_RESPONSE))
+        .mockResolvedValueOnce(checkResponse)
+        .mockResolvedValueOnce(checkResponse)
+        .mockResolvedValueOnce(checkResponse);
+
+      await Promise.all([
+        client.check("a"),
+        client.check("b"),
+        client.check("c"),
+      ]);
+
+      const tokenCalls = mockFetch.mock.calls.filter((c) =>
+        (c[0] as string).includes("/auth/token"),
+      );
+      expect(tokenCalls).toHaveLength(1);
+    });
   });
 
   describe("check", () => {
