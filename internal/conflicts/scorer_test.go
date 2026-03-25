@@ -146,7 +146,7 @@ func TestWithScoringThresholds_ZeroPreservesDefaults(t *testing.T) {
 }
 
 func TestNewScorer_NotNil(t *testing.T) {
-	scorer := NewScorer(testDB, slog.Default(), 0.4, nil, 0, 0)
+	scorer := NewScorer(testDB, slog.Default(), 0.4, stubConflictValidator{}, 0, 0)
 	require.NotNil(t, scorer)
 	assert.Equal(t, 0.4, scorer.threshold)
 	assert.NotNil(t, scorer.db)
@@ -171,6 +171,20 @@ func TestPtr_FloatAndBool(t *testing.T) {
 	b := ptr(true)
 	require.NotNil(t, b)
 	assert.True(t, *b)
+}
+
+// stubConflictValidator always returns "contradiction" like NoopValidator, but
+// is a distinct type so the scorer does not apply the noop claim gate to it.
+// Use this in tests that verify embedding math and expect conflicts to be
+// inserted without claim-level confirmation.
+type stubConflictValidator struct{}
+
+func (stubConflictValidator) Validate(_ context.Context, _ ValidateInput) (ValidationResult, error) {
+	return ValidationResult{
+		Relationship: "contradiction",
+		Category:     "strategic",
+		Severity:     "medium",
+	}, nil
 }
 
 // makeEmbedding creates a 1024-dim vector with value at position idx and zeroes elsewhere.
@@ -242,7 +256,7 @@ func TestScoreForDecision(t *testing.T) {
 	require.NoError(t, err)
 
 	// Use a low threshold so the conflict is detected.
-	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.1, stubConflictValidator{}, 0, 0)
 	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 
 	// Score for decisionB — it should find decisionA as a conflict.
@@ -261,7 +275,8 @@ func TestScoreForDecision(t *testing.T) {
 			found = true
 			assert.Equal(t, model.ConflictKindSelfContradiction, c.ConflictKind,
 				"same agent should produce self_contradiction")
-			assert.Equal(t, "embedding", c.ScoringMethod)
+			assert.Equal(t, "llm_v2", c.ScoringMethod,
+				"stubConflictValidator is a non-noop validator, so scoring method is llm_v2")
 			require.NotNil(t, c.TopicSimilarity)
 			assert.InDelta(t, 1.0, *c.TopicSimilarity, 0.01,
 				"identical topic embeddings should yield ~1.0 topic similarity")
@@ -305,7 +320,7 @@ func TestScoreForDecision_NoEmbeddings(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.1, stubConflictValidator{}, 0, 0)
 	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 
 	// Should return early without error (decision lacks embeddings).
@@ -355,7 +370,7 @@ func TestScoreForDecision_CrossAgent(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.1, stubConflictValidator{}, 0, 0)
 	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
@@ -416,7 +431,7 @@ func TestBackfillScoring(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.1, stubConflictValidator{}, 0, 0)
 	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 
 	// BackfillScoring should process both decisions and produce a conflict.
@@ -445,7 +460,7 @@ func TestBackfillScoring_EmptyDB(t *testing.T) {
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	scorer := NewScorer(testDB, logger, 0.5, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.5, stubConflictValidator{}, 0, 0)
 	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 
 	// Should handle gracefully when there are decisions but none with
@@ -492,7 +507,7 @@ func TestScoreForDecision_SkipsRevisionChain(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.1, stubConflictValidator{}, 0, 0)
 	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
@@ -552,7 +567,7 @@ func TestScoreForDecision_RevisionChainTransitive(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.1, stubConflictValidator{}, 0, 0)
 	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 
 	// Score for C — should NOT conflict with A or B (transitive chain).
@@ -578,7 +593,7 @@ func TestBackfillScoring_ContextCancellation(t *testing.T) {
 
 	cancel() // Cancel immediately.
 
-	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.1, stubConflictValidator{}, 0, 0)
 	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	processed, err := scorer.BackfillScoring(ctx, 100)
 
@@ -654,7 +669,7 @@ func TestBestClaimConflict_AboveFloors(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, slog.Default(), 0.1, nil, 0, 0)
+	scorer := NewScorer(testDB, slog.Default(), 0.1, stubConflictValidator{}, 0, 0)
 	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, orgID, 0.90)
 
 	assert.Greater(t, sig, 0.0, "significance should be positive when both floors are satisfied")
@@ -707,7 +722,7 @@ func TestBestClaimConflict_BelowSimFloor(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, slog.Default(), 0.1, nil, 0, 0)
+	scorer := NewScorer(testDB, slog.Default(), 0.1, stubConflictValidator{}, 0, 0)
 	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, orgID, 0.90)
 
 	assert.Equal(t, 0.0, sig, "significance should be 0 when claim sim is below floor")
@@ -760,7 +775,7 @@ func TestBestClaimConflict_BelowDivFloor(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, slog.Default(), 0.1, nil, 0, 0)
+	scorer := NewScorer(testDB, slog.Default(), 0.1, stubConflictValidator{}, 0, 0)
 	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, orgID, 0.90)
 
 	assert.Equal(t, 0.0, sig, "significance should be 0 when claims effectively agree (div < floor)")
@@ -800,7 +815,7 @@ func TestBestClaimConflict_NoClaims(t *testing.T) {
 	require.NoError(t, err)
 
 	// No claims inserted for either decision.
-	scorer := NewScorer(testDB, slog.Default(), 0.1, nil, 0, 0)
+	scorer := NewScorer(testDB, slog.Default(), 0.1, stubConflictValidator{}, 0, 0)
 	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, orgID, 0.90)
 
 	assert.Equal(t, 0.0, sig, "no claims means no claim-level conflict")
@@ -856,7 +871,7 @@ func TestBestClaimConflict_MultiplePairs_ReturnsBest(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, slog.Default(), 0.1, nil, 0, 0)
+	scorer := NewScorer(testDB, slog.Default(), 0.1, stubConflictValidator{}, 0, 0)
 	sig, div, claimA, claimB := scorer.bestClaimConflict(ctx, dA.ID, dB.ID, orgID, 0.90)
 
 	assert.Greater(t, sig, 0.0, "should find a claim-level conflict")
@@ -924,7 +939,7 @@ func TestScoreForDecision_ClaimMethodWinsOverEmbedding(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0) // NoopValidator: claim gate allows bestMethod=="claim" through
 	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
@@ -1095,7 +1110,7 @@ func TestBackfillScoring_MarksDecisionsScored(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1, nil, 2, 0)
+	scorer := NewScorer(testDB, logger, 0.1, stubConflictValidator{}, 2, 0)
 	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 
 	// First backfill should process decisions.
@@ -1181,7 +1196,7 @@ func TestBackfillScoring_Parallel(t *testing.T) {
 	}
 
 	// Use 3 workers to exercise parallel paths.
-	scorer := NewScorer(testDB, logger, 0.1, nil, 3, 0)
+	scorer := NewScorer(testDB, logger, 0.1, stubConflictValidator{}, 3, 0)
 	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	processed, err := scorer.BackfillScoring(ctx, 500)
 	require.NoError(t, err)
@@ -1243,7 +1258,7 @@ func TestScoreForDecision_DifferentReposSuppressConflict(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.1, stubConflictValidator{}, 0, 0)
 	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer.ScoreForDecision(ctx, decisionA.ID, orgID)
 
@@ -1306,7 +1321,7 @@ func TestScoreForDecision_SameRepoAllowsConflict(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.1, stubConflictValidator{}, 0, 0)
 	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer.ScoreForDecision(ctx, decisionA.ID, orgID)
 
@@ -1571,7 +1586,7 @@ func TestScoreForDecision_CrossEncoderSkippedWithPairwiseScorer(t *testing.T) {
 	// Enterprise pairwise scorer that overrides the confirmation step.
 	ps := &mockPairwiseScorer{score: 1.0, explanation: "enterprise says conflict"}
 
-	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.1, stubConflictValidator{}, 0, 0)
 	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer = scorer.WithCrossEncoder(ce, 0.50)
 	scorer = scorer.WithPairwiseScorer(ps)
@@ -1632,6 +1647,8 @@ func TestScoreForDecision_CrossEncoderSkippedWithNoopValidator(t *testing.T) {
 	ce := &mockCrossEncoder{score: 0.20}
 
 	// NoopValidator (nil validator defaults to NoopValidator).
+	// The noop claim gate filters pairs without claim-level confirmation,
+	// and cross-encoder should also NOT be called (nothing to save).
 	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
 	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer = scorer.WithCrossEncoder(ce, 0.50)
@@ -1643,7 +1660,7 @@ func TestScoreForDecision_CrossEncoderSkippedWithNoopValidator(t *testing.T) {
 }
 
 func TestWithCrossEncoder(t *testing.T) {
-	scorer := NewScorer(nil, slog.Default(), 0.3, nil, 0, 0)
+	scorer := NewScorer(nil, slog.Default(), 0.3, stubConflictValidator{}, 0, 0)
 	assert.Nil(t, scorer.crossEncoder, "cross-encoder should be nil by default")
 
 	ce := &mockCrossEncoder{score: 0.5}
@@ -1702,7 +1719,7 @@ func TestScoreForDecision_EarlyExitSkipsLowSignificance(t *testing.T) {
 	// so early exit will break (not continue). The high-significance candidate
 	// should still produce a conflict, but the low-significance one should not
 	// (it has significance ≈ 0 which is below the floor AND below the threshold).
-	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0).
+	scorer := NewScorer(testDB, logger, 0.1, stubConflictValidator{}, 0, 0).
 		WithCandidateFinder(storage.NewPgCandidateFinder(testDB)).
 		WithEarlyExitFloor(0.3)
 
@@ -1775,7 +1792,7 @@ func TestScoreForDecision_PreSortProcessesMostSignificantFirst(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0).
+	scorer := NewScorer(testDB, logger, 0.1, stubConflictValidator{}, 0, 0).
 		WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 
 	scorer.ScoreForDecision(ctx, target.ID, orgID)
@@ -1844,7 +1861,7 @@ func TestNewScorer_ValidatorDefaults(t *testing.T) {
 
 func TestRecordResolution(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	scorer := NewScorer(testDB, logger, 0.3, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.3, stubConflictValidator{}, 0, 0)
 
 	// RecordResolution should not panic even without a real OTel provider.
 	// The noop meter instruments accept writes silently.
@@ -1857,7 +1874,7 @@ func TestRecordResolution(t *testing.T) {
 
 func TestRegisterMetrics_NoNilInstruments(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	scorer := NewScorer(testDB, logger, 0.3, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.3, stubConflictValidator{}, 0, 0)
 
 	// Verify none of the metric instruments are nil after initialization.
 	assert.NotNil(t, scorer.metrics.detected)
@@ -1879,7 +1896,7 @@ func TestClearUnvalidatedConflicts_NoConflicts(t *testing.T) {
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	scorer := NewScorer(testDB, logger, 0.3, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.3, stubConflictValidator{}, 0, 0)
 	n, err := scorer.ClearUnvalidatedConflicts(ctx)
 	require.NoError(t, err)
 	// In a clean database (or after prior test runs that resolved everything),
@@ -1930,7 +1947,7 @@ func TestClearUnvalidatedConflicts_DeletesNonLLMv2(t *testing.T) {
 		dA.ID, dB.ID, orgID, agentID)
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.3, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.3, stubConflictValidator{}, 0, 0)
 	n, err := scorer.ClearUnvalidatedConflicts(ctx)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, n, 1, "should delete at least the embedding-method conflict we just inserted")
@@ -1944,7 +1961,7 @@ func TestClearAllConflicts_NoConflicts(t *testing.T) {
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	scorer := NewScorer(testDB, logger, 0.3, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.3, stubConflictValidator{}, 0, 0)
 	n, err := scorer.ClearAllConflicts(ctx)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, n, 0)
@@ -1993,7 +2010,7 @@ func TestClearAllConflicts_DeletesOpenConflicts(t *testing.T) {
 		dA.ID, dB.ID, orgID, agentID)
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.3, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.3, stubConflictValidator{}, 0, 0)
 	n, err := scorer.ClearAllConflicts(ctx)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, n, 1, "should delete at least the open conflict we just inserted")
@@ -2042,7 +2059,7 @@ func TestClearAllConflicts_PreservesResolvedConflicts(t *testing.T) {
 		dA.ID, dB.ID, orgID, agentID)
 	require.NoError(t, err)
 
-	scorer := NewScorer(testDB, logger, 0.3, nil, 0, 0)
+	scorer := NewScorer(testDB, logger, 0.3, stubConflictValidator{}, 0, 0)
 	_, err = scorer.ClearAllConflicts(ctx)
 	require.NoError(t, err)
 
@@ -2918,3 +2935,222 @@ func TestNewScorer_DefaultOutcomeSimFloor(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// --- Tests for the four new FP suppression layers ---
+
+func TestScoreForDecision_ConfidenceFloorFilters(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "conffloor-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+
+	topicEmb := makeEmbedding(900, 1.0)
+	outcomeEmbA := makeEmbedding(901, 1.0)
+	outcomeEmbB := makeEmbedding(902, 1.0) // orthogonal to A
+
+	// Both decisions have very low confidence (0.1 * 0.1 = 0.01 < 0.0225).
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "exploratory: maybe use Redis conffloor test",
+		Confidence: 0.1, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "exploratory: maybe use Memcached conffloor test",
+		Confidence: 0.1, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+	})
+	require.NoError(t, err)
+
+	scorer := NewScorer(testDB, logger, 0.1, stubConflictValidator{}, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
+	scorer.ScoreForDecision(ctx, dB.ID, orgID)
+
+	// Verify no conflict was inserted (confidence too low).
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 100, 0)
+	require.NoError(t, err)
+	for _, c := range conflicts {
+		aMatch := c.DecisionAID == dA.ID || c.DecisionBID == dA.ID
+		bMatch := c.DecisionAID == dB.ID || c.DecisionBID == dB.ID
+		if aMatch && bMatch {
+			t.Fatal("expected no conflict between low-confidence decisions, but found one")
+		}
+	}
+}
+
+func TestScoreForDecision_ConfidenceFloorPasses(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "confpass-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+
+	topicEmb := makeEmbedding(905, 1.0)
+	outcomeEmbA := makeEmbedding(906, 1.0)
+	outcomeEmbB := makeEmbedding(907, 1.0)
+
+	// One decision has moderate confidence — product 0.8 * 0.3 = 0.24 > 0.0225.
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use Redis confpass test",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use Memcached confpass test",
+		Confidence: 0.3, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+	})
+	require.NoError(t, err)
+
+	scorer := NewScorer(testDB, logger, 0.1, stubConflictValidator{}, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
+	scorer.ScoreForDecision(ctx, dB.ID, orgID)
+
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 100, 0)
+	require.NoError(t, err)
+	var found bool
+	for _, c := range conflicts {
+		aMatch := c.DecisionAID == dA.ID || c.DecisionBID == dA.ID
+		bMatch := c.DecisionAID == dB.ID || c.DecisionBID == dB.ID
+		if aMatch && bMatch {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected conflict when confidence product exceeds floor")
+}
+
+func TestScoreForDecision_NoopClaimGateFilters(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "noopgate-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+
+	topicEmb := makeEmbedding(910, 1.0)
+	outcomeEmbA := makeEmbedding(911, 1.0)
+	outcomeEmbB := makeEmbedding(912, 1.0)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use Redis noopgate test",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use Memcached noopgate test",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+	})
+	require.NoError(t, err)
+
+	// NoopValidator (nil) without claims: the noop claim gate should filter
+	// this pair because bestMethod will be "embedding", not "claim".
+	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
+	scorer.ScoreForDecision(ctx, dB.ID, orgID)
+
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 100, 0)
+	require.NoError(t, err)
+	for _, c := range conflicts {
+		aMatch := c.DecisionAID == dA.ID || c.DecisionBID == dA.ID
+		bMatch := c.DecisionAID == dB.ID || c.DecisionBID == dB.ID
+		if aMatch && bMatch {
+			t.Fatal("expected no conflict with NoopValidator and no claim-level confirmation")
+		}
+	}
+}
+
+func TestScoreForDecision_NoopClaimGateDoesNotPanic(t *testing.T) {
+	// Verify the noop claim gate path doesn't panic — the metric counter
+	// increments without error even with the global noop meter.
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "noopnopanic-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+
+	topicEmb := makeEmbedding(915, 1.0)
+	outcomeEmbA := makeEmbedding(916, 1.0)
+	outcomeEmbB := makeEmbedding(917, 1.0)
+
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use Redis noop-no-panic test",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use Memcached noop-no-panic test",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+	})
+	require.NoError(t, err)
+
+	scorer := NewScorer(testDB, logger, 0.1, nil, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
+
+	// Should not panic — the noop claim gate increments the metric and skips.
+	require.NotPanics(t, func() {
+		scorer.ScoreForDecision(ctx, dB.ID, orgID)
+	})
+}
+
+func TestConfidenceFloorProduct(t *testing.T) {
+	// Verify the constant is correct: sqrt(0.0225) = 0.15.
+	assert.InDelta(t, 0.15, math.Sqrt(confidenceFloorProduct), 1e-9)
+}
+
+func TestBenchmarkDataset_HasFPCategories(t *testing.T) {
+	pairs := BenchmarkDataset()
+	// Original: 10 genuine + 10 related + 10 unrelated = 30.
+	// New: + 30 FP category pairs = 60 total.
+	assert.Equal(t, 60, len(pairs), "expected 60 benchmark pairs after FP category expansion")
+
+	// Count labels.
+	labelCounts := make(map[string]int)
+	for _, p := range pairs {
+		labelCounts[p.Label]++
+	}
+	assert.Equal(t, 10, labelCounts["genuine"])
+	assert.Equal(t, 40, labelCounts["related_not_contradicting"], "10 original + 30 FP category pairs")
+	assert.Equal(t, 10, labelCounts["unrelated_false_positive"])
+}
