@@ -392,6 +392,42 @@ func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uu
 	return oldStatus, nil
 }
 
+// ResolveConflictGroup batch-resolves all open conflicts in a conflict group.
+func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, _ *string, _ storage.MutationAuditEntry) (int, error) {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: begin resolve group tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var exists bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM conflict_groups WHERE id = ? AND org_id = ?)`,
+		uuidStr(groupID), uuidStr(orgID),
+	).Scan(&exists); err != nil {
+		return 0, fmt.Errorf("sqlite: check conflict group: %w", err)
+	}
+	if !exists {
+		return 0, fmt.Errorf("sqlite: conflict group: %w", storage.ErrNotFound)
+	}
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE scored_conflicts
+		 SET status = ?, resolved_by = ?, resolved_at = datetime('now'), resolution_note = ?
+		 WHERE group_id = ? AND org_id = ? AND status = 'open'`,
+		status, resolvedBy, resolutionNote, uuidStr(groupID), uuidStr(orgID),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: resolve conflict group: %w", err)
+	}
+
+	affected, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("sqlite: commit resolve group: %w", err)
+	}
+	return int(affected), nil
+}
+
 // CascadeResolveByOutcome is a no-op in SQLite mode (no pgvector for embedding similarity).
 func (l *LiteDB) CascadeResolveByOutcome(_ context.Context, _, _, _, _ uuid.UUID, _ float64, _ storage.MutationAuditEntry) (int, error) {
 	return 0, nil
