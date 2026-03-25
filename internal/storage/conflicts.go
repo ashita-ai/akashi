@@ -5,6 +5,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -394,11 +395,19 @@ func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Read old status for audit before_data.
+	// Read old status and decision pair for audit before_data and winner validation.
+	var decisionAID, decisionBID uuid.UUID
 	if scanErr := tx.QueryRow(ctx,
-		`SELECT status FROM scored_conflicts WHERE id = $1 AND org_id = $2 FOR UPDATE`,
-		id, orgID).Scan(&oldStatus); scanErr != nil {
+		`SELECT status, decision_a_id, decision_b_id FROM scored_conflicts WHERE id = $1 AND org_id = $2 FOR UPDATE`,
+		id, orgID).Scan(&oldStatus, &decisionAID, &decisionBID); scanErr != nil {
 		return "", fmt.Errorf("storage: conflict: %w", ErrNotFound)
+	}
+
+	// Validate winning_decision_id belongs to this conflict.
+	if winningDecisionID != nil && status == "resolved" {
+		if *winningDecisionID != decisionAID && *winningDecisionID != decisionBID {
+			return "", ErrWinningDecisionNotInConflict
+		}
 	}
 
 	var tag pgconn.CommandTag
@@ -1216,13 +1225,15 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 	return groups, nil
 }
 
-// ResolveConflictGroup batch-resolves all open conflicts in a
-// conflict group. When winningAgent is non-nil, each conflict's winning_decision_id
-// is set to the decision from that agent (decision_a_id when agent_a matches,
-// decision_b_id when agent_b matches). When fpLabel is non-nil and status is
-// "false_positive", ground truth labels are inserted atomically within the same
-// transaction — preventing partial-label states on crash. Returns the number of
-// conflicts updated.
+// ResolveConflictGroup batch-resolves all open conflicts in a conflict group.
+// When winningAgent is non-nil, each conflict's winning_decision_id is set to
+// the decision from that agent (decision_a_id when agent_a matches,
+// decision_b_id when agent_b matches). Returns ErrWinningAgentNotInGroup if
+// winningAgent does not match agent_a or agent_b in the group.
+//
+// When fpLabel is non-nil (status must be "false_positive"), ground truth
+// labels are inserted atomically within the same transaction — preventing
+// partial-label states on crash. Returns the number of conflicts updated.
 func (db *DB) ResolveConflictGroup(
 	ctx context.Context,
 	groupID, orgID uuid.UUID,
@@ -1238,37 +1249,65 @@ func (db *DB) ResolveConflictGroup(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Verify the group exists and belongs to this org.
-	var exists bool
+	// Verify the group exists and belongs to this org. Fetch the agent pair
+	// so we can validate the winning agent if provided.
+	var agentA, agentB string
 	if err := tx.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM conflict_groups WHERE id = $1 AND org_id = $2)`,
+		`SELECT agent_a, agent_b FROM conflict_groups WHERE id = $1 AND org_id = $2`,
 		groupID, orgID,
-	).Scan(&exists); err != nil {
+	).Scan(&agentA, &agentB); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, fmt.Errorf("storage: conflict group: %w", ErrNotFound)
+		}
 		return 0, fmt.Errorf("storage: check conflict group: %w", err)
 	}
-	if !exists {
-		return 0, fmt.Errorf("storage: conflict group: %w", ErrNotFound)
+
+	// Validate winning agent matches one of the group's participants.
+	if winningAgent != nil && *winningAgent != agentA && *winningAgent != agentB {
+		return 0, fmt.Errorf("storage: agent %q not in group (agent_a=%q, agent_b=%q): %w",
+			*winningAgent, agentA, agentB, ErrWinningAgentNotInGroup)
 	}
 
 	// Build the UPDATE with RETURNING id so we know exactly which rows were
-	// changed. This feeds the false-positive labeling CTE below and avoids
+	// changed. This feeds the false-positive labeling below and avoids
 	// the fragile pattern of re-querying by status + resolved_by.
+	//
+	// When winning_agent is set, derive winning_decision_id per-row by
+	// JOINing the decisions table to check actual agent ownership. We cannot
+	// rely on agent_a corresponding to decision_a_id because
+	// InsertScoredConflict canonicalizes decisions by UUID bytes and agents
+	// by string sort independently — breaking positional correspondence.
+	// The JOIN also filters by valid_to IS NULL to avoid resolving conflicts
+	// whose referenced decisions have been superseded.
 	var updatedIDs []uuid.UUID
 	if winningAgent != nil && status == "resolved" {
+		// Count open conflicts before the JOIN-based UPDATE so we can detect
+		// when the JOIN filters out rows due to revised (superseded) decisions.
+		var openCount int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM scored_conflicts WHERE group_id = $1 AND org_id = $2 AND status = 'open'`,
+			groupID, orgID,
+		).Scan(&openCount); err != nil {
+			return 0, fmt.Errorf("storage: count open conflicts: %w", err)
+		}
+
 		rows, qErr := tx.Query(ctx,
-			`UPDATE scored_conflicts
+			`UPDATE scored_conflicts sc
 			 SET status = $1,
 			     resolved_by = $2,
 			     resolved_at = now(),
 			     resolution_note = $3,
 			     winning_decision_id = CASE
-			         WHEN agent_a = $4 THEN decision_a_id
-			         WHEN agent_b = $4 THEN decision_b_id
+			         WHEN da.agent_id = $4 THEN sc.decision_a_id
+			         WHEN db.agent_id = $4 THEN sc.decision_b_id
 			         ELSE NULL
 			     END
-			 WHERE group_id = $5 AND org_id = $6
-			   AND status = 'open'
-			 RETURNING id`,
+			 FROM decisions da, decisions db
+			 WHERE da.id = sc.decision_a_id AND da.valid_to IS NULL AND da.org_id = $6
+			   AND db.id = sc.decision_b_id AND db.valid_to IS NULL AND db.org_id = $6
+			   AND sc.group_id = $5 AND sc.org_id = $6
+			   AND sc.status = 'open'
+			 RETURNING sc.id`,
 			status, resolvedBy, resolutionNote, *winningAgent, groupID, orgID)
 		if qErr != nil {
 			return 0, fmt.Errorf("storage: resolve conflict group: %w", qErr)
@@ -1283,6 +1322,14 @@ func (db *DB) ResolveConflictGroup(
 		}
 		if err := rows.Err(); err != nil {
 			return 0, fmt.Errorf("storage: resolve conflict group rows: %w", err)
+		}
+
+		// If open conflicts exist but the JOIN resolved fewer, some decisions
+		// have been revised (valid_to IS NOT NULL). Return a clear error rather
+		// than silently succeeding with fewer resolved rows.
+		if openCount > 0 && len(updatedIDs) < openCount {
+			return 0, fmt.Errorf("storage: %d of %d open conflicts reference revised decisions (valid_to IS NOT NULL): %w",
+				openCount-len(updatedIDs), openCount, ErrRevisedDecisions)
 		}
 	} else {
 		rows, qErr := tx.Query(ctx,
@@ -1412,11 +1459,15 @@ func (db *DB) CascadeResolveByOutcome(
 	// For each open conflict in the group, compare both sides' outcome_embeddings
 	// against the winner. If exactly one side exceeds the threshold, resolve with
 	// that side as winner. If both exceed, pick the more aligned side.
+	//
+	// All decision JOINs filter valid_to IS NULL to ensure we only compare
+	// current (non-revised) decision embeddings. A revised decision's embedding
+	// may no longer represent the agent's actual position.
 	tag, err := tx.Exec(ctx, `
 		WITH winning AS (
 			SELECT outcome_embedding
 			FROM decisions
-			WHERE id = $1 AND org_id = $2
+			WHERE id = $1 AND org_id = $2 AND valid_to IS NULL
 		),
 		candidates AS (
 			SELECT
@@ -1434,8 +1485,8 @@ func (db *DB) CascadeResolveByOutcome(
 					ELSE 0.0
 				END AS sim_b
 			FROM scored_conflicts sc
-			JOIN decisions da ON da.id = sc.decision_a_id AND da.org_id = $2
-			JOIN decisions db ON db.id = sc.decision_b_id AND db.org_id = $2
+			JOIN decisions da ON da.id = sc.decision_a_id AND da.org_id = $2 AND da.valid_to IS NULL
+			JOIN decisions db ON db.id = sc.decision_b_id AND db.org_id = $2 AND db.valid_to IS NULL
 			CROSS JOIN winning w
 			WHERE sc.group_id = $3
 			  AND sc.org_id = $2
