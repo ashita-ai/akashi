@@ -510,8 +510,8 @@ func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.U
 			if scanErr := tx.QueryRowContext(ctx,
 				`SELECT count(*) FROM scored_conflicts
 				 WHERE group_id = ? AND org_id = ? AND status = 'resolved'
-				   AND winning_decision_id IS NULL AND resolved_by = ?`,
-				uuidStr(groupID), uuidStr(orgID), resolvedBy,
+				   AND winning_decision_id IS NULL AND resolved_at = datetime('now')`,
+				uuidStr(groupID), uuidStr(orgID),
 			).Scan(&nullWinners); scanErr != nil {
 				return 0, fmt.Errorf("sqlite: check for null winners: %w", scanErr)
 			}
@@ -537,9 +537,10 @@ func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.U
 	affected, _ := result.RowsAffected()
 
 	// Atomically label all just-resolved conflicts as false positives for
-	// ground truth training. The WHERE clause targets only rows updated in
-	// this transaction (status AND resolved_by AND group match), so
-	// previously resolved conflicts are never re-labeled.
+	// ground truth training. The WHERE clause uses resolved_at = datetime('now')
+	// (which returns a constant within a transaction) to precisely target
+	// only rows updated in THIS transaction, avoiding a resolved_by
+	// collision when the same actor resolves the same group twice.
 	if fpLabel != nil && status == "false_positive" && affected > 0 {
 		_, err = tx.ExecContext(ctx,
 			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
@@ -547,13 +548,13 @@ func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.U
 			 FROM scored_conflicts sc
 			 WHERE sc.group_id = ? AND sc.org_id = ?
 			   AND sc.status = 'false_positive'
-			   AND sc.resolved_by = ?
+			   AND sc.resolved_at = datetime('now')
 			 ON CONFLICT (scored_conflict_id) DO UPDATE SET
 			   label = excluded.label,
 			   labeled_by = excluded.labeled_by,
 			   labeled_at = excluded.labeled_at
 			 WHERE conflict_labels.org_id = excluded.org_id`,
-			*fpLabel, resolvedBy, uuidStr(groupID), uuidStr(orgID), resolvedBy,
+			*fpLabel, resolvedBy, uuidStr(groupID), uuidStr(orgID),
 		)
 		if err != nil {
 			return 0, fmt.Errorf("sqlite: label false positives in resolve group tx: %w", err)

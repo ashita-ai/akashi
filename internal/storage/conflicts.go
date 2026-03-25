@@ -1227,9 +1227,10 @@ func (db *DB) ResolveConflictGroup(
 	affected := int(tag.RowsAffected())
 
 	// Atomically label all just-resolved conflicts as false positives for
-	// ground truth training. The WHERE clause targets only rows updated in
-	// this transaction (status AND resolved_by AND group match), so
-	// previously resolved conflicts are never re-labeled.
+	// ground truth training. The WHERE clause uses resolved_at = now()
+	// (which returns a constant within a transaction) to precisely target
+	// only rows updated in THIS transaction, avoiding a resolved_by
+	// collision when the same actor resolves the same group twice.
 	if fpLabel != nil && status == "false_positive" && affected > 0 {
 		_, err = tx.Exec(ctx,
 			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
@@ -1237,13 +1238,13 @@ func (db *DB) ResolveConflictGroup(
 			 FROM scored_conflicts sc
 			 WHERE sc.group_id = $3 AND sc.org_id = $4
 			   AND sc.status = 'false_positive'
-			   AND sc.resolved_by = $5
+			   AND sc.resolved_at = now()
 			 ON CONFLICT (scored_conflict_id) DO UPDATE SET
 			   label = excluded.label,
 			   labeled_by = excluded.labeled_by,
 			   labeled_at = excluded.labeled_at
 			 WHERE conflict_labels.org_id = excluded.org_id`,
-			*fpLabel, resolvedBy, groupID, orgID, resolvedBy)
+			*fpLabel, resolvedBy, groupID, orgID)
 		if err != nil {
 			return 0, fmt.Errorf("storage: label false positives in resolve group tx: %w", err)
 		}

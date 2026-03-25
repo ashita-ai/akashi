@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"sync"
@@ -357,12 +358,29 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 
 		for _, d := range toEnrich {
 			g.Go(func() error {
+				// Bail early if the client disconnected or the request context
+				// was cancelled — avoids O(decisions*4) spurious DB calls and
+				// warning logs when the client hangs up mid-enrichment.
+				if gctx.Err() != nil {
+					return nil
+				}
+
 				decID := d.ID
 				var entry decisionEnrichment
+
+				// isContextErr returns true for context cancellation/deadline
+				// errors, which should not be logged as warnings since they
+				// simply mean the client went away.
+				isCtxErr := func(err error) bool {
+					return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+				}
 
 				// --- Revisions ---
 				revisions, err := h.db.GetDecisionRevisions(gctx, orgID, decID)
 				if err != nil {
+					if isCtxErr(err) {
+						return nil
+					}
 					if !isNotFoundError(err) {
 						h.logger.Warn("enrichment: failed to get revisions",
 							"decision_id", decID, "error", err)
@@ -374,6 +392,9 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 				} else {
 					revisions, filterErr := filterDecisionsByAccess(gctx, h.db, claims, revisions, h.grantCache)
 					if filterErr != nil {
+						if isCtxErr(filterErr) {
+							return nil
+						}
 						h.logger.Warn("enrichment: access filter failed for revisions",
 							"decision_id", decID, "error", filterErr)
 						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}, Degraded: true}
@@ -386,6 +407,9 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 				// --- Lineage (already org_id-scoped in the SQL query) ---
 				lineage, err := h.db.GetDecisionLineage(gctx, decID, orgID, 20)
 				if err != nil {
+					if isCtxErr(err) {
+						return nil
+					}
 					if !isNotFoundError(err) {
 						h.logger.Warn("enrichment: failed to get lineage",
 							"decision_id", decID, "error", err)
@@ -400,6 +424,9 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 				// Fetch one extra row beyond the cap so we can detect overflow.
 				conflicts, err := h.db.ListConflicts(gctx, orgID, storage.ConflictFilters{DecisionID: &decID}, maxEnrichmentConflicts+1, 0)
 				if err != nil {
+					if isCtxErr(err) {
+						return nil
+					}
 					if !isNotFoundError(err) {
 						h.logger.Warn("enrichment: failed to get conflicts",
 							"decision_id", decID, "error", err)
@@ -411,6 +438,9 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 				} else {
 					conflicts, filterErr := filterConflictsByAccess(gctx, h.db, claims, conflicts, h.grantCache)
 					if filterErr != nil {
+						if isCtxErr(filterErr) {
+							return nil
+						}
 						h.logger.Warn("enrichment: access filter failed for conflicts",
 							"decision_id", decID, "error", filterErr)
 						entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}, Degraded: true}
