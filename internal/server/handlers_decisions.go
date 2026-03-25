@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -727,6 +728,39 @@ func (h *Handlers) HandleVerifyDecision(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, r, http.StatusOK, resp)
+}
+
+// HandleListIntegrityViolations handles GET /v1/integrity/violations.
+// Returns recent integrity violations for the caller's organization, ordered
+// newest-first. This exposes the durable audit trail written by the background
+// integrity audit loop (auditIntegrityProofs). Admin-only because violations
+// indicate potential tampering and are part of incident response.
+func (h *Handlers) HandleListIntegrityViolations(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 200 {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "limit must be between 1 and 200")
+			return
+		}
+		limit = n
+	}
+
+	violations, err := h.db.GetIntegrityViolations(r.Context(), orgID, limit)
+	if err != nil {
+		h.writeInternalError(w, r, "failed to list integrity violations", err)
+		return
+	}
+	if violations == nil {
+		violations = []storage.IntegrityViolation{}
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"violations": violations,
+		"count":      len(violations),
+	})
 }
 
 // HandleTraceHealth handles GET /v1/trace-health.

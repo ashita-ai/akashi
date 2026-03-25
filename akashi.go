@@ -261,7 +261,8 @@ func New(opts ...Option) (*App, error) {
 	conflictScorer := conflicts.NewScorer(db, logger, cfg.ConflictSignificanceThreshold, conflictValidator, backfillWorkers, cfg.ConflictDecayLambda).
 		WithScoringThresholds(cfg.ConflictClaimTopicSimFloor, cfg.ConflictClaimDivFloor, cfg.ConflictDecisionTopicSimFloor).
 		WithCandidateLimit(cfg.ConflictCandidateLimit).
-		WithEarlyExitFloor(cfg.ConflictEarlyExitFloor)
+		WithEarlyExitFloor(cfg.ConflictEarlyExitFloor).
+		WithOutcomeSimFloor(cfg.ConflictOutcomeSimFloor)
 	if qdrantIndex != nil {
 		conflictScorer = conflictScorer.WithCandidateFinder(qdrantIndex)
 	}
@@ -961,6 +962,13 @@ func (a *App) verifyProofsForOrg(ctx context.Context, orgID uuid.UUID, proofs []
 				attribute.String("violation_type", "merkle_root_mismatch"),
 				attribute.String("sweep_type", sweepType),
 			))
+			a.persistViolation(ctx, orgID, p.ID, "merkle_root_mismatch", map[string]any{
+				"stored_root":    p.RootHash,
+				"decision_count": p.DecisionCount,
+				"batch_start":    p.BatchStart,
+				"batch_end":      p.BatchEnd,
+				"leaf_count":     len(hashes),
+			})
 		}
 		results = append(results, storage.IntegrityAuditResult{
 			OrgID: orgID, ProofID: p.ID, CheckType: "merkle_root",
@@ -982,6 +990,10 @@ func (a *App) verifyProofsForOrg(ctx context.Context, orgID uuid.UUID, proofs []
 					attribute.String("violation_type", "chain_linkage_broken"),
 					attribute.String("sweep_type", sweepType),
 				))
+				a.persistViolation(ctx, orgID, p.ID, "chain_linkage_nil_previous", map[string]any{
+					"older_proof_id": older.ID,
+					"older_root":     older.RootHash,
+				})
 			case *p.PreviousRoot != older.RootHash:
 				a.logger.Error("INTEGRITY VIOLATION: chain linkage broken — previous_root does not match prior proof",
 					"org_id", orgID, "proof_id", p.ID,
@@ -991,6 +1003,11 @@ func (a *App) verifyProofsForOrg(ctx context.Context, orgID uuid.UUID, proofs []
 					attribute.String("violation_type", "chain_linkage_broken"),
 					attribute.String("sweep_type", sweepType),
 				))
+				a.persistViolation(ctx, orgID, p.ID, "chain_linkage_broken", map[string]any{
+					"expected_previous": older.RootHash,
+					"actual_previous":   *p.PreviousRoot,
+					"older_proof_id":    older.ID,
+				})
 			default:
 				linkPassed = true
 			}
@@ -1002,6 +1019,55 @@ func (a *App) verifyProofsForOrg(ctx context.Context, orgID uuid.UUID, proofs []
 	}
 
 	return results
+}
+
+// persistViolation writes an integrity violation to the database with retry.
+// This is the durable counterpart to the INTEGRITY VIOLATION log messages —
+// the log is for operators, this record survives log rotation and is queryable
+// for incidents.
+//
+// Because the entire purpose of the violations table is to provide a durable
+// record that survives log rotation, a transient Postgres error (connection
+// blip, disk full) must not silently swallow the violation. We retry up to 3
+// times with exponential backoff before giving up. The violation payload is
+// small and the insert is idempotent (UUID is generated once, before retries).
+func (a *App) persistViolation(ctx context.Context, orgID, proofID uuid.UUID, violationType string, details map[string]any) {
+	v := storage.IntegrityViolation{
+		ID:            uuid.New(),
+		OrgID:         orgID,
+		ProofID:       proofID,
+		ViolationType: violationType,
+		Details:       details,
+		CreatedAt:     time.Now(),
+	}
+
+	const maxRetries = 3
+	backoff := 500 * time.Millisecond
+
+	var lastErr error
+	for attempt := range maxRetries {
+		if err := a.db.CreateIntegrityViolation(ctx, v); err != nil {
+			lastErr = err
+			a.logger.Warn("integrity audit: violation persist attempt failed, will retry",
+				"org_id", orgID, "proof_id", proofID, "violation_type", violationType,
+				"attempt", attempt+1, "max_retries", maxRetries, "error", err)
+
+			select {
+			case <-ctx.Done():
+				a.logger.Error("integrity audit: context cancelled during violation persist retry — violation detected but not durably stored",
+					"org_id", orgID, "proof_id", proofID, "violation_type", violationType, "error", ctx.Err())
+				return
+			case <-time.After(backoff):
+				backoff *= 2
+			}
+			continue
+		}
+		return // success
+	}
+
+	a.logger.Error("integrity audit: exhausted retries for violation persist — violation detected but not durably stored",
+		"org_id", orgID, "proof_id", proofID, "violation_type", violationType,
+		"attempts", maxRetries, "last_error", lastErr)
 }
 
 func (a *App) idempotencyCleanupLoop(ctx context.Context) {

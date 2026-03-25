@@ -1,4 +1,4 @@
-h1:9lsi0OToDWZb4H+fuiZnZSI1cCSOYc3Xjr3j5eOdyVk=
+h1:cmoRm+zw29uskEL32G9tclsuJivBCy+ba9f5nenPtBU=
 001_initial.sql h1:uhyGXto+QacAaGYb9ZTGjsBs5chlKi8O0eHz9aCQsrY=
 022_full_text_search.sql h1:9iwtA8MgCzAxDV9YkUBn0CLT9ePSmj3GcPoMGg8TXf0=
 023_fix_outbox_index.sql h1:OtMEFBcMRWej02+ghnBXlPr6BVq+LoA62Id9XUWfDNI=
@@ -56,4 +56,7 @@ h1:9lsi0OToDWZb4H+fuiZnZSI1cCSOYc3Xjr3j5eOdyVk=
 075_simplify_conflict_statuses.sql h1:OFBOEJ7TKmAsxFtTJL3JxkADIjrhsst/vshdahnrjZc=
 076_decision_claims_org_fk.sql h1:DjcXWVJwbgAcvtZJtaie3Grm0sttV5rP8EuOm5OAIIY=
 077_integrity_audit_results.sql h1:1jZ7u/cXMlsxWfFjyt78g3YGhPtDohj5mroI5Sat9wQ=
-078_conflict_project_columns.sql h1:IZF/yD0CA5aqxUfiiSfYHeOKF3nnwKqjLMRY0Sgv0pA=
+078_integrity_violations.sql h1:Q0B1rBnBDbQ941PZFU/AL0Tt08ZSvEI/M9zvczCQyj8=
+079_integrity_violations_immutability.sql h1:8VfkR6KngSMST7JTAyIlqpPCVNd7c7cKrsRJgk3kYmE=
+080_integrity_audit_results_immutability.sql h1:L+Km8jnamz618YOYGRYGQB+tWg4bVvx+sBrrxGNh7Bk=
+081_conflict_project_columns.sql h1:9Qzd9zgObpFQUZrPLUWRBkBJcJIN2D4STzqEs2zvC6I=

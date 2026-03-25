@@ -277,6 +277,9 @@ func (h *Handlers) HandleResolveConflictGroup(w http.ResponseWriter, r *http.Req
 	var fpLabel *string
 	if req.Status == "false_positive" {
 		label := "unrelated_false_positive"
+		if req.FalsePositiveLabel != nil && *req.FalsePositiveLabel == "related_not_contradicting" {
+			label = *req.FalsePositiveLabel
+		}
 		fpLabel = &label
 	}
 

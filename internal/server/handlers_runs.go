@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
@@ -412,7 +413,7 @@ func (h *Handlers) buildDecisionEnrichments(
 	var batchLineage map[uuid.UUID]storage.DecisionLineage
 	var batchConflicts map[uuid.UUID][]model.DecisionConflict
 	var batchConflictTotals map[uuid.UUID]int // pre-RBAC-filter counts
-	var lineageDegraded, conflictsDegraded bool
+	var lineageDegraded, conflictsDegraded atomic.Bool
 
 	g, gctx := errgroup.WithContext(ctx)
 
@@ -421,18 +422,24 @@ func (h *Handlers) buildDecisionEnrichments(
 		batchLineage, err = h.db.GetDecisionLineageBatch(gctx, decIDs, orgID, 20)
 		if err != nil {
 			h.logger.Warn("enrichment: batch lineage failed", "error", err)
-			lineageDegraded = true
+			lineageDegraded.Store(true)
 		}
 		return nil
 	})
 
 	g.Go(func() error {
-		raw, err := h.db.ListConflictsByDecisionIDs(gctx, orgID, decIDs, maxEnrichmentConflicts)
+		batchResult, err := h.db.ListConflictsByDecisionIDs(gctx, orgID, decIDs, maxEnrichmentConflicts)
 		if err != nil {
 			h.logger.Warn("enrichment: batch conflicts failed", "error", err)
-			conflictsDegraded = true
+			conflictsDegraded.Store(true)
 			return nil
 		}
+		if batchResult.GlobalTruncated {
+			h.logger.Warn("enrichment: batch conflicts hit global row cap — some decisions may have incomplete conflict lists",
+				"decision_count", len(decIDs))
+			conflictsDegraded.Store(true)
+		}
+		raw := batchResult.ByDecision
 		// Track pre-filter totals, then apply access filtering.
 		totals := make(map[uuid.UUID]int, len(raw))
 		for decID, conflicts := range raw {
@@ -441,7 +448,7 @@ func (h *Handlers) buildDecisionEnrichments(
 			if filterErr != nil {
 				h.logger.Warn("enrichment: access filter failed for batch conflicts",
 					"decision_id", decID, "error", filterErr)
-				conflictsDegraded = true
+				conflictsDegraded.Store(true)
 				continue
 			}
 			raw[decID] = filtered
@@ -463,8 +470,8 @@ func (h *Handlers) buildDecisionEnrichments(
 	for _, d := range toEnrich {
 		g2.Go(func() error {
 			entry := h.buildSingleEnrichment(gctx2, orgID, claims, d,
-				batchLineage, lineageDegraded,
-				batchConflicts, batchConflictTotals, conflictsDegraded)
+				batchLineage, &lineageDegraded,
+				batchConflicts, batchConflictTotals, &conflictsDegraded)
 			mu.Lock()
 			enrichments[d.ID.String()] = entry
 			mu.Unlock()
@@ -472,6 +479,12 @@ func (h *Handlers) buildDecisionEnrichments(
 		})
 	}
 
+	// Invariant: every goroutine in this errgroup returns nil — errors are
+	// logged and surfaced via per-decision degraded flags inside the closure,
+	// not propagated. We must still call Wait() to ensure all goroutines
+	// complete before reading enrichments. Do not add "return err" to the
+	// closure without also adding a response-level degraded signal, because
+	// errgroup.WithContext cancels gctx on the first non-nil error.
 	_ = g2.Wait()
 
 	// If the request was cancelled mid-flight, some enrichments may be
@@ -504,10 +517,10 @@ func (h *Handlers) buildSingleEnrichment(
 	claims *auth.Claims,
 	d model.Decision,
 	batchLineage map[uuid.UUID]storage.DecisionLineage,
-	lineageDegraded bool,
+	lineageDegraded *atomic.Bool,
 	batchConflicts map[uuid.UUID][]model.DecisionConflict,
 	batchConflictTotals map[uuid.UUID]int,
-	conflictsDegraded bool,
+	conflictsDegraded *atomic.Bool,
 ) decisionEnrichment {
 	decID := d.ID
 	var entry decisionEnrichment
@@ -542,7 +555,7 @@ func (h *Handlers) buildSingleEnrichment(
 
 	// --- Lineage (from batch result, then RBAC-filtered via FilterLineage) ---
 	switch {
-	case lineageDegraded:
+	case lineageDegraded.Load():
 		entry.Lineage = storage.DecisionLineage{DecisionID: decID}
 		entry.Degraded = true
 	case batchLineage != nil:
@@ -565,7 +578,7 @@ func (h *Handlers) buildSingleEnrichment(
 
 	// --- Conflicts (from batch result, already RBAC-filtered in Phase 1) ---
 	switch {
-	case conflictsDegraded:
+	case conflictsDegraded.Load():
 		entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}, Degraded: true}
 		entry.Degraded = true
 	case batchConflicts != nil:
