@@ -305,7 +305,7 @@ func (db *DB) GetConflict(ctx context.Context, id, orgID uuid.UUID) (*model.Deci
 // state and inserts a mutation audit entry, atomically in a single transaction.
 // winningDecisionID is optional; when provided it is written only for "resolved" transitions.
 // fpLabel is optional; when non-nil and status is "false_positive", a ground-truth
-// label is inserted in the same transaction — ensuring the label is never lost.
+// label is inserted atomically within the same transaction.
 func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, fpLabel *string, audit MutationAuditEntry) (oldStatus string, err error) {
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
@@ -355,18 +355,20 @@ func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.
 		return "", fmt.Errorf("storage: conflict: %w", ErrNotFound)
 	}
 
-	// Insert false_positive label atomically in the same transaction.
+	// Atomically label the conflict as a false positive for ground-truth
+	// training. Inserted in the same tx so a crash between status update
+	// and label insert can never leave an unlabeled false_positive.
 	if fpLabel != nil && status == "false_positive" {
-		if _, err := tx.Exec(ctx,
+		_, err = tx.Exec(ctx,
 			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
 			 VALUES ($1, $2, $3, $4, now())
-			 ON CONFLICT (scored_conflict_id)
-			 DO UPDATE SET label = EXCLUDED.label,
-			               labeled_by = EXCLUDED.labeled_by,
-			               labeled_at = EXCLUDED.labeled_at
-			 WHERE conflict_labels.org_id = EXCLUDED.org_id`,
-			id, orgID, *fpLabel, resolvedBy,
-		); err != nil {
+			 ON CONFLICT (scored_conflict_id) DO UPDATE SET
+			   label = excluded.label,
+			   labeled_by = excluded.labeled_by,
+			   labeled_at = excluded.labeled_at
+			 WHERE conflict_labels.org_id = excluded.org_id`,
+			id, orgID, *fpLabel, resolvedBy)
+		if err != nil {
 			return "", fmt.Errorf("storage: label false positive in conflict status tx: %w", err)
 		}
 	}
@@ -1129,8 +1131,8 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 // winningAgent does not match agent_a or agent_b in the group.
 //
 // When fpLabel is non-nil (status must be "false_positive"), ground truth
-// labels are inserted atomically in the same transaction — ensuring labels
-// are never lost if the process crashes after resolution.
+// labels are inserted atomically within the same transaction — preventing
+// partial-label states on crash. Returns the number of conflicts updated.
 func (db *DB) ResolveConflictGroup(
 	ctx context.Context,
 	groupID, orgID uuid.UUID,
@@ -1224,22 +1226,25 @@ func (db *DB) ResolveConflictGroup(
 
 	affected := int(tag.RowsAffected())
 
-	// Insert false_positive labels atomically in the same transaction.
-	// The bulk INSERT...SELECT matches all conflicts we just updated,
-	// ensuring no labels are lost if the process crashes after commit.
+	// Atomically label all just-resolved conflicts as false positives for
+	// ground truth training. The WHERE clause targets only rows updated in
+	// this transaction (status AND resolved_by AND group match), so
+	// previously resolved conflicts are never re-labeled.
 	if fpLabel != nil && status == "false_positive" && affected > 0 {
-		if _, err := tx.Exec(ctx,
+		_, err = tx.Exec(ctx,
 			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
-			 SELECT id, org_id, $1, $2, now()
-			 FROM scored_conflicts
-			 WHERE group_id = $3 AND org_id = $4 AND status = 'false_positive'
-			 ON CONFLICT (scored_conflict_id)
-			 DO UPDATE SET label = EXCLUDED.label,
-			               labeled_by = EXCLUDED.labeled_by,
-			               labeled_at = EXCLUDED.labeled_at
-			 WHERE conflict_labels.org_id = EXCLUDED.org_id`,
-			*fpLabel, resolvedBy, groupID, orgID,
-		); err != nil {
+			 SELECT sc.id, sc.org_id, $1, $2, now()
+			 FROM scored_conflicts sc
+			 WHERE sc.group_id = $3 AND sc.org_id = $4
+			   AND sc.status = 'false_positive'
+			   AND sc.resolved_by = $5
+			 ON CONFLICT (scored_conflict_id) DO UPDATE SET
+			   label = excluded.label,
+			   labeled_by = excluded.labeled_by,
+			   labeled_at = excluded.labeled_at
+			 WHERE conflict_labels.org_id = excluded.org_id`,
+			*fpLabel, resolvedBy, groupID, orgID, resolvedBy)
+		if err != nil {
 			return 0, fmt.Errorf("storage: label false positives in resolve group tx: %w", err)
 		}
 	}

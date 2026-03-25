@@ -1,7 +1,7 @@
 import { useParams, Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
-import { getRun, getDecision, getDecisionLineage, getDecisionRevisions, getDecisionConflicts, verifyDecisionIntegrity } from "@/lib/api";
-import type { Decision, DecisionConflict, LineageEntry } from "@/types/api";
+import { getRun, getDecision } from "@/lib/api";
+import type { Decision, DecisionConflict, DecisionEnrichments, LineageEntry } from "@/types/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge, decisionTypeBadgeVariant } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -25,8 +25,13 @@ import {
   Shield,
   ShieldCheck,
   ShieldX,
+  Trophy,
   XCircle,
 } from "lucide-react";
+
+// ---------------------------------------------------------------------------
+// Precedent link — still fetches individually (single lookup, not per-decision)
+// ---------------------------------------------------------------------------
 
 function PrecedentLink({ decisionId }: { decisionId: string }) {
   const { data, isPending, error } = useQuery({
@@ -57,6 +62,10 @@ function PrecedentLink({ decisionId }: { decisionId: string }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Evidence source colors
+// ---------------------------------------------------------------------------
+
 const evidenceSourceColors: Record<string, string> = {
   tool_output: "border-l-cyan-500/60",
   api_response: "border-l-blue-500/60",
@@ -68,23 +77,25 @@ const evidenceSourceColors: Record<string, string> = {
   database_query: "border-l-cyan-600/60",
 };
 
+// ---------------------------------------------------------------------------
+// Run status icons
+// ---------------------------------------------------------------------------
+
 const statusIcon = {
   running: <Clock className="h-4 w-4 text-amber-500" />,
   completed: <CheckCircle2 className="h-4 w-4 text-emerald-500" />,
   failed: <XCircle className="h-4 w-4 text-destructive" />,
 };
 
-function IntegrityBadge({ decisionId }: { decisionId: string }) {
-  const { data, isPending } = useQuery({
-    queryKey: ["integrity", decisionId],
-    queryFn: () => verifyDecisionIntegrity(decisionId),
-    staleTime: 60_000,
-  });
+// ---------------------------------------------------------------------------
+// Integrity badge — reads from pre-fetched enrichments
+// ---------------------------------------------------------------------------
 
-  if (isPending) return <Skeleton className="h-5 w-20 inline-block" />;
-  if (!data) return null;
+function IntegrityBadge({ enrichments }: { enrichments?: DecisionEnrichments }) {
+  if (!enrichments) return null;
+  const { status } = enrichments.integrity;
 
-  if (data.status === "verified") {
+  if (status === "verified") {
     return (
       <Badge variant="success" className="text-xs gap-1">
         <ShieldCheck className="h-3 w-3" />
@@ -92,7 +103,7 @@ function IntegrityBadge({ decisionId }: { decisionId: string }) {
       </Badge>
     );
   }
-  if (data.status === "tampered") {
+  if (status === "tampered") {
     return (
       <Badge variant="destructive" className="text-xs gap-1">
         <ShieldX className="h-3 w-3" />
@@ -108,33 +119,38 @@ function IntegrityBadge({ decisionId }: { decisionId: string }) {
   );
 }
 
-function RevisionChain({ decisionId }: { decisionId: string }) {
-  const { data, isPending } = useQuery({
-    queryKey: ["revisions", decisionId],
-    queryFn: () => getDecisionRevisions(decisionId),
-    staleTime: 30_000,
-  });
+// ---------------------------------------------------------------------------
+// Revision chain — reads from pre-fetched enrichments
+// ---------------------------------------------------------------------------
 
-  if (isPending) return <Skeleton className="h-24 w-full" />;
-  if (!data || data.count <= 1) return null;
+function RevisionChain({ enrichments }: { enrichments?: DecisionEnrichments }) {
+  if (!enrichments) return null;
+  const { items, count, degraded } = enrichments.revisions;
+  if (count <= 1 && !degraded) return null;
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-sm font-medium">
           <GitBranch className="h-4 w-4" />
-          Revision History ({data.count} versions)
+          Revision History ({count} versions)
         </CardTitle>
       </CardHeader>
       <CardContent>
+        {degraded && (
+          <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1 mb-3">
+            <AlertTriangle className="h-3 w-3" />
+            Revision data may be incomplete due to an authorization error.
+          </p>
+        )}
         <div className="relative space-y-3 pl-6 before:absolute before:left-[11px] before:top-2 before:h-[calc(100%-16px)] before:w-px before:bg-gradient-to-b before:from-primary/60 before:to-border">
-          {data.revisions.map((rev: Decision, idx: number) => (
+          {items.map((rev: Decision, idx: number) => (
             <div key={rev.id} className="relative">
               <div className="absolute -left-6 top-1 h-2.5 w-2.5 rounded-full border-2 border-background bg-primary" />
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
                   <Badge variant={idx === 0 ? "default" : "outline"} className="text-xs">
-                    {idx === 0 ? "Current" : `v${data.count - idx}`}
+                    {idx === 0 ? "Current" : `v${count - idx}`}
                   </Badge>
                   <span className="text-xs text-muted-foreground">
                     {formatDate(rev.valid_from)}
@@ -153,6 +169,10 @@ function RevisionChain({ decisionId }: { decisionId: string }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Conflict status helpers
+// ---------------------------------------------------------------------------
+
 const conflictStatusLabel: Record<string, string> = {
   open: "Open",
   resolved: "Resolved",
@@ -165,29 +185,32 @@ const conflictStatusVariant: Record<string, "warning" | "secondary" | "success" 
   false_positive: "outline",
 };
 
-function DecisionConflicts({ decisionId }: { decisionId: string }) {
-  const { data, isPending } = useQuery({
-    queryKey: ["decision-conflicts", decisionId],
-    queryFn: () => getDecisionConflicts(decisionId),
-    staleTime: 30_000,
-  });
+// ---------------------------------------------------------------------------
+// Decision conflicts — reads from pre-fetched enrichments
+// ---------------------------------------------------------------------------
 
-  if (isPending) return <Skeleton className="h-24 w-full" />;
-  if (!data || data.total === 0) return null;
+function DecisionConflicts({ decisionId, enrichments }: { decisionId: string; enrichments?: DecisionEnrichments }) {
+  if (!enrichments) return null;
+  const { items, count, has_more, degraded } = enrichments.conflicts;
+  if (count === 0 && !degraded) return null;
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-sm font-medium">
           <AlertTriangle className="h-4 w-4 text-amber-500" />
-          Related Conflicts ({data.total})
+          Related Conflicts ({count})
         </CardTitle>
       </CardHeader>
       <CardContent>
+        {degraded && (
+          <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1 mb-3">
+            <AlertTriangle className="h-3 w-3" />
+            Conflict data may be incomplete due to an authorization error.
+          </p>
+        )}
         <div className="space-y-3">
-          {data.conflicts.map((c: DecisionConflict) => {
-            // Identify which side is "this" decision so we can show
-            // what the OTHER decision said — otherwise all rows look identical.
+          {items.map((c: DecisionConflict) => {
             const isA = c.decision_a_id === decisionId;
             const otherAgent = isA ? c.agent_b : c.agent_a;
             const otherOutcome = isA ? c.outcome_b : c.outcome_a;
@@ -231,11 +254,20 @@ function DecisionConflicts({ decisionId }: { decisionId: string }) {
               </div>
             );
           })}
+          {has_more && (
+            <p className="text-xs text-muted-foreground italic text-center pt-2">
+              More conflicts exist than are shown here.
+            </p>
+          )}
         </div>
       </CardContent>
     </Card>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Lineage entry row
+// ---------------------------------------------------------------------------
 
 function LineageEntryRow({ entry }: { entry: LineageEntry }) {
   return (
@@ -272,15 +304,14 @@ function LineageEntryRow({ entry }: { entry: LineageEntry }) {
   );
 }
 
-function DecisionLineage({ decisionId }: { decisionId: string }) {
-  const { data, isPending } = useQuery({
-    queryKey: ["lineage", decisionId],
-    queryFn: () => getDecisionLineage(decisionId),
-    staleTime: 60_000,
-  });
+// ---------------------------------------------------------------------------
+// Decision lineage — reads from pre-fetched enrichments
+// ---------------------------------------------------------------------------
 
-  if (isPending) return <Skeleton className="h-24 w-full" />;
-  if (!data || (!data.preceded_by && (!data.cited_by || data.cited_by.length === 0))) return null;
+function DecisionLineageSection({ enrichments }: { enrichments?: DecisionEnrichments }) {
+  if (!enrichments) return null;
+  const lineage = enrichments.lineage;
+  if (!lineage.preceded_by && (!lineage.cited_by || lineage.cited_by.length === 0)) return null;
 
   return (
     <Card>
@@ -291,30 +322,28 @@ function DecisionLineage({ decisionId }: { decisionId: string }) {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Preceded by */}
         <div>
           <h4 className="text-xs font-medium text-muted-foreground mb-2">Preceded by</h4>
-          {data.preceded_by ? (
-            <LineageEntryRow entry={data.preceded_by} />
+          {lineage.preceded_by ? (
+            <LineageEntryRow entry={lineage.preceded_by} />
           ) : (
             <p className="text-xs text-muted-foreground italic">No precedents recorded</p>
           )}
         </div>
 
-        {/* Cited by */}
         <div>
           <h4 className="text-xs font-medium text-muted-foreground mb-2">
             Cited by
-            {data.cited_by && data.cited_by.length > 0 && (
-              <span className="ml-1 text-foreground">({data.cited_by.length}{data.cited_by_has_more ? "+" : ""})</span>
+            {lineage.cited_by && lineage.cited_by.length > 0 && (
+              <span className="ml-1 text-foreground">({lineage.cited_by.length}{lineage.cited_by_has_more ? "+" : ""})</span>
             )}
           </h4>
-          {data.cited_by && data.cited_by.length > 0 ? (
+          {lineage.cited_by && lineage.cited_by.length > 0 ? (
             <div className="space-y-2">
-              {data.cited_by.map((entry) => (
+              {lineage.cited_by.map((entry) => (
                 <LineageEntryRow key={entry.id} entry={entry} />
               ))}
-              {data.cited_by_has_more && (
+              {lineage.cited_by_has_more && (
                 <p className="text-xs text-muted-foreground italic text-center pt-1">
                   More citations exist
                 </p>
@@ -329,11 +358,14 @@ function DecisionLineage({ decisionId }: { decisionId: string }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Session context
+// ---------------------------------------------------------------------------
+
 function SessionContext({ decision }: { decision: Decision }) {
   const ctx = decision.metadata as Record<string, unknown> | null;
   if (!ctx) return null;
 
-  // Extract agent_context fields (session_id, tool, model, project)
   const agentContext = ctx.agent_context as Record<string, unknown> | undefined;
   const sessionId = (ctx.session_id ?? agentContext?.session_id) as string | undefined;
   const tool = agentContext?.tool as string | undefined;
@@ -375,12 +407,88 @@ function SessionContext({ decision }: { decision: Decision }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Outcome signals card — assessment summary, conflict fate, citation count,
+// supersession velocity, consensus counts
+// ---------------------------------------------------------------------------
+
+function OutcomeSignals({ decision }: { decision: Decision }) {
+  const hasFate = decision.conflict_fate && (decision.conflict_fate.won > 0 || decision.conflict_fate.lost > 0 || decision.conflict_fate.resolved_no_winner > 0);
+  const hasAssessment = decision.assessment_summary && decision.assessment_summary.total > 0;
+  const hasCitations = (decision.precedent_citation_count ?? 0) > 0;
+  const hasSupersession = decision.supersession_velocity != null;
+  const hasConsensus = (decision.agreement_count ?? 0) > 0 || (decision.conflict_count ?? 0) > 0;
+
+  if (!hasFate && !hasAssessment && !hasCitations && !hasSupersession && !hasConsensus) return null;
+
+  return (
+    <div className="space-y-2">
+      <h4 className="text-xs font-medium text-muted-foreground mb-1">Outcome Signals</h4>
+      <div className="flex flex-wrap gap-3">
+        {/* Assessment summary */}
+        {hasAssessment && (
+          <div className="flex items-center gap-1.5 text-xs">
+            <Trophy className="h-3 w-3 text-amber-500" />
+            <span>
+              {decision.assessment_summary!.correct} correct
+              {decision.assessment_summary!.incorrect > 0 && `, ${decision.assessment_summary!.incorrect} incorrect`}
+              {decision.assessment_summary!.partially_correct > 0 && `, ${decision.assessment_summary!.partially_correct} partial`}
+              <span className="text-muted-foreground ml-1">({decision.assessment_summary!.total} total)</span>
+            </span>
+          </div>
+        )}
+
+        {/* Conflict fate */}
+        {hasFate && (
+          <div className="flex items-center gap-1.5 text-xs">
+            <span className="font-medium">Conflict record:</span>
+            <span className="text-emerald-600">{decision.conflict_fate!.won}W</span>
+            <span className="text-destructive">{decision.conflict_fate!.lost}L</span>
+            {decision.conflict_fate!.resolved_no_winner > 0 && (
+              <span className="text-muted-foreground">{decision.conflict_fate!.resolved_no_winner}D</span>
+            )}
+          </div>
+        )}
+
+        {/* Citation count */}
+        {hasCitations && (
+          <div className="text-xs">
+            <span className="font-medium">Cited {decision.precedent_citation_count} time{decision.precedent_citation_count !== 1 ? "s" : ""}</span>
+          </div>
+        )}
+
+        {/* Supersession velocity */}
+        {hasSupersession && (
+          <div className="text-xs text-muted-foreground">
+            Superseded after {decision.supersession_velocity! < 1
+              ? `${Math.round(decision.supersession_velocity! * 60)}m`
+              : `${decision.supersession_velocity!.toFixed(1)}h`}
+          </div>
+        )}
+
+        {/* Consensus counts */}
+        {hasConsensus && (
+          <div className="text-xs text-muted-foreground">
+            {(decision.agreement_count ?? 0) > 0 && <span className="text-emerald-600">{decision.agreement_count} agree</span>}
+            {(decision.agreement_count ?? 0) > 0 && (decision.conflict_count ?? 0) > 0 && " / "}
+            {(decision.conflict_count ?? 0) > 0 && <span className="text-amber-600">{decision.conflict_count} conflict</span>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main page component
+// ---------------------------------------------------------------------------
+
 export default function DecisionDetail() {
   const { runId } = useParams<{ runId: string }>();
 
   const { data: run, isPending, error } = useQuery({
     queryKey: ["run", runId],
-    queryFn: () => getRun(runId!),
+    queryFn: () => getRun(runId!, { includeEnrichments: true }),
     enabled: !!runId,
   });
 
@@ -406,6 +514,8 @@ export default function DecisionDetail() {
       </div>
     );
   }
+
+  const enrichmentsMap = run.decision_enrichments;
 
   return (
     <div className="space-y-8 animate-page">
@@ -502,166 +612,204 @@ export default function DecisionDetail() {
         </Card>
       )}
 
+      {/* Decision truncation warning */}
+      {run.truncated_decisions && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950 p-3 flex items-center gap-2 text-sm text-amber-700 dark:text-amber-300">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          Showing {run.decisions?.length} of {run.total_decisions} decisions. The full set exceeds the display limit.
+        </div>
+      )}
+
+      {/* Enrichment truncation warning */}
+      {run.truncated_enrichments && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950 p-3 flex items-center gap-2 text-sm text-amber-700 dark:text-amber-300">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          Enrichments were computed for the first {run.enriched_count} of {run.total_decisions ?? run.decisions?.length} decisions.
+        </div>
+      )}
+
       {/* Decisions */}
       {run.decisions && run.decisions.length > 0 && (
         <>
-          {run.decisions.map((decision) => (
-            <Card key={decision.id}>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm font-medium">
-                    Decision: {decision.decision_type}
-                  </CardTitle>
-                  <div className="flex items-center gap-2">
-                    <IntegrityBadge decisionId={decision.id} />
-                    <Badge variant={decisionTypeBadgeVariant(decision.decision_type)}>
-                      {(decision.confidence * 100).toFixed(0)}% confidence
-                    </Badge>
+          {run.decisions.map((decision) => {
+            const enrichments = enrichmentsMap?.[decision.id];
+            return (
+              <Card key={decision.id}>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm font-medium">
+                      Decision: {decision.decision_type}
+                    </CardTitle>
+                    <div className="flex items-center gap-2">
+                      <IntegrityBadge enrichments={enrichments} />
+                      <Badge variant={decisionTypeBadgeVariant(decision.decision_type)}>
+                        {(decision.confidence * 100).toFixed(0)}% confidence
+                      </Badge>
+                    </div>
                   </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div>
-                  <h4 className="text-xs font-medium text-muted-foreground mb-1">
-                    Outcome
-                  </h4>
-                  <p className="text-sm">{decision.outcome}</p>
-                </div>
-
-                {/* Decision metadata */}
-                <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
-                  {decision.project && (
-                    <div>
-                      <dt className="text-xs text-muted-foreground">Project</dt>
-                      <dd className="font-mono text-xs">{decision.project}</dd>
-                    </div>
-                  )}
-                  <div>
-                    <dt className="text-xs text-muted-foreground">Completeness</dt>
-                    <dd className="font-mono text-xs">{(decision.completeness_score * 100).toFixed(0)}%</dd>
-                  </div>
-                  {decision.outcome_score != null && (
-                    <div>
-                      <dt className="text-xs text-muted-foreground">Outcome Score</dt>
-                      <dd className="font-mono text-xs">{(decision.outcome_score * 100).toFixed(0)}%</dd>
-                    </div>
-                  )}
-                  <div>
-                    <dt className="text-xs text-muted-foreground">Valid From</dt>
-                    <dd className="text-xs">{formatDate(decision.valid_from)}</dd>
-                  </div>
-                  {decision.valid_to && (
-                    <div>
-                      <dt className="text-xs text-muted-foreground">Valid To</dt>
-                      <dd className="text-xs">{formatDate(decision.valid_to)}</dd>
-                    </div>
-                  )}
-                  {decision.precedent_ref && (
-                    <div className="col-span-2">
-                      <dt className="text-xs text-muted-foreground">Precedent</dt>
-                      <dd><PrecedentLink decisionId={decision.precedent_ref} /></dd>
-                    </div>
-                  )}
-                </div>
-
-                {decision.reasoning && (
+                </CardHeader>
+                <CardContent className="space-y-4">
                   <div>
                     <h4 className="text-xs font-medium text-muted-foreground mb-1">
-                      Reasoning
+                      Outcome
                     </h4>
-                    <p className="text-sm whitespace-pre-wrap">
-                      {decision.reasoning}
-                    </p>
+                    <p className="text-sm">{decision.outcome}</p>
                   </div>
-                )}
 
-                {/* Session context */}
-                <SessionContext decision={decision} />
+                  {/* Decision metadata grid */}
+                  <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
+                    {decision.project && (
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Project</dt>
+                        <dd className="font-mono text-xs">{decision.project}</dd>
+                      </div>
+                    )}
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Completeness</dt>
+                      <dd className="font-mono text-xs">{(decision.completeness_score * 100).toFixed(0)}%</dd>
+                    </div>
+                    {decision.outcome_score != null && (
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Outcome Score</dt>
+                        <dd className="font-mono text-xs">{(decision.outcome_score * 100).toFixed(0)}%</dd>
+                      </div>
+                    )}
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Valid From</dt>
+                      <dd className="text-xs">{formatDate(decision.valid_from)}</dd>
+                    </div>
+                    {decision.valid_to && (
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Valid To</dt>
+                        <dd className="text-xs">{formatDate(decision.valid_to)}</dd>
+                      </div>
+                    )}
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Transaction Time</dt>
+                      <dd className="text-xs">{formatDate(decision.transaction_time)}</dd>
+                    </div>
+                    {enrichments?.integrity.content_hash && (
+                      <div className="col-span-2">
+                        <dt className="text-xs text-muted-foreground">Content Hash</dt>
+                        <dd className="font-mono text-[10px] text-muted-foreground break-all">{enrichments.integrity.content_hash}</dd>
+                      </div>
+                    )}
+                    {decision.precedent_ref && (
+                      <div className="col-span-2">
+                        <dt className="text-xs text-muted-foreground">Precedent</dt>
+                        <dd><PrecedentLink decisionId={decision.precedent_ref} /></dd>
+                      </div>
+                    )}
+                    {decision.precedent_reason && (
+                      <div className="col-span-2">
+                        <dt className="text-xs text-muted-foreground">Precedent Reason</dt>
+                        <dd className="text-xs">{decision.precedent_reason}</dd>
+                      </div>
+                    )}
+                  </div>
 
-                {/* Alternatives */}
-                {decision.alternatives && decision.alternatives.length > 0 && (
-                  <div>
-                    <h4 className="text-xs font-medium text-muted-foreground mb-2">
-                      Alternatives
-                    </h4>
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Option</TableHead>
-                          <TableHead>Rejection Reason</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {decision.alternatives.map((alt) => (
-                          <TableRow key={alt.id}>
-                            <TableCell className="font-medium">
-                              {alt.label}
-                            </TableCell>
-                            <TableCell className="text-sm text-muted-foreground">
-                              {alt.rejection_reason ?? "\u2014"}
-                            </TableCell>
+                  {/* Outcome signals */}
+                  <OutcomeSignals decision={decision} />
+
+                  {decision.reasoning && (
+                    <div>
+                      <h4 className="text-xs font-medium text-muted-foreground mb-1">
+                        Reasoning
+                      </h4>
+                      <p className="text-sm whitespace-pre-wrap">
+                        {decision.reasoning}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Session context */}
+                  <SessionContext decision={decision} />
+
+                  {/* Alternatives */}
+                  {decision.alternatives && decision.alternatives.length > 0 && (
+                    <div>
+                      <h4 className="text-xs font-medium text-muted-foreground mb-2">
+                        Alternatives
+                      </h4>
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Option</TableHead>
+                            <TableHead>Rejection Reason</TableHead>
                           </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                )}
+                        </TableHeader>
+                        <TableBody>
+                          {decision.alternatives.map((alt) => (
+                            <TableRow key={alt.id}>
+                              <TableCell className="font-medium">
+                                {alt.label}
+                              </TableCell>
+                              <TableCell className="text-sm text-muted-foreground">
+                                {alt.rejection_reason ?? "\u2014"}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
 
-                {/* Evidence */}
-                {decision.evidence && decision.evidence.length > 0 && (
-                  <div>
-                    <h4 className="text-xs font-medium text-muted-foreground mb-2">
-                      Evidence
-                    </h4>
-                    <div className="space-y-2">
-                      {decision.evidence.map((ev) => (
-                        <div
-                          key={ev.id}
-                          className={cn("rounded-md border border-l-[3px] p-3 text-sm", evidenceSourceColors[ev.source_type] ?? "border-l-border")}
-                        >
-                          <div className="flex items-center gap-2 mb-1">
-                            <Badge variant="outline" className="text-xs">
-                              {ev.source_type}
-                            </Badge>
-                            {ev.relevance_score != null && (
-                              <span className="text-xs text-muted-foreground">
-                                relevance:{" "}
-                                {(ev.relevance_score * 100).toFixed(0)}%
-                              </span>
+                  {/* Evidence */}
+                  {decision.evidence && decision.evidence.length > 0 && (
+                    <div>
+                      <h4 className="text-xs font-medium text-muted-foreground mb-2">
+                        Evidence
+                      </h4>
+                      <div className="space-y-2">
+                        {decision.evidence.map((ev) => (
+                          <div
+                            key={ev.id}
+                            className={cn("rounded-md border border-l-[3px] p-3 text-sm", evidenceSourceColors[ev.source_type] ?? "border-l-border")}
+                          >
+                            <div className="flex items-center gap-2 mb-1">
+                              <Badge variant="outline" className="text-xs">
+                                {ev.source_type}
+                              </Badge>
+                              {ev.relevance_score != null && (
+                                <span className="text-xs text-muted-foreground">
+                                  relevance:{" "}
+                                  {(ev.relevance_score * 100).toFixed(0)}%
+                                </span>
+                              )}
+                            </div>
+                            {["tool_output", "api_response", "database_query"].includes(ev.source_type)
+                              ? (
+                                <pre className="mt-2 rounded-md bg-muted px-3 py-2 text-xs font-mono overflow-x-auto whitespace-pre-wrap leading-relaxed">
+                                  {ev.content}
+                                </pre>
+                              )
+                              : (
+                                <p className="mt-1 whitespace-pre-wrap text-sm">{ev.content}</p>
+                              )
+                            }
+                            {ev.source_uri && (
+                              <p className="mt-1 text-xs text-muted-foreground font-mono">
+                                {ev.source_uri}
+                              </p>
                             )}
                           </div>
-                          {["tool_output", "api_response", "database_query"].includes(ev.source_type)
-                            ? (
-                              <pre className="mt-2 rounded-md bg-muted px-3 py-2 text-xs font-mono overflow-x-auto whitespace-pre-wrap leading-relaxed">
-                                {ev.content}
-                              </pre>
-                            )
-                            : (
-                              <p className="mt-1 whitespace-pre-wrap text-sm">{ev.content}</p>
-                            )
-                          }
-                          {ev.source_uri && (
-                            <p className="mt-1 text-xs text-muted-foreground font-mono">
-                              {ev.source_uri}
-                            </p>
-                          )}
-                        </div>
-                      ))}
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
 
-                {/* Revision chain */}
-                <RevisionChain decisionId={decision.id} />
+                  {/* Revision chain */}
+                  <RevisionChain enrichments={enrichments} />
 
-                {/* Lineage: precedent chain */}
-                <DecisionLineage decisionId={decision.id} />
+                  {/* Lineage */}
+                  <DecisionLineageSection enrichments={enrichments} />
 
-                {/* Related conflicts */}
-                <DecisionConflicts decisionId={decision.id} />
-              </CardContent>
-            </Card>
-          ))}
+                  {/* Related conflicts */}
+                  <DecisionConflicts decisionId={decision.id} enrichments={enrichments} />
+                </CardContent>
+              </Card>
+            );
+          })}
         </>
       )}
     </div>

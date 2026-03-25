@@ -348,8 +348,8 @@ func (l *LiteDB) GetConflict(ctx context.Context, id, orgID uuid.UUID) (*model.D
 
 // UpdateConflictStatusWithAudit transitions a conflict to a new lifecycle state.
 // When fpLabel is non-nil and status is "false_positive", a ground-truth label
-// is inserted in the same transaction.
-func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, fpLabel *string, _ storage.MutationAuditEntry) (string, error) {
+// is inserted atomically within the same transaction.
+func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, fpLabel *string, audit storage.MutationAuditEntry) (string, error) {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", fmt.Errorf("sqlite: begin conflict status tx: %w", err)
@@ -397,21 +397,34 @@ func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uu
 		return "", fmt.Errorf("sqlite: update conflict status: %w", err)
 	}
 
-	// Insert false_positive label atomically in the same transaction.
+	// Atomically label the conflict as a false positive for ground-truth training.
 	if fpLabel != nil && status == "false_positive" {
 		_, err = tx.ExecContext(ctx,
 			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
 			 VALUES (?, ?, ?, ?, datetime('now'))
-			 ON CONFLICT (scored_conflict_id)
-			 DO UPDATE SET label = excluded.label,
-			               labeled_by = excluded.labeled_by,
-			               labeled_at = excluded.labeled_at
+			 ON CONFLICT (scored_conflict_id) DO UPDATE SET
+			   label = excluded.label,
+			   labeled_by = excluded.labeled_by,
+			   labeled_at = excluded.labeled_at
 			 WHERE conflict_labels.org_id = excluded.org_id`,
 			uuidStr(id), uuidStr(orgID), *fpLabel, resolvedBy,
 		)
 		if err != nil {
 			return "", fmt.Errorf("sqlite: label false positive in conflict status tx: %w", err)
 		}
+	}
+
+	audit.BeforeData = map[string]any{"status": oldStatus}
+	afterData := map[string]any{"status": status, "resolved_by": resolvedBy}
+	if winningDecisionID != nil && status == "resolved" {
+		afterData["winning_decision_id"] = winningDecisionID.String()
+	}
+	if fpLabel != nil {
+		afterData["fp_label"] = *fpLabel
+	}
+	audit.AfterData = afterData
+	if err := insertAuditTx(ctx, tx, audit); err != nil {
+		return "", fmt.Errorf("sqlite: audit in conflict status tx: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -423,7 +436,7 @@ func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uu
 // ResolveConflictGroup atomically resolves all open conflicts in a group.
 // Validates winningAgent against the group's agent pair. When fpLabel is
 // non-nil (status must be "false_positive"), ground truth labels are inserted
-// in the same transaction.
+// atomically within the same transaction.
 func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningAgent *string, fpLabel *string, audit storage.MutationAuditEntry) (int, error) {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -523,26 +536,30 @@ func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.U
 
 	affected, _ := result.RowsAffected()
 
-	// Insert false_positive labels atomically in the same transaction.
+	// Atomically label all just-resolved conflicts as false positives for
+	// ground truth training. The WHERE clause targets only rows updated in
+	// this transaction (status AND resolved_by AND group match), so
+	// previously resolved conflicts are never re-labeled.
 	if fpLabel != nil && status == "false_positive" && affected > 0 {
 		_, err = tx.ExecContext(ctx,
 			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
-			 SELECT id, org_id, ?, ?, datetime('now')
-			 FROM scored_conflicts
-			 WHERE group_id = ? AND org_id = ? AND status = 'false_positive'
-			 ON CONFLICT (scored_conflict_id)
-			 DO UPDATE SET label = excluded.label,
-			               labeled_by = excluded.labeled_by,
-			               labeled_at = excluded.labeled_at
+			 SELECT sc.id, sc.org_id, ?, ?, datetime('now')
+			 FROM scored_conflicts sc
+			 WHERE sc.group_id = ? AND sc.org_id = ?
+			   AND sc.status = 'false_positive'
+			   AND sc.resolved_by = ?
+			 ON CONFLICT (scored_conflict_id) DO UPDATE SET
+			   label = excluded.label,
+			   labeled_by = excluded.labeled_by,
+			   labeled_at = excluded.labeled_at
 			 WHERE conflict_labels.org_id = excluded.org_id`,
-			*fpLabel, resolvedBy, uuidStr(groupID), uuidStr(orgID),
+			*fpLabel, resolvedBy, uuidStr(groupID), uuidStr(orgID), resolvedBy,
 		)
 		if err != nil {
 			return 0, fmt.Errorf("sqlite: label false positives in resolve group tx: %w", err)
 		}
 	}
 
-	// Record the mutation audit entry.
 	audit.BeforeData = map[string]any{"group_id": groupID.String(), "open_count": int(affected)}
 	afterData := map[string]any{"status": status, "resolved_by": resolvedBy, "resolved_count": int(affected)}
 	if winningAgent != nil {

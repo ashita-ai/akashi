@@ -4138,7 +4138,6 @@ func TestUpdateConflictStatusWithAudit(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestInsertEventsIdempotent(t *testing.T) {
-	t.Skip("agent_events hypertable lacks unique constraint on id; ON CONFLICT (id) DO NOTHING fails — pre-existing schema gap")
 	ctx := context.Background()
 	suffix := uuid.New().String()[:8]
 	agentID := "idem-evt-" + suffix
@@ -5404,10 +5403,8 @@ func TestBatchDeleteDecisions_NothingToDelete(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // NOTE: TestInsertEventsIdempotent_NewEvents, _DuplicatesSafe, and _PartialDuplicate
-// are omitted because InsertEventsIdempotent has a production bug: it uses
-// ON CONFLICT (id) but the agent_events hypertable's primary key is (id, occurred_at).
-// PostgreSQL requires the ON CONFLICT columns to match a unique constraint exactly.
-// See events.go line 163. Once that bug is fixed, these tests should be restored.
+// are covered by TestInsertEventsIdempotent, _WithDuplicates, and _SingleEvent.
+// The ON CONFLICT (id, occurred_at) clause now matches the composite PK.
 
 func TestInsertEventsIdempotent_EmptySlice(t *testing.T) {
 	ctx := context.Background()
@@ -8295,11 +8292,85 @@ func TestGetActiveAPIKeysByAgentIDGlobal_NoMatch(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestInsertEventsIdempotent_WithDuplicates(t *testing.T) {
-	t.Skip("agent_events hypertable lacks unique constraint on id; ON CONFLICT (id) DO NOTHING fails — pre-existing schema gap")
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "idem-dup-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	events := make([]model.AgentEvent, 3)
+	for i := range events {
+		events[i] = model.AgentEvent{
+			ID:          uuid.New(),
+			RunID:       run.ID,
+			EventType:   model.EventToolCallCompleted,
+			SequenceNum: int64(i + 1),
+			OccurredAt:  now,
+			AgentID:     agentID,
+			Payload:     map[string]any{"step": i},
+			CreatedAt:   now,
+		}
+	}
+
+	// Insert original events.
+	inserted, err := testDB.InsertEventsIdempotent(ctx, events)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), inserted)
+
+	// Mix duplicates with one new event.
+	newEvent := model.AgentEvent{
+		ID:          uuid.New(),
+		RunID:       run.ID,
+		EventType:   model.EventToolCallCompleted,
+		SequenceNum: 4,
+		OccurredAt:  now,
+		AgentID:     agentID,
+		Payload:     map[string]any{"step": 3},
+		CreatedAt:   now,
+	}
+	mixed := make([]model.AgentEvent, len(events)+1)
+	copy(mixed, events)
+	mixed[len(events)] = newEvent
+
+	inserted2, err := testDB.InsertEventsIdempotent(ctx, mixed)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), inserted2, "only the new event should be inserted")
+
+	got, err := testDB.GetEventsByRun(ctx, run.OrgID, run.ID, 0)
+	require.NoError(t, err)
+	assert.Len(t, got, 4)
 }
 
 func TestInsertEventsIdempotent_SingleEvent(t *testing.T) {
-	t.Skip("agent_events hypertable lacks unique constraint on id; ON CONFLICT (id) DO NOTHING fails — pre-existing schema gap")
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "idem-single-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	event := model.AgentEvent{
+		ID:          uuid.New(),
+		RunID:       run.ID,
+		EventType:   model.EventToolCallCompleted,
+		SequenceNum: 1,
+		OccurredAt:  now,
+		AgentID:     agentID,
+		Payload:     map[string]any{"step": 0},
+		CreatedAt:   now,
+	}
+
+	inserted, err := testDB.InsertEventsIdempotent(ctx, []model.AgentEvent{event})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), inserted)
+
+	// Re-insert same event.
+	inserted2, err := testDB.InsertEventsIdempotent(ctx, []model.AgentEvent{event})
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), inserted2, "duplicate should be skipped")
 }
 
 // ---------------------------------------------------------------------------

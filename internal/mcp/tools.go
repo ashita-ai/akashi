@@ -1549,8 +1549,7 @@ func (s *Server) resolveSingleConflict(
 					"group_id", conflict.GroupID,
 					"error", cascadeErr,
 				)
-			}
-			if cascaded > 0 {
+			} else if cascaded > 0 {
 				s.logger.Info("mcp: resolution cascade resolved conflicts",
 					"trigger_conflict_id", conflictID,
 					"group_id", conflict.GroupID,
