@@ -173,6 +173,43 @@ func TestLoad_WALDisableOverridesExplicitDir(t *testing.T) {
 	}
 }
 
+func TestValidate_EmptyWALDirWithoutDisable(t *testing.T) {
+	// A Config with WALDir="" and WALDisable=false should fail validation.
+	// Through Load(), envStr prevents this — this tests the belt-and-suspenders
+	// guard in Validate that catches programmatic Config construction.
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() for baseline config failed: %v", err)
+	}
+
+	// Simulate the unsafe state: WAL dir cleared without the disable flag.
+	cfg.WALDir = ""
+	cfg.WALDisable = false
+
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("expected Validate() to fail when WALDir is empty and WALDisable is false")
+	}
+	if !contains(err.Error(), "WAL is required") {
+		t.Fatalf("error should mention WAL requirement, got: %s", err.Error())
+	}
+}
+
+func TestValidate_EmptyWALDirWithDisable(t *testing.T) {
+	// WALDir="" + WALDisable=true is the legitimate opt-out path.
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() for baseline config failed: %v", err)
+	}
+
+	cfg.WALDir = ""
+	cfg.WALDisable = true
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected Validate() to succeed when WAL is explicitly disabled, got: %v", err)
+	}
+}
+
 func floatClose(a, b, eps float64) bool {
 	return math.Abs(a-b) < eps
 }
@@ -788,6 +825,7 @@ func validBaseConfig() Config {
 		RateLimitEnabled:           true,
 		RateLimitRPS:               100,
 		RateLimitBurst:             200,
+		WALDir:                     "./data/wal",
 	}
 }
 
