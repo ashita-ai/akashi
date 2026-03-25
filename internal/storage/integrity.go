@@ -120,6 +120,44 @@ func (db *DB) GetDecisionHashesForBatch(ctx context.Context, orgID uuid.UUID, si
 	return hashes, rows.Err()
 }
 
+// IntegrityAuditResult records the outcome of a single integrity check
+// (Merkle root verification or chain linkage verification) for a proof.
+type IntegrityAuditResult struct {
+	ID        uuid.UUID
+	OrgID     uuid.UUID
+	ProofID   uuid.UUID
+	CheckType string // "merkle_root" or "chain_linkage"
+	Passed    bool
+	SweepType string // "sample" or "full"
+	Detail    string // human-readable context on failure
+	CheckedAt time.Time
+}
+
+// InsertIntegrityAuditResults batch-inserts audit results. Each row records
+// whether a specific integrity check passed or failed, providing a durable
+// paper trail that survives log rotation.
+func (db *DB) InsertIntegrityAuditResults(ctx context.Context, results []IntegrityAuditResult) error {
+	if len(results) == 0 {
+		return nil
+	}
+	_, err := db.pool.CopyFrom(ctx,
+		pgx.Identifier{"integrity_audit_results"},
+		[]string{"id", "org_id", "proof_id", "check_type", "passed", "sweep_type", "detail", "checked_at"},
+		pgx.CopyFromSlice(len(results), func(i int) ([]any, error) {
+			r := results[i]
+			id := r.ID
+			if id == uuid.Nil {
+				id = uuid.New()
+			}
+			return []any{id, r.OrgID, r.ProofID, r.CheckType, r.Passed, r.SweepType, r.Detail, r.CheckedAt}, nil
+		}),
+	)
+	if err != nil {
+		return fmt.Errorf("storage: insert integrity audit results: %w", err)
+	}
+	return nil
+}
+
 // ListOrganizationIDs returns all active organization IDs.
 func (db *DB) ListOrganizationIDs(ctx context.Context) ([]uuid.UUID, error) {
 	rows, err := db.pool.Query(ctx, `SELECT id FROM organizations ORDER BY id`)
@@ -165,36 +203,4 @@ func (db *DB) CountOrganizations(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("storage: count organizations: %w", err)
 	}
 	return count, nil
-}
-
-// IntegrityViolation represents a detected integrity violation.
-type IntegrityViolation struct {
-	ID            uuid.UUID `json:"id"`
-	OrgID         uuid.UUID `json:"org_id"`
-	ProofID       uuid.UUID `json:"proof_id"`
-	ViolationType string    `json:"violation_type"`
-	Expected      string    `json:"expected"`
-	Actual        string    `json:"actual"`
-	DetectedAt    time.Time `json:"detected_at"`
-}
-
-// CreateIntegrityViolation inserts a record of a detected integrity violation.
-// This table is append-only by design — violations are evidence and must not
-// be modified or deleted.
-func (db *DB) CreateIntegrityViolation(ctx context.Context, v IntegrityViolation) error {
-	if v.ID == uuid.Nil {
-		v.ID = uuid.New()
-	}
-	if v.DetectedAt.IsZero() {
-		v.DetectedAt = time.Now().UTC()
-	}
-	_, err := db.pool.Exec(ctx,
-		`INSERT INTO integrity_violations (id, org_id, proof_id, violation_type, expected, actual, detected_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		v.ID, v.OrgID, v.ProofID, v.ViolationType, v.Expected, v.Actual, v.DetectedAt,
-	)
-	if err != nil {
-		return fmt.Errorf("storage: create integrity violation: %w", err)
-	}
-	return nil
 }
