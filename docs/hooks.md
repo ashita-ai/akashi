@@ -25,16 +25,16 @@ context appears in the IDE sidebar so the agent starts with awareness of prior w
 ### Edit gate
 
 Before any `Edit`, `Write`, or `MultiEdit` tool call, the hook checks whether
-`akashi_check` has been called in the current session (within the last 2 hours).
+`akashi_check` has been called in the current session (within the last 10 minutes).
 If not, the edit is **blocked** with a message asking the agent to call `akashi_check`
-first. Once checked, edits proceed normally until the 2-hour TTL expires.
+first. Once checked, edits proceed normally until the 10-minute TTL expires.
 
 ### Commit tracing
 
 After a `git commit`, the hook either:
 
 - **Auto-traces** the commit as a decision (`decision_type: "implementation"`,
-  `confidence: 0.7`) when `AKASHI_AUTO_TRACE=true` (the default), or
+  `confidence: 0.5`) when `AKASHI_AUTO_TRACE=true` (the default), or
 - **Suggests** running `akashi_trace` manually when auto-trace is disabled.
 
 ## Endpoints
@@ -131,8 +131,8 @@ so both IDEs use the same server endpoints.
 If the Akashi server is unreachable (curl timeout: 3 seconds):
 
 1. **Session start**: Prints a reminder to stderr, continues normally.
-2. **Edit gate**: Falls back to a marker file (`/tmp/akashi-checked-$(whoami)`) with the
-   same 2-hour TTL. Edits are still gated, just enforced locally.
+2. **Edit gate**: Falls back to an agent-scoped marker file (`/tmp/akashi-checked-{agent_id}`)
+   with the same 10-minute TTL. Edits are still gated, just enforced locally.
 3. **Commit trace**: Prints a reminder to call `akashi_trace` manually.
 
 When the server comes back, the in-memory session tracking takes over seamlessly.
