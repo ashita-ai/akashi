@@ -145,7 +145,8 @@ func TestComputeStats(t *testing.T) {
 
 func TestBenchmarkDataset_Labels(t *testing.T) {
 	dataset := BenchmarkDataset()
-	assert.Equal(t, 30, len(dataset), "should have 30 pairs (10 per category)")
+	// 10 genuine + 10 related + 10 unrelated + 30 FP category = 60 total.
+	assert.Equal(t, 60, len(dataset), "should have 60 pairs (10 original per category + 30 FP category)")
 
 	counts := map[string]int{}
 	for _, p := range dataset {
@@ -156,6 +157,6 @@ func TestBenchmarkDataset_Labels(t *testing.T) {
 		assert.NotEmpty(t, p.OutcomeB)
 	}
 	assert.Equal(t, 10, counts["genuine"])
-	assert.Equal(t, 10, counts["related_not_contradicting"])
+	assert.Equal(t, 40, counts["related_not_contradicting"], "10 original + 30 FP category pairs")
 	assert.Equal(t, 10, counts["unrelated_false_positive"])
 }

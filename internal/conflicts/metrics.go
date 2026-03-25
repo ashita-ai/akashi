@@ -21,6 +21,11 @@ type Metrics struct {
 	coordinatedFiltered metric.Int64Counter
 	outcomeSimFiltered  metric.Int64Counter
 
+	confidenceFloorFiltered metric.Int64Counter
+	noopClaimGateFiltered   metric.Int64Counter
+	transitiveGroupFiltered metric.Int64Counter
+	fpPatternFiltered       metric.Int64Counter
+
 	scoringDuration    metric.Float64Histogram
 	llmCallDuration    metric.Float64Histogram
 	significanceDist   metric.Float64Histogram
@@ -128,6 +133,38 @@ func (s *Scorer) registerMetrics() {
 	if err != nil {
 		s.logger.Warn("conflicts: failed to create akashi.conflicts.outcome_sim_filtered metric", "error", err)
 		s.metrics.outcomeSimFiltered, _ = meter.Int64Counter("akashi.conflicts.outcome_sim_filtered.fallback")
+	}
+
+	s.metrics.confidenceFloorFiltered, err = meter.Int64Counter("akashi.conflicts.confidence_floor_filtered",
+		metric.WithDescription("Candidate pairs filtered by confidence floor (both decisions too exploratory)"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.confidence_floor_filtered metric", "error", err)
+		s.metrics.confidenceFloorFiltered, _ = meter.Int64Counter("akashi.conflicts.confidence_floor_filtered.fallback")
+	}
+
+	s.metrics.noopClaimGateFiltered, err = meter.Int64Counter("akashi.conflicts.noop_claim_gate_filtered",
+		metric.WithDescription("Candidate pairs filtered by noop claim gate (no claim-level confirmation without LLM)"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.noop_claim_gate_filtered metric", "error", err)
+		s.metrics.noopClaimGateFiltered, _ = meter.Int64Counter("akashi.conflicts.noop_claim_gate_filtered.fallback")
+	}
+
+	s.metrics.transitiveGroupFiltered, err = meter.Int64Counter("akashi.conflicts.transitive_group_filtered",
+		metric.WithDescription("Candidate pairs filtered by transitive group dedup (both decisions already in same group)"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.transitive_group_filtered metric", "error", err)
+		s.metrics.transitiveGroupFiltered, _ = meter.Int64Counter("akashi.conflicts.transitive_group_filtered.fallback")
+	}
+
+	s.metrics.fpPatternFiltered, err = meter.Int64Counter("akashi.conflicts.fp_pattern_filtered",
+		metric.WithDescription("Candidate pairs where significance threshold was doubled due to high historical FP rate for type pair"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.fp_pattern_filtered metric", "error", err)
+		s.metrics.fpPatternFiltered, _ = meter.Int64Counter("akashi.conflicts.fp_pattern_filtered.fallback")
 	}
 
 	// --- Histograms ---
