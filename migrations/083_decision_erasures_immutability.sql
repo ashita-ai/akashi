@@ -1,4 +1,4 @@
--- 082: enforce append-only invariant on decision_erasures.
+-- 083: enforce append-only invariant on decision_erasures.
 --
 -- Migration 055 created decision_erasures to serve as GDPR compliance proof —
 -- a durable record that a decision's PII was erased. However, unlike
