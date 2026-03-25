@@ -360,17 +360,17 @@ func ParseValidatorResponse(response string) (ValidationResult, error) {
 	}, nil
 }
 
-// NoopValidator always returns a contradiction result. This preserves the
-// current behavior when no LLM is configured: embedding-scored candidates
-// are inserted without validation. Users who want precision must configure
-// an LLM model.
+// NoopValidator marks candidates as unvalidated when no LLM is configured.
+// Returns "unvalidated" relationship so downstream consumers can distinguish
+// between LLM-confirmed conflicts and candidates that were never classified.
+// Previously returned "contradiction" which caused 100% false positive rate
+// for deployments without an LLM provider.
 type NoopValidator struct{}
 
 func (NoopValidator) Validate(_ context.Context, _ ValidateInput) (ValidationResult, error) {
 	return ValidationResult{
-		Relationship: "contradiction",
-		Category:     "unknown",
-		Severity:     "medium",
+		Relationship: "unvalidated",
+		Explanation:  "no LLM validator configured — candidate requires manual review or LLM validation",
 	}, nil
 }
 

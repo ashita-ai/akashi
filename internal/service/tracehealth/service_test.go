@@ -63,11 +63,11 @@ func (m *mockStore) GetHighConfOutcomeSignals(_ context.Context, _ uuid.UUID, _,
 	return m.highConfOutcomeSignals, m.highConfOutcomeErr
 }
 
-func (m *mockStore) GetConfidenceCalibration(_ context.Context, _ uuid.UUID) (storage.ConfidenceCalibration, error) {
+func (m *mockStore) GetConfidenceCalibration(_ context.Context, _ uuid.UUID, _, _ *time.Time) (storage.ConfidenceCalibration, error) {
 	return m.calibration, m.calibrationErr
 }
 
-func (m *mockStore) GetDecisionTypeDistribution(_ context.Context, _ uuid.UUID) ([]storage.DecisionTypeCount, error) {
+func (m *mockStore) GetDecisionTypeDistribution(_ context.Context, _ uuid.UUID, _, _ *time.Time) ([]storage.DecisionTypeCount, error) {
 	return m.typeDist, m.typeDistErr
 }
 

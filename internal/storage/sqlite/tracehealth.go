@@ -196,12 +196,25 @@ func (l *LiteDB) GetOutcomeSignalsSummary(ctx context.Context, orgID uuid.UUID, 
 
 // GetConfidenceCalibration returns per-tier and per-agent calibration signals
 // correlating declared confidence with revision rates and assessment outcomes.
-func (l *LiteDB) GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID) (storage.ConfidenceCalibration, error) {
+// When from/to are non-nil, only decisions with valid_from in [from, to) are included.
+func (l *LiteDB) GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (storage.ConfidenceCalibration, error) {
 	var cal storage.ConfidenceCalibration
 
+	// Build optional time-range clause.
+	timeFilter := ""
+	args := []any{uuidStr(orgID)}
+	if from != nil {
+		args = append(args, from.Format(time.RFC3339Nano))
+		timeFilter += " AND d.valid_from >= ?"
+	}
+	if to != nil {
+		args = append(args, to.Format(time.RFC3339Nano))
+		timeFilter += " AND d.valid_from < ?"
+	}
+
 	// Per-tier calibration: group into low/mid/high and compute revision rate + outcome.
-	rows, err := l.db.QueryContext(ctx, `
-		SELECT
+	tierQuery := `SELECT` + //nolint:gosec // G202: timeFilter contains only parameterized time-range clauses
+		`
 		    tier,
 		    COUNT(*)                                                            AS total,
 		    COALESCE(SUM(CASE WHEN revised = 1 THEN 1 ELSE 0 END), 0)         AS revised_count,
@@ -223,10 +236,11 @@ func (l *LiteDB) GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID) 
 		              AND (julianday(sup.valid_from) - julianday(d.valid_from)) * 24.0 < 48
 		        ) THEN 1 ELSE 0 END AS revised
 		    FROM decisions d
-		    WHERE d.org_id = ? AND d.valid_to IS NULL
-		) sub
+		    WHERE d.org_id = ? AND d.valid_to IS NULL` + timeFilter + //nolint:gosec // G202: timeFilter contains only parameterized time-range clauses
+		`) sub
 		GROUP BY tier
-		ORDER BY tier`, uuidStr(orgID))
+		ORDER BY tier`
+	rows, err := l.db.QueryContext(ctx, tierQuery, args...)
 	if err != nil {
 		return cal, fmt.Errorf("sqlite: confidence calibration tiers: %w", err)
 	}
@@ -262,8 +276,8 @@ func (l *LiteDB) GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID) 
 	cal.Calibrated = storage.ComputeCalibrated(tierMap, cal.HasOutcomeData)
 
 	// Per-agent calibration.
-	agentRows, err := l.db.QueryContext(ctx, `
-		SELECT
+	agentQuery := `SELECT` + //nolint:gosec // G202: timeFilter contains only parameterized time-range clauses
+		`
 		    d.agent_id,
 		    COUNT(*),
 		    AVG(d.confidence),
@@ -276,9 +290,10 @@ func (l *LiteDB) GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID) 
 		    COALESCE(SUM(CASE WHEN d.outcome_score IS NOT NULL THEN 1 ELSE 0 END), 0),
 		    AVG(CASE WHEN d.outcome_score IS NOT NULL THEN d.outcome_score END)
 		FROM decisions d
-		WHERE d.org_id = ? AND d.valid_to IS NULL
-		GROUP BY d.agent_id
-		ORDER BY AVG(d.confidence) DESC`, uuidStr(orgID))
+		WHERE d.org_id = ? AND d.valid_to IS NULL` + timeFilter + //nolint:gosec // G202: timeFilter contains only parameterized time-range clauses
+		` GROUP BY d.agent_id
+		ORDER BY AVG(d.confidence) DESC`
+	agentRows, err := l.db.QueryContext(ctx, agentQuery, args...)
 	if err != nil {
 		return cal, fmt.Errorf("sqlite: confidence calibration by agent: %w", err)
 	}
@@ -510,15 +525,23 @@ func (l *LiteDB) GetCompletenessByDecisionType(ctx context.Context, orgID uuid.U
 
 // GetDecisionTypeDistribution returns the count of current decisions grouped by
 // decision_type, ordered by count descending.
-func (l *LiteDB) GetDecisionTypeDistribution(ctx context.Context, orgID uuid.UUID) ([]storage.DecisionTypeCount, error) {
-	rows, err := l.db.QueryContext(ctx,
-		`SELECT decision_type, COUNT(*)
+// When from/to are non-nil, only decisions with valid_from in [from, to) are included.
+func (l *LiteDB) GetDecisionTypeDistribution(ctx context.Context, orgID uuid.UUID, from, to *time.Time) ([]storage.DecisionTypeCount, error) {
+	q := `SELECT decision_type, COUNT(*)
 		 FROM decisions
-		 WHERE org_id = ? AND valid_to IS NULL
-		 GROUP BY decision_type
-		 ORDER BY COUNT(*) DESC`,
-		uuidStr(orgID),
-	)
+		 WHERE org_id = ? AND valid_to IS NULL`
+	args := []any{uuidStr(orgID)}
+	if from != nil {
+		args = append(args, from.Format(time.RFC3339Nano))
+		q += " AND valid_from >= ?"
+	}
+	if to != nil {
+		args = append(args, to.Format(time.RFC3339Nano))
+		q += " AND valid_from < ?"
+	}
+	q += ` GROUP BY decision_type ORDER BY COUNT(*) DESC`
+
+	rows, err := l.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: decision type distribution: %w", err)
 	}

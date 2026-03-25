@@ -37,6 +37,39 @@ const (
 	contextKeyRequestID contextKey = "request_id"
 )
 
+// touchLastSeenReq is a request to update agent last_seen and optional API key last_used_at.
+type touchLastSeenReq struct {
+	orgID    uuid.UUID
+	agentID  string
+	apiKeyID *uuid.UUID
+}
+
+// touchLastSeenCh is a bounded channel that limits concurrent TouchLastSeen
+// goroutines. A buffer of 256 provides backpressure under sustained load
+// while accommodating normal burst patterns without dropping updates.
+var touchLastSeenCh = make(chan touchLastSeenReq, 256)
+
+// StartTouchLastSeenWorkers starts n goroutines that drain touchLastSeenCh.
+// Call this once at server startup. The workers exit when the channel is closed.
+func StartTouchLastSeenWorkers(db *storage.DB, n int) {
+	for range n {
+		go func() {
+			for req := range touchLastSeenCh {
+				bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if err := db.TouchLastSeen(bgCtx, req.orgID, req.agentID); err != nil {
+					slog.Warn("failed to update agent last_seen", "agent_id", req.agentID, "error", err)
+				}
+				if req.apiKeyID != nil {
+					if err := db.TouchAPIKeyLastUsed(bgCtx, *req.apiKeyID); err != nil {
+						slog.Warn("failed to update api key last_used_at", "key_id", req.apiKeyID, "error", err)
+					}
+				}
+				cancel()
+			}
+		}()
+	}
+}
+
 // RequestIDFromContext extracts the request ID from the context.
 func RequestIDFromContext(ctx context.Context) string {
 	if v, ok := ctx.Value(contextKeyRequestID).(string); ok {
@@ -350,19 +383,15 @@ func authMiddleware(jwtMgr *auth.JWTManager, db *storage.DB, next http.Handler) 
 		ctx := ctxutil.WithClaims(r.Context(), claims)
 
 		// Update last_seen (agent) and last_used_at (key) asynchronously.
-		// Best-effort fire-and-forget — the request is not blocked.
-		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := db.TouchLastSeen(bgCtx, claims.OrgID, claims.AgentID); err != nil {
-				slog.Warn("failed to update agent last_seen", "agent_id", claims.AgentID, "error", err)
-			}
-			if claims.APIKeyID != nil {
-				if err := db.TouchAPIKeyLastUsed(bgCtx, *claims.APIKeyID); err != nil {
-					slog.Warn("failed to update api key last_used_at", "key_id", claims.APIKeyID, "error", err)
-				}
-			}
-		}()
+		// Best-effort — uses a bounded channel to prevent unbounded goroutine
+		// growth under high request rates. Dropped updates are acceptable since
+		// last_seen is a best-effort signal, not a critical-path operation.
+		select {
+		case touchLastSeenCh <- touchLastSeenReq{orgID: claims.OrgID, agentID: claims.AgentID, apiKeyID: claims.APIKeyID}:
+		default:
+			// Channel full — drop the update silently. Under sustained load
+			// this is expected; the most recent update wins anyway.
+		}
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

@@ -328,6 +328,11 @@ func New(cfg ServerConfig) *Server {
 		handler = cfg.Middlewares[i](handler)
 	}
 
+	// Start bounded worker pool for TouchLastSeen updates. 4 workers is sufficient
+	// — each update is a single UPDATE with 5s timeout, so the pool can sustain
+	// ~200 updates/sec which far exceeds realistic authenticated request rates.
+	StartTouchLastSeenWorkers(cfg.DB, 4)
+
 	return &Server{
 		httpServer: &http.Server{
 			Addr:         fmt.Sprintf(":%d", cfg.Port),
