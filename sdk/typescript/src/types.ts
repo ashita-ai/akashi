@@ -262,6 +262,7 @@ export interface CheckResponse {
   has_precedent: boolean;
   decisions: Decision[];
   conflicts?: DecisionConflict[];
+  conflicts_unavailable?: boolean;
 }
 
 export interface QueryResponse {
