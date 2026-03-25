@@ -120,6 +120,33 @@ func (db *DB) GetDecisionHashesForBatch(ctx context.Context, orgID uuid.UUID, si
 	return hashes, rows.Err()
 }
 
+// IntegrityAuditResult records the outcome of a single integrity proof verification.
+// Both pass and fail results are persisted for positive attestation.
+type IntegrityAuditResult struct {
+	ID            uuid.UUID      `json:"id"`
+	OrgID         uuid.UUID      `json:"org_id"`
+	ProofID       uuid.UUID      `json:"proof_id"`
+	ViolationType string         `json:"violation_type"` // "pass", "merkle_root_mismatch", "chain_linkage_broken", "chain_linkage_nil_previous"
+	Details       map[string]any `json:"details,omitempty"`
+	CheckedAt     time.Time      `json:"checked_at"`
+}
+
+// RecordIntegrityAuditResult persists the outcome of an integrity proof verification.
+func (db *DB) RecordIntegrityAuditResult(ctx context.Context, r IntegrityAuditResult) error {
+	if r.ID == uuid.Nil {
+		r.ID = uuid.New()
+	}
+	_, err := db.pool.Exec(ctx,
+		`INSERT INTO integrity_audit_results (id, org_id, proof_id, violation_type, details, checked_at)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		r.ID, r.OrgID, r.ProofID, r.ViolationType, r.Details, r.CheckedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("storage: record integrity audit result: %w", err)
+	}
+	return nil
+}
+
 // ListOrganizationIDs returns all active organization IDs.
 func (db *DB) ListOrganizationIDs(ctx context.Context) ([]uuid.UUID, error) {
 	rows, err := db.pool.Query(ctx, `SELECT id FROM organizations ORDER BY id`)

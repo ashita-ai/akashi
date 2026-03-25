@@ -695,6 +695,11 @@ func TestValidate_ZeroIntervals(t *testing.T) {
 			setter: func(c *Config) { c.IntegrityAuditInterval = 0 },
 			errStr: "AKASHI_INTEGRITY_AUDIT_INTERVAL",
 		},
+		{
+			name:   "zero integrity audit timeout",
+			setter: func(c *Config) { c.IntegrityAuditTimeout = 0 },
+			errStr: "AKASHI_INTEGRITY_AUDIT_TIMEOUT",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -764,6 +769,7 @@ func validBaseConfig() Config {
 		ConflictRefreshInterval:    30 * time.Second,
 		IntegrityProofInterval:     5 * time.Minute,
 		IntegrityAuditInterval:     15 * time.Minute,
+		IntegrityAuditTimeout:      5 * time.Minute,
 		IdempotencyCleanupInterval: 1 * time.Hour,
 		IdempotencyCompletedTTL:    7 * 24 * time.Hour,
 		IdempotencyAbandonedTTL:    24 * time.Hour,

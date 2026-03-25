@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"time"
@@ -754,7 +755,7 @@ func (a *App) integrityAuditLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			opCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			opCtx, cancel := context.WithTimeout(ctx, a.cfg.IntegrityAuditTimeout)
 			a.auditIntegrityProofs(opCtx)
 			cancel()
 		}
@@ -767,6 +768,9 @@ func (a *App) integrityAuditLoop(ctx context.Context) {
 // (2) checking chain linkage via previous_root.
 // Coverage is probabilistic: with N orgs, each org is audited roughly every
 // N * IntegrityAuditInterval. Only the 10 newest proofs per org are checked.
+//
+// Every check result — pass or fail — is durably persisted to
+// integrity_audit_results so the paper trail is itself tamper-evident.
 func (a *App) auditIntegrityProofs(ctx context.Context) {
 	orgIDs, err := a.db.ListOrganizationIDs(ctx)
 	if err != nil {
@@ -777,8 +781,9 @@ func (a *App) auditIntegrityProofs(ctx context.Context) {
 		return
 	}
 
-	// Pick one org per tick to spread load.
-	orgID := orgIDs[time.Now().UnixNano()%int64(len(orgIDs))]
+	// Pick one org per tick to spread load (uniform distribution).
+	// Cryptographic randomness is not needed for load-spreading; math/rand/v2 is sufficient.
+	orgID := orgIDs[rand.IntN(len(orgIDs))] //nolint:gosec // non-security sampling
 
 	proofs, err := a.db.GetRecentIntegrityProofs(ctx, orgID, 10)
 	if err != nil {
@@ -789,6 +794,7 @@ func (a *App) auditIntegrityProofs(ctx context.Context) {
 		return
 	}
 
+	now := time.Now().UTC()
 	for i, p := range proofs {
 		// Verify Merkle root.
 		hashes, err := a.db.GetDecisionHashesForBatch(ctx, orgID, p.BatchStart, p.BatchEnd)
@@ -810,6 +816,12 @@ func (a *App) auditIntegrityProofs(ctx context.Context) {
 				"stored_root", p.RootHash, "decision_count", p.DecisionCount)
 			a.integrityViolationsCounter.Add(ctx, 1,
 				metric.WithAttributes(attribute.String("violation_type", "merkle_root_mismatch")))
+			a.recordAuditResult(ctx, orgID, p.ID, "merkle_root_mismatch", map[string]any{
+				"stored_root":    p.RootHash,
+				"decision_count": p.DecisionCount,
+			}, now)
+		} else {
+			a.recordAuditResult(ctx, orgID, p.ID, "pass", nil, now)
 		}
 
 		// Verify chain linkage: this proof's previous_root should match the
@@ -819,17 +831,40 @@ func (a *App) auditIntegrityProofs(ctx context.Context) {
 			if p.PreviousRoot == nil {
 				a.logger.Warn("integrity audit: proof has nil previous_root but older proof exists — chain may be broken",
 					"org_id", orgID, "proof_id", p.ID, "older_proof_id", older.ID)
+				a.recordAuditResult(ctx, orgID, p.ID, "chain_linkage_nil_previous", map[string]any{
+					"older_proof_id": older.ID,
+				}, now)
 			} else if *p.PreviousRoot != older.RootHash {
 				a.logger.Error("INTEGRITY VIOLATION: chain linkage broken — previous_root does not match prior proof",
 					"org_id", orgID, "proof_id", p.ID,
 					"expected_previous", older.RootHash, "actual_previous", *p.PreviousRoot)
 				a.integrityViolationsCounter.Add(ctx, 1,
 					metric.WithAttributes(attribute.String("violation_type", "chain_linkage_broken")))
+				a.recordAuditResult(ctx, orgID, p.ID, "chain_linkage_broken", map[string]any{
+					"expected_previous": older.RootHash,
+					"actual_previous":   *p.PreviousRoot,
+				}, now)
 			}
 		}
 	}
 
 	a.logger.Info("integrity audit completed", "org_id", orgID, "proofs_checked", len(proofs))
+}
+
+// recordAuditResult persists an integrity audit check to the durable audit trail.
+// Failures are logged but do not halt the audit loop — the OTel metric still fires.
+func (a *App) recordAuditResult(ctx context.Context, orgID, proofID uuid.UUID, violationType string, details map[string]any, checkedAt time.Time) {
+	if err := a.db.RecordIntegrityAuditResult(ctx, storage.IntegrityAuditResult{
+		OrgID:         orgID,
+		ProofID:       proofID,
+		ViolationType: violationType,
+		Details:       details,
+		CheckedAt:     checkedAt,
+	}); err != nil {
+		a.logger.Error("integrity audit: failed to persist audit result",
+			"org_id", orgID, "proof_id", proofID,
+			"violation_type", violationType, "error", err)
+	}
 }
 
 func (a *App) idempotencyCleanupLoop(ctx context.Context) {

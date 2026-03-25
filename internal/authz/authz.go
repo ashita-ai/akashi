@@ -209,3 +209,23 @@ func FilterConflicts(ctx context.Context, db storage.Store, claims *auth.Claims,
 	}
 	return allowed, nil
 }
+
+// FilterLineageEntries removes lineage entries the caller is not authorized to see.
+// cache may be nil to disable caching.
+func FilterLineageEntries(ctx context.Context, db storage.Store, claims *auth.Claims, entries []storage.LineageEntry, cache *GrantCache) ([]storage.LineageEntry, error) {
+	granted, err := LoadGrantedSet(ctx, db, claims, cache)
+	if err != nil {
+		return nil, err
+	}
+	if granted == nil {
+		return entries, nil
+	}
+
+	allowed := make([]storage.LineageEntry, 0, len(entries))
+	for _, e := range entries {
+		if granted[e.AgentID] {
+			allowed = append(allowed, e)
+		}
+	}
+	return allowed, nil
+}

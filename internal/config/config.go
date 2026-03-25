@@ -93,6 +93,7 @@ type Config struct {
 	ConflictSignificanceThreshold float64       // Minimum significance to store (default 0.30).
 	IntegrityProofInterval        time.Duration // How often to build Merkle tree proofs.
 	IntegrityAuditInterval        time.Duration // How often to verify stored Merkle proofs.
+	IntegrityAuditTimeout         time.Duration // Max duration per audit tick.
 	EventBufferSize               int
 	EventFlushTimeout             time.Duration
 	ShutdownHTTPTimeout           time.Duration // 0 disables timeout (wait indefinitely).
@@ -237,6 +238,7 @@ func Load() (Config, error) {
 	cfg.ConflictRefreshInterval, errs = collectDuration(errs, "AKASHI_CONFLICT_REFRESH_INTERVAL", 30*time.Second)
 	cfg.IntegrityProofInterval, errs = collectDuration(errs, "AKASHI_INTEGRITY_PROOF_INTERVAL", 5*time.Minute)
 	cfg.IntegrityAuditInterval, errs = collectDuration(errs, "AKASHI_INTEGRITY_AUDIT_INTERVAL", 15*time.Minute)
+	cfg.IntegrityAuditTimeout, errs = collectDuration(errs, "AKASHI_INTEGRITY_AUDIT_TIMEOUT", 5*time.Minute)
 	cfg.EventFlushTimeout, errs = collectDuration(errs, "AKASHI_EVENT_FLUSH_TIMEOUT", 100*time.Millisecond)
 	cfg.WALSyncInterval, errs = collectDuration(errs, "AKASHI_WAL_SYNC_INTERVAL", 10*time.Millisecond)
 	cfg.ShutdownHTTPTimeout, errs = collectDuration(errs, "AKASHI_SHUTDOWN_HTTP_TIMEOUT", 10*time.Second)
@@ -357,6 +359,9 @@ func (c Config) Validate() error {
 	}
 	if c.IntegrityAuditInterval <= 0 {
 		errs = append(errs, errors.New("config: AKASHI_INTEGRITY_AUDIT_INTERVAL must be positive"))
+	}
+	if c.IntegrityAuditTimeout <= 0 {
+		errs = append(errs, errors.New("config: AKASHI_INTEGRITY_AUDIT_TIMEOUT must be positive"))
 	}
 	if c.RateLimitEnabled {
 		if c.RateLimitRPS <= 0 {

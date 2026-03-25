@@ -28,3 +28,8 @@ func filterSearchResultsByAccess(ctx context.Context, db *storage.DB, claims *au
 func filterConflictsByAccess(ctx context.Context, db *storage.DB, claims *auth.Claims, conflicts []model.DecisionConflict, cache *authz.GrantCache) ([]model.DecisionConflict, error) {
 	return authz.FilterConflicts(ctx, db, claims, conflicts, cache)
 }
+
+// filterLineageEntriesByAccess delegates to the shared authz package.
+func filterLineageEntriesByAccess(ctx context.Context, db *storage.DB, claims *auth.Claims, entries []storage.LineageEntry, cache *authz.GrantCache) ([]storage.LineageEntry, error) {
+	return authz.FilterLineageEntries(ctx, db, claims, entries, cache)
+}

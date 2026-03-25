@@ -23,17 +23,17 @@ import (
 // enrichmentRevisions holds the revision chain for a single decision.
 type enrichmentRevisions struct {
 	Items    []model.Decision `json:"items"`
-	Count    int              `json:"count"` // Number of items returned (may be filtered by access grants).
-	Total    int              `json:"total"` // Total revisions before access filtering.
+	Count    int              `json:"count"` // Number of accessible items returned.
+	Total    int              `json:"total"` // Total accessible revisions (post access filtering).
 	Degraded bool             `json:"degraded,omitempty"`
 }
 
 // enrichmentConflicts holds conflicts for a single decision.
 type enrichmentConflicts struct {
 	Items    []model.DecisionConflict `json:"items"`
-	Count    int                      `json:"count"` // Number of items returned (may be capped and access-filtered).
-	Total    int                      `json:"total"` // Total conflicts before truncation and access filtering.
-	HasMore  bool                     `json:"has_more"`
+	Count    int                      `json:"count"`    // Number of accessible items returned (may be capped).
+	Total    int                      `json:"total"`    // Total accessible conflicts (post access filtering, pre truncation).
+	HasMore  bool                     `json:"has_more"` // True when more accessible conflicts exist than the cap.
 	Degraded bool                     `json:"degraded,omitempty"`
 }
 
@@ -374,7 +374,6 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}}
 					}
 				} else {
-					totalRevisions := len(revisions)
 					revisions, filterErr := filterDecisionsByAccess(gctx, h.db, claims, revisions, h.grantCache)
 					if filterErr != nil {
 						h.logger.Warn("enrichment: access filter failed for revisions",
@@ -382,11 +381,11 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}, Degraded: true}
 						entry.Degraded = true
 					} else {
-						entry.Revisions = enrichmentRevisions{Items: revisions, Count: len(revisions), Total: totalRevisions}
+						entry.Revisions = enrichmentRevisions{Items: revisions, Count: len(revisions), Total: len(revisions)}
 					}
 				}
 
-				// --- Lineage (already org_id-scoped in the SQL query) ---
+				// --- Lineage (org_id-scoped in SQL, then RBAC-filtered) ---
 				lineage, err := h.db.GetDecisionLineage(gctx, decID, orgID, 20)
 				if err != nil {
 					if !isNotFoundError(err) {
@@ -396,6 +395,30 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 					}
 					entry.Lineage = storage.DecisionLineage{DecisionID: decID}
 				} else {
+					// Filter lineage entries by RBAC grants.
+					if lineage.PrecededBy != nil {
+						one := []storage.LineageEntry{*lineage.PrecededBy}
+						filtered, fErr := filterLineageEntriesByAccess(gctx, h.db, claims, one, h.grantCache)
+						if fErr != nil {
+							h.logger.Warn("enrichment: access filter failed for lineage preceded_by",
+								"decision_id", decID, "error", fErr)
+							lineage.PrecededBy = nil
+							entry.Degraded = true
+						} else if len(filtered) == 0 {
+							lineage.PrecededBy = nil
+						}
+					}
+					if len(lineage.CitedBy) > 0 {
+						filtered, fErr := filterLineageEntriesByAccess(gctx, h.db, claims, lineage.CitedBy, h.grantCache)
+						if fErr != nil {
+							h.logger.Warn("enrichment: access filter failed for lineage cited_by",
+								"decision_id", decID, "error", fErr)
+							lineage.CitedBy = nil
+							entry.Degraded = true
+						} else {
+							lineage.CitedBy = filtered
+						}
+					}
 					entry.Lineage = lineage
 				}
 
@@ -412,7 +435,6 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 						entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}}
 					}
 				} else {
-					totalConflicts := len(conflicts)
 					conflicts, filterErr := filterConflictsByAccess(gctx, h.db, claims, conflicts, h.grantCache)
 					if filterErr != nil {
 						h.logger.Warn("enrichment: access filter failed for conflicts",
@@ -420,14 +442,15 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 						entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}, Degraded: true}
 						entry.Degraded = true
 					} else {
-						hasMore := len(conflicts) > maxEnrichmentConflicts
+						totalAccessible := len(conflicts)
+						hasMore := totalAccessible > maxEnrichmentConflicts
 						if hasMore {
 							conflicts = conflicts[:maxEnrichmentConflicts]
 						}
 						entry.Conflicts = enrichmentConflicts{
 							Items:   conflicts,
 							Count:   len(conflicts),
-							Total:   totalConflicts,
+							Total:   totalAccessible,
 							HasMore: hasMore,
 						}
 					}
