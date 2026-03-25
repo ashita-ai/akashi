@@ -38,13 +38,43 @@ func (db *DB) GetOrgSettings(ctx context.Context, orgID uuid.UUID) (model.OrgSet
 	return s, nil
 }
 
-// UpsertOrgSettings inserts or updates the settings for an org.
-func (db *DB) UpsertOrgSettings(ctx context.Context, orgID uuid.UUID, settings model.OrgSettingsData, updatedBy string) error {
+// UpsertOrgSettingsWithAudit inserts or updates the settings for an org,
+// atomically recording a mutation audit entry in the same transaction.
+// The before-state is captured under a FOR UPDATE lock so the audit
+// accurately reflects what changed.
+func (db *DB) UpsertOrgSettingsWithAudit(ctx context.Context, orgID uuid.UUID, settings model.OrgSettingsData, updatedBy string, audit MutationAuditEntry) error {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("storage: begin upsert org settings tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Read before-state under FOR UPDATE to prevent concurrent mutations
+	// from producing an inconsistent audit trail.
+	var beforeRaw []byte
+	scanErr := tx.QueryRow(ctx,
+		`SELECT settings FROM org_settings WHERE org_id = $1 FOR UPDATE`,
+		orgID,
+	).Scan(&beforeRaw)
+	if scanErr != nil && !errors.Is(scanErr, pgx.ErrNoRows) {
+		return fmt.Errorf("storage: read org settings before-state: %w", scanErr)
+	}
+
+	// Capture before-data for the audit entry. nil means first-time insert.
+	if beforeRaw != nil {
+		var beforeData model.OrgSettingsData
+		if err := json.Unmarshal(beforeRaw, &beforeData); err != nil {
+			return fmt.Errorf("storage: unmarshal org settings before-state: %w", err)
+		}
+		audit.BeforeData = beforeData
+	}
+	audit.AfterData = settings
+
 	raw, err := json.Marshal(settings)
 	if err != nil {
 		return fmt.Errorf("storage: marshal org settings: %w", err)
 	}
-	_, err = db.pool.Exec(ctx,
+	_, err = tx.Exec(ctx,
 		`INSERT INTO org_settings (org_id, settings, updated_at, updated_by)
 		 VALUES ($1, $2, now(), $3)
 		 ON CONFLICT (org_id) DO UPDATE
@@ -54,7 +84,12 @@ func (db *DB) UpsertOrgSettings(ctx context.Context, orgID uuid.UUID, settings m
 	if err != nil {
 		return fmt.Errorf("storage: upsert org settings: %w", err)
 	}
-	return nil
+
+	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+		return fmt.Errorf("storage: audit org settings upsert: %w", err)
+	}
+
+	return tx.Commit(ctx)
 }
 
 // OrgAutoResolveConfig holds the parsed auto-resolution policy for an org.

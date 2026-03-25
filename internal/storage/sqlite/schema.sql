@@ -173,6 +173,8 @@ CREATE TABLE IF NOT EXISTS scored_conflicts (
     resolution_decision_id TEXT,
     winning_decision_id    TEXT,
     group_id               TEXT,
+    project_a              TEXT,
+    project_b              TEXT,
     UNIQUE(decision_a_id, decision_b_id)
 );
 CREATE INDEX IF NOT EXISTS idx_conflicts_org ON scored_conflicts(org_id, status);
@@ -259,6 +261,19 @@ CREATE TABLE IF NOT EXISTS conflict_labels (
     labeled_at         TEXT NOT NULL DEFAULT (datetime('now')),
     notes              TEXT
 );
+
+CREATE TABLE IF NOT EXISTS conflict_resolutions (
+    id                  TEXT PRIMARY KEY,
+    conflict_id         TEXT NOT NULL REFERENCES scored_conflicts(id),
+    org_id              TEXT NOT NULL,
+    resolved_by         TEXT NOT NULL,
+    resolved_at         TEXT NOT NULL,
+    resolution_note     TEXT,
+    winning_decision_id TEXT,
+    archived_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_conflict_resolutions_conflict ON conflict_resolutions(conflict_id);
+CREATE INDEX IF NOT EXISTS idx_conflict_resolutions_org ON conflict_resolutions(org_id);
 
 CREATE TABLE IF NOT EXISTS mutation_audit_log (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,

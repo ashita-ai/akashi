@@ -4135,6 +4135,261 @@ func TestUpdateConflictStatusWithAudit(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Tests: Conflict reopening archives resolution metadata
+// ---------------------------------------------------------------------------
+
+func TestInsertScoredConflict_ReopenArchivesResolution(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "reopen-a-" + suffix
+	agentB := "reopen-b-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: "reopen_test",
+		Outcome: "use Redis", Confidence: 0.8,
+	})
+	require.NoError(t, err)
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: "reopen_test",
+		Outcome: "use Memcached", Confidence: 0.7,
+	})
+	require.NoError(t, err)
+
+	// Step 1: Insert a conflict (starts as open).
+	topicSim := 0.9
+	outcomeDiv := 0.85
+	sig := topicSim * outcomeDiv
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "reopen_test", DecisionTypeB: "reopen_test",
+		OutcomeA: "use Redis", OutcomeB: "use Memcached",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+
+	// Step 2: Resolve the conflict with a winner.
+	resNote := "Redis preferred — already running in prod."
+	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
+		"resolved", "human-reviewer", &resNote, &dA.ID, nil,
+		storage.MutationAuditEntry{
+			RequestID: "resolve-" + suffix, OrgID: uuid.Nil,
+			ActorAgentID: "human-reviewer", ActorRole: "admin",
+			Operation: "resolve_conflict", ResourceType: "conflict",
+		})
+	require.NoError(t, err)
+
+	// Verify it's resolved with full metadata.
+	resolved, err := testDB.GetConflict(ctx, conflictID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, "resolved", resolved.Status)
+	require.NotNil(t, resolved.ResolvedBy)
+	assert.Equal(t, "human-reviewer", *resolved.ResolvedBy)
+	require.NotNil(t, resolved.WinningDecisionID)
+	assert.Equal(t, dA.ID, *resolved.WinningDecisionID)
+
+	// Step 3: Re-insert the same conflict pair (simulating scorer re-detection).
+	newSig := 0.95
+	conflictID2, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "reopen_test", DecisionTypeB: "reopen_test",
+		OutcomeA: "use Redis", OutcomeB: "use Memcached",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &newSig, ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, conflictID, conflictID2, "upsert should return the same conflict ID")
+
+	// Step 4: Verify the conflict is reopened with NULLed resolution fields.
+	reopened, err := testDB.GetConflict(ctx, conflictID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, "open", reopened.Status, "conflict should be reopened")
+	assert.Nil(t, reopened.ResolvedBy, "resolved_by should be NULL after reopening")
+	assert.Nil(t, reopened.ResolvedAt, "resolved_at should be NULL after reopening")
+	assert.Nil(t, reopened.ResolutionNote, "resolution_note should be NULL after reopening")
+	assert.Nil(t, reopened.WinningDecisionID, "winning_decision_id should be NULL after reopening")
+
+	// Step 5: Verify the resolution was archived in conflict_resolutions.
+	var archivedResolvedBy string
+	var archivedResNote *string
+	var archivedWinner *uuid.UUID
+	var archivedResolvedAt time.Time
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT resolved_by, resolution_note, winning_decision_id, resolved_at
+		 FROM conflict_resolutions
+		 WHERE conflict_id = $1 AND org_id = $2`,
+		conflictID, uuid.Nil,
+	).Scan(&archivedResolvedBy, &archivedResNote, &archivedWinner, &archivedResolvedAt)
+	require.NoError(t, err, "should find archived resolution in conflict_resolutions")
+	assert.Equal(t, "human-reviewer", archivedResolvedBy)
+	require.NotNil(t, archivedResNote)
+	assert.Equal(t, "Redis preferred — already running in prod.", *archivedResNote)
+	require.NotNil(t, archivedWinner)
+	assert.Equal(t, dA.ID, *archivedWinner)
+	assert.False(t, archivedResolvedAt.IsZero(), "archived resolved_at should be non-zero")
+}
+
+func TestInsertScoredConflict_ReopenWithGroupIDArchivesResolution(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "reopen-grp-a-" + suffix
+	agentB := "reopen-grp-b-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: "reopen_grp_test",
+		Outcome: "use Postgres", Confidence: 0.8,
+	})
+	require.NoError(t, err)
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: "reopen_grp_test",
+		Outcome: "use MySQL", Confidence: 0.7,
+	})
+	require.NoError(t, err)
+
+	// Pre-create a group (simulates FindOrCreateTopicGroup).
+	var groupID uuid.UUID
+	err = testDB.Pool().QueryRow(ctx,
+		`INSERT INTO conflict_groups (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic)
+		 VALUES ($1, $2, $3, 'cross_agent', 'reopen_grp_test', 'database choice')
+		 RETURNING id`,
+		uuid.Nil, agentA, agentB,
+	).Scan(&groupID)
+	require.NoError(t, err)
+
+	// Insert conflict with pre-computed group_id.
+	topicSim := 0.88
+	outcomeDiv := 0.9
+	sig := topicSim * outcomeDiv
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "reopen_grp_test", DecisionTypeB: "reopen_grp_test",
+		OutcomeA: "use Postgres", OutcomeB: "use MySQL",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text",
+		GroupID: &groupID,
+	})
+	require.NoError(t, err)
+
+	// Resolve it.
+	resNote := "Postgres wins — better JSON support."
+	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
+		"resolved", "tech-lead", &resNote, &dA.ID, nil,
+		storage.MutationAuditEntry{
+			RequestID: "resolve-grp-" + suffix, OrgID: uuid.Nil,
+			ActorAgentID: "tech-lead", ActorRole: "admin",
+			Operation: "resolve_conflict", ResourceType: "conflict",
+		})
+	require.NoError(t, err)
+
+	// Re-insert with the same GroupID (triggers insertScoredConflictWithGroup path).
+	conflictID2, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "reopen_grp_test", DecisionTypeB: "reopen_grp_test",
+		OutcomeA: "use Postgres", OutcomeB: "use MySQL",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text",
+		GroupID: &groupID,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, conflictID, conflictID2)
+
+	// Verify reopened.
+	reopened, err := testDB.GetConflict(ctx, conflictID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, "open", reopened.Status)
+	assert.Nil(t, reopened.WinningDecisionID)
+
+	// Verify archive.
+	var archivedResolvedBy string
+	var archivedWinner *uuid.UUID
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT resolved_by, winning_decision_id
+		 FROM conflict_resolutions
+		 WHERE conflict_id = $1 AND org_id = $2`,
+		conflictID, uuid.Nil,
+	).Scan(&archivedResolvedBy, &archivedWinner)
+	require.NoError(t, err, "should find archived resolution for group-path reopening")
+	assert.Equal(t, "tech-lead", archivedResolvedBy)
+	require.NotNil(t, archivedWinner)
+	assert.Equal(t, dA.ID, *archivedWinner)
+}
+
+func TestInsertScoredConflict_NoArchiveWhenNotResolved(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "noarch-a-" + suffix
+	agentB := "noarch-b-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: "noarch_test",
+		Outcome: "approach A", Confidence: 0.8,
+	})
+	require.NoError(t, err)
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: "noarch_test",
+		Outcome: "approach B", Confidence: 0.7,
+	})
+	require.NoError(t, err)
+
+	// Insert a conflict (open).
+	topicSim := 0.9
+	outcomeDiv := 0.8
+	sig := topicSim * outcomeDiv
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "noarch_test", DecisionTypeB: "noarch_test",
+		OutcomeA: "approach A", OutcomeB: "approach B",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+
+	// Re-insert without resolving first.
+	newSig := 0.95
+	_, err = testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "noarch_test", DecisionTypeB: "noarch_test",
+		OutcomeA: "approach A", OutcomeB: "approach B",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &newSig, ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+
+	// Verify no archive was created (the conflict was never resolved).
+	var count int
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT count(*) FROM conflict_resolutions WHERE conflict_id = $1 AND org_id = $2`,
+		conflictID, uuid.Nil,
+	).Scan(&count)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "no archive should exist for a conflict that was never resolved")
+}
+
+// ---------------------------------------------------------------------------
 // Tests: Events (InsertEventsIdempotent)
 // ---------------------------------------------------------------------------
 
@@ -4622,6 +4877,13 @@ func TestEraseDecision(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	// Add claims (derived from reasoning, may contain PII).
+	err = testDB.InsertClaims(ctx, []storage.Claim{
+		{DecisionID: d.ID, OrgID: uuid.Nil, ClaimIdx: 0, ClaimText: "sensitive claim one"},
+		{DecisionID: d.ID, OrgID: uuid.Nil, ClaimIdx: 1, ClaimText: "sensitive claim two"},
+	})
+	require.NoError(t, err)
+
 	result, err := testDB.EraseDecision(ctx, uuid.Nil, d.ID, "GDPR request", agentID, &storage.MutationAuditEntry{
 		RequestID: "erase-" + suffix, OrgID: uuid.Nil,
 		ActorAgentID: agentID, ActorRole: "admin",
@@ -4633,12 +4895,22 @@ func TestEraseDecision(t *testing.T) {
 	assert.Equal(t, "GDPR request", result.Erasure.Reason)
 	assert.Equal(t, int64(1), result.AlternativesErased)
 	assert.Equal(t, int64(1), result.EvidenceErased)
+	assert.Equal(t, int64(2), result.ClaimsErased)
 
 	// Verify decision outcome is scrubbed.
 	got, err := testDB.GetDecision(ctx, uuid.Nil, d.ID, storage.GetDecisionOpts{})
 	require.NoError(t, err)
 	assert.Equal(t, storage.ErasedSentinel, got.Outcome)
 	assert.Equal(t, storage.ErasedSentinel, *got.Reasoning)
+
+	// Verify claims are scrubbed (claim_text replaced, embedding nulled).
+	claims, err := testDB.FindClaimsByDecision(ctx, d.ID, uuid.Nil)
+	require.NoError(t, err)
+	require.Len(t, claims, 2, "claims should still exist after erasure")
+	for _, c := range claims {
+		assert.Equal(t, storage.ErasedSentinel, c.ClaimText, "claim_text must be scrubbed")
+		assert.Nil(t, c.Embedding, "claim embedding must be nulled")
+	}
 
 	// GetDecisionErasure should return the record.
 	erasure, err := testDB.GetDecisionErasure(ctx, uuid.Nil, d.ID)
@@ -8266,6 +8538,82 @@ func TestDropEventChunks_FarPast(t *testing.T) {
 	assert.Equal(t, int64(0), dropped)
 }
 
+func TestDropEventChunks_AuditLogPopulated(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "chunk-audit-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	// Insert events with occurred_at 5 days ago so they land in an old chunk.
+	// TimescaleDB chunk interval is 1 day, so a 5-day-old event is in a chunk
+	// whose range_end is at most 4 days ago.
+	oldTime := time.Now().UTC().Add(-5 * 24 * time.Hour)
+	events := make([]model.AgentEvent, 3)
+	for i := range events {
+		events[i] = model.AgentEvent{
+			ID:          uuid.New(),
+			RunID:       run.ID,
+			OrgID:       uuid.Nil, // test org
+			EventType:   model.EventDecisionMade,
+			SequenceNum: int64(900_000 + i),
+			OccurredAt:  oldTime.Add(time.Duration(i) * time.Minute),
+			AgentID:     agentID,
+			Payload:     map[string]any{"test": true},
+			CreatedAt:   oldTime.Add(time.Duration(i) * time.Minute),
+		}
+	}
+	_, err = testDB.InsertEvents(ctx, events)
+	require.NoError(t, err)
+
+	// Record deletion_audit_log count before the drop so we can assert on net-new rows.
+	var beforeCount int64
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT COUNT(*) FROM deletion_audit_log WHERE table_name = 'agent_events'`,
+	).Scan(&beforeCount)
+	require.NoError(t, err)
+
+	// Drop chunks older than 3 days ago. The 5-day-old chunk qualifies.
+	cutoff := time.Now().UTC().Add(-3 * 24 * time.Hour)
+	dropped, err := testDB.DropEventChunks(ctx, cutoff)
+	require.NoError(t, err)
+
+	if dropped == 0 {
+		t.Skip("TimescaleDB did not create a separate chunk for the old events (chunk interval may exceed test window)")
+	}
+
+	// Verify that deletion_audit_log was populated with summary records.
+	var afterCount int64
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT COUNT(*) FROM deletion_audit_log WHERE table_name = 'agent_events'`,
+	).Scan(&afterCount)
+	require.NoError(t, err)
+	assert.Greater(t, afterCount, beforeCount, "DropEventChunks should write audit log entries")
+
+	// Verify the audit log entries contain the expected fields.
+	var recordData map[string]any
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT record_data FROM deletion_audit_log
+		 WHERE table_name = 'agent_events'
+		 ORDER BY id DESC LIMIT 1`,
+	).Scan(&recordData)
+	require.NoError(t, err)
+
+	assert.Equal(t, "retention_chunk_drop", recordData["operation"], "operation field")
+	assert.NotNil(t, recordData["chunk_name"], "chunk_name field")
+	assert.NotNil(t, recordData["event_count"], "event_count field")
+	assert.NotNil(t, recordData["min_occurred_at"], "min_occurred_at field")
+	assert.NotNil(t, recordData["max_occurred_at"], "max_occurred_at field")
+	assert.NotNil(t, recordData["event_types"], "event_types field")
+	assert.NotNil(t, recordData["cutoff"], "cutoff field")
+
+	// event_count should be a positive number.
+	eventCount, ok := recordData["event_count"].(float64)
+	assert.True(t, ok, "event_count should be a number")
+	assert.Greater(t, eventCount, float64(0), "event_count should be positive")
+}
+
 // ---------------------------------------------------------------------------
 // Tests: GetActiveAPIKeysByAgentIDGlobal — coverage
 // ---------------------------------------------------------------------------
@@ -10445,4 +10793,221 @@ func TestIntegrityViolation_ChainLinkageDetection(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "chain linkage violation should be persisted and retrievable")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: proof_leaves — proofs survive retention purge and GDPR erasure
+// ---------------------------------------------------------------------------
+
+func TestProofLeaves_CreateAndGet(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	orgID := uuid.New()
+	_, err := testDB.Pool().Exec(ctx,
+		`INSERT INTO organizations (id, name, slug) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+		orgID, "pl-org-"+suffix, "pl-org-"+suffix)
+	require.NoError(t, err)
+
+	proofID := uuid.New()
+	proof := storage.IntegrityProof{
+		ID:            proofID,
+		OrgID:         orgID,
+		BatchStart:    time.Now().UTC().Add(-1 * time.Hour),
+		BatchEnd:      time.Now().UTC(),
+		DecisionCount: 3,
+		RootHash:      "pl-root-" + suffix,
+		CreatedAt:     time.Now().UTC(),
+	}
+	require.NoError(t, testDB.CreateIntegrityProof(ctx, proof))
+
+	leaves := []string{"aaa_hash", "bbb_hash", "ccc_hash"}
+	require.NoError(t, testDB.CreateProofLeaves(ctx, proofID, orgID, leaves))
+
+	got, err := testDB.GetProofLeaves(ctx, proofID)
+	require.NoError(t, err)
+	assert.Equal(t, leaves, got, "leaves should round-trip in sorted order")
+
+	// No leaves for a random proof.
+	empty, err := testDB.GetProofLeaves(ctx, uuid.New())
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+}
+
+func TestProofLeaves_Empty(t *testing.T) {
+	ctx := context.Background()
+	// CreateProofLeaves with empty slice should be a no-op.
+	require.NoError(t, testDB.CreateProofLeaves(ctx, uuid.New(), uuid.Nil, nil))
+}
+
+func TestProofLeaves_SurvivesRetentionPurge(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "pl-retention-" + suffix
+
+	// Isolated org.
+	orgID := uuid.New()
+	_, err := testDB.Pool().Exec(ctx,
+		`INSERT INTO organizations (id, name, slug) VALUES ($1, $2, $3)`,
+		orgID, "pl-ret-org-"+suffix, "pl-ret-org-"+suffix)
+	require.NoError(t, err)
+
+	runID := uuid.New()
+	_, err = testDB.Pool().Exec(ctx,
+		`INSERT INTO agent_runs (id, org_id, agent_id, status, created_at)
+		 VALUES ($1, $2, $3, 'running', now())`,
+		runID, orgID, agentID)
+	require.NoError(t, err)
+
+	beforeCreate := time.Now().UTC().Add(-1 * time.Second)
+
+	// Create decisions.
+	const count = 3
+	for i := range count {
+		reasoning := fmt.Sprintf("reasoning %d %s", i, suffix)
+		_, err := testDB.CreateDecision(ctx, model.Decision{
+			ID:           uuid.New(),
+			RunID:        runID,
+			AgentID:      agentID,
+			OrgID:        orgID,
+			DecisionType: "retention_proof_test",
+			Outcome:      fmt.Sprintf("outcome %d %s", i, suffix),
+			Confidence:   0.7,
+			Reasoning:    &reasoning,
+			ValidFrom:    time.Now().UTC(),
+		})
+		require.NoError(t, err)
+	}
+
+	afterCreate := time.Now().UTC().Add(1 * time.Second)
+
+	// Build proof and snapshot leaves.
+	hashes, err := testDB.GetDecisionHashesForBatch(ctx, orgID, beforeCreate, afterCreate)
+	require.NoError(t, err)
+	require.Len(t, hashes, count)
+
+	root, err := integrity.BuildMerkleRoot(hashes)
+	require.NoError(t, err)
+
+	proofID := uuid.New()
+	proof := storage.IntegrityProof{
+		ID:            proofID,
+		OrgID:         orgID,
+		BatchStart:    beforeCreate,
+		BatchEnd:      afterCreate,
+		DecisionCount: count,
+		RootHash:      root,
+		CreatedAt:     time.Now().UTC(),
+	}
+	require.NoError(t, testDB.CreateIntegrityProof(ctx, proof))
+	require.NoError(t, testDB.CreateProofLeaves(ctx, proofID, orgID, hashes))
+
+	// Verify passes before purge.
+	ok, err := integrity.VerifyBatchProof(root, hashes)
+	require.NoError(t, err)
+	require.True(t, ok, "proof should verify before purge")
+
+	// Purge all decisions (cutoff in the future).
+	_, err = testDB.BatchDeleteDecisions(ctx, orgID, time.Now().UTC().Add(1*time.Hour), nil, nil, nil, 100)
+	require.NoError(t, err)
+
+	// Decisions should be gone.
+	remaining, err := testDB.GetDecisionHashesForBatch(ctx, orgID, beforeCreate, afterCreate)
+	require.NoError(t, err)
+	assert.Empty(t, remaining, "decisions should be purged")
+
+	// But proof_leaves survive — verification still passes.
+	savedLeaves, err := testDB.GetProofLeaves(ctx, proofID)
+	require.NoError(t, err)
+	require.Len(t, savedLeaves, count, "proof leaves should survive retention purge")
+
+	ok, err = integrity.VerifyBatchProof(root, savedLeaves)
+	require.NoError(t, err)
+	assert.True(t, ok, "proof should still verify after retention purge via saved leaves")
+}
+
+func TestProofLeaves_SurvivesGDPRErasure(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "pl-gdpr-" + suffix
+
+	// Isolated org.
+	orgID := uuid.New()
+	_, err := testDB.Pool().Exec(ctx,
+		`INSERT INTO organizations (id, name, slug) VALUES ($1, $2, $3)`,
+		orgID, "pl-gdpr-org-"+suffix, "pl-gdpr-org-"+suffix)
+	require.NoError(t, err)
+
+	runID := uuid.New()
+	_, err = testDB.Pool().Exec(ctx,
+		`INSERT INTO agent_runs (id, org_id, agent_id, status, created_at)
+		 VALUES ($1, $2, $3, 'running', now())`,
+		runID, orgID, agentID)
+	require.NoError(t, err)
+
+	beforeCreate := time.Now().UTC().Add(-1 * time.Second)
+
+	// Create a decision that will be erased.
+	decisionID := uuid.New()
+	reasoning := "sensitive reasoning " + suffix
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		ID:           decisionID,
+		RunID:        runID,
+		AgentID:      agentID,
+		OrgID:        orgID,
+		DecisionType: "gdpr_proof_test",
+		Outcome:      "sensitive outcome " + suffix,
+		Confidence:   0.9,
+		Reasoning:    &reasoning,
+		ValidFrom:    time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	afterCreate := time.Now().UTC().Add(1 * time.Second)
+
+	// Build proof and snapshot leaves.
+	hashes, err := testDB.GetDecisionHashesForBatch(ctx, orgID, beforeCreate, afterCreate)
+	require.NoError(t, err)
+	require.Len(t, hashes, 1)
+
+	root, err := integrity.BuildMerkleRoot(hashes)
+	require.NoError(t, err)
+
+	proofID := uuid.New()
+	proof := storage.IntegrityProof{
+		ID:            proofID,
+		OrgID:         orgID,
+		BatchStart:    beforeCreate,
+		BatchEnd:      afterCreate,
+		DecisionCount: 1,
+		RootHash:      root,
+		CreatedAt:     time.Now().UTC(),
+	}
+	require.NoError(t, testDB.CreateIntegrityProof(ctx, proof))
+	require.NoError(t, testDB.CreateProofLeaves(ctx, proofID, orgID, hashes))
+
+	// Erase the decision (GDPR).
+	_, err = testDB.EraseDecision(ctx, orgID, decisionID, "GDPR request", "admin-"+suffix, nil)
+	require.NoError(t, err)
+
+	// The decision's content_hash has changed.
+	postErasureHashes, err := testDB.GetDecisionHashesForBatch(ctx, orgID, beforeCreate, afterCreate)
+	require.NoError(t, err)
+	require.Len(t, postErasureHashes, 1)
+	assert.NotEqual(t, hashes[0], postErasureHashes[0], "content_hash should change after erasure")
+
+	// Verifying against the decisions table would fail (false violation).
+	ok, err := integrity.VerifyBatchProof(root, postErasureHashes)
+	require.NoError(t, err)
+	assert.False(t, ok, "verifying against mutated decisions table should fail")
+
+	// But proof_leaves preserve the original hashes — verification passes.
+	savedLeaves, err := testDB.GetProofLeaves(ctx, proofID)
+	require.NoError(t, err)
+	require.Len(t, savedLeaves, 1)
+	assert.Equal(t, hashes[0], savedLeaves[0], "proof leaves should preserve original hash")
+
+	ok, err = integrity.VerifyBatchProof(root, savedLeaves)
+	require.NoError(t, err)
+	assert.True(t, ok, "proof should still verify after GDPR erasure via saved leaves")
 }

@@ -156,9 +156,13 @@ func (h *Handlers) HandleHookSessionStart(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// HandleHookPreToolUse handles two cases:
-// 1. Edit/Write/MultiEdit gate: blocks until akashi_check has been called recently.
-// 2. Pre-commit reminder: suggests calling akashi_check before git commit.
+// HandleHookPreToolUse gates Edit/Write/MultiEdit until akashi_check has been
+// called recently. Non-edit tools pass through immediately.
+//
+// Note: Bash is intentionally excluded from the PreToolUse matcher to avoid
+// firing a network round-trip on every shell command. The pre-commit hint
+// (previously handled here) was not worth intercepting ~50 Bash calls per
+// session to catch ~2 git commits. Commit tracing is handled in PostToolUse.
 func (h *Handlers) HandleHookPreToolUse(w http.ResponseWriter, r *http.Request) {
 	var input hookPreToolUseInput
 	if err := decodeJSON(w, r, &input, hookMaxBodyBytes); err != nil {
@@ -166,40 +170,30 @@ func (h *Handlers) HandleHookPreToolUse(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	switch {
-	case isEditTool(input.ToolName):
-		allowed := false
-		if input.AgentID != "" {
-			allowed = h.hookChecks.IsRecent(input.AgentID)
-		} else {
-			// No agent_id in request — fall back to checking any agent.
-			// This preserves backwards compatibility with older hook scripts.
-			allowed = h.hookChecks.IsAnyRecent()
-		}
-		if allowed {
-			writeHookJSON(w, hookResponse{Continue: true, SuppressOutput: true})
-			return
-		}
-		writeHookJSON(w, hookResponse{
-			HookSpecificOutput: &hookSpecific{
-				HookEventName:            "PreToolUse",
-				PermissionDecision:       "deny",
-				PermissionDecisionReason: "Call akashi_check before making changes. This ensures you've checked for prior decisions and conflicts.",
-			},
-		})
-
-	case isGitCommit(input.ToolInput):
-		writeHookJSON(w, hookResponse{
-			Continue: true,
-			HookSpecificOutput: &hookSpecific{
-				HookEventName:     "PreToolUse",
-				AdditionalContext: "Consider calling akashi_check before committing to verify no conflicting decisions exist.",
-			},
-		})
-
-	default:
+	if !isEditTool(input.ToolName) {
 		writeHookJSON(w, hookResponse{Continue: true, SuppressOutput: true})
+		return
 	}
+
+	allowed := false
+	if input.AgentID != "" {
+		allowed = h.hookChecks.IsRecent(input.AgentID)
+	} else {
+		// No agent_id in request — fall back to checking any agent.
+		// This preserves backwards compatibility with older hook scripts.
+		allowed = h.hookChecks.IsAnyRecent()
+	}
+	if allowed {
+		writeHookJSON(w, hookResponse{Continue: true, SuppressOutput: true})
+		return
+	}
+	writeHookJSON(w, hookResponse{
+		HookSpecificOutput: &hookSpecific{
+			HookEventName:            "PreToolUse",
+			PermissionDecision:       "deny",
+			PermissionDecisionReason: "Call akashi_check before making changes. This ensures you've checked for prior decisions and conflicts.",
+		},
+	})
 }
 
 // HandleHookPostToolUse handles:
@@ -226,9 +220,17 @@ func (h *Handlers) HandleHookPostToolUse(w http.ResponseWriter, r *http.Request)
 }
 
 // handlePostCommit auto-traces a git commit and/or suggests manual tracing.
+//
+// The commit has already happened by the time PostToolUse fires, so we read
+// the subject from `git log -1 --format=%s` instead of parsing the command
+// string. This correctly handles HEREDOC commits, --amend, and editor-based
+// messages that the old regex-based parser could not.
 func (h *Handlers) handlePostCommit(w http.ResponseWriter, input hookPostToolUseInput) {
-	command := extractCommand(input.ToolInput)
-	commitMsg := extractCommitMessage(command)
+	commitMsg := gitCommitSubject(input.CWD)
+	if commitMsg == "" {
+		// Fallback: try parsing from the command string.
+		commitMsg = extractCommitMessage(extractCommand(input.ToolInput))
+	}
 	if commitMsg == "" {
 		commitMsg = "commit (message not parsed)"
 	}
@@ -334,6 +336,22 @@ func gitDiffNameOnly(cwd string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// gitCommitSubject returns the subject line of the most recent commit,
+// or "" on error. This is preferred over regex-parsing the command string
+// because it handles HEREDOC commits, --amend, and editor-based messages.
+func gitCommitSubject(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", cwd, "log", "-1", "--format=%s").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // gitCommitBody returns the body (lines after the subject) of the most
 // recent commit, or "" if there is no body or on error.
 func gitCommitBody(cwd string) string {
@@ -410,9 +428,12 @@ func (h *Handlers) buildSessionContext(ctx context.Context, project string) stri
 		recent = nil
 	}
 
-	// Query open conflicts.
+	// Query open conflicts — scoped by project when known.
 	openStatus := "open"
 	conflictFilter := storage.ConflictFilters{Status: &openStatus}
+	if project != "" {
+		conflictFilter.Project = &project
+	}
 	conflicts, err := h.db.ListConflicts(ctx, orgID, conflictFilter, 5, 0)
 	if err != nil {
 		h.logger.Debug("hook session-start: list conflicts failed", "error", err)
@@ -539,11 +560,15 @@ func formatAge(d time.Duration) string {
 	}
 }
 
-func truncateHook(s string, maxLen int) string {
-	if len(s) <= maxLen {
+// truncateHook truncates s to at most maxRunes runes, appending "..." if
+// truncated. Operates on runes, not bytes, to avoid splitting multi-byte
+// UTF-8 characters (e.g. CJK, emoji) mid-codepoint.
+func truncateHook(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return string(runes[:maxRunes]) + "..."
 }
 
 func writeHookJSON(w http.ResponseWriter, resp hookResponse) {

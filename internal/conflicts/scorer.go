@@ -269,6 +269,12 @@ const decisionTopicSimFloor = 0.7
 // applies conservatively. See claimDivFloor calibration notes above.
 const defaultOutcomeSimFloor = 0.85
 
+// confidenceFloorProduct is the minimum product of confA * confB below which
+// candidate pairs are skipped entirely. sqrt(0.0225) = 0.15 — decisions where
+// both parties have very low confidence are exploratory and should not trigger
+// conflicts. Applied before computing cosine similarities to save CPU.
+const confidenceFloorProduct = 0.0225
+
 // pairCache tracks decision pairs that have already been evaluated within a
 // single backfill run. This prevents duplicate LLM calls when both sides of
 // a pair are processed concurrently (decision A finds B as candidate, and
@@ -435,6 +441,13 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			continue
 		}
 
+		// Confidence floor: skip exploratory decision pairs where both parties
+		// have very low confidence. Applied before cosine similarity to save CPU.
+		if float64(d.Confidence)*float64(cand.Confidence) < confidenceFloorProduct {
+			s.metrics.confidenceFloorFiltered.Add(ctx, 1)
+			continue
+		}
+
 		topicSim := cosineSimilarity(d.Embedding.Slice(), cand.Embedding.Slice())
 		s.metrics.candidatesEvaluated.Add(ctx, 1)
 
@@ -499,6 +512,28 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		return scored[i].bestSig > scored[j].bestSig
 	})
 
+	// --- FP pattern cache: lazy-loaded historical FP rates by decision type pair ---
+	type typePairKey struct{ a, b string }
+	fpRateCache := make(map[typePairKey]float64)
+	fpRateLookup := func(typeA, typeB string) float64 {
+		// Normalize order so (A,B) and (B,A) share a cache entry.
+		a, b := strings.ToLower(typeA), strings.ToLower(typeB)
+		if a > b {
+			a, b = b, a
+		}
+		key := typePairKey{a, b}
+		if rate, ok := fpRateCache[key]; ok {
+			return rate
+		}
+		rate, sampleSize, err := s.db.GetTypePairFPRate(ctx, orgID, a, b)
+		if err != nil || sampleSize < 5 {
+			fpRateCache[key] = 0
+			return 0
+		}
+		fpRateCache[key] = rate
+		return rate
+	}
+
 	// --- Sorted iteration with early exit ---
 	examined := 0
 	inserted := 0
@@ -528,7 +563,17 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			continue
 		}
 
-		if sc.bestSig < s.threshold && !directToScorer {
+		// FP pattern suppression: when the historical FP rate for this
+		// decision type pair exceeds 80%, double the significance threshold.
+		// This creates a feedback loop from labeled data — type pairs that
+		// consistently produce false positives get stricter gating.
+		effectiveThreshold := s.threshold
+		fpRate := fpRateLookup(d.DecisionType, sc.cand.DecisionType)
+		if fpRate > 0.80 {
+			effectiveThreshold *= 2.0
+			s.metrics.fpPatternFiltered.Add(ctx, 1)
+		}
+		if sc.bestSig < effectiveThreshold && !directToScorer {
 			continue
 		}
 
@@ -611,13 +656,14 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		}
 
 		// Confirmation gate: classify the candidate pair as conflict or not.
-		// Priority: (1) external pairwise scorer, (2) built-in LLM validator, (3) noop.
-		// NoopValidator returns "unvalidated" — the candidate is skipped (not inserted).
+		// Priority: (1) external pairwise scorer, (2) built-in LLM validator,
+		// (3) noop with claim-level confirmation.
 		bestMethod := sc.bestMethod
 		var explanation *string
 		var category, severity, relationship *string
 
-		if s.pairwiseScorer != nil {
+		switch {
+		case s.pairwiseScorer != nil:
 			// External pairwise scorer (enterprise override).
 			if cache != nil && cache.checkAndMark(decisionID, cand.ID) {
 				s.logger.Debug("conflict scorer: pair already evaluated, skipping external scorer call",
@@ -653,7 +699,8 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			if extExpl != "" {
 				explanation = &extExpl
 			}
-		} else if !isNoop {
+
+		case !isNoop:
 			// Built-in LLM validation gate.
 			// Skip LLM call if this pair was already evaluated during backfill.
 			if cache != nil && cache.checkAndMark(decisionID, cand.ID) {
@@ -721,6 +768,21 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			if result.Severity != "" {
 				severity = &result.Severity
 			}
+
+		default:
+			// Noop validator path: require claim-level confirmation.
+			// Full-outcome embeddings are stance-blind ("use Redis" and "avoid
+			// Redis" embed close together). Without an LLM, only claim-level
+			// scoring can distinguish genuine disagreement from topic overlap.
+			// This eliminates the primary source of false positives on the
+			// embedding-only path.
+			if sc.bestMethod != "claim" {
+				s.metrics.noopClaimGateFiltered.Add(ctx, 1)
+				s.logger.Debug("conflict scorer: noop claim gate filtered pair",
+					"decision_a", decisionID, "decision_b", cand.ID,
+					"method", sc.bestMethod, "significance", sc.bestSig)
+				continue
+			}
 		}
 
 		kind := model.ConflictKindCrossAgent
@@ -763,6 +825,8 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			ClaimTextA:         sc.claimFragA,
 			ClaimTextB:         sc.claimFragB,
 			EarliestPossibleAt: &earliestAt,
+			ProjectA:           d.Project,
+			ProjectB:           cand.Project,
 		}
 
 		// Topic-aware group assignment: find or create a group whose
@@ -779,6 +843,25 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 					"error", grpErr, "decision_a", decisionID, "decision_b", cand.ID)
 			} else {
 				c.GroupID = &groupID
+			}
+		}
+
+		// Transitive group dedup: if both decisions already participate in
+		// open or resolved conflicts within the same group, adding A↔B is
+		// redundant — the group already captures the full disagreement topology.
+		// This eliminates the N×N explosion from supersession chains where
+		// iterative refinements generate O(n²) pairwise conflicts.
+		if c.GroupID != nil {
+			alreadyGrouped, grpErr := s.db.HasGroupParticipation(ctx, orgID, *c.GroupID, decisionID, cand.ID)
+			if grpErr != nil {
+				s.logger.Warn("conflict scorer: group participation check failed",
+					"error", grpErr, "group_id", c.GroupID)
+			} else if alreadyGrouped {
+				s.metrics.transitiveGroupFiltered.Add(ctx, 1)
+				s.logger.Debug("conflict scorer: transitive group dedup suppressed pair",
+					"decision_a", decisionID, "decision_b", cand.ID,
+					"group_id", c.GroupID)
+				continue
 			}
 		}
 
@@ -1070,6 +1153,69 @@ func (s *Scorer) ClearAllConflicts(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("conflicts: commit clear all: %w", err)
 	}
 	s.logger.Warn("startup: cleared all open conflicts", "deleted", n, "reason", "AKASHI_FORCE_CONFLICT_RESCORE")
+	return n, nil
+}
+
+// CleanupTransitiveGroupConflicts marks redundant group conflicts as false
+// positives. For each conflict group with 3+ open conflicts, keeps only the
+// highest-significance conflict and marks the rest as false_positive with a
+// system note. This is a one-time cleanup for existing data; the transitive
+// group dedup filter in scoreForDecision prevents future accumulation.
+// Returns the number of conflicts cleaned up.
+// SECURITY: Intentionally global — one-time startup cleanup across all orgs.
+func (s *Scorer) CleanupTransitiveGroupConflicts(ctx context.Context) (int, error) {
+	tx, err := s.db.Pool().Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("conflicts: begin transitive cleanup tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// For each group with 3+ open conflicts, keep only the one with highest
+	// significance, mark the rest as false_positive.
+	tag, err := tx.Exec(ctx, `
+		WITH ranked AS (
+			SELECT id, group_id,
+				ROW_NUMBER() OVER (PARTITION BY group_id ORDER BY COALESCE(significance, 0) DESC) AS rn
+			FROM scored_conflicts
+			WHERE status = 'open'
+			  AND group_id IN (
+				SELECT group_id FROM scored_conflicts
+				WHERE status = 'open' AND group_id IS NOT NULL
+				GROUP BY group_id HAVING count(*) >= 3
+			  )
+		)
+		UPDATE scored_conflicts SET
+			status = 'false_positive',
+			resolved_at = now(),
+			resolved_by = 'system',
+			resolution_note = 'system: transitive group dedup cleanup'
+		WHERE id IN (SELECT id FROM ranked WHERE rn > 1)
+		  AND status = 'open'`)
+	if err != nil {
+		return 0, fmt.Errorf("conflicts: transitive cleanup: %w", err)
+	}
+	n := int(tag.RowsAffected())
+
+	if n > 0 {
+		if err := storage.InsertMutationAuditTx(ctx, tx, storage.MutationAuditEntry{
+			ActorAgentID: "system",
+			ActorRole:    "platform_admin",
+			Operation:    "cleanup_transitive_group_conflicts",
+			ResourceType: "scored_conflicts",
+			BeforeData:   map[string]any{"count": n},
+			AfterData:    map[string]any{"marked_false_positive": n},
+			Metadata:     map[string]any{"reason": "transitive_group_dedup_cleanup"},
+		}); err != nil {
+			return 0, fmt.Errorf("conflicts: audit transitive cleanup: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("conflicts: commit transitive cleanup: %w", err)
+	}
+	if n > 0 {
+		s.logger.Warn("startup: cleaned up transitive group conflicts", "marked_false_positive", n)
+	}
 	return n, nil
 }
 

@@ -1692,6 +1692,7 @@ func TestCheck_ConflictListError(t *testing.T) {
 	require.NoError(t, err, "conflict list error should be non-fatal")
 	assert.True(t, resp.HasPrecedent)
 	assert.Empty(t, resp.Conflicts)
+	assert.True(t, resp.ConflictsUnavailable, "should signal that conflict data is degraded")
 }
 
 func TestCheck_FiltersResolvedConflicts(t *testing.T) {

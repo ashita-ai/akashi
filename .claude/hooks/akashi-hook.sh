@@ -139,7 +139,7 @@ case "$HOOK_EVENT" in
           else
             MARKER_AGE=$(( $(date +%s) - $(stat -c %Y "$MARKER") ))
           fi
-          if [ "$MARKER_AGE" -lt 3600 ]; then
+          if [ "$MARKER_AGE" -lt 600 ]; then
             echo '{"continue":true,"suppressOutput":true}'
             exit 0
           fi

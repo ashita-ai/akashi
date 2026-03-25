@@ -397,6 +397,13 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("config: AKASHI_CONFLICT_OUTCOME_SIM_FLOOR must be between 0.0 and 1.0 (0 disables)"))
 	}
 
+	// WAL fail-safe: refuse to start without WAL unless explicitly disabled.
+	// The envStr helper prevents AKASHI_WAL_DIR="" from clearing the default,
+	// but this catches programmatic Config construction or future refactors.
+	if c.WALDir == "" && !c.WALDisable {
+		errs = append(errs, errors.New("config: WAL is required for crash durability; set AKASHI_WAL_DIR or set AKASHI_WAL_DISABLE=true to explicitly accept data loss risk"))
+	}
+
 	// JWT keys must be both set or both empty (ephemeral mode). Mismatched config
 	// would cause token validation to fail for all clients.
 	privSet := c.JWTPrivateKeyPath != ""

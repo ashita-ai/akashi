@@ -293,6 +293,7 @@ class CheckResponse(BaseModel):
     has_precedent: bool
     decisions: list[Decision]
     conflicts: list[DecisionConflict] = Field(default_factory=list)
+    conflicts_unavailable: bool = False
 
 
 class QueryResponse(BaseModel):

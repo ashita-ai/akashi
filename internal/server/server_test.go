@@ -11189,3 +11189,80 @@ func TestHandleGetRun_EnrichmentsEmptyRun(t *testing.T) {
 	assert.NotContains(t, string(b), "decision_enrichments",
 		"enrichments should not appear when run has no decisions")
 }
+
+// ---- HandleSetOrgSettings audit trail ------------------------------------
+
+func TestHandleSetOrgSettings_AuditTrail(t *testing.T) {
+	orgID := uuid.Nil // default org from SeedAdmin
+
+	// Count existing audit entries so we can assert on the delta.
+	var baseline int
+	require.NoError(t, testDB.Pool().QueryRow(context.Background(),
+		`SELECT count(*) FROM mutation_audit_log
+		 WHERE operation = 'org_settings_updated'
+		   AND resource_type = 'org_settings'
+		   AND org_id = $1`, orgID,
+	).Scan(&baseline))
+
+	t.Run("upsert writes mutation audit entry", func(t *testing.T) {
+		settings := model.OrgSettingsData{
+			ConflictResolution: &model.ConflictResolutionPolicy{
+				AutoResolveAfterDays:   7,
+				AutoResolveWinner:      model.WinnerRecency,
+				AutoResolveMaxSeverity: "medium",
+			},
+		}
+
+		resp, err := authedRequest("PUT", testSrv.URL+"/v1/org/settings", adminToken, settings)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		// Verify a mutation audit row was written for this operation.
+		var count int
+		err = testDB.Pool().QueryRow(context.Background(),
+			`SELECT count(*) FROM mutation_audit_log
+			 WHERE operation = 'org_settings_updated'
+			   AND resource_type = 'org_settings'
+			   AND org_id = $1`, orgID,
+		).Scan(&count)
+		require.NoError(t, err)
+		assert.Equal(t, baseline+1, count, "expected one new audit entry for org_settings_updated")
+	})
+
+	t.Run("second upsert captures before-state", func(t *testing.T) {
+		// Second write — should capture the first settings as before_data.
+		second := model.OrgSettingsData{
+			ConflictResolution: &model.ConflictResolutionPolicy{
+				AutoResolveAfterDays:   14,
+				AutoResolveWinner:      model.WinnerConfidence,
+				AutoResolveMaxSeverity: "high",
+			},
+		}
+		resp, err := authedRequest("PUT", testSrv.URL+"/v1/org/settings", adminToken, second)
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		// Find the most recent audit entry and verify before_data is non-null.
+		var beforeData, afterData []byte
+		err = testDB.Pool().QueryRow(context.Background(),
+			`SELECT before_data, after_data FROM mutation_audit_log
+			 WHERE operation = 'org_settings_updated'
+			   AND resource_type = 'org_settings'
+			   AND org_id = $1
+			 ORDER BY occurred_at DESC LIMIT 1`, orgID,
+		).Scan(&beforeData, &afterData)
+		require.NoError(t, err)
+		assert.NotNil(t, beforeData, "second upsert should capture before_data")
+		assert.NotNil(t, afterData, "second upsert should capture after_data")
+
+		// Verify the before_data contains the previous settings.
+		// PostgreSQL jsonb canonical form uses spaces after colons.
+		assert.Contains(t, string(beforeData), `"auto_resolve_after_days": 7`,
+			"before_data should reflect the first settings write")
+		// Verify the after_data contains the new settings.
+		assert.Contains(t, string(afterData), `"auto_resolve_after_days": 14`,
+			"after_data should reflect the second settings write")
+	})
+}

@@ -552,15 +552,66 @@ func (db *DB) deleteBatch(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID)
 }
 
 // DropEventChunks drops TimescaleDB chunks from agent_events older than olderThan.
-// Returns the number of chunks dropped (not rows — each chunk is a time partition).
+// Before dropping, it archives a per-org summary record to deletion_audit_log so
+// the audit trail records what was purged. Returns the number of chunks dropped
+// (not rows — each chunk is a time partition).
 func (db *DB) DropEventChunks(ctx context.Context, olderThan time.Time) (int64, error) {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("storage: begin drop event chunks tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Archive a summary record per (org_id, chunk) into deletion_audit_log.
+	// drop_chunks removes chunks whose range_end <= the cutoff, so we identify
+	// those chunks via timescaledb_information.chunks and aggregate the events
+	// they contain, grouped by org_id.
+	_, err = tx.Exec(ctx,
+		`WITH droppable_chunks AS (
+		     SELECT chunk_name,
+		            range_start::timestamptz AS range_start,
+		            range_end::timestamptz   AS range_end
+		     FROM timescaledb_information.chunks
+		     WHERE hypertable_name = 'agent_events'
+		       AND range_end::timestamptz <= $1
+		 )
+		 INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		 SELECT ae.org_id,
+		        'system',
+		        'agent_events',
+		        dc.chunk_name,
+		        jsonb_build_object(
+		            'operation',       'retention_chunk_drop',
+		            'chunk_name',      dc.chunk_name,
+		            'chunk_range_start', dc.range_start,
+		            'chunk_range_end',   dc.range_end,
+		            'cutoff',          $1::timestamptz,
+		            'event_count',     COUNT(*),
+		            'min_occurred_at', MIN(ae.occurred_at),
+		            'max_occurred_at', MAX(ae.occurred_at),
+		            'event_types',     jsonb_agg(DISTINCT ae.event_type)
+		        )
+		 FROM droppable_chunks dc
+		 JOIN agent_events ae ON ae.occurred_at >= dc.range_start
+		                      AND ae.occurred_at <  dc.range_end
+		 GROUP BY ae.org_id, dc.chunk_name, dc.range_start, dc.range_end`,
+		olderThan,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("storage: archive event chunk summary: %w", err)
+	}
+
 	var dropped int64
-	err := db.pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`SELECT count(*) FROM drop_chunks('agent_events', $1::timestamptz)`,
 		olderThan,
 	).Scan(&dropped)
 	if err != nil {
 		return 0, fmt.Errorf("storage: drop event chunks: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("storage: commit drop event chunks tx: %w", err)
 	}
 	return dropped, nil
 }
