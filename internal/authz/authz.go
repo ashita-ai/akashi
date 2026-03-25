@@ -84,8 +84,18 @@ func tagsOverlap(a, b []string) bool {
 }
 
 // LoadGrantedSet returns the set of agent_ids the caller can access.
-// For admin+ this returns nil (meaning unrestricted). For others it merges
-// tag-based matches (agents sharing at least one tag) with per-agent grants.
+//
+// Return value semantics (used by all Filter* functions):
+//   - nil map → unrestricted access (admin+ roles). Callers MUST return
+//     unfiltered results when granted is nil.
+//   - empty non-nil map → no access at all (nil claims, or a valid agent
+//     with no grants/tag overlap). Callers iterating the map will match
+//     nothing, correctly denying access to every entry.
+//   - populated map → access limited to the keys present.
+//
+// For admin+ this returns nil (meaning unrestricted). For nil claims it
+// returns an empty map (meaning deny-all). For others it merges tag-based
+// matches (agents sharing at least one tag) with per-agent grants.
 //
 // If cache is non-nil, results are cached by org_id:subject for the cache's TTL.
 func LoadGrantedSet(ctx context.Context, db storage.Store, claims *auth.Claims, cache *GrantCache) (map[string]bool, error) {
@@ -210,22 +220,51 @@ func FilterConflicts(ctx context.Context, db storage.Store, claims *auth.Claims,
 	return allowed, nil
 }
 
-// FilterLineageEntries removes lineage entries the caller is not authorized to see.
+// FilterConflictGroups removes conflict groups the caller cannot see.
+// A caller must have access to BOTH agents in the group (same rule as conflicts).
 // cache may be nil to disable caching.
-func FilterLineageEntries(ctx context.Context, db storage.Store, claims *auth.Claims, entries []storage.LineageEntry, cache *GrantCache) ([]storage.LineageEntry, error) {
+func FilterConflictGroups(ctx context.Context, db storage.Store, claims *auth.Claims, groups []model.ConflictGroup, cache *GrantCache) ([]model.ConflictGroup, error) {
 	granted, err := LoadGrantedSet(ctx, db, claims, cache)
 	if err != nil {
 		return nil, err
 	}
 	if granted == nil {
-		return entries, nil
+		return groups, nil
 	}
 
-	allowed := make([]storage.LineageEntry, 0, len(entries))
-	for _, e := range entries {
+	allowed := make([]model.ConflictGroup, 0, len(groups))
+	for _, g := range groups {
+		if granted[g.AgentA] && granted[g.AgentB] {
+			allowed = append(allowed, g)
+		}
+	}
+	return allowed, nil
+}
+
+// FilterLineage removes lineage entries the caller cannot see.
+// PrecededBy is nilled out if its agent is not accessible; CitedBy entries
+// are filtered to only those whose agent the caller can access.
+// cache may be nil to disable caching.
+func FilterLineage(ctx context.Context, db storage.Store, claims *auth.Claims, lineage storage.DecisionLineage, cache *GrantCache) (storage.DecisionLineage, error) {
+	granted, err := LoadGrantedSet(ctx, db, claims, cache)
+	if err != nil {
+		return lineage, err
+	}
+	if granted == nil {
+		return lineage, nil
+	}
+
+	if lineage.PrecededBy != nil && !granted[lineage.PrecededBy.AgentID] {
+		lineage.PrecededBy = nil
+	}
+
+	allowed := make([]storage.LineageEntry, 0, len(lineage.CitedBy))
+	for _, e := range lineage.CitedBy {
 		if granted[e.AgentID] {
 			allowed = append(allowed, e)
 		}
 	}
-	return allowed, nil
+	lineage.CitedBy = allowed
+
+	return lineage, nil
 }

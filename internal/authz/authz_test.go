@@ -292,3 +292,122 @@ func TestCanAccessAgent_NoTagOverlap(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok, "agents with different tags and no grants should be denied")
 }
+
+// ---------------------------------------------------------------------------
+// FilterConflictGroups
+// ---------------------------------------------------------------------------
+
+func TestFilterConflictGroups_AdminSeesAll(t *testing.T) {
+	claims := makeClaims("admin-cg", uuid.New(), model.RoleAdmin)
+
+	groups := []model.ConflictGroup{
+		{AgentA: "x", AgentB: "y"},
+		{AgentA: "a", AgentB: "b"},
+	}
+
+	filtered, err := authz.FilterConflictGroups(context.Background(), testDB, claims, groups, nil)
+	require.NoError(t, err)
+	assert.Len(t, filtered, 2, "admin should see all conflict groups")
+}
+
+func TestFilterConflictGroups_AgentSeesOnlyAccessible(t *testing.T) {
+	suffix := uuid.New().String()[:8]
+	agent := createTestAgent(t, "cg-agent-"+suffix, model.RoleAgent, nil)
+	claims := makeClaims(agent.AgentID, agent.ID, model.RoleAgent)
+
+	groups := []model.ConflictGroup{
+		{AgentA: agent.AgentID, AgentB: agent.AgentID}, // self-conflict group — visible
+		{AgentA: agent.AgentID, AgentB: "unknown"},     // only one side accessible — hidden
+		{AgentA: "unknown", AgentB: "other-unknown"},   // neither side accessible — hidden
+	}
+
+	filtered, err := authz.FilterConflictGroups(context.Background(), testDB, claims, groups, nil)
+	require.NoError(t, err)
+	assert.Len(t, filtered, 1, "agent should only see groups where both agents are accessible")
+	assert.Equal(t, agent.AgentID, filtered[0].AgentA)
+}
+
+func TestFilterConflictGroups_NilClaimsReturnsEmpty(t *testing.T) {
+	groups := []model.ConflictGroup{
+		{AgentA: "a", AgentB: "b"},
+	}
+	filtered, err := authz.FilterConflictGroups(context.Background(), testDB, nil, groups, nil)
+	require.NoError(t, err)
+	assert.Empty(t, filtered, "nil claims should filter out everything")
+}
+
+// ---------------------------------------------------------------------------
+// FilterLineage
+// ---------------------------------------------------------------------------
+
+func TestFilterLineage_AdminSeesAll(t *testing.T) {
+	claims := makeClaims("admin-lineage", uuid.New(), model.RoleAdmin)
+
+	lineage := storage.DecisionLineage{
+		DecisionID: uuid.New(),
+		PrecededBy: &storage.LineageEntry{AgentID: "x"},
+		CitedBy: []storage.LineageEntry{
+			{AgentID: "a"},
+			{AgentID: "b"},
+		},
+	}
+
+	filtered, err := authz.FilterLineage(context.Background(), testDB, claims, lineage, nil)
+	require.NoError(t, err)
+	assert.NotNil(t, filtered.PrecededBy, "admin should see preceded_by")
+	assert.Len(t, filtered.CitedBy, 2, "admin should see all cited_by entries")
+}
+
+func TestFilterLineage_AgentSeesOnlyOwn(t *testing.T) {
+	suffix := uuid.New().String()[:8]
+	agent := createTestAgent(t, "lineage-agent-"+suffix, model.RoleAgent, nil)
+	claims := makeClaims(agent.AgentID, agent.ID, model.RoleAgent)
+
+	lineage := storage.DecisionLineage{
+		DecisionID: uuid.New(),
+		PrecededBy: &storage.LineageEntry{AgentID: "other-agent"},
+		CitedBy: []storage.LineageEntry{
+			{AgentID: agent.AgentID},
+			{AgentID: "other-agent"},
+			{AgentID: agent.AgentID},
+		},
+	}
+
+	filtered, err := authz.FilterLineage(context.Background(), testDB, claims, lineage, nil)
+	require.NoError(t, err)
+	assert.Nil(t, filtered.PrecededBy, "preceded_by by inaccessible agent should be nil")
+	assert.Len(t, filtered.CitedBy, 2, "only cited_by entries for accessible agents should remain")
+	for _, e := range filtered.CitedBy {
+		assert.Equal(t, agent.AgentID, e.AgentID)
+	}
+}
+
+func TestFilterLineage_NilPrecededByStaysNil(t *testing.T) {
+	suffix := uuid.New().String()[:8]
+	agent := createTestAgent(t, "lineage-nil-"+suffix, model.RoleAgent, nil)
+	claims := makeClaims(agent.AgentID, agent.ID, model.RoleAgent)
+
+	lineage := storage.DecisionLineage{
+		DecisionID: uuid.New(),
+		PrecededBy: nil,
+		CitedBy:    []storage.LineageEntry{{AgentID: agent.AgentID}},
+	}
+
+	filtered, err := authz.FilterLineage(context.Background(), testDB, claims, lineage, nil)
+	require.NoError(t, err)
+	assert.Nil(t, filtered.PrecededBy)
+	assert.Len(t, filtered.CitedBy, 1)
+}
+
+func TestFilterLineage_NilClaimsFiltersEverything(t *testing.T) {
+	lineage := storage.DecisionLineage{
+		DecisionID: uuid.New(),
+		PrecededBy: &storage.LineageEntry{AgentID: "a"},
+		CitedBy:    []storage.LineageEntry{{AgentID: "b"}},
+	}
+
+	filtered, err := authz.FilterLineage(context.Background(), testDB, nil, lineage, nil)
+	require.NoError(t, err)
+	assert.Nil(t, filtered.PrecededBy, "nil claims should filter preceded_by")
+	assert.Empty(t, filtered.CitedBy, "nil claims should filter all cited_by")
+}

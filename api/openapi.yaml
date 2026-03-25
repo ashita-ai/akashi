@@ -3760,7 +3760,7 @@ components:
           description: Total accessible conflicts after RBAC filtering but before cap truncation.
         has_more:
           type: boolean
-          description: True when more accessible conflicts exist than the 50 returned.
+          description: True when more conflicts exist than the 50 returned (based on pre-RBAC-filter count).
         degraded:
           type: boolean
           description: True when conflict data could not be fully retrieved due to a storage or authorization error.

@@ -57,6 +57,7 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 // the highest-significance representative conflict embedded. This is the deduplicated
 // view that eliminates N×M pairwise noise from the raw conflicts list.
 func (h *Handlers) HandleListConflictGroups(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
 
 	filters := storage.ConflictGroupFilters{}
@@ -88,12 +89,19 @@ func (h *Handlers) HandleListConflictGroups(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	preFilterCount := len(groups)
+	groups, err = filterConflictGroupsByAccess(r.Context(), h.db, claims, groups, h.grantCache)
+	if err != nil {
+		h.writeInternalError(w, r, "authorization check failed", err)
+		return
+	}
+
 	if groups == nil {
 		groups = []model.ConflictGroup{}
 	}
 
-	hasMore := offset+len(groups) < total
-	writeListJSON(w, r, groups, &total, hasMore, limit, offset)
+	ptotal, hasMore := computePagination(len(groups), preFilterCount, limit, offset, total)
+	writeListJSON(w, r, groups, ptotal, hasMore, limit, offset)
 }
 
 // cascadeSimilarityThreshold is the minimum cosine similarity between a

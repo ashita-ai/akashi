@@ -34,14 +34,14 @@ type enrichmentRevisions struct {
 }
 
 // enrichmentConflicts holds conflicts for a single decision.
-// Count is the number of items returned (post-access-filter, post-truncation).
-// Total is the total number of conflicts before RBAC filtering (from the storage
-// layer). This lets consumers know when RBAC or truncation hid conflicts.
+// Count is the number of items returned (post-RBAC, post-truncation).
+// Total is the pre-RBAC count from the storage layer; omitted (zero) when
+// equal to Count so consumers can detect when RBAC or truncation hid conflicts.
 type enrichmentConflicts struct {
 	Items    []model.DecisionConflict `json:"items"`
 	Count    int                      `json:"count"`    // Number of accessible items returned (may be capped).
-	Total    int                      `json:"total"`    // Total accessible conflicts (post RBAC, pre truncation).
-	HasMore  bool                     `json:"has_more"` // True when more accessible conflicts exist than the cap.
+	Total    int                      `json:"total"`    // Pre-RBAC conflict count; 0 when equal to Count.
+	HasMore  bool                     `json:"has_more"` // True when pre-RBAC count exceeds the cap.
 	Degraded bool                     `json:"degraded,omitempty"`
 }
 
@@ -411,6 +411,7 @@ func (h *Handlers) buildDecisionEnrichments(
 	// Phase 1: Batch-fetch lineage and conflicts concurrently.
 	var batchLineage map[uuid.UUID]storage.DecisionLineage
 	var batchConflicts map[uuid.UUID][]model.DecisionConflict
+	var batchConflictTotals map[uuid.UUID]int // pre-RBAC-filter counts
 	var lineageDegraded, conflictsDegraded bool
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -432,7 +433,10 @@ func (h *Handlers) buildDecisionEnrichments(
 			conflictsDegraded = true
 			return nil
 		}
+		// Track pre-filter totals, then apply access filtering.
+		totals := make(map[uuid.UUID]int, len(raw))
 		for decID, conflicts := range raw {
+			totals[decID] = len(conflicts)
 			filtered, filterErr := filterConflictsByAccess(gctx, h.db, claims, conflicts, h.grantCache)
 			if filterErr != nil {
 				h.logger.Warn("enrichment: access filter failed for batch conflicts",
@@ -442,6 +446,7 @@ func (h *Handlers) buildDecisionEnrichments(
 			}
 			raw[decID] = filtered
 		}
+		batchConflictTotals = totals
 		batchConflicts = raw
 		return nil
 	})
@@ -459,7 +464,7 @@ func (h *Handlers) buildDecisionEnrichments(
 		g2.Go(func() error {
 			entry := h.buildSingleEnrichment(gctx2, orgID, claims, d,
 				batchLineage, lineageDegraded,
-				batchConflicts, conflictsDegraded)
+				batchConflicts, batchConflictTotals, conflictsDegraded)
 			mu.Lock()
 			enrichments[d.ID.String()] = entry
 			mu.Unlock()
@@ -468,6 +473,26 @@ func (h *Handlers) buildDecisionEnrichments(
 	}
 
 	_ = g2.Wait()
+
+	// If the request was cancelled mid-flight, some enrichments may be
+	// incomplete. Insert fully-degraded stubs so absence in the map is
+	// unambiguous (= not requested) rather than ambiguous (= cancelled?).
+	if ctx.Err() != nil {
+		truncated = true
+		for _, d := range toEnrich {
+			key := d.ID.String()
+			if _, exists := enrichments[key]; !exists {
+				enrichments[key] = decisionEnrichment{
+					Revisions: enrichmentRevisions{Items: []model.Decision{}, Degraded: true},
+					Lineage:   storage.DecisionLineage{DecisionID: d.ID},
+					Conflicts: enrichmentConflicts{Items: []model.DecisionConflict{}, Degraded: true},
+					Integrity: enrichmentIntegrity{Status: "no_hash"},
+					Degraded:  true,
+				}
+			}
+		}
+	}
+
 	return enrichments, truncated
 }
 
@@ -481,6 +506,7 @@ func (h *Handlers) buildSingleEnrichment(
 	batchLineage map[uuid.UUID]storage.DecisionLineage,
 	lineageDegraded bool,
 	batchConflicts map[uuid.UUID][]model.DecisionConflict,
+	batchConflictTotals map[uuid.UUID]int,
 	conflictsDegraded bool,
 ) decisionEnrichment {
 	decID := d.ID
@@ -498,6 +524,7 @@ func (h *Handlers) buildSingleEnrichment(
 			entry.Revisions = enrichmentRevisions{Items: []model.Decision{}}
 		}
 	} else {
+		totalRevisions := len(revisions)
 		revisions, filterErr := filterDecisionsByAccess(ctx, h.db, claims, revisions, h.grantCache)
 		if filterErr != nil {
 			h.logger.Warn("enrichment: access filter failed for revisions",
@@ -505,41 +532,30 @@ func (h *Handlers) buildSingleEnrichment(
 			entry.Revisions = enrichmentRevisions{Items: []model.Decision{}, Degraded: true}
 			entry.Degraded = true
 		} else {
-			entry.Revisions = enrichmentRevisions{Items: revisions, Count: len(revisions), Total: len(revisions)}
+			er := enrichmentRevisions{Items: revisions, Count: len(revisions)}
+			if totalRevisions != len(revisions) {
+				er.Total = totalRevisions
+			}
+			entry.Revisions = er
 		}
 	}
 
-	// --- Lineage (from batch result, then RBAC-filtered) ---
+	// --- Lineage (from batch result, then RBAC-filtered via FilterLineage) ---
 	switch {
 	case lineageDegraded:
 		entry.Lineage = storage.DecisionLineage{DecisionID: decID}
 		entry.Degraded = true
 	case batchLineage != nil:
 		if lineage, ok := batchLineage[decID]; ok {
-			if lineage.PrecededBy != nil {
-				one := []storage.LineageEntry{*lineage.PrecededBy}
-				filtered, fErr := filterLineageEntriesByAccess(ctx, h.db, claims, one, h.grantCache)
-				if fErr != nil {
-					h.logger.Warn("enrichment: access filter failed for lineage preceded_by",
-						"decision_id", decID, "error", fErr)
-					lineage.PrecededBy = nil
-					entry.Degraded = true
-				} else if len(filtered) == 0 {
-					lineage.PrecededBy = nil
-				}
+			filtered, fErr := filterLineageByAccess(ctx, h.db, claims, lineage, h.grantCache)
+			if fErr != nil {
+				h.logger.Warn("enrichment: access filter failed for lineage",
+					"decision_id", decID, "error", fErr)
+				entry.Lineage = storage.DecisionLineage{DecisionID: decID}
+				entry.Degraded = true
+			} else {
+				entry.Lineage = filtered
 			}
-			if len(lineage.CitedBy) > 0 {
-				filtered, fErr := filterLineageEntriesByAccess(ctx, h.db, claims, lineage.CitedBy, h.grantCache)
-				if fErr != nil {
-					h.logger.Warn("enrichment: access filter failed for lineage cited_by",
-						"decision_id", decID, "error", fErr)
-					lineage.CitedBy = nil
-					entry.Degraded = true
-				} else {
-					lineage.CitedBy = filtered
-				}
-			}
-			entry.Lineage = lineage
 		} else {
 			entry.Lineage = storage.DecisionLineage{DecisionID: decID}
 		}
@@ -553,25 +569,25 @@ func (h *Handlers) buildSingleEnrichment(
 		entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}, Degraded: true}
 		entry.Degraded = true
 	case batchConflicts != nil:
-		conflicts := batchConflicts[decID]
+		conflicts := batchConflicts[decID] // already RBAC-filtered in Phase 1
 		if conflicts == nil {
 			conflicts = []model.DecisionConflict{}
 		}
-		// Total reflects the post-RBAC count before truncation.
-		// Count reflects what we actually return (post-truncation).
-		// The storage layer fetches perDecisionLimit+1 so we can
-		// detect hasMore from the post-RBAC set.
-		totalAccessible := len(conflicts)
-		hasMore := totalAccessible > maxEnrichmentConflicts
-		if hasMore {
+		// Pre-filter total from Phase 1 (before RBAC).
+		preFilterTotal := batchConflictTotals[decID]
+		hasMore := preFilterTotal > maxEnrichmentConflicts
+		if len(conflicts) > maxEnrichmentConflicts {
 			conflicts = conflicts[:maxEnrichmentConflicts]
 		}
-		entry.Conflicts = enrichmentConflicts{
+		ec := enrichmentConflicts{
 			Items:   conflicts,
 			Count:   len(conflicts),
-			Total:   totalAccessible,
 			HasMore: hasMore,
 		}
+		if preFilterTotal != len(conflicts) {
+			ec.Total = preFilterTotal
+		}
+		entry.Conflicts = ec
 	default:
 		entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}}
 	}

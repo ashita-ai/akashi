@@ -29,6 +29,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -78,6 +79,8 @@ type App struct {
 	logger          *slog.Logger
 	autoResolver    *autoresolve.Service
 	version         string
+
+	auditOrgCounter atomic.Uint64 // round-robin counter for integrity audit org selection
 
 	// OTEL metrics for integrity audit violations. Incremented by
 	// verifyProofsForOrg on Merkle root mismatch or chain linkage failure.
@@ -812,16 +815,29 @@ func (a *App) integrityFullAuditLoop(ctx context.Context) {
 // N * IntegrityAuditInterval. Only the 10 newest proofs per org are checked.
 // All results (pass and fail) are persisted to integrity_audit_results.
 func (a *App) auditIntegrityProofs(ctx context.Context) {
-	orgIDs, err := a.db.ListOrganizationIDs(ctx)
+	// Use offset-based selection instead of loading the full org table.
+	// CountOrganizations is a cheap count(*) on the PK index.
+	orgCount, err := a.db.CountOrganizations(ctx)
 	if err != nil {
-		a.logger.Warn("integrity audit: list orgs failed", "error", err)
+		a.logger.Warn("integrity audit: count orgs failed", "error", err)
 		return
 	}
-	if len(orgIDs) == 0 {
+	if orgCount == 0 {
 		return
 	}
 
-	orgID := orgIDs[rand.IntN(len(orgIDs))] //nolint:gosec // sampling, not security
+	// Round-robin through orgs using atomic counter + offset.
+	idx := a.auditOrgCounter.Add(1) - 1
+	offset := int(idx % uint64(orgCount)) //nolint:gosec // orgCount is validated positive above; modulo result fits int
+	orgID, err := a.db.GetOrgIDByOffset(ctx, offset)
+	if err != nil {
+		a.logger.Warn("integrity audit: get org by offset failed", "offset", offset, "error", err)
+		return
+	}
+	if orgID == uuid.Nil {
+		// Org count changed between count and offset query — skip this tick.
+		return
+	}
 
 	proofs, err := a.db.GetRecentIntegrityProofs(ctx, orgID, 10)
 	if err != nil {
