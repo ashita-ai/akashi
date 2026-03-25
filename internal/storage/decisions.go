@@ -2201,3 +2201,123 @@ func (db *DB) GetDecisionLineage(ctx context.Context, id, orgID uuid.UUID, limit
 
 	return result, nil
 }
+
+// GetDecisionLineageBatch fetches lineage for multiple decisions in three queries
+// instead of 3*N queries. Returns a map keyed by decision ID.
+func (db *DB) GetDecisionLineageBatch(ctx context.Context, ids []uuid.UUID, orgID uuid.UUID, citedByLimit int) (map[uuid.UUID]DecisionLineage, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if citedByLimit <= 0 {
+		citedByLimit = 20
+	}
+
+	result := make(map[uuid.UUID]DecisionLineage, len(ids))
+	for _, id := range ids {
+		result[id] = DecisionLineage{DecisionID: id, CitedBy: []LineageEntry{}}
+	}
+
+	// Step 1: Fetch precedent_ref for all target decisions.
+	precRows, err := db.pool.Query(ctx,
+		`SELECT id, precedent_ref FROM decisions WHERE id = ANY($1) AND org_id = $2`,
+		ids, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: batch lineage precedent_ref: %w", err)
+	}
+	defer precRows.Close()
+
+	var precedentRefs []uuid.UUID
+	precMap := make(map[uuid.UUID]uuid.UUID) // decision_id -> precedent_ref
+	for precRows.Next() {
+		var id uuid.UUID
+		var ref *uuid.UUID
+		if err := precRows.Scan(&id, &ref); err != nil {
+			return nil, fmt.Errorf("storage: scan precedent_ref: %w", err)
+		}
+		if ref != nil {
+			precMap[id] = *ref
+			precedentRefs = append(precedentRefs, *ref)
+		}
+	}
+	if err := precRows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: precedent_ref rows: %w", err)
+	}
+
+	// Step 2: Fetch the precedent decisions in bulk.
+	if len(precedentRefs) > 0 {
+		precDecRows, err := db.pool.Query(ctx,
+			`SELECT `+lineageCols+` FROM decisions WHERE id = ANY($1) AND org_id = $2`,
+			precedentRefs, orgID)
+		if err != nil {
+			return nil, fmt.Errorf("storage: batch lineage precedent fetch: %w", err)
+		}
+		defer precDecRows.Close()
+
+		precEntries := make(map[uuid.UUID]LineageEntry)
+		for precDecRows.Next() {
+			entry, err := scanLineageEntry(precDecRows)
+			if err != nil {
+				return nil, err
+			}
+			precEntries[entry.ID] = entry
+		}
+		if err := precDecRows.Err(); err != nil {
+			return nil, fmt.Errorf("storage: batch lineage precedent rows: %w", err)
+		}
+
+		for decID, ref := range precMap {
+			if entry, ok := precEntries[ref]; ok {
+				entryCopy := entry
+				l := result[decID]
+				l.PrecededBy = &entryCopy
+				result[decID] = l
+			}
+		}
+	}
+
+	// Step 3: Fetch cited_by for all target decisions in one query.
+	// Use ROW_NUMBER() to cap per-decision so we don't blow up memory.
+	citedRows, err := db.pool.Query(ctx,
+		`SELECT precedent_ref, `+lineageCols+`
+		 FROM (
+		   SELECT precedent_ref, `+lineageCols+`,
+		          ROW_NUMBER() OVER (PARTITION BY precedent_ref ORDER BY created_at DESC) AS rn
+		   FROM decisions
+		   WHERE precedent_ref = ANY($1) AND org_id = $2 AND valid_to IS NULL
+		 ) sub
+		 WHERE rn <= $3`,
+		ids, orgID, citedByLimit+1)
+	if err != nil {
+		return nil, fmt.Errorf("storage: batch lineage cited_by: %w", err)
+	}
+	defer citedRows.Close()
+
+	for citedRows.Next() {
+		var precRef uuid.UUID
+		var entry LineageEntry
+		if err := citedRows.Scan(
+			&precRef,
+			&entry.ID, &entry.RunID, &entry.AgentID, &entry.DecisionType, &entry.Outcome,
+			&entry.Confidence, &entry.Project, &entry.CreatedAt, &entry.ValidFrom, &entry.ValidTo,
+		); err != nil {
+			return nil, fmt.Errorf("storage: scan cited_by: %w", err)
+		}
+		l := result[precRef]
+		l.CitedBy = append(l.CitedBy, entry)
+		result[precRef] = l
+	}
+	if err := citedRows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: batch lineage cited_by rows: %w", err)
+	}
+
+	// Trim to limit and set has_more flag.
+	for id, l := range result {
+		if len(l.CitedBy) > citedByLimit {
+			l.CitedBy = l.CitedBy[:citedByLimit]
+			l.CitedByMore = true
+			result[id] = l
+		}
+	}
+
+	return result, nil
+}

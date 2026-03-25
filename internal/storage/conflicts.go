@@ -212,6 +212,60 @@ func scanConflictRows(rows pgx.Rows) ([]model.DecisionConflict, error) {
 	return conflicts, rows.Err()
 }
 
+// ListConflictsByDecisionIDs fetches conflicts involving any of the given decision
+// IDs in a single query. Returns a map keyed by decision ID, where each entry
+// contains the conflicts that involve that decision (on either the A or B side).
+// A conflict may appear under multiple keys if both sides are in the input set.
+// Results per decision are capped at perDecisionLimit.
+func (db *DB) ListConflictsByDecisionIDs(ctx context.Context, orgID uuid.UUID, decisionIDs []uuid.UUID, perDecisionLimit int) (map[uuid.UUID][]model.DecisionConflict, error) {
+	if len(decisionIDs) == 0 {
+		return nil, nil
+	}
+	if perDecisionLimit <= 0 {
+		perDecisionLimit = 50
+	}
+
+	rows, err := db.pool.Query(ctx,
+		conflictSelectBase+` WHERE sc.org_id = $1
+		  AND (sc.decision_a_id = ANY($2) OR sc.decision_b_id = ANY($2))
+		  ORDER BY sc.detected_at DESC`,
+		orgID, decisionIDs)
+	if err != nil {
+		return nil, fmt.Errorf("storage: list conflicts by decision IDs: %w", err)
+	}
+	defer rows.Close()
+
+	all, err := scanConflictRows(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build a set for fast lookup.
+	idSet := make(map[uuid.UUID]struct{}, len(decisionIDs))
+	for _, id := range decisionIDs {
+		idSet[id] = struct{}{}
+	}
+
+	// Group by decision ID — a conflict can appear under both sides.
+	result := make(map[uuid.UUID][]model.DecisionConflict, len(decisionIDs))
+	for _, c := range all {
+		if _, ok := idSet[c.DecisionAID]; ok {
+			if len(result[c.DecisionAID]) < perDecisionLimit+1 {
+				result[c.DecisionAID] = append(result[c.DecisionAID], c)
+			}
+		}
+		if _, ok := idSet[c.DecisionBID]; ok {
+			if c.DecisionBID != c.DecisionAID { // avoid double-adding self-contradictions
+				if len(result[c.DecisionBID]) < perDecisionLimit+1 {
+					result[c.DecisionBID] = append(result[c.DecisionBID], c)
+				}
+			}
+		}
+	}
+
+	return result, nil
+}
+
 // NewConflictsSinceByOrg returns conflicts detected after the given time for one
 // organization from scored_conflicts.
 func (db *DB) NewConflictsSinceByOrg(ctx context.Context, orgID uuid.UUID, since time.Time, limit int) ([]model.DecisionConflict, error) {
