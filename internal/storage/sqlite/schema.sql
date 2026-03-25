@@ -173,6 +173,8 @@ CREATE TABLE IF NOT EXISTS scored_conflicts (
     resolution_decision_id TEXT,
     winning_decision_id    TEXT,
     group_id               TEXT,
+    project_a              TEXT,
+    project_b              TEXT,
     UNIQUE(decision_a_id, decision_b_id)
 );
 CREATE INDEX IF NOT EXISTS idx_conflicts_org ON scored_conflicts(org_id, status);

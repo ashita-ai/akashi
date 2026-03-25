@@ -30,6 +30,7 @@ func (l *LiteDB) ListConflicts(ctx context.Context, orgID uuid.UUID, filters sto
 		        sc.resolved_by, sc.resolved_at, sc.resolution_note,
 		        sc.relationship, sc.confidence_weight, sc.temporal_decay,
 		        sc.resolution_decision_id, sc.winning_decision_id, sc.group_id,
+		        sc.project_a, sc.project_b,
 		        da.run_id, db.run_id, da.confidence, db.confidence,
 		        da.reasoning, db.reasoning, da.valid_from, db.valid_from
 		 FROM scored_conflicts sc
@@ -179,6 +180,7 @@ func (l *LiteDB) loadRepresentativeConflict(ctx context.Context, groupID uuid.UU
 		        sc.resolved_by, sc.resolved_at, sc.resolution_note,
 		        sc.relationship, sc.confidence_weight, sc.temporal_decay,
 		        sc.resolution_decision_id, sc.winning_decision_id, sc.group_id,
+		        sc.project_a, sc.project_b,
 		        da.run_id, db.run_id, da.confidence, db.confidence,
 		        da.reasoning, db.reasoning, da.valid_from, db.valid_from
 		 FROM scored_conflicts sc
@@ -323,6 +325,7 @@ func (l *LiteDB) GetConflict(ctx context.Context, id, orgID uuid.UUID) (*model.D
 		        sc.resolved_by, sc.resolved_at, sc.resolution_note,
 		        sc.relationship, sc.confidence_weight, sc.temporal_decay,
 		        sc.resolution_decision_id, sc.winning_decision_id, sc.group_id,
+		        sc.project_a, sc.project_b,
 		        da.run_id, db.run_id, da.confidence, db.confidence,
 		        da.reasoning, db.reasoning, da.valid_from, db.valid_from
 		 FROM scored_conflicts sc
@@ -438,6 +441,10 @@ func conflictWhere(orgID uuid.UUID, f storage.ConflictFilters) (string, []any) {
 		conds = append(conds, "sc.group_id = ?")
 		args = append(args, uuidStr(*f.GroupID))
 	}
+	if f.Project != nil {
+		conds = append(conds, "(sc.project_a = ? OR sc.project_b = ?)")
+		args = append(args, *f.Project, *f.Project)
+	}
 
 	return "WHERE " + strings.Join(conds, " AND "), args
 }
@@ -462,6 +469,8 @@ func scanConflictRows(rows *sql.Rows) ([]model.DecisionConflict, error) {
 			resDecisionID sql.NullString
 			winningDecID  sql.NullString
 			groupID       sql.NullString
+			projectA      sql.NullString
+			projectB      sql.NullString
 			runAStr       sql.NullString
 			runBStr       sql.NullString
 			confA         sql.NullFloat64
@@ -481,6 +490,7 @@ func scanConflictRows(rows *sql.Rows) ([]model.DecisionConflict, error) {
 			&resolvedBy, &resolvedAt, &resNote,
 			&relationship, &c.ConfidenceWeight, &c.TemporalDecay,
 			&resDecisionID, &winningDecID, &groupID,
+			&projectA, &projectB,
 			&runAStr, &runBStr, &confA, &confB,
 			&reasonA, &reasonB, &decidedAtAStr, &decidedAtBStr,
 		)
@@ -514,6 +524,12 @@ func scanConflictRows(rows *sql.Rows) ([]model.DecisionConflict, error) {
 		c.ResolutionDecisionID = parseNullUUID(resDecisionID)
 		c.WinningDecisionID = parseNullUUID(winningDecID)
 		c.GroupID = parseNullUUID(groupID)
+		if projectA.Valid {
+			c.ProjectA = &projectA.String
+		}
+		if projectB.Valid {
+			c.ProjectB = &projectB.String
+		}
 
 		if runAStr.Valid {
 			c.RunA = parseUUID(runAStr.String)

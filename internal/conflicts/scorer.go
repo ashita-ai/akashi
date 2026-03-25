@@ -666,6 +666,8 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			ClaimTextA:         sc.claimFragA,
 			ClaimTextB:         sc.claimFragB,
 			EarliestPossibleAt: &earliestAt,
+			ProjectA:           d.Project,
+			ProjectB:           cand.Project,
 		}
 
 		// Topic-aware group assignment: find or create a group whose
