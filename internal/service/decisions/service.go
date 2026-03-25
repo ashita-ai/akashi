@@ -81,6 +81,14 @@ func (s *Service) SetClaimExtractor(e conflicts.ClaimExtractor) { s.claimExtract
 // goroutines' shared context and returns ctx.Err(). Call this during shutdown
 // before closing the database pool.
 func (s *Service) DrainAsync(ctx context.Context) error {
+	// Check context before waiting — an already-cancelled context must
+	// always return an error, even when the WaitGroup counter is zero.
+	// Without this, the select below races between <-done and <-ctx.Done()
+	// when both are ready simultaneously.
+	if err := ctx.Err(); err != nil {
+		s.shutdownStop()
+		return err
+	}
 	done := make(chan struct{})
 	go func() {
 		s.asyncWg.Wait()
