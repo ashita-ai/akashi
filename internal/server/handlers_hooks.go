@@ -410,9 +410,12 @@ func (h *Handlers) buildSessionContext(ctx context.Context, project string) stri
 		recent = nil
 	}
 
-	// Query open conflicts.
+	// Query open conflicts — scoped by project when known.
 	openStatus := "open"
 	conflictFilter := storage.ConflictFilters{Status: &openStatus}
+	if project != "" {
+		conflictFilter.Project = &project
+	}
 	conflicts, err := h.db.ListConflicts(ctx, orgID, conflictFilter, 5, 0)
 	if err != nil {
 		h.logger.Debug("hook session-start: list conflicts failed", "error", err)

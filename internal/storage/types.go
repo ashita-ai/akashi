@@ -85,6 +85,7 @@ type ConflictFilters struct {
 	Category     *string    // "factual", "assessment", "strategic", "temporal"
 	DecisionID   *uuid.UUID // conflicts involving this decision (A or B side)
 	GroupID      *uuid.UUID // conflicts belonging to this conflict group
+	Project      *string    // conflicts where project_a or project_b matches
 }
 
 // ConflictStatusCounts holds the number of conflicts in each resolution status.

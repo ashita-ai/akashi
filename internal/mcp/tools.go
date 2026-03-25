@@ -323,6 +323,9 @@ All statuses are shown by default; pass status to narrow results.`),
 			mcplib.WithString("category",
 				mcplib.Description("Filter by category: factual, assessment, strategic, temporal"),
 			),
+			mcplib.WithString("project",
+				mcplib.Description("Filter by project name. Auto-detected from the working directory when omitted. Pass \"*\" to disable filtering and see conflicts across all projects."),
+			),
 			mcplib.WithNumber("limit",
 				mcplib.Description("Maximum results to return"),
 				mcplib.Min(1),
@@ -1271,18 +1274,19 @@ func (s *Server) handleConflicts(ctx context.Context, request mcplib.CallToolReq
 		groupFilters.AgentID = &aid
 	}
 
-	// Use the category/severity filters from the request to post-filter on the
-	// representative conflict — they are not group-level columns.
+	// Use the category/severity/project filters from the request to post-filter
+	// on the representative conflict — they are not group-level columns.
 	severityFilter := request.GetString("severity", "")
 	categoryFilter := request.GetString("category", "")
+	projectFilter := s.resolveProjectFilter(ctx, request)
 
 	groups, err := s.db.ListConflictGroups(ctx, orgID, groupFilters, limit, 0)
 	if err != nil {
 		return errorResult(fmt.Sprintf("list conflict groups failed: %v", err)), nil
 	}
 
-	// Post-filter by severity/category on the representative conflict.
-	if severityFilter != "" || categoryFilter != "" {
+	// Post-filter by severity/category/project on the representative conflict.
+	if severityFilter != "" || categoryFilter != "" || projectFilter != nil {
 		var filtered []model.ConflictGroup
 		for _, g := range groups {
 			if g.Representative == nil {
@@ -1293,6 +1297,13 @@ func (s *Server) handleConflicts(ctx context.Context, request mcplib.CallToolReq
 			}
 			if categoryFilter != "" && (g.Representative.Category == nil || *g.Representative.Category != categoryFilter) {
 				continue
+			}
+			if projectFilter != nil {
+				pa := g.Representative.ProjectA
+				pb := g.Representative.ProjectB
+				if (pa == nil || *pa != *projectFilter) && (pb == nil || *pb != *projectFilter) {
+					continue
+				}
 			}
 			filtered = append(filtered, g)
 		}

@@ -209,6 +209,12 @@ type DecisionConflict struct {
 	// was auto-escalated to critical severity.
 	ReopensResolutionID *uuid.UUID `json:"reopens_resolution_id,omitempty"`
 
+	// ProjectA and ProjectB (migration 077): denormalized from decisions for
+	// project-scoped conflict queries. A conflict where project_a="X" or
+	// project_b="X" is relevant to project X.
+	ProjectA *string `json:"project_a,omitempty"`
+	ProjectB *string `json:"project_b,omitempty"`
+
 	// EarliestPossibleAt is max(decision_a.transaction_time, decision_b.transaction_time).
 	// A conflict cannot exist before both decisions exist. Used as first_detected_at
 	// when creating a new conflict group, instead of now().
