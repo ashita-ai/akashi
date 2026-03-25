@@ -209,3 +209,52 @@ func FilterConflicts(ctx context.Context, db storage.Store, claims *auth.Claims,
 	}
 	return allowed, nil
 }
+
+// FilterConflictGroups removes conflict groups the caller cannot see.
+// A caller must have access to BOTH agents in the group (same rule as conflicts).
+// cache may be nil to disable caching.
+func FilterConflictGroups(ctx context.Context, db storage.Store, claims *auth.Claims, groups []model.ConflictGroup, cache *GrantCache) ([]model.ConflictGroup, error) {
+	granted, err := LoadGrantedSet(ctx, db, claims, cache)
+	if err != nil {
+		return nil, err
+	}
+	if granted == nil {
+		return groups, nil
+	}
+
+	allowed := make([]model.ConflictGroup, 0, len(groups))
+	for _, g := range groups {
+		if granted[g.AgentA] && granted[g.AgentB] {
+			allowed = append(allowed, g)
+		}
+	}
+	return allowed, nil
+}
+
+// FilterLineage removes lineage entries the caller cannot see.
+// PrecededBy is nilled out if its agent is not accessible; CitedBy entries
+// are filtered to only those whose agent the caller can access.
+// cache may be nil to disable caching.
+func FilterLineage(ctx context.Context, db storage.Store, claims *auth.Claims, lineage storage.DecisionLineage, cache *GrantCache) (storage.DecisionLineage, error) {
+	granted, err := LoadGrantedSet(ctx, db, claims, cache)
+	if err != nil {
+		return lineage, err
+	}
+	if granted == nil {
+		return lineage, nil
+	}
+
+	if lineage.PrecededBy != nil && !granted[lineage.PrecededBy.AgentID] {
+		lineage.PrecededBy = nil
+	}
+
+	allowed := make([]storage.LineageEntry, 0, len(lineage.CitedBy))
+	for _, e := range lineage.CitedBy {
+		if granted[e.AgentID] {
+			allowed = append(allowed, e)
+		}
+	}
+	lineage.CitedBy = allowed
+
+	return lineage, nil
+}
