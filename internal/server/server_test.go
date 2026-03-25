@@ -11193,12 +11193,15 @@ func TestHandleGetRun_EnrichmentsEmptyRun(t *testing.T) {
 // ---- HandleSetOrgSettings audit trail ------------------------------------
 
 func TestHandleSetOrgSettings_AuditTrail(t *testing.T) {
+	orgID := uuid.Nil // default org from SeedAdmin
+
 	// Count existing audit entries so we can assert on the delta.
 	var baseline int
 	require.NoError(t, testDB.Pool().QueryRow(context.Background(),
 		`SELECT count(*) FROM mutation_audit_log
 		 WHERE operation = 'org_settings_updated'
-		   AND resource_type = 'org_settings'`,
+		   AND resource_type = 'org_settings'
+		   AND org_id = $1`, orgID,
 	).Scan(&baseline))
 
 	t.Run("upsert writes mutation audit entry", func(t *testing.T) {
@@ -11220,7 +11223,8 @@ func TestHandleSetOrgSettings_AuditTrail(t *testing.T) {
 		err = testDB.Pool().QueryRow(context.Background(),
 			`SELECT count(*) FROM mutation_audit_log
 			 WHERE operation = 'org_settings_updated'
-			   AND resource_type = 'org_settings'`,
+			   AND resource_type = 'org_settings'
+			   AND org_id = $1`, orgID,
 		).Scan(&count)
 		require.NoError(t, err)
 		assert.Equal(t, baseline+1, count, "expected one new audit entry for org_settings_updated")
@@ -11246,7 +11250,8 @@ func TestHandleSetOrgSettings_AuditTrail(t *testing.T) {
 			`SELECT before_data, after_data FROM mutation_audit_log
 			 WHERE operation = 'org_settings_updated'
 			   AND resource_type = 'org_settings'
-			 ORDER BY occurred_at DESC LIMIT 1`,
+			   AND org_id = $1
+			 ORDER BY occurred_at DESC LIMIT 1`, orgID,
 		).Scan(&beforeData, &afterData)
 		require.NoError(t, err)
 		assert.NotNil(t, beforeData, "second upsert should capture before_data")
