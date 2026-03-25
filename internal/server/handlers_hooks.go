@@ -20,6 +20,12 @@ import (
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
+// hookMaxBodyBytes is the maximum request body size for hook endpoints.
+// Hook payloads are small JSON objects (tool name, input, session ID), so
+// 256 KiB is generous. This prevents unbounded reads when AKASHI_HOOKS_API_KEY
+// is configured and the endpoint is exposed beyond localhost.
+const hookMaxBodyBytes int64 = 256 << 10
+
 // hookCheckStore tracks when each agent last called akashi_check.
 //
 // Keyed by agent_id so that one agent's check does not unlock edits for a
@@ -134,7 +140,7 @@ type hookSpecific struct {
 // old session-start-check.sh that just printed a reminder.
 func (h *Handlers) HandleHookSessionStart(w http.ResponseWriter, r *http.Request) {
 	var input hookSessionStartInput
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	if err := decodeJSON(w, r, &input, hookMaxBodyBytes); err != nil {
 		writeHookJSON(w, hookResponse{Continue: true})
 		return
 	}
@@ -155,7 +161,7 @@ func (h *Handlers) HandleHookSessionStart(w http.ResponseWriter, r *http.Request
 // 2. Pre-commit reminder: suggests calling akashi_check before git commit.
 func (h *Handlers) HandleHookPreToolUse(w http.ResponseWriter, r *http.Request) {
 	var input hookPreToolUseInput
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	if err := decodeJSON(w, r, &input, hookMaxBodyBytes); err != nil {
 		writeHookJSON(w, hookResponse{Continue: true})
 		return
 	}
@@ -201,7 +207,7 @@ func (h *Handlers) HandleHookPreToolUse(w http.ResponseWriter, r *http.Request) 
 // 2. Git commit: auto-traces the commit if AutoTrace is enabled.
 func (h *Handlers) HandleHookPostToolUse(w http.ResponseWriter, r *http.Request) {
 	var input hookPostToolUseInput
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	if err := decodeJSON(w, r, &input, hookMaxBodyBytes); err != nil {
 		writeHookJSON(w, hookResponse{Continue: true})
 		return
 	}

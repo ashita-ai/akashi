@@ -15,8 +15,10 @@ export class TokenManager {
 
   /** Return a valid token, refreshing if necessary.
    *  Concurrent callers share a single in-flight refresh to avoid redundant
-   *  token requests. */
-  async getToken(): Promise<string> {
+   *  token requests.
+   *  @param _signal - Accepted for backward compatibility but not used.
+   *  Canceling a shared refresh would break concurrent callers. */
+  async getToken(_signal?: AbortSignal): Promise<string> {
     if (this.token && Date.now() < this.expiresAt - this.refreshMarginMs) {
       return this.token;
     }
