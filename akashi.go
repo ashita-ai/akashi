@@ -33,6 +33,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
+	"go.opentelemetry.io/otel/attribute"
+	otelmetric "go.opentelemetry.io/otel/metric"
 
 	"github.com/ashita-ai/akashi/api"
 	"github.com/ashita-ai/akashi/internal/auth"
@@ -76,6 +78,10 @@ type App struct {
 	logger          *slog.Logger
 	autoResolver    *autoresolve.Service
 	version         string
+
+	// OTEL metrics for integrity audit violations. Incremented by
+	// verifyProofsForOrg on Merkle root mismatch or chain linkage failure.
+	integrityViolations otelmetric.Int64Counter
 }
 
 // New initialises the Akashi server. It connects to the database, runs
@@ -121,6 +127,16 @@ func New(opts ...Option) (*App, error) {
 	otelShutdown, err := telemetry.Init(ctx(opts), cfg.OTELEndpoint, cfg.ServiceName, version, cfg.OTELInsecure)
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: %w", err)
+	}
+
+	// Initialize integrity violation counter.
+	meter := telemetry.Meter("akashi/integrity")
+	integrityViolations, err := meter.Int64Counter("akashi.integrity.violations",
+		otelmetric.WithDescription("Count of integrity audit failures (Merkle root mismatch or chain linkage broken)"),
+	)
+	if err != nil {
+		logger.Warn("failed to create integrity violations counter", "error", err)
+		integrityViolations, _ = meter.Int64Counter("akashi.integrity.violations")
 	}
 
 	// Connect to database.
@@ -469,23 +485,24 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	return &App{
-		cfg:             cfg,
-		db:              db,
-		srv:             srv,
-		buf:             buf,
-		outbox:          outboxWorker,
-		qdrantIndex:     qdrantIndex,
-		grantCache:      grantCache,
-		conflictScorer:  conflictScorer,
-		decisionSvc:     decisionSvc,
-		percentileCache: pctCache,
-		broker:          broker,
-		otelShutdown:    otelShutdown,
-		limiter:         limiter,
-		decisionHooks:   decisionHooks,
-		logger:          logger,
-		autoResolver:    autoresolve.New(db, logger),
-		version:         version,
+		cfg:                 cfg,
+		db:                  db,
+		srv:                 srv,
+		buf:                 buf,
+		outbox:              outboxWorker,
+		qdrantIndex:         qdrantIndex,
+		grantCache:          grantCache,
+		conflictScorer:      conflictScorer,
+		decisionSvc:         decisionSvc,
+		percentileCache:     pctCache,
+		broker:              broker,
+		otelShutdown:        otelShutdown,
+		limiter:             limiter,
+		decisionHooks:       decisionHooks,
+		logger:              logger,
+		autoResolver:        autoresolve.New(db, logger),
+		version:             version,
+		integrityViolations: integrityViolations,
 	}, nil
 }
 
@@ -887,6 +904,10 @@ func (a *App) verifyProofsForOrg(ctx context.Context, orgID uuid.UUID, proofs []
 			a.logger.Error("INTEGRITY VIOLATION: Merkle root mismatch — stored root does not match recomputed root",
 				"org_id", orgID, "proof_id", p.ID,
 				"stored_root", p.RootHash, "decision_count", p.DecisionCount)
+			a.integrityViolations.Add(ctx, 1, otelmetric.WithAttributes(
+				attribute.String("violation_type", "merkle_root_mismatch"),
+				attribute.String("sweep_type", sweepType),
+			))
 		}
 		results = append(results, storage.IntegrityAuditResult{
 			OrgID: orgID, ProofID: p.ID, CheckType: "merkle_root",
@@ -904,11 +925,19 @@ func (a *App) verifyProofsForOrg(ctx context.Context, orgID uuid.UUID, proofs []
 				a.logger.Warn("integrity audit: proof has nil previous_root but older proof exists — chain may be broken",
 					"org_id", orgID, "proof_id", p.ID, "older_proof_id", older.ID)
 				detail = fmt.Sprintf("nil previous_root but older proof %s exists", older.ID)
+				a.integrityViolations.Add(ctx, 1, otelmetric.WithAttributes(
+					attribute.String("violation_type", "chain_linkage_broken"),
+					attribute.String("sweep_type", sweepType),
+				))
 			case *p.PreviousRoot != older.RootHash:
 				a.logger.Error("INTEGRITY VIOLATION: chain linkage broken — previous_root does not match prior proof",
 					"org_id", orgID, "proof_id", p.ID,
 					"expected_previous", older.RootHash, "actual_previous", *p.PreviousRoot)
 				detail = fmt.Sprintf("expected %s, got %s", older.RootHash, *p.PreviousRoot)
+				a.integrityViolations.Add(ctx, 1, otelmetric.WithAttributes(
+					attribute.String("violation_type", "chain_linkage_broken"),
+					attribute.String("sweep_type", sweepType),
+				))
 			default:
 				linkPassed = true
 			}

@@ -225,11 +225,16 @@ func (db *DB) ListConflictsByDecisionIDs(ctx context.Context, orgID uuid.UUID, d
 		perDecisionLimit = 50
 	}
 
+	// Global cap prevents unbounded result sets. Each decision can appear on
+	// the A or B side, so the theoretical max is 2 * len(decisionIDs) * (perDecisionLimit+1),
+	// but we use a tighter bound: len(decisionIDs) * (perDecisionLimit+1).
+	globalLimit := len(decisionIDs) * (perDecisionLimit + 1)
 	rows, err := db.pool.Query(ctx,
 		conflictSelectBase+` WHERE sc.org_id = $1
 		  AND (sc.decision_a_id = ANY($2) OR sc.decision_b_id = ANY($2))
-		  ORDER BY sc.detected_at DESC`,
-		orgID, decisionIDs)
+		  ORDER BY sc.detected_at DESC
+		  LIMIT $3`,
+		orgID, decisionIDs, globalLimit)
 	if err != nil {
 		return nil, fmt.Errorf("storage: list conflicts by decision IDs: %w", err)
 	}

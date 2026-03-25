@@ -21,16 +21,23 @@ import (
 // ---------------------------------------------------------------------------
 
 // enrichmentRevisions holds the revision chain for a single decision.
+// Count is the number of items returned (post-access-filter). Total is the
+// number of revisions that exist before filtering; it is omitted when equal
+// to Count so consumers can detect hidden revisions.
 type enrichmentRevisions struct {
 	Items    []model.Decision `json:"items"`
 	Count    int              `json:"count"`
+	Total    int              `json:"total,omitempty"`
 	Degraded bool             `json:"degraded,omitempty"`
 }
 
 // enrichmentConflicts holds conflicts for a single decision.
+// Count is the number of items returned (post-access-filter, post-truncation).
+// Total is the pre-filter count; omitted when equal to Count.
 type enrichmentConflicts struct {
 	Items    []model.DecisionConflict `json:"items"`
 	Count    int                      `json:"count"`
+	Total    int                      `json:"total,omitempty"`
 	HasMore  bool                     `json:"has_more"`
 	Degraded bool                     `json:"degraded,omitempty"`
 }
@@ -360,6 +367,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 		// These replace N*3 individual queries with 3+1 total queries.
 		var batchLineage map[uuid.UUID]storage.DecisionLineage
 		var batchConflicts map[uuid.UUID][]model.DecisionConflict
+		var batchConflictTotals map[uuid.UUID]int // pre-RBAC-filter counts
 		var lineageDegraded, conflictsDegraded bool
 
 		g, gctx := errgroup.WithContext(r.Context())
@@ -381,8 +389,10 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 				conflictsDegraded = true
 				return nil
 			}
-			// Apply access filtering to the full conflict set.
+			// Track pre-filter totals, then apply access filtering.
+			totals := make(map[uuid.UUID]int, len(raw))
 			for decID, conflicts := range raw {
+				totals[decID] = len(conflicts)
 				filtered, filterErr := filterConflictsByAccess(gctx, h.db, claims, conflicts, h.grantCache)
 				if filterErr != nil {
 					h.logger.Warn("enrichment: access filter failed for batch conflicts",
@@ -392,6 +402,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 				}
 				raw[decID] = filtered
 			}
+			batchConflictTotals = totals
 			batchConflicts = raw
 			return nil
 		})
@@ -422,6 +433,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}}
 					}
 				} else {
+					totalRevisions := len(revisions)
 					revisions, filterErr := filterDecisionsByAccess(gctx2, h.db, claims, revisions, h.grantCache)
 					if filterErr != nil {
 						h.logger.Warn("enrichment: access filter failed for revisions",
@@ -429,7 +441,11 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}, Degraded: true}
 						entry.Degraded = true
 					} else {
-						entry.Revisions = enrichmentRevisions{Items: revisions, Count: len(revisions)}
+						er := enrichmentRevisions{Items: revisions, Count: len(revisions)}
+						if totalRevisions != len(revisions) {
+							er.Total = totalRevisions
+						}
+						entry.Revisions = er
 					}
 				}
 
@@ -454,19 +470,25 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 					entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}, Degraded: true}
 					entry.Degraded = true
 				case batchConflicts != nil:
-					conflicts := batchConflicts[decID]
+					conflicts := batchConflicts[decID] // already RBAC-filtered in Phase 1
 					if conflicts == nil {
 						conflicts = []model.DecisionConflict{}
 					}
-					hasMore := len(conflicts) > maxEnrichmentConflicts
-					if hasMore {
+					// Pre-filter total from Phase 1 (before RBAC).
+					preFilterTotal := batchConflictTotals[decID]
+					hasMore := preFilterTotal > maxEnrichmentConflicts
+					if len(conflicts) > maxEnrichmentConflicts {
 						conflicts = conflicts[:maxEnrichmentConflicts]
 					}
-					entry.Conflicts = enrichmentConflicts{
+					ec := enrichmentConflicts{
 						Items:   conflicts,
 						Count:   len(conflicts),
 						HasMore: hasMore,
 					}
+					if preFilterTotal != len(conflicts) {
+						ec.Total = preFilterTotal
+					}
+					entry.Conflicts = ec
 				default:
 					entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}}
 				}
@@ -515,7 +537,7 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 		resp.DecisionEnrichments = enrichments
 		if enrichmentsTruncated {
 			resp.TruncatedEnrichments = true
-			resp.EnrichedCount = maxEnrichedDecisions
+			resp.EnrichedCount = len(enrichments)
 			resp.Truncated = true
 		}
 	}
