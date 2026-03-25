@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -355,13 +356,21 @@ func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uu
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	var oldStatus string
+	var oldStatus, decAIDStr, decBIDStr string
 	err = tx.QueryRowContext(ctx,
-		`SELECT status FROM scored_conflicts WHERE id = ? AND org_id = ?`,
+		`SELECT status, decision_a_id, decision_b_id FROM scored_conflicts WHERE id = ? AND org_id = ?`,
 		uuidStr(id), uuidStr(orgID),
-	).Scan(&oldStatus)
+	).Scan(&oldStatus, &decAIDStr, &decBIDStr)
 	if err != nil {
 		return "", fmt.Errorf("sqlite: get old conflict status: %w", err)
+	}
+
+	// Validate winning_decision_id belongs to this conflict.
+	if winningDecisionID != nil && status == "resolved" {
+		winStr := uuidStr(*winningDecisionID)
+		if winStr != decAIDStr && winStr != decBIDStr {
+			return "", storage.ErrWinningDecisionNotInConflict
+		}
 	}
 
 	switch status {
@@ -424,45 +433,114 @@ func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uu
 	return oldStatus, nil
 }
 
-// ResolveConflictGroup batch-resolves all open conflicts in a conflict group.
-// When fpLabel is non-nil and status is "false_positive", ground truth labels
-// are inserted atomically within the same transaction.
+// ResolveConflictGroup atomically resolves all open conflicts in a group.
+// Validates winningAgent against the group's agent pair. When fpLabel is
+// non-nil (status must be "false_positive"), ground truth labels are inserted
+// atomically within the same transaction.
 func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningAgent *string, fpLabel *string, audit storage.MutationAuditEntry) (int, error) {
-	if winningAgent != nil {
-		return 0, fmt.Errorf("sqlite: ResolveConflictGroup with winningAgent is not supported (requires pgvector)")
-	}
-
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("sqlite: begin resolve group tx: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	var exists bool
-	if err := tx.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM conflict_groups WHERE id = ? AND org_id = ?)`,
+	// Verify the group exists, belongs to this org, and fetch agent pair
+	// for winning agent validation.
+	var agentA, agentB string
+	err = tx.QueryRowContext(ctx,
+		`SELECT agent_a, agent_b FROM conflict_groups WHERE id = ? AND org_id = ?`,
 		uuidStr(groupID), uuidStr(orgID),
-	).Scan(&exists); err != nil {
+	).Scan(&agentA, &agentB)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, fmt.Errorf("sqlite: conflict group: %w", storage.ErrNotFound)
+		}
 		return 0, fmt.Errorf("sqlite: check conflict group: %w", err)
 	}
-	if !exists {
-		return 0, fmt.Errorf("sqlite: conflict group: %w", storage.ErrNotFound)
+
+	// Validate winning agent matches one of the group's participants.
+	if winningAgent != nil && *winningAgent != agentA && *winningAgent != agentB {
+		return 0, fmt.Errorf("sqlite: agent %q not in group (agent_a=%q, agent_b=%q): %w",
+			*winningAgent, agentA, agentB, storage.ErrWinningAgentNotInGroup)
 	}
 
-	res, err := tx.ExecContext(ctx,
-		`UPDATE scored_conflicts
-		 SET status = ?, resolved_by = ?, resolved_at = datetime('now'), resolution_note = ?
-		 WHERE group_id = ? AND org_id = ? AND status = 'open'`,
-		status, resolvedBy, resolutionNote, uuidStr(groupID), uuidStr(orgID),
-	)
+	var result sql.Result
+	if winningAgent != nil && status == "resolved" {
+		// Count open conflicts before the UPDATE so we can detect revised decisions.
+		var openCount int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT count(*) FROM scored_conflicts WHERE group_id = ? AND org_id = ? AND status = 'open'`,
+			uuidStr(groupID), uuidStr(orgID),
+		).Scan(&openCount); err != nil {
+			return 0, fmt.Errorf("sqlite: count open conflicts: %w", err)
+		}
+
+		// Use correlated subqueries to determine which decision belongs to
+		// the winning agent. We cannot rely on agent_a corresponding to
+		// decision_a_id because InsertScoredConflict canonicalizes decisions
+		// by UUID bytes and agents by string sort independently.
+		//
+		// Unlike PostgreSQL's FROM/JOIN approach (which drops rows when
+		// decisions are revised), correlated subqueries still UPDATE the row
+		// but set winning_decision_id = NULL via the ELSE branch. We detect
+		// this after the UPDATE by counting NULL winners.
+		result, err = tx.ExecContext(ctx,
+			`UPDATE scored_conflicts
+			 SET status = ?, resolved_by = ?, resolved_at = datetime('now'),
+			     resolution_note = ?,
+			     winning_decision_id = CASE
+			         WHEN (SELECT agent_id FROM decisions WHERE id = scored_conflicts.decision_a_id AND valid_to IS NULL AND org_id = ?) = ?
+			             THEN decision_a_id
+			         WHEN (SELECT agent_id FROM decisions WHERE id = scored_conflicts.decision_b_id AND valid_to IS NULL AND org_id = ?) = ?
+			             THEN decision_b_id
+			         ELSE NULL
+			     END
+			 WHERE group_id = ? AND org_id = ? AND status = 'open'`,
+			status, resolvedBy, resolutionNote,
+			uuidStr(orgID), *winningAgent, uuidStr(orgID), *winningAgent,
+			uuidStr(groupID), uuidStr(orgID),
+		)
+
+		// Detect revised decisions: the correlated subqueries set
+		// winning_decision_id = NULL when a decision's valid_to IS NOT NULL.
+		// Roll back and return a clear error rather than committing rows with
+		// status='resolved' but no winner.
+		if err == nil && openCount > 0 {
+			var nullWinners int
+			if scanErr := tx.QueryRowContext(ctx,
+				`SELECT count(*) FROM scored_conflicts
+				 WHERE group_id = ? AND org_id = ? AND status = 'resolved'
+				   AND winning_decision_id IS NULL AND resolved_at = datetime('now')`,
+				uuidStr(groupID), uuidStr(orgID),
+			).Scan(&nullWinners); scanErr != nil {
+				return 0, fmt.Errorf("sqlite: check for null winners: %w", scanErr)
+			}
+			if nullWinners > 0 {
+				return 0, fmt.Errorf("sqlite: %d of %d open conflicts reference revised decisions (valid_to IS NOT NULL): %w",
+					nullWinners, openCount, storage.ErrRevisedDecisions)
+			}
+		}
+	} else {
+		result, err = tx.ExecContext(ctx,
+			`UPDATE scored_conflicts
+			 SET status = ?, resolved_by = ?, resolved_at = datetime('now'),
+			     resolution_note = ?
+			 WHERE group_id = ? AND org_id = ? AND status = 'open'`,
+			status, resolvedBy, resolutionNote,
+			uuidStr(groupID), uuidStr(orgID),
+		)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("sqlite: resolve conflict group: %w", err)
 	}
 
-	affected, _ := res.RowsAffected()
+	affected, _ := result.RowsAffected()
 
 	// Atomically label all just-resolved conflicts as false positives for
-	// ground truth training. Targets only rows updated in this transaction.
+	// ground truth training. The WHERE clause uses resolved_at = datetime('now')
+	// (which returns a constant within a transaction) to precisely target
+	// only rows updated in THIS transaction, avoiding a resolved_by
+	// collision when the same actor resolves the same group twice.
 	if fpLabel != nil && status == "false_positive" && affected > 0 {
 		_, err = tx.ExecContext(ctx,
 			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
@@ -470,13 +548,13 @@ func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.U
 			 FROM scored_conflicts sc
 			 WHERE sc.group_id = ? AND sc.org_id = ?
 			   AND sc.status = 'false_positive'
-			   AND sc.resolved_by = ?
+			   AND sc.resolved_at = datetime('now')
 			 ON CONFLICT (scored_conflict_id) DO UPDATE SET
 			   label = excluded.label,
 			   labeled_by = excluded.labeled_by,
 			   labeled_at = excluded.labeled_at
 			 WHERE conflict_labels.org_id = excluded.org_id`,
-			*fpLabel, resolvedBy, uuidStr(groupID), uuidStr(orgID), resolvedBy,
+			*fpLabel, resolvedBy, uuidStr(groupID), uuidStr(orgID),
 		)
 		if err != nil {
 			return 0, fmt.Errorf("sqlite: label false positives in resolve group tx: %w", err)
@@ -485,6 +563,9 @@ func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.U
 
 	audit.BeforeData = map[string]any{"group_id": groupID.String(), "open_count": int(affected)}
 	afterData := map[string]any{"status": status, "resolved_by": resolvedBy, "resolved_count": int(affected)}
+	if winningAgent != nil {
+		afterData["winning_agent"] = *winningAgent
+	}
 	if fpLabel != nil {
 		afterData["fp_label"] = *fpLabel
 	}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"sync"
@@ -377,7 +378,9 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 			var err error
 			batchLineage, err = h.db.GetDecisionLineageBatch(gctx, decIDs, orgID, 20)
 			if err != nil {
-				h.logger.Warn("enrichment: batch lineage failed", "error", err)
+				if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+					h.logger.Warn("enrichment: batch lineage failed", "error", err)
+				}
 				lineageDegraded.Store(true)
 			}
 			return nil
@@ -386,7 +389,9 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 		g.Go(func() error {
 			batchResult, err := h.db.ListConflictsByDecisionIDs(gctx, orgID, decIDs, maxEnrichmentConflicts)
 			if err != nil {
-				h.logger.Warn("enrichment: batch conflicts failed", "error", err)
+				if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+					h.logger.Warn("enrichment: batch conflicts failed", "error", err)
+				}
 				conflictsDegraded.Store(true)
 				return nil
 			}
@@ -402,8 +407,10 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 				totals[decID] = len(conflicts)
 				filtered, filterErr := filterConflictsByAccess(gctx, h.db, claims, conflicts, h.grantCache)
 				if filterErr != nil {
-					h.logger.Warn("enrichment: access filter failed for batch conflicts",
-						"decision_id", decID, "error", filterErr)
+					if !errors.Is(filterErr, context.Canceled) && !errors.Is(filterErr, context.DeadlineExceeded) {
+						h.logger.Warn("enrichment: access filter failed for batch conflicts",
+							"decision_id", decID, "error", filterErr)
+					}
 					conflictsDegraded.Store(true)
 					continue
 				}
@@ -425,12 +432,29 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 
 		for _, d := range toEnrich {
 			g2.Go(func() error {
+				// Bail early if the client disconnected or the request context
+				// was cancelled — avoids spurious DB calls and warning logs
+				// when the client hangs up mid-enrichment.
+				if gctx2.Err() != nil {
+					return nil
+				}
+
 				decID := d.ID
 				var entry decisionEnrichment
+
+				// isCtxErr returns true for context cancellation/deadline
+				// errors, which should not be logged as warnings since they
+				// simply mean the client went away.
+				isCtxErr := func(err error) bool {
+					return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+				}
 
 				// --- Revisions (per-decision recursive CTE) ---
 				revisions, err := h.db.GetDecisionRevisions(gctx2, orgID, decID)
 				if err != nil {
+					if isCtxErr(err) {
+						return nil
+					}
 					if !isNotFoundError(err) {
 						h.logger.Warn("enrichment: failed to get revisions",
 							"decision_id", decID, "error", err)
@@ -443,6 +467,9 @@ func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 					totalRevisions := len(revisions)
 					revisions, filterErr := filterDecisionsByAccess(gctx2, h.db, claims, revisions, h.grantCache)
 					if filterErr != nil {
+						if isCtxErr(filterErr) {
+							return nil
+						}
 						h.logger.Warn("enrichment: access filter failed for revisions",
 							"decision_id", decID, "error", filterErr)
 						entry.Revisions = enrichmentRevisions{Items: []model.Decision{}, Degraded: true}
