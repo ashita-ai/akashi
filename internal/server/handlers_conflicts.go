@@ -180,6 +180,11 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
 			return
 		}
+		if errors.Is(err, storage.ErrWinningDecisionNotInConflict) {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+				"winning_decision_id must be one of the two decisions in this conflict")
+			return
+		}
 		h.writeInternalError(w, r, "failed to update conflict", err)
 		return
 	}
@@ -277,6 +282,9 @@ func (h *Handlers) HandleResolveConflictGroup(w http.ResponseWriter, r *http.Req
 	var fpLabel *string
 	if req.Status == "false_positive" {
 		label := "unrelated_false_positive"
+		if req.FalsePositiveLabel != nil && *req.FalsePositiveLabel == "related_not_contradicting" {
+			label = *req.FalsePositiveLabel
+		}
 		fpLabel = &label
 	}
 
@@ -289,6 +297,11 @@ func (h *Handlers) HandleResolveConflictGroup(w http.ResponseWriter, r *http.Req
 		if errors.Is(err, storage.ErrWinningAgentNotInGroup) {
 			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
 				"winning_agent does not match either agent in this conflict group")
+			return
+		}
+		if errors.Is(err, storage.ErrRevisedDecisions) {
+			writeError(w, r, http.StatusConflict, model.ErrCodeInvalidInput,
+				"some conflicts in the group reference revised decisions and cannot be resolved with a winner")
 			return
 		}
 		h.writeInternalError(w, r, "failed to resolve conflict group", err)

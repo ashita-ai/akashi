@@ -313,11 +313,19 @@ func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Read old status for audit before_data.
+	// Read old status and decision pair for audit before_data and winner validation.
+	var decisionAID, decisionBID uuid.UUID
 	if scanErr := tx.QueryRow(ctx,
-		`SELECT status FROM scored_conflicts WHERE id = $1 AND org_id = $2 FOR UPDATE`,
-		id, orgID).Scan(&oldStatus); scanErr != nil {
+		`SELECT status, decision_a_id, decision_b_id FROM scored_conflicts WHERE id = $1 AND org_id = $2 FOR UPDATE`,
+		id, orgID).Scan(&oldStatus, &decisionAID, &decisionBID); scanErr != nil {
 		return "", fmt.Errorf("storage: conflict: %w", ErrNotFound)
+	}
+
+	// Validate winning_decision_id belongs to this conflict.
+	if winningDecisionID != nil && status == "resolved" {
+		if *winningDecisionID != decisionAID && *winningDecisionID != decisionBID {
+			return "", ErrWinningDecisionNotInConflict
+		}
 	}
 
 	var tag pgconn.CommandTag
@@ -1164,6 +1172,16 @@ func (db *DB) ResolveConflictGroup(
 	// by string sort independently — breaking positional correspondence.
 	var tag pgconn.CommandTag
 	if winningAgent != nil && status == "resolved" {
+		// Count open conflicts before the JOIN-based UPDATE so we can detect
+		// when the JOIN filters out rows due to revised (superseded) decisions.
+		var openCount int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM scored_conflicts WHERE group_id = $1 AND org_id = $2 AND status = 'open'`,
+			groupID, orgID,
+		).Scan(&openCount); err != nil {
+			return 0, fmt.Errorf("storage: count open conflicts: %w", err)
+		}
+
 		tag, err = tx.Exec(ctx,
 			`UPDATE scored_conflicts sc
 			 SET status = $1,
@@ -1181,6 +1199,14 @@ func (db *DB) ResolveConflictGroup(
 			   AND sc.group_id = $5 AND sc.org_id = $6
 			   AND sc.status = 'open'`,
 			status, resolvedBy, resolutionNote, *winningAgent, groupID, orgID)
+
+		// If open conflicts exist but the JOIN resolved fewer, some decisions
+		// have been revised (valid_to IS NOT NULL). Return a clear error rather
+		// than silently succeeding with fewer resolved rows.
+		if err == nil && openCount > 0 && int(tag.RowsAffected()) < openCount {
+			return 0, fmt.Errorf("storage: %d of %d open conflicts reference revised decisions (valid_to IS NOT NULL): %w",
+				openCount-int(tag.RowsAffected()), openCount, ErrRevisedDecisions)
+		}
 	} else {
 		tag, err = tx.Exec(ctx,
 			`UPDATE scored_conflicts

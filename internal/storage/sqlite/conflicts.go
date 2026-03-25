@@ -356,13 +356,21 @@ func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uu
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	var oldStatus string
+	var oldStatus, decAIDStr, decBIDStr string
 	err = tx.QueryRowContext(ctx,
-		`SELECT status FROM scored_conflicts WHERE id = ? AND org_id = ?`,
+		`SELECT status, decision_a_id, decision_b_id FROM scored_conflicts WHERE id = ? AND org_id = ?`,
 		uuidStr(id), uuidStr(orgID),
-	).Scan(&oldStatus)
+	).Scan(&oldStatus, &decAIDStr, &decBIDStr)
 	if err != nil {
 		return "", fmt.Errorf("sqlite: get old conflict status: %w", err)
+	}
+
+	// Validate winning_decision_id belongs to this conflict.
+	if winningDecisionID != nil && status == "resolved" {
+		winStr := uuidStr(*winningDecisionID)
+		if winStr != decAIDStr && winStr != decBIDStr {
+			return "", storage.ErrWinningDecisionNotInConflict
+		}
 	}
 
 	switch status {
@@ -416,7 +424,7 @@ func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uu
 // Validates winningAgent against the group's agent pair. When fpLabel is
 // non-nil (status must be "false_positive"), ground truth labels are inserted
 // in the same transaction.
-func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningAgent *string, fpLabel *string, _ storage.MutationAuditEntry) (int, error) {
+func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningAgent *string, fpLabel *string, audit storage.MutationAuditEntry) (int, error) {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("sqlite: begin resolve group tx: %w", err)
@@ -498,6 +506,20 @@ func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.U
 		if err != nil {
 			return 0, fmt.Errorf("sqlite: label false positives in resolve group tx: %w", err)
 		}
+	}
+
+	// Record the mutation audit entry.
+	audit.BeforeData = map[string]any{"group_id": groupID.String(), "open_count": int(affected)}
+	afterData := map[string]any{"status": status, "resolved_by": resolvedBy, "resolved_count": int(affected)}
+	if winningAgent != nil {
+		afterData["winning_agent"] = *winningAgent
+	}
+	if fpLabel != nil {
+		afterData["fp_label"] = *fpLabel
+	}
+	audit.AfterData = afterData
+	if err := insertAuditTx(ctx, tx, audit); err != nil {
+		return 0, fmt.Errorf("sqlite: audit in resolve group tx: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

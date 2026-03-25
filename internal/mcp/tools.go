@@ -1470,38 +1470,34 @@ func (s *Server) handleResolve(ctx context.Context, request mcplib.CallToolReque
 
 	actorRole := string(claims.Role)
 
-	// Try resolving as a scored_conflict ID first.
-	conflict, cErr := s.db.GetConflict(ctx, conflictID, orgID)
-	if cErr != nil {
-		return errorResult(fmt.Sprintf("failed to look up conflict: %v", cErr)), nil
+	// Attempt single-conflict resolution first. UpdateConflictStatusWithAudit
+	// uses SELECT ... FOR UPDATE inside its transaction, so there is no
+	// read-then-write race. If the ID doesn't match a scored_conflict, fall
+	// back to group resolution.
+	singleResult, singleErr := s.resolveSingleConflict(ctx, request, conflictID, orgID, status, resolvedBy, actorRole, resolutionNote, winningDecisionID)
+	if singleErr != nil {
+		return nil, singleErr
 	}
-	if conflict != nil {
-		return s.resolveSingleConflict(ctx, request, conflict, orgID, status, resolvedBy, actorRole, resolutionNote, winningDecisionID)
+	if singleResult != nil {
+		return singleResult, nil
 	}
 
 	// Not a scored_conflict ID — try resolving as a conflict_group ID.
 	return s.resolveGroup(ctx, request, conflictID, orgID, status, resolvedBy, actorRole, resolutionNote, winningDecisionID)
 }
 
-// resolveSingleConflict handles resolution of a single scored_conflict.
+// resolveSingleConflict attempts to resolve the given ID as a scored_conflict.
+// Returns (nil, nil) if the ID doesn't match any scored_conflict, signaling
+// the caller to try group resolution instead. This avoids a read-then-write
+// race — UpdateConflictStatusWithAudit uses SELECT ... FOR UPDATE internally.
 func (s *Server) resolveSingleConflict(
 	ctx context.Context,
 	request mcplib.CallToolRequest,
-	conflict *model.DecisionConflict,
-	orgID uuid.UUID,
+	conflictID, orgID uuid.UUID,
 	status, resolvedBy, actorRole string,
 	resolutionNote *string,
 	winningDecisionID *uuid.UUID,
 ) (*mcplib.CallToolResult, error) {
-	conflictID := conflict.ID
-
-	// Validate winning_decision_id belongs to this conflict.
-	if winningDecisionID != nil {
-		if *winningDecisionID != conflict.DecisionAID && *winningDecisionID != conflict.DecisionBID {
-			return errorResult("winning_decision_id must be one of the two decisions in this conflict"), nil
-		}
-	}
-
 	// Compute false_positive label so the storage layer can insert it
 	// atomically in the same transaction as the resolution.
 	var fpLabel *string
@@ -1527,39 +1523,47 @@ func (s *Server) resolveSingleConflict(
 	oldStatus, err := s.db.UpdateConflictStatusWithAudit(ctx, conflictID, orgID, status, resolvedBy, resolutionNote, winningDecisionID, fpLabel, audit)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
-			return errorResult("conflict not found"), nil
+			// Not a scored_conflict — return nil to signal fallback to group path.
+			return nil, nil
+		}
+		if errors.Is(err, storage.ErrWinningDecisionNotInConflict) {
+			return errorResult("winning_decision_id must be one of the two decisions in this conflict"), nil
 		}
 		return errorResult(fmt.Sprintf("failed to update conflict: %v", err)), nil
 	}
 
 	// Cascade resolution when resolving with a winner in a group.
 	var cascaded int
-	if status == "resolved" && winningDecisionID != nil && conflict.GroupID != nil {
-		cascadeAudit := storage.MutationAuditEntry{
-			OrgID:        orgID,
-			ActorAgentID: resolvedBy,
-			ActorRole:    actorRole,
-			Endpoint:     "mcp/akashi_resolve",
-			Operation:    "conflict_cascade_resolved",
-			ResourceType: "conflict",
-			ResourceID:   conflictID.String(),
-			Metadata:     map[string]any{"trigger_conflict_id": conflictID.String(), "winning_decision_id": winningDecisionID.String()},
-		}
-		var cascadeErr error
-		cascaded, cascadeErr = s.db.CascadeResolveByOutcome(ctx, orgID, *conflict.GroupID, *winningDecisionID, conflictID, cascadeSimilarityThreshold, cascadeAudit)
-		if cascadeErr != nil {
-			s.logger.Warn("mcp: resolution cascade failed",
-				"trigger_conflict_id", conflictID,
-				"group_id", conflict.GroupID,
-				"error", cascadeErr,
-			)
-		}
-		if cascaded > 0 {
-			s.logger.Info("mcp: resolution cascade resolved conflicts",
-				"trigger_conflict_id", conflictID,
-				"group_id", conflict.GroupID,
-				"cascade_resolved", cascaded,
-			)
+	if status == "resolved" && winningDecisionID != nil {
+		// Fetch the conflict to check group membership for cascade.
+		conflict, cErr := s.db.GetConflict(ctx, conflictID, orgID)
+		if cErr == nil && conflict != nil && conflict.GroupID != nil {
+			cascadeAudit := storage.MutationAuditEntry{
+				OrgID:        orgID,
+				ActorAgentID: resolvedBy,
+				ActorRole:    actorRole,
+				Endpoint:     "mcp/akashi_resolve",
+				Operation:    "conflict_cascade_resolved",
+				ResourceType: "conflict",
+				ResourceID:   conflictID.String(),
+				Metadata:     map[string]any{"trigger_conflict_id": conflictID.String(), "winning_decision_id": winningDecisionID.String()},
+			}
+			var cascadeErr error
+			cascaded, cascadeErr = s.db.CascadeResolveByOutcome(ctx, orgID, *conflict.GroupID, *winningDecisionID, conflictID, cascadeSimilarityThreshold, cascadeAudit)
+			if cascadeErr != nil {
+				s.logger.Warn("mcp: resolution cascade failed",
+					"trigger_conflict_id", conflictID,
+					"group_id", conflict.GroupID,
+					"error", cascadeErr,
+				)
+			}
+			if cascaded > 0 {
+				s.logger.Info("mcp: resolution cascade resolved conflicts",
+					"trigger_conflict_id", conflictID,
+					"group_id", conflict.GroupID,
+					"cascade_resolved", cascaded,
+				)
+			}
 		}
 	}
 
@@ -1635,6 +1639,9 @@ func (s *Server) resolveGroup(
 		}
 		if errors.Is(err, storage.ErrWinningAgentNotInGroup) {
 			return errorResult("winning_decision_id belongs to an agent that is not a participant in this conflict group"), nil
+		}
+		if errors.Is(err, storage.ErrRevisedDecisions) {
+			return errorResult(fmt.Sprintf("cannot resolve group with winner: %v", err)), nil
 		}
 		return errorResult(fmt.Sprintf("failed to resolve conflict group: %v", err)), nil
 	}
