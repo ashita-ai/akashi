@@ -1155,8 +1155,8 @@ func (db *DB) ResolveConflictGroup(
 			         ELSE NULL
 			     END
 			 FROM decisions da, decisions db
-			 WHERE da.id = sc.decision_a_id AND da.valid_to IS NULL
-			   AND db.id = sc.decision_b_id AND db.valid_to IS NULL
+			 WHERE da.id = sc.decision_a_id AND da.valid_to IS NULL AND da.org_id = $6
+			   AND db.id = sc.decision_b_id AND db.valid_to IS NULL AND db.org_id = $6
 			   AND sc.group_id = $5 AND sc.org_id = $6
 			   AND sc.status = 'open'`,
 			status, resolvedBy, resolutionNote, *winningAgent, groupID, orgID)

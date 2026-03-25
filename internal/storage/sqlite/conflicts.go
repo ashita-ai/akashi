@@ -435,15 +435,15 @@ func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.U
 			 SET status = ?, resolved_by = ?, resolved_at = datetime('now'),
 			     resolution_note = ?,
 			     winning_decision_id = CASE
-			         WHEN (SELECT agent_id FROM decisions WHERE id = scored_conflicts.decision_a_id) = ?
+			         WHEN (SELECT agent_id FROM decisions WHERE id = scored_conflicts.decision_a_id AND valid_to IS NULL AND org_id = ?) = ?
 			             THEN decision_a_id
-			         WHEN (SELECT agent_id FROM decisions WHERE id = scored_conflicts.decision_b_id) = ?
+			         WHEN (SELECT agent_id FROM decisions WHERE id = scored_conflicts.decision_b_id AND valid_to IS NULL AND org_id = ?) = ?
 			             THEN decision_b_id
 			         ELSE NULL
 			     END
 			 WHERE group_id = ? AND org_id = ? AND status = 'open'`,
 			status, resolvedBy, resolutionNote,
-			*winningAgent, *winningAgent,
+			uuidStr(orgID), *winningAgent, uuidStr(orgID), *winningAgent,
 			uuidStr(groupID), uuidStr(orgID),
 		)
 	} else {
