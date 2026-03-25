@@ -84,6 +84,8 @@ func conflictWhere(filters ConflictFilters, argOffset int) (string, []any) {
 		argOffset++
 	}
 	if filters.Project != nil {
+		// Same placeholder used twice: both sides of the OR bind to the same arg value.
+		// Only one value is appended — do not append a second.
 		clause += fmt.Sprintf(" AND (sc.project_a = $%d OR sc.project_b = $%d)", argOffset, argOffset)
 		args = append(args, *filters.Project)
 		argOffset++ //nolint:ineffassign // keep argOffset consistent so future additions don't miscount
@@ -1234,12 +1236,12 @@ func (db *DB) ResolveConflictGroup(
 		return 0, fmt.Errorf("storage: conflict group: %w", ErrNotFound)
 	}
 
-	// Build the UPDATE. When winning_agent is set, derive winning_decision_id
-	// per-row from the agent columns. Only "resolved" sets a winner;
-	// "false_positive" intentionally leaves winning_decision_id NULL.
-	var tag pgconn.CommandTag
+	// Build the UPDATE with RETURNING id so we know exactly which rows were
+	// changed. This feeds the false-positive labeling CTE below and avoids
+	// the fragile pattern of re-querying by status + resolved_by.
+	var updatedIDs []uuid.UUID
 	if winningAgent != nil && status == "resolved" {
-		tag, err = tx.Exec(ctx,
+		rows, qErr := tx.Query(ctx,
 			`UPDATE scored_conflicts
 			 SET status = $1,
 			     resolved_by = $2,
@@ -1251,43 +1253,65 @@ func (db *DB) ResolveConflictGroup(
 			         ELSE NULL
 			     END
 			 WHERE group_id = $5 AND org_id = $6
-			   AND status = 'open'`,
+			   AND status = 'open'
+			 RETURNING id`,
 			status, resolvedBy, resolutionNote, *winningAgent, groupID, orgID)
+		if qErr != nil {
+			return 0, fmt.Errorf("storage: resolve conflict group: %w", qErr)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				return 0, fmt.Errorf("storage: scan resolved conflict id: %w", err)
+			}
+			updatedIDs = append(updatedIDs, id)
+		}
+		if err := rows.Err(); err != nil {
+			return 0, fmt.Errorf("storage: resolve conflict group rows: %w", err)
+		}
 	} else {
-		tag, err = tx.Exec(ctx,
+		rows, qErr := tx.Query(ctx,
 			`UPDATE scored_conflicts
 			 SET status = $1,
 			     resolved_by = $2,
 			     resolved_at = now(),
 			     resolution_note = $3
 			 WHERE group_id = $4 AND org_id = $5
-			   AND status = 'open'`,
+			   AND status = 'open'
+			 RETURNING id`,
 			status, resolvedBy, resolutionNote, groupID, orgID)
-	}
-	if err != nil {
-		return 0, fmt.Errorf("storage: resolve conflict group: %w", err)
+		if qErr != nil {
+			return 0, fmt.Errorf("storage: resolve conflict group: %w", qErr)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				return 0, fmt.Errorf("storage: scan resolved conflict id: %w", err)
+			}
+			updatedIDs = append(updatedIDs, id)
+		}
+		if err := rows.Err(); err != nil {
+			return 0, fmt.Errorf("storage: resolve conflict group rows: %w", err)
+		}
 	}
 
-	affected := int(tag.RowsAffected())
+	affected := len(updatedIDs)
 
-	// Atomically label all just-resolved conflicts as false positives for
-	// ground truth training. The WHERE clause targets only rows updated in
-	// this transaction (status = $1 AND resolved_by = $2 AND group match),
-	// so previously resolved conflicts are never re-labeled.
+	// Atomically label the exact rows we just updated. Using the RETURNING IDs
+	// eliminates the fragile pattern of re-querying by status + resolved_by
+	// (which could accidentally match rows from concurrent transactions).
 	if fpLabel != nil && status == "false_positive" && affected > 0 {
 		_, err = tx.Exec(ctx,
 			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
-			 SELECT sc.id, sc.org_id, $1, $2, now()
-			 FROM scored_conflicts sc
-			 WHERE sc.group_id = $3 AND sc.org_id = $4
-			   AND sc.status = 'false_positive'
-			   AND sc.resolved_by = $5
+			 SELECT unnest($1::uuid[]), $2, $3, $4, now()
 			 ON CONFLICT (scored_conflict_id) DO UPDATE SET
 			   label = excluded.label,
 			   labeled_by = excluded.labeled_by,
 			   labeled_at = excluded.labeled_at
 			 WHERE conflict_labels.org_id = excluded.org_id`,
-			*fpLabel, resolvedBy, groupID, orgID, resolvedBy)
+			updatedIDs, orgID, *fpLabel, resolvedBy)
 		if err != nil {
 			return 0, fmt.Errorf("storage: label false positives in resolve group tx: %w", err)
 		}

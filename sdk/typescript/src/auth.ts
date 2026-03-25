@@ -15,10 +15,10 @@ export class TokenManager {
 
   /** Return a valid token, refreshing if necessary.
    *  Concurrent callers share a single in-flight refresh to avoid redundant
-   *  token requests.
-   *  @param _signal - Accepted for backward compatibility but not used.
-   *  Canceling a shared refresh would break concurrent callers. */
-  async getToken(_signal?: AbortSignal): Promise<string> {
+   *  token requests. If `signal` is provided, it races against the shared
+   *  refresh — aborting the caller's wait without canceling the refresh
+   *  itself (which other callers depend on). */
+  async getToken(signal?: AbortSignal): Promise<string> {
     if (this.token && Date.now() < this.expiresAt - this.refreshMarginMs) {
       return this.token;
     }
@@ -27,7 +27,25 @@ export class TokenManager {
         this.refreshPromise = null;
       });
     }
-    await this.refreshPromise;
+    // Race the shared refresh against the caller's abort signal so that
+    // individual callers can still cancel their wait without breaking
+    // concurrent callers who share the same refresh promise.
+    if (signal) {
+      await Promise.race([
+        this.refreshPromise,
+        new Promise<never>((_, reject) => {
+          if (signal.aborted) {
+            reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+            return;
+          }
+          signal.addEventListener("abort", () => {
+            reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+          }, { once: true });
+        }),
+      ]);
+    } else {
+      await this.refreshPromise;
+    }
     return this.token;
   }
 
