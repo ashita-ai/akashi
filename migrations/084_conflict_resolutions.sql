@@ -1,4 +1,4 @@
--- 083: Conflict resolution history table.
+-- 084: Conflict resolution history table.
 --
 -- When the conflict scorer re-detects a previously resolved conflict, the
 -- ON CONFLICT DO UPDATE in InsertScoredConflict transitions it from
