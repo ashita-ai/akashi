@@ -17,6 +17,10 @@ import (
 
 const userAgent = "akashi-go/0.2.0"
 
+// maxResponseBodySize caps how much data we read from the server to prevent
+// a misbehaving or compromised server from OOMing the client.
+const maxResponseBodySize = 10 << 20 // 10 MiB
+
 // Config holds the settings needed to construct a Client.
 type Config struct {
 	// BaseURL is the root URL of the Akashi server (e.g. "http://localhost:8080").
@@ -704,7 +708,7 @@ func (c *Client) doPostList(ctx context.Context, path string, body any, items an
 }
 
 func handleResponse(resp *http.Response, dest any) error {
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
 		return fmt.Errorf("akashi: read response body: %w", err)
 	}
@@ -735,7 +739,7 @@ func handleResponse(resp *http.Response, dest any) error {
 // handleListResponse parses the list envelope from a response body.
 // items must be a pointer to a slice (e.g., *[]Decision).
 func handleListResponse(resp *http.Response, items any) (listEnvelope, error) {
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
 		return listEnvelope{}, fmt.Errorf("akashi: read response body: %w", err)
 	}
