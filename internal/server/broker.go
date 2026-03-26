@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"time"
@@ -66,15 +67,63 @@ func (b *Broker) Start(ctx context.Context) {
 	b.logger.Info("broker: listening for notifications",
 		"channels", []string{storage.ChannelDecisions, storage.ChannelConflicts})
 
+	const (
+		baseBackoff = 1 * time.Second
+		maxBackoff  = 30 * time.Second
+	)
+	backoff := baseBackoff
+	consecutiveErrors := 0
+
 	for {
 		channel, payload, err := b.db.WaitForNotification(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return // Shutting down.
 			}
-			b.logger.Warn("broker: notification error, retrying", "error", err)
+			consecutiveErrors++
+
+			// Exponential backoff with jitter to avoid tight spin during
+			// persistent database outages. The storage layer has its own
+			// internal reconnect backoff, but if that exhausts its retries
+			// we need to pace the outer loop as well.
+			jitter := time.Duration(rand.Int64N(int64(backoff / 2))) //nolint:gosec // jitter doesn't need crypto-strength randomness
+			sleep := backoff + jitter
+			b.logger.Warn("broker: notification error, backing off before retry",
+				"error", err,
+				"consecutive_errors", consecutiveErrors,
+				"backoff", sleep)
+
+			timer := time.NewTimer(sleep)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			}
+
+			// Grow backoff for next failure, capped at maxBackoff.
+			backoff = min(backoff*2, maxBackoff)
+
+			// Re-issue LISTEN in case the underlying connection was replaced.
+			for _, ch := range []string{storage.ChannelDecisions, storage.ChannelConflicts} {
+				if listenErr := b.db.Listen(ctx, ch); listenErr != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					b.logger.Warn("broker: re-listen failed after reconnect",
+						"channel", ch, "error", listenErr)
+				}
+			}
 			continue
 		}
+
+		// Success — reset backoff state.
+		if consecutiveErrors > 0 {
+			b.logger.Info("broker: notification loop recovered",
+				"after_errors", consecutiveErrors)
+		}
+		backoff = baseBackoff
+		consecutiveErrors = 0
 
 		// Extract org_id from the notification payload for tenant isolation.
 		orgID, ok := extractOrgID(payload)
