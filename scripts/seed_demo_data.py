@@ -453,6 +453,16 @@ def clear_seed_data(conn):
         """, (SEED_MARKER,))
         ev_count = cur.rowcount
 
+        # Delete assessments before decisions — FK is ON DELETE RESTRICT (migration 086).
+        # SET LOCAL authorizes the immutability trigger for this transaction only.
+        cur.execute("SET LOCAL akashi.allow_assessment_delete = 'true'")
+        cur.execute("""
+            DELETE FROM decision_assessments WHERE decision_id IN (
+                SELECT id FROM decisions WHERE metadata->>'seed_marker' = %s
+            )
+        """, (SEED_MARKER,))
+        cur.execute("SET LOCAL akashi.allow_assessment_delete = 'false'")
+
         cur.execute("DELETE FROM decisions WHERE metadata->>'seed_marker' = %s", (SEED_MARKER,))
         dec_count = cur.rowcount
 

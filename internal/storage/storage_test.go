@@ -6628,6 +6628,14 @@ func TestBatchDeleteDecisions_WithData(t *testing.T) {
 			RelevanceScore: &rel,
 		})
 		require.NoError(t, err)
+
+		// Add an assessment per decision so the trigger bypass is exercised.
+		_, err = testDB.CreateAssessment(ctx, uuid.Nil, model.DecisionAssessment{
+			DecisionID:      d.ID,
+			AssessorAgentID: fmt.Sprintf("batch-reviewer-%d", i),
+			Outcome:         model.AssessmentCorrect,
+		})
+		require.NoError(t, err)
 	}
 
 	cutoff := time.Now().UTC().Add(1 * time.Hour)
@@ -6636,6 +6644,7 @@ func TestBatchDeleteDecisions_WithData(t *testing.T) {
 	assert.Equal(t, int64(3), result.Decisions, "should delete 3 decisions")
 	assert.Equal(t, int64(3), result.Alternatives, "should delete 3 alternatives")
 	assert.Equal(t, int64(3), result.Evidence, "should delete 3 evidence rows")
+	assert.Equal(t, int64(3), result.Assessments, "should delete 3 assessments")
 }
 
 func TestGetConflictCount(t *testing.T) {
@@ -8080,6 +8089,15 @@ func TestDeleteAgentData_WithAllRelatedData(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	// Create an assessment so the trigger bypass (SET LOCAL akashi.allow_assessment_delete)
+	// is exercised against a live row, not just zero-match.
+	_, err = testDB.CreateAssessment(ctx, uuid.Nil, model.DecisionAssessment{
+		DecisionID:      dec.ID,
+		AssessorAgentID: "reviewer-" + suffix,
+		Outcome:         model.AssessmentCorrect,
+	})
+	require.NoError(t, err)
+
 	now := time.Now().UTC()
 	err = testDB.InsertEvent(ctx, model.AgentEvent{
 		ID: uuid.New(), RunID: run.ID, OrgID: run.OrgID,
@@ -8102,10 +8120,22 @@ func TestDeleteAgentData_WithAllRelatedData(t *testing.T) {
 	assert.GreaterOrEqual(t, result.Decisions, int64(1))
 	assert.GreaterOrEqual(t, result.Evidence, int64(1))
 	assert.GreaterOrEqual(t, result.Alternatives, int64(1))
+	assert.GreaterOrEqual(t, result.Assessments, int64(1), "assessments should be explicitly deleted")
 	assert.GreaterOrEqual(t, result.Events, int64(1))
 	assert.GreaterOrEqual(t, result.Runs, int64(1))
 	assert.GreaterOrEqual(t, result.Grants, int64(1))
 	assert.GreaterOrEqual(t, result.Agents, int64(1))
+
+	// Verify the assessment was archived to deletion_audit_log before deletion.
+	var archived int
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT COUNT(*) FROM deletion_audit_log
+		 WHERE org_id = $1 AND table_name = 'decision_assessments'
+		   AND record_data->>'assessor_agent_id' = $2`,
+		uuid.Nil, "reviewer-"+suffix,
+	).Scan(&archived)
+	require.NoError(t, err)
+	assert.Equal(t, 1, archived, "assessment should be archived to deletion_audit_log")
 }
 
 // ---------------------------------------------------------------------------
