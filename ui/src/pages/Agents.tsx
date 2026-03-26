@@ -78,6 +78,8 @@ function compareAgents(a: AgentWithStats, b: AgentWithStats, field: SortField, d
 }
 
 const roleColors: Record<AgentRole, "default" | "secondary" | "destructive" | "success" | "warning" | "outline"> = {
+  platform_admin: "destructive",
+  org_owner: "warning",
   admin: "default",
   agent: "secondary",
   reader: "outline",
@@ -214,6 +216,8 @@ export default function Agents() {
                       <SelectItem value="reader">Reader</SelectItem>
                       <SelectItem value="agent">Agent</SelectItem>
                       <SelectItem value="admin">Admin</SelectItem>
+                      <SelectItem value="org_owner">Org Owner</SelectItem>
+                      <SelectItem value="platform_admin">Platform Admin</SelectItem>
                     </SelectContent>
                   </Select>
                   <input type="hidden" name="role" value={selectedRole} />
