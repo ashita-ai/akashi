@@ -66,8 +66,8 @@ internal/
   ratelimit/         Pluggable token bucket rate limiter.
   telemetry/         OpenTelemetry setup (traces + metrics).
   testutil/          Shared test helpers (testcontainers, test DB, test logger).
-migrations/          Sequential SQL files (001..054). Atlas-managed checksums.
-adrs/                Technical architecture decision records (ADR-001 through ADR-008).
+migrations/          Sequential SQL files (001..085). Atlas-managed checksums.
+adrs/                Technical architecture decision records (ADR-001 through ADR-011).
 sdk/                 Go, Python, TypeScript client SDKs.
 ui/                  React 19 SPA (audit dashboard). Embedded via go:embed when built with -tags ui.
 docs/                Configuration reference, .env.example.
@@ -75,7 +75,7 @@ docs/                Configuration reference, .env.example.
 
 ## Architecture patterns
 
-**Multi-tenancy via org_id.** Every query MUST include `AND org_id = $N`. There are 84 org_id filters across the storage layer. Missing one is a data leak. When adding a new query, always scope by org_id.
+**Multi-tenancy via org_id.** Every query MUST include `AND org_id = $N`. There are 231 org_id filters across the storage layer. Missing one is a data leak. When adding a new query, always scope by org_id.
 
 **Bi-temporal model.** Decisions have `valid_from`/`valid_to` (business time) and `transaction_time` (system time). Active records have `valid_to IS NULL`. Always include this filter in queries that should return current state.
 
