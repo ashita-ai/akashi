@@ -6,8 +6,9 @@
  * - After each generation (streaming or not), `trace()` records the LLM output
  *   as a decision.
  *
- * All Akashi calls are fire-and-forget: errors are swallowed silently so they
- * never interrupt the model call.
+ * All Akashi calls are fire-and-forget: errors are logged via `console.warn`
+ * and never interrupt the model call. Supply an `onError` callback in options
+ * for custom error handling (e.g. structured logging, metrics).
  */
 
 import type { AkashiClient } from "akashi";
@@ -48,6 +49,15 @@ export interface AkashiMiddlewareOptions {
    * Defaults to `true`.
    */
   traceStreams?: boolean;
+
+  /**
+   * Called when an Akashi `check()` or `trace()` call fails. Receives the
+   * thrown error and the operation name (`"check"` or `"trace"`).
+   *
+   * Errors are always logged via `console.warn` regardless of whether this
+   * callback is provided.
+   */
+  onError?: (error: unknown, operation: "check" | "trace") => void;
 }
 
 /**
@@ -81,11 +91,13 @@ async function safeCheck(
   client: AkashiClient,
   decisionType: string,
   query: string | undefined,
+  onError?: (error: unknown, operation: "check" | "trace") => void,
 ): Promise<void> {
   try {
     await client.check(decisionType, query);
-  } catch {
-    // Never interrupt the model call.
+  } catch (err: unknown) {
+    console.warn("[akashi] check failed:", err);
+    try { onError?.(err, "check"); } catch { /* callback must not disrupt the model call */ }
   }
 }
 
@@ -94,6 +106,7 @@ async function safeTrace(
   decisionType: string,
   outcome: string,
   confidence: number,
+  onError?: (error: unknown, operation: "check" | "trace") => void,
   reasoning?: string,
 ): Promise<void> {
   try {
@@ -103,8 +116,9 @@ async function safeTrace(
       confidence,
       reasoning,
     });
-  } catch {
-    // Never interrupt the model call.
+  } catch (err: unknown) {
+    console.warn("[akashi] trace failed:", err);
+    try { onError?.(err, "trace"); } catch { /* callback must not disrupt the model call */ }
   }
 }
 
@@ -142,6 +156,7 @@ export function createAkashiMiddleware(
     checkBeforeGenerate = true,
     traceGenerations = true,
     traceStreams = true,
+    onError,
   } = options;
 
   return {
@@ -153,7 +168,7 @@ export function createAkashiMiddleware(
         const query = extractLastUserQuery(
           params.prompt as Array<{ role: string; content: unknown }>,
         );
-        await safeCheck(client, decisionType, query);
+        await safeCheck(client, decisionType, query, onError);
       }
 
       const result = await doGenerate();
@@ -166,7 +181,7 @@ export function createAkashiMiddleware(
             ?.map((c) => `tool:${c.toolName}(${JSON.stringify(c.args).slice(0, 100)})`)
             .join(", ") ??
           "";
-        await safeTrace(client, decisionType, text, confidence);
+        await safeTrace(client, decisionType, text, confidence, onError);
       }
 
       return result;
@@ -180,7 +195,7 @@ export function createAkashiMiddleware(
         const query = extractLastUserQuery(
           params.prompt as Array<{ role: string; content: unknown }>,
         );
-        await safeCheck(client, decisionType, query);
+        await safeCheck(client, decisionType, query, onError);
       }
 
       const result = await doStream();
@@ -205,7 +220,7 @@ export function createAkashiMiddleware(
         },
         async flush() {
           if (accumulated) {
-            await safeTrace(client, decisionType, accumulated, confidence);
+            await safeTrace(client, decisionType, accumulated, confidence, onError);
           }
         },
       });

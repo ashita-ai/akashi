@@ -548,3 +548,100 @@ describe("all disabled", () => {
     expect(client.trace).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Error reporting — console.warn + onError callback
+// ---------------------------------------------------------------------------
+
+describe("error reporting", () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  it("logs check errors to console.warn", async () => {
+    const client = makeClient();
+    const err = new Error("check down");
+    vi.mocked(client.check).mockRejectedValue(err);
+    await runGenerate(client, "q", { text: "ok" });
+    expect(warnSpy).toHaveBeenCalledWith("[akashi] check failed:", err);
+  });
+
+  it("logs trace errors to console.warn", async () => {
+    const client = makeClient();
+    const err = new Error("trace down");
+    vi.mocked(client.trace).mockRejectedValue(err);
+    await runGenerate(client, "q", { text: "ok" });
+    expect(warnSpy).toHaveBeenCalledWith("[akashi] trace failed:", err);
+  });
+
+  it("calls onError with error and operation name on check failure", async () => {
+    const client = makeClient();
+    const err = new Error("check down");
+    vi.mocked(client.check).mockRejectedValue(err);
+    const onError = vi.fn();
+    await runGenerate(client, "q", { text: "ok" }, { onError });
+    expect(onError).toHaveBeenCalledWith(err, "check");
+  });
+
+  it("calls onError with error and operation name on trace failure", async () => {
+    const client = makeClient();
+    const err = new Error("trace down");
+    vi.mocked(client.trace).mockRejectedValue(err);
+    const onError = vi.fn();
+    await runGenerate(client, "q", { text: "ok" }, { onError });
+    expect(onError).toHaveBeenCalledWith(err, "trace");
+  });
+
+  it("calls onError on stream check failure", async () => {
+    const client = makeClient();
+    const err = new Error("check down");
+    vi.mocked(client.check).mockRejectedValue(err);
+    const onError = vi.fn();
+    const mw = createAkashiMiddleware(client, { onError });
+    const { stream } = await mw.wrapStream!({
+      doStream: vi.fn().mockResolvedValue(streamResult([
+        { type: "text-delta", textDelta: "text" },
+      ])),
+      doGenerate: vi.fn(),
+      params: callParams([]),
+      model: {} as never,
+    });
+    await drain(stream);
+    expect(onError).toHaveBeenCalledWith(err, "check");
+  });
+
+  it("calls onError on stream trace failure", async () => {
+    const client = makeClient();
+    const err = new Error("trace down");
+    vi.mocked(client.trace).mockRejectedValue(err);
+    const onError = vi.fn();
+    const mw = createAkashiMiddleware(client, { onError });
+    const { stream } = await mw.wrapStream!({
+      doStream: vi.fn().mockResolvedValue(streamResult([
+        { type: "text-delta", textDelta: "text" },
+      ])),
+      doGenerate: vi.fn(),
+      params: callParams([]),
+      model: {} as never,
+    });
+    await drain(stream);
+    expect(onError).toHaveBeenCalledWith(err, "trace");
+  });
+
+  it("does not call onError when no errors occur", async () => {
+    const client = makeClient();
+    const onError = vi.fn();
+    await runGenerate(client, "q", { text: "ok" }, { onError });
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("onError exception does not interrupt the model call", async () => {
+    const client = makeClient();
+    vi.mocked(client.check).mockRejectedValue(new Error("check down"));
+    const onError = vi.fn().mockImplementation(() => { throw new Error("callback blew up"); });
+    const result = await runGenerate(client, "q", { text: "still works" }, { onError });
+    expect(result.text).toBe("still works");
+  });
+});
