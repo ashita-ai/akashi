@@ -32,6 +32,8 @@ export interface AuthTokenResponse {
 
 // Agent
 export type AgentRole =
+  | "platform_admin"
+  | "org_owner"
   | "admin"
   | "agent"
   | "reader";
