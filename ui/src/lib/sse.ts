@@ -73,8 +73,8 @@ export function useSSE(token: string | null, onAuthError?: () => void) {
     } finally {
       if (!controller.signal.aborted) {
         setStatus("disconnected");
-        // Reconnect with exponential backoff.
-        const delay = retryMs.current;
+        // Reconnect with exponential backoff + jitter to avoid thundering herd.
+        const delay = retryMs.current * (0.5 + Math.random());
         retryMs.current = Math.min(retryMs.current * 2, MAX_RETRY_MS);
         setTimeout(() => connect(), delay);
       }
