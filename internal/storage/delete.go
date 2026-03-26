@@ -207,7 +207,7 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 	}
 
 	_, err = tx.Exec(ctx,
-		`DELETE FROM decision_assessments WHERE decision_id IN (
+		`DELETE FROM decision_assessments WHERE org_id = $1 AND decision_id IN (
 			SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2
 		)`, orgID, agentID)
 	if err != nil {
