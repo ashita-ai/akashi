@@ -184,10 +184,9 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 	}
 	result.Claims = tag.RowsAffected()
 
-	// 4c. Archive decision_assessments BEFORE deleting decisions.
-	// decision_assessments.decision_id has ON DELETE CASCADE, so assessments
-	// silently vanish when decisions are deleted. Archive them first so the
-	// assessment history remains recoverable from deletion_audit_log.
+	// 4c. Archive and delete decision_assessments BEFORE deleting decisions.
+	// decision_assessments.decision_id uses ON DELETE RESTRICT (migration 086),
+	// so assessments must be explicitly removed before their parent decision.
 	_, err = tx.Exec(ctx,
 		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
 		 SELECT $1, $2, 'decision_assessments', da.id::text, to_jsonb(da)
@@ -199,6 +198,25 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 	)
 	if err != nil {
 		return DeleteAgentResult{}, fmt.Errorf("storage: archive assessments for delete: %w", err)
+	}
+
+	// SET LOCAL is transaction-scoped: it authorizes the immutability trigger
+	// (prevent_assessment_mutation) to permit deletes within this tx only.
+	if _, err = tx.Exec(ctx, `SET LOCAL akashi.allow_assessment_delete = 'true'`); err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: set assessment delete flag: %w", err)
+	}
+
+	_, err = tx.Exec(ctx,
+		`DELETE FROM decision_assessments WHERE decision_id IN (
+			SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2
+		)`, orgID, agentID)
+	if err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: delete assessments: %w", err)
+	}
+
+	// Reset the flag so no other statements in this tx can accidentally delete assessments.
+	if _, err = tx.Exec(ctx, `SET LOCAL akashi.allow_assessment_delete = 'false'`); err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: reset assessment delete flag: %w", err)
 	}
 
 	// 5. Delete decisions.

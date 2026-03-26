@@ -26,7 +26,8 @@ CREATE INDEX idx_decision_assessments_org_created
 
 -- Immutability triggers: prevent DELETE and UPDATE on decision_assessments.
 -- Assessments are append-only audit records. A revised assessment is a new row,
--- not an overwrite. Hard deletes are only permitted via ON DELETE CASCADE from decisions.
+-- not an overwrite. Authorized deletion requires setting the session flag
+-- akashi.allow_assessment_delete (see migration 086 for the updated trigger).
 CREATE OR REPLACE FUNCTION prevent_assessment_mutation()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN

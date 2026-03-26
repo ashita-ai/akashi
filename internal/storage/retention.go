@@ -478,9 +478,8 @@ func (db *DB) deleteBatch(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID)
 	}
 	cnt.Claims = tag.RowsAffected()
 
-	// 4. Archive and delete decision_assessments (ON DELETE CASCADE from decisions
-	// would silently drop them; archive first so the assessment history remains
-	// recoverable from deletion_audit_log).
+	// 4. Archive and delete decision_assessments. The FK uses ON DELETE RESTRICT
+	// (migration 086), so assessments must be explicitly removed before decisions.
 	if _, err = tx.Exec(ctx,
 		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
 		 SELECT $2, da.assessor_agent_id, 'decision_assessments', da.id::text, to_jsonb(da)
@@ -489,6 +488,20 @@ func (db *DB) deleteBatch(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID)
 		ids, orgID,
 	); err != nil {
 		return cnt, fmt.Errorf("storage: archive assessments batch: %w", err)
+	}
+	// SET LOCAL is transaction-scoped: it authorizes the immutability trigger
+	// (prevent_assessment_mutation) to permit deletes within this tx only.
+	if _, err = tx.Exec(ctx, `SET LOCAL akashi.allow_assessment_delete = 'true'`); err != nil {
+		return cnt, fmt.Errorf("storage: set assessment delete flag: %w", err)
+	}
+	if _, err = tx.Exec(ctx,
+		`DELETE FROM decision_assessments WHERE decision_id = ANY($1) AND org_id = $2`,
+		ids, orgID,
+	); err != nil {
+		return cnt, fmt.Errorf("storage: delete assessments batch: %w", err)
+	}
+	if _, err = tx.Exec(ctx, `SET LOCAL akashi.allow_assessment_delete = 'false'`); err != nil {
+		return cnt, fmt.Errorf("storage: reset assessment delete flag: %w", err)
 	}
 
 	// 5. Null out precedent_ref / supersedes_id references to these decisions.
