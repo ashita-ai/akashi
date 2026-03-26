@@ -52,6 +52,7 @@ type PurgeCount struct {
 	Alternatives int64 `json:"alternatives"`
 	Evidence     int64 `json:"evidence"`
 	Claims       int64 `json:"claims"`
+	Assessments  int64 `json:"assessments"`
 	Events       int64 `json:"events"`
 }
 
@@ -398,6 +399,7 @@ func (db *DB) BatchDeleteDecisions(ctx context.Context, orgID uuid.UUID, before 
 		total.Evidence += cnt.Evidence
 		total.Alternatives += cnt.Alternatives
 		total.Claims += cnt.Claims
+		total.Assessments += cnt.Assessments
 		total.Decisions += cnt.Decisions
 	}
 
@@ -494,12 +496,14 @@ func (db *DB) deleteBatch(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID)
 	if _, err = tx.Exec(ctx, `SET LOCAL akashi.allow_assessment_delete = 'true'`); err != nil {
 		return cnt, fmt.Errorf("storage: set assessment delete flag: %w", err)
 	}
-	if _, err = tx.Exec(ctx,
+	tag, err = tx.Exec(ctx,
 		`DELETE FROM decision_assessments WHERE decision_id = ANY($1) AND org_id = $2`,
 		ids, orgID,
-	); err != nil {
+	)
+	if err != nil {
 		return cnt, fmt.Errorf("storage: delete assessments batch: %w", err)
 	}
+	cnt.Assessments = tag.RowsAffected()
 	if _, err = tx.Exec(ctx, `SET LOCAL akashi.allow_assessment_delete = 'false'`); err != nil {
 		return cnt, fmt.Errorf("storage: reset assessment delete flag: %w", err)
 	}
