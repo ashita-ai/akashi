@@ -174,7 +174,7 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 				mcplib.Description(`What you're working on (e.g. "codebase review", "implement rate limiting"). Groups related decisions.`),
 			),
 			mcplib.WithString("project",
-				mcplib.Description(`The project, application, or service this decision belongs to (e.g. "akashi", "my-langchain-app", "customer-support-bot"). Include this so the decision appears in project-scoped queries and can be filtered by other agents working on the same project.`),
+				mcplib.Description(`The repository or project name (e.g. "akashi", "my-langchain-app"). Auto-detected from the git remote when omitted — prefer omitting unless you know the exact canonical name. Do NOT use workspace directory names.`),
 			),
 			mcplib.WithString("idempotency_key",
 				mcplib.Description("Optional key for retry safety. Same key + same payload replays the original response. Same key + different payload returns an error. Use a UUID or deterministic identifier per logical operation."),
@@ -442,6 +442,11 @@ func (s *Server) resolveProjectFilter(ctx context.Context, request mcplib.CallTo
 		return nil // cross-project opt-out
 	}
 	if explicit != "" {
+		// Resolve alias: the agent may have passed a workspace name.
+		orgID := ctxutil.OrgIDFromContext(ctx)
+		if canonical, err := s.db.ResolveProjectAlias(ctx, orgID, explicit); err == nil && canonical != "" {
+			return &canonical
+		}
 		return &explicit
 	}
 	// Auto-detect from MCP roots.
@@ -829,6 +834,20 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		)
 		clientCtx["project_submitted"] = clientProject
 		clientCtx["project"] = serverProject
+
+		// Auto-create alias so future traces with the same workspace name
+		// get normalized even when MCP roots are unavailable.
+		// Guard: don't create an alias if the canonical name is itself an alias
+		// (prevents chains like A→B→C where only one hop is resolved).
+		if existing, err := s.db.ResolveProjectAlias(ctx, orgID, serverProject); err == nil && existing == "" {
+			if err := s.db.CreateProjectAlias(ctx, orgID, clientProject, serverProject, "system:auto-alias"); err != nil {
+				s.logger.Warn("failed to auto-create project alias (non-fatal)",
+					"alias", clientProject, "canonical", serverProject, "error", err)
+			} else {
+				s.logger.Info("auto-created project alias",
+					"alias", clientProject, "canonical", serverProject)
+			}
+		}
 	} else if clientProject != "" && serverProject == "" {
 		// No server inference available — try alias lookup as fallback.
 		canonical, aliasErr := s.db.ResolveProjectAlias(ctx, orgID, clientProject)

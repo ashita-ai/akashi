@@ -104,6 +104,10 @@ type Store interface {
 	// alias mapping exists.
 	ResolveProjectAlias(ctx context.Context, orgID uuid.UUID, alias string) (string, error)
 
+	// CreateProjectAlias inserts an alias→canonical mapping (link_type='alias').
+	// Idempotent: silently ignores duplicates via ON CONFLICT DO NOTHING.
+	CreateProjectAlias(ctx context.Context, orgID uuid.UUID, alias, canonical, createdBy string) error
+
 	// ---- Idempotency ----
 
 	BeginIdempotency(ctx context.Context, orgID uuid.UUID, agentID, endpoint, key, requestHash string) (IdempotencyLookup, error)

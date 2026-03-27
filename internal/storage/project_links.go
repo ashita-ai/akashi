@@ -163,6 +163,51 @@ func (db *DB) LinkedProjects(ctx context.Context, orgID uuid.UUID, project, link
 	return projects, rows.Err()
 }
 
+// CreateProjectAlias inserts an alias→canonical mapping (link_type='alias')
+// with an accompanying mutation_audit entry. Idempotent: uses ON CONFLICT DO
+// NOTHING so duplicate alias creation is a no-op.
+func (db *DB) CreateProjectAlias(ctx context.Context, orgID uuid.UUID, alias, canonical, createdBy string) error {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("storage: begin create project alias tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	id := uuid.New()
+	tag, err := tx.Exec(ctx,
+		`INSERT INTO project_links (id, org_id, project_a, project_b, link_type, created_by)
+		 VALUES ($1, $2, $3, $4, 'alias', $5)
+		 ON CONFLICT (org_id, project_a, project_b, link_type) DO NOTHING`,
+		id, orgID, alias, canonical, createdBy,
+	)
+	if err != nil {
+		return fmt.Errorf("storage: create project alias: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		// Already exists — nothing to audit.
+		return nil
+	}
+
+	if err := InsertMutationAuditTx(ctx, tx, MutationAuditEntry{
+		OrgID:        orgID,
+		ActorAgentID: createdBy,
+		ActorRole:    "system",
+		Operation:    "create",
+		ResourceType: "project_link",
+		ResourceID:   id.String(),
+		Endpoint:     "system:auto-alias",
+		AfterData: model.ProjectLink{
+			ID: id, OrgID: orgID,
+			ProjectA: alias, ProjectB: canonical,
+			LinkType: "alias", CreatedBy: createdBy,
+		},
+	}); err != nil {
+		return fmt.Errorf("storage: audit in create project alias tx: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
 // ResolveProjectAlias looks up a canonical project name for the given alias.
 // Alias links use link_type='alias' with project_a as the alias and project_b
 // as the canonical name (unidirectional, unlike conflict_scope links).

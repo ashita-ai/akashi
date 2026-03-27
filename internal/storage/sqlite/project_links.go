@@ -12,3 +12,8 @@ import (
 func (l *LiteDB) ResolveProjectAlias(_ context.Context, _ uuid.UUID, _ string) (string, error) {
 	return "", nil
 }
+
+// CreateProjectAlias is a no-op in lite mode.
+func (l *LiteDB) CreateProjectAlias(_ context.Context, _ uuid.UUID, _, _, _ string) error {
+	return nil
+}
