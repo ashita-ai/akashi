@@ -30,7 +30,7 @@ func scanOneAPIKey(row pgxRowScanner) (model.APIKey, error) {
 }
 
 func scanAPIKeys(rows pgx.Rows) ([]model.APIKey, error) {
-	var keys []model.APIKey
+	keys := make([]model.APIKey, 0)
 	for rows.Next() {
 		k, err := scanOneAPIKey(rows)
 		if err != nil {
@@ -44,12 +44,6 @@ func scanAPIKeys(rows pgx.Rows) ([]model.APIKey, error) {
 // CreateAPIKeyWithAudit inserts a new API key and a mutation audit entry
 // atomically within a single transaction.
 func (db *DB) CreateAPIKeyWithAudit(ctx context.Context, key model.APIKey, audit MutationAuditEntry) (model.APIKey, error) {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return model.APIKey{}, fmt.Errorf("storage: begin create api key tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	if key.ID == uuid.Nil {
 		key.ID = uuid.New()
 	}
@@ -57,24 +51,26 @@ func (db *DB) CreateAPIKeyWithAudit(ctx context.Context, key model.APIKey, audit
 		key.CreatedAt = time.Now().UTC()
 	}
 
-	_, err = tx.Exec(ctx,
-		`INSERT INTO api_keys (id, prefix, key_hash, agent_id, org_id, label, created_by, created_at, expires_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		key.ID, key.Prefix, key.KeyHash, key.AgentID, key.OrgID,
-		key.Label, key.CreatedBy, key.CreatedAt, key.ExpiresAt,
-	)
+	err := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`INSERT INTO api_keys (id, prefix, key_hash, agent_id, org_id, label, created_by, created_at, expires_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			key.ID, key.Prefix, key.KeyHash, key.AgentID, key.OrgID,
+			key.Label, key.CreatedBy, key.CreatedAt, key.ExpiresAt,
+		)
+		if err != nil {
+			return fmt.Errorf("storage: create api key: %w", err)
+		}
+
+		audit.ResourceID = key.ID.String()
+		audit.AfterData = key
+		if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+			return fmt.Errorf("storage: audit in create api key tx: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return model.APIKey{}, fmt.Errorf("storage: create api key: %w", err)
-	}
-
-	audit.ResourceID = key.ID.String()
-	audit.AfterData = key
-	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
-		return model.APIKey{}, fmt.Errorf("storage: audit in create api key tx: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return model.APIKey{}, fmt.Errorf("storage: commit create api key tx: %w", err)
+		return model.APIKey{}, err
 	}
 	return key, nil
 }
@@ -163,15 +159,7 @@ func (db *DB) GetActiveAPIKeysByAgentIDGlobal(ctx context.Context, agentID strin
 // Includes revoked/expired keys for admin visibility. Use the revoked_at and
 // expires_at fields to filter in the UI if needed.
 func (db *DB) ListAPIKeys(ctx context.Context, orgID uuid.UUID, limit, offset int) ([]model.APIKey, int, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
-	if offset < 0 {
-		offset = 0
-	}
+	limit, offset = clampPagination(limit, offset, 50, 1000)
 
 	var total int
 	if err := db.pool.QueryRow(ctx,
@@ -202,71 +190,45 @@ func (db *DB) ListAPIKeys(ctx context.Context, orgID uuid.UUID, limit, offset in
 // RevokeAPIKeyWithAudit sets revoked_at on an API key and records a mutation
 // audit entry atomically.
 func (db *DB) RevokeAPIKeyWithAudit(ctx context.Context, orgID uuid.UUID, keyID uuid.UUID, audit MutationAuditEntry) error {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("storage: begin revoke api key tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	return db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		// Fetch the key before revoking for audit.
+		before, err := scanOneAPIKey(tx.QueryRow(ctx,
+			`SELECT `+apiKeyCols+` FROM api_keys WHERE id = $1 AND org_id = $2`,
+			keyID, orgID,
+		))
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("storage: api key %s: %w", keyID, ErrNotFound)
+			}
+			return fmt.Errorf("storage: get api key for revocation: %w", err)
+		}
+		if before.RevokedAt != nil {
+			return fmt.Errorf("storage: api key %s already revoked", keyID)
+		}
 
-	// Fetch the key before revoking for audit.
-	before, err := scanOneAPIKey(tx.QueryRow(ctx,
-		`SELECT `+apiKeyCols+` FROM api_keys WHERE id = $1 AND org_id = $2`,
-		keyID, orgID,
-	))
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		tag, err := tx.Exec(ctx,
+			`UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND org_id = $2 AND revoked_at IS NULL`,
+			keyID, orgID,
+		)
+		if err != nil {
+			return fmt.Errorf("storage: revoke api key: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
 			return fmt.Errorf("storage: api key %s: %w", keyID, ErrNotFound)
 		}
-		return fmt.Errorf("storage: get api key for revocation: %w", err)
-	}
-	if before.RevokedAt != nil {
-		return fmt.Errorf("storage: api key %s already revoked", keyID)
-	}
 
-	tag, err := tx.Exec(ctx,
-		`UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND org_id = $2 AND revoked_at IS NULL`,
-		keyID, orgID,
-	)
-	if err != nil {
-		return fmt.Errorf("storage: revoke api key: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("storage: api key %s: %w", keyID, ErrNotFound)
-	}
-
-	audit.ResourceID = keyID.String()
-	audit.BeforeData = before
-	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
-		return fmt.Errorf("storage: audit in revoke api key tx: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("storage: commit revoke api key tx: %w", err)
-	}
-	return nil
+		audit.ResourceID = keyID.String()
+		audit.BeforeData = before
+		if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+			return fmt.Errorf("storage: audit in revoke api key tx: %w", err)
+		}
+		return nil
+	})
 }
 
 // RotateAPIKeyWithAudit revokes the old key and creates a new one atomically.
 // Returns the newly created key.
 func (db *DB) RotateAPIKeyWithAudit(ctx context.Context, orgID uuid.UUID, oldKeyID uuid.UUID, newKey model.APIKey, audit MutationAuditEntry) (model.APIKey, error) {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return model.APIKey{}, fmt.Errorf("storage: begin rotate api key tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	// Revoke the old key.
-	tag, err := tx.Exec(ctx,
-		`UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND org_id = $2 AND revoked_at IS NULL`,
-		oldKeyID, orgID,
-	)
-	if err != nil {
-		return model.APIKey{}, fmt.Errorf("storage: revoke old key during rotation: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return model.APIKey{}, fmt.Errorf("storage: old key %s not found or already revoked: %w", oldKeyID, ErrNotFound)
-	}
-
 	// Create the new key.
 	if newKey.ID == uuid.Nil {
 		newKey.ID = uuid.New()
@@ -275,27 +237,41 @@ func (db *DB) RotateAPIKeyWithAudit(ctx context.Context, orgID uuid.UUID, oldKey
 		newKey.CreatedAt = time.Now().UTC()
 	}
 
-	_, err = tx.Exec(ctx,
-		`INSERT INTO api_keys (id, prefix, key_hash, agent_id, org_id, label, created_by, created_at, expires_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		newKey.ID, newKey.Prefix, newKey.KeyHash, newKey.AgentID, newKey.OrgID,
-		newKey.Label, newKey.CreatedBy, newKey.CreatedAt, newKey.ExpiresAt,
-	)
+	err := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		// Revoke the old key.
+		tag, err := tx.Exec(ctx,
+			`UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND org_id = $2 AND revoked_at IS NULL`,
+			oldKeyID, orgID,
+		)
+		if err != nil {
+			return fmt.Errorf("storage: revoke old key during rotation: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("storage: old key %s not found or already revoked: %w", oldKeyID, ErrNotFound)
+		}
+
+		_, err = tx.Exec(ctx,
+			`INSERT INTO api_keys (id, prefix, key_hash, agent_id, org_id, label, created_by, created_at, expires_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			newKey.ID, newKey.Prefix, newKey.KeyHash, newKey.AgentID, newKey.OrgID,
+			newKey.Label, newKey.CreatedBy, newKey.CreatedAt, newKey.ExpiresAt,
+		)
+		if err != nil {
+			return fmt.Errorf("storage: create new key during rotation: %w", err)
+		}
+
+		audit.ResourceID = newKey.ID.String()
+		audit.AfterData = map[string]any{
+			"new_key_id":     newKey.ID,
+			"revoked_key_id": oldKeyID,
+		}
+		if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+			return fmt.Errorf("storage: audit in rotate api key tx: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return model.APIKey{}, fmt.Errorf("storage: create new key during rotation: %w", err)
-	}
-
-	audit.ResourceID = newKey.ID.String()
-	audit.AfterData = map[string]any{
-		"new_key_id":     newKey.ID,
-		"revoked_key_id": oldKeyID,
-	}
-	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
-		return model.APIKey{}, fmt.Errorf("storage: audit in rotate api key tx: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return model.APIKey{}, fmt.Errorf("storage: commit rotate api key tx: %w", err)
+		return model.APIKey{}, err
 	}
 	return newKey, nil
 }
@@ -319,92 +295,91 @@ func (db *DB) TouchAPIKeyLastUsed(ctx context.Context, keyID uuid.UUID) error {
 // have at least one entry in api_keys. NULLs out agents.api_key_hash after copy.
 // Called once at startup.
 func (db *DB) MigrateAgentKeysToAPIKeys(ctx context.Context) (int, error) {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("storage: begin key migration tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	// Find agents with legacy keys that haven't been migrated yet.
-	rows, err := tx.Query(ctx,
-		`SELECT a.id, a.agent_id, a.org_id, a.api_key_hash
+	var migrated int
+	err := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		// Find agents with legacy keys that haven't been migrated yet.
+		rows, err := tx.Query(ctx,
+			`SELECT a.id, a.agent_id, a.org_id, a.api_key_hash
 		 FROM agents a
 		 WHERE a.api_key_hash IS NOT NULL
 		   AND NOT EXISTS (
 		       SELECT 1 FROM api_keys k
 		       WHERE k.org_id = a.org_id AND k.agent_id = a.agent_id
 		   )`,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("storage: query agents for key migration: %w", err)
-	}
-	defer rows.Close()
-
-	type legacyKey struct {
-		agentUUID uuid.UUID
-		agentID   string
-		orgID     uuid.UUID
-		keyHash   string
-	}
-	var toMigrate []legacyKey
-
-	for rows.Next() {
-		var lk legacyKey
-		if err := rows.Scan(&lk.agentUUID, &lk.agentID, &lk.orgID, &lk.keyHash); err != nil {
-			return 0, fmt.Errorf("storage: scan legacy key: %w", err)
+		)
+		if err != nil {
+			return fmt.Errorf("storage: query agents for key migration: %w", err)
 		}
-		toMigrate = append(toMigrate, lk)
-	}
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("storage: iterate legacy keys: %w", err)
-	}
+		defer rows.Close()
 
-	for _, lk := range toMigrate {
-		keyID := uuid.New()
-		now := time.Now().UTC()
-		_, err := tx.Exec(ctx,
-			`INSERT INTO api_keys (id, prefix, key_hash, agent_id, org_id, label, created_by, created_at)
+		type legacyKey struct {
+			agentUUID uuid.UUID
+			agentID   string
+			orgID     uuid.UUID
+			keyHash   string
+		}
+		var toMigrate []legacyKey
+
+		for rows.Next() {
+			var lk legacyKey
+			if err := rows.Scan(&lk.agentUUID, &lk.agentID, &lk.orgID, &lk.keyHash); err != nil {
+				return fmt.Errorf("storage: scan legacy key: %w", err)
+			}
+			toMigrate = append(toMigrate, lk)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("storage: iterate legacy keys: %w", err)
+		}
+
+		for _, lk := range toMigrate {
+			keyID := uuid.New()
+			now := time.Now().UTC()
+			_, err := tx.Exec(ctx,
+				`INSERT INTO api_keys (id, prefix, key_hash, agent_id, org_id, label, created_by, created_at)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			keyID, "legacy__", lk.keyHash, lk.agentID, lk.orgID,
-			"Migrated from agent", "system", now,
-		)
-		if err != nil {
-			return 0, fmt.Errorf("storage: insert migrated key for agent %s: %w", lk.agentID, err)
+				keyID, "legacy__", lk.keyHash, lk.agentID, lk.orgID,
+				"Migrated from agent", "system", now,
+			)
+			if err != nil {
+				return fmt.Errorf("storage: insert migrated key for agent %s: %w", lk.agentID, err)
+			}
+
+			// Write audit trail for the migrated key so the mutation_audit_log
+			// reflects when and why this key entered the api_keys table.
+			if err := InsertMutationAuditTx(ctx, tx, MutationAuditEntry{
+				RequestID:    "system:startup:key-migration",
+				OrgID:        lk.orgID,
+				ActorAgentID: "system",
+				ActorRole:    "platform_admin",
+				Operation:    "migrate_api_key",
+				ResourceType: "api_key",
+				ResourceID:   keyID.String(),
+				AfterData: map[string]any{
+					"agent_id": lk.agentID,
+					"org_id":   lk.orgID,
+					"source":   "legacy_api_key_hash",
+				},
+			}); err != nil {
+				return fmt.Errorf("storage: audit migrate key for agent %s: %w", lk.agentID, err)
+			}
+
+			// NULL out the legacy hash.
+			_, err = tx.Exec(ctx,
+				`UPDATE agents SET api_key_hash = NULL WHERE id = $1`,
+				lk.agentUUID,
+			)
+			if err != nil {
+				return fmt.Errorf("storage: null legacy hash for agent %s: %w", lk.agentID, err)
+			}
 		}
 
-		// Write audit trail for the migrated key so the mutation_audit_log
-		// reflects when and why this key entered the api_keys table.
-		if err := InsertMutationAuditTx(ctx, tx, MutationAuditEntry{
-			RequestID:    "system:startup:key-migration",
-			OrgID:        lk.orgID,
-			ActorAgentID: "system",
-			ActorRole:    "platform_admin",
-			Operation:    "migrate_api_key",
-			ResourceType: "api_key",
-			ResourceID:   keyID.String(),
-			AfterData: map[string]any{
-				"agent_id": lk.agentID,
-				"org_id":   lk.orgID,
-				"source":   "legacy_api_key_hash",
-			},
-		}); err != nil {
-			return 0, fmt.Errorf("storage: audit migrate key for agent %s: %w", lk.agentID, err)
-		}
-
-		// NULL out the legacy hash.
-		_, err = tx.Exec(ctx,
-			`UPDATE agents SET api_key_hash = NULL WHERE id = $1`,
-			lk.agentUUID,
-		)
-		if err != nil {
-			return 0, fmt.Errorf("storage: null legacy hash for agent %s: %w", lk.agentID, err)
-		}
+		migrated = len(toMigrate)
+		return nil
+	})
+	if err != nil {
+		return 0, err
 	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("storage: commit key migration tx: %w", err)
-	}
-	return len(toMigrate), nil
+	return migrated, nil
 }
 
 // CountDecisionsByAPIKey returns decision counts grouped by api_key_id for

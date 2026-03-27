@@ -32,6 +32,9 @@ import (
 	"github.com/ashita-ai/akashi/internal/telemetry"
 )
 
+// ErrEmbeddingDimMismatch is returned when an embedding vector has the wrong number of dimensions.
+var ErrEmbeddingDimMismatch = errors.New("embedding dimension mismatch")
+
 // ConflictScorer scores semantic conflicts for new decisions.
 type ConflictScorer interface {
 	ScoreForDecision(ctx context.Context, decisionID, orgID uuid.UUID)
@@ -335,7 +338,7 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 
 		// Check for dimension validation errors (hard failure).
 		for _, err := range errs {
-			if err != nil && strings.Contains(err.Error(), "AKASHI_EMBEDDING_DIMENSIONS") {
+			if err != nil && errors.Is(err, ErrEmbeddingDimMismatch) {
 				return storage.CreateTraceParams{}, err
 			}
 		}
@@ -685,7 +688,7 @@ func (s *Service) validateEmbeddingDims(v pgvector.Vector) error {
 	expected := s.embedder.Dimensions()
 	got := len(v.Slice())
 	if got != expected {
-		return fmt.Errorf("embedding dimension mismatch: got %d, want %d", got, expected)
+		return fmt.Errorf("%w: got %d, want %d", ErrEmbeddingDimMismatch, got, expected)
 	}
 	return nil
 }

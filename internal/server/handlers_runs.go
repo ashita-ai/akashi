@@ -127,7 +127,7 @@ func (h *Handlers) HandleCreateRun(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
-	runID, err := parseRunID(r)
+	runID, err := parsePathUUID(r, "run_id")
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
 		return
@@ -231,7 +231,7 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) HandleCompleteRun(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
-	runID, err := parseRunID(r)
+	runID, err := parsePathUUID(r, "run_id")
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
 		return
@@ -293,7 +293,7 @@ func (h *Handlers) HandleCompleteRun(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) HandleGetRun(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
-	runID, err := parseRunID(r)
+	runID, err := parsePathUUID(r, "run_id")
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
 		return

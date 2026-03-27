@@ -622,6 +622,32 @@ func (a *App) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// ── Background loop helper ─────────────────────────────────────────────────────
+
+// runLoop runs fn on every tick of interval until ctx is cancelled.
+// It recovers from panics in fn and logs them so a single bad tick
+// cannot kill a background goroutine.
+func (a *App) runLoop(ctx context.Context, name string, interval time.Duration, fn func(ctx context.Context)) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						a.logger.Error("panic in background loop", "loop", name, "panic", r)
+					}
+				}()
+				fn(ctx)
+			}()
+		}
+	}
+}
+
 // ── Background loops (moved from cmd/akashi/main.go) ──────────────────────────
 
 func (a *App) conflictBackfillLoop(ctx context.Context) {
@@ -734,22 +760,14 @@ func (a *App) conflictRefreshLoop(ctx context.Context) {
 }
 
 func (a *App) integrityProofLoop(ctx context.Context) {
-	ticker := time.NewTicker(a.cfg.IntegrityProofInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			opCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-			buildIntegrityProofs(opCtx, a.db, a.logger)
-			if hasNull, err := a.db.HasDecisionsWithNullSearchVector(opCtx); err == nil && hasNull {
-				a.logger.Warn("decisions with NULL search_vector detected — FTS excludes these rows; check trigger and migration 022 backfill")
-			}
-			cancel()
+	a.runLoop(ctx, "integrityProof", a.cfg.IntegrityProofInterval, func(ctx context.Context) {
+		opCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+		buildIntegrityProofs(opCtx, a.db, a.logger)
+		if hasNull, err := a.db.HasDecisionsWithNullSearchVector(opCtx); err == nil && hasNull {
+			a.logger.Warn("decisions with NULL search_vector detected — FTS excludes these rows; check trigger and migration 022 backfill")
 		}
-	}
+	})
 }
 
 func (a *App) integrityAuditLoop(ctx context.Context) {
@@ -1087,81 +1105,49 @@ func (a *App) persistViolation(ctx context.Context, orgID, proofID uuid.UUID, vi
 }
 
 func (a *App) idempotencyCleanupLoop(ctx context.Context) {
-	ticker := time.NewTicker(a.cfg.IdempotencyCleanupInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
+	a.runLoop(ctx, "idempotencyCleanup", a.cfg.IdempotencyCleanupInterval, func(ctx context.Context) {
+		opCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		deleted, err := a.db.CleanupIdempotencyKeys(opCtx, a.cfg.IdempotencyCompletedTTL, a.cfg.IdempotencyAbandonedTTL)
+		if err != nil {
+			a.logger.Warn("idempotency cleanup failed", "error", err)
 			return
-		case <-ticker.C:
-			opCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			deleted, err := a.db.CleanupIdempotencyKeys(opCtx, a.cfg.IdempotencyCompletedTTL, a.cfg.IdempotencyAbandonedTTL)
-			cancel()
-			if err != nil {
-				a.logger.Warn("idempotency cleanup failed", "error", err)
-				continue
-			}
-			if deleted > 0 {
-				a.logger.Info("idempotency cleanup deleted rows", "deleted", deleted)
-			}
 		}
-	}
+		if deleted > 0 {
+			a.logger.Info("idempotency cleanup deleted rows", "deleted", deleted)
+		}
+	})
 }
 
 func (a *App) hookCheckCleanupLoop(ctx context.Context) {
-	ticker := time.NewTicker(10 * time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			a.srv.Handlers().CleanupHookChecks()
-		}
-	}
+	a.runLoop(ctx, "hookCheckCleanup", 10*time.Minute, func(_ context.Context) {
+		a.srv.Handlers().CleanupHookChecks()
+	})
 }
 
 func (a *App) retentionLoop(ctx context.Context) {
 	if a.cfg.RetentionInterval <= 0 {
 		return
 	}
-	ticker := time.NewTicker(a.cfg.RetentionInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			a.runRetention(ctx)
-		}
-	}
+	a.runLoop(ctx, "retention", a.cfg.RetentionInterval, func(ctx context.Context) {
+		a.runRetention(ctx)
+	})
 }
 
 func (a *App) claimEmbeddingRetryLoop(ctx context.Context) {
 	if a.cfg.ClaimRetryInterval <= 0 {
 		return
 	}
-	ticker := time.NewTicker(a.cfg.ClaimRetryInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			opCtx, cancel := context.WithTimeout(ctx, a.cfg.ClaimRetryInterval)
-			n, err := a.decisionSvc.RetryFailedClaimEmbeddings(opCtx, 50, 3)
-			cancel()
-			if err != nil {
-				a.logger.Warn("claim embedding retry failed", "error", err)
-			} else if n > 0 {
-				a.logger.Info("claim embedding retry complete", "retried", n)
-			}
+	a.runLoop(ctx, "claimEmbeddingRetry", a.cfg.ClaimRetryInterval, func(ctx context.Context) {
+		opCtx, cancel := context.WithTimeout(ctx, a.cfg.ClaimRetryInterval)
+		defer cancel()
+		n, err := a.decisionSvc.RetryFailedClaimEmbeddings(opCtx, 50, 3)
+		if err != nil {
+			a.logger.Warn("claim embedding retry failed", "error", err)
+		} else if n > 0 {
+			a.logger.Info("claim embedding retry complete", "retried", n)
 		}
-	}
+	})
 }
 
 // percentileRefreshLoop periodically recomputes signal percentile breakpoints for all orgs
@@ -1222,19 +1208,11 @@ func (a *App) autoResolveLoop(ctx context.Context) {
 	if a.cfg.AutoResolveInterval <= 0 {
 		return
 	}
-	ticker := time.NewTicker(a.cfg.AutoResolveInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := a.autoResolver.RunOnce(ctx); err != nil {
-				a.logger.Warn("auto-resolve loop failed", "error", err)
-			}
+	a.runLoop(ctx, "autoResolve", a.cfg.AutoResolveInterval, func(ctx context.Context) {
+		if err := a.autoResolver.RunOnce(ctx); err != nil {
+			a.logger.Warn("auto-resolve loop failed", "error", err)
 		}
-	}
+	})
 }
 
 // runRetention processes data retention policies for all orgs that have a
@@ -1387,22 +1365,6 @@ func toPublicDecision(d model.Decision) Decision {
 
 // toPublicConflict converts an internal model.DecisionConflict to the public akashi.Conflict.
 func toPublicConflict(c model.DecisionConflict) Conflict {
-	score := float32(0)
-	if c.Significance != nil {
-		score = float32(*c.Significance)
-	}
-	explanation := ""
-	if c.Explanation != nil {
-		explanation = *c.Explanation
-	}
-	category := ""
-	if c.Category != nil {
-		category = *c.Category
-	}
-	severity := ""
-	if c.Severity != nil {
-		severity = *c.Severity
-	}
 	return Conflict{
 		ID:           c.ID,
 		OrgID:        c.OrgID,
@@ -1411,13 +1373,21 @@ func toPublicConflict(c model.DecisionConflict) Conflict {
 		AgentA:       c.AgentA,
 		AgentB:       c.AgentB,
 		DecisionType: c.DecisionType,
-		Score:        score,
-		Explanation:  explanation,
-		Category:     category,
-		Severity:     severity,
+		Score:        float32(derefOr(c.Significance, 0)),
+		Explanation:  derefOr(c.Explanation, ""),
+		Category:     derefOr(c.Category, ""),
+		Severity:     derefOr(c.Severity, ""),
 		Status:       c.Status,
 		DetectedAt:   c.DetectedAt,
 	}
+}
+
+// derefOr returns the dereferenced value of ptr, or fallback if ptr is nil.
+func derefOr[T any](ptr *T, fallback T) T {
+	if ptr != nil {
+		return *ptr
+	}
+	return fallback
 }
 
 // ── Helpers (moved from cmd/akashi/main.go) ────────────────────────────────────

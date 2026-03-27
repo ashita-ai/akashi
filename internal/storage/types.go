@@ -322,3 +322,17 @@ const (
 	ChannelDecisions = "akashi_decisions"
 	ChannelConflicts = "akashi_conflicts"
 )
+
+// clampPagination normalizes limit and offset values to safe ranges.
+func clampPagination(limit, offset, defaultLimit, maxLimit int) (int, int) {
+	if limit <= 0 {
+		limit = defaultLimit
+	}
+	if limit > maxLimit {
+		limit = maxLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
+}
