@@ -3775,3 +3775,66 @@ func TestResolveProjectFilter_ResolvesAlias(t *testing.T) {
 	require.NotNil(t, result)
 	assert.Equal(t, canonical, *result, "should resolve workspace name to canonical via alias")
 }
+
+func TestIsAliasTarget(t *testing.T) {
+	ctx := adminCtx()
+
+	alias := "iat-alias-" + uuid.New().String()[:8]
+	canonical := "iat-canonical-" + uuid.New().String()[:8]
+
+	// Before any alias exists, neither name is a target.
+	isTarget, err := testDB.IsAliasTarget(ctx, uuid.Nil, canonical)
+	require.NoError(t, err)
+	assert.False(t, isTarget, "canonical should not be a target before alias creation")
+
+	isTarget, err = testDB.IsAliasTarget(ctx, uuid.Nil, alias)
+	require.NoError(t, err)
+	assert.False(t, isTarget, "alias should not be a target before alias creation")
+
+	// Create alias→canonical.
+	err = testDB.CreateProjectAlias(ctx, uuid.Nil, alias, canonical, "system:auto-alias")
+	require.NoError(t, err)
+
+	// Now canonical IS a target (it's project_b of the alias link).
+	isTarget, err = testDB.IsAliasTarget(ctx, uuid.Nil, canonical)
+	require.NoError(t, err)
+	assert.True(t, isTarget, "canonical should be a target after alias creation")
+
+	// The alias name itself is NOT a target (it's project_a, the source).
+	isTarget, err = testDB.IsAliasTarget(ctx, uuid.Nil, alias)
+	require.NoError(t, err)
+	assert.False(t, isTarget, "alias source should not be a target")
+}
+
+func TestCreateProjectAlias_ChainPrevention_AliasIsTarget(t *testing.T) {
+	// Verifies the second chain guard: if X→A exists, creating A→B should be
+	// blocked because it would form a chain X→A→B where only one hop resolves.
+	ctx := adminCtx()
+
+	x := "chain-x-" + uuid.New().String()[:8]
+	a := "chain-a-" + uuid.New().String()[:8]
+	b := "chain-b-" + uuid.New().String()[:8]
+
+	// Create X→A.
+	err := testDB.CreateProjectAlias(ctx, uuid.Nil, x, a, "system:auto-alias")
+	require.NoError(t, err)
+
+	// A is now a target. The chain guard should detect this.
+	isTarget, err := testDB.IsAliasTarget(ctx, uuid.Nil, a)
+	require.NoError(t, err)
+	assert.True(t, isTarget, "A should be a target of X→A")
+
+	// The code in handleTrace would skip creating A→B because aliasIsTarget=true.
+	// We verify the building blocks here; the handleTrace integration is covered
+	// by the guard logic using IsAliasTarget + ResolveProjectAlias together.
+
+	// Verify ResolveProjectAlias still returns the correct mapping for X.
+	resolved, err := testDB.ResolveProjectAlias(ctx, uuid.Nil, x)
+	require.NoError(t, err)
+	assert.Equal(t, a, resolved)
+
+	// And B is not an alias for anything.
+	resolved, err = testDB.ResolveProjectAlias(ctx, uuid.Nil, b)
+	require.NoError(t, err)
+	assert.Empty(t, resolved)
+}

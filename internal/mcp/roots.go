@@ -29,6 +29,10 @@ type rootsCache struct {
 	mu      sync.RWMutex
 	cache   map[string][]mcplib.Root // sessionID -> roots (only set on success or second failure)
 	retried map[string]bool          // sessions that already had one failed attempt
+	// NOTE: retried grows by one bool per failed session and is never evicted.
+	// This is acceptable because sessions are bounded by connection lifetime
+	// and each entry is ~40 bytes. If the server starts handling millions of
+	// ephemeral sessions, add a TTL or sync.Map with periodic sweep.
 }
 
 func newRootsCache() *rootsCache {

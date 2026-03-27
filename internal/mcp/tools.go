@@ -837,9 +837,28 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 
 		// Auto-create alias so future traces with the same workspace name
 		// get normalized even when MCP roots are unavailable.
-		// Guard: don't create an alias if the canonical name is itself an alias
-		// (prevents chains like A→B→C where only one hop is resolved).
-		if existing, err := s.db.ResolveProjectAlias(ctx, orgID, serverProject); err == nil && existing == "" {
+		//
+		// Chain guard (both directions):
+		//   1. Don't create A→B if B is itself an alias source (B→C exists).
+		//      Otherwise B resolves to C but A resolves to B (stale).
+		//   2. Don't create A→B if A is already a canonical target (X→A exists).
+		//      Otherwise X resolves to A but A now points to B (broken chain).
+		canonicalIsAlias := false
+		if existing, err := s.db.ResolveProjectAlias(ctx, orgID, serverProject); err == nil && existing != "" {
+			canonicalIsAlias = true
+		}
+		aliasIsTarget := false
+		if isTarget, err := s.db.IsAliasTarget(ctx, orgID, clientProject); err == nil && isTarget {
+			aliasIsTarget = true
+		}
+		switch {
+		case canonicalIsAlias:
+			s.logger.Debug("skipping alias creation: canonical is itself an alias",
+				"alias", clientProject, "canonical", serverProject)
+		case aliasIsTarget:
+			s.logger.Debug("skipping alias creation: alias name is already a canonical target",
+				"alias", clientProject, "canonical", serverProject)
+		default:
 			if err := s.db.CreateProjectAlias(ctx, orgID, clientProject, serverProject, "system:auto-alias"); err != nil {
 				s.logger.Warn("failed to auto-create project alias (non-fatal)",
 					"alias", clientProject, "canonical", serverProject, "error", err)
