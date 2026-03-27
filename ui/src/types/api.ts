@@ -213,6 +213,7 @@ export interface DecisionConflict {
   resolved_by: string | null;
   resolved_at: string | null;
   resolution_note: string | null;
+  winning_decision_id: string | null;
 }
 
 // Recommendation (computed by GET /v1/conflicts/{id})

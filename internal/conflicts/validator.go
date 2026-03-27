@@ -87,9 +87,9 @@ func formatPrompt(input ValidateInput) string {
 	var b strings.Builder
 	b.WriteString("You are a relationship classifier for an AI decision audit system.\n\n")
 
-	// --- Decision A ---
-	fmt.Fprintf(&b, "Decision A (%s, by agent %q, recorded %s):\n%s\n",
-		input.TypeA, input.AgentA, input.CreatedA.Format(time.RFC3339), input.OutcomeA)
+	// --- Decision by agent A ---
+	fmt.Fprintf(&b, "Agent %q decision (%s, recorded %s):\n%s\n",
+		input.AgentA, input.TypeA, input.CreatedA.Format(time.RFC3339), input.OutcomeA)
 	if input.FullOutcomeA != "" && input.FullOutcomeA != input.OutcomeA {
 		fmt.Fprintf(&b, "[Full decision context: %s]\n", truncateRunes(input.FullOutcomeA, 500))
 	}
@@ -97,9 +97,9 @@ func formatPrompt(input ValidateInput) string {
 		fmt.Fprintf(&b, "[Reasoning: %s]\n", truncateRunes(input.ReasoningA, 300))
 	}
 
-	// --- Decision B ---
-	fmt.Fprintf(&b, "\nDecision B (%s, by agent %q, recorded %s):\n%s\n",
-		input.TypeB, input.AgentB, input.CreatedB.Format(time.RFC3339), input.OutcomeB)
+	// --- Decision by agent B ---
+	fmt.Fprintf(&b, "\nAgent %q decision (%s, recorded %s):\n%s\n",
+		input.AgentB, input.TypeB, input.CreatedB.Format(time.RFC3339), input.OutcomeB)
 	if input.FullOutcomeB != "" && input.FullOutcomeB != input.OutcomeB {
 		fmt.Fprintf(&b, "[Full decision context: %s]\n", truncateRunes(input.FullOutcomeB, 500))
 	}
@@ -113,8 +113,8 @@ func formatPrompt(input ValidateInput) string {
 	// --- Project context (#168: cross-project confusion) ---
 	if input.ProjectA != "" && input.ProjectB != "" {
 		if input.ProjectA != input.ProjectB {
-			fmt.Fprintf(&b, "DIFFERENT PROJECTS: Decision A is about %q, Decision B is about %q. Decisions about different codebases are almost always UNRELATED.\n",
-				input.ProjectA, input.ProjectB)
+			fmt.Fprintf(&b, "DIFFERENT PROJECTS: %q's decision is about %q, %q's decision is about %q. Decisions about different codebases are almost always UNRELATED.\n",
+				input.AgentA, input.ProjectA, input.AgentB, input.ProjectB)
 		} else {
 			fmt.Fprintf(&b, "Same project: %s\n", input.ProjectA)
 		}
@@ -125,14 +125,14 @@ func formatPrompt(input ValidateInput) string {
 		// being related. Cross-project confusion is the leading source of false positives.
 		b.WriteString("PROJECT CONTEXT: Repository names are not recorded for these decisions. " +
 			"Read the outcome text carefully for named codebases, products, or projects (e.g. proper nouns like product names, repository names, service names). " +
-			"If Decision A and Decision B clearly refer to DIFFERENT named systems, classify as UNRELATED — different codebases cannot contradict each other. " +
+			"If the two decisions clearly refer to DIFFERENT named systems, classify as UNRELATED — different codebases cannot contradict each other. " +
 			"Only classify as CONTRADICTION if both decisions are clearly about the SAME system and make incompatible claims about it.\n")
 	}
 	if input.TaskA != "" {
-		fmt.Fprintf(&b, "Task A: %s\n", truncateRunes(input.TaskA, 100))
+		fmt.Fprintf(&b, "Task (%s): %s\n", input.AgentA, truncateRunes(input.TaskA, 100))
 	}
 	if input.TaskB != "" {
-		fmt.Fprintf(&b, "Task B: %s\n", truncateRunes(input.TaskB, 100))
+		fmt.Fprintf(&b, "Task (%s): %s\n", input.AgentB, truncateRunes(input.TaskB, 100))
 	}
 
 	// --- Session context (#170: temporal refinement) ---
@@ -219,7 +219,7 @@ IMPORTANT for agreement detection:
 RELATIONSHIP: one of [contradiction, supersession, complementary, refinement, unrelated]
 CATEGORY: factual, assessment, strategic, or temporal
 SEVERITY: critical, high, medium, or low
-EXPLANATION: one sentence`)
+EXPLANATION: one sentence using agent names (not "Decision A" or "Decision B")`)
 
 	return b.String()
 }

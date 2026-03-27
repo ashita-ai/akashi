@@ -71,6 +71,11 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 			"precedent_reason requires precedent_ref to be set")
 		return
 	}
+	if req.SupersedesID != nil && *req.SupersedesID == uuid.Nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"supersedes_id must be a valid non-nil UUID")
+		return
+	}
 
 	if !model.RoleAtLeast(claims.Role, model.RoleAdmin) && req.AgentID != claims.AgentID {
 		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "can only trace for your own agent_id")
@@ -134,6 +139,7 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		Decision:        req.Decision,
 		PrecedentRef:    req.PrecedentRef,
 		PrecedentReason: req.PrecedentReason,
+		SupersedesID:    req.SupersedesID,
 		SessionID:       sessionID,
 		AgentContext:    agentContext,
 		APIKeyID:        claims.APIKeyID,

@@ -191,6 +191,9 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 			mcplib.WithString("precedent_reason",
 				mcplib.Description("Brief explanation of why the cited precedent_ref applies to this decision. Helps future agents understand the reasoning lineage without re-reading both decisions. Example: \"extends the first_detected_at fix to also handle rescored decisions\". Omit if precedent_ref is not set."),
 			),
+			mcplib.WithString("supersedes_id",
+				mcplib.Description("UUID of a prior decision that this one explicitly replaces. The superseded decision will be invalidated (valid_to set) and its open conflicts auto-resolved. Use this when your decision reverses or replaces a prior one, rather than just building on it. Omit for new decisions or refinements."),
+			),
 		),
 		s.handleTrace,
 	)
@@ -747,6 +750,17 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		precedentReason = &reason
 	}
 
+	// Parse supersedes_id: marks a prior decision as replaced by this one.
+	var supersedesID *uuid.UUID
+	if sid := request.GetString("supersedes_id", ""); sid != "" {
+		if id, parseErr := uuid.Parse(sid); parseErr == nil {
+			supersedesID = &id
+		} else {
+			s.logger.Warn("akashi_trace: ignoring invalid supersedes_id UUID",
+				"value", sid, "error", parseErr, "agent_id", agentID)
+		}
+	}
+
 	// Build agent_context with server/client namespace split.
 	// "server" contains values the server extracted or verified (MCP session,
 	// client info, roots, API key prefix). "client" contains self-reported
@@ -931,6 +945,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		AuditMeta:       auditMeta,
 		PrecedentRef:    precedentRef,
 		PrecedentReason: precedentReason,
+		SupersedesID:    supersedesID,
 		Decision: model.TraceDecision{
 			DecisionType: decisionType,
 			Outcome:      outcome,
