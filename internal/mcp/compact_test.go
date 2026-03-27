@@ -43,7 +43,7 @@ func TestCompactDecision(t *testing.T) {
 	assert.Equal(t, "chose Redis with 5min TTL", m["outcome"])
 	assert.Equal(t, float32(0.85), m["confidence"])
 	assert.Equal(t, reasoning, m["reasoning"])
-	assert.Equal(t, &sessionID, m["session_id"])
+	assert.Equal(t, sessionID, m["session_id"])
 	assert.Equal(t, "claude-code", m["tool"])
 	assert.Equal(t, "claude-opus-4-6", m["model"])
 	assert.Equal(t, "session infra redesign", m["task"])
@@ -748,7 +748,7 @@ func TestCompactConflict_WinningDecisionID(t *testing.T) {
 		WinningDecisionID: &winID,
 	}
 	m := compactConflict(c, "")
-	assert.Equal(t, &winID, m["winning_decision_id"])
+	assert.Equal(t, winID, m["winning_decision_id"])
 }
 
 func TestCompactConflict_NilOptionalFields(t *testing.T) {

@@ -507,18 +507,6 @@ func parsePathUUID(r *http.Request, name string) (uuid.UUID, error) {
 	return uuid.Parse(r.PathValue(name))
 }
 
-func parseRunID(r *http.Request) (uuid.UUID, error) {
-	runIDStr := r.PathValue("run_id")
-	if runIDStr == "" {
-		return uuid.Nil, fmt.Errorf("run_id is required")
-	}
-	id, err := uuid.Parse(runIDStr)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("invalid run_id: %s", runIDStr)
-	}
-	return id, nil
-}
-
 // maxQueryLimit is the maximum allowed value for limit query parameters.
 const maxQueryLimit = 1000
 
@@ -566,9 +554,10 @@ func queryTime(r *http.Request, key string) (*time.Time, error) {
 	}
 	t, err := time.Parse(time.RFC3339, v)
 	if err != nil {
-		return nil, fmt.Errorf("invalid %s: expected RFC3339 format (e.g. 2024-01-01T00:00:00Z)", key)
+		return nil, fmt.Errorf("invalid '%s': expected RFC3339 format (e.g. 2024-01-01T00:00:00Z)", key)
 	}
-	return &t, nil
+	utc := t.UTC()
+	return &utc, nil
 }
 
 // computePagination derives pagination metadata from a query result set,

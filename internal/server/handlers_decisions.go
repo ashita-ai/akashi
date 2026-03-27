@@ -769,9 +769,6 @@ func (h *Handlers) HandleListIntegrityViolations(w http.ResponseWriter, r *http.
 		h.writeInternalError(w, r, "failed to list integrity violations", err)
 		return
 	}
-	if violations == nil {
-		violations = []storage.IntegrityViolation{}
-	}
 
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"violations": violations,
@@ -785,24 +782,15 @@ func (h *Handlers) HandleListIntegrityViolations(w http.ResponseWriter, r *http.
 func (h *Handlers) HandleTraceHealth(w http.ResponseWriter, r *http.Request) {
 	orgID := OrgIDFromContext(r.Context())
 
-	var from, to *time.Time
-	if v := r.URL.Query().Get("from"); v != "" {
-		parsed, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid 'from' timestamp")
-			return
-		}
-		t := parsed.UTC()
-		from = &t
+	from, err := queryTime(r, "from")
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
 	}
-	if v := r.URL.Query().Get("to"); v != "" {
-		parsed, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid 'to' timestamp")
-			return
-		}
-		t := parsed.UTC()
-		to = &t
+	to, err := queryTime(r, "to")
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
 	}
 
 	svc := tracehealth.New(h.db)
@@ -1032,21 +1020,17 @@ func (h *Handlers) HandleDecisionTimeline(w http.ResponseWriter, r *http.Request
 	to := now
 	from := now.AddDate(0, 0, -30)
 
-	if v := r.URL.Query().Get("from"); v != "" {
-		parsed, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid 'from' timestamp")
-			return
-		}
-		from = parsed.UTC()
+	if fromParam, err := queryTime(r, "from"); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	} else if fromParam != nil {
+		from = *fromParam
 	}
-	if v := r.URL.Query().Get("to"); v != "" {
-		parsed, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid 'to' timestamp")
-			return
-		}
-		to = parsed.UTC()
+	if toParam, err := queryTime(r, "to"); err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	} else if toParam != nil {
+		to = *toParam
 	}
 
 	var agentID *string
@@ -1123,13 +1107,6 @@ func (h *Handlers) HandleDecisionFacets(w http.ResponseWriter, r *http.Request) 
 	if projErr != nil {
 		h.writeInternalError(w, r, "failed to list projects", projErr)
 		return
-	}
-
-	if types == nil {
-		types = []string{}
-	}
-	if projects == nil {
-		projects = []string{}
 	}
 
 	writeJSON(w, r, http.StatusOK, struct {

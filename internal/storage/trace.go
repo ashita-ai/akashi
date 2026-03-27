@@ -18,19 +18,15 @@ import (
 // the run atomically within a single database transaction. This prevents partial
 // writes that could leave orphaned runs or decisions without their related data.
 func (db *DB) CreateTraceTx(ctx context.Context, params CreateTraceParams) (model.AgentRun, model.Decision, error) {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: begin trace tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	run, d, err := db.createTraceInTx(ctx, tx, params)
+	var run model.AgentRun
+	var d model.Decision
+	err := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var txErr error
+		run, d, txErr = db.createTraceInTx(ctx, tx, params)
+		return txErr
+	})
 	if err != nil {
 		return model.AgentRun{}, model.Decision{}, err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: commit trace tx: %w", err)
 	}
 	return run, d, nil
 }
@@ -39,49 +35,48 @@ func (db *DB) CreateTraceTx(ctx context.Context, params CreateTraceParams) (mode
 // conflict in a single atomic transaction. This prevents the failure mode where
 // an adjudication decision exists but the conflict remains unresolved.
 func (db *DB) CreateTraceAndAdjudicateConflictTx(ctx context.Context, traceParams CreateTraceParams, conflictParams AdjudicateConflictInTraceParams) (model.AgentRun, model.Decision, error) {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: begin trace+adjudicate tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	var run model.AgentRun
+	var d model.Decision
+	err := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var txErr error
+		run, d, txErr = db.createTraceInTx(ctx, tx, traceParams)
+		if txErr != nil {
+			return txErr
+		}
 
-	run, d, err := db.createTraceInTx(ctx, tx, traceParams)
+		// Adjudicate the conflict within the same transaction.
+		tag, err := tx.Exec(ctx,
+			`UPDATE scored_conflicts SET status = 'resolved', resolved_by = $1, resolved_at = now(),
+			 resolution_note = $2, resolution_decision_id = $3, winning_decision_id = $4
+			 WHERE id = $5 AND org_id = $6`,
+			conflictParams.ResolvedBy, conflictParams.ResNote, d.ID,
+			conflictParams.WinningDecisionID,
+			conflictParams.ConflictID, traceParams.OrgID)
+		if err != nil {
+			return fmt.Errorf("storage: adjudicate conflict in trace tx: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("storage: conflict: %w", ErrNotFound)
+		}
+
+		// Insert conflict adjudication audit entry.
+		conflictParams.Audit.ResourceID = conflictParams.ConflictID.String()
+		afterData := map[string]any{
+			"status":                 "resolved",
+			"resolved_by":            conflictParams.ResolvedBy,
+			"resolution_decision_id": d.ID.String(),
+		}
+		if conflictParams.WinningDecisionID != nil {
+			afterData["winning_decision_id"] = conflictParams.WinningDecisionID.String()
+		}
+		conflictParams.Audit.AfterData = afterData
+		if err := InsertMutationAuditTx(ctx, tx, conflictParams.Audit); err != nil {
+			return fmt.Errorf("storage: audit in trace+adjudicate tx: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
 		return model.AgentRun{}, model.Decision{}, err
-	}
-
-	// Adjudicate the conflict within the same transaction.
-	tag, err := tx.Exec(ctx,
-		`UPDATE scored_conflicts SET status = 'resolved', resolved_by = $1, resolved_at = now(),
-		 resolution_note = $2, resolution_decision_id = $3, winning_decision_id = $4
-		 WHERE id = $5 AND org_id = $6`,
-		conflictParams.ResolvedBy, conflictParams.ResNote, d.ID,
-		conflictParams.WinningDecisionID,
-		conflictParams.ConflictID, traceParams.OrgID)
-	if err != nil {
-		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: adjudicate conflict in trace tx: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: conflict: %w", ErrNotFound)
-	}
-
-	// Insert conflict adjudication audit entry.
-	conflictParams.Audit.ResourceID = conflictParams.ConflictID.String()
-	afterData := map[string]any{
-		"status":                 "resolved",
-		"resolved_by":            conflictParams.ResolvedBy,
-		"resolution_decision_id": d.ID.String(),
-	}
-	if conflictParams.WinningDecisionID != nil {
-		afterData["winning_decision_id"] = conflictParams.WinningDecisionID.String()
-	}
-	conflictParams.Audit.AfterData = afterData
-	if err := InsertMutationAuditTx(ctx, tx, conflictParams.Audit); err != nil {
-		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: audit in trace+adjudicate tx: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: commit trace+adjudicate tx: %w", err)
 	}
 	return run, d, nil
 }

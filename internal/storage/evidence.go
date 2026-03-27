@@ -120,7 +120,7 @@ func (db *DB) GetEvidenceByDecision(ctx context.Context, decisionID uuid.UUID, o
 	}
 	defer rows.Close()
 
-	var evs []model.Evidence
+	evs := make([]model.Evidence, 0)
 	for rows.Next() {
 		var ev model.Evidence
 		if err := rows.Scan(

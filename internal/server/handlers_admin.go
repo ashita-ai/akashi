@@ -183,6 +183,16 @@ func (h *Handlers) HandleListAgents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// validGrantResourceTypes defines the allowed values for grant resource_type.
+var validGrantResourceTypes = map[string]bool{
+	string(model.ResourceAgentTraces): true,
+}
+
+// validGrantPermissions defines the allowed values for grant permission.
+var validGrantPermissions = map[string]bool{
+	string(model.PermissionRead): true,
+}
+
 // HandleCreateGrant handles POST /v1/grants.
 func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
@@ -195,17 +205,11 @@ func (h *Handlers) HandleCreateGrant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate resource_type and permission against known constants.
-	validResourceTypes := map[string]bool{
-		string(model.ResourceAgentTraces): true,
-	}
-	validPermissions := map[string]bool{
-		string(model.PermissionRead): true,
-	}
-	if !validResourceTypes[req.ResourceType] {
+	if !validGrantResourceTypes[req.ResourceType] {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid resource_type")
 		return
 	}
-	if !validPermissions[req.Permission] {
+	if !validGrantPermissions[req.Permission] {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid permission")
 		return
 	}
@@ -325,9 +329,6 @@ func (h *Handlers) HandleListGrants(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.writeInternalError(w, r, "failed to list grants", err)
 		return
-	}
-	if grants == nil {
-		grants = []model.AccessGrant{}
 	}
 
 	ptotal := total

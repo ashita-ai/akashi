@@ -48,12 +48,6 @@ func (db *DB) CreateRun(ctx context.Context, req model.CreateRunRequest) (model.
 // atomically within a single transaction. If either INSERT fails, both
 // are rolled back — mutations never persist without their audit record.
 func (db *DB) CreateRunWithAudit(ctx context.Context, req model.CreateRunRequest, audit MutationAuditEntry) (model.AgentRun, error) {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return model.AgentRun{}, fmt.Errorf("storage: begin create run tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	now := time.Now().UTC()
 	run := model.AgentRun{
 		ID:          uuid.New(),
@@ -70,23 +64,25 @@ func (db *DB) CreateRunWithAudit(ctx context.Context, req model.CreateRunRequest
 		run.Metadata = map[string]any{}
 	}
 
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO agent_runs (id, agent_id, org_id, trace_id, parent_run_id, status, started_at, metadata, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		run.ID, run.AgentID, run.OrgID, run.TraceID, run.ParentRunID,
-		string(run.Status), run.StartedAt, run.Metadata, run.CreatedAt,
-	); err != nil {
-		return model.AgentRun{}, fmt.Errorf("storage: create run: %w", err)
-	}
+	err := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO agent_runs (id, agent_id, org_id, trace_id, parent_run_id, status, started_at, metadata, created_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			run.ID, run.AgentID, run.OrgID, run.TraceID, run.ParentRunID,
+			string(run.Status), run.StartedAt, run.Metadata, run.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("storage: create run: %w", err)
+		}
 
-	audit.ResourceID = run.ID.String()
-	audit.AfterData = run
-	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
-		return model.AgentRun{}, fmt.Errorf("storage: audit in create run tx: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return model.AgentRun{}, fmt.Errorf("storage: commit create run tx: %w", err)
+		audit.ResourceID = run.ID.String()
+		audit.AfterData = run
+		if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+			return fmt.Errorf("storage: audit in create run tx: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return model.AgentRun{}, err
 	}
 	return run, nil
 }
@@ -149,62 +145,50 @@ func (db *DB) CompleteRun(ctx context.Context, orgID, id uuid.UUID, status model
 // CompleteRunWithAudit marks a run as completed/failed and inserts a mutation
 // audit entry atomically within a single transaction.
 func (db *DB) CompleteRunWithAudit(ctx context.Context, orgID, id uuid.UUID, status model.RunStatus, metadata map[string]any, audit MutationAuditEntry) error {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("storage: begin complete run tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	now := time.Now().UTC()
 	if metadata == nil {
 		metadata = map[string]any{}
 	}
-	tag, err := tx.Exec(ctx,
-		`UPDATE agent_runs SET status = $1, completed_at = $2, metadata = metadata || $3
-		 WHERE id = $4 AND org_id = $5 AND status = 'running'`,
-		string(status), now, metadata, id, orgID,
-	)
-	if err != nil {
-		return fmt.Errorf("storage: complete run: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		var existingStatus string
-		err := tx.QueryRow(ctx,
-			`SELECT status FROM agent_runs WHERE id = $1 AND org_id = $2`,
-			id, orgID,
-		).Scan(&existingStatus)
+
+	return db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		now := time.Now().UTC()
+		tag, err := tx.Exec(ctx,
+			`UPDATE agent_runs SET status = $1, completed_at = $2, metadata = metadata || $3
+			 WHERE id = $4 AND org_id = $5 AND status = 'running'`,
+			string(status), now, metadata, id, orgID,
+		)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return fmt.Errorf("storage: run %s: %w", id, ErrNotFound)
+			return fmt.Errorf("storage: complete run: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			var existingStatus string
+			err := tx.QueryRow(ctx,
+				`SELECT status FROM agent_runs WHERE id = $1 AND org_id = $2`,
+				id, orgID,
+			).Scan(&existingStatus)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return fmt.Errorf("storage: run %s: %w", id, ErrNotFound)
+				}
+				return fmt.Errorf("storage: complete run status lookup: %w", err)
 			}
-			return fmt.Errorf("storage: complete run status lookup: %w", err)
+			if existingStatus == string(model.RunStatusCompleted) || existingStatus == string(model.RunStatusFailed) {
+				// Idempotent — already finalized. Return nil to commit.
+				return nil
+			}
+			return fmt.Errorf("storage: run %s complete transition rejected from status %q", id, existingStatus)
 		}
-		if existingStatus == string(model.RunStatusCompleted) || existingStatus == string(model.RunStatusFailed) {
-			// Idempotent — already finalized. Still commit to release tx.
-			return tx.Commit(ctx)
+
+		audit.ResourceID = id.String()
+		if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+			return fmt.Errorf("storage: audit in complete run tx: %w", err)
 		}
-		return fmt.Errorf("storage: run %s complete transition rejected from status %q", id, existingStatus)
-	}
-
-	audit.ResourceID = id.String()
-	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
-		return fmt.Errorf("storage: audit in complete run tx: %w", err)
-	}
-
-	return tx.Commit(ctx)
+		return nil
+	})
 }
 
 // ListRunsByAgent returns runs for a given agent_id within an org, ordered by started_at DESC.
 func (db *DB) ListRunsByAgent(ctx context.Context, orgID uuid.UUID, agentID string, limit, offset int) ([]model.AgentRun, int, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
-	if offset < 0 {
-		offset = 0
-	}
+	limit, offset = clampPagination(limit, offset, 50, 1000)
 
 	var total int
 	err := db.pool.QueryRow(ctx,
@@ -226,7 +210,7 @@ func (db *DB) ListRunsByAgent(ctx context.Context, orgID uuid.UUID, agentID stri
 	}
 	defer rows.Close()
 
-	var runs []model.AgentRun
+	runs := make([]model.AgentRun, 0)
 	for rows.Next() {
 		var r model.AgentRun
 		if err := rows.Scan(

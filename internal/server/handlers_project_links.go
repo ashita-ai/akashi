@@ -68,9 +68,6 @@ func (h *Handlers) HandleListProjectLinks(w http.ResponseWriter, r *http.Request
 		h.writeInternalError(w, r, "failed to list project links", err)
 		return
 	}
-	if links == nil {
-		links = []model.ProjectLink{}
-	}
 
 	ptotal := total
 	writeListJSON(w, r, links, &ptotal, offset+len(links) < total, limit, offset)

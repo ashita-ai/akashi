@@ -88,45 +88,40 @@ func (db *DB) CreateDecision(ctx context.Context, d model.Decision) (model.Decis
 	if d.Metadata == nil {
 		d.Metadata = map[string]any{}
 	}
-
-	d.ContentHash = integrity.ComputeContentHash(d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
-
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return model.Decision{}, fmt.Errorf("storage: begin create decision tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	if d.AgentContext == nil {
 		d.AgentContext = map[string]any{}
 	}
 
-	_, err = tx.Exec(ctx,
-		`INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome, confidence,
-		 reasoning, embedding, outcome_embedding, metadata, completeness_score, outcome_score, precedent_ref, precedent_reason, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
-		d.ID, d.RunID, d.AgentID, d.OrgID, d.DecisionType, d.Outcome, d.Confidence,
-		d.Reasoning, d.Embedding, d.OutcomeEmbedding, d.Metadata, d.CompletenessScore, d.OutcomeScore, d.PrecedentRef,
-		d.PrecedentReason, d.SupersedesID, d.ContentHash,
-		d.ValidFrom, d.ValidTo, d.TransactionTime, d.CreatedAt,
-		d.SessionID, d.AgentContext, d.APIKeyID,
-	)
+	d.ContentHash = integrity.ComputeContentHash(d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
+
+	err := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome, confidence,
+			 reasoning, embedding, outcome_embedding, metadata, completeness_score, outcome_score, precedent_ref, precedent_reason, supersedes_id, content_hash,
+			 valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
+			d.ID, d.RunID, d.AgentID, d.OrgID, d.DecisionType, d.Outcome, d.Confidence,
+			d.Reasoning, d.Embedding, d.OutcomeEmbedding, d.Metadata, d.CompletenessScore, d.OutcomeScore, d.PrecedentRef,
+			d.PrecedentReason, d.SupersedesID, d.ContentHash,
+			d.ValidFrom, d.ValidTo, d.TransactionTime, d.CreatedAt,
+			d.SessionID, d.AgentContext, d.APIKeyID,
+		)
+		if err != nil {
+			return fmt.Errorf("storage: create decision: %w", err)
+		}
+
+		// Queue search index update inside the same transaction.
+		// Always queue regardless of embedding status — the outbox worker will
+		// generate embeddings asynchronously if needed. Without this, decisions
+		// created without an embedding (e.g. via the REST API) are permanently
+		// invisible to search.
+		if err := queueSearchOutbox(ctx, tx, d.ID, d.OrgID, "upsert"); err != nil {
+			return fmt.Errorf("storage: queue search outbox in create decision: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return model.Decision{}, fmt.Errorf("storage: create decision: %w", err)
-	}
-
-	// Queue search index update inside the same transaction.
-	// Always queue regardless of embedding status — the outbox worker will
-	// generate embeddings asynchronously if needed. Without this, decisions
-	// created without an embedding (e.g. via the REST API) are permanently
-	// invisible to search.
-	if err := queueSearchOutbox(ctx, tx, d.ID, d.OrgID, "upsert"); err != nil {
-		return model.Decision{}, fmt.Errorf("storage: queue search outbox in create decision: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return model.Decision{}, fmt.Errorf("storage: commit create decision: %w", err)
+		return model.Decision{}, err
 	}
 	return d, nil
 }
@@ -176,27 +171,9 @@ func (db *DB) GetDecision(ctx context.Context, orgID, id uuid.UUID, opts GetDeci
 // and creates a new decision with the revised data. When audit is non-nil,
 // a mutation audit entry recording the revision is inserted in the same transaction.
 func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised model.Decision, audit *MutationAuditEntry) (model.Decision, error) {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return model.Decision{}, fmt.Errorf("storage: begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	now := time.Now().UTC()
 
-	// Invalidate original decision, scoped by org_id for tenant isolation.
-	tag, err := tx.Exec(ctx,
-		`UPDATE decisions SET valid_to = $1 WHERE id = $2 AND org_id = $3 AND valid_to IS NULL`,
-		now, originalID, revised.OrgID,
-	)
-	if err != nil {
-		return model.Decision{}, fmt.Errorf("storage: invalidate decision: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return model.Decision{}, fmt.Errorf("storage: original decision %s (or already revised): %w", originalID, ErrNotFound)
-	}
-
-	// Insert revised decision.
+	// Prepare revised decision fields before entering the transaction.
 	revised.ID = uuid.New()
 	revised.ValidFrom = now
 	revised.TransactionTime = now
@@ -210,55 +187,69 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 		revised.AgentContext = map[string]any{}
 	}
 
-	_, err = tx.Exec(ctx,
-		`INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome, confidence,
-		 reasoning, embedding, outcome_embedding, metadata, completeness_score, outcome_score, precedent_ref, precedent_reason, supersedes_id, content_hash,
-		 valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
-		revised.ID, revised.RunID, revised.AgentID, revised.OrgID, revised.DecisionType, revised.Outcome,
-		revised.Confidence, revised.Reasoning, revised.Embedding, revised.OutcomeEmbedding, revised.Metadata,
-		revised.CompletenessScore, revised.OutcomeScore, revised.PrecedentRef, revised.PrecedentReason, revised.SupersedesID, revised.ContentHash,
-		revised.ValidFrom, revised.ValidTo, revised.TransactionTime, revised.CreatedAt,
-		revised.SessionID, revised.AgentContext, revised.APIKeyID,
-	)
-	if err != nil {
-		return model.Decision{}, fmt.Errorf("storage: insert revised decision: %w", err)
-	}
-
-	// Queue search index updates: delete the old decision, upsert the new one.
-	if err := queueSearchOutbox(ctx, tx, originalID, revised.OrgID, "delete"); err != nil {
-		return model.Decision{}, fmt.Errorf("storage: queue search outbox delete in revision: %w", err)
-	}
-	if err := queueSearchOutbox(ctx, tx, revised.ID, revised.OrgID, "upsert"); err != nil {
-		return model.Decision{}, fmt.Errorf("storage: queue search outbox upsert in revision: %w", err)
-	}
-
-	// Auto-resolve open conflicts involving the superseded decision. The revised
-	// decision replaces the old one, so stale conflicts should not persist.
-	// If the revision still conflicts, the scorer will create a new conflict.
-	autoResolved, err := AutoResolveSupersededConflictsTx(ctx, tx, revised.OrgID, originalID, revised.ID)
-	if err != nil {
-		return model.Decision{}, fmt.Errorf("storage: auto-resolve in revision tx: %w", err)
-	}
-
-	// Insert revision audit entry (same tx — atomic with the revision).
-	if audit != nil {
-		audit.Operation = "decision_revised"
-		audit.ResourceType = "decision"
-		audit.ResourceID = originalID.String()
-		audit.BeforeData = map[string]any{"valid_to": nil}
-		audit.AfterData = map[string]any{
-			"superseded_by":           revised.ID.String(),
-			"valid_to":                now,
-			"conflicts_auto_resolved": autoResolved,
+	err := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		// Invalidate original decision, scoped by org_id for tenant isolation.
+		tag, err := tx.Exec(ctx,
+			`UPDATE decisions SET valid_to = $1 WHERE id = $2 AND org_id = $3 AND valid_to IS NULL`,
+			now, originalID, revised.OrgID,
+		)
+		if err != nil {
+			return fmt.Errorf("storage: invalidate decision: %w", err)
 		}
-		if err := InsertMutationAuditTx(ctx, tx, *audit); err != nil {
-			return model.Decision{}, fmt.Errorf("storage: audit in revision tx: %w", err)
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("storage: original decision %s (or already revised): %w", originalID, ErrNotFound)
 		}
-	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return model.Decision{}, fmt.Errorf("storage: commit revision: %w", err)
+		_, err = tx.Exec(ctx,
+			`INSERT INTO decisions (id, run_id, agent_id, org_id, decision_type, outcome, confidence,
+			 reasoning, embedding, outcome_embedding, metadata, completeness_score, outcome_score, precedent_ref, precedent_reason, supersedes_id, content_hash,
+			 valid_from, valid_to, transaction_time, created_at, session_id, agent_context, api_key_id)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
+			revised.ID, revised.RunID, revised.AgentID, revised.OrgID, revised.DecisionType, revised.Outcome,
+			revised.Confidence, revised.Reasoning, revised.Embedding, revised.OutcomeEmbedding, revised.Metadata,
+			revised.CompletenessScore, revised.OutcomeScore, revised.PrecedentRef, revised.PrecedentReason, revised.SupersedesID, revised.ContentHash,
+			revised.ValidFrom, revised.ValidTo, revised.TransactionTime, revised.CreatedAt,
+			revised.SessionID, revised.AgentContext, revised.APIKeyID,
+		)
+		if err != nil {
+			return fmt.Errorf("storage: insert revised decision: %w", err)
+		}
+
+		// Queue search index updates: delete the old decision, upsert the new one.
+		if err := queueSearchOutbox(ctx, tx, originalID, revised.OrgID, "delete"); err != nil {
+			return fmt.Errorf("storage: queue search outbox delete in revision: %w", err)
+		}
+		if err := queueSearchOutbox(ctx, tx, revised.ID, revised.OrgID, "upsert"); err != nil {
+			return fmt.Errorf("storage: queue search outbox upsert in revision: %w", err)
+		}
+
+		// Auto-resolve open conflicts involving the superseded decision. The revised
+		// decision replaces the old one, so stale conflicts should not persist.
+		// If the revision still conflicts, the scorer will create a new conflict.
+		autoResolved, err := AutoResolveSupersededConflictsTx(ctx, tx, revised.OrgID, originalID, revised.ID)
+		if err != nil {
+			return fmt.Errorf("storage: auto-resolve in revision tx: %w", err)
+		}
+
+		// Insert revision audit entry (same tx — atomic with the revision).
+		if audit != nil {
+			audit.Operation = "decision_revised"
+			audit.ResourceType = "decision"
+			audit.ResourceID = originalID.String()
+			audit.BeforeData = map[string]any{"valid_to": nil}
+			audit.AfterData = map[string]any{
+				"superseded_by":           revised.ID.String(),
+				"valid_to":                now,
+				"conflicts_auto_resolved": autoResolved,
+			}
+			if err := InsertMutationAuditTx(ctx, tx, *audit); err != nil {
+				return fmt.Errorf("storage: audit in revision tx: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return model.Decision{}, err
 	}
 	return revised, nil
 }
@@ -267,85 +258,77 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 // DecisionRetracted event, queuing a search index deletion, and inserting a
 // mutation audit entry — all atomically in a single transaction.
 func (db *DB) RetractDecision(ctx context.Context, orgID, decisionID uuid.UUID, reason, retractedBy string, audit *MutationAuditEntry) error {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("storage: begin retract decision tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	return db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		now := time.Now().UTC()
 
-	now := time.Now().UTC()
-
-	// Fetch the decision's run_id and agent_id for the retraction event.
-	var runID uuid.UUID
-	var agentID string
-	err = tx.QueryRow(ctx,
-		`SELECT run_id, agent_id FROM decisions WHERE id = $1 AND org_id = $2 AND valid_to IS NULL`,
-		decisionID, orgID,
-	).Scan(&runID, &agentID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("storage: decision %s: %w", decisionID, ErrNotFound)
+		// Fetch the decision's run_id and agent_id for the retraction event.
+		var runID uuid.UUID
+		var agentID string
+		err := tx.QueryRow(ctx,
+			`SELECT run_id, agent_id FROM decisions WHERE id = $1 AND org_id = $2 AND valid_to IS NULL`,
+			decisionID, orgID,
+		).Scan(&runID, &agentID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("storage: decision %s: %w", decisionID, ErrNotFound)
+			}
+			return fmt.Errorf("storage: fetch decision for retraction: %w", err)
 		}
-		return fmt.Errorf("storage: fetch decision for retraction: %w", err)
-	}
 
-	// Soft-delete: set valid_to on the decision.
-	_, err = tx.Exec(ctx,
-		`UPDATE decisions SET valid_to = $1 WHERE id = $2 AND org_id = $3 AND valid_to IS NULL`,
-		now, decisionID, orgID,
-	)
-	if err != nil {
-		return fmt.Errorf("storage: retract decision: %w", err)
-	}
+		// Soft-delete: set valid_to on the decision.
+		_, err = tx.Exec(ctx,
+			`UPDATE decisions SET valid_to = $1 WHERE id = $2 AND org_id = $3 AND valid_to IS NULL`,
+			now, decisionID, orgID,
+		)
+		if err != nil {
+			return fmt.Errorf("storage: retract decision: %w", err)
+		}
 
-	// Queue search index deletion.
-	if err := queueSearchOutbox(ctx, tx, decisionID, orgID, "delete"); err != nil {
-		return fmt.Errorf("storage: queue search outbox delete in retraction: %w", err)
-	}
+		// Queue search index deletion.
+		if err := queueSearchOutbox(ctx, tx, decisionID, orgID, "delete"); err != nil {
+			return fmt.Errorf("storage: queue search outbox delete in retraction: %w", err)
+		}
 
-	// Insert DecisionRetracted event.
-	payload := map[string]any{
-		"decision_id":  decisionID.String(),
-		"retracted_by": retractedBy,
-	}
-	if reason != "" {
-		payload["reason"] = reason
-	}
-	var seqNum int64
-	err = tx.QueryRow(ctx, `SELECT nextval('event_sequence_num_seq')`).Scan(&seqNum)
-	if err != nil {
-		return fmt.Errorf("storage: reserve sequence num for retraction event: %w", err)
-	}
-	_, err = tx.Exec(ctx,
-		`INSERT INTO agent_events (id, run_id, org_id, event_type, sequence_num, occurred_at, agent_id, payload, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		uuid.New(), runID, orgID, string(model.EventDecisionRetracted), seqNum,
-		now, agentID, payload, now,
-	)
-	if err != nil {
-		return fmt.Errorf("storage: insert retraction event: %w", err)
-	}
-
-	// Insert mutation audit entry.
-	if audit != nil {
-		audit.Operation = "decision_retracted"
-		audit.ResourceType = "decision"
-		audit.ResourceID = decisionID.String()
-		audit.BeforeData = map[string]any{"valid_to": nil}
-		audit.AfterData = map[string]any{
-			"valid_to":     now,
+		// Insert DecisionRetracted event.
+		payload := map[string]any{
+			"decision_id":  decisionID.String(),
 			"retracted_by": retractedBy,
-			"reason":       reason,
 		}
-		if err := InsertMutationAuditTx(ctx, tx, *audit); err != nil {
-			return fmt.Errorf("storage: audit in retraction tx: %w", err)
+		if reason != "" {
+			payload["reason"] = reason
 		}
-	}
+		var seqNum int64
+		err = tx.QueryRow(ctx, `SELECT nextval('event_sequence_num_seq')`).Scan(&seqNum)
+		if err != nil {
+			return fmt.Errorf("storage: reserve sequence num for retraction event: %w", err)
+		}
+		_, err = tx.Exec(ctx,
+			`INSERT INTO agent_events (id, run_id, org_id, event_type, sequence_num, occurred_at, agent_id, payload, created_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			uuid.New(), runID, orgID, string(model.EventDecisionRetracted), seqNum,
+			now, agentID, payload, now,
+		)
+		if err != nil {
+			return fmt.Errorf("storage: insert retraction event: %w", err)
+		}
 
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("storage: commit retraction: %w", err)
-	}
-	return nil
+		// Insert mutation audit entry.
+		if audit != nil {
+			audit.Operation = "decision_retracted"
+			audit.ResourceType = "decision"
+			audit.ResourceID = decisionID.String()
+			audit.BeforeData = map[string]any{"valid_to": nil}
+			audit.AfterData = map[string]any{
+				"valid_to":     now,
+				"retracted_by": retractedBy,
+				"reason":       reason,
+			}
+			if err := InsertMutationAuditTx(ctx, tx, *audit); err != nil {
+				return fmt.Errorf("storage: audit in retraction tx: %w", err)
+			}
+		}
+		return nil
+	})
 }
 
 // ErasedSentinel is the placeholder text that replaces PII fields during GDPR erasure.
@@ -377,179 +360,177 @@ func (db *DB) EraseDecision(
 	reason, erasedBy string,
 	audit *MutationAuditEntry,
 ) (DecisionErasureResult, error) {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return DecisionErasureResult{}, fmt.Errorf("storage: begin erase decision tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	var result DecisionErasureResult
+	err := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		// Activate the erasure bypass for the immutability trigger.
+		// SET LOCAL is scoped to this transaction and auto-resets on commit/rollback.
+		if _, err := tx.Exec(ctx, `SET LOCAL akashi.erasure_in_progress = 'true'`); err != nil {
+			return fmt.Errorf("storage: set erasure session var: %w", err)
+		}
 
-	// Activate the erasure bypass for the immutability trigger.
-	// SET LOCAL is scoped to this transaction and auto-resets on commit/rollback.
-	if _, err := tx.Exec(ctx, `SET LOCAL akashi.erasure_in_progress = 'true'`); err != nil {
-		return DecisionErasureResult{}, fmt.Errorf("storage: set erasure session var: %w", err)
-	}
-
-	// Fetch the decision. Must exist and belong to org.
-	var runID uuid.UUID
-	var agentID, oldOutcome, oldContentHash string
-	var oldReasoning *string
-	var decisionType string
-	var confidence float32
-	var validFrom time.Time
-	err = tx.QueryRow(ctx,
-		`SELECT run_id, agent_id, outcome, reasoning, decision_type, confidence,
+		// Fetch the decision. Must exist and belong to org.
+		var runID uuid.UUID
+		var agentID, oldOutcome, oldContentHash string
+		var oldReasoning *string
+		var decisionType string
+		var confidence float32
+		var validFrom time.Time
+		err := tx.QueryRow(ctx,
+			`SELECT run_id, agent_id, outcome, reasoning, decision_type, confidence,
 		        content_hash, valid_from
 		 FROM decisions WHERE id = $1 AND org_id = $2`,
-		decisionID, orgID,
-	).Scan(&runID, &agentID, &oldOutcome, &oldReasoning, &decisionType,
-		&confidence, &oldContentHash, &validFrom)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return DecisionErasureResult{}, fmt.Errorf("storage: decision %s: %w", decisionID, ErrNotFound)
+			decisionID, orgID,
+		).Scan(&runID, &agentID, &oldOutcome, &oldReasoning, &decisionType,
+			&confidence, &oldContentHash, &validFrom)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("storage: decision %s: %w", decisionID, ErrNotFound)
+			}
+			return fmt.Errorf("storage: fetch decision for erasure: %w", err)
 		}
-		return DecisionErasureResult{}, fmt.Errorf("storage: fetch decision for erasure: %w", err)
-	}
 
-	// Check idempotency: if already erased, return error.
-	var alreadyErased bool
-	err = tx.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM decision_erasures WHERE decision_id = $1)`,
-		decisionID,
-	).Scan(&alreadyErased)
-	if err != nil {
-		return DecisionErasureResult{}, fmt.Errorf("storage: check existing erasure: %w", err)
-	}
-	if alreadyErased {
-		return DecisionErasureResult{}, fmt.Errorf("storage: decision %s: %w", decisionID, ErrAlreadyErased)
-	}
+		// Check idempotency: if already erased, return error.
+		var alreadyErased bool
+		err = tx.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM decision_erasures WHERE decision_id = $1)`,
+			decisionID,
+		).Scan(&alreadyErased)
+		if err != nil {
+			return fmt.Errorf("storage: check existing erasure: %w", err)
+		}
+		if alreadyErased {
+			return fmt.Errorf("storage: decision %s: %w", decisionID, ErrAlreadyErased)
+		}
 
-	// Compute new content hash over scrubbed fields.
-	erasedReasoning := ErasedSentinel
-	newHash := integrity.ComputeContentHash(
-		decisionID, decisionType, ErasedSentinel, confidence, &erasedReasoning, validFrom,
-	)
+		// Compute new content hash over scrubbed fields.
+		erasedReasoning := ErasedSentinel
+		newHash := integrity.ComputeContentHash(
+			decisionID, decisionType, ErasedSentinel, confidence, &erasedReasoning, validFrom,
+		)
 
-	// Scrub the decision row.
-	_, err = tx.Exec(ctx,
-		`UPDATE decisions
+		// Scrub the decision row.
+		_, err = tx.Exec(ctx,
+			`UPDATE decisions
 		 SET outcome = $1, reasoning = $2, content_hash = $3,
 		     embedding = NULL, outcome_embedding = NULL
 		 WHERE id = $4 AND org_id = $5`,
-		ErasedSentinel, ErasedSentinel, newHash, decisionID, orgID,
-	)
-	if err != nil {
-		return DecisionErasureResult{}, fmt.Errorf("storage: scrub decision: %w", err)
-	}
+			ErasedSentinel, ErasedSentinel, newHash, decisionID, orgID,
+		)
+		if err != nil {
+			return fmt.Errorf("storage: scrub decision: %w", err)
+		}
 
-	// Scrub alternatives.
-	altTag, err := tx.Exec(ctx,
-		`UPDATE alternatives
+		// Scrub alternatives.
+		altTag, err := tx.Exec(ctx,
+			`UPDATE alternatives
 		 SET label = $1, rejection_reason = $1
 		 WHERE decision_id = $2
 		   AND decision_id IN (SELECT id FROM decisions WHERE org_id = $3)`,
-		ErasedSentinel, decisionID, orgID,
-	)
-	if err != nil {
-		return DecisionErasureResult{}, fmt.Errorf("storage: scrub alternatives: %w", err)
-	}
+			ErasedSentinel, decisionID, orgID,
+		)
+		if err != nil {
+			return fmt.Errorf("storage: scrub alternatives: %w", err)
+		}
 
-	// Scrub evidence.
-	evTag, err := tx.Exec(ctx,
-		`UPDATE evidence
+		// Scrub evidence.
+		evTag, err := tx.Exec(ctx,
+			`UPDATE evidence
 		 SET content = $1, source_uri = NULL, embedding = NULL
 		 WHERE decision_id = $2 AND org_id = $3`,
-		ErasedSentinel, decisionID, orgID,
-	)
-	if err != nil {
-		return DecisionErasureResult{}, fmt.Errorf("storage: scrub evidence: %w", err)
-	}
+			ErasedSentinel, decisionID, orgID,
+		)
+		if err != nil {
+			return fmt.Errorf("storage: scrub evidence: %w", err)
+		}
 
-	// Scrub claims (claim_text is derived from reasoning and may contain PII).
-	claimTag, err := tx.Exec(ctx,
-		`UPDATE decision_claims
+		// Scrub claims (claim_text is derived from reasoning and may contain PII).
+		claimTag, err := tx.Exec(ctx,
+			`UPDATE decision_claims
 		 SET claim_text = $1, embedding = NULL
 		 WHERE decision_id = $2 AND org_id = $3`,
-		ErasedSentinel, decisionID, orgID,
-	)
-	if err != nil {
-		return DecisionErasureResult{}, fmt.Errorf("storage: scrub claims: %w", err)
-	}
+			ErasedSentinel, decisionID, orgID,
+		)
+		if err != nil {
+			return fmt.Errorf("storage: scrub claims: %w", err)
+		}
 
-	// Queue search index deletion.
-	if err := queueSearchOutbox(ctx, tx, decisionID, orgID, "delete"); err != nil {
-		return DecisionErasureResult{}, fmt.Errorf("storage: queue search outbox delete in erasure: %w", err)
-	}
+		// Queue search index deletion.
+		if err := queueSearchOutbox(ctx, tx, decisionID, orgID, "delete"); err != nil {
+			return fmt.Errorf("storage: queue search outbox delete in erasure: %w", err)
+		}
 
-	// Insert decision_erasures row.
-	var erasure model.DecisionErasure
-	err = tx.QueryRow(ctx,
-		`INSERT INTO decision_erasures (decision_id, org_id, erased_by, original_hash, erased_hash, reason)
+		// Insert decision_erasures row.
+		var erasure model.DecisionErasure
+		err = tx.QueryRow(ctx,
+			`INSERT INTO decision_erasures (decision_id, org_id, erased_by, original_hash, erased_hash, reason)
 		 VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING id, decision_id, org_id, erased_by, original_hash, erased_hash, reason, erased_at`,
-		decisionID, orgID, erasedBy, oldContentHash, newHash, reason,
-	).Scan(&erasure.ID, &erasure.DecisionID, &erasure.OrgID, &erasure.ErasedBy,
-		&erasure.OriginalHash, &erasure.ErasedHash, &erasure.Reason, &erasure.ErasedAt)
-	if err != nil {
-		return DecisionErasureResult{}, fmt.Errorf("storage: insert decision erasure: %w", err)
-	}
+			decisionID, orgID, erasedBy, oldContentHash, newHash, reason,
+		).Scan(&erasure.ID, &erasure.DecisionID, &erasure.OrgID, &erasure.ErasedBy,
+			&erasure.OriginalHash, &erasure.ErasedHash, &erasure.Reason, &erasure.ErasedAt)
+		if err != nil {
+			return fmt.Errorf("storage: insert decision erasure: %w", err)
+		}
 
-	// Insert DecisionErased event.
-	now := time.Now().UTC()
-	payload := map[string]any{
-		"decision_id":   decisionID.String(),
-		"erased_by":     erasedBy,
-		"original_hash": oldContentHash,
-	}
-	if reason != "" {
-		payload["reason"] = reason
-	}
-	var seqNum int64
-	err = tx.QueryRow(ctx, `SELECT nextval('event_sequence_num_seq')`).Scan(&seqNum)
-	if err != nil {
-		return DecisionErasureResult{}, fmt.Errorf("storage: reserve sequence num for erasure event: %w", err)
-	}
-	_, err = tx.Exec(ctx,
-		`INSERT INTO agent_events (id, run_id, org_id, event_type, sequence_num, occurred_at, agent_id, payload, created_at)
+		// Insert DecisionErased event.
+		now := time.Now().UTC()
+		payload := map[string]any{
+			"decision_id":   decisionID.String(),
+			"erased_by":     erasedBy,
+			"original_hash": oldContentHash,
+		}
+		if reason != "" {
+			payload["reason"] = reason
+		}
+		var seqNum int64
+		err = tx.QueryRow(ctx, `SELECT nextval('event_sequence_num_seq')`).Scan(&seqNum)
+		if err != nil {
+			return fmt.Errorf("storage: reserve sequence num for erasure event: %w", err)
+		}
+		_, err = tx.Exec(ctx,
+			`INSERT INTO agent_events (id, run_id, org_id, event_type, sequence_num, occurred_at, agent_id, payload, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		uuid.New(), runID, orgID, string(model.EventDecisionErased), seqNum,
-		now, agentID, payload, now,
-	)
+			uuid.New(), runID, orgID, string(model.EventDecisionErased), seqNum,
+			now, agentID, payload, now,
+		)
+		if err != nil {
+			return fmt.Errorf("storage: insert erasure event: %w", err)
+		}
+
+		// Insert mutation audit entry.
+		if audit != nil {
+			audit.Operation = "decision_erased"
+			audit.ResourceType = "decision"
+			audit.ResourceID = decisionID.String()
+			audit.BeforeData = map[string]any{
+				"outcome":      oldOutcome,
+				"reasoning":    oldReasoning,
+				"content_hash": oldContentHash,
+			}
+			audit.AfterData = map[string]any{
+				"outcome":      ErasedSentinel,
+				"reasoning":    ErasedSentinel,
+				"content_hash": newHash,
+				"erased_by":    erasedBy,
+				"reason":       reason,
+			}
+			if err := InsertMutationAuditTx(ctx, tx, *audit); err != nil {
+				return fmt.Errorf("storage: audit in erasure tx: %w", err)
+			}
+		}
+
+		result = DecisionErasureResult{
+			Erasure:            erasure,
+			AlternativesErased: altTag.RowsAffected(),
+			EvidenceErased:     evTag.RowsAffected(),
+			ClaimsErased:       claimTag.RowsAffected(),
+		}
+		return nil
+	})
 	if err != nil {
-		return DecisionErasureResult{}, fmt.Errorf("storage: insert erasure event: %w", err)
+		return DecisionErasureResult{}, err
 	}
-
-	// Insert mutation audit entry.
-	if audit != nil {
-		audit.Operation = "decision_erased"
-		audit.ResourceType = "decision"
-		audit.ResourceID = decisionID.String()
-		audit.BeforeData = map[string]any{
-			"outcome":      oldOutcome,
-			"reasoning":    oldReasoning,
-			"content_hash": oldContentHash,
-		}
-		audit.AfterData = map[string]any{
-			"outcome":      ErasedSentinel,
-			"reasoning":    ErasedSentinel,
-			"content_hash": newHash,
-			"erased_by":    erasedBy,
-			"reason":       reason,
-		}
-		if err := InsertMutationAuditTx(ctx, tx, *audit); err != nil {
-			return DecisionErasureResult{}, fmt.Errorf("storage: audit in erasure tx: %w", err)
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return DecisionErasureResult{}, fmt.Errorf("storage: commit erasure: %w", err)
-	}
-
-	return DecisionErasureResult{
-		Erasure:            erasure,
-		AlternativesErased: altTag.RowsAffected(),
-		EvidenceErased:     evTag.RowsAffected(),
-		ClaimsErased:       claimTag.RowsAffected(),
-	}, nil
+	return result, nil
 }
 
 // GetDecisionErasure retrieves the erasure record for a decision, if one exists.
@@ -608,17 +589,7 @@ func (db *DB) QueryDecisions(ctx context.Context, orgID uuid.UUID, req model.Que
 		orderDir = "ASC"
 	}
 
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
-	offset := req.Offset
-	if offset < 0 {
-		offset = 0
-	}
+	limit, offset := clampPagination(req.Limit, req.Offset, 50, 1000)
 
 	selectQuery := fmt.Sprintf(
 		`SELECT %s FROM decisions%s ORDER BY %s %s LIMIT %d OFFSET %d`,
@@ -833,7 +804,7 @@ func (db *DB) execSearchQuery(ctx context.Context, sql string, args []any) ([]mo
 	}
 	defer rows.Close()
 
-	var results []model.SearchResult
+	results := make([]model.SearchResult, 0)
 	for rows.Next() {
 		var d model.Decision
 		var relevance float32
@@ -856,15 +827,7 @@ func (db *DB) execSearchQuery(ctx context.Context, sql string, args []any) ([]mo
 // GetDecisionsByAgent returns active decisions for a given agent within an org with pagination.
 // Only returns decisions with valid_to IS NULL (not revised/invalidated).
 func (db *DB) GetDecisionsByAgent(ctx context.Context, orgID uuid.UUID, agentID string, limit, offset int, from, to *time.Time) ([]model.Decision, int, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
-	if offset < 0 {
-		offset = 0
-	}
+	limit, offset = clampPagination(limit, offset, 50, 1000)
 
 	filters := model.QueryFilters{
 		AgentIDs: []string{agentID},
@@ -1247,7 +1210,7 @@ func isoWeekStart(isoYear, isoWeek int) time.Time {
 }
 
 func scanDecisions(rows pgx.Rows) ([]model.Decision, error) {
-	var decisions []model.Decision
+	decisions := make([]model.Decision, 0)
 	for rows.Next() {
 		d, err := scanOneDecision(rows)
 		if err != nil {
@@ -1494,27 +1457,22 @@ func (db *DB) FindUnembeddedDecisions(ctx context.Context, limit int) ([]Unembed
 // BackfillEmbedding updates a decision's embedding and queues a search outbox
 // entry so the outbox worker syncs it to Qdrant. Both writes are atomic.
 func (db *DB) BackfillEmbedding(ctx context.Context, id, orgID uuid.UUID, emb pgvector.Vector) error {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("storage: begin backfill tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	return db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE decisions SET embedding = $1 WHERE id = $2 AND org_id = $3 AND valid_to IS NULL`,
+			emb, id, orgID)
+		if err != nil {
+			return fmt.Errorf("storage: update embedding: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return nil // Decision was revised or deleted — skip silently.
+		}
 
-	tag, err := tx.Exec(ctx,
-		`UPDATE decisions SET embedding = $1 WHERE id = $2 AND org_id = $3 AND valid_to IS NULL`,
-		emb, id, orgID)
-	if err != nil {
-		return fmt.Errorf("storage: update embedding: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return nil // Decision was revised or deleted — skip silently.
-	}
-
-	if err := queueSearchOutbox(ctx, tx, id, orgID, "upsert"); err != nil {
-		return fmt.Errorf("storage: queue backfill outbox: %w", err)
-	}
-
-	return tx.Commit(ctx)
+		if err := queueSearchOutbox(ctx, tx, id, orgID, "upsert"); err != nil {
+			return fmt.Errorf("storage: queue backfill outbox: %w", err)
+		}
+		return nil
+	})
 }
 
 // FindDecisionsMissingOutcomeEmbedding returns active decisions that have

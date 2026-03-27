@@ -1261,16 +1261,16 @@ func TestParsePathUUID(t *testing.T) {
 	})
 }
 
-// --- parseRunID ---
+// --- parsePathUUID with run_id ---
 
-func TestParseRunID(t *testing.T) {
+func TestParsePathUUID_RunID(t *testing.T) {
 	t.Run("parses valid run_id", func(t *testing.T) {
 		expected := uuid.New()
 		mux := http.NewServeMux()
 		var got uuid.UUID
 		var gotErr error
 		mux.HandleFunc("GET /v1/runs/{run_id}", func(_ http.ResponseWriter, r *http.Request) {
-			got, gotErr = parseRunID(r)
+			got, gotErr = parsePathUUID(r, "run_id")
 		})
 
 		rec := httptest.NewRecorder()
@@ -1283,16 +1283,16 @@ func TestParseRunID(t *testing.T) {
 
 	t.Run("returns error for missing run_id", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/v1/runs/", nil)
-		_, err := parseRunID(req)
+		_, err := parsePathUUID(req, "run_id")
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "run_id is required")
+		assert.ErrorContains(t, err, "invalid UUID")
 	})
 
 	t.Run("returns error for invalid run_id", func(t *testing.T) {
 		mux := http.NewServeMux()
 		var gotErr error
 		mux.HandleFunc("GET /v1/runs/{run_id}", func(_ http.ResponseWriter, r *http.Request) {
-			_, gotErr = parseRunID(r)
+			_, gotErr = parsePathUUID(r, "run_id")
 		})
 
 		rec := httptest.NewRecorder()
@@ -1300,7 +1300,7 @@ func TestParseRunID(t *testing.T) {
 		mux.ServeHTTP(rec, req)
 
 		assert.Error(t, gotErr)
-		assert.Contains(t, gotErr.Error(), "invalid run_id")
+		assert.ErrorContains(t, gotErr, "invalid UUID")
 	})
 }
 

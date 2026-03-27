@@ -43,11 +43,6 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ensure JSON array, not null.
-	if conflicts == nil {
-		conflicts = []model.DecisionConflict{}
-	}
-
 	ptotal, hasMore := computePagination(len(conflicts), preFilterCount, limit, offset, total)
 	writeListJSON(w, r, conflicts, ptotal, hasMore, limit, offset)
 }
@@ -96,10 +91,6 @@ func (h *Handlers) HandleListConflictGroups(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if groups == nil {
-		groups = []model.ConflictGroup{}
-	}
-
 	ptotal, hasMore := computePagination(len(groups), preFilterCount, limit, offset, total)
 	writeListJSON(w, r, groups, ptotal, hasMore, limit, offset)
 }
@@ -110,8 +101,9 @@ func (h *Handlers) HandleListConflictGroups(w http.ResponseWriter, r *http.Reque
 // avoid false matches while catching genuine variants of the same disagreement.
 const cascadeSimilarityThreshold = 0.80
 
-// validConflictStatuses defines the allowed values for conflict status transitions.
-var validConflictStatuses = map[string]bool{
+// validResolutionStatuses defines the allowed values for conflict status transitions.
+// Used by both individual conflict patches and batch group resolution.
+var validResolutionStatuses = map[string]bool{
 	"resolved":       true,
 	"false_positive": true,
 }
@@ -134,7 +126,7 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !validConflictStatuses[req.Status] {
+	if !validResolutionStatuses[req.Status] {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
 			"status must be one of: resolved, false_positive")
 		return
@@ -202,37 +194,11 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 	// Resolution cascade: when a conflict is resolved with a winner and belongs
 	// to a group, auto-resolve other open conflicts in the same group whose
 	// outcome embeddings align with the winning decision.
-	if req.Status == "resolved" && req.WinningDecisionID != nil && conflict.GroupID != nil {
-		cascadeAudit := h.buildAuditEntry(r, orgID,
-			"conflict_cascade_resolved", "conflict", id.String(),
-			nil, nil,
-			map[string]any{"trigger_conflict_id": id.String(), "winning_decision_id": req.WinningDecisionID.String()},
-		)
-		cascaded, cascadeErr := h.db.CascadeResolveByOutcome(
-			r.Context(), orgID, *conflict.GroupID, *req.WinningDecisionID, id,
-			cascadeSimilarityThreshold, cascadeAudit,
-		)
-		if cascadeErr != nil {
-			h.logger.Warn("resolution cascade failed", "conflict_id", id, "error", cascadeErr)
-		} else if cascaded > 0 {
-			h.logger.Info("resolution cascade resolved conflicts",
-				"trigger_conflict_id", id,
-				"group_id", conflict.GroupID,
-				"cascade_resolved", cascaded,
-			)
-			if h.resolutionRecorder != nil {
-				h.resolutionRecorder.RecordResolution(r.Context(), "resolved", string(conflict.ConflictKind), cascaded)
-			}
-		}
+	if req.Status == "resolved" && req.WinningDecisionID != nil {
+		h.executeCascadeResolution(r, orgID, *conflict, *req.WinningDecisionID)
 	}
 
 	writeJSON(w, r, http.StatusOK, conflict)
-}
-
-// validGroupResolveStatuses defines the allowed values for batch conflict group resolution.
-var validGroupResolveStatuses = map[string]bool{
-	"resolved":       true,
-	"false_positive": true,
 }
 
 // HandleResolveConflictGroup handles PATCH /v1/conflict-groups/{id}/resolve.
@@ -253,7 +219,7 @@ func (h *Handlers) HandleResolveConflictGroup(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if !validGroupResolveStatuses[req.Status] {
+	if !validResolutionStatuses[req.Status] {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
 			"status must be one of: resolved, false_positive")
 		return
@@ -414,28 +380,8 @@ func (h *Handlers) HandleAdjudicateConflict(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Resolution cascade: auto-resolve related conflicts in the same group.
-	if req.WinningDecisionID != nil && conflict.GroupID != nil {
-		cascadeAudit := h.buildAuditEntry(r, orgID,
-			"conflict_cascade_resolved", "conflict", id.String(),
-			nil, nil,
-			map[string]any{"trigger_conflict_id": id.String(), "winning_decision_id": req.WinningDecisionID.String()},
-		)
-		cascaded, cascadeErr := h.db.CascadeResolveByOutcome(
-			r.Context(), orgID, *conflict.GroupID, *req.WinningDecisionID, id,
-			cascadeSimilarityThreshold, cascadeAudit,
-		)
-		if cascadeErr != nil {
-			h.logger.Warn("adjudication cascade failed", "conflict_id", id, "error", cascadeErr)
-		} else if cascaded > 0 {
-			h.logger.Info("adjudication cascade resolved conflicts",
-				"trigger_conflict_id", id,
-				"group_id", conflict.GroupID,
-				"cascade_resolved", cascaded,
-			)
-			if h.resolutionRecorder != nil {
-				h.resolutionRecorder.RecordResolution(r.Context(), "resolved", string(conflict.ConflictKind), cascaded)
-			}
-		}
+	if req.WinningDecisionID != nil {
+		h.executeCascadeResolution(r, orgID, *conflict, *req.WinningDecisionID)
 	}
 
 	// Return the updated conflict.
@@ -674,12 +620,42 @@ func (h *Handlers) HandleDecisionConflicts(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if conflicts == nil {
-		conflicts = []model.DecisionConflict{}
-	}
-
 	ptotal, hasMore := computePagination(len(conflicts), preFilterCount, limit, offset, total)
 	writeListJSON(w, r, conflicts, ptotal, hasMore, limit, offset)
+}
+
+// executeCascadeResolution auto-resolves related conflicts in the same group
+// whose outcome embeddings align with the winning decision. Called after both
+// manual resolution (PATCH) and adjudication (POST .../adjudicate) to propagate
+// the winner across the conflict group. No-op when the conflict has no group.
+func (h *Handlers) executeCascadeResolution(r *http.Request, orgID uuid.UUID, conflict model.DecisionConflict, winningDecisionID uuid.UUID) {
+	if conflict.GroupID == nil {
+		return
+	}
+	cascadeAudit := h.buildAuditEntry(r, orgID,
+		"conflict_cascade_resolved", "conflict", conflict.ID.String(),
+		nil, nil,
+		map[string]any{
+			"trigger_conflict_id": conflict.ID.String(),
+			"winning_decision_id": winningDecisionID.String(),
+		},
+	)
+	cascaded, cascadeErr := h.db.CascadeResolveByOutcome(
+		r.Context(), orgID, *conflict.GroupID, winningDecisionID, conflict.ID,
+		cascadeSimilarityThreshold, cascadeAudit,
+	)
+	if cascadeErr != nil {
+		h.logger.Warn("resolution cascade failed", "conflict_id", conflict.ID, "error", cascadeErr)
+	} else if cascaded > 0 {
+		h.logger.Info("resolution cascade resolved conflicts",
+			"trigger_conflict_id", conflict.ID,
+			"group_id", conflict.GroupID,
+			"cascade_resolved", cascaded,
+		)
+		if h.resolutionRecorder != nil {
+			h.resolutionRecorder.RecordResolution(r.Context(), "resolved", string(conflict.ConflictKind), cascaded)
+		}
+	}
 }
 
 // parseConflictFilters extracts conflict filter parameters from the request query string.

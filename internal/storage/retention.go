@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // RetentionPolicy holds an org's data retention configuration.
@@ -421,114 +422,109 @@ func (db *DB) BatchDeleteDecisions(ctx context.Context, orgID uuid.UUID, before 
 // deletion so the paper trail is preserved even for retention-based purges.
 // Respects FK cascade order.
 func (db *DB) deleteBatch(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID) (PurgeCount, error) {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return PurgeCount{}, fmt.Errorf("storage: begin delete batch tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	var cnt PurgeCount
+	txErr := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 
-	// 1. Archive and delete evidence (scoped by org_id for defense in depth).
-	if _, err = tx.Exec(ctx,
-		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		// 1. Archive and delete evidence (scoped by org_id for defense in depth).
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
 		 SELECT $2, d.agent_id, 'evidence', e.id::text, to_jsonb(e)
 		 FROM evidence e
 		 JOIN decisions d ON d.id = e.decision_id
 		 WHERE e.decision_id = ANY($1) AND e.org_id = $2`,
-		ids, orgID,
-	); err != nil {
-		return cnt, fmt.Errorf("storage: archive evidence batch: %w", err)
-	}
-	tag, err := tx.Exec(ctx, `DELETE FROM evidence WHERE decision_id = ANY($1) AND org_id = $2`, ids, orgID)
-	if err != nil {
-		return cnt, fmt.Errorf("storage: delete evidence batch: %w", err)
-	}
-	cnt.Evidence = tag.RowsAffected()
+			ids, orgID,
+		); err != nil {
+			return fmt.Errorf("storage: archive evidence batch: %w", err)
+		}
+		tag, err := tx.Exec(ctx, `DELETE FROM evidence WHERE decision_id = ANY($1) AND org_id = $2`, ids, orgID)
+		if err != nil {
+			return fmt.Errorf("storage: delete evidence batch: %w", err)
+		}
+		cnt.Evidence = tag.RowsAffected()
 
-	// 2. Archive and delete alternatives (no org_id column; decision_id FK provides scoping).
-	if _, err = tx.Exec(ctx,
-		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		// 2. Archive and delete alternatives (no org_id column; decision_id FK provides scoping).
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
 		 SELECT $2, d.agent_id, 'alternatives', a.id::text, to_jsonb(a)
 		 FROM alternatives a
 		 JOIN decisions d ON d.id = a.decision_id
 		 WHERE a.decision_id = ANY($1) AND d.org_id = $2`,
-		ids, orgID,
-	); err != nil {
-		return cnt, fmt.Errorf("storage: archive alternatives batch: %w", err)
-	}
-	tag, err = tx.Exec(ctx, `DELETE FROM alternatives WHERE decision_id = ANY($1)`, ids)
-	if err != nil {
-		return cnt, fmt.Errorf("storage: delete alternatives batch: %w", err)
-	}
-	cnt.Alternatives = tag.RowsAffected()
+			ids, orgID,
+		); err != nil {
+			return fmt.Errorf("storage: archive alternatives batch: %w", err)
+		}
+		tag, err = tx.Exec(ctx, `DELETE FROM alternatives WHERE decision_id = ANY($1)`, ids)
+		if err != nil {
+			return fmt.Errorf("storage: delete alternatives batch: %w", err)
+		}
+		cnt.Alternatives = tag.RowsAffected()
 
-	// 3. Archive and delete decision_claims (scoped by org_id for defense in depth).
-	if _, err = tx.Exec(ctx,
-		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		// 3. Archive and delete decision_claims (scoped by org_id for defense in depth).
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
 		 SELECT $2, d.agent_id, 'decision_claims', c.id::text, to_jsonb(c)
 		 FROM decision_claims c
 		 JOIN decisions d ON d.id = c.decision_id
 		 WHERE c.decision_id = ANY($1) AND c.org_id = $2`,
-		ids, orgID,
-	); err != nil {
-		return cnt, fmt.Errorf("storage: archive claims batch: %w", err)
-	}
-	tag, err = tx.Exec(ctx, `DELETE FROM decision_claims WHERE decision_id = ANY($1) AND org_id = $2`, ids, orgID)
-	if err != nil {
-		return cnt, fmt.Errorf("storage: delete claims batch: %w", err)
-	}
-	cnt.Claims = tag.RowsAffected()
+			ids, orgID,
+		); err != nil {
+			return fmt.Errorf("storage: archive claims batch: %w", err)
+		}
+		tag, err = tx.Exec(ctx, `DELETE FROM decision_claims WHERE decision_id = ANY($1) AND org_id = $2`, ids, orgID)
+		if err != nil {
+			return fmt.Errorf("storage: delete claims batch: %w", err)
+		}
+		cnt.Claims = tag.RowsAffected()
 
-	// 4. Archive and delete decision_assessments. The FK uses ON DELETE RESTRICT
-	// (migration 086), so assessments must be explicitly removed before decisions.
-	if _, err = tx.Exec(ctx,
-		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		// 4. Archive and delete decision_assessments. The FK uses ON DELETE RESTRICT
+		// (migration 086), so assessments must be explicitly removed before decisions.
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
 		 SELECT $2, da.assessor_agent_id, 'decision_assessments', da.id::text, to_jsonb(da)
 		 FROM decision_assessments da
 		 WHERE da.decision_id = ANY($1) AND da.org_id = $2`,
-		ids, orgID,
-	); err != nil {
-		return cnt, fmt.Errorf("storage: archive assessments batch: %w", err)
-	}
-	// SET LOCAL is transaction-scoped: it authorizes the immutability trigger
-	// (prevent_assessment_mutation) to permit deletes within this tx only.
-	if _, err = tx.Exec(ctx, `SET LOCAL akashi.allow_assessment_delete = 'true'`); err != nil {
-		return cnt, fmt.Errorf("storage: set assessment delete flag: %w", err)
-	}
-	tag, err = tx.Exec(ctx,
-		`DELETE FROM decision_assessments WHERE decision_id = ANY($1) AND org_id = $2`,
-		ids, orgID,
-	)
-	if err != nil {
-		return cnt, fmt.Errorf("storage: delete assessments batch: %w", err)
-	}
-	cnt.Assessments = tag.RowsAffected()
-	if _, err = tx.Exec(ctx, `SET LOCAL akashi.allow_assessment_delete = 'false'`); err != nil {
-		return cnt, fmt.Errorf("storage: reset assessment delete flag: %w", err)
-	}
+			ids, orgID,
+		); err != nil {
+			return fmt.Errorf("storage: archive assessments batch: %w", err)
+		}
+		// SET LOCAL is transaction-scoped: it authorizes the immutability trigger
+		// (prevent_assessment_mutation) to permit deletes within this tx only.
+		if _, err := tx.Exec(ctx, `SET LOCAL akashi.allow_assessment_delete = 'true'`); err != nil {
+			return fmt.Errorf("storage: set assessment delete flag: %w", err)
+		}
+		tag, err = tx.Exec(ctx,
+			`DELETE FROM decision_assessments WHERE decision_id = ANY($1) AND org_id = $2`,
+			ids, orgID,
+		)
+		if err != nil {
+			return fmt.Errorf("storage: delete assessments batch: %w", err)
+		}
+		cnt.Assessments = tag.RowsAffected()
+		if _, err := tx.Exec(ctx, `SET LOCAL akashi.allow_assessment_delete = 'false'`); err != nil {
+			return fmt.Errorf("storage: reset assessment delete flag: %w", err)
+		}
 
-	// 5. Null out precedent_ref / supersedes_id references to these decisions.
-	if _, err = tx.Exec(ctx, `UPDATE decisions SET precedent_ref = NULL WHERE precedent_ref = ANY($1) AND org_id = $2`, ids, orgID); err != nil {
-		return cnt, fmt.Errorf("storage: clear precedent refs batch: %w", err)
-	}
-	if _, err = tx.Exec(ctx, `UPDATE decisions SET supersedes_id = NULL WHERE supersedes_id = ANY($1) AND org_id = $2`, ids, orgID); err != nil {
-		return cnt, fmt.Errorf("storage: clear supersedes refs batch: %w", err)
-	}
+		// 5. Null out precedent_ref / supersedes_id references to these decisions.
+		if _, err := tx.Exec(ctx, `UPDATE decisions SET precedent_ref = NULL WHERE precedent_ref = ANY($1) AND org_id = $2`, ids, orgID); err != nil {
+			return fmt.Errorf("storage: clear precedent refs batch: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE decisions SET supersedes_id = NULL WHERE supersedes_id = ANY($1) AND org_id = $2`, ids, orgID); err != nil {
+			return fmt.Errorf("storage: clear supersedes refs batch: %w", err)
+		}
 
-	// 6. Queue Qdrant deletions via search_outbox.
-	if _, err = tx.Exec(ctx,
-		`INSERT INTO search_outbox (decision_id, org_id, operation)
+		// 6. Queue Qdrant deletions via search_outbox.
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO search_outbox (decision_id, org_id, operation)
 		 SELECT id, $2, 'delete' FROM decisions WHERE id = ANY($1)
 		 ON CONFLICT (decision_id, operation) DO UPDATE SET created_at = now(), attempts = 0, locked_until = NULL`,
-		ids, orgID,
-	); err != nil {
-		return cnt, fmt.Errorf("storage: queue outbox deletes batch: %w", err)
-	}
+			ids, orgID,
+		); err != nil {
+			return fmt.Errorf("storage: queue outbox deletes batch: %w", err)
+		}
 
-	// 7. Archive and delete scored conflicts referencing these decisions.
-	if _, err = tx.Exec(ctx,
-		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		// 7. Archive and delete scored conflicts referencing these decisions.
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
 		 SELECT $2,
 		        'system',
 		        'scored_conflicts',
@@ -536,34 +532,36 @@ func (db *DB) deleteBatch(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID)
 		        to_jsonb(sc)
 		 FROM scored_conflicts sc
 		 WHERE (sc.decision_a_id = ANY($1) OR sc.decision_b_id = ANY($1)) AND sc.org_id = $2`,
-		ids, orgID,
-	); err != nil {
-		return cnt, fmt.Errorf("storage: archive conflicts batch: %w", err)
-	}
-	if _, err = tx.Exec(ctx,
-		`DELETE FROM scored_conflicts WHERE (decision_a_id = ANY($1) OR decision_b_id = ANY($1)) AND org_id = $2`, ids, orgID,
-	); err != nil {
-		return cnt, fmt.Errorf("storage: delete conflicts batch: %w", err)
-	}
+			ids, orgID,
+		); err != nil {
+			return fmt.Errorf("storage: archive conflicts batch: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM scored_conflicts WHERE (decision_a_id = ANY($1) OR decision_b_id = ANY($1)) AND org_id = $2`, ids, orgID,
+		); err != nil {
+			return fmt.Errorf("storage: delete conflicts batch: %w", err)
+		}
 
-	// 8. Archive and delete decisions.
-	if _, err = tx.Exec(ctx,
-		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		// 8. Archive and delete decisions.
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
 		 SELECT $2, d.agent_id, 'decisions', d.id::text, to_jsonb(d)
 		 FROM decisions d
 		 WHERE d.id = ANY($1) AND d.org_id = $2`,
-		ids, orgID,
-	); err != nil {
-		return cnt, fmt.Errorf("storage: archive decisions batch: %w", err)
-	}
-	tag, err = tx.Exec(ctx, `DELETE FROM decisions WHERE id = ANY($1) AND org_id = $2`, ids, orgID)
-	if err != nil {
-		return cnt, fmt.Errorf("storage: delete decisions batch: %w", err)
-	}
-	cnt.Decisions = tag.RowsAffected()
+			ids, orgID,
+		); err != nil {
+			return fmt.Errorf("storage: archive decisions batch: %w", err)
+		}
+		tag, err = tx.Exec(ctx, `DELETE FROM decisions WHERE id = ANY($1) AND org_id = $2`, ids, orgID)
+		if err != nil {
+			return fmt.Errorf("storage: delete decisions batch: %w", err)
+		}
+		cnt.Decisions = tag.RowsAffected()
 
-	if err := tx.Commit(ctx); err != nil {
-		return cnt, fmt.Errorf("storage: commit delete batch tx: %w", err)
+		return nil
+	})
+	if txErr != nil {
+		return PurgeCount{}, txErr
 	}
 	return cnt, nil
 }
@@ -573,18 +571,15 @@ func (db *DB) deleteBatch(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID)
 // the audit trail records what was purged. Returns the number of chunks dropped
 // (not rows — each chunk is a time partition).
 func (db *DB) DropEventChunks(ctx context.Context, olderThan time.Time) (int64, error) {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("storage: begin drop event chunks tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	var dropped int64
+	txErr := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 
-	// Archive a summary record per (org_id, chunk) into deletion_audit_log.
-	// drop_chunks removes chunks whose range_end <= the cutoff, so we identify
-	// those chunks via timescaledb_information.chunks and aggregate the events
-	// they contain, grouped by org_id.
-	_, err = tx.Exec(ctx,
-		`WITH droppable_chunks AS (
+		// Archive a summary record per (org_id, chunk) into deletion_audit_log.
+		// drop_chunks removes chunks whose range_end <= the cutoff, so we identify
+		// those chunks via timescaledb_information.chunks and aggregate the events
+		// they contain, grouped by org_id.
+		_, err := tx.Exec(ctx,
+			`WITH droppable_chunks AS (
 		     SELECT chunk_name,
 		            range_start::timestamptz AS range_start,
 		            range_end::timestamptz   AS range_end
@@ -612,23 +607,23 @@ func (db *DB) DropEventChunks(ctx context.Context, olderThan time.Time) (int64, 
 		 JOIN agent_events ae ON ae.occurred_at >= dc.range_start
 		                      AND ae.occurred_at <  dc.range_end
 		 GROUP BY ae.org_id, dc.chunk_name, dc.range_start, dc.range_end`,
-		olderThan,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("storage: archive event chunk summary: %w", err)
-	}
+			olderThan,
+		)
+		if err != nil {
+			return fmt.Errorf("storage: archive event chunk summary: %w", err)
+		}
 
-	var dropped int64
-	err = tx.QueryRow(ctx,
-		`SELECT count(*) FROM drop_chunks('agent_events', $1::timestamptz)`,
-		olderThan,
-	).Scan(&dropped)
-	if err != nil {
-		return 0, fmt.Errorf("storage: drop event chunks: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("storage: commit drop event chunks tx: %w", err)
+		err = tx.QueryRow(ctx,
+			`SELECT count(*) FROM drop_chunks('agent_events', $1::timestamptz)`,
+			olderThan,
+		).Scan(&dropped)
+		if err != nil {
+			return fmt.Errorf("storage: drop event chunks: %w", err)
+		}
+		return nil
+	})
+	if txErr != nil {
+		return 0, txErr
 	}
 	return dropped, nil
 }
