@@ -183,3 +183,20 @@ func TestRootsCache(t *testing.T) {
 	assert.True(t, ok)
 	assert.Empty(t, got)
 }
+
+func TestRootsCache_ShouldRetry(t *testing.T) {
+	cache := newRootsCache()
+
+	// First failure: should retry.
+	assert.True(t, cache.ShouldRetry("session-1"), "first failure should allow retry")
+
+	// Session is now marked as retried — not cached yet.
+	_, ok := cache.Get("session-1")
+	assert.False(t, ok, "should not be cached after first failure")
+
+	// Second failure: should NOT retry.
+	assert.False(t, cache.ShouldRetry("session-1"), "second failure should not retry")
+
+	// Different session is independent.
+	assert.True(t, cache.ShouldRetry("session-2"), "different session should allow retry")
+}

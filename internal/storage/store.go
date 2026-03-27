@@ -104,6 +104,15 @@ type Store interface {
 	// alias mapping exists.
 	ResolveProjectAlias(ctx context.Context, orgID uuid.UUID, alias string) (string, error)
 
+	// CreateProjectAlias upserts an alias→canonical mapping (link_type='alias').
+	// Idempotent: if the alias already maps to the same canonical, it is a
+	// no-op. If the canonical differs, the mapping is updated (last-write-wins).
+	CreateProjectAlias(ctx context.Context, orgID uuid.UUID, alias, canonical, createdBy string) error
+
+	// IsAliasTarget reports whether the given name is the canonical target
+	// (project_b) of any existing alias. Used to prevent alias chains.
+	IsAliasTarget(ctx context.Context, orgID uuid.UUID, name string) (bool, error)
+
 	// ---- Idempotency ----
 
 	BeginIdempotency(ctx context.Context, orgID uuid.UUID, agentID, endpoint, key, requestHash string) (IdempotencyLookup, error)
