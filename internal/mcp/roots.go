@@ -20,14 +20,25 @@ const rootsRequestTimeout = 3 * time.Second
 // rootsCache caches MCP roots per session ID so we don't re-request
 // on every tool call within the same session. Roots don't change
 // mid-session, so one request per session is sufficient.
+//
+// Failure handling: the first roots failure is NOT cached, allowing one
+// retry on the next tool call. If the retry also fails, the empty result
+// is cached permanently for the session. This prevents a single transient
+// timeout from poisoning all subsequent tool calls in the session.
 type rootsCache struct {
-	mu    sync.RWMutex
-	cache map[string][]mcplib.Root // sessionID -> roots
+	mu      sync.RWMutex
+	cache   map[string][]mcplib.Root // sessionID -> roots (only set on success or second failure)
+	retried map[string]bool          // sessions that already had one failed attempt
+	// NOTE: retried grows by one bool per failed session and is never evicted.
+	// This is acceptable because sessions are bounded by connection lifetime
+	// and each entry is ~40 bytes. If the server starts handling millions of
+	// ephemeral sessions, add a TTL or sync.Map with periodic sweep.
 }
 
 func newRootsCache() *rootsCache {
 	return &rootsCache{
-		cache: make(map[string][]mcplib.Root),
+		cache:   make(map[string][]mcplib.Root),
+		retried: make(map[string]bool),
 	}
 }
 
@@ -44,6 +55,19 @@ func (rc *rootsCache) Set(sessionID string, roots []mcplib.Root) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	rc.cache[sessionID] = roots
+}
+
+// ShouldRetry reports whether a failed session should retry (first failure)
+// and marks it as retried. Returns false on the second failure, meaning the
+// caller should cache the empty result permanently.
+func (rc *rootsCache) ShouldRetry(sessionID string) bool {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	if rc.retried[sessionID] {
+		return false // already retried once
+	}
+	rc.retried[sessionID] = true
+	return true
 }
 
 // requestRoots requests roots from the client via the MCP protocol,
@@ -74,7 +98,11 @@ func (s *Server) requestRoots(ctx context.Context) []mcplib.Root {
 	if err != nil {
 		// Client may not support roots — that's fine.
 		s.logger.Debug("MCP roots request failed (non-fatal)", "error", err, "session_id", sessionID)
-		// Cache empty slice to avoid re-requesting.
+		if s.rootsCache.ShouldRetry(sessionID) {
+			// First failure: don't cache, allow one retry on the next call.
+			return nil
+		}
+		// Second failure: cache permanently to avoid further round-trips.
 		s.rootsCache.Set(sessionID, []mcplib.Root{})
 		return nil
 	}
