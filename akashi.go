@@ -29,6 +29,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"sync/atomic"
 	"time"
 
@@ -639,7 +640,11 @@ func (a *App) runLoop(ctx context.Context, name string, interval time.Duration, 
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						a.logger.Error("panic in background loop", "loop", name, "panic", r)
+						a.logger.Error("panic in background loop",
+							"loop", name,
+							"panic", r,
+							"stack", string(debug.Stack()),
+						)
 					}
 				}()
 				fn(ctx)

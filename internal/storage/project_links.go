@@ -95,6 +95,7 @@ func (db *DB) GetProjectLink(ctx context.Context, orgID, id uuid.UUID) (model.Pr
 }
 
 // ListProjectLinks returns all project links within an org, ordered by created_at descending.
+// limit is clamped to [1, 1000] with a default of 50; offset must be non-negative.
 func (db *DB) ListProjectLinks(ctx context.Context, orgID uuid.UUID, limit, offset int) ([]model.ProjectLink, int, error) {
 	limit, offset = clampPagination(limit, offset, 50, 1000)
 	var total int
