@@ -76,6 +76,11 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 			"supersedes_id must be a valid non-nil UUID")
 		return
 	}
+	if req.SupersedesID != nil && req.PrecedentRef != nil && *req.SupersedesID == *req.PrecedentRef {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"supersedes_id and precedent_ref cannot reference the same decision")
+		return
+	}
 
 	if !model.RoleAtLeast(claims.Role, model.RoleAdmin) && req.AgentID != claims.AgentID {
 		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "can only trace for your own agent_id")
@@ -147,7 +152,7 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		h.clearIdempotentWrite(r, orgID, idem)
-		if errors.Is(err, storage.ErrNotFound) {
+		if errors.Is(err, storage.ErrNotFound) || isForeignKeyViolation(err) {
 			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
 				"superseded decision not found or already superseded")
 			return

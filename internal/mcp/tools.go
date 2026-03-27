@@ -751,14 +751,22 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	}
 
 	// Parse supersedes_id: marks a prior decision as replaced by this one.
+	// Unlike precedent_ref (advisory), supersedes_id has destructive side effects
+	// (invalidates a decision, auto-resolves conflicts), so we reject on bad input
+	// rather than silently dropping it.
 	var supersedesID *uuid.UUID
 	if sid := request.GetString("supersedes_id", ""); sid != "" {
-		if id, parseErr := uuid.Parse(sid); parseErr == nil {
-			supersedesID = &id
-		} else {
-			s.logger.Warn("akashi_trace: ignoring invalid supersedes_id UUID",
-				"value", sid, "error", parseErr, "agent_id", agentID)
+		id, parseErr := uuid.Parse(sid)
+		if parseErr != nil {
+			return errorResult(fmt.Sprintf("supersedes_id is not a valid UUID: %s", sid)), nil
 		}
+		if id == uuid.Nil {
+			return errorResult("supersedes_id must be a valid non-nil UUID"), nil
+		}
+		supersedesID = &id
+	}
+	if supersedesID != nil && precedentRef != nil && *supersedesID == *precedentRef {
+		return errorResult("supersedes_id and precedent_ref cannot reference the same decision"), nil
 	}
 
 	// Build agent_context with server/client namespace split.
@@ -870,7 +878,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	idemKey := request.GetString("idempotency_key", "")
 	var idemOwned bool // true when this request owns the in-progress reservation
 	if idemKey != "" {
-		payloadHash, hashErr := mcpTraceHash(agentID, decisionType, outcome, confidence, reasoning, evidence, alternatives, precedentRef)
+		payloadHash, hashErr := mcpTraceHash(agentID, decisionType, outcome, confidence, reasoning, evidence, alternatives, precedentRef, supersedesID)
 		if hashErr != nil {
 			return errorResult(fmt.Sprintf("failed to hash trace payload: %v", hashErr)), nil
 		}
@@ -1125,14 +1133,21 @@ func inferModelFromToolName(name string) string {
 }
 
 // mcpTraceHash computes a deterministic SHA-256 hash of the trace parameters
-// used for idempotency payload comparison. precedentRef is included so that
-// the same outcome recorded with a different attribution link is treated as
-// a distinct payload (rather than a replay of the original).
-func mcpTraceHash(agentID, decisionType, outcome string, confidence float32, reasoning string, evidence []model.TraceEvidence, alternatives []model.TraceAlternative, precedentRef *uuid.UUID) (string, error) {
+// used for idempotency payload comparison. precedentRef and supersedesID are
+// included so that the same outcome recorded with different linkage is treated
+// as a distinct payload (rather than a replay of the original). This is
+// especially important for supersedesID, which has write side effects
+// (invalidating a decision, auto-resolving conflicts).
+func mcpTraceHash(agentID, decisionType, outcome string, confidence float32, reasoning string, evidence []model.TraceEvidence, alternatives []model.TraceAlternative, precedentRef *uuid.UUID, supersedesID *uuid.UUID) (string, error) {
 	var prStr *string
 	if precedentRef != nil {
 		s := precedentRef.String()
 		prStr = &s
+	}
+	var ssStr *string
+	if supersedesID != nil {
+		s := supersedesID.String()
+		ssStr = &s
 	}
 	b, err := json.Marshal(map[string]any{
 		"agent_id":      agentID,
@@ -1143,6 +1158,7 @@ func mcpTraceHash(agentID, decisionType, outcome string, confidence float32, rea
 		"evidence":      evidence,
 		"alternatives":  alternatives,
 		"precedent_ref": prStr,
+		"supersedes_id": ssStr,
 	})
 	if err != nil {
 		return "", err

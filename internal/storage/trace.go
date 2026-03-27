@@ -243,6 +243,25 @@ func (db *DB) createTraceInTx(ctx context.Context, tx pgx.Tx, params CreateTrace
 		if _, err := AutoResolveSupersededConflictsTx(ctx, tx, params.OrgID, *d.SupersedesID, d.ID); err != nil {
 			return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: auto-resolve superseded conflicts in trace: %w", err)
 		}
+		// Record supersession in the mutation audit log so the paper trail
+		// captures who replaced what, atomically with the invalidation.
+		if err := InsertMutationAuditTx(ctx, tx, MutationAuditEntry{
+			OrgID:        params.OrgID,
+			ActorAgentID: params.AgentID,
+			ActorRole:    "agent",
+			Operation:    "supersede_decision",
+			ResourceType: "decision",
+			ResourceID:   d.SupersedesID.String(),
+			BeforeData:   map[string]any{"valid_to": nil},
+			AfterData: map[string]any{
+				"valid_to":        now,
+				"superseded_by":   d.ID,
+				"new_decision_id": d.ID,
+				"superseded_id":   *d.SupersedesID,
+			},
+		}); err != nil {
+			return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: audit supersession in trace tx: %w", err)
+		}
 	}
 
 	// 5. Complete run.
