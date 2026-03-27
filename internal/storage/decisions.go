@@ -66,6 +66,11 @@ func queueSearchOutbox(ctx context.Context, exec txExecer, decisionID, orgID uui
 
 // CreateDecision inserts a decision and queues a search outbox entry if the
 // decision has an embedding. Both writes happen atomically in a single transaction.
+//
+// WARNING: This function does NOT insert a mutation audit entry. It exists for
+// test/eval use only (conflicts/eval.go). Production traces MUST use
+// CreateTraceTx, which atomically records the audit trail.
+// Do not call this from handler or service code.
 func (db *DB) CreateDecision(ctx context.Context, d model.Decision) (model.Decision, error) {
 	if d.ID == uuid.Nil {
 		d.ID = uuid.New()

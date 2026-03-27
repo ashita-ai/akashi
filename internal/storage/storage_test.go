@@ -8139,6 +8139,135 @@ func TestDeleteAgentData_WithAllRelatedData(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Tests: DeleteAgentData — with resolved conflict resolutions
+// ---------------------------------------------------------------------------
+
+func TestDeleteAgentData_WithResolvedConflicts(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentA := "del-conflict-a-" + suffix
+	agentB := "del-conflict-b-" + suffix
+
+	// Create two agents with decisions that will have a conflict.
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentA, OrgID: uuid.Nil, Name: agentA, Role: model.RoleAgent, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+	_, err = testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentB, OrgID: uuid.Nil, Name: agentB, Role: model.RoleAgent, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA,
+		DecisionType: "delete_cr_test", Outcome: "approach A",
+		Confidence: 0.7, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB,
+		DecisionType: "delete_cr_test", Outcome: "approach B",
+		Confidence: 0.8, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Insert a scored conflict between the two decisions.
+	topicSim := 0.90
+	outcomeDiv := 0.80
+	sig := topicSim * outcomeDiv
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind:      model.ConflictKindCrossAgent,
+		DecisionAID:       dA.ID,
+		DecisionBID:       dB.ID,
+		OrgID:             uuid.Nil,
+		AgentA:            agentA,
+		AgentB:            agentB,
+		DecisionTypeA:     "delete_cr_test",
+		DecisionTypeB:     "delete_cr_test",
+		OutcomeA:          "approach A",
+		OutcomeB:          "approach B",
+		TopicSimilarity:   &topicSim,
+		OutcomeDivergence: &outcomeDiv,
+		Significance:      &sig,
+		ScoringMethod:     "text",
+	})
+	require.NoError(t, err)
+
+	// Resolve the conflict — this updates the scored_conflicts row in place.
+	resNote := "A wins because reasons"
+	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
+		"resolved", "admin-"+suffix, &resNote, &dA.ID, nil,
+		storage.MutationAuditEntry{
+			OrgID: uuid.Nil, ActorAgentID: "admin-" + suffix, ActorRole: "admin",
+			Operation: "resolve_conflict", ResourceType: "conflict",
+		},
+	)
+	require.NoError(t, err)
+
+	// Re-insert the same conflict pair. The CTE in InsertScoredConflict archives
+	// the resolution to conflict_resolutions before the ON CONFLICT DO UPDATE
+	// reopens it. This is the only codepath that creates conflict_resolutions rows.
+	_, err = testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind:      model.ConflictKindCrossAgent,
+		DecisionAID:       dA.ID,
+		DecisionBID:       dB.ID,
+		OrgID:             uuid.Nil,
+		AgentA:            agentA,
+		AgentB:            agentB,
+		DecisionTypeA:     "delete_cr_test",
+		DecisionTypeB:     "delete_cr_test",
+		OutcomeA:          "approach A",
+		OutcomeB:          "approach B",
+		TopicSimilarity:   &topicSim,
+		OutcomeDivergence: &outcomeDiv,
+		Significance:      &sig,
+		ScoringMethod:     "text",
+	})
+	require.NoError(t, err)
+
+	// Verify the conflict_resolutions row exists before deletion.
+	var resBefore int
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT COUNT(*) FROM conflict_resolutions WHERE conflict_id = $1`, conflictID,
+	).Scan(&resBefore)
+	require.NoError(t, err)
+	require.Equal(t, 1, resBefore, "should have 1 archived resolution before delete")
+
+	// Delete agent A — this must clean up conflict_resolutions before scored_conflicts.
+	// Before this fix, the ON DELETE RESTRICT FK on conflict_resolutions.conflict_id
+	// would cause a FK violation error, rolling back the entire delete transaction.
+	result, err := testDB.DeleteAgentData(ctx, uuid.Nil, agentA, nil)
+	require.NoError(t, err, "DeleteAgentData should not fail with resolved conflicts")
+	assert.GreaterOrEqual(t, result.Decisions, int64(1))
+	assert.GreaterOrEqual(t, result.ConflictResolutions, int64(1), "should delete conflict_resolutions")
+
+	// Verify the resolution was archived to deletion_audit_log.
+	var archivedRes int
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT COUNT(*) FROM deletion_audit_log
+		 WHERE org_id = $1 AND table_name = 'conflict_resolutions'
+		   AND record_data->>'conflict_id' = $2`,
+		uuid.Nil, conflictID.String(),
+	).Scan(&archivedRes)
+	require.NoError(t, err)
+	assert.Equal(t, 1, archivedRes, "resolution should be archived to deletion_audit_log")
+
+	// Verify the conflict_resolutions row is gone.
+	var resAfter int
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT COUNT(*) FROM conflict_resolutions WHERE conflict_id = $1`, conflictID,
+	).Scan(&resAfter)
+	require.NoError(t, err)
+	assert.Equal(t, 0, resAfter, "conflict_resolutions should be deleted")
+}
+
+// ---------------------------------------------------------------------------
 // Tests: GetCitationPercentilesForOrg — with data
 // ---------------------------------------------------------------------------
 
