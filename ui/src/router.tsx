@@ -9,6 +9,7 @@ const Decisions = lazy(() => import("@/pages/Decisions"));
 const DecisionDetail = lazy(() => import("@/pages/DecisionDetail"));
 const Agents = lazy(() => import("@/pages/Agents"));
 const Conflicts = lazy(() => import("@/pages/Conflicts"));
+const ConflictDetailPage = lazy(() => import("@/pages/ConflictDetail"));
 const SearchPage = lazy(() => import("@/pages/SearchPage"));
 const ExportPage = lazy(() => import("@/pages/ExportPage"));
 const SessionTimeline = lazy(() => import("@/pages/SessionTimeline"));
@@ -64,6 +65,7 @@ export const router = createBrowserRouter([
       { path: "decisions/:runId", element: <Lazy><DecisionDetail /></Lazy> },
       { path: "agents", element: <Lazy><Agents /></Lazy> },
       { path: "conflicts", element: <Lazy><Conflicts /></Lazy> },
+      { path: "conflicts/:conflictId", element: <Lazy><ConflictDetailPage /></Lazy> },
       { path: "search", element: <Lazy><SearchPage /></Lazy> },
       { path: "export", element: <Lazy><ExportPage /></Lazy> },
       { path: "grants", element: <Lazy><GrantsPage /></Lazy> },
