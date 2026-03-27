@@ -1,4 +1,4 @@
-h1:hNQstJEnjM6rS3btgrb7afQLWhRSmI2JtvYlNkxIvqo=
+h1:XC7kvDLB7rI8sYcE6tLKhk46x5WQVx7Wp+VJmxurryc=
 001_initial.sql h1:uhyGXto+QacAaGYb9ZTGjsBs5chlKi8O0eHz9aCQsrY=
 022_full_text_search.sql h1:9iwtA8MgCzAxDV9YkUBn0CLT9ePSmj3GcPoMGg8TXf0=
 023_fix_outbox_index.sql h1:OtMEFBcMRWej02+ghnBXlPr6BVq+LoA62Id9XUWfDNI=
@@ -65,3 +65,6 @@ h1:hNQstJEnjM6rS3btgrb7afQLWhRSmI2JtvYlNkxIvqo=
 084_proof_leaves.sql h1:L0U0Q9jBkoT9CD7tMX0Qk1CJXgc1TWDNLhpdmSHS4Yo=
 085_conflict_resolutions.sql h1:EX8YENM+546oUfcYGlN2vxdsU72pSykprieJ3BONDaU=
 086_assessments_restrict_cascade.sql h1:BkaT/dAtNkkDCzeSGZJpm3uya1NNDcvanfrd5Rb9emA=
+087_project_links_alias_index.sql h1:WytNkji711Eeko6Ijz9l1X0ZXOQh5RhidjDBSZf1UMY=
+088_unique_alias_per_project.sql h1:UY1u6IycabSjhWDRK9RDohqwSz/yDLgwQBwDWiRrSx8=
+089_fix_conflict_resolutions_trigger_and_proof_leaves_fk.sql h1:V4I0KLXGHcL24yvmbRd3Iei5yXDAYiL6xWYYKb5jMjA=

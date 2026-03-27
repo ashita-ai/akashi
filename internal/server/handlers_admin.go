@@ -580,6 +580,12 @@ func isDuplicateKeyError(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
+// isForeignKeyViolation checks if a Postgres error is a foreign_key_violation (23503).
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
+}
+
 // isNotFoundError checks if the error indicates a missing resource.
 // Uses sentinel error matching instead of fragile string comparison.
 func isNotFoundError(err error) bool {

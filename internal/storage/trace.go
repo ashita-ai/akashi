@@ -217,6 +217,65 @@ func (db *DB) createTraceInTx(ctx context.Context, tx pgx.Tx, params CreateTrace
 		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: queue search outbox in trace tx: %w", err)
 	}
 
+	// 4c. Handle explicit supersession: invalidate the superseded decision and
+	// auto-resolve its open conflicts, matching the ReviseDecision pattern.
+	if d.SupersedesID != nil {
+		tag, err := tx.Exec(ctx,
+			`UPDATE decisions SET valid_to = $1 WHERE id = $2 AND org_id = $3 AND valid_to IS NULL`,
+			now, *d.SupersedesID, params.OrgID,
+		)
+		if err != nil {
+			return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: invalidate superseded decision: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: superseded decision %s not found (or already superseded): %w", *d.SupersedesID, ErrNotFound)
+		}
+		// Queue search index deletion for the superseded decision.
+		if err := queueSearchOutbox(ctx, tx, *d.SupersedesID, params.OrgID, "delete"); err != nil {
+			return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: queue search outbox delete for superseded: %w", err)
+		}
+		// Auto-resolve open conflicts involving the superseded decision.
+		if _, err := AutoResolveSupersededConflictsTx(ctx, tx, params.OrgID, *d.SupersedesID, d.ID); err != nil {
+			return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: auto-resolve superseded conflicts in trace: %w", err)
+		}
+		// Emit DecisionSuperseded event into the event stream (matching the
+		// retraction pattern) so SSE consumers and event queries see it.
+		var supersessionSeqNum int64
+		if err := tx.QueryRow(ctx, `SELECT nextval('event_sequence_num_seq')`).Scan(&supersessionSeqNum); err != nil {
+			return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: reserve sequence num for supersession event: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO agent_events (id, run_id, org_id, event_type, sequence_num, occurred_at, agent_id, payload, created_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			uuid.New(), run.ID, params.OrgID, string(model.EventDecisionSuperseded), supersessionSeqNum,
+			now, params.AgentID, map[string]any{
+				"superseded_decision_id": d.SupersedesID.String(),
+				"new_decision_id":        d.ID.String(),
+			}, now,
+		); err != nil {
+			return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: insert supersession event: %w", err)
+		}
+		// Record supersession in the mutation audit log so the paper trail
+		// captures who replaced what, atomically with the invalidation.
+		if err := InsertMutationAuditTx(ctx, tx, MutationAuditEntry{
+			OrgID:        params.OrgID,
+			ActorAgentID: params.AgentID,
+			ActorRole:    "agent",
+			Operation:    "supersede_decision",
+			ResourceType: "decision",
+			ResourceID:   d.SupersedesID.String(),
+			BeforeData:   map[string]any{"valid_to": nil},
+			AfterData: map[string]any{
+				"valid_to":        now,
+				"superseded_by":   d.ID,
+				"new_decision_id": d.ID,
+				"superseded_id":   *d.SupersedesID,
+			},
+		}); err != nil {
+			return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: audit supersession in trace tx: %w", err)
+		}
+	}
+
 	// 5. Complete run.
 	if _, err := tx.Exec(ctx,
 		`UPDATE agent_runs SET status = $1, completed_at = $2 WHERE id = $3`,

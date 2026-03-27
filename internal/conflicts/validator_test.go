@@ -442,8 +442,8 @@ func TestFormatPrompt_TaskContext(t *testing.T) {
 		TaskA:    "implement caching layer",
 		TaskB:    "optimize API response times",
 	})
-	assert.Contains(t, prompt, "Task A: implement caching layer")
-	assert.Contains(t, prompt, "Task B: optimize API response times")
+	assert.Contains(t, prompt, "Task (planner): implement caching layer")
+	assert.Contains(t, prompt, "Task (coder): optimize API response times")
 }
 
 func TestFormatPrompt_TopicSimilarityHighCrossAgent(t *testing.T) {

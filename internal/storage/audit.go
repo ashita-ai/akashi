@@ -11,6 +11,11 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// Design note: mutation_audit_log and deletion_audit_log intentionally lack a
+// foreign key to organizations. Audit records MUST survive org deletion — they
+// are the record OF the deletion. Adding ON DELETE CASCADE would silently
+// destroy the audit trail when an org is removed.
+
 // pgxExecer is the subset of pgx.Tx / pgxpool.Pool used for INSERT execution.
 // Both *pgxpool.Pool and pgx.Tx satisfy this interface.
 type pgxExecer interface {

@@ -155,6 +155,95 @@ func (db *DB) LinkedProjects(ctx context.Context, orgID uuid.UUID, project, link
 	return projects, rows.Err()
 }
 
+// CreateProjectAlias upserts an alias→canonical mapping (link_type='alias')
+// with an accompanying mutation_audit entry. If the alias already points to the
+// same canonical, it's a no-op. If the canonical differs (e.g. the git remote
+// changed), the mapping is updated to the new canonical (last-write-wins) and
+// the audit entry captures both the old and new state.
+func (db *DB) CreateProjectAlias(ctx context.Context, orgID uuid.UUID, alias, canonical, createdBy string) error {
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("storage: begin create project alias tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Use a CTE to capture the previous canonical (if any) so we can record
+	// BeforeData in the audit entry and distinguish creates from updates.
+	proposedID := uuid.New()
+	var actualID uuid.UUID
+	var oldCanonical *string
+	err = tx.QueryRow(ctx,
+		`WITH old AS (
+		     SELECT id, project_b FROM project_links
+		     WHERE org_id = $2 AND project_a = $3 AND link_type = 'alias'
+		 )
+		 INSERT INTO project_links (id, org_id, project_a, project_b, link_type, created_by)
+		 VALUES ($1, $2, $3, $4, 'alias', $5)
+		 ON CONFLICT (org_id, project_a) WHERE link_type = 'alias'
+		 DO UPDATE SET project_b = EXCLUDED.project_b, created_by = EXCLUDED.created_by
+		 WHERE project_links.project_b != EXCLUDED.project_b
+		 RETURNING id, (SELECT project_b FROM old)`,
+		proposedID, orgID, alias, canonical, createdBy,
+	).Scan(&actualID, &oldCanonical)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Already exists with the same canonical — nothing to audit.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("storage: create project alias: %w", err)
+	}
+
+	operation := "create"
+	var beforeData any
+	if oldCanonical != nil {
+		operation = "update"
+		beforeData = model.ProjectLink{
+			ID: actualID, OrgID: orgID,
+			ProjectA: alias, ProjectB: *oldCanonical,
+			LinkType: "alias", CreatedBy: createdBy,
+		}
+	}
+
+	if err := InsertMutationAuditTx(ctx, tx, MutationAuditEntry{
+		OrgID:        orgID,
+		ActorAgentID: createdBy,
+		ActorRole:    "system",
+		Operation:    operation,
+		ResourceType: "project_link",
+		ResourceID:   actualID.String(),
+		Endpoint:     "system:auto-alias",
+		BeforeData:   beforeData,
+		AfterData: model.ProjectLink{
+			ID: actualID, OrgID: orgID,
+			ProjectA: alias, ProjectB: canonical,
+			LinkType: "alias", CreatedBy: createdBy,
+		},
+	}); err != nil {
+		return fmt.Errorf("storage: audit in create project alias tx: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
+// IsAliasTarget reports whether the given name is the canonical target
+// (project_b) of any existing alias link. Used to prevent alias chains:
+// if X→name already exists, creating name→Y would form a chain X→name→Y
+// where only one hop is resolved.
+func (db *DB) IsAliasTarget(ctx context.Context, orgID uuid.UUID, name string) (bool, error) {
+	var exists bool
+	err := db.pool.QueryRow(ctx,
+		`SELECT EXISTS(
+		     SELECT 1 FROM project_links
+		     WHERE org_id = $1 AND link_type = 'alias' AND project_b = $2
+		 )`,
+		orgID, name,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("storage: is alias target: %w", err)
+	}
+	return exists, nil
+}
+
 // ResolveProjectAlias looks up a canonical project name for the given alias.
 // Alias links use link_type='alias' with project_a as the alias and project_b
 // as the canonical name (unidirectional, unlike conflict_scope links).
@@ -165,6 +254,7 @@ func (db *DB) ResolveProjectAlias(ctx context.Context, orgID uuid.UUID, alias st
 		`SELECT project_b
 		 FROM project_links
 		 WHERE org_id = $1 AND link_type = 'alias' AND project_a = $2
+		 ORDER BY created_at DESC
 		 LIMIT 1`,
 		orgID, alias,
 	).Scan(&canonical)

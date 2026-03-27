@@ -174,7 +174,7 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 				mcplib.Description(`What you're working on (e.g. "codebase review", "implement rate limiting"). Groups related decisions.`),
 			),
 			mcplib.WithString("project",
-				mcplib.Description(`The project, application, or service this decision belongs to (e.g. "akashi", "my-langchain-app", "customer-support-bot"). Include this so the decision appears in project-scoped queries and can be filtered by other agents working on the same project.`),
+				mcplib.Description(`The repository or project name (e.g. "akashi", "my-langchain-app"). Auto-detected from the git remote when omitted — prefer omitting unless you know the exact canonical name. Do NOT use workspace directory names.`),
 			),
 			mcplib.WithString("idempotency_key",
 				mcplib.Description("Optional key for retry safety. Same key + same payload replays the original response. Same key + different payload returns an error. Use a UUID or deterministic identifier per logical operation."),
@@ -190,6 +190,9 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 			),
 			mcplib.WithString("precedent_reason",
 				mcplib.Description("Brief explanation of why the cited precedent_ref applies to this decision. Helps future agents understand the reasoning lineage without re-reading both decisions. Example: \"extends the first_detected_at fix to also handle rescored decisions\". Omit if precedent_ref is not set."),
+			),
+			mcplib.WithString("supersedes_id",
+				mcplib.Description("UUID of a prior decision that this one explicitly replaces. The superseded decision will be invalidated (valid_to set) and its open conflicts auto-resolved. Use this when your decision reverses or replaces a prior one, rather than just building on it. Omit for new decisions or refinements."),
 			),
 		),
 		s.handleTrace,
@@ -442,6 +445,11 @@ func (s *Server) resolveProjectFilter(ctx context.Context, request mcplib.CallTo
 		return nil // cross-project opt-out
 	}
 	if explicit != "" {
+		// Resolve alias: the agent may have passed a workspace name.
+		orgID := ctxutil.OrgIDFromContext(ctx)
+		if canonical, err := s.db.ResolveProjectAlias(ctx, orgID, explicit); err == nil && canonical != "" {
+			return &canonical
+		}
 		return &explicit
 	}
 	// Auto-detect from MCP roots.
@@ -747,6 +755,25 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		precedentReason = &reason
 	}
 
+	// Parse supersedes_id: marks a prior decision as replaced by this one.
+	// Unlike precedent_ref (advisory), supersedes_id has destructive side effects
+	// (invalidates a decision, auto-resolves conflicts), so we reject on bad input
+	// rather than silently dropping it.
+	var supersedesID *uuid.UUID
+	if sid := request.GetString("supersedes_id", ""); sid != "" {
+		id, parseErr := uuid.Parse(sid)
+		if parseErr != nil {
+			return errorResult(fmt.Sprintf("supersedes_id is not a valid UUID: %s", sid)), nil
+		}
+		if id == uuid.Nil {
+			return errorResult("supersedes_id must be a valid non-nil UUID"), nil
+		}
+		supersedesID = &id
+	}
+	if supersedesID != nil && precedentRef != nil && *supersedesID == *precedentRef {
+		return errorResult("supersedes_id and precedent_ref cannot reference the same decision"), nil
+	}
+
 	// Build agent_context with server/client namespace split.
 	// "server" contains values the server extracted or verified (MCP session,
 	// client info, roots, API key prefix). "client" contains self-reported
@@ -829,6 +856,39 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		)
 		clientCtx["project_submitted"] = clientProject
 		clientCtx["project"] = serverProject
+
+		// Auto-create alias so future traces with the same workspace name
+		// get normalized even when MCP roots are unavailable.
+		//
+		// Chain guard (both directions):
+		//   1. Don't create A→B if B is itself an alias source (B→C exists).
+		//      Otherwise B resolves to C but A resolves to B (stale).
+		//   2. Don't create A→B if A is already a canonical target (X→A exists).
+		//      Otherwise X resolves to A but A now points to B (broken chain).
+		canonicalIsAlias := false
+		if existing, err := s.db.ResolveProjectAlias(ctx, orgID, serverProject); err == nil && existing != "" {
+			canonicalIsAlias = true
+		}
+		aliasIsTarget := false
+		if isTarget, err := s.db.IsAliasTarget(ctx, orgID, clientProject); err == nil && isTarget {
+			aliasIsTarget = true
+		}
+		switch {
+		case canonicalIsAlias:
+			s.logger.Debug("skipping alias creation: canonical is itself an alias",
+				"alias", clientProject, "canonical", serverProject)
+		case aliasIsTarget:
+			s.logger.Debug("skipping alias creation: alias name is already a canonical target",
+				"alias", clientProject, "canonical", serverProject)
+		default:
+			if err := s.db.CreateProjectAlias(ctx, orgID, clientProject, serverProject, "system:auto-alias"); err != nil {
+				s.logger.Warn("failed to auto-create project alias (non-fatal)",
+					"alias", clientProject, "canonical", serverProject, "error", err)
+			} else {
+				s.logger.Info("auto-created project alias",
+					"alias", clientProject, "canonical", serverProject)
+			}
+		}
 	} else if clientProject != "" && serverProject == "" {
 		// No server inference available — try alias lookup as fallback.
 		canonical, aliasErr := s.db.ResolveProjectAlias(ctx, orgID, clientProject)
@@ -856,7 +916,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	idemKey := request.GetString("idempotency_key", "")
 	var idemOwned bool // true when this request owns the in-progress reservation
 	if idemKey != "" {
-		payloadHash, hashErr := mcpTraceHash(agentID, decisionType, outcome, confidence, reasoning, evidence, alternatives, precedentRef)
+		payloadHash, hashErr := mcpTraceHash(agentID, decisionType, outcome, confidence, reasoning, evidence, alternatives, precedentRef, supersedesID)
 		if hashErr != nil {
 			return errorResult(fmt.Sprintf("failed to hash trace payload: %v", hashErr)), nil
 		}
@@ -931,6 +991,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		AuditMeta:       auditMeta,
 		PrecedentRef:    precedentRef,
 		PrecedentReason: precedentReason,
+		SupersedesID:    supersedesID,
 		Decision: model.TraceDecision{
 			DecisionType: decisionType,
 			Outcome:      outcome,
@@ -1110,14 +1171,21 @@ func inferModelFromToolName(name string) string {
 }
 
 // mcpTraceHash computes a deterministic SHA-256 hash of the trace parameters
-// used for idempotency payload comparison. precedentRef is included so that
-// the same outcome recorded with a different attribution link is treated as
-// a distinct payload (rather than a replay of the original).
-func mcpTraceHash(agentID, decisionType, outcome string, confidence float32, reasoning string, evidence []model.TraceEvidence, alternatives []model.TraceAlternative, precedentRef *uuid.UUID) (string, error) {
+// used for idempotency payload comparison. precedentRef and supersedesID are
+// included so that the same outcome recorded with different linkage is treated
+// as a distinct payload (rather than a replay of the original). This is
+// especially important for supersedesID, which has write side effects
+// (invalidating a decision, auto-resolving conflicts).
+func mcpTraceHash(agentID, decisionType, outcome string, confidence float32, reasoning string, evidence []model.TraceEvidence, alternatives []model.TraceAlternative, precedentRef *uuid.UUID, supersedesID *uuid.UUID) (string, error) {
 	var prStr *string
 	if precedentRef != nil {
 		s := precedentRef.String()
 		prStr = &s
+	}
+	var ssStr *string
+	if supersedesID != nil {
+		s := supersedesID.String()
+		ssStr = &s
 	}
 	b, err := json.Marshal(map[string]any{
 		"agent_id":      agentID,
@@ -1128,6 +1196,7 @@ func mcpTraceHash(agentID, decisionType, outcome string, confidence float32, rea
 		"evidence":      evidence,
 		"alternatives":  alternatives,
 		"precedent_ref": prStr,
+		"supersedes_id": ssStr,
 	})
 	if err != nil {
 		return "", err

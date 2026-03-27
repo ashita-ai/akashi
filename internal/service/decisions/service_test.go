@@ -1269,6 +1269,190 @@ func TestDrainAsync_CompletesImmediatelyWhenIdle(t *testing.T) {
 	require.NoError(t, err, "DrainAsync should return immediately when no goroutines are in flight")
 }
 
+func TestTrace_SupersedesID_InvalidatesOldDecision(t *testing.T) {
+	ctx := context.Background()
+	agentID := "supersede-" + uuid.New().String()[:8]
+	createAgent(t, agentID)
+
+	// Create the original decision.
+	original, err := testSvc.Trace(ctx, uuid.Nil, decisions.TraceInput{
+		AgentID: agentID,
+		Decision: model.TraceDecision{
+			DecisionType: "architecture",
+			Outcome:      "use PostgreSQL for storage",
+			Confidence:   0.8,
+		},
+	})
+	require.NoError(t, err)
+
+	// Supersede it with a new decision.
+	replacement, err := testSvc.Trace(ctx, uuid.Nil, decisions.TraceInput{
+		AgentID:      agentID,
+		SupersedesID: &original.DecisionID,
+		Decision: model.TraceDecision{
+			DecisionType: "architecture",
+			Outcome:      "use CockroachDB for storage",
+			Confidence:   0.9,
+		},
+	})
+	require.NoError(t, err)
+	assert.NotEqual(t, uuid.Nil, replacement.DecisionID)
+
+	// Original should now have valid_to set (invalidated).
+	orig, err := testDB.GetDecision(ctx, uuid.Nil, original.DecisionID, storage.GetDecisionOpts{})
+	require.NoError(t, err)
+	assert.NotNil(t, orig.ValidTo, "superseded decision must have valid_to set")
+
+	// Replacement should be current (valid_to IS NULL).
+	repl, err := testDB.GetDecision(ctx, uuid.Nil, replacement.DecisionID, storage.GetDecisionOpts{})
+	require.NoError(t, err)
+	assert.Nil(t, repl.ValidTo, "replacement decision must have valid_to = NULL")
+	assert.Equal(t, &original.DecisionID, repl.SupersedesID, "replacement must reference the superseded decision")
+}
+
+func TestTrace_SupersedesID_NonexistentDecision(t *testing.T) {
+	ctx := context.Background()
+	agentID := "supersede-missing-" + uuid.New().String()[:8]
+	createAgent(t, agentID)
+
+	bogusID := uuid.New()
+	_, err := testSvc.Trace(ctx, uuid.Nil, decisions.TraceInput{
+		AgentID:      agentID,
+		SupersedesID: &bogusID,
+		Decision: model.TraceDecision{
+			DecisionType: "architecture",
+			Outcome:      "this should fail",
+			Confidence:   0.7,
+		},
+	})
+	require.Error(t, err, "superseding a nonexistent decision should fail")
+	// The FK constraint on supersedes_id fires before the UPDATE check,
+	// producing a foreign_key_violation (23503) rather than ErrNotFound.
+	assert.Contains(t, err.Error(), "23503", "should be a foreign key violation")
+}
+
+func TestTrace_SupersedesID_AlreadySuperseded(t *testing.T) {
+	ctx := context.Background()
+	agentID := "supersede-twice-" + uuid.New().String()[:8]
+	createAgent(t, agentID)
+
+	// Create and supersede a decision.
+	original, err := testSvc.Trace(ctx, uuid.Nil, decisions.TraceInput{
+		AgentID: agentID,
+		Decision: model.TraceDecision{
+			DecisionType: "architecture",
+			Outcome:      "original approach",
+			Confidence:   0.8,
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = testSvc.Trace(ctx, uuid.Nil, decisions.TraceInput{
+		AgentID:      agentID,
+		SupersedesID: &original.DecisionID,
+		Decision: model.TraceDecision{
+			DecisionType: "architecture",
+			Outcome:      "first replacement",
+			Confidence:   0.9,
+		},
+	})
+	require.NoError(t, err)
+
+	// Second supersession of the same decision should fail (already has valid_to).
+	_, err = testSvc.Trace(ctx, uuid.Nil, decisions.TraceInput{
+		AgentID:      agentID,
+		SupersedesID: &original.DecisionID,
+		Decision: model.TraceDecision{
+			DecisionType: "architecture",
+			Outcome:      "second replacement — should fail",
+			Confidence:   0.85,
+		},
+	})
+	require.Error(t, err, "superseding an already-superseded decision should fail")
+	assert.ErrorIs(t, err, storage.ErrNotFound)
+}
+
+func TestTrace_SupersedesID_AutoResolvesConflicts(t *testing.T) {
+	ctx := context.Background()
+	agentA := "supersede-conflict-a-" + uuid.New().String()[:8]
+	agentB := "supersede-conflict-b-" + uuid.New().String()[:8]
+	createAgent(t, agentA)
+	createAgent(t, agentB)
+
+	// Create two decisions that will conflict.
+	resultA, err := testSvc.Trace(ctx, uuid.Nil, decisions.TraceInput{
+		AgentID: agentA,
+		Decision: model.TraceDecision{
+			DecisionType: "approach",
+			Outcome:      "use REST API",
+			Confidence:   0.8,
+		},
+	})
+	require.NoError(t, err)
+
+	resultB, err := testSvc.Trace(ctx, uuid.Nil, decisions.TraceInput{
+		AgentID: agentB,
+		Decision: model.TraceDecision{
+			DecisionType: "approach",
+			Outcome:      "use GraphQL API",
+			Confidence:   0.7,
+		},
+	})
+	require.NoError(t, err)
+
+	// Seed a conflict between them.
+	topicSim := 0.90
+	outcomeDiv := 0.85
+	sig := topicSim * outcomeDiv
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind:      model.ConflictKindCrossAgent,
+		DecisionAID:       resultA.DecisionID,
+		DecisionBID:       resultB.DecisionID,
+		OrgID:             uuid.Nil,
+		AgentA:            agentA,
+		AgentB:            agentB,
+		DecisionTypeA:     "approach",
+		DecisionTypeB:     "approach",
+		OutcomeA:          "use REST API",
+		OutcomeB:          "use GraphQL API",
+		TopicSimilarity:   &topicSim,
+		OutcomeDivergence: &outcomeDiv,
+		Significance:      &sig,
+		ScoringMethod:     "text",
+	})
+	require.NoError(t, err)
+
+	// Supersede decision A — this should auto-resolve the conflict.
+	_, err = testSvc.Trace(ctx, uuid.Nil, decisions.TraceInput{
+		AgentID:      agentA,
+		SupersedesID: &resultA.DecisionID,
+		Decision: model.TraceDecision{
+			DecisionType: "approach",
+			Outcome:      "use REST API v2",
+			Confidence:   0.9,
+		},
+	})
+	require.NoError(t, err)
+
+	// Verify the conflict is now resolved.
+	resolvedStatus := "resolved"
+	allConflicts, err := testDB.ListConflicts(ctx, uuid.Nil, storage.ConflictFilters{
+		Status: &resolvedStatus,
+	}, 50, 0)
+	require.NoError(t, err)
+	var found bool
+	for _, c := range allConflicts {
+		if c.ID == conflictID {
+			assert.Equal(t, "resolved", c.Status)
+			require.NotNil(t, c.ResolvedBy)
+			assert.Equal(t, "system:revision", *c.ResolvedBy)
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "conflict should be auto-resolved after supersession")
+}
+
 func TestDrainAsync_ReturnsErrorOnTimeout(t *testing.T) {
 	embedder := embedding.NewNoopProvider(1024)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
