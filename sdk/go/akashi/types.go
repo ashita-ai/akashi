@@ -118,6 +118,7 @@ type TraceRequest struct {
 	Confidence   float32            `json:"confidence"`
 	Reasoning    *string            `json:"reasoning,omitempty"`
 	PrecedentRef *uuid.UUID         `json:"precedent_ref,omitempty"`
+	SupersedesID *uuid.UUID         `json:"supersedes_id,omitempty"`
 	Alternatives []TraceAlternative `json:"alternatives,omitempty"`
 	Evidence     []TraceEvidence    `json:"evidence,omitempty"`
 	Metadata     map[string]any     `json:"metadata,omitempty"`

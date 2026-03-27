@@ -211,7 +211,10 @@ function ConflictPairRow({
               </Button>
             )}
           </div>
-          <div>
+          <div className="flex items-center gap-1">
+            <Link to={`/conflicts/${c.id}`} className="inline-flex items-center h-6 px-2 text-[10px] text-muted-foreground hover:text-foreground transition-colors">
+              Details
+            </Link>
             {canAdjudicate && (
               <Button
                 variant="ghost"
@@ -328,34 +331,36 @@ function ConflictGroupCard({
           </div>
         </div>
 
-        {/* ── Competing outcomes — show what actually conflicts ── */}
-        {rep && (rep.outcome_a || rep.outcome_b) && (
-          <div className="space-y-1.5 text-xs">
-            {rep.outcome_a && (
-              <div className="flex gap-2 items-start">
-                <Badge variant="outline" className="font-mono text-[10px] shrink-0 mt-0.5">
-                  {group.agent_a}
-                </Badge>
-                <span className="text-muted-foreground leading-snug">
-                  {truncate(rep.outcome_a, 140)}
-                </span>
-              </div>
-            )}
-            {rep.outcome_b && (
-              <div className="flex gap-2 items-start">
-                <Badge variant="outline" className="font-mono text-[10px] shrink-0 mt-0.5">
-                  {!isSelf ? group.agent_b : group.agent_a}
-                </Badge>
-                <span className="text-muted-foreground leading-snug">
-                  {truncate(rep.outcome_b, 140)}
-                </span>
-              </div>
-            )}
+        {/* ── Conflict summary — explanation first, outcomes as context ── */}
+        {rep && (rep.explanation || rep.outcome_a || rep.outcome_b) && (
+          <div className="space-y-2 text-xs">
             {rep.explanation && (
-              <p className="text-[11px] text-muted-foreground/70 leading-snug italic">
-                {truncate(rep.explanation, 180)}
+              <p className="text-sm text-foreground/80 leading-snug">
+                {truncate(rep.explanation, 220)}
               </p>
             )}
+            <div className="space-y-1">
+              {rep.outcome_a && (
+                <div className="flex gap-2 items-start">
+                  <Badge variant="outline" className="font-mono text-[10px] shrink-0 mt-0.5">
+                    {group.agent_a}
+                  </Badge>
+                  <span className="text-muted-foreground leading-snug">
+                    {truncate(rep.outcome_a, 140)}
+                  </span>
+                </div>
+              )}
+              {rep.outcome_b && (
+                <div className="flex gap-2 items-start">
+                  <Badge variant="outline" className="font-mono text-[10px] shrink-0 mt-0.5">
+                    {!isSelf ? group.agent_b : group.agent_a}
+                  </Badge>
+                  <span className="text-muted-foreground leading-snug">
+                    {truncate(rep.outcome_b, 140)}
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </CardHeader>

@@ -22,6 +22,7 @@ const (
 	EventReasoningStepCompleted EventType = "ReasoningStepCompleted"
 	EventDecisionMade           EventType = "DecisionMade"
 	EventDecisionRevised        EventType = "DecisionRevised"
+	EventDecisionSuperseded     EventType = "DecisionSuperseded"
 	EventDecisionRetracted      EventType = "DecisionRetracted"
 	EventDecisionErased         EventType = "DecisionErased"
 

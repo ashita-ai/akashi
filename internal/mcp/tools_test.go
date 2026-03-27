@@ -1406,15 +1406,15 @@ func TestHandleQuery_FullFormat(t *testing.T) {
 // ---------- mcpTraceHash ----------
 
 func TestMCPTraceHash_Deterministic(t *testing.T) {
-	h1, err := mcpTraceHash("agent", "architecture", "chose Redis", 0.8, "good fit", nil, nil, nil)
+	h1, err := mcpTraceHash("agent", "architecture", "chose Redis", 0.8, "good fit", nil, nil, nil, nil)
 	require.NoError(t, err)
 
-	h2, err := mcpTraceHash("agent", "architecture", "chose Redis", 0.8, "good fit", nil, nil, nil)
+	h2, err := mcpTraceHash("agent", "architecture", "chose Redis", 0.8, "good fit", nil, nil, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, h1, h2, "same inputs should produce the same hash")
 
 	// Different outcome should produce a different hash.
-	h3, err := mcpTraceHash("agent", "architecture", "chose Memcached", 0.8, "good fit", nil, nil, nil)
+	h3, err := mcpTraceHash("agent", "architecture", "chose Memcached", 0.8, "good fit", nil, nil, nil, nil)
 	require.NoError(t, err)
 	assert.NotEqual(t, h1, h3, "different outcome should produce different hash")
 }
@@ -1422,13 +1422,25 @@ func TestMCPTraceHash_Deterministic(t *testing.T) {
 func TestMCPTraceHash_WithPrecedentRef(t *testing.T) {
 	ref := uuid.New()
 
-	h1, err := mcpTraceHash("agent", "architecture", "chose Redis", 0.8, "", nil, nil, nil)
+	h1, err := mcpTraceHash("agent", "architecture", "chose Redis", 0.8, "", nil, nil, nil, nil)
 	require.NoError(t, err)
 
-	h2, err := mcpTraceHash("agent", "architecture", "chose Redis", 0.8, "", nil, nil, &ref)
+	h2, err := mcpTraceHash("agent", "architecture", "chose Redis", 0.8, "", nil, nil, &ref, nil)
 	require.NoError(t, err)
 
 	assert.NotEqual(t, h1, h2, "adding precedent_ref should change the hash")
+}
+
+func TestMCPTraceHash_WithSupersedesID(t *testing.T) {
+	sid := uuid.New()
+
+	h1, err := mcpTraceHash("agent", "architecture", "chose Redis", 0.8, "", nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	h2, err := mcpTraceHash("agent", "architecture", "chose Redis", 0.8, "", nil, nil, nil, &sid)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, h1, h2, "adding supersedes_id should change the hash")
 }
 
 // ---------- New() constructor ----------

@@ -146,6 +146,7 @@ type TraceInput struct {
 	Decision        model.TraceDecision
 	PrecedentRef    *uuid.UUID
 	PrecedentReason *string
+	SupersedesID    *uuid.UUID     // Decision this one explicitly replaces.
 	SessionID       *uuid.UUID     // MCP session or X-Akashi-Session header.
 	AgentContext    map[string]any // Merged server-extracted + client-supplied context.
 	APIKeyID        *uuid.UUID     // Managed API key that authenticated this request.
@@ -386,6 +387,7 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 			CompletenessScore: qualityScore,
 			PrecedentRef:      input.PrecedentRef,
 			PrecedentReason:   input.PrecedentReason,
+			SupersedesID:      input.SupersedesID,
 			APIKeyID:          input.APIKeyID,
 		},
 		Alternatives: alts,

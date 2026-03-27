@@ -261,6 +261,7 @@ type TraceRequest struct {
 	Decision        TraceDecision  `json:"decision"`
 	PrecedentRef    *uuid.UUID     `json:"precedent_ref,omitempty"`    // decision that influenced this one
 	PrecedentReason *string        `json:"precedent_reason,omitempty"` // why the precedent applies
+	SupersedesID    *uuid.UUID     `json:"supersedes_id,omitempty"`    // decision this one explicitly replaces
 	Metadata        map[string]any `json:"metadata,omitempty"`
 	Context         map[string]any `json:"context,omitempty"` // Agent context (model, task, repo, branch).
 }

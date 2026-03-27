@@ -2847,6 +2847,13 @@ components:
           description: >
             Brief explanation of why the cited precedent_ref applies to this decision.
             Only meaningful when precedent_ref is set; ignored otherwise.
+        supersedes_id:
+          type: string
+          format: uuid
+          description: >
+            UUID of the prior decision that this one explicitly replaced. When set,
+            the superseded decision was invalidated (valid_to set) and its open
+            conflicts were auto-resolved at trace time.
         valid_from:
           type: string
           format: date-time
@@ -3465,6 +3472,14 @@ components:
           description: >
             Brief explanation of why the cited precedent_ref applies to this decision.
             Requires precedent_ref to be set; rejected with 400 otherwise.
+        supersedes_id:
+          type: string
+          format: uuid
+          description: >
+            UUID of a prior decision that this one explicitly replaces. The superseded
+            decision will be invalidated (valid_to set) and its open conflicts auto-resolved.
+            Use when your decision reverses or replaces a prior one, rather than just
+            building on it. Omit for new decisions or refinements.
         metadata:
           type: object
           additionalProperties: true
