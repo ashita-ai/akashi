@@ -174,21 +174,23 @@ func (db *DB) CreateProjectAlias(ctx context.Context, orgID uuid.UUID, alias, ca
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	id := uuid.New()
-	tag, err := tx.Exec(ctx,
+	proposedID := uuid.New()
+	var actualID uuid.UUID
+	err = tx.QueryRow(ctx,
 		`INSERT INTO project_links (id, org_id, project_a, project_b, link_type, created_by)
 		 VALUES ($1, $2, $3, $4, 'alias', $5)
 		 ON CONFLICT (org_id, project_a) WHERE link_type = 'alias'
 		 DO UPDATE SET project_b = EXCLUDED.project_b, created_by = EXCLUDED.created_by
-		 WHERE project_links.project_b != EXCLUDED.project_b`,
-		id, orgID, alias, canonical, createdBy,
-	)
+		 WHERE project_links.project_b != EXCLUDED.project_b
+		 RETURNING id`,
+		proposedID, orgID, alias, canonical, createdBy,
+	).Scan(&actualID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Already exists with the same canonical — nothing to audit.
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("storage: create project alias: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		// Already exists — nothing to audit.
-		return nil
 	}
 
 	if err := InsertMutationAuditTx(ctx, tx, MutationAuditEntry{
@@ -197,10 +199,10 @@ func (db *DB) CreateProjectAlias(ctx context.Context, orgID uuid.UUID, alias, ca
 		ActorRole:    "system",
 		Operation:    "create",
 		ResourceType: "project_link",
-		ResourceID:   id.String(),
+		ResourceID:   actualID.String(),
 		Endpoint:     "system:auto-alias",
 		AfterData: model.ProjectLink{
-			ID: id, OrgID: orgID,
+			ID: actualID, OrgID: orgID,
 			ProjectA: alias, ProjectB: canonical,
 			LinkType: "alias", CreatedBy: createdBy,
 		},
