@@ -152,7 +152,7 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		h.clearIdempotentWrite(r, orgID, idem)
-		if errors.Is(err, storage.ErrNotFound) || isForeignKeyViolation(err) {
+		if req.SupersedesID != nil && (errors.Is(err, storage.ErrNotFound) || isForeignKeyViolation(err)) {
 			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
 				"superseded decision not found or already superseded")
 			return
