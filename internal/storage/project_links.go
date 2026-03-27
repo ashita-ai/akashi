@@ -163,9 +163,10 @@ func (db *DB) LinkedProjects(ctx context.Context, orgID uuid.UUID, project, link
 	return projects, rows.Err()
 }
 
-// CreateProjectAlias inserts an alias→canonical mapping (link_type='alias')
-// with an accompanying mutation_audit entry. Idempotent: uses ON CONFLICT DO
-// NOTHING so duplicate alias creation is a no-op.
+// CreateProjectAlias upserts an alias→canonical mapping (link_type='alias')
+// with an accompanying mutation_audit entry. If the alias already points to the
+// same canonical, it's a no-op. If the canonical differs (e.g. the git remote
+// changed), the mapping is updated to the new canonical (last-write-wins).
 func (db *DB) CreateProjectAlias(ctx context.Context, orgID uuid.UUID, alias, canonical, createdBy string) error {
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
@@ -177,7 +178,9 @@ func (db *DB) CreateProjectAlias(ctx context.Context, orgID uuid.UUID, alias, ca
 	tag, err := tx.Exec(ctx,
 		`INSERT INTO project_links (id, org_id, project_a, project_b, link_type, created_by)
 		 VALUES ($1, $2, $3, $4, 'alias', $5)
-		 ON CONFLICT (org_id, project_a, project_b, link_type) DO NOTHING`,
+		 ON CONFLICT (org_id, project_a) WHERE link_type = 'alias'
+		 DO UPDATE SET project_b = EXCLUDED.project_b, created_by = EXCLUDED.created_by
+		 WHERE project_links.project_b != EXCLUDED.project_b`,
 		id, orgID, alias, canonical, createdBy,
 	)
 	if err != nil {
@@ -218,6 +221,7 @@ func (db *DB) ResolveProjectAlias(ctx context.Context, orgID uuid.UUID, alias st
 		`SELECT project_b
 		 FROM project_links
 		 WHERE org_id = $1 AND link_type = 'alias' AND project_a = $2
+		 ORDER BY created_at DESC
 		 LIMIT 1`,
 		orgID, alias,
 	).Scan(&canonical)

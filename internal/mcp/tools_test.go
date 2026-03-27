@@ -3697,9 +3697,18 @@ func TestHandleTrace_AutoCreatesAlias(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, canonical, resolved)
 
-	// Verify idempotency: second insert is a no-op.
+	// Verify idempotency: same canonical is a no-op.
 	err = testDB.CreateProjectAlias(ctx, uuid.Nil, workspaceName, canonical, "system:auto-alias")
 	require.NoError(t, err)
+
+	// Verify re-alias: different canonical updates the mapping (last-write-wins).
+	canonical2 := "canonical2-" + uuid.New().String()[:8]
+	err = testDB.CreateProjectAlias(ctx, uuid.Nil, workspaceName, canonical2, "system:auto-alias")
+	require.NoError(t, err)
+
+	resolved, err = testDB.ResolveProjectAlias(ctx, uuid.Nil, workspaceName)
+	require.NoError(t, err)
+	assert.Equal(t, canonical2, resolved, "alias should now point to the updated canonical")
 }
 
 func TestHandleTrace_AliasNormalizesProjectOnFallback(t *testing.T) {
