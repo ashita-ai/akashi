@@ -243,8 +243,6 @@ func (db *DB) createTraceInTx(ctx context.Context, tx pgx.Tx, params CreateTrace
 		if _, err := AutoResolveSupersededConflictsTx(ctx, tx, params.OrgID, *d.SupersedesID, d.ID); err != nil {
 			return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: auto-resolve superseded conflicts in trace: %w", err)
 		}
-		// Record supersession in the mutation audit log so the paper trail
-		// captures who replaced what, atomically with the invalidation.
 		// Emit DecisionSuperseded event into the event stream (matching the
 		// retraction pattern) so SSE consumers and event queries see it.
 		var supersessionSeqNum int64
