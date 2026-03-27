@@ -147,6 +147,11 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		h.clearIdempotentWrite(r, orgID, idem)
+		if errors.Is(err, storage.ErrNotFound) {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+				"superseded decision not found or already superseded")
+			return
+		}
 		h.writeInternalError(w, r, "failed to create trace", err)
 		return
 	}
