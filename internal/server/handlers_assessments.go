@@ -114,10 +114,6 @@ func (h *Handlers) HandleListAssessments(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if assessments == nil {
-		assessments = []model.DecisionAssessment{}
-	}
-
 	summary, err := h.db.GetAssessmentSummary(r.Context(), orgID, decisionID)
 	if err != nil {
 		h.writeInternalError(w, r, "failed to get assessment summary", err)

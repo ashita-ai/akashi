@@ -124,19 +124,6 @@ func (db *DB) InsertEventsIdempotent(ctx context.Context, events []model.AgentEv
 		return 0, nil
 	}
 
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("storage: begin idempotent insert tx: %w", err)
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-
-	// Create unlogged temp table (no WAL overhead for the temp table itself).
-	if _, err := tx.Exec(ctx,
-		`CREATE TEMP TABLE _recovery_events (LIKE agent_events INCLUDING DEFAULTS) ON COMMIT DROP`,
-	); err != nil {
-		return 0, fmt.Errorf("storage: create recovery temp table: %w", err)
-	}
-
 	columns := []string{"id", "run_id", "org_id", "event_type", "sequence_num", "occurred_at", "agent_id", "payload", "created_at"}
 	rows := make([][]any, len(events))
 	for i, e := range events {
@@ -153,29 +140,41 @@ func (db *DB) InsertEventsIdempotent(ctx context.Context, events []model.AgentEv
 		}
 	}
 
-	// COPY into temp table (fast bulk load).
-	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"_recovery_events"}, columns, pgx.CopyFromRows(rows)); err != nil {
-		return 0, fmt.Errorf("storage: copy into recovery temp table: %w", err)
-	}
+	var inserted int64
+	err := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		// Create unlogged temp table (no WAL overhead for the temp table itself).
+		if _, err := tx.Exec(ctx,
+			`CREATE TEMP TABLE _recovery_events (LIKE agent_events INCLUDING DEFAULTS) ON COMMIT DROP`,
+		); err != nil {
+			return fmt.Errorf("storage: create recovery temp table: %w", err)
+		}
 
-	// Move to real table, skipping duplicates.
-	// The conflict target must match the composite primary key (id, occurred_at)
-	// because TimescaleDB hypertables require unique constraints to include the
-	// partition column.
-	tag, err := tx.Exec(ctx,
-		`INSERT INTO agent_events SELECT * FROM _recovery_events ON CONFLICT (id, occurred_at) DO NOTHING`)
+		// COPY into temp table (fast bulk load).
+		if _, err := tx.CopyFrom(ctx, pgx.Identifier{"_recovery_events"}, columns, pgx.CopyFromRows(rows)); err != nil {
+			return fmt.Errorf("storage: copy into recovery temp table: %w", err)
+		}
+
+		// Move to real table, skipping duplicates.
+		// The conflict target must match the composite primary key (id, occurred_at)
+		// because TimescaleDB hypertables require unique constraints to include the
+		// partition column.
+		tag, err := tx.Exec(ctx,
+			`INSERT INTO agent_events SELECT * FROM _recovery_events ON CONFLICT (id, occurred_at) DO NOTHING`)
+		if err != nil {
+			return fmt.Errorf("storage: insert from recovery temp table: %w", err)
+		}
+
+		inserted = tag.RowsAffected()
+		return nil
+	})
 	if err != nil {
-		return 0, fmt.Errorf("storage: insert from recovery temp table: %w", err)
+		return 0, err
 	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("storage: commit idempotent insert: %w", err)
-	}
-	return tag.RowsAffected(), nil
+	return inserted, nil
 }
 
 func scanEvents(rows pgx.Rows) ([]model.AgentEvent, error) {
-	var events []model.AgentEvent
+	events := make([]model.AgentEvent, 0)
 	for rows.Next() {
 		var e model.AgentEvent
 		if err := rows.Scan(

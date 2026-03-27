@@ -30,7 +30,7 @@ func scanOneAgent(row pgxRowScanner) (model.Agent, error) {
 }
 
 func scanAgents(rows pgx.Rows) ([]model.Agent, error) {
-	var agents []model.Agent
+	agents := make([]model.Agent, 0)
 	for rows.Next() {
 		a, err := scanOneAgent(rows)
 		if err != nil {
@@ -73,12 +73,6 @@ func (db *DB) CreateAgent(ctx context.Context, agent model.Agent) (model.Agent, 
 // CreateAgentWithAudit inserts a new agent and a mutation audit entry
 // atomically within a single transaction.
 func (db *DB) CreateAgentWithAudit(ctx context.Context, agent model.Agent, audit MutationAuditEntry) (model.Agent, error) {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return model.Agent{}, fmt.Errorf("storage: begin create agent tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	if agent.ID == uuid.Nil {
 		agent.ID = uuid.New()
 	}
@@ -94,23 +88,25 @@ func (db *DB) CreateAgentWithAudit(ctx context.Context, agent model.Agent, audit
 		agent.Tags = []string{}
 	}
 
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO agents (id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		agent.ID, agent.AgentID, agent.OrgID, agent.Name, string(agent.Role),
-		agent.APIKeyHash, agent.Email, agent.Tags, agent.Metadata, agent.CreatedAt, agent.UpdatedAt,
-	); err != nil {
-		return model.Agent{}, fmt.Errorf("storage: create agent: %w", err)
-	}
+	err := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO agents (id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			agent.ID, agent.AgentID, agent.OrgID, agent.Name, string(agent.Role),
+			agent.APIKeyHash, agent.Email, agent.Tags, agent.Metadata, agent.CreatedAt, agent.UpdatedAt,
+		); err != nil {
+			return fmt.Errorf("storage: create agent: %w", err)
+		}
 
-	audit.ResourceID = agent.AgentID
-	audit.AfterData = agent
-	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
-		return model.Agent{}, fmt.Errorf("storage: audit in create agent tx: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return model.Agent{}, fmt.Errorf("storage: commit create agent tx: %w", err)
+		audit.ResourceID = agent.AgentID
+		audit.AfterData = agent
+		if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+			return fmt.Errorf("storage: audit in create agent tx: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return model.Agent{}, err
 	}
 	return agent, nil
 }
@@ -125,12 +121,6 @@ func (db *DB) CreateAgentAndKeyTx(
 	key model.APIKey,
 	agentAudit, keyAudit MutationAuditEntry,
 ) (model.Agent, model.APIKey, error) {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return model.Agent{}, model.APIKey{}, fmt.Errorf("storage: begin create agent+key tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	if agent.ID == uuid.Nil {
 		agent.ID = uuid.New()
 	}
@@ -148,21 +138,6 @@ func (db *DB) CreateAgentAndKeyTx(
 	// Credentials live in api_keys — never write the legacy column for new agents.
 	agent.APIKeyHash = nil
 
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO agents (id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		agent.ID, agent.AgentID, agent.OrgID, agent.Name, string(agent.Role),
-		agent.APIKeyHash, agent.Email, agent.Tags, agent.Metadata, agent.CreatedAt, agent.UpdatedAt,
-	); err != nil {
-		return model.Agent{}, model.APIKey{}, fmt.Errorf("storage: create agent: %w", err)
-	}
-
-	agentAudit.ResourceID = agent.AgentID
-	agentAudit.AfterData = agent
-	if err := InsertMutationAuditTx(ctx, tx, agentAudit); err != nil {
-		return model.Agent{}, model.APIKey{}, fmt.Errorf("storage: audit in create agent+key tx: %w", err)
-	}
-
 	if key.ID == uuid.Nil {
 		key.ID = uuid.New()
 	}
@@ -170,23 +145,40 @@ func (db *DB) CreateAgentAndKeyTx(
 		key.CreatedAt = now
 	}
 
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO api_keys (id, prefix, key_hash, agent_id, org_id, label, created_by, created_at, expires_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		key.ID, key.Prefix, key.KeyHash, key.AgentID, key.OrgID,
-		key.Label, key.CreatedBy, key.CreatedAt, key.ExpiresAt,
-	); err != nil {
-		return model.Agent{}, model.APIKey{}, fmt.Errorf("storage: create api key in agent+key tx: %w", err)
-	}
+	err := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO agents (id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			agent.ID, agent.AgentID, agent.OrgID, agent.Name, string(agent.Role),
+			agent.APIKeyHash, agent.Email, agent.Tags, agent.Metadata, agent.CreatedAt, agent.UpdatedAt,
+		); err != nil {
+			return fmt.Errorf("storage: create agent: %w", err)
+		}
 
-	keyAudit.ResourceID = key.ID.String()
-	keyAudit.AfterData = key
-	if err := InsertMutationAuditTx(ctx, tx, keyAudit); err != nil {
-		return model.Agent{}, model.APIKey{}, fmt.Errorf("storage: audit api key in create agent+key tx: %w", err)
-	}
+		agentAudit.ResourceID = agent.AgentID
+		agentAudit.AfterData = agent
+		if err := InsertMutationAuditTx(ctx, tx, agentAudit); err != nil {
+			return fmt.Errorf("storage: audit in create agent+key tx: %w", err)
+		}
 
-	if err := tx.Commit(ctx); err != nil {
-		return model.Agent{}, model.APIKey{}, fmt.Errorf("storage: commit create agent+key tx: %w", err)
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO api_keys (id, prefix, key_hash, agent_id, org_id, label, created_by, created_at, expires_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			key.ID, key.Prefix, key.KeyHash, key.AgentID, key.OrgID,
+			key.Label, key.CreatedBy, key.CreatedAt, key.ExpiresAt,
+		); err != nil {
+			return fmt.Errorf("storage: create api key in agent+key tx: %w", err)
+		}
+
+		keyAudit.ResourceID = key.ID.String()
+		keyAudit.AfterData = key
+		if err := InsertMutationAuditTx(ctx, tx, keyAudit); err != nil {
+			return fmt.Errorf("storage: audit api key in create agent+key tx: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return model.Agent{}, model.APIKey{}, err
 	}
 	return agent, key, nil
 }
@@ -248,15 +240,7 @@ func (db *DB) GetAgentByID(ctx context.Context, id uuid.UUID, orgID uuid.UUID) (
 // ListAgents returns agents within an org with pagination.
 // limit is clamped to [1, 1000] with a default of 200; offset must be non-negative.
 func (db *DB) ListAgents(ctx context.Context, orgID uuid.UUID, limit, offset int) ([]model.Agent, error) {
-	if limit <= 0 {
-		limit = 200
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
-	if offset < 0 {
-		offset = 0
-	}
+	limit, offset = clampPagination(limit, offset, 200, 1000)
 	rows, err := db.pool.Query(ctx,
 		`SELECT `+agentCols+` FROM agents WHERE org_id = $1 ORDER BY created_at ASC LIMIT $2 OFFSET $3`,
 		orgID, limit, offset,
@@ -341,40 +325,36 @@ func (db *DB) UpdateAgent(ctx context.Context, orgID uuid.UUID, agentID string, 
 // UpdateAgentWithAudit performs a partial update and inserts a mutation audit
 // entry atomically within a single transaction.
 func (db *DB) UpdateAgentWithAudit(ctx context.Context, orgID uuid.UUID, agentID string, name *string, metadata map[string]any, audit MutationAuditEntry) (model.Agent, error) {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return model.Agent{}, fmt.Errorf("storage: begin update agent tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	var a model.Agent
-	err = tx.QueryRow(ctx,
-		`UPDATE agents
-		 SET name = COALESCE($1, name),
-		     metadata = CASE WHEN $2::jsonb IS NOT NULL THEN metadata || $2::jsonb ELSE metadata END,
-		     updated_at = now()
-		 WHERE org_id = $3 AND agent_id = $4
-		 RETURNING id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at`,
-		name, metadata, orgID, agentID,
-	).Scan(
-		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
-		&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return model.Agent{}, fmt.Errorf("storage: agent %s: %w", agentID, ErrNotFound)
+	err := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		err := tx.QueryRow(ctx,
+			`UPDATE agents
+			 SET name = COALESCE($1, name),
+			     metadata = CASE WHEN $2::jsonb IS NOT NULL THEN metadata || $2::jsonb ELSE metadata END,
+			     updated_at = now()
+			 WHERE org_id = $3 AND agent_id = $4
+			 RETURNING id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at`,
+			name, metadata, orgID, agentID,
+		).Scan(
+			&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
+			&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt,
+		)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("storage: agent %s: %w", agentID, ErrNotFound)
+			}
+			return fmt.Errorf("storage: update agent: %w", err)
 		}
-		return model.Agent{}, fmt.Errorf("storage: update agent: %w", err)
-	}
 
-	audit.ResourceID = agentID
-	audit.AfterData = a
-	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
-		return model.Agent{}, fmt.Errorf("storage: audit in update agent tx: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return model.Agent{}, fmt.Errorf("storage: commit update agent tx: %w", err)
+		audit.ResourceID = agentID
+		audit.AfterData = a
+		if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+			return fmt.Errorf("storage: audit in update agent tx: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return model.Agent{}, err
 	}
 	return a, nil
 }
@@ -494,36 +474,32 @@ func (db *DB) UpdateAgentTagsWithAudit(ctx context.Context, orgID uuid.UUID, age
 		tags = []string{}
 	}
 
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return model.Agent{}, fmt.Errorf("storage: begin update tags tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	var a model.Agent
-	err = tx.QueryRow(ctx,
-		`UPDATE agents SET tags = $1, updated_at = now()
-		 WHERE org_id = $2 AND agent_id = $3
-		 RETURNING id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at, last_seen`,
-		tags, orgID, agentID,
-	).Scan(
-		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
-		&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt, &a.LastSeen,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return model.Agent{}, fmt.Errorf("storage: agent %s: %w", agentID, ErrNotFound)
+	err := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		err := tx.QueryRow(ctx,
+			`UPDATE agents SET tags = $1, updated_at = now()
+			 WHERE org_id = $2 AND agent_id = $3
+			 RETURNING id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at, last_seen`,
+			tags, orgID, agentID,
+		).Scan(
+			&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
+			&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt, &a.LastSeen,
+		)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("storage: agent %s: %w", agentID, ErrNotFound)
+			}
+			return fmt.Errorf("storage: update agent tags: %w", err)
 		}
-		return model.Agent{}, fmt.Errorf("storage: update agent tags: %w", err)
-	}
 
-	audit.ResourceID = agentID
-	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
-		return model.Agent{}, fmt.Errorf("storage: audit in update tags tx: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return model.Agent{}, fmt.Errorf("storage: commit update tags tx: %w", err)
+		audit.ResourceID = agentID
+		if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+			return fmt.Errorf("storage: audit in update tags tx: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return model.Agent{}, err
 	}
 	return a, nil
 }

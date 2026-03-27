@@ -132,7 +132,7 @@ func (db *DB) GetIntegrityViolations(ctx context.Context, orgID uuid.UUID, limit
 	}
 	defer rows.Close()
 
-	var violations []IntegrityViolation
+	violations := make([]IntegrityViolation, 0)
 	for rows.Next() {
 		var v IntegrityViolation
 		if err := rows.Scan(&v.ID, &v.OrgID, &v.ProofID, &v.ViolationType, &v.Details, &v.CreatedAt); err != nil {

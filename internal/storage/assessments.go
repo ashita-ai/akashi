@@ -88,7 +88,7 @@ func (db *DB) ListAssessments(ctx context.Context, orgID, decisionID uuid.UUID) 
 	}
 	defer rows.Close()
 
-	var out []model.DecisionAssessment
+	out := make([]model.DecisionAssessment, 0)
 	for rows.Next() {
 		var a model.DecisionAssessment
 		if err := rows.Scan(

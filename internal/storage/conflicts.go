@@ -141,15 +141,7 @@ func (db *DB) GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID, from
 // ListConflicts retrieves detected conflicts within an org from scored_conflicts.
 // Joins decisions for reasoning, confidence, run_id, and valid_from.
 func (db *DB) ListConflicts(ctx context.Context, orgID uuid.UUID, filters ConflictFilters, limit, offset int) ([]model.DecisionConflict, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
-	if offset < 0 {
-		offset = 0
-	}
+	limit, offset = clampPagination(limit, offset, 50, 1000)
 
 	query := conflictSelectBase + ` WHERE sc.org_id = $1`
 
@@ -189,7 +181,7 @@ const conflictSelectBase = `SELECT sc.id, sc.conflict_kind, sc.decision_a_id, sc
 		 LEFT JOIN decisions db ON db.id = sc.decision_b_id`
 
 func scanConflictRows(rows pgx.Rows) ([]model.DecisionConflict, error) {
-	var conflicts []model.DecisionConflict
+	conflicts := make([]model.DecisionConflict, 0)
 	for rows.Next() {
 		var c model.DecisionConflict
 		var runA, runB uuid.UUID
@@ -347,7 +339,7 @@ func (db *DB) GetResolvedConflictsByType(ctx context.Context, orgID uuid.UUID, d
 	}
 	defer rows.Close()
 
-	var results []model.ConflictResolution
+	results := make([]model.ConflictResolution, 0)
 	for rows.Next() {
 		var r model.ConflictResolution
 		if err := rows.Scan(
@@ -389,87 +381,84 @@ func (db *DB) GetConflict(ctx context.Context, id, orgID uuid.UUID) (*model.Deci
 // fpLabel is optional; when non-nil and status is "false_positive", a ground-truth
 // label is inserted atomically within the same transaction.
 func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, fpLabel *string, audit MutationAuditEntry) (oldStatus string, err error) {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return "", fmt.Errorf("storage: begin conflict status tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	// Read old status and decision pair for audit before_data and winner validation.
-	var decisionAID, decisionBID uuid.UUID
-	if scanErr := tx.QueryRow(ctx,
-		`SELECT status, decision_a_id, decision_b_id FROM scored_conflicts WHERE id = $1 AND org_id = $2 FOR UPDATE`,
-		id, orgID).Scan(&oldStatus, &decisionAID, &decisionBID); scanErr != nil {
-		return "", fmt.Errorf("storage: conflict: %w", ErrNotFound)
-	}
-
-	// Validate winning_decision_id belongs to this conflict.
-	if winningDecisionID != nil && status == "resolved" {
-		if *winningDecisionID != decisionAID && *winningDecisionID != decisionBID {
-			return "", ErrWinningDecisionNotInConflict
+	txErr := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		// Read old status and decision pair for audit before_data and winner validation.
+		var decisionAID, decisionBID uuid.UUID
+		if scanErr := tx.QueryRow(ctx,
+			`SELECT status, decision_a_id, decision_b_id FROM scored_conflicts WHERE id = $1 AND org_id = $2 FOR UPDATE`,
+			id, orgID).Scan(&oldStatus, &decisionAID, &decisionBID); scanErr != nil {
+			return fmt.Errorf("storage: conflict: %w", ErrNotFound)
 		}
-	}
 
-	var tag pgconn.CommandTag
-	switch status {
-	case "resolved", "false_positive":
-		// winning_decision_id is only meaningful for "resolved"; for false_positive
-		// it is intentionally left NULL (no winner when the conflict is spurious).
-		var winner *uuid.UUID
-		if status == "resolved" {
-			winner = winningDecisionID
+		// Validate winning_decision_id belongs to this conflict.
+		if winningDecisionID != nil && status == "resolved" {
+			if *winningDecisionID != decisionAID && *winningDecisionID != decisionBID {
+				return ErrWinningDecisionNotInConflict
+			}
 		}
-		tag, err = tx.Exec(ctx,
-			`UPDATE scored_conflicts
-			 SET status = $1, resolved_by = $2, resolved_at = now(),
-			     resolution_note = $3, winning_decision_id = $4
-			 WHERE id = $5 AND org_id = $6`,
-			status, resolvedBy, resolutionNote, winner, id, orgID)
-	default:
-		tag, err = tx.Exec(ctx,
-			`UPDATE scored_conflicts SET status = $1 WHERE id = $2 AND org_id = $3`,
-			status, id, orgID)
-	}
-	if err != nil {
-		return "", fmt.Errorf("storage: update conflict status: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return "", fmt.Errorf("storage: conflict: %w", ErrNotFound)
-	}
 
-	// Atomically label the conflict as a false positive for ground-truth
-	// training. Inserted in the same tx so a crash between status update
-	// and label insert can never leave an unlabeled false_positive.
-	if fpLabel != nil && status == "false_positive" {
-		_, err = tx.Exec(ctx,
-			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
-			 VALUES ($1, $2, $3, $4, now())
-			 ON CONFLICT (scored_conflict_id) DO UPDATE SET
-			   label = excluded.label,
-			   labeled_by = excluded.labeled_by,
-			   labeled_at = excluded.labeled_at
-			 WHERE conflict_labels.org_id = excluded.org_id`,
-			id, orgID, *fpLabel, resolvedBy)
+		var tag pgconn.CommandTag
+		var err error
+		switch status {
+		case "resolved", "false_positive":
+			// winning_decision_id is only meaningful for "resolved"; for false_positive
+			// it is intentionally left NULL (no winner when the conflict is spurious).
+			var winner *uuid.UUID
+			if status == "resolved" {
+				winner = winningDecisionID
+			}
+			tag, err = tx.Exec(ctx,
+				`UPDATE scored_conflicts
+				 SET status = $1, resolved_by = $2, resolved_at = now(),
+				     resolution_note = $3, winning_decision_id = $4
+				 WHERE id = $5 AND org_id = $6`,
+				status, resolvedBy, resolutionNote, winner, id, orgID)
+		default:
+			tag, err = tx.Exec(ctx,
+				`UPDATE scored_conflicts SET status = $1 WHERE id = $2 AND org_id = $3`,
+				status, id, orgID)
+		}
 		if err != nil {
-			return "", fmt.Errorf("storage: label false positive in conflict status tx: %w", err)
+			return fmt.Errorf("storage: update conflict status: %w", err)
 		}
-	}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("storage: conflict: %w", ErrNotFound)
+		}
 
-	audit.BeforeData = map[string]any{"status": oldStatus}
-	afterData := map[string]any{"status": status, "resolved_by": resolvedBy}
-	if winningDecisionID != nil && status == "resolved" {
-		afterData["winning_decision_id"] = winningDecisionID.String()
-	}
-	if fpLabel != nil {
-		afterData["fp_label"] = *fpLabel
-	}
-	audit.AfterData = afterData
-	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
-		return "", fmt.Errorf("storage: audit in conflict status tx: %w", err)
-	}
+		// Atomically label the conflict as a false positive for ground-truth
+		// training. Inserted in the same tx so a crash between status update
+		// and label insert can never leave an unlabeled false_positive.
+		if fpLabel != nil && status == "false_positive" {
+			_, err = tx.Exec(ctx,
+				`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
+				 VALUES ($1, $2, $3, $4, now())
+				 ON CONFLICT (scored_conflict_id) DO UPDATE SET
+				   label = excluded.label,
+				   labeled_by = excluded.labeled_by,
+				   labeled_at = excluded.labeled_at
+				 WHERE conflict_labels.org_id = excluded.org_id`,
+				id, orgID, *fpLabel, resolvedBy)
+			if err != nil {
+				return fmt.Errorf("storage: label false positive in conflict status tx: %w", err)
+			}
+		}
 
-	if err := tx.Commit(ctx); err != nil {
-		return "", fmt.Errorf("storage: commit conflict status tx: %w", err)
+		audit.BeforeData = map[string]any{"status": oldStatus}
+		afterData := map[string]any{"status": status, "resolved_by": resolvedBy}
+		if winningDecisionID != nil && status == "resolved" {
+			afterData["winning_decision_id"] = winningDecisionID.String()
+		}
+		if fpLabel != nil {
+			afterData["fp_label"] = *fpLabel
+		}
+		audit.AfterData = afterData
+		if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+			return fmt.Errorf("storage: audit in conflict status tx: %w", err)
+		}
+		return nil
+	})
+	if txErr != nil {
+		return "", txErr
 	}
 	return oldStatus, nil
 }
@@ -653,39 +642,34 @@ func (db *DB) insertScoredConflictWithGroup(
 	reopensResolutionID *uuid.UUID,
 	projectA, projectB *string,
 ) (uuid.UUID, error) {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("storage: begin insert conflict tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	// Update the group's last_detected_at.
-	if _, err := tx.Exec(ctx,
-		`UPDATE conflict_groups SET last_detected_at = now() WHERE id = $1 AND org_id = $2`,
-		groupID, orgID,
-	); err != nil {
-		return uuid.Nil, fmt.Errorf("storage: update group timestamp: %w", err)
-	}
-
-	// Archive resolution metadata before the upsert can overwrite it.
-	// If the existing conflict isn't resolved, the WHERE clause matches
-	// zero rows and the INSERT is a no-op.
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO conflict_resolutions
-		     (conflict_id, org_id, resolved_by, resolved_at, resolution_note, winning_decision_id)
-		 SELECT id, org_id, resolved_by, resolved_at, resolution_note, winning_decision_id
-		 FROM scored_conflicts
-		 WHERE decision_a_id = $1 AND decision_b_id = $2
-		   AND org_id = $3
-		   AND status = 'resolved' AND resolved_by IS NOT NULL`,
-		da, dbID, orgID,
-	); err != nil {
-		return uuid.Nil, fmt.Errorf("storage: archive conflict resolution: %w", err)
-	}
-
 	var id uuid.UUID
-	err = tx.QueryRow(ctx,
-		`INSERT INTO scored_conflicts
+	err := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		// Update the group's last_detected_at.
+		if _, err := tx.Exec(ctx,
+			`UPDATE conflict_groups SET last_detected_at = now() WHERE id = $1 AND org_id = $2`,
+			groupID, orgID,
+		); err != nil {
+			return fmt.Errorf("storage: update group timestamp: %w", err)
+		}
+
+		// Archive resolution metadata before the upsert can overwrite it.
+		// If the existing conflict isn't resolved, the WHERE clause matches
+		// zero rows and the INSERT is a no-op.
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO conflict_resolutions
+			     (conflict_id, org_id, resolved_by, resolved_at, resolution_note, winning_decision_id)
+			 SELECT id, org_id, resolved_by, resolved_at, resolution_note, winning_decision_id
+			 FROM scored_conflicts
+			 WHERE decision_a_id = $1 AND decision_b_id = $2
+			   AND org_id = $3
+			   AND status = 'resolved' AND resolved_by IS NOT NULL`,
+			da, dbID, orgID,
+		); err != nil {
+			return fmt.Errorf("storage: archive conflict resolution: %w", err)
+		}
+
+		err := tx.QueryRow(ctx,
+			`INSERT INTO scored_conflicts
 		     (decision_a_id, decision_b_id, org_id, conflict_kind,
 		      agent_a, agent_b, decision_type_a, decision_type_b, outcome_a, outcome_b,
 		      topic_similarity, outcome_divergence, significance, scoring_method, explanation,
@@ -724,19 +708,20 @@ func (db *DB) insertScoredConflictWithGroup(
 		     winning_decision_id = CASE WHEN scored_conflicts.status = 'resolved' THEN NULL
 		                                ELSE scored_conflicts.winning_decision_id END
 		 RETURNING id`,
-		da, dbID, orgID, string(conflictKind),
-		agentA, agentB, typeA, typeB, outcomeA, outcomeB,
-		topicSim, outcomeDiv, sig, method, explanation,
-		category, severity, relationship, confWeight, tempDecay,
-		claimTextA, claimTextB, groupID, reopensResolutionID,
-		projectA, projectB,
-	).Scan(&id)
+			da, dbID, orgID, string(conflictKind),
+			agentA, agentB, typeA, typeB, outcomeA, outcomeB,
+			topicSim, outcomeDiv, sig, method, explanation,
+			category, severity, relationship, confWeight, tempDecay,
+			claimTextA, claimTextB, groupID, reopensResolutionID,
+			projectA, projectB,
+		).Scan(&id)
+		if err != nil {
+			return fmt.Errorf("storage: insert scored conflict: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("storage: insert scored conflict: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return uuid.Nil, fmt.Errorf("storage: commit insert conflict tx: %w", err)
+		return uuid.Nil, err
 	}
 	return id, nil
 }
@@ -968,15 +953,7 @@ func (db *DB) CountConflictGroups(ctx context.Context, orgID uuid.UUID, f Confli
 // group, falling back to the highest-significance conflict overall when all are
 // closed. This ensures expanding a group shows the conflict that needs attention.
 func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f ConflictGroupFilters, limit, offset int) ([]model.ConflictGroup, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
-	if offset < 0 {
-		offset = 0
-	}
+	limit, offset = clampPagination(limit, offset, 50, 1000)
 
 	// Build the optional status HAVING clause. Uses the existing sc_all join
 	// rather than adding a separate join, so conflict_count/open_count
@@ -1085,7 +1062,7 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 	}
 	defer rows.Close()
 
-	var groups []model.ConflictGroup
+	groups := make([]model.ConflictGroup, 0)
 	for rows.Next() {
 		var g model.ConflictGroup
 		var rep model.DecisionConflict
@@ -1476,26 +1453,22 @@ func (db *DB) CascadeResolveByOutcome(
 	threshold float64,
 	audit MutationAuditEntry,
 ) (int, error) {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("storage: begin cascade resolve tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	var affected int
+	txErr := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		note := fmt.Sprintf(
+			"Auto-resolved via cascade from conflict %s. Aligned with winning decision %s (threshold %.2f).",
+			triggerID, winningDecisionID, threshold,
+		)
 
-	note := fmt.Sprintf(
-		"Auto-resolved via cascade from conflict %s. Aligned with winning decision %s (threshold %.2f).",
-		triggerID, winningDecisionID, threshold,
-	)
-
-	// Use pgvector's cosine distance operator (<=>). Cosine similarity = 1 - distance.
-	// For each open conflict in the group, compare both sides' outcome_embeddings
-	// against the winner. If exactly one side exceeds the threshold, resolve with
-	// that side as winner. If both exceed, pick the more aligned side.
-	//
-	// All decision JOINs filter valid_to IS NULL to ensure we only compare
-	// current (non-revised) decision embeddings. A revised decision's embedding
-	// may no longer represent the agent's actual position.
-	tag, err := tx.Exec(ctx, `
+		// Use pgvector's cosine distance operator (<=>). Cosine similarity = 1 - distance.
+		// For each open conflict in the group, compare both sides' outcome_embeddings
+		// against the winner. If exactly one side exceeds the threshold, resolve with
+		// that side as winner. If both exceed, pick the more aligned side.
+		//
+		// All decision JOINs filter valid_to IS NULL to ensure we only compare
+		// current (non-revised) decision embeddings. A revised decision's embedding
+		// may no longer represent the agent's actual position.
+		tag, err := tx.Exec(ctx, `
 		WITH winning AS (
 			SELECT outcome_embedding
 			FROM decisions
@@ -1537,37 +1510,35 @@ func (db *DB) CascadeResolveByOutcome(
 		FROM candidates c
 		WHERE sc.id = c.id
 		  AND (c.sim_a >= $6 OR c.sim_b >= $6)`,
-		winningDecisionID, orgID, groupID, triggerID, note, threshold,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("storage: cascade resolve by outcome: %w", err)
-	}
-
-	affected := int(tag.RowsAffected())
-	if affected == 0 {
-		// Nothing cascaded — skip audit entry and commit.
-		if err := tx.Commit(ctx); err != nil {
-			return 0, fmt.Errorf("storage: commit cascade resolve tx: %w", err)
+			winningDecisionID, orgID, groupID, triggerID, note, threshold,
+		)
+		if err != nil {
+			return fmt.Errorf("storage: cascade resolve by outcome: %w", err)
 		}
-		return 0, nil
-	}
 
-	audit.BeforeData = map[string]any{
-		"trigger_conflict_id":  triggerID.String(),
-		"winning_decision_id":  winningDecisionID.String(),
-		"group_id":             groupID.String(),
-		"similarity_threshold": threshold,
-	}
-	audit.AfterData = map[string]any{
-		"cascade_resolved": affected,
-		"resolved_by":      "cascade",
-	}
-	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
-		return 0, fmt.Errorf("storage: audit in cascade resolve tx: %w", err)
-	}
+		affected = int(tag.RowsAffected())
+		if affected == 0 {
+			// Nothing cascaded — skip audit entry and commit.
+			return nil
+		}
 
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("storage: commit cascade resolve tx: %w", err)
+		audit.BeforeData = map[string]any{
+			"trigger_conflict_id":  triggerID.String(),
+			"winning_decision_id":  winningDecisionID.String(),
+			"group_id":             groupID.String(),
+			"similarity_threshold": threshold,
+		}
+		audit.AfterData = map[string]any{
+			"cascade_resolved": affected,
+			"resolved_by":      "cascade",
+		}
+		if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+			return fmt.Errorf("storage: audit in cascade resolve tx: %w", err)
+		}
+		return nil
+	})
+	if txErr != nil {
+		return 0, txErr
 	}
 	return affected, nil
 }

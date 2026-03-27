@@ -128,7 +128,7 @@ func (l *LiteDB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, filter
 	}
 	defer rows.Close() //nolint:errcheck
 
-	var groups []model.ConflictGroup
+	groups := make([]model.ConflictGroup, 0)
 	for rows.Next() {
 		var (
 			g        model.ConflictGroup
@@ -285,7 +285,7 @@ func (l *LiteDB) GetResolvedConflictsByType(ctx context.Context, orgID uuid.UUID
 	}
 	defer rows.Close() //nolint:errcheck
 
-	var results []model.ConflictResolution
+	results := make([]model.ConflictResolution, 0)
 	for rows.Next() {
 		var (
 			r          model.ConflictResolution
@@ -638,7 +638,7 @@ func conflictWhere(orgID uuid.UUID, f storage.ConflictFilters) (string, []any) {
 }
 
 func scanConflictRows(rows *sql.Rows) ([]model.DecisionConflict, error) {
-	var conflicts []model.DecisionConflict
+	conflicts := make([]model.DecisionConflict, 0)
 	for rows.Next() {
 		var (
 			c             model.DecisionConflict

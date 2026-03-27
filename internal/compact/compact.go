@@ -16,6 +16,13 @@ import (
 // MaxCompactReasoning is the character limit for reasoning/outcome fields in compact format.
 const MaxCompactReasoning = 200
 
+// setIfPresent sets m[key] = *ptr when ptr is non-nil.
+func setIfPresent[T any](m map[string]any, key string, ptr *T) {
+	if ptr != nil {
+		m[key] = *ptr
+	}
+}
+
 // Decision returns a minimal representation of a decision.
 // Drops internal bookkeeping (content_hash, transaction_time, valid_from/to,
 // completeness_score, org_id, run_id, metadata, embedding fields) that agents don't act on.
@@ -40,9 +47,7 @@ func Decision(d model.Decision) map[string]any {
 			m["precedent_reason"] = *d.PrecedentReason
 		}
 	}
-	if d.SessionID != nil {
-		m["session_id"] = d.SessionID
-	}
+	setIfPresent(m, "session_id", d.SessionID)
 	if tool, ok := d.AgentContext["tool"]; ok {
 		m["tool"] = tool
 	}
@@ -129,12 +134,8 @@ func Conflict(c model.DecisionConflict, consensusNote string) map[string]any {
 		"status":      c.Status,
 		"detected_at": c.DetectedAt,
 	}
-	if c.Category != nil {
-		m["category"] = *c.Category
-	}
-	if c.Severity != nil {
-		m["severity"] = *c.Severity
-	}
+	setIfPresent(m, "category", c.Category)
+	setIfPresent(m, "severity", c.Severity)
 	if c.Explanation != nil && *c.Explanation != "" {
 		m["explanation"] = *c.Explanation
 	}
@@ -143,9 +144,7 @@ func Conflict(c model.DecisionConflict, consensusNote string) map[string]any {
 	m["outcome_b"] = Truncate(c.OutcomeB, MaxCompactReasoning)
 
 	// Winner: which decision prevailed (nil when not set or conflict is unresolved).
-	if c.WinningDecisionID != nil {
-		m["winning_decision_id"] = c.WinningDecisionID
-	}
+	setIfPresent(m, "winning_decision_id", c.WinningDecisionID)
 
 	// Consensus asymmetry note, when there's a meaningful corroboration imbalance.
 	if consensusNote != "" {
@@ -153,9 +152,7 @@ func Conflict(c model.DecisionConflict, consensusNote string) map[string]any {
 	}
 
 	// Precedent-aware escalation: flag when this conflict reopens a prior resolution.
-	if c.ReopensResolutionID != nil {
-		m["reopens_resolution_id"] = c.ReopensResolutionID
-	}
+	setIfPresent(m, "reopens_resolution_id", c.ReopensResolutionID)
 
 	return m
 }
@@ -179,17 +176,11 @@ func ConflictGroup(g model.ConflictGroup) map[string]any {
 	if g.TimesReopened > 0 {
 		m["times_reopened"] = g.TimesReopened
 	}
-	if g.GroupTopic != nil {
-		m["group_topic"] = *g.GroupTopic
-	}
+	setIfPresent(m, "group_topic", g.GroupTopic)
 	if g.Representative != nil {
 		r := g.Representative
-		if r.Severity != nil {
-			m["severity"] = *r.Severity
-		}
-		if r.Category != nil {
-			m["category"] = *r.Category
-		}
+		setIfPresent(m, "severity", r.Severity)
+		setIfPresent(m, "category", r.Category)
 		if r.Explanation != nil && *r.Explanation != "" {
 			m["explanation"] = *r.Explanation
 		}

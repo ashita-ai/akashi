@@ -492,7 +492,7 @@ func (l *LiteDB) SearchDecisionsByText(ctx context.Context, orgID uuid.UUID, que
 	}
 	defer rows.Close() //nolint:errcheck
 
-	var results []model.SearchResult
+	results := make([]model.SearchResult, 0)
 	for rows.Next() {
 		var (
 			d            model.Decision
@@ -593,7 +593,7 @@ func (l *LiteDB) searchDecisionsByLike(ctx context.Context, orgID uuid.UUID, que
 	}
 	defer rows.Close() //nolint:errcheck
 
-	var results []model.SearchResult
+	results := make([]model.SearchResult, 0)
 	for rows.Next() {
 		var (
 			d            model.Decision
@@ -785,7 +785,7 @@ func sanitizeOrderCol(col string) string {
 
 // scanDecisionRows scans multiple decision rows (25 columns matching decisionCols).
 func scanDecisionRows(rows *sql.Rows) ([]model.Decision, error) {
-	var decisions []model.Decision
+	decisions := make([]model.Decision, 0)
 	for rows.Next() {
 		d, err := scanOneDecision(rows)
 		if err != nil {
@@ -795,9 +795,6 @@ func scanDecisionRows(rows *sql.Rows) ([]model.Decision, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sqlite: decision rows: %w", err)
-	}
-	if decisions == nil {
-		decisions = []model.Decision{}
 	}
 	return decisions, nil
 }

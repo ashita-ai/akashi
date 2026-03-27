@@ -6,8 +6,11 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+
 	"sort"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 const migrationAdvisoryLockKey int64 = 9021001
@@ -151,26 +154,18 @@ func (db *DB) runMigrationNoTx(ctx context.Context, name, sql string) error {
 // runMigrationTx executes a migration and records it in schema_migrations within
 // a single transaction. If either step fails, both are rolled back.
 func (db *DB) runMigrationTx(ctx context.Context, name, sql string) error {
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("storage: begin migration tx %s: %w", name, err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	return db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, sql); err != nil {
+			return fmt.Errorf("storage: execute migration %s: %w", name, err)
+		}
 
-	if _, err := tx.Exec(ctx, sql); err != nil {
-		return fmt.Errorf("storage: execute migration %s: %w", name, err)
-	}
-
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`, name,
-	); err != nil {
-		return fmt.Errorf("storage: record migration %s: %w", name, err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("storage: commit migration %s: %w", name, err)
-	}
-	return nil
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`, name,
+		); err != nil {
+			return fmt.Errorf("storage: record migration %s: %w", name, err)
+		}
+		return nil
+	})
 }
 
 // loadAppliedMigrations returns the set of migration filenames already recorded

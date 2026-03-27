@@ -107,9 +107,6 @@ func (h *Handlers) HandleListKeys(w http.ResponseWriter, r *http.Request) {
 		h.writeInternalError(w, r, "failed to list api keys", err)
 		return
 	}
-	if keys == nil {
-		keys = []model.APIKey{}
-	}
 
 	writeJSON(w, r, http.StatusOK, model.APIKeyResponse{
 		Keys:    keys,

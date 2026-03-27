@@ -95,7 +95,7 @@ func (db *DB) GetAlternativesByDecision(ctx context.Context, decisionID uuid.UUI
 	}
 	defer rows.Close()
 
-	var alts []model.Alternative
+	alts := make([]model.Alternative, 0)
 	for rows.Next() {
 		var a model.Alternative
 		if err := rows.Scan(
