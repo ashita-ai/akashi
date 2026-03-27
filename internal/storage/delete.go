@@ -17,16 +17,17 @@ var ErrAgentNotFound = fmt.Errorf("storage: agent: %w", ErrNotFound)
 
 // DeleteAgentResult contains the count of rows deleted per table.
 type DeleteAgentResult struct {
-	Evidence     int64 `json:"evidence"`
-	Alternatives int64 `json:"alternatives"`
-	Claims       int64 `json:"claims"`
-	Assessments  int64 `json:"assessments"`
-	Decisions    int64 `json:"decisions"`
-	Events       int64 `json:"events"`
-	Runs         int64 `json:"runs"`
-	Grants       int64 `json:"grants"`
-	APIKeys      int64 `json:"api_keys"`
-	Agents       int64 `json:"agents"`
+	Evidence            int64 `json:"evidence"`
+	Alternatives        int64 `json:"alternatives"`
+	Claims              int64 `json:"claims"`
+	Assessments         int64 `json:"assessments"`
+	ConflictResolutions int64 `json:"conflict_resolutions"`
+	Decisions           int64 `json:"decisions"`
+	Events              int64 `json:"events"`
+	Runs                int64 `json:"runs"`
+	Grants              int64 `json:"grants"`
+	APIKeys             int64 `json:"api_keys"`
+	Agents              int64 `json:"agents"`
 }
 
 // DeleteAgentData removes all data associated with an agent within an org in a single
@@ -138,7 +139,50 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 		return DeleteAgentResult{}, fmt.Errorf("storage: queue search outbox deletes: %w", err)
 	}
 
-	// 4. Delete scored conflicts referencing this agent's decisions.
+	// 4. Delete conflict_resolutions BEFORE scored_conflicts.
+	// conflict_resolutions.conflict_id uses ON DELETE RESTRICT (migration 085),
+	// so resolutions must be explicitly archived and removed first.
+	_, err = tx.Exec(ctx,
+		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
+		 SELECT $1, $2, 'conflict_resolutions', cr.id::text, to_jsonb(cr)
+		 FROM conflict_resolutions cr
+		 WHERE cr.org_id = $1
+		   AND cr.conflict_id IN (
+		     SELECT sc.id FROM scored_conflicts sc
+		     WHERE sc.decision_a_id IN (SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2)
+		        OR sc.decision_b_id IN (SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2)
+		 )`,
+		orgID, agentID,
+	)
+	if err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: archive conflict resolutions for delete: %w", err)
+	}
+
+	// SET LOCAL is transaction-scoped: it authorizes the immutability trigger
+	// (prevent_conflict_resolutions_modify) to permit deletes within this tx only.
+	if _, err = tx.Exec(ctx, `SET LOCAL akashi.allow_conflict_resolution_delete = 'true'`); err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: set conflict resolution delete flag: %w", err)
+	}
+
+	tag, err = tx.Exec(ctx,
+		`DELETE FROM conflict_resolutions
+		 WHERE org_id = $1
+		   AND conflict_id IN (
+		     SELECT sc.id FROM scored_conflicts sc
+		     WHERE sc.decision_a_id IN (SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2)
+		        OR sc.decision_b_id IN (SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2)
+		 )`,
+		orgID, agentID)
+	if err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: delete conflict resolutions: %w", err)
+	}
+	result.ConflictResolutions = tag.RowsAffected()
+
+	if _, err = tx.Exec(ctx, `SET LOCAL akashi.allow_conflict_resolution_delete = 'false'`); err != nil {
+		return DeleteAgentResult{}, fmt.Errorf("storage: reset conflict resolution delete flag: %w", err)
+	}
+
+	// 4b. Delete scored conflicts referencing this agent's decisions.
 	_, err = tx.Exec(ctx,
 		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
 		 SELECT $1, $2, 'scored_conflicts',
