@@ -146,7 +146,8 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 		`INSERT INTO deletion_audit_log (org_id, agent_id, table_name, record_id, record_data)
 		 SELECT $1, $2, 'conflict_resolutions', cr.id::text, to_jsonb(cr)
 		 FROM conflict_resolutions cr
-		 WHERE cr.conflict_id IN (
+		 WHERE cr.org_id = $1
+		   AND cr.conflict_id IN (
 		     SELECT sc.id FROM scored_conflicts sc
 		     WHERE sc.decision_a_id IN (SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2)
 		        OR sc.decision_b_id IN (SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2)
@@ -165,7 +166,8 @@ func (db *DB) DeleteAgentData(ctx context.Context, orgID uuid.UUID, agentID stri
 
 	tag, err = tx.Exec(ctx,
 		`DELETE FROM conflict_resolutions
-		 WHERE conflict_id IN (
+		 WHERE org_id = $1
+		   AND conflict_id IN (
 		     SELECT sc.id FROM scored_conflicts sc
 		     WHERE sc.decision_a_id IN (SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2)
 		        OR sc.decision_b_id IN (SELECT id FROM decisions WHERE org_id = $1 AND agent_id = $2)
