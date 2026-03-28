@@ -662,6 +662,12 @@ func TestLevenshtein(t *testing.T) {
 		{"trade_off", "tradeoff", 1},
 		{"architecture", "arhitecture", 1},
 		{"kitten", "sitting", 3},
+		// Multi-byte: each CJK character is one rune, not three bytes.
+		{"日本語", "日本人", 1},
+		{"café", "cafe", 1},
+		{"日本", "", 2},
+		{"", "日本", 2},
+		{"über", "uber", 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.a+"_"+tt.b, func(t *testing.T) {
