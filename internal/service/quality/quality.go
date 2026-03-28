@@ -72,26 +72,29 @@ func SuggestStandardType(input string, standardTypes map[string]bool, maxDist in
 }
 
 // levenshtein computes the Levenshtein edit distance between two strings.
+// It operates on runes (Unicode code points) so that multi-byte characters
+// such as CJK or accented text are counted as single edits.
 func levenshtein(a, b string) int {
-	if len(a) == 0 {
-		return len(b)
+	ra, rb := []rune(a), []rune(b)
+	if len(ra) == 0 {
+		return len(rb)
 	}
-	if len(b) == 0 {
-		return len(a)
+	if len(rb) == 0 {
+		return len(ra)
 	}
 
 	// Use single-row DP to minimize allocations.
-	prev := make([]int, len(b)+1)
+	prev := make([]int, len(rb)+1)
 	for j := range prev {
 		prev[j] = j
 	}
 
-	for i := range len(a) {
-		curr := make([]int, len(b)+1)
+	for i := range len(ra) {
+		curr := make([]int, len(rb)+1)
 		curr[0] = i + 1
-		for j := range len(b) {
+		for j := range len(rb) {
 			cost := 1
-			if a[i] == b[j] {
+			if ra[i] == rb[j] {
 				cost = 0
 			}
 			curr[j+1] = min(
@@ -102,7 +105,7 @@ func levenshtein(a, b string) int {
 		}
 		prev = curr
 	}
-	return prev[len(b)]
+	return prev[len(rb)]
 }
 
 // CompletenessProfile defines per-decision-type expectations for tip filtering.
