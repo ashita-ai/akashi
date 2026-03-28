@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ashita-ai/akashi/internal/compact"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
@@ -677,15 +678,15 @@ func TestFormatPrompt_NoPrecedentLink(t *testing.T) {
 
 func TestTruncateRunes(t *testing.T) {
 	// Below limit: unchanged.
-	assert.Equal(t, "hello", truncateRunes("hello", 10))
+	assert.Equal(t, "hello", compact.Truncate("hello", 10))
 	// At limit: unchanged.
-	assert.Equal(t, "hello", truncateRunes("hello", 5))
+	assert.Equal(t, "hello", compact.Truncate("hello", 5))
 	// Above limit: truncated with "...".
-	assert.Equal(t, "hel...", truncateRunes("hello world", 3))
+	assert.Equal(t, "hel...", compact.Truncate("hello world", 3))
 	// Multi-byte characters.
-	assert.Equal(t, "こん...", truncateRunes("こんにちは", 2))
+	assert.Equal(t, "こん...", compact.Truncate("こんにちは", 2))
 	// Empty string.
-	assert.Equal(t, "", truncateRunes("", 10))
+	assert.Equal(t, "", compact.Truncate("", 10))
 }
 
 func TestFormatDuration(t *testing.T) {

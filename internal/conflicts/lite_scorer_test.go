@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ashita-ai/akashi/internal/compact"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -289,9 +291,9 @@ func TestUniqueWords(t *testing.T) {
 }
 
 func TestTruncate(t *testing.T) {
-	assert.Equal(t, "abc", truncate("abcdef", 3))
-	assert.Equal(t, "ab", truncate("ab", 3))
-	assert.Equal(t, "", truncate("", 3))
+	assert.Equal(t, "abc...", compact.Truncate("abcdef", 3))
+	assert.Equal(t, "ab", compact.Truncate("ab", 3))
+	assert.Equal(t, "", compact.Truncate("", 3))
 }
 
 // TestScoreClaimOverlap_EmptyClaims verifies that empty claim slices return zeros.
@@ -388,12 +390,14 @@ func TestUniqueWords_EmptyString(t *testing.T) {
 	assert.Empty(t, words)
 }
 
-// TestTruncate_LiteScorer verifies the lite_scorer's truncate function.
+// TestTruncate_LiteScorer verifies rune-safe truncation via compact.Truncate.
 func TestTruncate_LiteScorer(t *testing.T) {
-	assert.Equal(t, "hello", truncate("hello", 10))
-	assert.Equal(t, "hel", truncate("hello", 3))
-	assert.Equal(t, "", truncate("", 5))
-	assert.Equal(t, "hello", truncate("hello", 5))
+	assert.Equal(t, "hello", compact.Truncate("hello", 10))
+	assert.Equal(t, "hel...", compact.Truncate("hello", 3))
+	assert.Equal(t, "", compact.Truncate("", 5))
+	assert.Equal(t, "hello", compact.Truncate("hello", 5))
+	// Multi-byte: rune-safe, no split mid-codepoint.
+	assert.Equal(t, "こん...", compact.Truncate("こんにちは", 2))
 }
 
 // TestLiteScorer_ProjectScoping verifies that the scorer scopes candidates

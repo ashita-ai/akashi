@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ashita-ai/akashi/internal/compact"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
@@ -218,7 +219,7 @@ func (s *LiteScorer) insertConflict(ctx context.Context, orgID uuid.UUID, confli
 		a.id.String(), b.id.String(), orgID.String(),
 		a.agentID, b.agentID,
 		a.decisionType, b.decisionType,
-		truncate(a.outcome, 500), truncate(b.outcome, 500),
+		compact.Truncate(a.outcome, 500), compact.Truncate(b.outcome, 500),
 		topicSim, outcomeDivergence, significance,
 		"text_claims", explanation, now, severity, "open",
 		groupID.String(),
@@ -356,12 +357,4 @@ func jaccardSimilarity(a, b map[string]bool) float32 {
 		return 0
 	}
 	return float32(intersection) / float32(union)
-}
-
-// truncate limits a string to maxLen characters.
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen]
 }
