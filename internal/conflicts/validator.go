@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/ashita-ai/akashi/internal/compact"
 )
 
 // ValidateInput holds all context needed for relationship classification.
@@ -91,20 +93,20 @@ func formatPrompt(input ValidateInput) string {
 	fmt.Fprintf(&b, "Agent %q decision (%s, recorded %s):\n%s\n",
 		input.AgentA, input.TypeA, input.CreatedA.Format(time.RFC3339), input.OutcomeA)
 	if input.FullOutcomeA != "" && input.FullOutcomeA != input.OutcomeA {
-		fmt.Fprintf(&b, "[Full decision context: %s]\n", truncateRunes(input.FullOutcomeA, 500))
+		fmt.Fprintf(&b, "[Full decision context: %s]\n", compact.Truncate(input.FullOutcomeA, 500))
 	}
 	if input.ReasoningA != "" {
-		fmt.Fprintf(&b, "[Reasoning: %s]\n", truncateRunes(input.ReasoningA, 300))
+		fmt.Fprintf(&b, "[Reasoning: %s]\n", compact.Truncate(input.ReasoningA, 300))
 	}
 
 	// --- Decision by agent B ---
 	fmt.Fprintf(&b, "\nAgent %q decision (%s, recorded %s):\n%s\n",
 		input.AgentB, input.TypeB, input.CreatedB.Format(time.RFC3339), input.OutcomeB)
 	if input.FullOutcomeB != "" && input.FullOutcomeB != input.OutcomeB {
-		fmt.Fprintf(&b, "[Full decision context: %s]\n", truncateRunes(input.FullOutcomeB, 500))
+		fmt.Fprintf(&b, "[Full decision context: %s]\n", compact.Truncate(input.FullOutcomeB, 500))
 	}
 	if input.ReasoningB != "" {
-		fmt.Fprintf(&b, "[Reasoning: %s]\n", truncateRunes(input.ReasoningB, 300))
+		fmt.Fprintf(&b, "[Reasoning: %s]\n", compact.Truncate(input.ReasoningB, 300))
 	}
 
 	// --- Temporal and agent context ---
@@ -129,10 +131,10 @@ func formatPrompt(input ValidateInput) string {
 			"Only classify as CONTRADICTION if both decisions are clearly about the SAME system and make incompatible claims about it.\n")
 	}
 	if input.TaskA != "" {
-		fmt.Fprintf(&b, "Task (%s): %s\n", input.AgentA, truncateRunes(input.TaskA, 100))
+		fmt.Fprintf(&b, "Task (%s): %s\n", input.AgentA, compact.Truncate(input.TaskA, 100))
 	}
 	if input.TaskB != "" {
-		fmt.Fprintf(&b, "Task (%s): %s\n", input.AgentB, truncateRunes(input.TaskB, 100))
+		fmt.Fprintf(&b, "Task (%s): %s\n", input.AgentB, compact.Truncate(input.TaskB, 100))
 	}
 
 	// --- Session context (#170: temporal refinement) ---
@@ -257,16 +259,6 @@ func isWorkflowPair(typeA, typeB string) bool {
 		}
 	}
 	return false
-}
-
-// truncateRunes truncates a string to maxLen runes, appending "..." if truncated.
-// Rune-safe to avoid splitting multi-byte characters.
-func truncateRunes(s string, maxLen int) string {
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	return string(runes[:maxLen]) + "..."
 }
 
 // formatDuration produces a human-readable duration string.
