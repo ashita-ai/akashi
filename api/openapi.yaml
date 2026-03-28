@@ -73,6 +73,12 @@ tags:
     description: API key management (admin-only)
   - name: Usage
     description: Usage metering (admin-only)
+  - name: Sessions
+    description: Session-level decision views
+  - name: Retention
+    description: Retention policies, purge, and legal holds (admin-only)
+  - name: ProjectLinks
+    description: Cross-project conflict scope links (admin-only)
   - name: Settings
     description: Organization settings and policies
   - name: System
@@ -767,6 +773,45 @@ paths:
       responses:
         "200":
           description: The decision with alternatives and evidence.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_Decision"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: retractDecision
+      tags: [Decisions]
+      summary: Retract (soft-delete) a decision
+      description: |
+        Sets `valid_to` on the decision, making it invisible to current-state
+        queries while preserving it in the temporal audit trail. Creates a
+        `DecisionRetracted` event. Requires `admin` role.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Decision UUID.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: Optional explanation for the retraction.
+      responses:
+        "200":
+          description: Decision retracted. Returns the updated decision with `valid_to` set.
           content:
             application/json:
               schema:
@@ -1968,6 +2013,331 @@ paths:
                 $ref: "#/components/schemas/UsageResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  # ── Sessions ──────────────────────────────────────────────────────
+  /v1/sessions/{session_id}:
+    get:
+      operationId: getSessionView
+      tags: [Sessions]
+      summary: View all decisions in a session
+      description: |
+        Returns every decision recorded under a given session ID, along with
+        aggregate statistics (duration, type breakdown, average confidence).
+        Access-filtered: the caller may see fewer decisions than actually exist
+        if grant-based restrictions apply. Requires `reader` role or higher.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The session UUID.
+      responses:
+        "200":
+          description: Session decisions and summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_SessionView"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  # ── Retention ────────────────────────────────────────────────────
+  /v1/retention:
+    get:
+      operationId: getRetention
+      tags: [Retention]
+      summary: Get retention policy and active holds
+      description: |
+        Returns the current retention policy (retention window, excluded
+        decision types, last/next purge run) together with all active legal
+        holds. Requires `reader` role or higher.
+      responses:
+        "200":
+          description: Current retention policy and holds.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_RetentionView"
+    put:
+      operationId: setRetention
+      tags: [Retention]
+      summary: Update retention policy
+      description: |
+        Create or update the organisation's retention policy. At least one of
+        `retention_days` or `retention_exclude_types` must be provided.
+        `retention_days` must be >= 1. Requires `admin` role.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetRetentionRequest"
+      responses:
+        "200":
+          description: Updated retention policy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_RetentionPolicy"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/retention/purge:
+    post:
+      operationId: purgeDecisions
+      tags: [Retention]
+      summary: Purge old decisions
+      description: |
+        Delete decisions older than a given timestamp, optionally filtered by
+        decision type and/or agent. Supports dry-run mode to preview the
+        impact before committing. Decisions under active legal holds are
+        excluded. Requires `admin` role.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PurgeRequest"
+      responses:
+        "200":
+          description: Purge result (or dry-run preview).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_PurgeResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/retention/hold:
+    post:
+      operationId: createHold
+      tags: [Retention]
+      summary: Create a legal hold
+      description: |
+        Place a legal hold that prevents purge from deleting decisions in the
+        specified time range. Optionally scoped to specific decision types
+        and/or agents. Requires `admin` role.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateHoldRequest"
+      responses:
+        "201":
+          description: Hold created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_RetentionHold"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/retention/hold/{id}:
+    delete:
+      operationId: releaseHold
+      tags: [Retention]
+      summary: Release a legal hold
+      description: |
+        Deactivate a legal hold so that the retention purge can once again
+        process decisions in the hold's time range. This is a soft release
+        (sets `released_at`), not a physical delete. Requires `admin` role.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The hold UUID.
+      responses:
+        "204":
+          description: Hold released.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Conflict Groups ─────────────────────────────────────────────
+  /v1/conflict-groups:
+    get:
+      operationId: listConflictGroups
+      tags: [Query]
+      summary: List conflict groups
+      description: |
+        Returns deduplicated conflict groups — one entry per logical cluster of
+        related conflicts. Each group includes the highest-significance
+        representative conflict and all open conflicts in the group. Supports
+        filtering by decision type, agent, conflict kind, and status.
+        Access-filtered by grants. Requires `reader` role or higher.
+      parameters:
+        - name: decision_type
+          in: query
+          schema:
+            type: string
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - name: conflict_kind
+          in: query
+          schema:
+            type: string
+            enum: [cross_agent, self_contradiction]
+          description: Filter by conflict type.
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [open, resolved, false_positive]
+          description: Filter by lifecycle status.
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 25
+            minimum: 1
+            maximum: 1000
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+      responses:
+        "200":
+          description: Paginated list of conflict groups.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_ConflictGroupList"
+
+  # ── Project Links ────────────────────────────────────────────────
+  /v1/project-links:
+    post:
+      operationId: createProjectLink
+      tags: [ProjectLinks]
+      summary: Create a project link
+      description: |
+        Create a directional link between two projects that declares them as
+        being in the same conflict-detection scope. Projects are normalised
+        (lexicographically sorted) so (A, B) and (B, A) are the same link.
+        Requires `admin` role.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProjectLinkRequest"
+      responses:
+        "201":
+          description: Project link created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_ProjectLink"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    get:
+      operationId: listProjectLinks
+      tags: [ProjectLinks]
+      summary: List project links
+      description: |
+        Returns all project links for the organisation with pagination.
+        Requires `admin` role.
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 1000
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+      responses:
+        "200":
+          description: Paginated list of project links.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_ProjectLinkList"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/project-links/{id}:
+    delete:
+      operationId: deleteProjectLink
+      tags: [ProjectLinks]
+      summary: Delete a project link
+      description: |
+        Permanently delete a project link. This removes the two projects from
+        each other's conflict-detection scope. Requires `admin` role.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The project link UUID.
+      responses:
+        "204":
+          description: Project link deleted.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/project-links/grant-all:
+    post:
+      operationId: grantAllProjectLinks
+      tags: [ProjectLinks]
+      summary: Create links between all projects
+      description: |
+        Bulk-create conflict-scope links between every distinct pair of
+        projects in the organisation. Existing links are silently skipped.
+        Requires `admin` role.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                link_type:
+                  type: string
+                  default: conflict_scope
+                  description: Link type to create (defaults to "conflict_scope").
+      responses:
+        "200":
+          description: Bulk creation result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_GrantAllProjectLinksResponse"
         "403":
           $ref: "#/components/responses/Forbidden"
 
@@ -4899,5 +5269,452 @@ components:
       properties:
         data:
           $ref: "#/components/schemas/OrgSettingsData"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    # ── Sessions ─────────────────────────────────────────────────────
+    SessionView:
+      type: object
+      required: [session_id, decisions, decision_count]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        decisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Decision"
+        decision_count:
+          type: integer
+        summary:
+          $ref: "#/components/schemas/SessionSummary"
+          description: |
+            Aggregate statistics for the session. Absent when the session
+            contains no decisions.
+
+    SessionSummary:
+      type: object
+      required: [started_at, ended_at, duration_secs, decision_types, avg_confidence]
+      properties:
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+        duration_secs:
+          type: number
+          format: double
+          description: Wall-clock duration from first to last decision.
+        decision_types:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Counts keyed by decision type.
+        avg_confidence:
+          type: number
+          format: double
+
+    APIResponse_SessionView:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/SessionView"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    # ── Retention ────────────────────────────────────────────────────
+    RetentionPolicy:
+      type: object
+      properties:
+        retention_days:
+          type: integer
+          nullable: true
+          description: Number of days to retain decisions. Null if unset.
+        retention_exclude_types:
+          type: array
+          items:
+            type: string
+          description: Decision types excluded from automatic purge.
+        last_run:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp of the most recent purge run.
+        last_run_deleted:
+          type: integer
+          nullable: true
+          description: Number of decisions deleted in the most recent purge run.
+        next_run:
+          type: string
+          format: date-time
+          nullable: true
+          description: Scheduled timestamp for the next purge run.
+
+    RetentionHold:
+      type: object
+      required: [id, org_id, reason, from, to, created_by, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        reason:
+          type: string
+        from:
+          type: string
+          format: date-time
+          description: Start of the hold window.
+        to:
+          type: string
+          format: date-time
+          description: End of the hold window.
+        decision_types:
+          type: array
+          items:
+            type: string
+          description: Optional scope — hold only these decision types.
+        agent_ids:
+          type: array
+          items:
+            type: string
+          description: Optional scope — hold only these agents' decisions.
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        released_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set when the hold is released.
+
+    RetentionView:
+      type: object
+      required: [retention_days, retention_exclude_types, holds]
+      properties:
+        retention_days:
+          type: integer
+          nullable: true
+        retention_exclude_types:
+          type: array
+          items:
+            type: string
+        last_run:
+          type: string
+          format: date-time
+          nullable: true
+        last_run_deleted:
+          type: integer
+          nullable: true
+        next_run:
+          type: string
+          format: date-time
+          nullable: true
+        holds:
+          type: array
+          items:
+            $ref: "#/components/schemas/RetentionHold"
+
+    SetRetentionRequest:
+      type: object
+      properties:
+        retention_days:
+          type: integer
+          minimum: 1
+          description: Number of days to retain decisions.
+        retention_exclude_types:
+          type: array
+          items:
+            type: string
+          description: Decision types to exclude from automatic purge.
+
+    PurgeRequest:
+      type: object
+      required: [before]
+      properties:
+        before:
+          type: string
+          format: date-time
+          description: Delete decisions with `valid_from` before this timestamp.
+        decision_type:
+          type: string
+          description: Optional filter by decision type.
+        agent_id:
+          type: string
+          description: Optional filter by agent.
+        dry_run:
+          type: boolean
+          default: false
+          description: When true, return counts without deleting.
+
+    PurgeResponse:
+      type: object
+      required: [dry_run]
+      properties:
+        dry_run:
+          type: boolean
+        deleted:
+          $ref: "#/components/schemas/PurgeCounts"
+          description: Present when `dry_run` is false.
+        would_delete:
+          $ref: "#/components/schemas/PurgeCounts"
+          description: Present when `dry_run` is true.
+
+    PurgeCounts:
+      type: object
+      required: [decisions, alternatives, evidence, claims, events]
+      properties:
+        decisions:
+          type: integer
+        alternatives:
+          type: integer
+        evidence:
+          type: integer
+        claims:
+          type: integer
+        events:
+          type: integer
+
+    CreateHoldRequest:
+      type: object
+      required: [reason, from, to]
+      properties:
+        reason:
+          type: string
+          description: Reason for the legal hold.
+        from:
+          type: string
+          format: date-time
+          description: Start of the hold window.
+        to:
+          type: string
+          format: date-time
+          description: End of the hold window. Must be after `from`.
+        decision_types:
+          type: array
+          items:
+            type: string
+          description: Optional scope — hold only these decision types.
+        agent_ids:
+          type: array
+          items:
+            type: string
+          description: Optional scope — hold only these agents' decisions.
+
+    APIResponse_RetentionView:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/RetentionView"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_RetentionPolicy:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/RetentionPolicy"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_RetentionHold:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/RetentionHold"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_PurgeResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/PurgeResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    # ── Conflict Groups ──────────────────────────────────────────────
+    ConflictGroup:
+      type: object
+      required:
+        - id
+        - org_id
+        - agent_a
+        - agent_b
+        - conflict_kind
+        - decision_type
+        - first_detected_at
+        - last_detected_at
+        - conflict_count
+        - open_count
+        - times_reopened
+      properties:
+        id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        agent_a:
+          type: string
+        agent_b:
+          type: string
+        conflict_kind:
+          type: string
+          enum: [cross_agent, self_contradiction]
+        decision_type:
+          type: string
+        group_topic:
+          type: string
+          nullable: true
+          description: LLM-generated topic summary for the conflict cluster.
+        first_detected_at:
+          type: string
+          format: date-time
+        last_detected_at:
+          type: string
+          format: date-time
+        conflict_count:
+          type: integer
+          description: Total number of conflicts in the group.
+        open_count:
+          type: integer
+          description: Number of unresolved conflicts.
+        representative:
+          $ref: "#/components/schemas/DecisionConflict"
+          description: The highest-significance conflict in the group.
+        open_conflicts:
+          type: array
+          items:
+            $ref: "#/components/schemas/DecisionConflict"
+          description: All open conflicts in the group.
+        times_reopened:
+          type: integer
+          description: How many times a resolution in this group was later reopened.
+
+    ConflictGroupList:
+      type: object
+      required: [data, has_more, limit, offset]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConflictGroup"
+        total:
+          type: integer
+          nullable: true
+        has_more:
+          type: boolean
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    APIResponse_ConflictGroupList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ConflictGroupList"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    # ── Project Links ────────────────────────────────────────────────
+    ProjectLink:
+      type: object
+      required: [id, org_id, project_a, project_b, link_type, created_by, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        project_a:
+          type: string
+        project_b:
+          type: string
+        link_type:
+          type: string
+          description: Link category (e.g. "conflict_scope").
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    CreateProjectLinkRequest:
+      type: object
+      required: [project_a, project_b]
+      properties:
+        project_a:
+          type: string
+          description: First project name.
+        project_b:
+          type: string
+          description: Second project name. Must differ from `project_a`.
+        link_type:
+          type: string
+          default: conflict_scope
+          description: Link type (defaults to "conflict_scope").
+
+    ProjectLinkList:
+      type: object
+      required: [data, total, has_more, limit, offset]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectLink"
+        total:
+          type: integer
+        has_more:
+          type: boolean
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    GrantAllProjectLinksResponse:
+      type: object
+      required: [links_created]
+      properties:
+        links_created:
+          type: integer
+          description: Number of new links created (duplicates skipped).
+
+    APIResponse_ProjectLink:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ProjectLink"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_ProjectLinkList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ProjectLinkList"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_GrantAllProjectLinksResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/GrantAllProjectLinksResponse"
         meta:
           $ref: "#/components/schemas/ResponseMeta"
