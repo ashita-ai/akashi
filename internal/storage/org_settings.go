@@ -115,7 +115,11 @@ func (db *DB) GetOrgsWithAutoResolution(ctx context.Context) ([]OrgAutoResolveCo
 		}
 		var data model.OrgSettingsData
 		if err := json.Unmarshal(raw, &data); err != nil {
-			continue // skip malformed rows
+			db.logger.Warn("storage: skipping malformed org settings row",
+				"org_id", c.OrgID,
+				"error", err,
+			)
+			continue
 		}
 		if data.ConflictResolution == nil {
 			continue
