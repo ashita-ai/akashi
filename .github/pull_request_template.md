@@ -10,7 +10,6 @@
   - [ ] `docs/configuration.md`
   - [ ] `docs/runbook.md` (operational subset, if relevant)
   - [ ] `.env.example` (if baseline local/dev defaults changed)
-  - [ ] `docs/consistency-manifest.json` (only if policy/coverage rules changed)
 - [ ] `python3 scripts/check_doc_config_consistency.py` passes.
 
 ## Risk / Rollout Notes

@@ -112,8 +112,8 @@ calls by 50–80%. Configure with:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AKASHI_CROSS_ENCODER_URL` | _(empty)_ | Cross-encoder service endpoint. Empty = disabled. |
-| `AKASHI_CROSS_ENCODER_THRESHOLD` | `0.50` | Minimum cross-encoder score to proceed to LLM. |
+| `AKASHI_CONFLICT_CROSS_ENCODER_URL` | _(empty)_ | Cross-encoder service endpoint. Empty = disabled. |
+| `AKASHI_CONFLICT_CROSS_ENCODER_THRESHOLD` | `0.50` | Minimum cross-encoder score to proceed to LLM. |
 
 Pairs below the threshold are skipped without an LLM call. If the cross-encoder service
 is unreachable, the system falls open to LLM validation (no silent suppression).
@@ -283,8 +283,8 @@ When OpenTelemetry is configured, the conflict pipeline emits these metrics:
 | `AKASHI_CONFLICT_CLAIM_TOPIC_SIM_FLOOR` | `0.60` | Min cosine similarity for claim pairs |
 | `AKASHI_CONFLICT_CLAIM_DIV_FLOOR` | `0.15` | Min outcome divergence for claim pairs |
 | `AKASHI_CONFLICT_DECISION_TOPIC_SIM_FLOOR` | `0.70` | Min decision similarity to activate claim scoring |
-| `AKASHI_CROSS_ENCODER_URL` | _(empty)_ | Cross-encoder reranking endpoint |
-| `AKASHI_CROSS_ENCODER_THRESHOLD` | `0.50` | Min cross-encoder score for LLM validation |
+| `AKASHI_CONFLICT_CROSS_ENCODER_URL` | _(empty)_ | Cross-encoder reranking endpoint |
+| `AKASHI_CONFLICT_CROSS_ENCODER_THRESHOLD` | `0.50` | Min cross-encoder score for LLM validation |
 | `AKASHI_CLAIM_EXTRACTION_LLM` | `false` | Use LLM for structured claim extraction |
 | `AKASHI_FORCE_CONFLICT_RESCORE` | `false` | Clear and re-score all conflicts at startup |
 
