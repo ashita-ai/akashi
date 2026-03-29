@@ -698,6 +698,11 @@ func (db *DB) SearchDecisionsByText(ctx context.Context, orgID uuid.UUID, query 
 	// fall back to ILIKE instead of returning 500.
 	results, err := db.searchByFTS(ctx, orgID, query, filters, limit)
 	if err != nil {
+		db.logger.Warn("storage: FTS search failed, falling back to ILIKE",
+			"org_id", orgID,
+			"query", query,
+			"error", err,
+		)
 		return db.searchByILIKE(ctx, orgID, query, filters, limit)
 	}
 	if len(results) > 0 {
