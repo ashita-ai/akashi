@@ -97,7 +97,10 @@ Optional (server starts without them — search falls back to text):
 
 | Variable | Description |
 |----------|-------------|
-| `QDRANT_URL` | Qdrant endpoint for vector search |
+| `QDRANT_URL` | Qdrant endpoint for vector search. `:6334` (gRPC) preferred; `:6333` (REST) auto-mapped |
+| `QDRANT_API_KEY` | Qdrant API key (required for Qdrant Cloud) |
+| `QDRANT_COLLECTION` | Qdrant collection name. Default: `akashi_decisions` |
+| `NOTIFY_URL` | Direct Postgres connection for LISTEN/NOTIFY (SSE). Defaults to `DATABASE_URL`. Must bypass PgBouncer |
 | `OPENAI_API_KEY` | Enables OpenAI embeddings and LLM conflict validation |
 | `OLLAMA_URL` | Ollama endpoint for local embeddings |
 | `AKASHI_JWT_PRIVATE_KEY` | Path to Ed25519 private key PEM file. **Empty = ephemeral key pair generated on every startup** — all tokens are invalidated on each restart. Set this for any persistent deployment. |
@@ -106,56 +109,7 @@ Optional (server starts without them — search falls back to text):
 
 See [Configuration](docs/configuration.md) for all variables and the [Self-Hosting Guide](docs/self-hosting.md) for full setup instructions.
 
-### Record your first decision
-
-```bash
-# Get a token (default admin key for local dev is "admin")
-TOKEN=$(curl -s -X POST http://localhost:8080/auth/token \
-  -H 'Content-Type: application/json' \
-  -d '{"agent_id": "admin", "api_key": "admin"}' \
-  | jq -r '.data.token')
-
-# Record a decision with reasoning, alternatives, and evidence
-curl -X POST http://localhost:8080/v1/trace \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "agent_id": "admin",
-    "decision": {
-      "decision_type": "architecture",
-      "outcome": "use microservices for the payment system",
-      "confidence": 0.85,
-      "reasoning": "Payment processing needs independent scaling and deployment. A monolith couples payment latency to unrelated features.",
-      "alternatives": [
-        {"label": "microservices", "selected": true, "score": 0.85,
-         "rationale": "Independent scaling, isolated failures, team autonomy"},
-        {"label": "monolith", "selected": false, "score": 0.65,
-         "rationale": "Simpler deployment but couples all domains"}
-      ],
-      "evidence": [
-        {"source_type": "analysis", "content": "Payment traffic spikes 10x during promotions while other services stay flat"}
-      ]
-    }
-  }'
-```
-
-### Check for precedents before deciding
-
-```bash
-curl -X POST http://localhost:8080/v1/check \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"decision_type": "architecture", "query": "microservices vs monolith"}'
-```
-
-### Search the audit trail
-
-```bash
-curl -X POST http://localhost:8080/v1/search \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"query": "scaling decisions for high-traffic services", "limit": 5}'
-```
+See the [Self-Hosting Guide](docs/self-hosting.md) for step-by-step verification and the [FAQ](docs/faq.md) for curl examples covering auth, tracing, and searching.
 
 ## MCP integration
 
@@ -210,51 +164,7 @@ Add to your MCP configuration file (`~/.cursor/mcp.json`, `~/.windsurf/mcp.json`
 
 Replace `admin` with your agent ID and `<your-api-key>` with your `AKASHI_ADMIN_API_KEY` value.
 
-<details>
-<summary>Using JWT tokens instead</summary>
-
-JWTs work fine for MCP config files if you configure a long enough expiration. The default is 24 hours — set `AKASHI_JWT_EXPIRATION=8760h` in your `.env` for 1-year tokens that won't need refreshing.
-
-**Requirements for long-lived JWTs:**
-
-1. Persistent signing keys — without them, every server restart invalidates all tokens regardless of expiration. Generate them once:
-
-```bash
-mkdir -p data
-openssl genpkey -algorithm ed25519 -out data/jwt_private.pem
-openssl pkey -in data/jwt_private.pem -pubout -out data/jwt_public.pem
-chmod 600 data/jwt_private.pem data/jwt_public.pem
-```
-
-Then set in `.env`:
-```
-AKASHI_JWT_PRIVATE_KEY=/data/jwt_private.pem
-AKASHI_JWT_PUBLIC_KEY=/data/jwt_public.pem
-AKASHI_JWT_EXPIRATION=8760h
-```
-
-2. Issue a token:
-
-```bash
-AKASHI_ADMIN_API_KEY="${AKASHI_ADMIN_API_KEY:-admin}"
-TOKEN=$(curl -s -X POST http://localhost:8080/auth/token \
-  -H 'Content-Type: application/json' \
-  -d "{\"agent_id\":\"admin\",\"api_key\":\"$AKASHI_ADMIN_API_KEY\"}" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['token'])")
-```
-
-3. Wire Claude Code:
-
-```bash
-claude mcp add --transport http --scope user akashi http://localhost:8080/mcp \
-  --header "Authorization: Bearer $TOKEN"
-```
-
-The token is valid for 1 year from issuance. If you restart the server with the same key files, existing tokens remain valid.
-
-> **Simpler alternative:** `ApiKey admin:<your-api-key>` never expires at all and requires no token issuance step. See the examples above.
-
-</details>
+For JWT-based auth instead, see [Self-Hosting Guide § Persistent JWT signing keys](docs/self-hosting.md).
 
 ### Available tools
 
@@ -282,18 +192,6 @@ A planner agent decides to use microservices for a payment system and records it
 | **Audit dashboard** | `/` | Human reviewers, auditors, operators |
 
 All three share the same storage, auth, and embedding provider.
-
-## What the audit trail captures
-
-Every decision trace records:
-
-- **The decision** -- what was chosen and the agent's confidence level
-- **Reasoning** -- step-by-step logic explaining why
-- **Rejected alternatives** -- what else was considered, with scores and rejection reasons
-- **Supporting evidence** -- what information backed the decision, with provenance
-- **Temporal context** -- when it was made, when it was valid (bi-temporal model)
-- **Integrity proof** -- SHA-256 content hash and Merkle tree batch verification
-- **Conflicts** -- when two agents disagree on the same question
 
 ## SDKs
 
@@ -342,6 +240,7 @@ flowchart TD
 
 | Document | Description |
 |----------|-------------|
+| [FAQ](docs/faq.md) | Common questions about setup, concepts, auth, integrity, SDKs, and architecture |
 | [Self-Hosting Guide](docs/self-hosting.md) | Step-by-step deployment: Postgres-only through full stack with Qdrant and Ollama |
 | [Configuration](docs/configuration.md) | All environment variables with defaults and descriptions |
 | [Conflict Detection](docs/conflicts.md) | How conflicts are found, scored, validated, and resolved |
@@ -374,19 +273,7 @@ go test -race ./...    # Go tests with race detection
 
 ## IDE hooks (optional)
 
-If you develop with Claude Code or Cursor, Akashi can enforce the check-before/trace-after workflow automatically via IDE hooks:
-
-- **Session start** — injects the 5 most recent decisions and open conflicts into your agent's context.
-- **Edit gate** — blocks file edits until `akashi_check` has been called (2-hour TTL).
-- **Commit trace** — auto-records each `git commit` as a decision (or reminds you to call `akashi_trace` manually).
-
-```bash
-make install-hooks   # copies unified hook script, registers in settings.json
-```
-
-This is idempotent and safe to re-run. It also cleans up stale hook scripts from earlier installations. If the Akashi server is unreachable, hooks degrade gracefully — edits fall back to a local marker file, and commit tracing prints a reminder instead of blocking.
-
-See [IDE Hooks](docs/hooks.md) for endpoint details, Cursor setup, and configuration variables (`AKASHI_HOOKS_ENABLED`, `AKASHI_AUTO_TRACE`, `AKASHI_HOOKS_API_KEY`).
+Akashi can enforce the check-before/trace-after workflow automatically in Claude Code and Cursor via IDE hooks. Run `make install-hooks` to set up. See [IDE Hooks](docs/hooks.md) for details.
 
 ## Requirements
 
