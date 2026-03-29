@@ -97,7 +97,10 @@ Optional (server starts without them — search falls back to text):
 
 | Variable | Description |
 |----------|-------------|
-| `QDRANT_URL` | Qdrant endpoint for vector search |
+| `QDRANT_URL` | Qdrant endpoint for vector search. `:6334` (gRPC) preferred; `:6333` (REST) auto-mapped |
+| `QDRANT_API_KEY` | Qdrant API key (required for Qdrant Cloud) |
+| `QDRANT_COLLECTION` | Qdrant collection name. Default: `akashi_decisions` |
+| `NOTIFY_URL` | Direct Postgres connection for LISTEN/NOTIFY (SSE). Defaults to `DATABASE_URL`. Must bypass PgBouncer |
 | `OPENAI_API_KEY` | Enables OpenAI embeddings and LLM conflict validation |
 | `OLLAMA_URL` | Ollama endpoint for local embeddings |
 | `AKASHI_JWT_PRIVATE_KEY` | Path to Ed25519 private key PEM file. **Empty = ephemeral key pair generated on every startup** — all tokens are invalidated on each restart. Set this for any persistent deployment. |
