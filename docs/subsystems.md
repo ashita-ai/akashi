@@ -1,12 +1,12 @@
 # Subsystem Reference
 
-Internals of embedding, rate limiting, Qdrant search, and conflict detection. For the decision model and conflict logic, see [decisions.md](decisions.md). For configuration, see [configuration.md](configuration.md). For operational procedures, see [runbook.md](runbook.md).
+Internals of embedding, rate limiting, and Qdrant search. See also: [decisions.md](decisions.md), [conflicts.md](conflicts.md), [configuration.md](configuration.md), [runbook.md](runbook.md).
 
 ---
 
 ## Embedding Provider
 
-Akashi generates vector embeddings for every decision trace to enable semantic search ("find decisions similar to X"). The embedding provider is selected at startup and used throughout the server's lifetime.
+The embedding provider is selected at startup and used for the server's lifetime.
 
 ### Provider Chain
 
@@ -66,7 +66,7 @@ The backfill runs once per startup and logs progress:
 
 ### What Gets Embedded
 
-Two embeddings are computed per decision (Option B for conflict detection):
+Two embeddings are computed per decision:
 
 | Embedding | Input | Stored As |
 |-----------|-------|-----------|
@@ -218,8 +218,3 @@ If the drain context expires before the final batch completes, the log emits `"s
 
 When `QDRANT_URL` is empty, the outbox worker is not started and `POST /v1/search` falls back to PostgreSQL full-text search (`tsvector` with GIN index) plus ILIKE matching. Semantic similarity is unavailable; results are ranked by text relevance only.
 
----
-
-## Conflict Detection
-
-For the full conflict detection pipeline (candidate retrieval, significance scoring, LLM validation, claim-level analysis, resolution, analytics, and observability), see [conflicts.md](conflicts.md).

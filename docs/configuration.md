@@ -6,8 +6,8 @@ All configuration is via environment variables. See [`.env.example`](../.env.exa
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | — | PostgreSQL connection string for queries and writes |
-| `AKASHI_ADMIN_API_KEY` | — | Bootstrap API key for the admin agent. Required when the agents table is empty |
+| `DATABASE_URL` | `postgres://akashi:akashi@localhost:6432/akashi?sslmode=disable` | PostgreSQL connection string for queries and writes. The default assumes PgBouncer on port 6432; for direct Postgres use port 5432 |
+| `AKASHI_ADMIN_API_KEY` | _(empty)_ | Bootstrap API key for the admin agent. Required when the agents table is empty |
 
 ## Server
 
@@ -25,7 +25,7 @@ All configuration is via environment variables. See [`.env.example`](../.env.exa
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | — | PostgreSQL connection string for queries and writes. In production, point this at PgBouncer; in local dev, point directly at Postgres (port 5432) |
-| `NOTIFY_URL` | same as `DATABASE_URL` | Direct Postgres connection for LISTEN/NOTIFY (SSE). Must bypass PgBouncer — transaction-mode poolers do not support LISTEN. Set `NOTIFY_URL=` to disable SSE push entirely |
+| `NOTIFY_URL` | `postgres://akashi:akashi@localhost:5432/akashi?sslmode=disable` | Direct Postgres connection for LISTEN/NOTIFY (SSE). Must bypass PgBouncer — transaction-mode poolers do not support LISTEN. Set `NOTIFY_URL=` to disable SSE push entirely |
 | `AKASHI_SKIP_EMBEDDED_MIGRATIONS` | `false` | Skip startup embedded migrations (use when an external system like Atlas owns migration execution) |
 
 See [ADR-007](../adrs/ADR-007-dual-postgres-connections.md) for why two connections are needed.
@@ -239,7 +239,7 @@ Operational idempotency settings:
 |----------|---------|-------------|
 | `AKASHI_HOOKS_ENABLED` | `true` | Enable `/hooks/*` IDE integration endpoints for Claude Code and Cursor. When disabled, the routes are not registered |
 | `AKASHI_HOOKS_API_KEY` | _(empty)_ | Optional API key for non-localhost hook access. When set, remote clients can authenticate with `X-Akashi-Hook-Key` header. Empty = localhost-only (recommended for local dev) |
-| `AKASHI_AUTO_TRACE` | `true` | Automatically trace git commits detected in `PostToolUse` hooks as decisions with `confidence: 0.7`. Set to `false` to disable auto-tracing |
+| `AKASHI_AUTO_TRACE` | `true` | Automatically trace git commits detected in `PostToolUse` hooks as decisions with `confidence: 0.5`. Set to `false` to disable auto-tracing |
 
 ### Completeness profiles
 

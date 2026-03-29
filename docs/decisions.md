@@ -25,9 +25,7 @@ Decisions are bi-temporal: `valid_from`/`valid_to` (business time) and `transact
 
 `POST /v1/trace` records a decision:
 
-1. **Embeddings** — Two vectors are computed:
-   - **Full embedding:** `decision_type + ": " + outcome + " " + reasoning` → `decisions.embedding`
-   - **Outcome embedding:** `outcome` only → `decisions.outcome_embedding`
+1. **Embeddings** — Two vectors computed (full + outcome-only). See [subsystems.md](subsystems.md#what-gets-embedded).
 
 2. **Quality score** — Completeness heuristic (alternatives, evidence, reasoning length).
 
@@ -41,12 +39,7 @@ Decisions are bi-temporal: `valid_from`/`valid_to` (business time) and `transact
 
 ## Embeddings
 
-| Column | Input Text | Use |
-|--------|------------|-----|
-| `embedding` | `type + outcome + reasoning` | Semantic search, conflict **topic similarity** |
-| `outcome_embedding` | `outcome` only | Conflict **outcome divergence** (Option B) |
-
-When the embedder is noop or fails, both are NULL. Backfill runs at startup for unembedded decisions and unembedded outcomes.
+Two embeddings are computed per decision (`embedding` and `outcome_embedding`). Both are nullable — when the embedder is noop or fails, they are NULL and backfilled at next startup. See [subsystems.md § Embedding Provider](subsystems.md#embedding-provider) for input construction, truncation, and provider details.
 
 ---
 

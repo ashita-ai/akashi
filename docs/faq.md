@@ -4,21 +4,11 @@
 
 ### What is Akashi?
 
-Akashi is a decision coordination layer for multi-agent AI systems. It records every decision an AI agent makes — what was decided, why, what alternatives were considered, and how confident the agent was — then makes that history searchable and auditable. When agents contradict each other, Akashi detects it automatically.
+Akashi is a decision coordination layer for multi-agent AI systems. It gives agents shared memory of what's already been decided — so they stop contradicting each other, stop relitigating settled questions, and leave a trail when things go wrong. Every decision is recorded with its reasoning, alternatives, and confidence, then made searchable and auditable. When agents diverge, Akashi detects it semantically.
 
-### What problem does Akashi solve?
+### How is this different from a log aggregator?
 
-In production multi-agent systems, agents operate independently and have no shared memory of prior decisions. This leads to three problems:
-
-1. **Contradiction.** Agent A decides to use PostgreSQL; Agent B decides to use MySQL. Neither knows the other decided.
-2. **Relitigation.** A question that was already settled gets re-debated from scratch because no agent remembers the prior decision.
-3. **Opacity.** When something goes wrong, there is no trail to answer "who decided what, when, and why?"
-
-Akashi solves all three by giving agents a shared, searchable decision history with automatic conflict detection.
-
-### How is this different from a log aggregator or observability tool?
-
-Log aggregators collect operational events (errors, request traces, metrics). Akashi collects *decisions* — structured records that include reasoning, alternatives considered, confidence levels, and supporting evidence. Decisions are semantically indexed so agents can find relevant precedents by meaning, not just keyword. Conflict detection compares decisions across agents to find genuine contradictions, which is not something log aggregators do.
+Logs capture what happened. Akashi captures *why* — structured decision records with reasoning, alternatives, confidence, and evidence. Decisions are semantically indexed (precedent search by meaning, not keyword) and compared across agents to detect genuine contradictions. Log aggregators don't do either of those things.
 
 ### Is Akashi open source?
 
@@ -56,36 +46,11 @@ For the complete local stack: Docker with at least 8GB of available memory (the 
 
 ### How do I connect my AI agent to Akashi?
 
-**MCP (recommended for Claude Code, Cursor, Windsurf):**
+Three options, from easiest to most flexible:
 
-```bash
-claude mcp add --transport http akashi http://localhost:8080/mcp \
-  --header "Authorization: ApiKey admin:$AKASHI_ADMIN_API_KEY"
-```
-
-**SDK (recommended for programmatic integration):**
-
-```python
-# Python
-from akashi import AsyncAkashiClient
-
-client = AsyncAkashiClient(base_url="http://localhost:8080", api_key="admin:your-key")
-await client.trace(
-    decision_type="architecture",
-    outcome="Use PostgreSQL for persistence",
-    reasoning="Mature ecosystem, pgvector for embeddings",
-    confidence=0.85,
-)
-```
-
-**HTTP API (works with any language):**
-
-```bash
-curl -X POST http://localhost:8080/v1/trace \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"decision_type":"architecture","outcome":"Use PostgreSQL","confidence":0.85}'
-```
+1. **MCP** — zero code changes. See [MCP integration](../README.md#mcp-integration) in the README.
+2. **SDK** — Go, Python, or TypeScript clients. See [SDKs](#which-sdks-are-available) below.
+3. **HTTP API** — `POST /v1/trace` with any HTTP client. See the [OpenAPI spec](../api/openapi.yaml).
 
 ---
 
@@ -205,18 +170,10 @@ Akashi degrades gracefully. Semantic vector search falls back to PostgreSQL full
 
 Akashi tries providers in order: Ollama → OpenAI → noop. If all are unavailable, decisions are still stored but without embeddings. Semantic search and conflict detection are disabled until a provider recovers.
 
-### Where can I find operational runbooks?
+### Where are the operational docs?
 
-See [docs/runbook.md](runbook.md) for health checks, monitoring, alerting, and troubleshooting procedures.
-
-### How do I configure Akashi?
-
-All configuration is via environment variables with the `AKASHI_` prefix. See [docs/configuration.md](configuration.md) for the full reference. The minimum required variables are:
-
-- `DATABASE_URL` — PostgreSQL connection string
-- `AKASHI_ADMIN_API_KEY` — bootstrap API key for the admin agent
-
-The Docker Compose setup handles both automatically.
+- **Configuration**: [configuration.md](configuration.md) — every env var with defaults
+- **Runbook**: [runbook.md](runbook.md) — health checks, monitoring, alerting, troubleshooting
 
 ---
 
@@ -238,16 +195,7 @@ Yes. The HTTP API at `/v1/...` is fully documented in the OpenAPI spec served at
 
 ### How do I use Akashi with Claude Code?
 
-```bash
-# Add the MCP server
-claude mcp add --transport http akashi http://localhost:8080/mcp \
-  --header "Authorization: ApiKey admin:$AKASHI_ADMIN_API_KEY"
-
-# Install the post-commit hook (optional, reminds you to trace after commits)
-make install-hooks
-```
-
-Once configured, Claude Code has access to `akashi_check`, `akashi_trace`, `akashi_query`, `akashi_conflicts`, `akashi_resolve`, `akashi_assess`, and `akashi_stats` as MCP tools.
+See the [MCP integration](../README.md#mcp-integration) section of the README. Optionally run `make install-hooks` to enforce the check-before/trace-after workflow via IDE hooks (see [IDE Hooks](hooks.md)).
 
 ---
 
@@ -255,11 +203,11 @@ Once configured, Claude Code has access to `akashi_check`, `akashi_trace`, `akas
 
 ### Why Go?
 
-Go compiles to a single static binary, has excellent concurrency primitives for the event ingestion pipeline, and a mature standard library for HTTP servers. See [ADR-001](../adrs/ADR-001-server-language.md) for the full rationale.
+Go compiles to a single static binary, has excellent concurrency primitives for the event ingestion pipeline, and a mature standard library for HTTP servers. See [ADR-001](../adrs/ADR-001-go-server-language.md) for the full rationale.
 
 ### Why PostgreSQL instead of a dedicated event store?
 
-PostgreSQL with pgvector and TimescaleDB provides event storage (hypertables), vector search (pgvector), and relational queries in a single dependency. This avoids the operational cost of running separate systems for each concern. Qdrant is optional and additive. See [ADR-002](../adrs/ADR-002-unified-postgresql.md).
+PostgreSQL with pgvector and TimescaleDB provides event storage (hypertables), vector search (pgvector), and relational queries in a single dependency. This avoids the operational cost of running separate systems for each concern. Qdrant is optional and additive. See [ADR-002](../adrs/ADR-002-unified-postgres-storage.md).
 
 ### Why Ed25519 for JWTs instead of RS256?
 
@@ -267,4 +215,4 @@ Ed25519 (EdDSA) is ~20x faster than RSA-2048 for signing and verification, produ
 
 ### How does the event-sourced architecture work?
 
-The `agent_events` table is an append-only TimescaleDB hypertable — the source of truth. Events (`DecisionMade`, `DecisionRevised`, `DecisionErased`, etc.) are flushed in batches via `COPY` for high throughput. Materialized tables (`decisions`, `alternatives`, `evidence`) are derived from events for efficient querying. See [ADR-003](../adrs/ADR-003-event-sourced-bitemporal.md).
+The `agent_events` table is an append-only TimescaleDB hypertable — the source of truth. Events (`DecisionMade`, `DecisionRevised`, `DecisionErased`, etc.) are flushed in batches via `COPY` for high throughput. Materialized tables (`decisions`, `alternatives`, `evidence`) are derived from events for efficient querying. See [ADR-003](../adrs/ADR-003-event-sourced-bitemporal-model.md).

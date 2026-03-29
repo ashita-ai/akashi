@@ -1,8 +1,6 @@
 # Self-Hosting Guide
 
-This guide walks you through deploying Akashi on your own infrastructure. It covers four progressively richer configurations — from a minimal Postgres-only setup to a full stack with local embeddings and LLM conflict validation.
-
-For the complete environment variable reference, see [configuration.md](configuration.md).
+Four deployment tiers, from minimal to full-featured. Each section adds one component. See [configuration.md](configuration.md) for the complete env var reference.
 
 ## Prerequisites
 
