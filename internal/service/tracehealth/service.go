@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/storage"
@@ -75,6 +76,7 @@ func New(db storage.Store) *Service {
 // When from/to are non-nil they scope the decision and conflict windows.
 // Pass nil, nil to get all-time metrics (equivalent to the legacy behavior).
 func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (*Metrics, error) {
+	// Quality stats must run first: a zero total triggers an early return.
 	qs, err := s.db.GetDecisionQualityStats(ctx, orgID, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("tracehealth: quality stats: %w", err)
@@ -89,30 +91,104 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 		}, nil
 	}
 
-	es, err := s.db.GetEvidenceCoverageStats(ctx, orgID, from, to)
-	if err != nil {
-		return nil, fmt.Errorf("tracehealth: evidence stats: %w", err)
+	// The remaining 8 queries are independent — run them concurrently.
+	var (
+		es   storage.EvidenceCoverageStats
+		cc   storage.ConflictStatusCounts
+		os   storage.OutcomeSignalsSummary
+		cd   storage.ConfidenceDistribution
+		hcos storage.HighConfOutcomeSignals
+		cal  storage.ConfidenceCalibration
+		dtd  []storage.DecisionTypeCount
+		cbt  []storage.DecisionTypeCompleteness
+	)
+
+	g, gctx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		var err error
+		es, err = s.db.GetEvidenceCoverageStats(gctx, orgID, from, to)
+		if err != nil {
+			return fmt.Errorf("tracehealth: evidence stats: %w", err)
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		var err error
+		cc, err = s.db.GetConflictStatusCounts(gctx, orgID, from, to)
+		if err != nil {
+			return fmt.Errorf("tracehealth: conflict status counts: %w", err)
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		var err error
+		os, err = s.db.GetOutcomeSignalsSummary(gctx, orgID, from, to)
+		if err != nil {
+			return fmt.Errorf("tracehealth: outcome signals: %w", err)
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		var err error
+		cd, err = s.db.GetConfidenceDistribution(gctx, orgID, from, to)
+		if err != nil {
+			return fmt.Errorf("tracehealth: confidence distribution: %w", err)
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		var err error
+		hcos, err = s.db.GetHighConfOutcomeSignals(gctx, orgID, from, to)
+		if err != nil {
+			return fmt.Errorf("tracehealth: high-conf outcome signals: %w", err)
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		var err error
+		cal, err = s.db.GetConfidenceCalibration(gctx, orgID, from, to)
+		if err != nil {
+			return fmt.Errorf("tracehealth: confidence calibration: %w", err)
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		var err error
+		dtd, err = s.db.GetDecisionTypeDistribution(gctx, orgID, from, to)
+		if err != nil {
+			return fmt.Errorf("tracehealth: decision type distribution: %w", err)
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		var err error
+		cbt, err = s.db.GetCompletenessByDecisionType(gctx, orgID, from, to)
+		if err != nil {
+			return fmt.Errorf("tracehealth: completeness by type: %w", err)
+		}
+		return nil
+	})
+
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 
-	cc, err := s.db.GetConflictStatusCounts(ctx, orgID, from, to)
-	if err != nil {
-		return nil, fmt.Errorf("tracehealth: conflict status counts: %w", err)
-	}
-
+	// Assemble metrics from the concurrent results.
 	var resolvedPct float64
 	if cc.Total > 0 {
 		resolvedPct = float64(cc.Resolved) / float64(cc.Total) * 100
 	}
 
-	var reasoningPct float64
-	if qs.Total > 0 {
-		reasoningPct = float64(qs.WithReasoning) / float64(qs.Total) * 100
-	}
-
-	var alternativesPct float64
-	if qs.Total > 0 {
-		alternativesPct = float64(qs.WithAlternatives) / float64(qs.Total) * 100
-	}
+	reasoningPct := float64(qs.WithReasoning) / float64(qs.Total) * 100
+	alternativesPct := float64(qs.WithAlternatives) / float64(qs.Total) * 100
 
 	m := &Metrics{
 		Completeness: &CompletenessMetrics{
@@ -146,68 +222,32 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 		}
 	}
 
-	// Outcome signals: temporal, graph, and fate aggregate counts.
-	os, err := s.db.GetOutcomeSignalsSummary(ctx, orgID, from, to)
-	if err != nil {
-		return nil, fmt.Errorf("tracehealth: outcome signals: %w", err)
-	}
 	if qs.Total > 0 {
 		m.OutcomeSignals = &os
 	}
 
-	// Confidence distribution: histogram + per-agent breakdown.
-	cd, err := s.db.GetConfidenceDistribution(ctx, orgID, from, to)
-	if err != nil {
-		return nil, fmt.Errorf("tracehealth: confidence distribution: %w", err)
-	}
 	if qs.Total > 0 {
 		m.ConfidenceDistribution = &cd
 	}
 
-	// High-confidence outcome signals: behavioral data for the dashboard.
-	hcos, err := s.db.GetHighConfOutcomeSignals(ctx, orgID, from, to)
-	if err != nil {
-		return nil, fmt.Errorf("tracehealth: high-conf outcome signals: %w", err)
-	}
 	if hcos.Total > 0 {
 		m.HighConfOutcomeSignals = &hcos
 	}
 
-	// Confidence calibration: correlates confidence with outcomes.
-	cal, err := s.db.GetConfidenceCalibration(ctx, orgID, from, to)
-	if err != nil {
-		return nil, fmt.Errorf("tracehealth: confidence calibration: %w", err)
-	}
 	if qs.Total > 0 {
 		m.ConfidenceCalibration = &cal
 	}
 
-	// Decision type distribution.
-	dtd, err := s.db.GetDecisionTypeDistribution(ctx, orgID, from, to)
-	if err != nil {
-		return nil, fmt.Errorf("tracehealth: decision type distribution: %w", err)
-	}
 	if len(dtd) > 0 {
 		m.DecisionTypeDistribution = dtd
 	}
 
-	// Per-type completeness breakdown: surfaces which decision types are
-	// weakest, ordered by avg completeness ascending. Each row is enriched
-	// with the per-type health threshold so consumers can see which types
-	// fall below expectations without client-side knowledge of thresholds.
-	cbt, err := s.db.GetCompletenessByDecisionType(ctx, orgID, from, to)
-	if err != nil {
-		return nil, fmt.Errorf("tracehealth: completeness by type: %w", err)
-	}
 	if len(cbt) > 0 {
 		enrichCompletenessWithExpectations(cbt)
 		m.CompletenessByType = cbt
 	}
 
-	// Gap detection: rule-based, max 3 gaps, ordered by severity.
 	m.Gaps = computeGaps(qs, cc.Total, cc.Open, os, cd, cal)
-
-	// Overall status.
 	m.Status = computeStatus(qs, cc.Open)
 
 	return m, nil
