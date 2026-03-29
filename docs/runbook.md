@@ -40,12 +40,17 @@ No authentication required.
 
 | Field (under `data`) | Healthy Value   | Unhealthy Value   |
 |----------------------|-----------------|-------------------|
-| `status`             | `"healthy"`     | `"unhealthy"`     |
+| `status`             | `"healthy"`     | `"degraded"` / `"unhealthy"` |
 | `postgres`           | `"connected"`   | `"disconnected"`  |
 | `qdrant`             | `"connected"`   | `"disconnected"`  |
-| `buffer_status`      | `"ok"`          | `"high"`/`"critical"` |
+| `buffer_status`      | `"ok"`          | `"high"` / `"critical"` |
 
-HTTP status is **200** when healthy, **503** when unhealthy. The endpoint returns 503 if and only if PostgreSQL is unreachable. Qdrant being down does NOT cause a 503 -- the system degrades to text search.
+Three status values:
+- **`healthy`** (HTTP 200) — Postgres connected, buffer below 75% capacity.
+- **`degraded`** (HTTP 200) — Postgres connected, but buffer above 75% capacity (`buffer_status: "critical"`).
+- **`unhealthy`** (HTTP 503) — PostgreSQL is unreachable.
+
+The endpoint returns 503 if and only if PostgreSQL is unreachable. Qdrant being down does NOT cause a 503 -- the system degrades to text search.
 
 The `qdrant` field is omitted entirely when Qdrant is not configured (no `QDRANT_URL`).
 The `sse_broker` field is omitted when SSE/NOTIFY is disabled.
@@ -362,6 +367,7 @@ Standard `pg_dump` works. Key tables by priority:
 | `search_outbox_dead_letters` | Archived failed outbox entries (paper trail).               |
 | `deletion_audit_log`         | Archived deleted records for destructive admin operations.   |
 | `mutation_audit_log`         | Append-only ledger for API mutation paper trail.            |
+| `agent_events_archive`       | Archived historical events moved out of the hot hypertable. |
 
 ```sh
 # Full backup
@@ -565,10 +571,12 @@ On `SIGTERM` or `SIGINT`, the server shuts down in this order:
 
 ```
 1. HTTP server drains           -- stops accepting new requests, completes in-flight (`AKASHI_SHUTDOWN_HTTP_TIMEOUT`)
-2. Event buffer drains          -- final flush to PostgreSQL (always indefinite, durability-first)
-3. Outbox worker drains         -- syncs remaining entries to Qdrant (`AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT`)
-4. Database pools close         -- PgBouncer pool + NOTIFY connection
-5. OTEL flushes                 -- final trace/metric export
+2. Async post-trace drain       -- waits for in-flight claim generation and conflict scoring (`AKASHI_SHUTDOWN_ASYNC_DRAIN_TIMEOUT`)
+3. Event buffer drains          -- final flush to PostgreSQL (`AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT`)
+4. Outbox worker drains         -- syncs remaining entries to Qdrant (`AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT`)
+5. Cleanup                      -- grant cache, rate limiter, Qdrant client closed
+6. OTEL flushes                 -- final trace/metric export
+7. Database pool closes         -- PgBouncer pool + NOTIFY connection
 ```
 
 There is no single shared shutdown timeout. Each phase has its own timeout, and setting a timeout to `0` waits indefinitely.
@@ -667,7 +675,7 @@ TOKEN=$(curl -s http://localhost:8081/auth/token \
   -d '{"agent_id":"admin","api_key":"ak_..."}' | jq -r .token)
 
 # List detected conflicts to find IDs to label
-curl -s http://localhost:8081/v1/admin/conflicts \
+curl -s http://localhost:8081/v1/conflicts \
   -H "Authorization: Bearer $TOKEN" | jq '.conflicts[:5]'
 
 # Label a conflict as genuine
@@ -779,8 +787,8 @@ This is useful for verifying that threshold changes don't break the scorer's abi
 
 1. Run your akashi instance locally on port 8081.
 2. Exercise the system — trace decisions, let the scorer detect conflicts.
-3. Review detected conflicts via the UI or `GET /v1/admin/conflicts`.
+3. Review detected conflicts via the UI or `GET /v1/conflicts`.
 4. Label 20+ conflicts across all three categories for a meaningful precision measurement.
 5. Run `go run ./cmd/eval-conflicts --mode=scorer --save` to compute precision.
-6. Tune scorer thresholds (`AKASHI_CONFLICT_THRESHOLD`, early exit floor) and re-evaluate.
+6. Tune scorer thresholds (`AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD`, early exit floor) and re-evaluate.
 7. Repeat after model or embedding changes to catch regressions.

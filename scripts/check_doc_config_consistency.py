@@ -7,14 +7,61 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-MANIFEST_PATH = ROOT / "docs" / "consistency-manifest.json"
+
+SOURCE_PATH = "internal/config/config.go"
+
+TARGETS = [
+    {
+        "name": "configuration_doc",
+        "path": "docs/configuration.md",
+        "rule": "must_include_all_source_vars",
+        "allow_extra": True,
+    },
+    {
+        "name": "runbook_doc",
+        "path": "docs/runbook.md",
+        "rule": "must_include_vars",
+        "required_vars": [
+            "DATABASE_URL",
+            "NOTIFY_URL",
+            "AKASHI_JWT_PRIVATE_KEY",
+            "AKASHI_JWT_PUBLIC_KEY",
+            "AKASHI_JWT_EXPIRATION",
+            "AKASHI_EVENT_BUFFER_SIZE",
+            "AKASHI_SHUTDOWN_HTTP_TIMEOUT",
+            "AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT",
+            "AKASHI_IDEMPOTENCY_ABANDONED_TTL",
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OPENAI_API_KEY",
+            "OLLAMA_URL",
+            "QDRANT_URL",
+        ],
+        "allow_extra": True,
+    },
+]
+
+ENV_EXAMPLE = {
+    "path": ".env.example",
+    "required_vars": [
+        "DATABASE_URL",
+        "NOTIFY_URL",
+        "AKASHI_ADMIN_API_KEY",
+        "OPENAI_API_KEY",
+        "AKASHI_EMBEDDING_MODEL",
+        "OLLAMA_URL",
+        "OLLAMA_MODEL",
+        "AKASHI_LOG_LEVEL",
+        "AKASHI_IDEMPOTENCY_CLEANUP_INTERVAL",
+        "AKASHI_IDEMPOTENCY_COMPLETED_TTL",
+        "AKASHI_IDEMPOTENCY_ABANDONED_TTL",
+    ],
+}
 
 
 def read_text(path: Path) -> str:
@@ -54,18 +101,11 @@ def extract_env_example_vars(env_text: str) -> set[str]:
 
 
 def main() -> int:
-    if not MANIFEST_PATH.exists():
-        print(f"error: manifest not found: {MANIFEST_PATH}", file=sys.stderr)
-        return 2
-
-    manifest = json.loads(read_text(MANIFEST_PATH))
-
-    source_path = ROOT / manifest["source"]["path"]
-    source_vars = extract_source_vars(read_text(source_path))
+    source_vars = extract_source_vars(read_text(ROOT / SOURCE_PATH))
 
     failures: list[str] = []
 
-    for target in manifest.get("targets", []):
+    for target in TARGETS:
         target_path = ROOT / target["path"]
         target_vars = extract_doc_vars(read_text(target_path))
 
@@ -91,17 +131,15 @@ def main() -> int:
                     f"{target['name']} has {len(extras)} extra vars:\n  - " + "\n  - ".join(extras)
                 )
 
-    env_cfg = manifest.get("env_example", {})
-    if env_cfg:
-        env_path = ROOT / env_cfg["path"]
-        env_vars = extract_env_example_vars(read_text(env_path))
-        required = set(env_cfg.get("required_vars", []))
-        missing_required = sorted(required - env_vars)
-        if missing_required:
-            failures.append(
-                f".env.example missing {len(missing_required)} required vars:\n  - "
-                + "\n  - ".join(missing_required)
-            )
+    env_path = ROOT / ENV_EXAMPLE["path"]
+    env_vars = extract_env_example_vars(read_text(env_path))
+    required = set(ENV_EXAMPLE["required_vars"])
+    missing_required = sorted(required - env_vars)
+    if missing_required:
+        failures.append(
+            f".env.example missing {len(missing_required)} required vars:\n  - "
+            + "\n  - ".join(missing_required)
+        )
 
     if failures:
         print("Doc/config consistency check FAILED\n")
@@ -112,8 +150,7 @@ def main() -> int:
     print(
         "Doc/config consistency check passed:\n"
         f"- source vars: {len(source_vars)}\n"
-        f"- docs checked: {len(manifest.get('targets', []))}\n"
-        f"- manifest: {manifest['version']}"
+        f"- docs checked: {len(TARGETS)}"
     )
     return 0
 
