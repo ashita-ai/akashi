@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -136,7 +137,22 @@ func (tm *tokenManager) refresh(ctx context.Context) (string, time.Time, error) 
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", time.Time{}, fmt.Errorf("akashi: auth failed with status %d", resp.StatusCode)
+		// Read the error body so callers see the server's reason (e.g. "invalid api key")
+		// rather than a generic status code.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		var errEnv struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(body, &errEnv) == nil && errEnv.Error.Message != "" {
+			return "", time.Time{}, fmt.Errorf("akashi: auth failed (%d): %s", resp.StatusCode, errEnv.Error.Message)
+		}
+		msg := string(body)
+		if msg == "" {
+			msg = http.StatusText(resp.StatusCode)
+		}
+		return "", time.Time{}, fmt.Errorf("akashi: auth failed (%d): %s", resp.StatusCode, msg)
 	}
 
 	var envelope authResponseEnvelope

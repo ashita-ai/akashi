@@ -373,3 +373,399 @@ class AssessResponse(BaseModel):
     outcome: AssessOutcome
     notes: str | None = None
     created_at: datetime
+
+
+# --- Phase 2: Decision & conflict management types ---
+
+
+class ConflictRecommendation(BaseModel):
+    suggested_winner: UUID
+    reasons: list[str] = Field(default_factory=list)
+    confidence: float
+
+
+class ConflictDetail(BaseModel):
+    decision_conflict: DecisionConflict
+    recommendation: ConflictRecommendation | None = None
+
+
+class LineageEntry(BaseModel):
+    id: UUID
+    decision_type: str
+    outcome: str
+    confidence: float
+    agent_id: str
+    valid_from: datetime
+    precedent_reason: str | None = None
+
+
+class LineageResponse(BaseModel):
+    decision_id: UUID
+    precedent_ref: UUID | None = None
+    precedent: LineageEntry | None = None
+    cites: list[LineageEntry] = Field(default_factory=list)
+
+
+class TimelineDecisionSummary(BaseModel):
+    id: UUID
+    agent_id: str
+    decision_type: str
+    outcome: str
+    confidence: float
+    project: str = ""
+    created_at: datetime
+
+
+class TimelineBucket(BaseModel):
+    bucket: str
+    decision_count: int = 0
+    avg_confidence: float = 0.0
+    decision_types: dict[str, int] = Field(default_factory=dict)
+    agents: dict[str, int] = Field(default_factory=dict)
+    conflict_count: int = 0
+    top_decisions: list[TimelineDecisionSummary] = Field(default_factory=list)
+
+
+class TimelineResponse(BaseModel):
+    granularity: str
+    buckets: list[TimelineBucket] = Field(default_factory=list)
+    projects: list[str] = Field(default_factory=list)
+
+
+class FacetsResponse(BaseModel):
+    types: list[str] = Field(default_factory=list)
+    projects: list[str] = Field(default_factory=list)
+
+
+class EraseDecisionResponse(BaseModel):
+    decision_id: UUID
+    erased_at: datetime
+    original_hash: str
+    erased_hash: str
+    alternatives_erased: int = 0
+    evidence_erased: int = 0
+    claims_erased: int = 0
+
+
+class ConflictStatusUpdate(BaseModel):
+    status: str  # "resolved" or "false_positive"
+    resolution_note: str | None = None
+    winning_decision_id: UUID | None = None
+    false_positive_label: str | None = None
+
+
+class AdjudicateConflictRequest(BaseModel):
+    outcome: str
+    reasoning: str | None = None
+    decision_type: str = "conflict_resolution"
+    winning_decision_id: UUID | None = None
+
+
+class ResolveConflictGroupRequest(BaseModel):
+    status: str  # "resolved" or "false_positive"
+    resolution_note: str | None = None
+    winning_agent: str | None = None
+    false_positive_label: str | None = None
+
+
+class ResolveConflictGroupResponse(BaseModel):
+    group_id: UUID
+    status: str
+    resolved: int
+
+
+class ConflictGroup(BaseModel):
+    id: UUID
+    org_id: UUID
+    agent_a: str
+    agent_b: str
+    conflict_kind: ConflictKind
+    decision_type: str
+    group_topic: str = ""
+    first_detected_at: datetime
+    last_detected_at: datetime
+    conflict_count: int = 0
+    open_count: int = 0
+    times_reopened: int = 0
+    representative: DecisionConflict | None = None
+    open_conflicts: list[DecisionConflict] = Field(default_factory=list)
+
+
+class ConflictAnalyticsSummary(BaseModel):
+    total_conflicts: int = 0
+    open: int = 0
+    resolved: int = 0
+    false_positives: int = 0
+    avg_days_to_resolution: float = 0.0
+
+
+class ConflictAgentPairStats(BaseModel):
+    agent_a: str
+    agent_b: str
+    count: int = 0
+    open: int = 0
+    resolved: int = 0
+    false_positives: int = 0
+
+
+class ConflictTypeStats(BaseModel):
+    decision_type: str
+    count: int = 0
+    open: int = 0
+
+
+class ConflictSeverityStats(BaseModel):
+    severity: str
+    count: int = 0
+    open: int = 0
+
+
+class ConflictDailyTrend(BaseModel):
+    date: str
+    detected: int = 0
+    resolved: int = 0
+
+
+class ConflictAnalyticsResponse(BaseModel):
+    period: str = ""
+    from_time: datetime | None = Field(default=None, alias="from")
+    to_time: datetime | None = Field(default=None, alias="to")
+    summary: ConflictAnalyticsSummary = Field(default_factory=ConflictAnalyticsSummary)
+    by_agent_pair: list[ConflictAgentPairStats] = Field(default_factory=list)
+    by_decision_type: list[ConflictTypeStats] = Field(default_factory=list)
+    by_severity: list[ConflictSeverityStats] = Field(default_factory=list)
+    daily_trend: list[ConflictDailyTrend] = Field(default_factory=list)
+
+
+# --- Phase 3: Admin & configuration types ---
+
+
+class APIKey(BaseModel):
+    id: UUID
+    prefix: str
+    agent_id: str
+    org_id: UUID | None = None
+    label: str = ""
+    created_by: str = ""
+    created_at: datetime
+    expires_at: datetime | None = None
+    revoked_at: datetime | None = None
+
+
+class APIKeyWithRawKey(BaseModel):
+    api_key: APIKey
+    raw_key: str
+
+
+class CreateKeyRequest(BaseModel):
+    agent_id: str
+    label: str = ""
+    expires_at: str | None = None
+
+
+class RotateKeyResponse(BaseModel):
+    new_key: APIKeyWithRawKey
+    revoked_key_id: UUID
+
+
+class ConflictResolutionSettings(BaseModel):
+    auto_resolve_threshold: float = 0.95
+    enable_cascade_resolution: bool = True
+    cascade_similarity_threshold: float = 0.8
+
+
+class OrgSettings(BaseModel):
+    conflict_resolution: ConflictResolutionSettings = Field(default_factory=ConflictResolutionSettings)
+    updated_at: datetime | None = None
+
+
+class SetOrgSettingsRequest(BaseModel):
+    conflict_resolution: ConflictResolutionSettings
+
+
+class RetentionHold(BaseModel):
+    id: UUID
+    org_id: UUID
+    reason: str
+    hold_from: datetime
+    hold_to: datetime
+    decision_types: list[str] = Field(default_factory=list)
+    agent_ids: list[str] = Field(default_factory=list)
+    created_by: str = ""
+    created_at: datetime
+    released_at: datetime | None = None
+
+
+class RetentionPolicy(BaseModel):
+    retention_days: int = 0
+    retention_exclude_types: list[str] = Field(default_factory=list)
+    last_run: datetime | None = None
+    last_run_deleted: int = 0
+    next_run: datetime | None = None
+    holds: list[RetentionHold] = Field(default_factory=list)
+
+
+class SetRetentionRequest(BaseModel):
+    retention_days: int
+    retention_exclude_types: list[str] = Field(default_factory=list)
+
+
+class PurgeCounts(BaseModel):
+    decisions: int = 0
+    alternatives: int = 0
+    evidence: int = 0
+    claims: int = 0
+    events: int = 0
+
+
+class PurgeRequest(BaseModel):
+    before: datetime
+    decision_type: str | None = None
+    agent_id: str | None = None
+    dry_run: bool = True
+
+
+class PurgeResponse(BaseModel):
+    dry_run: bool
+    would_delete: PurgeCounts = Field(default_factory=PurgeCounts)
+    deleted: PurgeCounts = Field(default_factory=PurgeCounts)
+
+
+class CreateHoldRequest(BaseModel):
+    reason: str
+    from_time: datetime = Field(alias="from")
+    to_time: datetime = Field(alias="to")
+    decision_types: list[str] = Field(default_factory=list)
+    agent_ids: list[str] = Field(default_factory=list)
+
+
+class ProjectLink(BaseModel):
+    id: UUID
+    org_id: UUID
+    project_a: str
+    project_b: str
+    link_type: str = ""
+    created_by: str = ""
+    created_at: datetime
+
+
+class CreateProjectLinkRequest(BaseModel):
+    project_a: str
+    project_b: str
+    link_type: str = "conflict_scope"
+
+
+class IntegrityViolation(BaseModel):
+    id: UUID
+    decision_id: UUID
+    org_id: UUID
+    expected_hash: str
+    actual_hash: str
+    detected_at: datetime
+
+
+class IntegrityViolationsResponse(BaseModel):
+    violations: list[IntegrityViolation] = Field(default_factory=list)
+    count: int = 0
+
+
+class TraceHealthResponse(BaseModel):
+    total_decisions: int = 0
+    total_assessments: int = 0
+    total_conflicts: int = 0
+    avg_completeness: float = 0.0
+    avg_confidence: float = 0.0
+    assessment_rate: float = 0.0
+    conflict_rate: float = 0.0
+    compliance_score: float = 0.0
+
+
+class UsageByKey(BaseModel):
+    key_id: UUID
+    prefix: str = ""
+    label: str = ""
+    agent_id: str = ""
+    decisions: int = 0
+
+
+class UsageByAgent(BaseModel):
+    agent_id: str
+    decisions: int = 0
+
+
+class UsageResponse(BaseModel):
+    org_id: UUID
+    period: str = ""
+    total_decisions: int = 0
+    by_key: list[UsageByKey] = Field(default_factory=list)
+    by_agent: list[UsageByAgent] = Field(default_factory=list)
+
+
+class ScopedTokenRequest(BaseModel):
+    as_agent_id: str
+    expires_in: int = 300
+
+
+class ScopedTokenResponse(BaseModel):
+    token: str
+    expires_at: datetime
+    as_agent_id: str
+    scoped_by: str
+
+
+class SignupRequest(BaseModel):
+    org_name: str
+    agent_id: str
+    email: str
+
+
+class MCPConfigInfo(BaseModel):
+    url: str = ""
+    header: str = ""
+
+
+class SignupResponse(BaseModel):
+    org_id: UUID
+    org_slug: str = ""
+    agent_id: str
+    api_key: str
+    mcp_config: MCPConfigInfo | None = None
+
+
+class ConfigResponse(BaseModel):
+    search_enabled: bool
+
+
+# --- Phase 4: Agent, grant, session types ---
+
+
+class UpdateAgentRequest(BaseModel):
+    name: str | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class AgentStats(BaseModel):
+    decision_count: int = 0
+    last_decision_at: datetime | None = None
+    avg_confidence: float = 0.0
+    conflict_rate: float = 0.0
+
+
+class AgentStatsResponse(BaseModel):
+    agent_id: str
+    stats: AgentStats
+
+
+class SessionSummary(BaseModel):
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    duration_secs: float = 0.0
+    decision_types: dict[str, int] = Field(default_factory=dict)
+    avg_confidence: float = 0.0
+
+
+class SessionViewResponse(BaseModel):
+    session_id: UUID
+    decisions: list[Decision] = Field(default_factory=list)
+    decision_count: int = 0
+    summary: SessionSummary = Field(default_factory=SessionSummary)

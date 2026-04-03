@@ -27,6 +27,15 @@ import type {
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
+// Minimal Headers stub for mock responses.
+function mockHeaders(entries: Record<string, string> = {}): Headers {
+  return {
+    get(name: string) {
+      return entries[name.toLowerCase()] ?? null;
+    },
+  } as Headers;
+}
+
 // Helper to create a mock Response.
 function mockResponse(
   status: number,
@@ -36,6 +45,7 @@ function mockResponse(
   return {
     ok,
     status,
+    headers: mockHeaders(),
     json: () => Promise.resolve(body),
   } as Response;
 }
@@ -45,6 +55,7 @@ function mockNoContent(): Response {
   return {
     ok: true,
     status: 204,
+    headers: mockHeaders(),
     json: () => Promise.reject(new Error("no body")),
   } as Response;
 }
@@ -69,6 +80,7 @@ describe("AkashiClient", () => {
       baseUrl: "http://localhost:8080",
       agentId: "test-agent",
       apiKey: "test-key",
+      maxRetries: 0,
     });
   });
 

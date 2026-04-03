@@ -10,31 +10,76 @@ import {
   ValidationError,
 } from "./errors.js";
 import type {
+  AdjudicateConflictRequest,
   Agent,
   AgentRun,
+  AgentStatsResponse,
+  APIKeyInfo,
+  APIKeyWithRawKey,
   AssessRequest,
   AssessResponse,
   CheckResponse,
   CompleteRunRequest,
+  ConfigResponse,
+  ConflictAnalyticsResponse,
+  ConflictDetail,
+  ConflictGroup,
+  ConflictStatusUpdate,
   CreateAgentRequest,
   CreateGrantRequest,
+  CreateHoldRequest,
+  CreateKeyRequest,
+  CreateProjectLinkRequest,
   CreateRunRequest,
   Decision,
   DecisionConflict,
+  EraseDecisionResponse,
   EventInput,
+  FacetsResponse,
   GetRunResponse,
   Grant,
   HealthResponse,
+  IntegrityViolationsResponse,
   AkashiConfig,
+  LineageResponse,
+  OrgSettings,
+  ProjectLink,
+  PurgeRequest,
+  PurgeResponse,
   QueryFilters,
   QueryResponse,
+  ResolveConflictGroupRequest,
+  ResolveConflictGroupResponse,
+  RetentionHold,
+  RetentionPolicy,
   RevisionsResponse,
+  RotateKeyResponse,
+  ScopedTokenRequest,
+  ScopedTokenResponse,
   SearchResponse,
   SearchResult,
+  SessionViewResponse,
+  SetOrgSettingsRequest,
+  SetRetentionRequest,
+  SignupRequest,
+  SignupResponse,
+  TimelineResponse,
+  TraceHealthResponse,
   TraceRequest,
   TraceResponse,
+  UpdateAgentRequest,
+  UsageResponse,
   VerifyResponse,
 } from "./types.js";
+import {
+  DEFAULT_MAX_RETRIES,
+  DEFAULT_RETRY_BASE_DELAY_MS,
+  isRetryableStatus,
+  retryDelayMs,
+  parseRetryAfter,
+  checkResponseSize,
+  sleep,
+} from "./retry.js";
 
 const USER_AGENT = "akashi-typescript/0.2.0";
 
@@ -410,6 +455,8 @@ export class AkashiClient {
   private readonly sessionId: string;
   private readonly timeoutMs: number;
   private readonly tokenManager: TokenManager;
+  private readonly maxRetries: number;
+  private readonly retryBaseDelayMs: number;
 
   constructor(config: AkashiConfig) {
     this.baseUrl = config.baseUrl.replace(/\/+$/, "");
@@ -422,6 +469,8 @@ export class AkashiClient {
       config.apiKey,
       this.timeoutMs,
     );
+    this.maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
+    this.retryBaseDelayMs = config.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
   }
 
   /** Check for existing decisions before making a new one. */
@@ -438,19 +487,12 @@ export class AkashiClient {
 
   /** Record a decision trace. */
   async trace(request: TraceRequest): Promise<TraceResponse> {
-    const token = await this.tokenManager.getToken();
-    const resp = await fetch(`${this.baseUrl}/v1/trace`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-        "User-Agent": USER_AGENT,
-        "X-Akashi-Session": this.sessionId,
-      },
-      body: JSON.stringify(buildTraceBody(this.agentId, request)),
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
-    return handleResponse<TraceResponse>(resp);
+    const idempotencyKey = request.idempotencyKey ?? crypto.randomUUID();
+    return this.post<TraceResponse>(
+      "/v1/trace",
+      buildTraceBody(this.agentId, request),
+      { "X-Idempotency-Key": idempotencyKey },
+    );
   }
 
   /** Query past decisions with structured filters. */
@@ -531,10 +573,16 @@ export class AkashiClient {
   }
 
   /** Append events to an existing run. */
-  async appendEvents(runId: string, events: EventInput[]): Promise<void> {
+  async appendEvents(
+    runId: string,
+    events: EventInput[],
+    idempotencyKey?: string,
+  ): Promise<void> {
+    const key = idempotencyKey ?? crypto.randomUUID();
     await this.post<unknown>(
       `/v1/runs/${encodeURIComponent(runId)}/events`,
       buildAppendEventsBody(events),
+      { "X-Idempotency-Key": key },
     );
   }
 
@@ -542,10 +590,13 @@ export class AkashiClient {
   async completeRun(
     runId: string,
     req: CompleteRunRequest,
+    idempotencyKey?: string,
   ): Promise<AgentRun> {
+    const key = idempotencyKey ?? crypto.randomUUID();
     return this.post<AgentRun>(
       `/v1/runs/${encodeURIComponent(runId)}/complete`,
       buildCompleteRunBody(req),
+      { "X-Idempotency-Key": key },
     );
   }
 
@@ -687,6 +738,321 @@ export class AkashiClient {
     return envelope.items;
   }
 
+  // --- Phase 2: Decision details ---
+
+  /** Get a single decision by ID. */
+  async getDecision(decisionId: string): Promise<Decision> {
+    return this.get<Decision>(`/v1/decisions/${encodeURIComponent(decisionId)}`);
+  }
+
+  /** List conflicts for a specific decision. */
+  async getDecisionConflicts(
+    decisionId: string,
+    options?: { status?: string; limit?: number; offset?: number },
+  ): Promise<DecisionConflict[]> {
+    const params = new URLSearchParams();
+    if (options?.status) params.set("status", options.status);
+    if (options?.limit !== undefined) params.set("limit", String(options.limit));
+    if (options?.offset !== undefined) params.set("offset", String(options.offset));
+    const qs = params.toString();
+    const envelope = await this.getList<DecisionConflict>(
+      `/v1/decisions/${encodeURIComponent(decisionId)}/conflicts${qs ? `?${qs}` : ""}`,
+    );
+    return envelope.items;
+  }
+
+  /** Get the precedent lineage for a decision. */
+  async getDecisionLineage(decisionId: string): Promise<LineageResponse> {
+    return this.get<LineageResponse>(`/v1/decisions/${encodeURIComponent(decisionId)}/lineage`);
+  }
+
+  /** Get an aggregated timeline of decisions. */
+  async getDecisionTimeline(options?: {
+    granularity?: string;
+    from?: string;
+    to?: string;
+    agentId?: string;
+    project?: string;
+  }): Promise<TimelineResponse> {
+    const params = new URLSearchParams();
+    if (options?.granularity) params.set("granularity", options.granularity);
+    if (options?.from) params.set("from", options.from);
+    if (options?.to) params.set("to", options.to);
+    if (options?.agentId) params.set("agent_id", options.agentId);
+    if (options?.project) params.set("project", options.project);
+    const qs = params.toString();
+    return this.get<TimelineResponse>(`/v1/decisions/timeline${qs ? `?${qs}` : ""}`);
+  }
+
+  /** Get available decision types and projects for filtering. */
+  async getDecisionFacets(): Promise<FacetsResponse> {
+    return this.get<FacetsResponse>("/v1/decisions/facets");
+  }
+
+  /** Retract (soft-delete) a decision. */
+  async retractDecision(decisionId: string, reason?: string): Promise<Decision> {
+    return this.del_with_body<Decision>(
+      `/v1/decisions/${encodeURIComponent(decisionId)}`,
+      reason ? { reason } : {},
+    );
+  }
+
+  /** GDPR-erase a decision, replacing content with hashed placeholders. */
+  async eraseDecision(decisionId: string, reason?: string): Promise<EraseDecisionResponse> {
+    return this.post<EraseDecisionResponse>(
+      `/v1/decisions/${encodeURIComponent(decisionId)}/erase`,
+      reason ? { reason } : {},
+    );
+  }
+
+  // --- Phase 2: Conflict management ---
+
+  /** Get a single conflict with optional recommendation. */
+  async getConflict(conflictId: string): Promise<ConflictDetail> {
+    return this.get<ConflictDetail>(`/v1/conflicts/${encodeURIComponent(conflictId)}`);
+  }
+
+  /** Adjudicate a conflict by choosing a winner. */
+  async adjudicateConflict(conflictId: string, req: AdjudicateConflictRequest): Promise<ConflictDetail> {
+    return this.post<ConflictDetail>(
+      `/v1/conflicts/${encodeURIComponent(conflictId)}/adjudicate`,
+      req,
+    );
+  }
+
+  /** Update a conflict's status (resolve, mark false positive, etc.). */
+  async patchConflict(conflictId: string, req: ConflictStatusUpdate): Promise<DecisionConflict> {
+    return this.patch<DecisionConflict>(
+      `/v1/conflicts/${encodeURIComponent(conflictId)}`,
+      req,
+    );
+  }
+
+  /** List conflict groups (clusters of related conflicts). */
+  async listConflictGroups(options?: {
+    decisionType?: string;
+    agentId?: string;
+    conflictKind?: string;
+    status?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<ConflictGroup[]> {
+    const params = new URLSearchParams();
+    if (options?.decisionType) params.set("decision_type", options.decisionType);
+    if (options?.agentId) params.set("agent_id", options.agentId);
+    if (options?.conflictKind) params.set("conflict_kind", options.conflictKind);
+    if (options?.status) params.set("status", options.status);
+    if (options?.limit !== undefined) params.set("limit", String(options.limit));
+    if (options?.offset !== undefined) params.set("offset", String(options.offset));
+    const qs = params.toString();
+    const envelope = await this.getList<ConflictGroup>(`/v1/conflict-groups${qs ? `?${qs}` : ""}`);
+    return envelope.items;
+  }
+
+  /** Resolve all open conflicts in a group. */
+  async resolveConflictGroup(groupId: string, req: ResolveConflictGroupRequest): Promise<ResolveConflictGroupResponse> {
+    return this.patch<ResolveConflictGroupResponse>(
+      `/v1/conflict-groups/${encodeURIComponent(groupId)}/resolve`,
+      req,
+    );
+  }
+
+  /** Get conflict analytics (summary, trends, breakdowns). */
+  async getConflictAnalytics(options?: {
+    period?: string;
+    from?: string;
+    to?: string;
+    agentId?: string;
+    decisionType?: string;
+    conflictKind?: string;
+  }): Promise<ConflictAnalyticsResponse> {
+    const params = new URLSearchParams();
+    if (options?.period) params.set("period", options.period);
+    if (options?.from) params.set("from", options.from);
+    if (options?.to) params.set("to", options.to);
+    if (options?.agentId) params.set("agent_id", options.agentId);
+    if (options?.decisionType) params.set("decision_type", options.decisionType);
+    if (options?.conflictKind) params.set("conflict_kind", options.conflictKind);
+    const qs = params.toString();
+    return this.get<ConflictAnalyticsResponse>(`/v1/conflicts/analytics${qs ? `?${qs}` : ""}`);
+  }
+
+  // --- Phase 3: API keys ---
+
+  /** Create a new API key. */
+  async createKey(req: CreateKeyRequest): Promise<APIKeyWithRawKey> {
+    return this.post<APIKeyWithRawKey>("/v1/keys", req);
+  }
+
+  /** List API keys for the org. */
+  async listKeys(options?: { limit?: number; offset?: number }): Promise<APIKeyInfo[]> {
+    const params = new URLSearchParams();
+    if (options?.limit !== undefined) params.set("limit", String(options.limit));
+    if (options?.offset !== undefined) params.set("offset", String(options.offset));
+    const qs = params.toString();
+    const envelope = await this.getList<APIKeyInfo>(`/v1/keys${qs ? `?${qs}` : ""}`);
+    return envelope.items;
+  }
+
+  /** Revoke an API key. */
+  async revokeKey(keyId: string): Promise<void> {
+    await this.del(`/v1/keys/${encodeURIComponent(keyId)}`);
+  }
+
+  /** Rotate an API key (revoke old, create new). */
+  async rotateKey(keyId: string): Promise<RotateKeyResponse> {
+    return this.post<RotateKeyResponse>(`/v1/keys/${encodeURIComponent(keyId)}/rotate`, {});
+  }
+
+  // --- Phase 3: Org settings ---
+
+  /** Get org-level settings. */
+  async getOrgSettings(): Promise<OrgSettings> {
+    return this.get<OrgSettings>("/v1/org/settings");
+  }
+
+  /** Update org-level settings. */
+  async setOrgSettings(req: SetOrgSettingsRequest): Promise<OrgSettings> {
+    return this.put<OrgSettings>("/v1/org/settings", req);
+  }
+
+  // --- Phase 3: Retention ---
+
+  /** Get the retention policy for the org. */
+  async getRetention(): Promise<RetentionPolicy> {
+    return this.get<RetentionPolicy>("/v1/retention");
+  }
+
+  /** Set the retention policy for the org. */
+  async setRetention(req: SetRetentionRequest): Promise<RetentionPolicy> {
+    return this.put<RetentionPolicy>("/v1/retention", req);
+  }
+
+  /** Purge old decisions (optionally dry-run). */
+  async purgeDecisions(req: PurgeRequest): Promise<PurgeResponse> {
+    return this.post<PurgeResponse>("/v1/retention/purge", req);
+  }
+
+  /** Create a retention hold to prevent purging. */
+  async createHold(req: CreateHoldRequest): Promise<RetentionHold> {
+    return this.post<RetentionHold>("/v1/retention/hold", req);
+  }
+
+  /** Release a retention hold. */
+  async releaseHold(holdId: string): Promise<void> {
+    await this.del(`/v1/retention/hold/${encodeURIComponent(holdId)}`);
+  }
+
+  // --- Phase 3: Project links ---
+
+  /** Create a link between two projects. */
+  async createProjectLink(req: CreateProjectLinkRequest): Promise<ProjectLink> {
+    return this.post<ProjectLink>("/v1/project-links", req);
+  }
+
+  /** List project links. */
+  async listProjectLinks(options?: { limit?: number; offset?: number }): Promise<ProjectLink[]> {
+    const params = new URLSearchParams();
+    if (options?.limit !== undefined) params.set("limit", String(options.limit));
+    if (options?.offset !== undefined) params.set("offset", String(options.offset));
+    const qs = params.toString();
+    const envelope = await this.getList<ProjectLink>(`/v1/project-links${qs ? `?${qs}` : ""}`);
+    return envelope.items;
+  }
+
+  /** Delete a project link. */
+  async deleteProjectLink(linkId: string): Promise<void> {
+    await this.del(`/v1/project-links/${encodeURIComponent(linkId)}`);
+  }
+
+  /** Auto-create links between all known projects. */
+  async grantAllProjectLinks(linkType?: string): Promise<{ links_created: number }> {
+    return this.post<{ links_created: number }>(
+      "/v1/project-links/grant-all",
+      linkType ? { link_type: linkType } : {},
+    );
+  }
+
+  // --- Phase 3: Integrity, trace health, usage ---
+
+  /** List integrity violations (tampered decision hashes). */
+  async listIntegrityViolations(limit?: number): Promise<IntegrityViolationsResponse> {
+    const params = new URLSearchParams();
+    if (limit !== undefined) params.set("limit", String(limit));
+    const qs = params.toString();
+    return this.get<IntegrityViolationsResponse>(`/v1/integrity/violations${qs ? `?${qs}` : ""}`);
+  }
+
+  /** Get trace health metrics (completeness, compliance). */
+  async getTraceHealth(options?: { from?: string; to?: string }): Promise<TraceHealthResponse> {
+    const params = new URLSearchParams();
+    if (options?.from) params.set("from", options.from);
+    if (options?.to) params.set("to", options.to);
+    const qs = params.toString();
+    return this.get<TraceHealthResponse>(`/v1/trace-health${qs ? `?${qs}` : ""}`);
+  }
+
+  /** Get API usage statistics. */
+  async getUsage(period?: string): Promise<UsageResponse> {
+    const params = new URLSearchParams();
+    if (period) params.set("period", period);
+    const qs = params.toString();
+    return this.get<UsageResponse>(`/v1/usage${qs ? `?${qs}` : ""}`);
+  }
+
+  // --- Phase 3: Auth ---
+
+  /** Create a scoped token to act as another agent. */
+  async scopedToken(req: ScopedTokenRequest): Promise<ScopedTokenResponse> {
+    return this.post<ScopedTokenResponse>("/v1/auth/scoped-token", req);
+  }
+
+  /** Sign up a new org (no auth required). */
+  async signup(req: SignupRequest): Promise<SignupResponse> {
+    return this.postNoAuth<SignupResponse>("/auth/signup", req);
+  }
+
+  /** Get public server config (no auth required). */
+  async getConfig(): Promise<ConfigResponse> {
+    return this.getNoAuth<ConfigResponse>("/config");
+  }
+
+  // --- Phase 4: Agent management ---
+
+  /** Get a single agent by agent_id. */
+  async getAgent(agentId: string): Promise<Agent> {
+    return this.get<Agent>(`/v1/agents/${encodeURIComponent(agentId)}`);
+  }
+
+  /** Update an agent's name or metadata. */
+  async updateAgent(agentId: string, req: UpdateAgentRequest): Promise<Agent> {
+    return this.patch<Agent>(`/v1/agents/${encodeURIComponent(agentId)}`, req);
+  }
+
+  /** Get aggregate statistics for an agent. */
+  async getAgentStats(agentId: string): Promise<AgentStatsResponse> {
+    return this.get<AgentStatsResponse>(`/v1/agents/${encodeURIComponent(agentId)}/stats`);
+  }
+
+  // --- Phase 4: Grants ---
+
+  /** List access grants with pagination. */
+  async listGrants(options?: { limit?: number; offset?: number }): Promise<Grant[]> {
+    const params = new URLSearchParams();
+    if (options?.limit !== undefined) params.set("limit", String(options.limit));
+    if (options?.offset !== undefined) params.set("offset", String(options.offset));
+    const qs = params.toString();
+    const envelope = await this.getList<Grant>(`/v1/grants${qs ? `?${qs}` : ""}`);
+    return envelope.items;
+  }
+
+  // --- Phase 4: Sessions ---
+
+  /** Get a session view with decisions and summary. */
+  async getSessionView(sessionId: string): Promise<SessionViewResponse> {
+    return this.get<SessionViewResponse>(`/v1/sessions/${encodeURIComponent(sessionId)}`);
+  }
+
   // --- Health (no auth) ---
 
   /** Check server health. Does not require authentication. */
@@ -696,100 +1062,375 @@ export class AkashiClient {
 
   // --- HTTP transport ---
 
-  private async post<T>(path: string, body: unknown): Promise<T> {
-    const token = await this.tokenManager.getToken();
-    const resp = await fetch(`${this.baseUrl}${path}`, {
-      method: "POST",
-      headers: {
+  private async post<T>(
+    path: string,
+    body: unknown,
+    extraHeaders?: Record<string, string>,
+  ): Promise<T> {
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      const token = await this.tokenManager.getToken();
+      const headers: Record<string, string> = {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
         "User-Agent": USER_AGENT,
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
-    return handleResponse<T>(resp);
+        "X-Akashi-Session": this.sessionId,
+        ...extraHeaders,
+      };
+      let resp: Response;
+      try {
+        resp = await fetch(`${this.baseUrl}${path}`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < this.maxRetries) {
+          await sleep(retryDelayMs(attempt, this.retryBaseDelayMs));
+          continue;
+        }
+        throw lastError;
+      }
+      if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
+        const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
+        await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
+        continue;
+      }
+      checkResponseSize(resp.headers.get("content-length"));
+      return handleResponse<T>(resp);
+    }
+    throw lastError!;
   }
 
   private async postList<T>(
     path: string,
     body: unknown,
   ): Promise<ListEnvelope<T>> {
-    const token = await this.tokenManager.getToken();
-    const resp = await fetch(`${this.baseUrl}${path}`, {
-      method: "POST",
-      headers: {
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      const token = await this.tokenManager.getToken();
+      const headers: Record<string, string> = {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
         "User-Agent": USER_AGENT,
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
-    return handleListResponse<T>(resp);
+        "X-Akashi-Session": this.sessionId,
+      };
+      let resp: Response;
+      try {
+        resp = await fetch(`${this.baseUrl}${path}`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < this.maxRetries) {
+          await sleep(retryDelayMs(attempt, this.retryBaseDelayMs));
+          continue;
+        }
+        throw lastError;
+      }
+      if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
+        const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
+        await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
+        continue;
+      }
+      checkResponseSize(resp.headers.get("content-length"));
+      return handleListResponse<T>(resp);
+    }
+    throw lastError!;
   }
 
   private async patch<T>(path: string, body: unknown): Promise<T> {
-    const token = await this.tokenManager.getToken();
-    const resp = await fetch(`${this.baseUrl}${path}`, {
-      method: "PATCH",
-      headers: {
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      const token = await this.tokenManager.getToken();
+      const headers: Record<string, string> = {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
         "User-Agent": USER_AGENT,
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
-    return handleResponse<T>(resp);
+        "X-Akashi-Session": this.sessionId,
+      };
+      let resp: Response;
+      try {
+        resp = await fetch(`${this.baseUrl}${path}`, {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < this.maxRetries) {
+          await sleep(retryDelayMs(attempt, this.retryBaseDelayMs));
+          continue;
+        }
+        throw lastError;
+      }
+      if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
+        const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
+        await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
+        continue;
+      }
+      checkResponseSize(resp.headers.get("content-length"));
+      return handleResponse<T>(resp);
+    }
+    throw lastError!;
   }
 
   private async get<T>(path: string): Promise<T> {
-    const token = await this.tokenManager.getToken();
-    const resp = await fetch(`${this.baseUrl}${path}`, {
-      method: "GET",
-      headers: {
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      const token = await this.tokenManager.getToken();
+      const headers: Record<string, string> = {
         Authorization: `Bearer ${token}`,
         "User-Agent": USER_AGENT,
-      },
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
-    return handleResponse<T>(resp);
+        "X-Akashi-Session": this.sessionId,
+      };
+      let resp: Response;
+      try {
+        resp = await fetch(`${this.baseUrl}${path}`, {
+          method: "GET",
+          headers,
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < this.maxRetries) {
+          await sleep(retryDelayMs(attempt, this.retryBaseDelayMs));
+          continue;
+        }
+        throw lastError;
+      }
+      if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
+        const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
+        await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
+        continue;
+      }
+      checkResponseSize(resp.headers.get("content-length"));
+      return handleResponse<T>(resp);
+    }
+    throw lastError!;
   }
 
   private async getList<T>(path: string): Promise<ListEnvelope<T>> {
-    const token = await this.tokenManager.getToken();
-    const resp = await fetch(`${this.baseUrl}${path}`, {
-      method: "GET",
-      headers: {
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      const token = await this.tokenManager.getToken();
+      const headers: Record<string, string> = {
         Authorization: `Bearer ${token}`,
         "User-Agent": USER_AGENT,
-      },
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
-    return handleListResponse<T>(resp);
+        "X-Akashi-Session": this.sessionId,
+      };
+      let resp: Response;
+      try {
+        resp = await fetch(`${this.baseUrl}${path}`, {
+          method: "GET",
+          headers,
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < this.maxRetries) {
+          await sleep(retryDelayMs(attempt, this.retryBaseDelayMs));
+          continue;
+        }
+        throw lastError;
+      }
+      if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
+        const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
+        await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
+        continue;
+      }
+      checkResponseSize(resp.headers.get("content-length"));
+      return handleListResponse<T>(resp);
+    }
+    throw lastError!;
   }
 
   private async del(path: string): Promise<void> {
-    const token = await this.tokenManager.getToken();
-    const resp = await fetch(`${this.baseUrl}${path}`, {
-      method: "DELETE",
-      headers: {
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      const token = await this.tokenManager.getToken();
+      const headers: Record<string, string> = {
         Authorization: `Bearer ${token}`,
         "User-Agent": USER_AGENT,
-      },
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
-    if (resp.status === 204) return;
-    await handleResponse<unknown>(resp);
+        "X-Akashi-Session": this.sessionId,
+      };
+      let resp: Response;
+      try {
+        resp = await fetch(`${this.baseUrl}${path}`, {
+          method: "DELETE",
+          headers,
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < this.maxRetries) {
+          await sleep(retryDelayMs(attempt, this.retryBaseDelayMs));
+          continue;
+        }
+        throw lastError;
+      }
+      if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
+        const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
+        await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
+        continue;
+      }
+      if (resp.status === 204) return;
+      checkResponseSize(resp.headers.get("content-length"));
+      await handleResponse<unknown>(resp);
+      return;
+    }
+    throw lastError!;
   }
 
   private async getNoAuth<T>(path: string): Promise<T> {
-    const resp = await fetch(`${this.baseUrl}${path}`, {
-      method: "GET",
-      headers: { "User-Agent": USER_AGENT },
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
-    return handleResponse<T>(resp);
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      let resp: Response;
+      try {
+        resp = await fetch(`${this.baseUrl}${path}`, {
+          method: "GET",
+          headers: { "User-Agent": USER_AGENT },
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < this.maxRetries) {
+          await sleep(retryDelayMs(attempt, this.retryBaseDelayMs));
+          continue;
+        }
+        throw lastError;
+      }
+      if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
+        const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
+        await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
+        continue;
+      }
+      checkResponseSize(resp.headers.get("content-length"));
+      return handleResponse<T>(resp);
+    }
+    throw lastError!;
+  }
+
+  private async put<T>(path: string, body: unknown): Promise<T> {
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      const token = await this.tokenManager.getToken();
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        "User-Agent": USER_AGENT,
+        "X-Akashi-Session": this.sessionId,
+      };
+      let resp: Response;
+      try {
+        resp = await fetch(`${this.baseUrl}${path}`, {
+          method: "PUT",
+          headers,
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < this.maxRetries) {
+          await sleep(retryDelayMs(attempt, this.retryBaseDelayMs));
+          continue;
+        }
+        throw lastError;
+      }
+      if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
+        const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
+        await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
+        continue;
+      }
+      checkResponseSize(resp.headers.get("content-length"));
+      return handleResponse<T>(resp);
+    }
+    throw lastError!;
+  }
+
+  private async postNoAuth<T>(path: string, body: unknown): Promise<T> {
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      let resp: Response;
+      try {
+        resp = await fetch(`${this.baseUrl}${path}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < this.maxRetries) {
+          await sleep(retryDelayMs(attempt, this.retryBaseDelayMs));
+          continue;
+        }
+        throw lastError;
+      }
+      if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
+        const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
+        await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
+        continue;
+      }
+      checkResponseSize(resp.headers.get("content-length"));
+      return handleResponse<T>(resp);
+    }
+    throw lastError!;
+  }
+
+  private async del_with_body<T>(path: string, body: unknown): Promise<T> {
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      const token = await this.tokenManager.getToken();
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        "User-Agent": USER_AGENT,
+        "X-Akashi-Session": this.sessionId,
+      };
+      let resp: Response;
+      try {
+        resp = await fetch(`${this.baseUrl}${path}`, {
+          method: "DELETE",
+          headers,
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < this.maxRetries) {
+          await sleep(retryDelayMs(attempt, this.retryBaseDelayMs));
+          continue;
+        }
+        throw lastError;
+      }
+      if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
+        const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
+        await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
+        continue;
+      }
+      checkResponseSize(resp.headers.get("content-length"));
+      return handleResponse<T>(resp);
+    }
+    throw lastError!;
   }
 }

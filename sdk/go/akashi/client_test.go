@@ -1685,7 +1685,7 @@ func TestDecisionDeserializesAllFields(t *testing.T) {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"data": []map[string]any{
 					{
-						"id":                decisionID,
+						"id":                 decisionID,
 						"run_id":             runID,
 						"agent_id":           "planner",
 						"org_id":             orgID,

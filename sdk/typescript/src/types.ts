@@ -161,6 +161,8 @@ export interface TraceRequest {
   precedentReason?: string;
   metadata?: Record<string, unknown>;
   context?: Record<string, unknown>;
+  /** Optional idempotency key for safe retries. Auto-generated if omitted. */
+  idempotencyKey?: string;
 }
 
 export interface TraceAlternative {
@@ -300,6 +302,10 @@ export interface AkashiConfig {
   timeoutMs?: number;
   /** Override the auto-generated session UUID. If omitted, one is generated. */
   sessionId?: string;
+  /** Maximum retries on transient errors (429, 5xx, network). Default: 3. */
+  maxRetries?: number;
+  /** Base delay for exponential backoff in ms. Default: 500. */
+  retryBaseDelayMs?: number;
 }
 
 // --- Assessment types (spec 29) ---
@@ -323,4 +329,397 @@ export interface AssessResponse {
   outcome: AssessOutcome;
   notes?: string;
   created_at: string;
+}
+
+// --- Phase 2: Decision & conflict management types ---
+
+export interface ConflictRecommendation {
+  suggested_winner: string;
+  reasons: string[];
+  confidence: number;
+}
+
+export interface ConflictDetail {
+  decision_conflict: DecisionConflict;
+  recommendation?: ConflictRecommendation;
+}
+
+export interface LineageEntry {
+  id: string;
+  decision_type: string;
+  outcome: string;
+  confidence: number;
+  agent_id: string;
+  valid_from: string;
+  precedent_reason?: string;
+}
+
+export interface LineageResponse {
+  decision_id: string;
+  precedent_ref?: string;
+  precedent?: LineageEntry;
+  cites: LineageEntry[];
+}
+
+export interface TimelineDecisionSummary {
+  id: string;
+  agent_id: string;
+  decision_type: string;
+  outcome: string;
+  confidence: number;
+  project?: string;
+  created_at: string;
+}
+
+export interface TimelineBucket {
+  bucket: string;
+  decision_count: number;
+  avg_confidence: number;
+  decision_types: Record<string, number>;
+  agents: Record<string, number>;
+  conflict_count: number;
+  top_decisions?: TimelineDecisionSummary[];
+}
+
+export interface TimelineResponse {
+  granularity: string;
+  buckets: TimelineBucket[];
+  projects: string[];
+}
+
+export interface FacetsResponse {
+  types: string[];
+  projects: string[];
+}
+
+export interface EraseDecisionResponse {
+  decision_id: string;
+  erased_at: string;
+  original_hash: string;
+  erased_hash: string;
+  alternatives_erased: number;
+  evidence_erased: number;
+  claims_erased: number;
+}
+
+export interface AdjudicateConflictRequest {
+  outcome: string;
+  reasoning?: string;
+  decision_type?: string;
+  winning_decision_id?: string;
+}
+
+export interface ConflictStatusUpdate {
+  status: string;
+  resolution_note?: string;
+  winning_decision_id?: string;
+  false_positive_label?: string;
+}
+
+export interface ResolveConflictGroupRequest {
+  status: string;
+  resolution_note?: string;
+  winning_agent?: string;
+  false_positive_label?: string;
+}
+
+export interface ResolveConflictGroupResponse {
+  group_id: string;
+  status: string;
+  resolved: number;
+}
+
+export interface ConflictGroup {
+  id: string;
+  org_id: string;
+  agent_a: string;
+  agent_b: string;
+  conflict_kind: ConflictKind;
+  decision_type: string;
+  group_topic?: string;
+  first_detected_at: string;
+  last_detected_at: string;
+  conflict_count: number;
+  open_count: number;
+  times_reopened: number;
+  representative?: DecisionConflict;
+  open_conflicts?: DecisionConflict[];
+}
+
+export interface ConflictAnalyticsSummary {
+  total_conflicts: number;
+  open: number;
+  resolved: number;
+  false_positives: number;
+  avg_days_to_resolution: number;
+}
+
+export interface ConflictAgentPairStats {
+  agent_a: string;
+  agent_b: string;
+  count: number;
+  open: number;
+  resolved: number;
+  false_positives: number;
+}
+
+export interface ConflictTypeStats {
+  decision_type: string;
+  count: number;
+  open: number;
+}
+
+export interface ConflictSeverityStats {
+  severity: string;
+  count: number;
+  open: number;
+}
+
+export interface ConflictDailyTrend {
+  date: string;
+  detected: number;
+  resolved: number;
+}
+
+export interface ConflictAnalyticsResponse {
+  period: string;
+  from: string;
+  to: string;
+  summary: ConflictAnalyticsSummary;
+  by_agent_pair: ConflictAgentPairStats[];
+  by_decision_type: ConflictTypeStats[];
+  by_severity: ConflictSeverityStats[];
+  daily_trend: ConflictDailyTrend[];
+}
+
+// --- Phase 3: Admin & configuration types ---
+
+export interface APIKeyInfo {
+  id: string;
+  prefix: string;
+  agent_id: string;
+  org_id?: string;
+  label: string;
+  created_by?: string;
+  created_at: string;
+  expires_at?: string;
+  revoked_at?: string;
+}
+
+export interface APIKeyWithRawKey {
+  api_key: APIKeyInfo;
+  raw_key: string;
+}
+
+export interface CreateKeyRequest {
+  agent_id: string;
+  label?: string;
+  expires_at?: string;
+}
+
+export interface RotateKeyResponse {
+  new_key: APIKeyWithRawKey;
+  revoked_key_id: string;
+}
+
+export interface ConflictResolutionSettings {
+  auto_resolve_threshold: number;
+  enable_cascade_resolution: boolean;
+  cascade_similarity_threshold: number;
+}
+
+export interface OrgSettings {
+  conflict_resolution: ConflictResolutionSettings;
+  updated_at: string;
+}
+
+export interface SetOrgSettingsRequest {
+  conflict_resolution: ConflictResolutionSettings;
+}
+
+export interface RetentionHold {
+  id: string;
+  org_id: string;
+  reason: string;
+  hold_from: string;
+  hold_to: string;
+  decision_types?: string[];
+  agent_ids?: string[];
+  created_by: string;
+  created_at: string;
+  released_at?: string;
+}
+
+export interface RetentionPolicy {
+  retention_days: number;
+  retention_exclude_types: string[];
+  last_run?: string;
+  last_run_deleted: number;
+  next_run?: string;
+  holds: RetentionHold[];
+}
+
+export interface SetRetentionRequest {
+  retention_days: number;
+  retention_exclude_types?: string[];
+}
+
+export interface PurgeCounts {
+  decisions: number;
+  alternatives: number;
+  evidence: number;
+  claims: number;
+  events: number;
+}
+
+export interface PurgeRequest {
+  before: string;
+  decision_type?: string;
+  agent_id?: string;
+  dry_run: boolean;
+}
+
+export interface PurgeResponse {
+  dry_run: boolean;
+  would_delete: PurgeCounts;
+  deleted: PurgeCounts;
+}
+
+export interface CreateHoldRequest {
+  reason: string;
+  from: string;
+  to: string;
+  decision_types?: string[];
+  agent_ids?: string[];
+}
+
+export interface ProjectLink {
+  id: string;
+  org_id: string;
+  project_a: string;
+  project_b: string;
+  link_type: string;
+  created_by: string;
+  created_at: string;
+}
+
+export interface CreateProjectLinkRequest {
+  project_a: string;
+  project_b: string;
+  link_type?: string;
+}
+
+export interface IntegrityViolation {
+  id: string;
+  decision_id: string;
+  org_id: string;
+  expected_hash: string;
+  actual_hash: string;
+  detected_at: string;
+}
+
+export interface IntegrityViolationsResponse {
+  violations: IntegrityViolation[];
+  count: number;
+}
+
+export interface TraceHealthResponse {
+  total_decisions: number;
+  total_assessments: number;
+  total_conflicts: number;
+  avg_completeness: number;
+  avg_confidence: number;
+  assessment_rate: number;
+  conflict_rate: number;
+  compliance_score: number;
+}
+
+export interface UsageByKey {
+  key_id: string;
+  prefix: string;
+  label: string;
+  agent_id: string;
+  decisions: number;
+}
+
+export interface UsageByAgent {
+  agent_id: string;
+  decisions: number;
+}
+
+export interface UsageResponse {
+  org_id: string;
+  period: string;
+  total_decisions: number;
+  by_key: UsageByKey[];
+  by_agent: UsageByAgent[];
+}
+
+export interface ScopedTokenRequest {
+  as_agent_id: string;
+  expires_in?: number;
+}
+
+export interface ScopedTokenResponse {
+  token: string;
+  expires_at: string;
+  as_agent_id: string;
+  scoped_by: string;
+}
+
+export interface SignupRequest {
+  org_name: string;
+  agent_id: string;
+  email: string;
+}
+
+export interface MCPConfigInfo {
+  url: string;
+  header: string;
+}
+
+export interface SignupResponse {
+  org_id: string;
+  org_slug: string;
+  agent_id: string;
+  api_key: string;
+  mcp_config?: MCPConfigInfo;
+}
+
+export interface ConfigResponse {
+  search_enabled: boolean;
+}
+
+// --- Phase 4 types ---
+
+export interface UpdateAgentRequest {
+  name?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AgentStatValues {
+  decision_count: number;
+  last_decision_at?: string;
+  avg_confidence: number;
+  conflict_rate: number;
+}
+
+export interface AgentStatsResponse {
+  agent_id: string;
+  stats: AgentStatValues;
+}
+
+export interface SessionSummary {
+  started_at?: string;
+  ended_at?: string;
+  duration_secs: number;
+  decision_types: Record<string, number>;
+  avg_confidence: number;
+}
+
+export interface SessionViewResponse {
+  session_id: string;
+  decisions: Decision[];
+  decision_count: number;
+  summary: SessionSummary;
 }

@@ -42,16 +42,28 @@ type Config struct {
 	// SessionID overrides the auto-generated session UUID. If nil, a random
 	// UUID is generated on client construction.
 	SessionID *uuid.UUID
+
+	// MaxRetries is the number of times to retry a failed request on
+	// transient errors (429, 5xx, network errors). Defaults to 3. Set to 0
+	// to disable retries.
+	MaxRetries *int
+
+	// RetryBaseDelay is the base delay for exponential backoff between
+	// retries. Actual delay is base * 2^attempt with ±25% jitter.
+	// Defaults to 500ms.
+	RetryBaseDelay time.Duration
 }
 
 // Client is an HTTP client for the Akashi decision-tracing API.
 // All methods are safe for concurrent use.
 type Client struct {
-	baseURL   string
-	agentID   string
-	sessionID uuid.UUID
-	client    *http.Client
-	tokenMgr  *tokenManager
+	baseURL        string
+	agentID        string
+	sessionID      uuid.UUID
+	client         *http.Client
+	tokenMgr       *tokenManager
+	maxRetries     int
+	retryBaseDelay time.Duration
 }
 
 // NewClient creates a Client from the given configuration.
@@ -83,12 +95,23 @@ func NewClient(cfg Config) (*Client, error) {
 		sessionID = *cfg.SessionID
 	}
 
+	maxRetries := defaultMaxRetries
+	if cfg.MaxRetries != nil {
+		maxRetries = *cfg.MaxRetries
+	}
+	retryBaseDelay := cfg.RetryBaseDelay
+	if retryBaseDelay == 0 {
+		retryBaseDelay = defaultRetryBaseDelay
+	}
+
 	return &Client{
-		baseURL:   baseURL,
-		agentID:   cfg.AgentID,
-		sessionID: sessionID,
-		client:    httpClient,
-		tokenMgr:  newTokenManager(baseURL, cfg.AgentID, cfg.APIKey, httpClient),
+		baseURL:        baseURL,
+		agentID:        cfg.AgentID,
+		sessionID:      sessionID,
+		client:         httpClient,
+		tokenMgr:       newTokenManager(baseURL, cfg.AgentID, cfg.APIKey, httpClient),
+		maxRetries:     maxRetries,
+		retryBaseDelay: retryBaseDelay,
 	}, nil
 }
 
@@ -109,23 +132,18 @@ func (c *Client) Check(ctx context.Context, req CheckRequest) (*CheckResponse, e
 
 // Trace records a decision so other agents can learn from it.
 // The client's AgentID and SessionID are automatically included.
+// An idempotency key is generated automatically unless one is provided
+// via TraceRequest.IdempotencyKey.
 func (c *Client) Trace(ctx context.Context, req TraceRequest) (*TraceResponse, error) {
+	idemKey := req.IdempotencyKey
+	if idemKey == "" {
+		idemKey = uuid.New().String()
+	}
 	body := buildTraceBody(c.agentID, req)
-
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("akashi: marshal request body: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/trace", bytes.NewReader(encoded))
-	if err != nil {
-		return nil, fmt.Errorf("akashi: create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Akashi-Session", c.sessionID.String())
-
 	var resp TraceResponse
-	if err := c.doRequest(ctx, httpReq, &resp); err != nil {
+	if err := c.postWithHeaders(ctx, "/v1/trace", body, &resp, http.Header{
+		"X-Idempotency-Key": {idemKey},
+	}); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -223,20 +241,42 @@ func (c *Client) CreateRun(ctx context.Context, req CreateRunRequest) (*AgentRun
 }
 
 // AppendEvents appends events to an existing run.
-func (c *Client) AppendEvents(ctx context.Context, runID uuid.UUID, events []EventInput) (*AppendEventsResponse, error) {
+// An idempotency key is generated automatically unless one is provided
+// via the idempotencyKey parameter.
+func (c *Client) AppendEvents(ctx context.Context, runID uuid.UUID, events []EventInput, idempotencyKey ...string) (*AppendEventsResponse, error) {
+	idemKey := ""
+	if len(idempotencyKey) > 0 {
+		idemKey = idempotencyKey[0]
+	}
+	if idemKey == "" {
+		idemKey = uuid.New().String()
+	}
 	body := map[string]any{"events": events}
 	var resp AppendEventsResponse
-	if err := c.post(ctx, "/v1/runs/"+runID.String()+"/events", body, &resp); err != nil {
+	if err := c.postWithHeaders(ctx, "/v1/runs/"+runID.String()+"/events", body, &resp, http.Header{
+		"X-Idempotency-Key": {idemKey},
+	}); err != nil {
 		return nil, err
 	}
 	return &resp, nil
 }
 
 // CompleteRun marks a run as completed or failed.
-func (c *Client) CompleteRun(ctx context.Context, runID uuid.UUID, status string, metadata map[string]any) (*AgentRun, error) {
+// An idempotency key is generated automatically unless one is provided
+// via the idempotencyKey parameter.
+func (c *Client) CompleteRun(ctx context.Context, runID uuid.UUID, status string, metadata map[string]any, idempotencyKey ...string) (*AgentRun, error) {
+	idemKey := ""
+	if len(idempotencyKey) > 0 {
+		idemKey = idempotencyKey[0]
+	}
+	if idemKey == "" {
+		idemKey = uuid.New().String()
+	}
 	body := CompleteRunRequest{Status: status, Metadata: metadata}
 	var resp AgentRun
-	if err := c.post(ctx, "/v1/runs/"+runID.String()+"/complete", body, &resp); err != nil {
+	if err := c.postWithHeaders(ctx, "/v1/runs/"+runID.String()+"/complete", body, &resp, http.Header{
+		"X-Idempotency-Key": {idemKey},
+	}); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -582,6 +622,10 @@ type apiErrorEnvelope struct {
 }
 
 func (c *Client) post(ctx context.Context, path string, body any, dest any) error {
+	return c.postWithHeaders(ctx, path, body, dest, nil)
+}
+
+func (c *Client) postWithHeaders(ctx context.Context, path string, body any, dest any, extra http.Header) error {
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("akashi: marshal request body: %w", err)
@@ -592,6 +636,11 @@ func (c *Client) post(ctx context.Context, path string, body any, dest any) erro
 		return fmt.Errorf("akashi: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	for k, vs := range extra {
+		for _, v := range vs {
+			req.Header.Set(k, v)
+		}
+	}
 
 	return c.doRequest(ctx, req, dest)
 }
@@ -630,25 +679,49 @@ func (c *Client) patch(ctx context.Context, path string, body any, dest any) err
 }
 
 func (c *Client) getNoAuth(ctx context.Context, path string, dest any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
-	if err != nil {
-		return fmt.Errorf("akashi: create request: %w", err)
-	}
-	req.Header.Set("User-Agent", userAgent)
+	var lastErr error
+	for attempt := range c.maxRetries + 1 {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+		if err != nil {
+			return fmt.Errorf("akashi: create request: %w", err)
+		}
+		req.Header.Set("User-Agent", userAgent)
 
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("akashi: %s %s: %w", req.Method, req.URL.Path, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+		resp, doErr := c.client.Do(req)
+		if doErr != nil {
+			lastErr = fmt.Errorf("akashi: %s %s: %w", req.Method, req.URL.Path, doErr)
+			if attempt < c.maxRetries {
+				if waitErr := retrySleep(ctx, attempt, c.retryBaseDelay, 0); waitErr != nil {
+					return waitErr
+				}
+				continue
+			}
+			return lastErr
+		}
 
-	return handleResponse(resp, dest)
+		if isRetryableStatus(resp.StatusCode) && attempt < c.maxRetries {
+			retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if waitErr := retrySleep(ctx, attempt, c.retryBaseDelay, retryAfter); waitErr != nil {
+				return waitErr
+			}
+			continue
+		}
+
+		defer func() { _ = resp.Body.Close() }()
+		return handleResponse(resp, dest)
+	}
+
+	return lastErr
 }
 
-// execRequest adds auth headers and executes an HTTP request.
-// The caller is responsible for closing the response body.
+// execRequest adds auth and session headers, executes the HTTP request, and
+// retries on transient failures (429, 5xx, network errors) with exponential
+// backoff + jitter.  The caller is responsible for closing the response body.
 func (c *Client) execRequest(ctx context.Context, req *http.Request) (*http.Response, error) {
 	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("X-Akashi-Session", c.sessionID.String())
 
 	token, err := c.tokenMgr.getToken(ctx)
 	if err != nil {
@@ -656,11 +729,69 @@ func (c *Client) execRequest(ctx context.Context, req *http.Request) (*http.Resp
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("akashi: %s %s: %w", req.Method, req.URL.Path, err)
+	// Fast path when retries are disabled.
+	if c.maxRetries == 0 {
+		resp, execErr := c.client.Do(req)
+		if execErr != nil {
+			return nil, fmt.Errorf("akashi: %s %s: %w", req.Method, req.URL.Path, execErr)
+		}
+		return resp, nil
 	}
-	return resp, nil
+
+	// Buffer body so we can replay it on retries.
+	var bodyBytes []byte
+	if req.Body != nil {
+		bodyBytes, err = io.ReadAll(req.Body)
+		_ = req.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("akashi: buffer request body: %w", err)
+		}
+	}
+
+	var lastErr error
+	for attempt := range c.maxRetries + 1 {
+		// Reset body for each attempt.
+		if bodyBytes != nil {
+			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			req.ContentLength = int64(len(bodyBytes))
+		} else {
+			req.Body = nil
+			req.ContentLength = 0
+		}
+
+		resp, doErr := c.client.Do(req)
+		if doErr != nil {
+			lastErr = fmt.Errorf("akashi: %s %s: %w", req.Method, req.URL.Path, doErr)
+			if attempt < c.maxRetries {
+				if waitErr := retrySleep(ctx, attempt, c.retryBaseDelay, 0); waitErr != nil {
+					return nil, waitErr
+				}
+				// Token may have expired during backoff.
+				if t, tErr := c.tokenMgr.getToken(ctx); tErr == nil {
+					req.Header.Set("Authorization", "Bearer "+t)
+				}
+				continue
+			}
+			return nil, lastErr
+		}
+
+		if isRetryableStatus(resp.StatusCode) && attempt < c.maxRetries {
+			retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if waitErr := retrySleep(ctx, attempt, c.retryBaseDelay, retryAfter); waitErr != nil {
+				return nil, waitErr
+			}
+			if t, tErr := c.tokenMgr.getToken(ctx); tErr == nil {
+				req.Header.Set("Authorization", "Bearer "+t)
+			}
+			continue
+		}
+
+		return resp, nil
+	}
+
+	return nil, lastErr
 }
 
 func (c *Client) doRequest(ctx context.Context, req *http.Request, dest any) error {
