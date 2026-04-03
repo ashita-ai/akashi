@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -513,7 +514,7 @@ type mockSearcher struct {
 	healthy       error
 	findResults   []search.Result
 	findErr       error
-	findCallCount int
+	findCallCount atomic.Int32
 }
 
 func (m *mockSearcher) Search(_ context.Context, _ uuid.UUID, _ []float32, _ model.QueryFilters, _ int) ([]search.Result, error) {
@@ -525,7 +526,7 @@ func (m *mockSearcher) Healthy(_ context.Context) error {
 }
 
 func (m *mockSearcher) FindSimilar(_ context.Context, _ uuid.UUID, _ []float32, _ uuid.UUID, _ []string, _ int) ([]search.Result, error) {
-	m.findCallCount++
+	m.findCallCount.Add(1)
 	return m.findResults, m.findErr
 }
 
