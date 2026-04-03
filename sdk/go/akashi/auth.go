@@ -79,11 +79,12 @@ func (tm *tokenManager) doRefresh(f *tokenFuture) {
 	// Use a background context so that one caller's cancellation doesn't
 	// break the refresh for all waiters. Individual callers can still bail
 	// out via their own ctx in awaitFuture.
-	tok, err := tm.refresh(context.Background())
+	tok, expiresAt, err := tm.refresh(context.Background())
 
 	tm.mu.Lock()
 	if err == nil {
 		tm.token = tok
+		tm.expiresAt = expiresAt
 	}
 	f.tok = tok
 	f.err = err
@@ -116,33 +117,32 @@ type authResponseEnvelope struct {
 	} `json:"data"`
 }
 
-func (tm *tokenManager) refresh(ctx context.Context) (string, error) {
+func (tm *tokenManager) refresh(ctx context.Context) (string, time.Time, error) {
 	body, err := json.Marshal(authRequest{AgentID: tm.agentID, APIKey: tm.apiKey})
 	if err != nil {
-		return "", fmt.Errorf("akashi: marshal auth request: %w", err)
+		return "", time.Time{}, fmt.Errorf("akashi: marshal auth request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tm.baseURL+"/auth/token", bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("akashi: create auth request: %w", err)
+		return "", time.Time{}, fmt.Errorf("akashi: create auth request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := tm.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("akashi: auth request: %w", err)
+		return "", time.Time{}, fmt.Errorf("akashi: auth request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("akashi: auth failed with status %d", resp.StatusCode)
+		return "", time.Time{}, fmt.Errorf("akashi: auth failed with status %d", resp.StatusCode)
 	}
 
 	var envelope authResponseEnvelope
 	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		return "", fmt.Errorf("akashi: decode auth response: %w", err)
+		return "", time.Time{}, fmt.Errorf("akashi: decode auth response: %w", err)
 	}
 
-	tm.expiresAt = envelope.Data.ExpiresAt
-	return envelope.Data.Token, nil
+	return envelope.Data.Token, envelope.Data.ExpiresAt, nil
 }

@@ -3,13 +3,15 @@ package akashi
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // newTestServer returns an httptest.Server that responds to /auth/token with a
@@ -38,24 +40,14 @@ func TestGetToken_CachesValidToken(t *testing.T) {
 	ctx := context.Background()
 
 	tok1, err := tm.getToken(ctx)
-	if err != nil {
-		t.Fatalf("first getToken: %v", err)
-	}
-	if tok1 != "tok-valid" {
-		t.Fatalf("first token = %q, want %q", tok1, "tok-valid")
-	}
+	require.NoError(t, err, "first getToken")
+	assert.Equal(t, "tok-valid", tok1)
 
 	tok2, err := tm.getToken(ctx)
-	if err != nil {
-		t.Fatalf("second getToken: %v", err)
-	}
-	if tok2 != "tok-valid" {
-		t.Fatalf("second token = %q, want %q", tok2, "tok-valid")
-	}
+	require.NoError(t, err, "second getToken")
+	assert.Equal(t, "tok-valid", tok2)
 
-	if n := count.Load(); n != 1 {
-		t.Fatalf("server hit %d times, want 1 (token should be cached)", n)
-	}
+	assert.Equal(t, int64(1), count.Load(), "server should be hit exactly once (token should be cached)")
 }
 
 func TestGetToken_ConcurrentCallersShareOneRefresh(t *testing.T) {
@@ -81,22 +73,16 @@ func TestGetToken_ConcurrentCallersShareOneRefresh(t *testing.T) {
 	wg.Wait()
 
 	for i, err := range errs {
-		if err != nil {
-			t.Errorf("goroutine %d: %v", i, err)
-		}
-		if tokens[i] != "tok-valid" {
-			t.Errorf("goroutine %d: token = %q, want %q", i, tokens[i], "tok-valid")
-		}
+		assert.NoError(t, err, "goroutine %d", i)
+		assert.Equal(t, "tok-valid", tokens[i], "goroutine %d", i)
 	}
 
-	if n := count.Load(); n != 1 {
-		t.Fatalf("server hit %d times, want 1 (all concurrent callers should share one refresh)", n)
-	}
+	assert.Equal(t, int64(1), count.Load(), "all concurrent callers should share one refresh")
 }
 
 func TestGetToken_CallerContextCancellation(t *testing.T) {
 	var count atomic.Int64
-	// Very slow server — caller should be able to bail out.
+	// Very slow server -- caller should be able to bail out.
 	srv := newTestServer(t, &count, 5*time.Second)
 	defer srv.Close()
 
@@ -106,12 +92,8 @@ func TestGetToken_CallerContextCancellation(t *testing.T) {
 	defer cancel()
 
 	_, err := tm.getToken(ctx)
-	if err == nil {
-		t.Fatal("expected error from cancelled context, got nil")
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected DeadlineExceeded, got: %v", err)
-	}
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 func TestGetToken_RefreshErrorDoesNotPoison(t *testing.T) {
@@ -135,19 +117,13 @@ func TestGetToken_RefreshErrorDoesNotPoison(t *testing.T) {
 
 	// First call fails.
 	_, err := tm.getToken(ctx)
-	if err == nil {
-		t.Fatal("expected error on first call, got nil")
-	}
+	require.Error(t, err)
 
-	// Second call should retry and succeed — the error must not leave the
+	// Second call should retry and succeed -- the error must not leave the
 	// tokenManager in a permanently broken state.
 	tok, err := tm.getToken(ctx)
-	if err != nil {
-		t.Fatalf("second getToken: %v", err)
-	}
-	if tok != "tok-retry" {
-		t.Fatalf("token = %q, want %q", tok, "tok-retry")
-	}
+	require.NoError(t, err, "second getToken")
+	assert.Equal(t, "tok-retry", tok)
 }
 
 func TestGetToken_ExpiredTokenTriggersRefresh(t *testing.T) {
@@ -159,12 +135,9 @@ func TestGetToken_ExpiredTokenTriggersRefresh(t *testing.T) {
 	ctx := context.Background()
 
 	// Prime the cache.
-	if _, err := tm.getToken(ctx); err != nil {
-		t.Fatalf("first getToken: %v", err)
-	}
-	if n := count.Load(); n != 1 {
-		t.Fatalf("server hit %d times after first call, want 1", n)
-	}
+	_, err := tm.getToken(ctx)
+	require.NoError(t, err, "first getToken")
+	require.Equal(t, int64(1), count.Load(), "server hit count after first call")
 
 	// Force expiration by backdating expiresAt.
 	tm.mu.Lock()
@@ -172,13 +145,7 @@ func TestGetToken_ExpiredTokenTriggersRefresh(t *testing.T) {
 	tm.mu.Unlock()
 
 	tok, err := tm.getToken(ctx)
-	if err != nil {
-		t.Fatalf("second getToken: %v", err)
-	}
-	if tok != "tok-valid" {
-		t.Fatalf("token = %q, want %q", tok, "tok-valid")
-	}
-	if n := count.Load(); n != 2 {
-		t.Fatalf("server hit %d times, want 2 (expired token should trigger second refresh)", n)
-	}
+	require.NoError(t, err, "second getToken")
+	assert.Equal(t, "tok-valid", tok)
+	assert.Equal(t, int64(2), count.Load(), "expired token should trigger second refresh")
 }
