@@ -14,6 +14,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -757,6 +758,15 @@ func localhostOnly(apiKey string, next http.Handler) http.Handler {
 	})
 }
 
+// gzipWriterPool reuses gzip.Writer instances across requests to avoid
+// allocating ~32KB of internal buffers per gzip-eligible request.
+var gzipWriterPool = sync.Pool{
+	New: func() any {
+		gz, _ := gzip.NewWriterLevel(nil, gzip.BestSpeed)
+		return gz
+	},
+}
+
 // gzipMiddleware compresses JSON API responses for clients that accept gzip.
 // Uses BestSpeed to minimize CPU overhead on hot paths (check, trace).
 func gzipMiddleware(next http.Handler) http.Handler {
@@ -772,11 +782,8 @@ func gzipMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		gz, err := gzip.NewWriterLevel(w, gzip.BestSpeed)
-		if err != nil {
-			next.ServeHTTP(w, r)
-			return
-		}
+		gz := gzipWriterPool.Get().(*gzip.Writer)
+		gz.Reset(w)
 
 		w.Header().Set("Content-Encoding", "gzip")
 		w.Header().Set("Vary", "Accept-Encoding")
@@ -787,6 +794,7 @@ func gzipMiddleware(next http.Handler) http.Handler {
 			// Best-effort close; the response is already written so there's
 			// nothing actionable on error, but we satisfy errcheck.
 			_ = gz.Close()
+			gzipWriterPool.Put(gz)
 		}()
 
 		next.ServeHTTP(gw, r)
