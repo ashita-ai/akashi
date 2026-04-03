@@ -66,9 +66,9 @@ func (h *Handlers) buildAuditMeta(r *http.Request, orgID uuid.UUID) *ctxutil.Aud
 }
 
 // recordMutationAuditBestEffort appends a mutation audit event outside any
-// transaction. Only used for HandleAppendEvents where the COPY buffer system
-// is architecturally incompatible with transactional audit. All other
-// mutation endpoints use atomic *WithAudit storage methods instead.
+// transaction. Used for lightweight mutations (e.g. token issuance) where
+// transactional audit is not critical. Event append audit now uses the buffer's
+// transactional flush path instead (see issue #608).
 func (h *Handlers) recordMutationAuditBestEffort(
 	r *http.Request,
 	orgID uuid.UUID,

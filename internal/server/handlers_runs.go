@@ -207,22 +207,15 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 		resp["message"] = "events accepted, will be persisted by background flush"
 	}
 
-	if err := h.recordMutationAuditBestEffort(
-		r,
-		orgID,
-		"append_events",
-		"agent_run",
-		runID.String(),
-		nil,
-		resp,
+	// Buffer the audit entry alongside events so both are flushed in the same
+	// transaction. This eliminates the window where events persist without an
+	// audit trail (see issue #608).
+	h.buffer.BufferAudit(h.buildAuditEntry(
+		r, orgID,
+		"append_events", "agent_run", runID.String(),
+		nil, resp,
 		map[string]any{"agent_id": run.AgentID, "event_count": len(events)},
-	); err != nil {
-		h.logger.Error("failed to record mutation audit after committed append_events",
-			"error", err,
-			"run_id", runID,
-			"org_id", orgID,
-			"request_id", RequestIDFromContext(r.Context()))
-	}
+	))
 	h.completeIdempotentWriteBestEffort(r, orgID, idem, statusCode, resp)
 	writeJSON(w, r, statusCode, resp)
 }

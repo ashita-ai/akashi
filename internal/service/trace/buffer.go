@@ -42,7 +42,8 @@ type Buffer struct {
 
 	mu        sync.Mutex
 	events    []model.AgentEvent
-	walMaxLSN uint64 // highest WAL LSN for buffered events (valid only when wal != nil)
+	audits    []storage.MutationAuditEntry // audit entries to flush atomically with events
+	walMaxLSN uint64                       // highest WAL LSN for buffered events (valid only when wal != nil)
 
 	droppedEvents atomic.Int64 // total events rejected (capacity or drain in progress)
 	draining      atomic.Bool  // true after Drain is initiated; rejects new appends
@@ -181,6 +182,16 @@ func (b *Buffer) Append(ctx context.Context, runID uuid.UUID, agentID string, or
 	return events, nil
 }
 
+// BufferAudit enqueues an audit entry to be flushed atomically with the next
+// batch of events. This ensures event appends and their audit records are
+// committed in the same transaction — eliminating the window where events
+// persist but their audit trail is lost.
+func (b *Buffer) BufferAudit(entry storage.MutationAuditEntry) {
+	b.mu.Lock()
+	b.audits = append(b.audits, entry)
+	b.mu.Unlock()
+}
+
 // HasWAL returns true if a write-ahead log is configured.
 func (b *Buffer) HasWAL() bool {
 	return b.wal != nil
@@ -266,21 +277,30 @@ func (b *Buffer) flushUntilEmpty(ctx context.Context) error {
 
 // flushOnce attempts a single COPY flush.
 // Returns (flushedAny, err): flushedAny=true when a batch was written successfully.
+//
+// When audit entries have been buffered via BufferAudit, events and audits are
+// flushed in a single transaction — guaranteeing that event appends never
+// persist without their audit trail.
 func (b *Buffer) flushOnce(ctx context.Context) (bool, error) {
 	b.mu.Lock()
 	if len(b.events) == 0 {
 		b.mu.Unlock()
 		return false, nil
 	}
-	// Keep events in memory until COPY succeeds.
+	// Keep events in memory until the flush succeeds.
 	// This avoids data loss on transient flush failures.
 	batch := make([]model.AgentEvent, len(b.events))
 	copy(batch, b.events)
+	var auditBatch []storage.MutationAuditEntry
+	if len(b.audits) > 0 {
+		auditBatch = make([]storage.MutationAuditEntry, len(b.audits))
+		copy(auditBatch, b.audits)
+	}
 	batchWALLSN := b.walMaxLSN // snapshot the highest LSN for this batch
 	b.mu.Unlock()
 
 	start := time.Now()
-	count, err := b.db.InsertEvents(ctx, batch)
+	count, err := b.db.InsertEventsWithAudit(ctx, batch, auditBatch)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -289,13 +309,19 @@ func (b *Buffer) flushOnce(ctx context.Context) (bool, error) {
 	}
 
 	// Remove only the flushed prefix. New events appended while COPY was in
-	// progress remain queued for the next flush.
+	// progress remain queued for the next flush. Audit entries are similarly
+	// trimmed — only the snapshot we flushed is removed.
 	b.mu.Lock()
 	if len(b.events) >= len(batch) {
 		b.events = b.events[len(batch):]
 	} else {
 		// Defensive guard: should not happen because writers only append.
 		b.events = nil
+	}
+	if len(b.audits) >= len(auditBatch) {
+		b.audits = b.audits[len(auditBatch):]
+	} else {
+		b.audits = nil
 	}
 	b.mu.Unlock()
 
@@ -310,6 +336,7 @@ func (b *Buffer) flushOnce(ctx context.Context) (bool, error) {
 
 	b.logger.Info("trace: batch flushed",
 		"batch_size", count,
+		"audit_entries", len(auditBatch),
 		"flush_duration_ms", duration.Milliseconds(),
 	)
 	return true, nil

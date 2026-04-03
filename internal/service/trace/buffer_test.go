@@ -1384,3 +1384,105 @@ func TestWAL_RegisterMetrics_CallbacksExecute(t *testing.T) {
 
 	require.NoError(t, wal.Close())
 }
+
+func TestBuffer_AuditFlushedWithEvents(t *testing.T) {
+	// Verify that audit entries buffered via BufferAudit are flushed
+	// atomically with events — the core fix for issue #608.
+	run := createTestRun(t)
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 100*time.Millisecond, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	events, err := buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(2))
+	require.NoError(t, err)
+	require.Len(t, events, 2)
+
+	// Buffer an audit entry alongside the events, as HandleAppendEvents does.
+	buf.BufferAudit(storage.MutationAuditEntry{
+		RequestID:    "test-req-audit-flush",
+		OrgID:        run.OrgID,
+		ActorAgentID: run.AgentID,
+		ActorRole:    "agent",
+		HTTPMethod:   "POST",
+		Endpoint:     "/v1/runs/" + run.ID.String() + "/events",
+		Operation:    "append_events",
+		ResourceType: "agent_run",
+		ResourceID:   run.ID.String(),
+		AfterData:    map[string]any{"event_count": 2},
+	})
+
+	// Drain forces a flush. Both events and audit must land atomically.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	require.NoError(t, buf.Drain(drainCtx))
+
+	// Verify events reached the database.
+	got, err := testDB.GetEventsByRun(context.Background(), run.OrgID, run.ID, 0)
+	require.NoError(t, err)
+	assert.Len(t, got, 2, "events should be flushed to DB")
+
+	// Verify the audit entry was committed in the same transaction.
+	var auditCount int
+	err = testDB.Pool().QueryRow(context.Background(),
+		`SELECT count(*) FROM mutation_audit_log
+		 WHERE operation = 'append_events'
+		   AND resource_id = $1
+		   AND request_id = 'test-req-audit-flush'
+		   AND org_id = $2`, run.ID.String(), run.OrgID,
+	).Scan(&auditCount)
+	require.NoError(t, err)
+	assert.Equal(t, 1, auditCount, "audit entry should be flushed atomically with events")
+}
+
+func TestBuffer_AuditNotLostOnFlushRetry(t *testing.T) {
+	// When no events are buffered but audits are, they should not be
+	// silently discarded — they wait for the next event batch.
+	run := createTestRun(t)
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	// Buffer an audit entry with no events.
+	buf.BufferAudit(storage.MutationAuditEntry{
+		RequestID:    "test-req-orphan-audit",
+		OrgID:        run.OrgID,
+		ActorAgentID: run.AgentID,
+		ActorRole:    "agent",
+		HTTPMethod:   "POST",
+		Endpoint:     "/v1/runs/" + run.ID.String() + "/events",
+		Operation:    "append_events",
+		ResourceType: "agent_run",
+		ResourceID:   run.ID.String(),
+	})
+
+	// flushOnce with no events should be a no-op (nothing to flush).
+	flushed, err := buf.flushOnce(context.Background())
+	require.NoError(t, err)
+	assert.False(t, flushed, "flushOnce should be a no-op when no events are buffered")
+
+	// The audit entry should still be queued.
+	buf.mu.Lock()
+	assert.Len(t, buf.audits, 1, "audit entry should remain queued when no events to flush")
+	buf.mu.Unlock()
+
+	// Now append events — the queued audit should flush with them.
+	_, err = buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(1))
+	require.NoError(t, err)
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	require.NoError(t, buf.Drain(drainCtx))
+
+	var auditCount int
+	err = testDB.Pool().QueryRow(context.Background(),
+		`SELECT count(*) FROM mutation_audit_log
+		 WHERE request_id = 'test-req-orphan-audit'
+		   AND org_id = $1`, run.OrgID,
+	).Scan(&auditCount)
+	require.NoError(t, err)
+	assert.Equal(t, 1, auditCount, "orphaned audit entry should flush with the next event batch")
+}
