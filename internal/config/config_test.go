@@ -571,6 +571,11 @@ func TestValidate_NegativeTimeouts(t *testing.T) {
 			setter: func(c *Config) { c.ShutdownOutboxDrainTimeout = -1 * time.Second },
 			errStr: "AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT",
 		},
+		{
+			name:   "negative shutdown loop drain timeout",
+			setter: func(c *Config) { c.ShutdownLoopDrainTimeout = -1 * time.Second },
+			errStr: "AKASHI_SHUTDOWN_LOOP_DRAIN_TIMEOUT",
+		},
 	}
 
 	for _, tt := range tests {
@@ -812,6 +817,7 @@ func validBaseConfig() Config {
 		ShutdownAsyncDrainTimeout:  30 * time.Second,
 		ShutdownBufferDrainTimeout: 30 * time.Second,
 		ShutdownOutboxDrainTimeout: 0,
+		ShutdownLoopDrainTimeout:   10 * time.Second,
 		OutboxPollInterval:         1 * time.Second,
 		ConflictRefreshInterval:    30 * time.Second,
 		IntegrityProofInterval:     5 * time.Minute,

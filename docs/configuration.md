@@ -193,6 +193,7 @@ Existing deployments that set `AKASHI_WAL_DIR` explicitly will continue to work 
 | `AKASHI_SHUTDOWN_ASYNC_DRAIN_TIMEOUT` | `30s` | Maximum time to drain in-flight post-trace async work (claim generation, conflict scoring) during shutdown. `0` = wait indefinitely |
 | `AKASHI_SHUTDOWN_BUFFER_DRAIN_TIMEOUT` | `30s` | Maximum time to flush in-memory events to Postgres during shutdown. `0` = wait indefinitely. The 30s default prevents process hang on unreachable database while giving the WAL time to recover unflushed events on restart. |
 | `AKASHI_SHUTDOWN_OUTBOX_DRAIN_TIMEOUT` | `0` | Outbox drain timeout (`0` = wait indefinitely) |
+| `AKASHI_SHUTDOWN_LOOP_DRAIN_TIMEOUT` | `10s` | Maximum time to wait for background loops (conflict backfill, retention, integrity audit, etc.) to exit during shutdown. `0` = wait indefinitely |
 | `AKASHI_PERCENTILE_REFRESH_INTERVAL` | `1h` | How often to refresh per-org signal percentile caches used for distribution-aware ReScore normalization. Set to `0` to disable |
 | `AKASHI_AUTO_RESOLVE_INTERVAL` | `1h` | How often the background auto-resolution worker runs to resolve eligible conflicts per org policy. Set to `0` to disable |
 
