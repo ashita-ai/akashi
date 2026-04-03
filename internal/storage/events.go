@@ -80,6 +80,55 @@ func (db *DB) InsertEvents(ctx context.Context, events []model.AgentEvent) (int6
 	return copyCount, nil
 }
 
+// InsertEventsWithAudit inserts events and their associated audit entries
+// atomically in a single transaction. When auditEntries is empty, this falls
+// back to the non-transactional COPY path for zero overhead. When auditEntries
+// is non-empty, events are COPYed and audit entries are INSERTed within the
+// same transaction — guaranteeing that event appends never persist without
+// their audit trail.
+func (db *DB) InsertEventsWithAudit(ctx context.Context, events []model.AgentEvent, auditEntries []MutationAuditEntry) (int64, error) {
+	if len(events) == 0 {
+		return 0, nil
+	}
+
+	// Fast path: no audit entries, skip the transaction wrapper.
+	if len(auditEntries) == 0 {
+		return db.InsertEvents(ctx, events)
+	}
+
+	columns := []string{"id", "run_id", "org_id", "event_type", "sequence_num", "occurred_at", "agent_id", "payload", "created_at"}
+	rows := make([][]any, len(events))
+	for i, e := range events {
+		rows[i] = []any{
+			e.ID, e.RunID, e.OrgID, string(e.EventType), e.SequenceNum,
+			e.OccurredAt, e.AgentID, e.Payload, e.CreatedAt,
+		}
+	}
+
+	copyCtx, copyCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer copyCancel()
+
+	var copyCount int64
+	err := db.WithTx(copyCtx, func(ctx context.Context, tx pgx.Tx) error {
+		n, err := tx.CopyFrom(ctx, pgx.Identifier{"agent_events"}, columns, pgx.CopyFromRows(rows))
+		if err != nil {
+			return fmt.Errorf("storage: copy events in tx: %w", err)
+		}
+		copyCount = n
+
+		for _, entry := range auditEntries {
+			if err := InsertMutationAuditTx(ctx, tx, entry); err != nil {
+				return fmt.Errorf("storage: audit in event flush tx: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return copyCount, nil
+}
+
 // InsertEvent inserts a single event (for low-volume operations).
 func (db *DB) InsertEvent(ctx context.Context, event model.AgentEvent) error {
 	_, err := db.pool.Exec(ctx,
