@@ -45,6 +45,8 @@ type Buffer struct {
 	audits    []storage.MutationAuditEntry // audit entries to flush atomically with events
 	walMaxLSN uint64                       // highest WAL LSN for buffered events (valid only when wal != nil)
 
+	flushMu sync.Mutex // serializes flushOnce calls to prevent concurrent prefix-trim corruption
+
 	droppedEvents atomic.Int64 // total events rejected (capacity or drain in progress)
 	draining      atomic.Bool  // true after Drain is initiated; rejects new appends
 
@@ -359,6 +361,13 @@ func (b *Buffer) flushUntilEmpty(ctx context.Context) error {
 // flushed in a single transaction — guaranteeing that event appends never
 // persist without their audit trail.
 func (b *Buffer) flushOnce(ctx context.Context) (bool, error) {
+	// Serialize flushes so that concurrent callers (flushLoop ticker vs
+	// FlushNow from a request handler) cannot both snapshot the same prefix,
+	// flush it, and then double-trim — which would silently drop entries
+	// appended between the two snapshots.
+	b.flushMu.Lock()
+	defer b.flushMu.Unlock()
+
 	b.mu.Lock()
 	if len(b.events) == 0 && len(b.audits) == 0 {
 		b.mu.Unlock()

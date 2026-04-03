@@ -431,6 +431,52 @@ func TestBuffer_FlushNow(t *testing.T) {
 	require.NoError(t, buf.Drain(drainCtx))
 }
 
+func TestBuffer_ConcurrentFlushNowNoDataLoss(t *testing.T) {
+	// Regression test: concurrent FlushNow (from request handlers) and
+	// ticker-driven flushes must not double-trim the buffer, which would
+	// silently drop events appended between two overlapping snapshots.
+	// The flushMu serialization prevents this.
+	run := createTestRun(t)
+
+	// Short flush interval to provoke ticker/FlushNow overlap.
+	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Millisecond, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	const batches = 20
+	const eventsPerBatch = 5
+	totalEvents := batches * eventsPerBatch
+
+	var wg sync.WaitGroup
+
+	// Simulate concurrent request handlers appending + calling FlushNow.
+	for i := 0; i < batches; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(eventsPerBatch))
+			if err != nil {
+				return // buffer draining or at capacity — acceptable in stress test
+			}
+			flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer flushCancel()
+			_ = buf.FlushNow(flushCtx)
+		}()
+	}
+	wg.Wait()
+
+	// Final drain to flush any stragglers.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	require.NoError(t, buf.Drain(drainCtx))
+
+	got, err := testDB.GetEventsByRun(context.Background(), run.OrgID, run.ID, 0)
+	require.NoError(t, err)
+	assert.Equal(t, totalEvents, len(got),
+		"all %d events must survive concurrent FlushNow + ticker flushes (got %d)", totalEvents, len(got))
+}
+
 func TestBuffer_DrainIdempotent(t *testing.T) {
 	run := createTestRun(t)
 
