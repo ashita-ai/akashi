@@ -22,6 +22,8 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/ashita-ai/akashi/internal/conflicts"
 	"github.com/ashita-ai/akashi/internal/ctxutil"
 	"github.com/ashita-ai/akashi/internal/model"
@@ -818,20 +820,34 @@ func (s *Service) ConsensusScoresBatch(ctx context.Context, ids []uuid.UUID, org
 		return result, nil //nolint:nilerr
 	}
 
-	// Per-decision Qdrant queries. Collect all neighbor IDs for a single batch
-	// Postgres fetch, avoiding N+1 embedding lookups.
+	// Per-decision Qdrant queries, parallelized with bounded concurrency.
+	// Collect all neighbor IDs for a single batch Postgres fetch, avoiding
+	// N+1 embedding lookups.
 	neighborResultsByID := make(map[uuid.UUID][]search.Result, len(embMap))
 	allNeighborIDs := make(map[uuid.UUID]struct{})
+	var mu sync.Mutex
+
+	g, gCtx := errgroup.WithContext(ctx)
+	g.SetLimit(10) // bound concurrent Qdrant RPCs
+
 	for id, embs := range embMap {
-		results, qErr := cf.FindSimilar(ctx, orgID, embs[0].Slice(), id, nil, 50)
-		if qErr != nil {
-			s.logger.Warn("consensus batch: qdrant find similar failed", "decision_id", id, "error", qErr)
-			continue
-		}
-		neighborResultsByID[id] = results
-		for _, r := range results {
-			allNeighborIDs[r.DecisionID] = struct{}{}
-		}
+		g.Go(func() error {
+			results, qErr := cf.FindSimilar(gCtx, orgID, embs[0].Slice(), id, nil, 50)
+			if qErr != nil {
+				s.logger.Warn("consensus batch: qdrant find similar failed", "decision_id", id, "error", qErr)
+				return nil // non-fatal: skip this decision
+			}
+			mu.Lock()
+			neighborResultsByID[id] = results
+			for _, r := range results {
+				allNeighborIDs[r.DecisionID] = struct{}{}
+			}
+			mu.Unlock()
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return result, nil //nolint:nilerr // Qdrant errors are non-fatal for consensus
 	}
 
 	if len(allNeighborIDs) == 0 {
