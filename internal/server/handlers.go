@@ -361,10 +361,11 @@ func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Buffer health: >50% capacity = high, >75% capacity = critical.
+	// Compare event count only — Capacity bounds events, not audit entries.
 	bufDepth := 0
 	bufStatus := "ok"
 	if h.buffer != nil {
-		bufDepth = h.buffer.Len()
+		bufDepth = h.buffer.EventLen()
 		cap := h.buffer.Capacity()
 		if bufDepth > cap*3/4 {
 			bufStatus = "critical"

@@ -431,6 +431,52 @@ func TestBuffer_FlushNow(t *testing.T) {
 	require.NoError(t, buf.Drain(drainCtx))
 }
 
+func TestBuffer_ConcurrentFlushNowNoDataLoss(t *testing.T) {
+	// Regression test: concurrent FlushNow (from request handlers) and
+	// ticker-driven flushes must not double-trim the buffer, which would
+	// silently drop events appended between two overlapping snapshots.
+	// The flushMu serialization prevents this.
+	run := createTestRun(t)
+
+	// Short flush interval to provoke ticker/FlushNow overlap.
+	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Millisecond, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	const batches = 20
+	const eventsPerBatch = 5
+	totalEvents := batches * eventsPerBatch
+
+	var wg sync.WaitGroup
+
+	// Simulate concurrent request handlers appending + calling FlushNow.
+	for i := 0; i < batches; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(eventsPerBatch))
+			if err != nil {
+				return // buffer draining or at capacity — acceptable in stress test
+			}
+			flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer flushCancel()
+			_ = buf.FlushNow(flushCtx)
+		}()
+	}
+	wg.Wait()
+
+	// Final drain to flush any stragglers.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	require.NoError(t, buf.Drain(drainCtx))
+
+	got, err := testDB.GetEventsByRun(context.Background(), run.OrgID, run.ID, 0)
+	require.NoError(t, err)
+	assert.Equal(t, totalEvents, len(got),
+		"all %d events must survive concurrent FlushNow + ticker flushes (got %d)", totalEvents, len(got))
+}
+
 func TestBuffer_DrainIdempotent(t *testing.T) {
 	run := createTestRun(t)
 
@@ -1383,4 +1429,136 @@ func TestWAL_RegisterMetrics_CallbacksExecute(t *testing.T) {
 	assert.Equal(t, 2, found, "should have registered both WAL gauges")
 
 	require.NoError(t, wal.Close())
+}
+
+func TestBuffer_AuditFlushedWithEvents(t *testing.T) {
+	// Verify that audit entries buffered via AppendWithAudit are flushed
+	// atomically with events — the core fix for issue #608.
+	run := createTestRun(t)
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 100*time.Millisecond, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	// AppendWithAudit buffers events and audit under a single lock hold,
+	// eliminating the race where a background flush could drain events
+	// before the audit entry was buffered.
+	events, err := buf.AppendWithAudit(
+		context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(2),
+		func(evts []model.AgentEvent) storage.MutationAuditEntry {
+			return storage.MutationAuditEntry{
+				RequestID:    "test-req-audit-flush",
+				OrgID:        run.OrgID,
+				ActorAgentID: run.AgentID,
+				ActorRole:    "agent",
+				HTTPMethod:   "POST",
+				Endpoint:     "/v1/runs/" + run.ID.String() + "/events",
+				Operation:    "append_events",
+				ResourceType: "agent_run",
+				ResourceID:   run.ID.String(),
+				AfterData:    map[string]any{"event_count": len(evts)},
+			}
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, events, 2)
+
+	// Drain forces a flush. Both events and audit must land atomically.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer drainCancel()
+	require.NoError(t, buf.Drain(drainCtx))
+
+	// Verify events reached the database.
+	got, err := testDB.GetEventsByRun(context.Background(), run.OrgID, run.ID, 0)
+	require.NoError(t, err)
+	assert.Len(t, got, 2, "events should be flushed to DB")
+
+	// Verify the audit entry was committed in the same transaction.
+	var auditCount int
+	err = testDB.Pool().QueryRow(context.Background(),
+		`SELECT count(*) FROM mutation_audit_log
+		 WHERE operation = 'append_events'
+		   AND resource_id = $1
+		   AND request_id = 'test-req-audit-flush'
+		   AND org_id = $2`, run.ID.String(), run.OrgID,
+	).Scan(&auditCount)
+	require.NoError(t, err)
+	assert.Equal(t, 1, auditCount, "audit entry should be flushed atomically with events")
+}
+
+func TestBuffer_AuditNotLostOnFlushRetry(t *testing.T) {
+	// Orphaned audit entries (buffered without events) must flush
+	// immediately rather than waiting for an event batch that may never
+	// arrive — e.g. on graceful shutdown.
+	run := createTestRun(t)
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	// Buffer an audit entry with no events.
+	buf.BufferAudit(storage.MutationAuditEntry{
+		RequestID:    "test-req-orphan-audit",
+		OrgID:        run.OrgID,
+		ActorAgentID: run.AgentID,
+		ActorRole:    "agent",
+		HTTPMethod:   "POST",
+		Endpoint:     "/v1/runs/" + run.ID.String() + "/events",
+		Operation:    "append_events",
+		ResourceType: "agent_run",
+		ResourceID:   run.ID.String(),
+	})
+
+	// flushOnce with orphaned audits should flush them directly.
+	flushed, err := buf.flushOnce(context.Background())
+	require.NoError(t, err)
+	assert.True(t, flushed, "flushOnce should flush orphaned audit entries even without events")
+
+	// The audit entry should have been drained from the buffer.
+	buf.mu.Lock()
+	assert.Len(t, buf.audits, 0, "audit entry should be cleared after flush")
+	buf.mu.Unlock()
+
+	// Verify the audit entry reached the database.
+	var auditCount int
+	err = testDB.Pool().QueryRow(context.Background(),
+		`SELECT count(*) FROM mutation_audit_log
+		 WHERE request_id = 'test-req-orphan-audit'
+		   AND org_id = $1`, run.OrgID,
+	).Scan(&auditCount)
+	require.NoError(t, err)
+	assert.Equal(t, 1, auditCount, "orphaned audit entry should be flushed directly to the database")
+}
+
+func TestBuffer_LenIncludesAudits(t *testing.T) {
+	// Len() returns events + audits (for drain completeness checks).
+	// EventLen() returns events only (for health endpoint capacity comparison).
+	run := createTestRun(t)
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	assert.Equal(t, 0, buf.Len(), "empty buffer: Len should be 0")
+	assert.Equal(t, 0, buf.EventLen(), "empty buffer: EventLen should be 0")
+
+	// Append 2 events without audit.
+	_, err := buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(2))
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, buf.Len(), "Len should count events")
+	assert.Equal(t, 2, buf.EventLen(), "EventLen should count events")
+
+	// Buffer an orphaned audit entry.
+	buf.BufferAudit(storage.MutationAuditEntry{
+		RequestID: "test-len-audit",
+		OrgID:     run.OrgID,
+		Operation: "append_events",
+	})
+
+	assert.Equal(t, 3, buf.Len(), "Len should count events + audits")
+	assert.Equal(t, 2, buf.EventLen(), "EventLen should count only events")
 }

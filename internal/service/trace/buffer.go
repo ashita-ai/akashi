@@ -42,7 +42,10 @@ type Buffer struct {
 
 	mu        sync.Mutex
 	events    []model.AgentEvent
-	walMaxLSN uint64 // highest WAL LSN for buffered events (valid only when wal != nil)
+	audits    []storage.MutationAuditEntry // audit entries to flush atomically with events
+	walMaxLSN uint64                       // highest WAL LSN for buffered events (valid only when wal != nil)
+
+	flushMu sync.Mutex // serializes flushOnce calls to prevent concurrent prefix-trim corruption
 
 	droppedEvents atomic.Int64 // total events rejected (capacity or drain in progress)
 	draining      atomic.Bool  // true after Drain is initiated; rejects new appends
@@ -181,6 +184,93 @@ func (b *Buffer) Append(ctx context.Context, runID uuid.UUID, agentID string, or
 	return events, nil
 }
 
+// BufferAudit enqueues an audit entry to be flushed atomically with the next
+// batch of events. This ensures event appends and their audit records are
+// committed in the same transaction — eliminating the window where events
+// persist but their audit trail is lost.
+func (b *Buffer) BufferAudit(entry storage.MutationAuditEntry) {
+	b.mu.Lock()
+	b.audits = append(b.audits, entry)
+	b.mu.Unlock()
+}
+
+// AppendWithAudit is like Append but atomically buffers an audit entry alongside
+// the events under the same lock acquisition. The auditFn callback receives the
+// created events and returns the audit entry to buffer. This eliminates the race
+// window where a background flush could drain events before the audit is buffered.
+func (b *Buffer) AppendWithAudit(
+	ctx context.Context,
+	runID uuid.UUID,
+	agentID string,
+	orgID uuid.UUID,
+	inputs []model.EventInput,
+	auditFn func(events []model.AgentEvent) storage.MutationAuditEntry,
+) ([]model.AgentEvent, error) {
+	if b.draining.Load() {
+		b.droppedEvents.Add(int64(len(inputs)))
+		return nil, fmt.Errorf("%w: rejecting %d new events", ErrBufferDraining, len(inputs))
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if len(b.events)+len(inputs) > maxBufferCapacity {
+		b.droppedEvents.Add(int64(len(inputs)))
+		return nil, fmt.Errorf("%w (%d events), try again later", ErrBufferAtCapacity, len(b.events))
+	}
+
+	seqNums, err := b.db.ReserveSequenceNums(ctx, len(inputs))
+	if err != nil {
+		return nil, fmt.Errorf("trace: reserve sequence nums: %w", err)
+	}
+
+	now := time.Now().UTC()
+	events := make([]model.AgentEvent, len(inputs))
+	for i, input := range inputs {
+		occurredAt := now
+		if input.OccurredAt != nil {
+			occurredAt = *input.OccurredAt
+		}
+		events[i] = model.AgentEvent{
+			ID:          uuid.New(),
+			RunID:       runID,
+			OrgID:       orgID,
+			EventType:   input.EventType,
+			SequenceNum: seqNums[i],
+			OccurredAt:  occurredAt,
+			AgentID:     agentID,
+			Payload:     input.Payload,
+			CreatedAt:   now,
+		}
+	}
+
+	// Write to WAL before buffering in memory for crash durability.
+	if b.wal != nil {
+		maxLSN, walErr := b.wal.Write(events)
+		if walErr != nil {
+			return nil, fmt.Errorf("trace: wal write: %w", walErr)
+		}
+		b.walMaxLSN = maxLSN
+	}
+
+	b.events = append(b.events, events...)
+
+	// Buffer the audit entry under the same lock hold — no background flush
+	// can snapshot the events without also capturing this audit entry.
+	if auditFn != nil {
+		b.audits = append(b.audits, auditFn(events))
+	}
+
+	if len(b.events) >= b.maxSize {
+		select {
+		case b.flushCh <- struct{}{}:
+		default:
+		}
+	}
+
+	return events, nil
+}
+
 // HasWAL returns true if a write-ahead log is configured.
 func (b *Buffer) HasWAL() bool {
 	return b.wal != nil
@@ -202,7 +292,7 @@ func (b *Buffer) flushLoop(ctx context.Context) {
 			}
 			if drainCtx != nil {
 				if err := b.flushUntilEmpty(drainCtx); err != nil {
-					b.logger.Warn("trace: final drain flush incomplete", "error", err, "remaining_events", b.Len())
+					b.logger.Warn("trace: final drain flush incomplete", "error", err, "remaining", b.Len())
 				}
 			} else {
 				// Fallback for direct cancellation without Drain (e.g., tests).
@@ -210,7 +300,7 @@ func (b *Buffer) flushLoop(ctx context.Context) {
 				// full buffer batch even under transient DB pressure.
 				fallbackCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				if err := b.flushUntilEmpty(fallbackCtx); err != nil {
-					b.logger.Warn("trace: fallback final flush incomplete", "error", err, "remaining_events", b.Len())
+					b.logger.Warn("trace: fallback final flush incomplete", "error", err, "remaining", b.Len())
 				}
 				cancel()
 			}
@@ -266,21 +356,62 @@ func (b *Buffer) flushUntilEmpty(ctx context.Context) error {
 
 // flushOnce attempts a single COPY flush.
 // Returns (flushedAny, err): flushedAny=true when a batch was written successfully.
+//
+// When audit entries have been buffered via BufferAudit, events and audits are
+// flushed in a single transaction — guaranteeing that event appends never
+// persist without their audit trail.
 func (b *Buffer) flushOnce(ctx context.Context) (bool, error) {
+	// Serialize flushes so that concurrent callers (flushLoop ticker vs
+	// FlushNow from a request handler) cannot both snapshot the same prefix,
+	// flush it, and then double-trim — which would silently drop entries
+	// appended between the two snapshots.
+	b.flushMu.Lock()
+	defer b.flushMu.Unlock()
+
 	b.mu.Lock()
-	if len(b.events) == 0 {
+	if len(b.events) == 0 && len(b.audits) == 0 {
 		b.mu.Unlock()
 		return false, nil
 	}
-	// Keep events in memory until COPY succeeds.
+
+	// Orphaned audit entries (no events): flush them in a single transaction
+	// rather than waiting for an event batch that may never arrive. Using a
+	// transaction ensures all-or-nothing semantics — no duplicates on retry.
+	if len(b.events) == 0 {
+		orphanedAudits := make([]storage.MutationAuditEntry, len(b.audits))
+		copy(orphanedAudits, b.audits)
+		b.mu.Unlock()
+
+		if err := b.db.InsertMutationAuditBatch(ctx, orphanedAudits); err != nil {
+			b.logger.Error("trace: orphaned audit flush failed", "error", err)
+			return false, err
+		}
+
+		b.mu.Lock()
+		if len(b.audits) >= len(orphanedAudits) {
+			b.audits = b.audits[len(orphanedAudits):]
+		} else {
+			b.audits = nil
+		}
+		b.mu.Unlock()
+
+		b.logger.Info("trace: orphaned audits flushed", "audit_entries", len(orphanedAudits))
+		return true, nil
+	}
+	// Keep events in memory until the flush succeeds.
 	// This avoids data loss on transient flush failures.
 	batch := make([]model.AgentEvent, len(b.events))
 	copy(batch, b.events)
+	var auditBatch []storage.MutationAuditEntry
+	if len(b.audits) > 0 {
+		auditBatch = make([]storage.MutationAuditEntry, len(b.audits))
+		copy(auditBatch, b.audits)
+	}
 	batchWALLSN := b.walMaxLSN // snapshot the highest LSN for this batch
 	b.mu.Unlock()
 
 	start := time.Now()
-	count, err := b.db.InsertEvents(ctx, batch)
+	count, err := b.db.InsertEventsWithAudit(ctx, batch, auditBatch)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -289,13 +420,19 @@ func (b *Buffer) flushOnce(ctx context.Context) (bool, error) {
 	}
 
 	// Remove only the flushed prefix. New events appended while COPY was in
-	// progress remain queued for the next flush.
+	// progress remain queued for the next flush. Audit entries are similarly
+	// trimmed — only the snapshot we flushed is removed.
 	b.mu.Lock()
 	if len(b.events) >= len(batch) {
 		b.events = b.events[len(batch):]
 	} else {
 		// Defensive guard: should not happen because writers only append.
 		b.events = nil
+	}
+	if len(b.audits) >= len(auditBatch) {
+		b.audits = b.audits[len(auditBatch):]
+	} else {
+		b.audits = nil
 	}
 	b.mu.Unlock()
 
@@ -310,6 +447,7 @@ func (b *Buffer) flushOnce(ctx context.Context) (bool, error) {
 
 	b.logger.Info("trace: batch flushed",
 		"batch_size", count,
+		"audit_entries", len(auditBatch),
 		"flush_duration_ms", duration.Milliseconds(),
 	)
 	return true, nil
@@ -343,8 +481,8 @@ func (b *Buffer) Drain(ctx context.Context) error {
 	select {
 	case <-b.done:
 	case <-ctx.Done():
-		b.logger.Error("trace: drain timed out — unflushed events will be lost",
-			"remaining_events", b.Len(),
+		b.logger.Error("trace: drain timed out — unflushed entries will be lost",
+			"remaining", b.Len(),
 		)
 	}
 
@@ -356,7 +494,7 @@ func (b *Buffer) Drain(ctx context.Context) error {
 	}
 
 	if remaining := b.Len(); remaining > 0 {
-		return fmt.Errorf("trace: drain incomplete, %d events lost", remaining)
+		return fmt.Errorf("trace: drain incomplete, %d entries lost", remaining)
 	}
 	return nil
 }
@@ -367,7 +505,7 @@ func (b *Buffer) registerMetrics() {
 	meter := telemetry.Meter("akashi/buffer")
 
 	_, _ = meter.Int64ObservableGauge("akashi.buffer.depth",
-		metric.WithDescription("Current number of events in the write buffer"),
+		metric.WithDescription("Current number of events and audit entries in the write buffer"),
 		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
 			o.Observe(int64(b.Len()))
 			return nil
@@ -383,8 +521,17 @@ func (b *Buffer) registerMetrics() {
 	)
 }
 
-// Len returns the current number of buffered events.
+// Len returns the total number of buffered entries (events + audit).
+// Use this for drain/flush-empty checks where both must be flushed.
 func (b *Buffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.events) + len(b.audits)
+}
+
+// EventLen returns the number of buffered events only, excluding audit
+// entries. Use this when comparing against Capacity (which bounds events).
+func (b *Buffer) EventLen() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return len(b.events)
