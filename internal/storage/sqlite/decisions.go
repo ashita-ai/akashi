@@ -264,16 +264,6 @@ const decisionCols = `id, run_id, agent_id, org_id, decision_type, outcome, conf
 func (l *LiteDB) QueryDecisions(ctx context.Context, orgID uuid.UUID, req model.QueryRequest) ([]model.Decision, int, error) {
 	where, args := buildDecisionWhere(orgID, req.Filters, req.TraceID)
 
-	// Count.
-	var total int
-	err := l.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM decisions "+where, args...).Scan(&total)
-	if err != nil {
-		return nil, 0, fmt.Errorf("sqlite: count decisions: %w", err)
-	}
-	if total == 0 {
-		return []model.Decision{}, 0, nil
-	}
-
 	// Order.
 	orderCol := "valid_from"
 	if req.OrderBy != "" {
@@ -293,7 +283,9 @@ func (l *LiteDB) QueryDecisions(ctx context.Context, orgID uuid.UUID, req model.
 		offset = 0
 	}
 
-	q := fmt.Sprintf("SELECT %s FROM decisions %s ORDER BY %s %s LIMIT ? OFFSET ?", //nolint:gosec // G201: interpolated values are sanitized constants
+	// Use COUNT(*) OVER() window function to get the total count alongside data
+	// rows in a single query, eliminating a separate COUNT(*) table scan.
+	q := fmt.Sprintf("SELECT %s, COUNT(*) OVER() FROM decisions %s ORDER BY %s %s LIMIT ? OFFSET ?", //nolint:gosec // G201: interpolated values are sanitized constants
 		decisionCols, where, orderCol, orderDir)
 	args = append(args, limit, offset)
 
@@ -303,7 +295,7 @@ func (l *LiteDB) QueryDecisions(ctx context.Context, orgID uuid.UUID, req model.
 	}
 	defer rows.Close() //nolint:errcheck
 
-	decisions, err := scanDecisionRows(rows)
+	decisions, total, err := scanDecisionRowsWithTotal(rows)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -799,6 +791,25 @@ func scanDecisionRows(rows *sql.Rows) ([]model.Decision, error) {
 	return decisions, nil
 }
 
+// scanDecisionRowsWithTotal scans rows that include a trailing COUNT(*) OVER()
+// column, returning the decisions and the total count in a single pass.
+func scanDecisionRowsWithTotal(rows *sql.Rows) ([]model.Decision, int, error) {
+	decisions := make([]model.Decision, 0)
+	var total int
+	for rows.Next() {
+		d, t, err := scanOneDecisionWithTotal(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		total = t
+		decisions = append(decisions, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("sqlite: decision rows: %w", err)
+	}
+	return decisions, total, nil
+}
+
 // rowScanner is satisfied by both *sql.Row and *sql.Rows.
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -859,6 +870,66 @@ func scanOneDecision(row rowScanner) (model.Decision, error) {
 		d.Project = &project.String
 	}
 	return d, nil
+}
+
+// scanOneDecisionWithTotal scans the 25-column decisionCols plus a trailing
+// COUNT(*) OVER() total from a row.
+func scanOneDecisionWithTotal(row rowScanner) (model.Decision, int, error) {
+	var (
+		d            model.Decision
+		total        int
+		idStr        string
+		runIDStr     string
+		orgIDStr     string
+		metaJSON     sql.NullString
+		precedent    sql.NullString
+		supersedes   sql.NullString
+		validFromStr string
+		validToStr   sql.NullString
+		txTimeStr    string
+		createdStr   string
+		sessionStr   sql.NullString
+		ctxJSON      sql.NullString
+		apiKeyStr    sql.NullString
+		tool         sql.NullString
+		modelStr     sql.NullString
+		project      sql.NullString
+	)
+	err := row.Scan(&idStr, &runIDStr, &d.AgentID, &orgIDStr, &d.DecisionType,
+		&d.Outcome, &d.Confidence, &d.Reasoning, &metaJSON, &d.CompletenessScore,
+		&d.OutcomeScore, &precedent, &d.PrecedentReason, &supersedes, &d.ContentHash,
+		&validFromStr, &validToStr, &txTimeStr, &createdStr,
+		&sessionStr, &ctxJSON, &apiKeyStr, &tool, &modelStr, &project,
+		&total)
+	if err != nil {
+		return model.Decision{}, 0, fmt.Errorf("sqlite: scan decision with total: %w", err)
+	}
+
+	d.ID = parseUUID(idStr)
+	d.RunID = parseUUID(runIDStr)
+	d.OrgID = parseUUID(orgIDStr)
+	d.PrecedentRef = parseNullUUID(precedent)
+	d.SupersedesID = parseNullUUID(supersedes)
+	d.ValidFrom = parseTime(validFromStr)
+	d.ValidTo = parseNullTime(validToStr)
+	d.TransactionTime = parseTime(txTimeStr)
+	d.CreatedAt = parseTime(createdStr)
+	d.SessionID = parseNullUUID(sessionStr)
+	d.APIKeyID = parseNullUUID(apiKeyStr)
+	d.Metadata = map[string]any{}
+	_ = scanJSON(metaJSON, &d.Metadata)
+	d.AgentContext = map[string]any{}
+	_ = scanJSON(ctxJSON, &d.AgentContext)
+	if tool.Valid {
+		d.Tool = &tool.String
+	}
+	if modelStr.Valid {
+		d.Model = &modelStr.String
+	}
+	if project.Valid {
+		d.Project = &project.String
+	}
+	return d, total, nil
 }
 
 // ---- Batch loaders for alternatives and evidence ----
