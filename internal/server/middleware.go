@@ -819,6 +819,23 @@ var errBodyTooLarge = errors.New("request body too large")
 // for malformed input. Use handleDecodeError to respond correctly in either case.
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any, maxBytes int64) error {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(target); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			return errBodyTooLarge
+		}
+		return err
+	}
+	return nil
+}
+
+// decodeJSONLenient decodes JSON without rejecting unknown fields.
+// Use this for payloads from external systems (e.g. Claude Code hooks)
+// where the sender may add new fields at any time.
+func decodeJSONLenient(w http.ResponseWriter, r *http.Request, target any, maxBytes int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 	if err := json.NewDecoder(r.Body).Decode(target); err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
