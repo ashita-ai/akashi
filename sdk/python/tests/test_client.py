@@ -910,6 +910,25 @@ class TestErrorMapping:
                 client.check("test")
 
 
+class TestAuthErrorExtraction:
+    @respx.mock
+    def test_auth_failure_surfaces_server_message(self) -> None:
+        respx.post(f"{BASE_URL}/auth/token").respond(
+            401,
+            json={"error": {"message": "invalid api key"}},
+        )
+        with _make_client() as client:
+            with pytest.raises(httpx.HTTPStatusError, match="invalid api key"):
+                client.check("test")
+
+    @respx.mock
+    def test_auth_failure_falls_back_without_message(self) -> None:
+        respx.post(f"{BASE_URL}/auth/token").respond(401, json={})
+        with _make_client() as client:
+            with pytest.raises(httpx.HTTPStatusError, match="401"):
+                client.check("test")
+
+
 class TestMiddleware:
     @respx.mock
     def test_sync_middleware_check_then_trace(self) -> None:
