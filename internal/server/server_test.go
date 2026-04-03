@@ -5350,7 +5350,7 @@ func TestHandleCreateKey_ForAgent(t *testing.T) {
 	resp, err := authedRequest("POST", testSrv.URL+"/v1/keys", adminToken,
 		map[string]any{
 			"agent_id": "test-agent",
-			"name":     "coverage-test-key",
+			"label":    "coverage-test-key",
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -5782,7 +5782,7 @@ func TestAPIKeyAuth_NonexistentAgent(t *testing.T) {
 
 func TestHandleQuery_WithAgentFilter(t *testing.T) {
 	resp, err := authedRequest("POST", testSrv.URL+"/v1/query", adminToken,
-		map[string]any{"filters": map[string]any{"agent_ids": []string{"admin"}}})
+		map[string]any{"filters": map[string]any{"agent_id": []string{"admin"}}})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -9265,7 +9265,7 @@ func TestHandleQuery_WithFilters(t *testing.T) {
 	resp, err := authedRequest("POST", testSrv.URL+"/v1/query", agentToken,
 		map[string]any{
 			"filters": map[string]any{
-				"agent_ids":     []string{"test-agent"},
+				"agent_id":      []string{"test-agent"},
 				"decision_type": "architecture",
 			},
 			"limit": 5,
@@ -9307,7 +9307,7 @@ func TestHandleCheck_ValidRequest(t *testing.T) {
 	resp, err := authedRequest("POST", testSrv.URL+"/v1/check", agentToken,
 		map[string]any{
 			"decision_type": "architecture",
-			"outcome":       "use redis for caching",
+			"query":         "use redis for caching",
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()

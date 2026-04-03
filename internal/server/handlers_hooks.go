@@ -140,7 +140,7 @@ type hookSpecific struct {
 // old session-start-check.sh that just printed a reminder.
 func (h *Handlers) HandleHookSessionStart(w http.ResponseWriter, r *http.Request) {
 	var input hookSessionStartInput
-	if err := decodeJSON(w, r, &input, hookMaxBodyBytes); err != nil {
+	if err := decodeJSONLenient(w, r, &input, hookMaxBodyBytes); err != nil {
 		writeHookJSON(w, hookResponse{Continue: true})
 		return
 	}
@@ -165,7 +165,7 @@ func (h *Handlers) HandleHookSessionStart(w http.ResponseWriter, r *http.Request
 // session to catch ~2 git commits. Commit tracing is handled in PostToolUse.
 func (h *Handlers) HandleHookPreToolUse(w http.ResponseWriter, r *http.Request) {
 	var input hookPreToolUseInput
-	if err := decodeJSON(w, r, &input, hookMaxBodyBytes); err != nil {
+	if err := decodeJSONLenient(w, r, &input, hookMaxBodyBytes); err != nil {
 		writeHookJSON(w, hookResponse{Continue: true})
 		return
 	}
@@ -201,7 +201,7 @@ func (h *Handlers) HandleHookPreToolUse(w http.ResponseWriter, r *http.Request) 
 // 2. Git commit: auto-traces the commit if AutoTrace is enabled.
 func (h *Handlers) HandleHookPostToolUse(w http.ResponseWriter, r *http.Request) {
 	var input hookPostToolUseInput
-	if err := decodeJSON(w, r, &input, hookMaxBodyBytes); err != nil {
+	if err := decodeJSONLenient(w, r, &input, hookMaxBodyBytes); err != nil {
 		writeHookJSON(w, hookResponse{Continue: true})
 		return
 	}

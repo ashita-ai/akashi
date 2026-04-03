@@ -728,6 +728,44 @@ func TestDecodeJSON(t *testing.T) {
 		err := decodeJSON(rec, req, &p, 1024)
 		assert.Error(t, err)
 	})
+
+	t.Run("rejects unknown fields", func(t *testing.T) {
+		body := `{"name":"test","value":1.0,"unknown_field":"oops"}`
+		rec := httptest.NewRecorder()
+		req := &http.Request{Body: io.NopCloser(strings.NewReader(body))}
+
+		var p payload
+		err := decodeJSON(rec, req, &p, 1024)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown field")
+	})
+}
+
+func TestDecodeJSONLenient(t *testing.T) {
+	type payload struct {
+		Name string `json:"name"`
+	}
+
+	t.Run("accepts unknown fields", func(t *testing.T) {
+		body := `{"name":"test","extra":"ignored"}`
+		rec := httptest.NewRecorder()
+		req := &http.Request{Body: io.NopCloser(strings.NewReader(body))}
+
+		var p payload
+		err := decodeJSONLenient(rec, req, &p, 1024)
+		require.NoError(t, err)
+		assert.Equal(t, "test", p.Name)
+	})
+
+	t.Run("returns errBodyTooLarge for oversized body", func(t *testing.T) {
+		body := `{"name":"this is a long name that exceeds the limit"}`
+		rec := httptest.NewRecorder()
+		req := &http.Request{Body: io.NopCloser(strings.NewReader(body))}
+
+		var p payload
+		err := decodeJSONLenient(rec, req, &p, 10)
+		assert.ErrorIs(t, err, errBodyTooLarge)
+	})
 }
 
 func TestHandleDecodeError(t *testing.T) {
