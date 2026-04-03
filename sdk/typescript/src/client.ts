@@ -1095,6 +1095,7 @@ export class AkashiClient {
       }
       if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
         const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
         await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
         continue;
       }
@@ -1135,6 +1136,7 @@ export class AkashiClient {
       }
       if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
         const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
         await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
         continue;
       }
@@ -1172,6 +1174,7 @@ export class AkashiClient {
       }
       if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
         const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
         await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
         continue;
       }
@@ -1207,6 +1210,7 @@ export class AkashiClient {
       }
       if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
         const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
         await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
         continue;
       }
@@ -1242,6 +1246,7 @@ export class AkashiClient {
       }
       if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
         const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
         await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
         continue;
       }
@@ -1277,6 +1282,7 @@ export class AkashiClient {
       }
       if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
         const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
         await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
         continue;
       }
@@ -1289,13 +1295,33 @@ export class AkashiClient {
   }
 
   private async getNoAuth<T>(path: string): Promise<T> {
-    const resp = await fetch(`${this.baseUrl}${path}`, {
-      method: "GET",
-      headers: { "User-Agent": USER_AGENT },
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
-    checkResponseSize(resp.headers.get("content-length"));
-    return handleResponse<T>(resp);
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      let resp: Response;
+      try {
+        resp = await fetch(`${this.baseUrl}${path}`, {
+          method: "GET",
+          headers: { "User-Agent": USER_AGENT },
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < this.maxRetries) {
+          await sleep(retryDelayMs(attempt, this.retryBaseDelayMs));
+          continue;
+        }
+        throw lastError;
+      }
+      if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
+        const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
+        await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
+        continue;
+      }
+      checkResponseSize(resp.headers.get("content-length"));
+      return handleResponse<T>(resp);
+    }
+    throw lastError!;
   }
 
   private async put<T>(path: string, body: unknown): Promise<T> {
@@ -1326,6 +1352,7 @@ export class AkashiClient {
       }
       if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
         const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
         await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
         continue;
       }
@@ -1336,17 +1363,37 @@ export class AkashiClient {
   }
 
   private async postNoAuth<T>(path: string, body: unknown): Promise<T> {
-    const resp = await fetch(`${this.baseUrl}${path}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "User-Agent": USER_AGENT,
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
-    checkResponseSize(resp.headers.get("content-length"));
-    return handleResponse<T>(resp);
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      let resp: Response;
+      try {
+        resp = await fetch(`${this.baseUrl}${path}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < this.maxRetries) {
+          await sleep(retryDelayMs(attempt, this.retryBaseDelayMs));
+          continue;
+        }
+        throw lastError;
+      }
+      if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
+        const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
+        await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
+        continue;
+      }
+      checkResponseSize(resp.headers.get("content-length"));
+      return handleResponse<T>(resp);
+    }
+    throw lastError!;
   }
 
   private async del_with_body<T>(path: string, body: unknown): Promise<T> {
@@ -1377,6 +1424,7 @@ export class AkashiClient {
       }
       if (isRetryableStatus(resp.status) && attempt < this.maxRetries) {
         const ra = parseRetryAfter(resp.headers.get("retry-after"));
+        await resp.body?.cancel();
         await sleep(retryDelayMs(attempt, this.retryBaseDelayMs, ra));
         continue;
       }

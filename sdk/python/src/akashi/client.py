@@ -1243,14 +1243,28 @@ class AkashiClient:
         raise last_err  # type: ignore[misc]
 
     async def _post_no_auth(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        resp = await self._client.post(
-            f"{self.base_url}{path}",
-            json=body,
-            headers={"User-Agent": _USER_AGENT},
-        )
-        if len(resp.content) > _MAX_RESPONSE_BYTES:
-            raise AkashiError("Response body exceeds 10 MiB limit")
-        return _handle_response(resp)
+        headers = {"User-Agent": _USER_AGENT}
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                resp = await self._client.post(
+                    f"{self.base_url}{path}",
+                    json=body,
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    await asyncio.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                await asyncio.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            return _handle_response(resp)
+        raise last_err  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
@@ -2090,11 +2104,25 @@ class AkashiSyncClient:
         raise last_err  # type: ignore[misc]
 
     def _post_no_auth(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        resp = self._client.post(
-            f"{self.base_url}{path}",
-            json=body,
-            headers={"User-Agent": _USER_AGENT},
-        )
-        if len(resp.content) > _MAX_RESPONSE_BYTES:
-            raise AkashiError("Response body exceeds 10 MiB limit")
-        return _handle_response(resp)
+        headers = {"User-Agent": _USER_AGENT}
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                resp = self._client.post(
+                    f"{self.base_url}{path}",
+                    json=body,
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    _time.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                _time.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            return _handle_response(resp)
+        raise last_err  # type: ignore[misc]

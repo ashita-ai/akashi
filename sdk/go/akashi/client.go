@@ -679,19 +679,41 @@ func (c *Client) patch(ctx context.Context, path string, body any, dest any) err
 }
 
 func (c *Client) getNoAuth(ctx context.Context, path string, dest any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
-	if err != nil {
-		return fmt.Errorf("akashi: create request: %w", err)
-	}
-	req.Header.Set("User-Agent", userAgent)
+	var lastErr error
+	for attempt := range c.maxRetries + 1 {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+		if err != nil {
+			return fmt.Errorf("akashi: create request: %w", err)
+		}
+		req.Header.Set("User-Agent", userAgent)
 
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("akashi: %s %s: %w", req.Method, req.URL.Path, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+		resp, doErr := c.client.Do(req)
+		if doErr != nil {
+			lastErr = fmt.Errorf("akashi: %s %s: %w", req.Method, req.URL.Path, doErr)
+			if attempt < c.maxRetries {
+				if waitErr := retrySleep(ctx, attempt, c.retryBaseDelay, 0); waitErr != nil {
+					return waitErr
+				}
+				continue
+			}
+			return lastErr
+		}
 
-	return handleResponse(resp, dest)
+		if isRetryableStatus(resp.StatusCode) && attempt < c.maxRetries {
+			retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if waitErr := retrySleep(ctx, attempt, c.retryBaseDelay, retryAfter); waitErr != nil {
+				return waitErr
+			}
+			continue
+		}
+
+		defer func() { _ = resp.Body.Close() }()
+		return handleResponse(resp, dest)
+	}
+
+	return lastErr
 }
 
 // execRequest adds auth and session headers, executes the HTTP request, and
