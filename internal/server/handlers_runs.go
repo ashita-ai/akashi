@@ -161,7 +161,30 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, err := h.buffer.Append(r.Context(), runID, run.AgentID, run.OrgID, req.Events)
+	// AppendWithAudit buffers events and their audit entry under a single lock
+	// acquisition, closing the race where a background flush could drain events
+	// before the audit entry was buffered (see issue #608).
+	events, err := h.buffer.AppendWithAudit(
+		r.Context(), runID, run.AgentID, run.OrgID, req.Events,
+		func(evts []model.AgentEvent) storage.MutationAuditEntry {
+			eventIDs := make([]uuid.UUID, len(evts))
+			for i, e := range evts {
+				eventIDs[i] = e.ID
+			}
+			return h.buildAuditEntry(
+				r, orgID,
+				"append_events", "agent_run", runID.String(),
+				nil,
+				map[string]any{
+					"accepted":  len(evts),
+					"event_ids": eventIDs,
+					"status":    "persisted",
+					"message":   "events durably persisted",
+				},
+				map[string]any{"agent_id": run.AgentID, "event_count": len(evts)},
+			)
+		},
+	)
 	if err != nil {
 		h.clearIdempotentWrite(r, orgID, idem)
 		switch {
@@ -175,10 +198,10 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// After Append succeeds, events are in the buffer and WILL be persisted by
-	// the background flush loop (barring process crash). From this point we must
-	// NEVER clear the idempotency key — doing so allows retries to create
-	// duplicate events. See issue #65.
+	// After AppendWithAudit succeeds, events and audit are in the buffer and
+	// WILL be persisted by the background flush loop (barring process crash).
+	// From this point we must NEVER clear the idempotency key — doing so
+	// allows retries to create duplicate events. See issue #65.
 
 	eventIDs := make([]uuid.UUID, len(events))
 	for i, e := range events {
@@ -192,16 +215,6 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 		"status":    "persisted",
 		"message":   "events durably persisted",
 	}
-
-	// Buffer the audit entry BEFORE FlushNow so both are flushed in the same
-	// transaction. This eliminates the window where events persist without an
-	// audit trail (see issue #608).
-	h.buffer.BufferAudit(h.buildAuditEntry(
-		r, orgID,
-		"append_events", "agent_run", runID.String(),
-		nil, resp,
-		map[string]any{"agent_id": run.AgentID, "event_count": len(events)},
-	))
 
 	if err := h.buffer.FlushNow(r.Context()); err != nil {
 		// Events are in the buffer and will be flushed by the background loop.

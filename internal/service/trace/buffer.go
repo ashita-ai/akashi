@@ -192,6 +192,83 @@ func (b *Buffer) BufferAudit(entry storage.MutationAuditEntry) {
 	b.mu.Unlock()
 }
 
+// AppendWithAudit is like Append but atomically buffers an audit entry alongside
+// the events under the same lock acquisition. The auditFn callback receives the
+// created events and returns the audit entry to buffer. This eliminates the race
+// window where a background flush could drain events before the audit is buffered.
+func (b *Buffer) AppendWithAudit(
+	ctx context.Context,
+	runID uuid.UUID,
+	agentID string,
+	orgID uuid.UUID,
+	inputs []model.EventInput,
+	auditFn func(events []model.AgentEvent) storage.MutationAuditEntry,
+) ([]model.AgentEvent, error) {
+	if b.draining.Load() {
+		b.droppedEvents.Add(int64(len(inputs)))
+		return nil, fmt.Errorf("%w: rejecting %d new events", ErrBufferDraining, len(inputs))
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if len(b.events)+len(inputs) > maxBufferCapacity {
+		b.droppedEvents.Add(int64(len(inputs)))
+		return nil, fmt.Errorf("%w (%d events), try again later", ErrBufferAtCapacity, len(b.events))
+	}
+
+	seqNums, err := b.db.ReserveSequenceNums(ctx, len(inputs))
+	if err != nil {
+		return nil, fmt.Errorf("trace: reserve sequence nums: %w", err)
+	}
+
+	now := time.Now().UTC()
+	events := make([]model.AgentEvent, len(inputs))
+	for i, input := range inputs {
+		occurredAt := now
+		if input.OccurredAt != nil {
+			occurredAt = *input.OccurredAt
+		}
+		events[i] = model.AgentEvent{
+			ID:          uuid.New(),
+			RunID:       runID,
+			OrgID:       orgID,
+			EventType:   input.EventType,
+			SequenceNum: seqNums[i],
+			OccurredAt:  occurredAt,
+			AgentID:     agentID,
+			Payload:     input.Payload,
+			CreatedAt:   now,
+		}
+	}
+
+	// Write to WAL before buffering in memory for crash durability.
+	if b.wal != nil {
+		maxLSN, walErr := b.wal.Write(events)
+		if walErr != nil {
+			return nil, fmt.Errorf("trace: wal write: %w", walErr)
+		}
+		b.walMaxLSN = maxLSN
+	}
+
+	b.events = append(b.events, events...)
+
+	// Buffer the audit entry under the same lock hold — no background flush
+	// can snapshot the events without also capturing this audit entry.
+	if auditFn != nil {
+		b.audits = append(b.audits, auditFn(events))
+	}
+
+	if len(b.events) >= b.maxSize {
+		select {
+		case b.flushCh <- struct{}{}:
+		default:
+		}
+	}
+
+	return events, nil
+}
+
 // HasWAL returns true if a write-ahead log is configured.
 func (b *Buffer) HasWAL() bool {
 	return b.wal != nil
@@ -288,18 +365,17 @@ func (b *Buffer) flushOnce(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
-	// Orphaned audit entries (no events): flush them directly via the pool
-	// rather than waiting for an event batch that may never arrive.
+	// Orphaned audit entries (no events): flush them in a single transaction
+	// rather than waiting for an event batch that may never arrive. Using a
+	// transaction ensures all-or-nothing semantics — no duplicates on retry.
 	if len(b.events) == 0 {
 		orphanedAudits := make([]storage.MutationAuditEntry, len(b.audits))
 		copy(orphanedAudits, b.audits)
 		b.mu.Unlock()
 
-		for _, entry := range orphanedAudits {
-			if err := b.db.InsertMutationAudit(ctx, entry); err != nil {
-				b.logger.Error("trace: orphaned audit flush failed", "error", err)
-				return false, err
-			}
+		if err := b.db.InsertMutationAuditBatch(ctx, orphanedAudits); err != nil {
+			b.logger.Error("trace: orphaned audit flush failed", "error", err)
+			return false, err
 		}
 
 		b.mu.Lock()

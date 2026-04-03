@@ -1386,7 +1386,7 @@ func TestWAL_RegisterMetrics_CallbacksExecute(t *testing.T) {
 }
 
 func TestBuffer_AuditFlushedWithEvents(t *testing.T) {
-	// Verify that audit entries buffered via BufferAudit are flushed
+	// Verify that audit entries buffered via AppendWithAudit are flushed
 	// atomically with events — the core fix for issue #608.
 	run := createTestRun(t)
 
@@ -1395,23 +1395,28 @@ func TestBuffer_AuditFlushedWithEvents(t *testing.T) {
 	defer cancel()
 	buf.Start(ctx)
 
-	events, err := buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(2))
+	// AppendWithAudit buffers events and audit under a single lock hold,
+	// eliminating the race where a background flush could drain events
+	// before the audit entry was buffered.
+	events, err := buf.AppendWithAudit(
+		context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(2),
+		func(evts []model.AgentEvent) storage.MutationAuditEntry {
+			return storage.MutationAuditEntry{
+				RequestID:    "test-req-audit-flush",
+				OrgID:        run.OrgID,
+				ActorAgentID: run.AgentID,
+				ActorRole:    "agent",
+				HTTPMethod:   "POST",
+				Endpoint:     "/v1/runs/" + run.ID.String() + "/events",
+				Operation:    "append_events",
+				ResourceType: "agent_run",
+				ResourceID:   run.ID.String(),
+				AfterData:    map[string]any{"event_count": len(evts)},
+			}
+		},
+	)
 	require.NoError(t, err)
 	require.Len(t, events, 2)
-
-	// Buffer an audit entry alongside the events, as HandleAppendEvents does.
-	buf.BufferAudit(storage.MutationAuditEntry{
-		RequestID:    "test-req-audit-flush",
-		OrgID:        run.OrgID,
-		ActorAgentID: run.AgentID,
-		ActorRole:    "agent",
-		HTTPMethod:   "POST",
-		Endpoint:     "/v1/runs/" + run.ID.String() + "/events",
-		Operation:    "append_events",
-		ResourceType: "agent_run",
-		ResourceID:   run.ID.String(),
-		AfterData:    map[string]any{"event_count": 2},
-	})
 
 	// Drain forces a flush. Both events and audit must land atomically.
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)

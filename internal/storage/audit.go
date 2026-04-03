@@ -81,3 +81,23 @@ func (db *DB) InsertMutationAudit(ctx context.Context, e MutationAuditEntry) err
 func InsertMutationAuditTx(ctx context.Context, tx pgx.Tx, e MutationAuditEntry) error {
 	return insertMutationAudit(ctx, tx, e)
 }
+
+// InsertMutationAuditBatch inserts multiple audit entries in a single
+// transaction. Either all entries are committed or none are — preventing
+// duplicate rows on partial-failure retry.
+func (db *DB) InsertMutationAuditBatch(ctx context.Context, entries []MutationAuditEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	if len(entries) == 1 {
+		return db.InsertMutationAudit(ctx, entries[0])
+	}
+	return db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		for _, e := range entries {
+			if err := InsertMutationAuditTx(ctx, tx, e); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
