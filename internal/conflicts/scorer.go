@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pgvector/pgvector-go"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/sync/errgroup"
@@ -363,36 +364,44 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 
 	// Hydrate candidate IDs from Postgres to get full model data
 	// (outcome_embedding, reasoning, agent_context) for the scoring pipeline.
+	// GetDecisionEmbeddings and GetDecisionsByIDs are independent queries on
+	// the same ID set — run them in parallel to halve the latency (#554).
 	neighborIDs := make([]uuid.UUID, len(qdrantResults))
 	for i, r := range qdrantResults {
 		neighborIDs[i] = r.DecisionID
 	}
-	embMap, err := s.db.GetDecisionEmbeddings(ctx, neighborIDs, orgID)
-	if err != nil {
-		s.logger.Warn("conflict scorer: hydrate embeddings failed", "decision_id", decisionID, "error", err)
+
+	var (
+		embMap       map[uuid.UUID][2]pgvector.Vector
+		candidateMap map[uuid.UUID]model.Decision
+	)
+	g, gCtx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		var err error
+		embMap, err = s.db.GetDecisionEmbeddings(gCtx, neighborIDs, orgID)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		candidateMap, err = s.db.GetDecisionsByIDs(gCtx, orgID, neighborIDs)
+		return err
+	})
+	if err := g.Wait(); err != nil {
+		s.logger.Warn("conflict scorer: hydrate candidates failed", "decision_id", decisionID, "error", err)
 		return
 	}
 
-	// GetDecisionEmbeddings returns only decisions with both embeddings present.
-	// Fetch full decision data for those IDs to get outcome, reasoning, etc.
-	hydratedIDs := make([]uuid.UUID, 0, len(embMap))
-	for id := range embMap {
-		hydratedIDs = append(hydratedIDs, id)
-	}
-	candidateMap, err := s.db.GetDecisionsByIDs(ctx, orgID, hydratedIDs)
-	if err != nil {
-		s.logger.Warn("conflict scorer: hydrate decisions failed", "decision_id", decisionID, "error", err)
-		return
-	}
-
-	// Assemble ordered candidate list preserving Qdrant ranking.
-	// GetDecisionsByIDs doesn't include embedding/outcome_embedding; re-attach from embMap.
-	candidates := make([]model.Decision, 0, len(candidateMap))
-	for id, cand := range candidateMap {
-		if embs, ok := embMap[id]; ok {
-			cand.Embedding = &embs[0]
-			cand.OutcomeEmbedding = &embs[1]
+	// Assemble candidate list: only include decisions present in both maps
+	// (i.e. those that have both embeddings). Re-attach embeddings since
+	// GetDecisionsByIDs doesn't return them.
+	candidates := make([]model.Decision, 0, len(embMap))
+	for id, embs := range embMap {
+		cand, ok := candidateMap[id]
+		if !ok {
+			continue
 		}
+		cand.Embedding = &embs[0]
+		cand.OutcomeEmbedding = &embs[1]
 		candidates = append(candidates, cand)
 	}
 
