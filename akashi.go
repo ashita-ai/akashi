@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"os"
 	"runtime/debug"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -80,6 +81,8 @@ type App struct {
 	logger          *slog.Logger
 	autoResolver    *autoresolve.Service
 	version         string
+
+	bgLoops sync.WaitGroup // tracks background goroutines for graceful shutdown
 
 	auditOrgCounter atomic.Uint64 // round-robin counter for integrity audit org selection
 
@@ -521,21 +524,34 @@ func (a *App) Run(ctx context.Context) error {
 		a.outbox.Start(ctx)
 	}
 	if a.broker != nil {
-		go a.broker.Start(ctx)
+		a.bgLoops.Add(1)
+		go func() {
+			defer a.bgLoops.Done()
+			a.broker.Start(ctx)
+		}()
 	}
 
-	// Background goroutines.
-	go a.conflictBackfillLoop(ctx)
-	go a.conflictRefreshLoop(ctx)
-	go a.integrityProofLoop(ctx)
-	go a.integrityAuditLoop(ctx)
-	go a.integrityFullAuditLoop(ctx)
-	go a.idempotencyCleanupLoop(ctx)
-	go a.hookCheckCleanupLoop(ctx)
-	go a.retentionLoop(ctx)
-	go a.claimEmbeddingRetryLoop(ctx)
-	go a.percentileRefreshLoop(ctx)
-	go a.autoResolveLoop(ctx)
+	// Background goroutines — all tracked by bgLoops so Shutdown can wait
+	// for them to exit before closing the database pool.
+	for _, fn := range []func(context.Context){
+		a.conflictBackfillLoop,
+		a.conflictRefreshLoop,
+		a.integrityProofLoop,
+		a.integrityAuditLoop,
+		a.integrityFullAuditLoop,
+		a.idempotencyCleanupLoop,
+		a.hookCheckCleanupLoop,
+		a.retentionLoop,
+		a.claimEmbeddingRetryLoop,
+		a.percentileRefreshLoop,
+		a.autoResolveLoop,
+	} {
+		a.bgLoops.Add(1)
+		go func() {
+			defer a.bgLoops.Done()
+			fn(ctx)
+		}()
+	}
 
 	// Start HTTP server.
 	errCh := make(chan error, 1)
@@ -606,6 +622,22 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 		outboxCancel()
 	}
+
+	// Wait for background loops to exit. The Run() context was cancelled
+	// before Shutdown was called, so loops are draining. We bound the wait
+	// to avoid hanging on a stuck goroutine.
+	bgDone := make(chan struct{})
+	go func() { a.bgLoops.Wait(); close(bgDone) }()
+	loopCtx, loopCancel := contextWithOptionalTimeout(ctx, a.cfg.ShutdownLoopDrainTimeout)
+	select {
+	case <-bgDone:
+		a.logger.Info("all background loops exited")
+	case <-loopCtx.Done():
+		a.logger.Warn("background loops did not exit within timeout, proceeding with shutdown",
+			"configured_timeout", a.cfg.ShutdownLoopDrainTimeout,
+		)
+	}
+	loopCancel()
 
 	// Cleanup.
 	a.grantCache.Close()
