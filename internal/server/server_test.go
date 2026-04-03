@@ -5623,6 +5623,114 @@ func TestHandleAssessDecision_InvalidOutcome(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
+// ---- Coverage push: assess decision authorization ----
+
+func TestHandleAssessDecision_ForbiddenWithoutGrant(t *testing.T) {
+	// Create an agent that has no grants to admin's decisions.
+	agentID := fmt.Sprintf("assess-no-grant-%d", time.Now().UnixNano())
+	createAgent(testSrv.URL, adminToken, agentID, "Assess No Grant", "agent", agentID+"-key")
+	token := getToken(testSrv.URL, agentID, agentID+"-key")
+
+	// Create a decision as admin.
+	traceResp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken, model.TraceRequest{
+		AgentID: "admin",
+		Decision: model.TraceDecision{
+			DecisionType: "assess-authz-test",
+			Outcome:      "test outcome",
+			Confidence:   0.7,
+		},
+	})
+	require.NoError(t, err)
+	var traceResult struct {
+		Data struct {
+			DecisionID uuid.UUID `json:"decision_id"`
+		} `json:"data"`
+	}
+	b, _ := io.ReadAll(traceResp.Body)
+	_ = traceResp.Body.Close()
+	require.NoError(t, json.Unmarshal(b, &traceResult))
+
+	// Agent without grant tries to assess admin's decision — should be forbidden.
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+traceResult.Data.DecisionID.String()+"/assess", token,
+		map[string]any{"outcome": "correct"})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
+func TestHandleAssessDecision_OwnDecisionSucceeds(t *testing.T) {
+	// Agent traces a decision, then assesses it — should succeed.
+	traceResp, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken, model.TraceRequest{
+		AgentID: "test-agent",
+		Decision: model.TraceDecision{
+			DecisionType: "assess-own-test",
+			Outcome:      "test outcome",
+			Confidence:   0.8,
+		},
+	})
+	require.NoError(t, err)
+	var traceResult struct {
+		Data struct {
+			DecisionID uuid.UUID `json:"decision_id"`
+		} `json:"data"`
+	}
+	b, _ := io.ReadAll(traceResp.Body)
+	_ = traceResp.Body.Close()
+	require.NoError(t, json.Unmarshal(b, &traceResult))
+
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+traceResult.Data.DecisionID.String()+"/assess", agentToken,
+		map[string]any{"outcome": "correct"})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleAssessDecision_SucceedsWithGrant(t *testing.T) {
+	// Create a dedicated agent that will receive a grant.
+	granteeID := fmt.Sprintf("assess-grantee-%d", time.Now().UnixNano())
+	createAgent(testSrv.URL, adminToken, granteeID, "Assess Grantee", "agent", granteeID+"-key")
+	granteeToken := getToken(testSrv.URL, granteeID, granteeID+"-key")
+
+	// Create a decision as admin.
+	traceResp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken, model.TraceRequest{
+		AgentID: "admin",
+		Decision: model.TraceDecision{
+			DecisionType: "assess-grant-test",
+			Outcome:      "test outcome",
+			Confidence:   0.6,
+		},
+	})
+	require.NoError(t, err)
+	var traceResult struct {
+		Data struct {
+			DecisionID uuid.UUID `json:"decision_id"`
+		} `json:"data"`
+	}
+	b, _ := io.ReadAll(traceResp.Body)
+	_ = traceResp.Body.Close()
+	require.NoError(t, json.Unmarshal(b, &traceResult))
+
+	// Grant the agent access to admin's traces.
+	agentIDStr := "admin"
+	grantResp, err := authedRequest("POST", testSrv.URL+"/v1/grants", adminToken,
+		model.CreateGrantRequest{
+			GranteeAgentID: granteeID,
+			ResourceType:   "agent_traces",
+			ResourceID:     &agentIDStr,
+			Permission:     "read",
+		})
+	require.NoError(t, err)
+	defer func() { _ = grantResp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, grantResp.StatusCode)
+
+	// Agent with grant assesses admin's decision — should succeed.
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/decisions/"+traceResult.Data.DecisionID.String()+"/assess", granteeToken,
+		map[string]any{"outcome": "incorrect", "notes": "decision was wrong"})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
 // ---- Coverage push: check endpoint ----
 
 func TestHandleCheck_MissingDecisionTypeField(t *testing.T) {
