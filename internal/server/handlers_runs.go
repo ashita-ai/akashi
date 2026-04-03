@@ -193,6 +193,16 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 		"message":   "events durably persisted",
 	}
 
+	// Buffer the audit entry BEFORE FlushNow so both are flushed in the same
+	// transaction. This eliminates the window where events persist without an
+	// audit trail (see issue #608).
+	h.buffer.BufferAudit(h.buildAuditEntry(
+		r, orgID,
+		"append_events", "agent_run", runID.String(),
+		nil, resp,
+		map[string]any{"agent_id": run.AgentID, "event_count": len(events)},
+	))
+
 	if err := h.buffer.FlushNow(r.Context()); err != nil {
 		// Events are in the buffer and will be flushed by the background loop.
 		// Return 202 to signal they are accepted but not yet confirmed durable.
@@ -206,16 +216,6 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 		resp["status"] = "buffered"
 		resp["message"] = "events accepted, will be persisted by background flush"
 	}
-
-	// Buffer the audit entry alongside events so both are flushed in the same
-	// transaction. This eliminates the window where events persist without an
-	// audit trail (see issue #608).
-	h.buffer.BufferAudit(h.buildAuditEntry(
-		r, orgID,
-		"append_events", "agent_run", runID.String(),
-		nil, resp,
-		map[string]any{"agent_id": run.AgentID, "event_count": len(events)},
-	))
 	h.completeIdempotentWriteBestEffort(r, orgID, idem, statusCode, resp)
 	writeJSON(w, r, statusCode, resp)
 }

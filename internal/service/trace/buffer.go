@@ -213,7 +213,7 @@ func (b *Buffer) flushLoop(ctx context.Context) {
 			}
 			if drainCtx != nil {
 				if err := b.flushUntilEmpty(drainCtx); err != nil {
-					b.logger.Warn("trace: final drain flush incomplete", "error", err, "remaining_events", b.Len())
+					b.logger.Warn("trace: final drain flush incomplete", "error", err, "remaining", b.Len())
 				}
 			} else {
 				// Fallback for direct cancellation without Drain (e.g., tests).
@@ -221,7 +221,7 @@ func (b *Buffer) flushLoop(ctx context.Context) {
 				// full buffer batch even under transient DB pressure.
 				fallbackCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				if err := b.flushUntilEmpty(fallbackCtx); err != nil {
-					b.logger.Warn("trace: fallback final flush incomplete", "error", err, "remaining_events", b.Len())
+					b.logger.Warn("trace: fallback final flush incomplete", "error", err, "remaining", b.Len())
 				}
 				cancel()
 			}
@@ -283,9 +283,35 @@ func (b *Buffer) flushUntilEmpty(ctx context.Context) error {
 // persist without their audit trail.
 func (b *Buffer) flushOnce(ctx context.Context) (bool, error) {
 	b.mu.Lock()
-	if len(b.events) == 0 {
+	if len(b.events) == 0 && len(b.audits) == 0 {
 		b.mu.Unlock()
 		return false, nil
+	}
+
+	// Orphaned audit entries (no events): flush them directly via the pool
+	// rather than waiting for an event batch that may never arrive.
+	if len(b.events) == 0 {
+		orphanedAudits := make([]storage.MutationAuditEntry, len(b.audits))
+		copy(orphanedAudits, b.audits)
+		b.mu.Unlock()
+
+		for _, entry := range orphanedAudits {
+			if err := b.db.InsertMutationAudit(ctx, entry); err != nil {
+				b.logger.Error("trace: orphaned audit flush failed", "error", err)
+				return false, err
+			}
+		}
+
+		b.mu.Lock()
+		if len(b.audits) >= len(orphanedAudits) {
+			b.audits = b.audits[len(orphanedAudits):]
+		} else {
+			b.audits = nil
+		}
+		b.mu.Unlock()
+
+		b.logger.Info("trace: orphaned audits flushed", "audit_entries", len(orphanedAudits))
+		return true, nil
 	}
 	// Keep events in memory until the flush succeeds.
 	// This avoids data loss on transient flush failures.
@@ -370,8 +396,8 @@ func (b *Buffer) Drain(ctx context.Context) error {
 	select {
 	case <-b.done:
 	case <-ctx.Done():
-		b.logger.Error("trace: drain timed out — unflushed events will be lost",
-			"remaining_events", b.Len(),
+		b.logger.Error("trace: drain timed out — unflushed entries will be lost",
+			"remaining", b.Len(),
 		)
 	}
 
@@ -383,7 +409,7 @@ func (b *Buffer) Drain(ctx context.Context) error {
 	}
 
 	if remaining := b.Len(); remaining > 0 {
-		return fmt.Errorf("trace: drain incomplete, %d events lost", remaining)
+		return fmt.Errorf("trace: drain incomplete, %d entries lost", remaining)
 	}
 	return nil
 }
@@ -394,7 +420,7 @@ func (b *Buffer) registerMetrics() {
 	meter := telemetry.Meter("akashi/buffer")
 
 	_, _ = meter.Int64ObservableGauge("akashi.buffer.depth",
-		metric.WithDescription("Current number of events in the write buffer"),
+		metric.WithDescription("Current number of events and audit entries in the write buffer"),
 		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
 			o.Observe(int64(b.Len()))
 			return nil
@@ -410,11 +436,11 @@ func (b *Buffer) registerMetrics() {
 	)
 }
 
-// Len returns the current number of buffered events.
+// Len returns the current number of buffered events and audit entries.
 func (b *Buffer) Len() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return len(b.events)
+	return len(b.events) + len(b.audits)
 }
 
 // Capacity returns the hard upper limit on buffered events.

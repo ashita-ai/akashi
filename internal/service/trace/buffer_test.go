@@ -1437,8 +1437,9 @@ func TestBuffer_AuditFlushedWithEvents(t *testing.T) {
 }
 
 func TestBuffer_AuditNotLostOnFlushRetry(t *testing.T) {
-	// When no events are buffered but audits are, they should not be
-	// silently discarded — they wait for the next event batch.
+	// Orphaned audit entries (buffered without events) must flush
+	// immediately rather than waiting for an event batch that may never
+	// arrive — e.g. on graceful shutdown.
 	run := createTestRun(t)
 
 	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute, nil)
@@ -1459,24 +1460,17 @@ func TestBuffer_AuditNotLostOnFlushRetry(t *testing.T) {
 		ResourceID:   run.ID.String(),
 	})
 
-	// flushOnce with no events should be a no-op (nothing to flush).
+	// flushOnce with orphaned audits should flush them directly.
 	flushed, err := buf.flushOnce(context.Background())
 	require.NoError(t, err)
-	assert.False(t, flushed, "flushOnce should be a no-op when no events are buffered")
+	assert.True(t, flushed, "flushOnce should flush orphaned audit entries even without events")
 
-	// The audit entry should still be queued.
+	// The audit entry should have been drained from the buffer.
 	buf.mu.Lock()
-	assert.Len(t, buf.audits, 1, "audit entry should remain queued when no events to flush")
+	assert.Len(t, buf.audits, 0, "audit entry should be cleared after flush")
 	buf.mu.Unlock()
 
-	// Now append events — the queued audit should flush with them.
-	_, err = buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(1))
-	require.NoError(t, err)
-
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer drainCancel()
-	require.NoError(t, buf.Drain(drainCtx))
-
+	// Verify the audit entry reached the database.
 	var auditCount int
 	err = testDB.Pool().QueryRow(context.Background(),
 		`SELECT count(*) FROM mutation_audit_log
@@ -1484,5 +1478,5 @@ func TestBuffer_AuditNotLostOnFlushRetry(t *testing.T) {
 		   AND org_id = $1`, run.OrgID,
 	).Scan(&auditCount)
 	require.NoError(t, err)
-	assert.Equal(t, 1, auditCount, "orphaned audit entry should flush with the next event batch")
+	assert.Equal(t, 1, auditCount, "orphaned audit entry should be flushed directly to the database")
 }
