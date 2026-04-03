@@ -512,11 +512,20 @@ func (b *Buffer) registerMetrics() {
 	)
 }
 
-// Len returns the current number of buffered events and audit entries.
+// Len returns the total number of buffered entries (events + audit).
+// Use this for drain/flush-empty checks where both must be flushed.
 func (b *Buffer) Len() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return len(b.events) + len(b.audits)
+}
+
+// EventLen returns the number of buffered events only, excluding audit
+// entries. Use this when comparing against Capacity (which bounds events).
+func (b *Buffer) EventLen() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.events)
 }
 
 // Capacity returns the hard upper limit on buffered events.

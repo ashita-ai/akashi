@@ -1485,3 +1485,34 @@ func TestBuffer_AuditNotLostOnFlushRetry(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, auditCount, "orphaned audit entry should be flushed directly to the database")
 }
+
+func TestBuffer_LenIncludesAudits(t *testing.T) {
+	// Len() returns events + audits (for drain completeness checks).
+	// EventLen() returns events only (for health endpoint capacity comparison).
+	run := createTestRun(t)
+
+	buf := NewBuffer(testDB, testLogger(), 1000, 10*time.Minute, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf.Start(ctx)
+
+	assert.Equal(t, 0, buf.Len(), "empty buffer: Len should be 0")
+	assert.Equal(t, 0, buf.EventLen(), "empty buffer: EventLen should be 0")
+
+	// Append 2 events without audit.
+	_, err := buf.Append(context.Background(), run.ID, run.AgentID, run.OrgID, makeEventInputs(2))
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, buf.Len(), "Len should count events")
+	assert.Equal(t, 2, buf.EventLen(), "EventLen should count events")
+
+	// Buffer an orphaned audit entry.
+	buf.BufferAudit(storage.MutationAuditEntry{
+		RequestID: "test-len-audit",
+		OrgID:     run.OrgID,
+		Operation: "append_events",
+	})
+
+	assert.Equal(t, 3, buf.Len(), "Len should count events + audits")
+	assert.Equal(t, 2, buf.EventLen(), "EventLen should count only events")
+}
