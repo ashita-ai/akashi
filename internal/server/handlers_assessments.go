@@ -26,6 +26,26 @@ func (h *Handlers) HandleAssessDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Verify the caller has access to the decision's agent before allowing assessment.
+	d, err := h.db.GetDecision(r.Context(), orgID, decisionID, storage.GetDecisionOpts{})
+	if err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "decision not found")
+			return
+		}
+		h.writeInternalError(w, r, "failed to get decision", err)
+		return
+	}
+	ok, err := canAccessAgent(r.Context(), h.db, claims, d.AgentID)
+	if err != nil {
+		h.writeInternalError(w, r, "authorization check failed", err)
+		return
+	}
+	if !ok {
+		writeError(w, r, http.StatusForbidden, model.ErrCodeForbidden, "no access to this decision")
+		return
+	}
+
 	var req model.AssessRequest
 	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
 		handleDecodeError(w, r, err)
