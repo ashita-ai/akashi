@@ -564,13 +564,6 @@ func (db *DB) QueryDecisions(ctx context.Context, orgID uuid.UUID, req model.Que
 		where += fmt.Sprintf(" AND run_id IN (SELECT id FROM agent_runs WHERE trace_id = $%d AND org_id = $1)", len(args))
 	}
 
-	// Count total matching decisions.
-	countQuery := "SELECT COUNT(*) FROM decisions" + where
-	var total int
-	if err := db.pool.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("storage: count decisions: %w", err)
-	}
-
 	// Build order clause.
 	orderBy := "valid_from"
 	if req.OrderBy != "" {
@@ -591,8 +584,10 @@ func (db *DB) QueryDecisions(ctx context.Context, orgID uuid.UUID, req model.Que
 
 	limit, offset := clampPagination(req.Limit, req.Offset, 50, 1000)
 
+	// Use COUNT(*) OVER() window function to get the total count alongside data
+	// rows in a single query, eliminating a separate COUNT(*) table scan.
 	selectQuery := fmt.Sprintf(
-		`SELECT %s FROM decisions%s ORDER BY %s %s LIMIT %d OFFSET %d`,
+		`SELECT %s, COUNT(*) OVER() FROM decisions%s ORDER BY %s %s LIMIT %d OFFSET %d`,
 		decisionCols, where, orderBy, orderDir, limit, offset,
 	)
 
@@ -602,7 +597,7 @@ func (db *DB) QueryDecisions(ctx context.Context, orgID uuid.UUID, req model.Que
 	}
 	defer rows.Close()
 
-	decisions, err := scanDecisions(rows)
+	decisions, total, err := scanDecisionsWithTotal(rows)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -843,13 +838,10 @@ func (db *DB) GetDecisionsByAgent(ctx context.Context, orgID uuid.UUID, agentID 
 
 	where, args := buildDecisionWhereClause(orgID, filters, 1, true)
 
-	var total int
-	if err := db.pool.QueryRow(ctx, "SELECT COUNT(*) FROM decisions"+where, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("storage: count agent decisions: %w", err)
-	}
-
+	// Use COUNT(*) OVER() window function to get the total count alongside data
+	// rows in a single query, eliminating a separate COUNT(*) table scan.
 	query := fmt.Sprintf(
-		`SELECT %s FROM decisions%s ORDER BY valid_from DESC LIMIT %d OFFSET %d`,
+		`SELECT %s, COUNT(*) OVER() FROM decisions%s ORDER BY valid_from DESC LIMIT %d OFFSET %d`,
 		decisionCols, where, limit, offset,
 	)
 
@@ -859,8 +851,7 @@ func (db *DB) GetDecisionsByAgent(ctx context.Context, orgID uuid.UUID, agentID 
 	}
 	defer rows.Close()
 
-	decisions, err := scanDecisions(rows)
-	return decisions, total, err
+	return scanDecisionsWithTotal(rows)
 }
 
 func buildDecisionWhereClause(orgID uuid.UUID, f model.QueryFilters, startArgIdx int, currentOnly bool) (string, []any) {
@@ -1224,6 +1215,33 @@ func scanDecisions(rows pgx.Rows) ([]model.Decision, error) {
 		decisions = append(decisions, d)
 	}
 	return decisions, rows.Err()
+}
+
+// scanDecisionsWithTotal scans rows that include a trailing COUNT(*) OVER()
+// column, returning the decisions and the total count in a single pass.
+// This avoids a separate COUNT query (double table scan) on paginated endpoints.
+func scanDecisionsWithTotal(rows pgx.Rows) ([]model.Decision, int, error) {
+	decisions := make([]model.Decision, 0)
+	var total int
+	for rows.Next() {
+		var d model.Decision
+		if err := rows.Scan(
+			&d.ID, &d.RunID, &d.AgentID, &d.OrgID, &d.DecisionType, &d.Outcome, &d.Confidence,
+			&d.Reasoning, &d.Metadata, &d.CompletenessScore, &d.OutcomeScore, &d.PrecedentRef,
+			&d.PrecedentReason, &d.SupersedesID, &d.ContentHash,
+			&d.ValidFrom, &d.ValidTo, &d.TransactionTime, &d.CreatedAt,
+			&d.SessionID, &d.AgentContext, &d.APIKeyID,
+			&d.Tool, &d.Model, &d.Project,
+			&total,
+		); err != nil {
+			return nil, 0, fmt.Errorf("storage: scan decision with total: %w", err)
+		}
+		decisions = append(decisions, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return decisions, total, nil
 }
 
 // GetDecisionsByIDs returns active decisions for the given IDs within an org.
