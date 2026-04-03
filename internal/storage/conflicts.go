@@ -882,6 +882,7 @@ func conflictGroupWhere(f ConflictGroupFilters, argOffset int) (string, []any) {
 	if f.ConflictKind != nil {
 		clause += fmt.Sprintf(" AND cg.conflict_kind = $%d", argOffset)
 		args = append(args, *f.ConflictKind)
+		argOffset++ //nolint:ineffassign
 	}
 	return clause, args
 }
@@ -1635,6 +1636,7 @@ func analyticsWhere(f ConflictAnalyticsFilters, argOffset int) (string, []any) {
 	if f.ConflictKind != nil {
 		clause += fmt.Sprintf(" AND sc.conflict_kind = $%d", argOffset)
 		args = append(args, *f.ConflictKind)
+		argOffset++ //nolint:ineffassign
 	}
 	return clause, args
 }
