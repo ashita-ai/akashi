@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time as _time
 from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -9,6 +11,7 @@ from uuid import UUID, uuid4
 import httpx
 
 _USER_AGENT = "akashi-python/0.2.0"
+_MAX_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MiB
 
 from akashi.auth import TokenManager
 from akashi.exceptions import (
@@ -21,29 +24,72 @@ from akashi.exceptions import (
     ServerError,
     ValidationError,
 )
+from akashi.retry import (
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_RETRY_BASE_DELAY,
+    is_retryable_status,
+    retry_delay,
+    parse_retry_after,
+)
 from akashi.types import (
+    AdjudicateConflictRequest,
     Agent,
     AgentEvent,
     AgentRun,
+    AgentStatsResponse,
+    APIKey,
+    APIKeyWithRawKey,
     AssessRequest,
     AssessResponse,
     CheckResponse,
     CompleteRunRequest,
+    ConfigResponse,
+    ConflictAnalyticsResponse,
+    ConflictDetail,
+    ConflictGroup,
+    ConflictStatusUpdate,
     CreateAgentRequest,
     CreateGrantRequest,
+    CreateHoldRequest,
+    CreateKeyRequest,
+    CreateProjectLinkRequest,
     Decision,
     DecisionConflict,
+    EraseDecisionResponse,
     EventInput,
+    FacetsResponse,
     GetRunResponse,
     Grant,
     HealthResponse,
+    IntegrityViolationsResponse,
+    LineageResponse,
+    OrgSettings,
+    ProjectLink,
+    PurgeRequest,
+    PurgeResponse,
     QueryFilters,
     QueryResponse,
+    ResolveConflictGroupRequest,
+    ResolveConflictGroupResponse,
+    RetentionHold,
+    RetentionPolicy,
     RevisionsResponse,
+    RotateKeyResponse,
+    ScopedTokenRequest,
+    ScopedTokenResponse,
     SearchResponse,
     SearchResult,
+    SessionViewResponse,
+    SetOrgSettingsRequest,
+    SetRetentionRequest,
+    SignupRequest,
+    SignupResponse,
+    TimelineResponse,
+    TraceHealthResponse,
     TraceRequest,
     TraceResponse,
+    UpdateAgentRequest,
+    UsageResponse,
     VerifyResponse,
 )
 
@@ -345,6 +391,12 @@ def _handle_no_content(resp: httpx.Response) -> None:
     _handle_response(resp)
 
 
+def _check_response_size(resp: httpx.Response) -> None:
+    """Raise if the response body exceeds the safety limit."""
+    if len(resp.content) > _MAX_RESPONSE_BYTES:
+        raise AkashiError("Response body exceeds 10 MiB limit")
+
+
 # ---------------------------------------------------------------------------
 # Async client
 # ---------------------------------------------------------------------------
@@ -375,11 +427,15 @@ class AkashiClient:
         api_key: str,
         *,
         timeout: float = 30.0,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_base_delay: float = DEFAULT_RETRY_BASE_DELAY,
         session_id: UUID | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.agent_id = agent_id
         self.session_id: UUID = session_id if session_id is not None else uuid4()
+        self._max_retries = max_retries
+        self._retry_base_delay = retry_base_delay
         self._token_mgr = TokenManager(
             base_url=self.base_url,
             agent_id=agent_id,
@@ -411,19 +467,14 @@ class AkashiClient:
         data = await self._post("/v1/check", _build_check_body(decision_type, query, agent_id, limit))
         return CheckResponse.model_validate(data)
 
-    async def trace(self, request: TraceRequest) -> TraceResponse:
+    async def trace(self, request: TraceRequest, *, idempotency_key: str | None = None) -> TraceResponse:
         """Record a decision trace."""
-        token = await self._token_mgr.get_token(self._client)
-        resp = await self._client.post(
-            f"{self.base_url}/v1/trace",
-            json=_build_trace_body(self.agent_id, request),
-            headers={
-                "Authorization": f"Bearer {token}",
-                "User-Agent": _USER_AGENT,
-                "X-Akashi-Session": str(self.session_id),
-            },
+        idem_key = idempotency_key or str(uuid4())
+        data = await self._post(
+            "/v1/trace",
+            _build_trace_body(self.agent_id, request),
+            extra_headers={"X-Idempotency-Key": idem_key},
         )
-        data = _handle_response(resp)
         return TraceResponse.model_validate(data)
 
     async def query(
@@ -484,9 +535,16 @@ class AkashiClient:
         data = await self._post("/v1/runs", _build_create_run_body(self.agent_id, req))
         return AgentRun.model_validate(data)
 
-    async def append_events(self, run_id: UUID, events: list[EventInput]) -> None:
+    async def append_events(
+        self, run_id: UUID, events: list[EventInput], *, idempotency_key: str | None = None,
+    ) -> None:
         """Append events to an existing run."""
-        await self._post(f"/v1/runs/{run_id}/events", _build_append_events_body(events))
+        idem_key = idempotency_key or str(uuid4())
+        await self._post(
+            f"/v1/runs/{run_id}/events",
+            _build_append_events_body(events),
+            extra_headers={"X-Idempotency-Key": idem_key},
+        )
 
     async def complete_run(
         self,
@@ -494,10 +552,16 @@ class AkashiClient:
         status: str,
         *,
         metadata: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
     ) -> AgentRun:
         """Mark a run as completed or failed."""
+        idem_key = idempotency_key or str(uuid4())
         req = CompleteRunRequest(status=status, metadata=metadata or {})
-        data = await self._post(f"/v1/runs/{run_id}/complete", _build_complete_run_body(req))
+        data = await self._post(
+            f"/v1/runs/{run_id}/complete",
+            _build_complete_run_body(req),
+            extra_headers={"X-Idempotency-Key": idem_key},
+        )
         return AgentRun.model_validate(data)
 
     async def get_run(self, run_id: UUID) -> GetRunResponse:
@@ -618,66 +682,574 @@ class AkashiClient:
         data = await self._get_no_auth("/health")
         return HealthResponse.model_validate(data)
 
+    # --- Phase 2: Decision details ---
+
+    async def get_decision(self, decision_id: UUID) -> Decision:
+        """Get a single decision by ID."""
+        data = await self._get(f"/v1/decisions/{decision_id}")
+        return Decision.model_validate(data)
+
+    async def get_decision_conflicts(
+        self,
+        decision_id: UUID,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[DecisionConflict]:
+        """List conflicts for a specific decision."""
+        params: dict[str, str] = {"limit": str(limit), "offset": str(offset)}
+        if status:
+            params["status"] = status
+        items, _ = await self._get_list(f"/v1/decisions/{decision_id}/conflicts", params=params)
+        return [DecisionConflict.model_validate(c) for c in items]
+
+    async def get_decision_lineage(self, decision_id: UUID) -> LineageResponse:
+        """Get the precedent lineage for a decision."""
+        data = await self._get(f"/v1/decisions/{decision_id}/lineage")
+        return LineageResponse.model_validate(data)
+
+    async def get_decision_timeline(
+        self,
+        *,
+        granularity: str = "day",
+        from_time: datetime | None = None,
+        to_time: datetime | None = None,
+        agent_id: str | None = None,
+        project: str | None = None,
+    ) -> TimelineResponse:
+        """Get a bucketed timeline of decisions."""
+        params: dict[str, str] = {"granularity": granularity}
+        if from_time:
+            params["from"] = from_time.isoformat()
+        if to_time:
+            params["to"] = to_time.isoformat()
+        if agent_id:
+            params["agent_id"] = agent_id
+        if project:
+            params["project"] = project
+        data = await self._get("/v1/decisions/timeline", params=params)
+        return TimelineResponse.model_validate(data)
+
+    async def get_decision_facets(self) -> FacetsResponse:
+        """Get available decision type and project facets."""
+        data = await self._get("/v1/decisions/facets")
+        return FacetsResponse.model_validate(data)
+
+    async def retract_decision(self, decision_id: UUID, reason: str = "") -> Decision:
+        """Retract (soft-delete) a decision."""
+        data = await self._delete_with_body(
+            f"/v1/decisions/{decision_id}",
+            {"reason": reason} if reason else {},
+        )
+        return Decision.model_validate(data)
+
+    async def erase_decision(self, decision_id: UUID, reason: str = "") -> EraseDecisionResponse:
+        """GDPR-erase a decision (irreversible)."""
+        data = await self._post(
+            f"/v1/decisions/{decision_id}/erase",
+            {"reason": reason} if reason else {},
+        )
+        return EraseDecisionResponse.model_validate(data)
+
+    # --- Phase 2: Conflict management ---
+
+    async def get_conflict(self, conflict_id: UUID) -> ConflictDetail:
+        """Get a single conflict with recommendation."""
+        data = await self._get(f"/v1/conflicts/{conflict_id}")
+        return ConflictDetail.model_validate(data)
+
+    async def adjudicate_conflict(self, conflict_id: UUID, req: AdjudicateConflictRequest) -> ConflictDetail:
+        """Adjudicate a conflict by recording a resolution decision."""
+        data = await self._post(
+            f"/v1/conflicts/{conflict_id}/adjudicate",
+            req.model_dump(exclude_none=True),
+        )
+        return ConflictDetail.model_validate(data)
+
+    async def patch_conflict(self, conflict_id: UUID, req: ConflictStatusUpdate) -> DecisionConflict:
+        """Update a conflict's status (resolve or mark false positive)."""
+        data = await self._patch(
+            f"/v1/conflicts/{conflict_id}",
+            req.model_dump(exclude_none=True),
+        )
+        return DecisionConflict.model_validate(data)
+
+    async def list_conflict_groups(
+        self,
+        *,
+        decision_type: str | None = None,
+        agent_id: str | None = None,
+        conflict_kind: str | None = None,
+        status: str | None = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> list[ConflictGroup]:
+        """List conflict groups."""
+        params: dict[str, str] = {"limit": str(limit), "offset": str(offset)}
+        if decision_type:
+            params["decision_type"] = decision_type
+        if agent_id:
+            params["agent_id"] = agent_id
+        if conflict_kind:
+            params["conflict_kind"] = conflict_kind
+        if status:
+            params["status"] = status
+        items, _ = await self._get_list("/v1/conflict-groups", params=params)
+        return [ConflictGroup.model_validate(g) for g in items]
+
+    async def resolve_conflict_group(
+        self,
+        group_id: UUID,
+        req: ResolveConflictGroupRequest,
+    ) -> ResolveConflictGroupResponse:
+        """Resolve all open conflicts in a group."""
+        data = await self._patch(
+            f"/v1/conflict-groups/{group_id}/resolve",
+            req.model_dump(exclude_none=True),
+        )
+        return ResolveConflictGroupResponse.model_validate(data)
+
+    async def get_conflict_analytics(
+        self,
+        *,
+        period: str | None = None,
+        from_time: datetime | None = None,
+        to_time: datetime | None = None,
+        agent_id: str | None = None,
+        decision_type: str | None = None,
+        conflict_kind: str | None = None,
+    ) -> ConflictAnalyticsResponse:
+        """Get conflict analytics summary."""
+        params: dict[str, str] = {}
+        if period:
+            params["period"] = period
+        if from_time:
+            params["from"] = from_time.isoformat()
+        if to_time:
+            params["to"] = to_time.isoformat()
+        if agent_id:
+            params["agent_id"] = agent_id
+        if decision_type:
+            params["decision_type"] = decision_type
+        if conflict_kind:
+            params["conflict_kind"] = conflict_kind
+        data = await self._get("/v1/conflicts/analytics", params=params if params else None)
+        return ConflictAnalyticsResponse.model_validate(data)
+
+    # --- Phase 3: API key management ---
+
+    async def create_key(self, req: CreateKeyRequest) -> APIKeyWithRawKey:
+        """Create a new API key."""
+        data = await self._post("/v1/keys", req.model_dump(exclude_none=True))
+        return APIKeyWithRawKey.model_validate(data)
+
+    async def list_keys(self, *, limit: int = 50, offset: int = 0) -> list[APIKey]:
+        """List API keys for the organization."""
+        items, _ = await self._get_list("/v1/keys", params={"limit": str(limit), "offset": str(offset)})
+        return [APIKey.model_validate(k) for k in items]
+
+    async def revoke_key(self, key_id: UUID) -> None:
+        """Revoke an API key."""
+        await self._delete(f"/v1/keys/{key_id}")
+
+    async def rotate_key(self, key_id: UUID) -> RotateKeyResponse:
+        """Rotate an API key (revoke old, create new)."""
+        data = await self._post(f"/v1/keys/{key_id}/rotate", {})
+        return RotateKeyResponse.model_validate(data)
+
+    # --- Phase 3: Org settings ---
+
+    async def get_org_settings(self) -> OrgSettings:
+        """Get organization settings."""
+        data = await self._get("/v1/org/settings")
+        return OrgSettings.model_validate(data)
+
+    async def set_org_settings(self, req: SetOrgSettingsRequest) -> OrgSettings:
+        """Update organization settings."""
+        data = await self._put("/v1/org/settings", req.model_dump())
+        return OrgSettings.model_validate(data)
+
+    # --- Phase 3: Retention ---
+
+    async def get_retention(self) -> RetentionPolicy:
+        """Get the retention policy."""
+        data = await self._get("/v1/retention")
+        return RetentionPolicy.model_validate(data)
+
+    async def set_retention(self, req: SetRetentionRequest) -> RetentionPolicy:
+        """Update the retention policy."""
+        data = await self._put("/v1/retention", req.model_dump())
+        return RetentionPolicy.model_validate(data)
+
+    async def purge_decisions(self, req: PurgeRequest) -> PurgeResponse:
+        """Purge decisions matching criteria (supports dry_run)."""
+        data = await self._post("/v1/retention/purge", req.model_dump(exclude_none=True))
+        return PurgeResponse.model_validate(data)
+
+    async def create_hold(self, req: CreateHoldRequest) -> RetentionHold:
+        """Create a retention hold to prevent purging."""
+        data = await self._post(
+            "/v1/retention/hold",
+            req.model_dump(by_alias=True, exclude_none=True),
+        )
+        return RetentionHold.model_validate(data)
+
+    async def release_hold(self, hold_id: UUID) -> None:
+        """Release a retention hold."""
+        await self._delete(f"/v1/retention/hold/{hold_id}")
+
+    # --- Phase 3: Project links ---
+
+    async def create_project_link(self, req: CreateProjectLinkRequest) -> ProjectLink:
+        """Create a link between two projects."""
+        data = await self._post("/v1/project-links", req.model_dump())
+        return ProjectLink.model_validate(data)
+
+    async def list_project_links(self, *, limit: int = 50, offset: int = 0) -> list[ProjectLink]:
+        """List project links."""
+        items, _ = await self._get_list(
+            "/v1/project-links",
+            params={"limit": str(limit), "offset": str(offset)},
+        )
+        return [ProjectLink.model_validate(p) for p in items]
+
+    async def delete_project_link(self, link_id: UUID) -> None:
+        """Delete a project link."""
+        await self._delete(f"/v1/project-links/{link_id}")
+
+    async def grant_all_project_links(self, link_type: str = "") -> dict[str, Any]:
+        """Grant cross-project access for all linked projects."""
+        return await self._post(
+            "/v1/project-links/grant-all",
+            {"link_type": link_type} if link_type else {},
+        )
+
+    # --- Phase 3: Integrity, trace health, usage ---
+
+    async def list_integrity_violations(self, *, limit: int = 50) -> IntegrityViolationsResponse:
+        """List integrity violations."""
+        data = await self._get("/v1/integrity/violations", params={"limit": str(limit)})
+        return IntegrityViolationsResponse.model_validate(data)
+
+    async def get_trace_health(
+        self,
+        *,
+        from_time: datetime | None = None,
+        to_time: datetime | None = None,
+    ) -> TraceHealthResponse:
+        """Get trace health metrics."""
+        params: dict[str, str] = {}
+        if from_time:
+            params["from"] = from_time.isoformat()
+        if to_time:
+            params["to"] = to_time.isoformat()
+        data = await self._get("/v1/trace-health", params=params if params else None)
+        return TraceHealthResponse.model_validate(data)
+
+    async def get_usage(self, *, period: str = "") -> UsageResponse:
+        """Get usage statistics."""
+        params = {"period": period} if period else None
+        data = await self._get("/v1/usage", params=params)
+        return UsageResponse.model_validate(data)
+
+    # --- Phase 3: Auth ---
+
+    async def scoped_token(self, req: ScopedTokenRequest) -> ScopedTokenResponse:
+        """Create a scoped token for delegated access."""
+        data = await self._post("/v1/auth/scoped-token", req.model_dump())
+        return ScopedTokenResponse.model_validate(data)
+
+    async def signup(self, req: SignupRequest) -> SignupResponse:
+        """Sign up a new organization (no auth required)."""
+        data = await self._post_no_auth("/auth/signup", req.model_dump())
+        return SignupResponse.model_validate(data)
+
+    async def get_config(self) -> ConfigResponse:
+        """Get server configuration (no auth required)."""
+        data = await self._get_no_auth("/config")
+        return ConfigResponse.model_validate(data)
+
+    # --- Phase 4: Agent management ---
+
+    async def get_agent(self, agent_id: str) -> Agent:
+        """Get a single agent by ID."""
+        data = await self._get(f"/v1/agents/{agent_id}")
+        return Agent.model_validate(data)
+
+    async def update_agent(self, agent_id: str, req: UpdateAgentRequest) -> Agent:
+        """Update an agent's name or metadata."""
+        data = await self._patch(f"/v1/agents/{agent_id}", req.model_dump(exclude_none=True))
+        return Agent.model_validate(data)
+
+    async def get_agent_stats(self, agent_id: str) -> AgentStatsResponse:
+        """Get statistics for a specific agent."""
+        data = await self._get(f"/v1/agents/{agent_id}/stats")
+        return AgentStatsResponse.model_validate(data)
+
+    # --- Phase 4: Grants ---
+
+    async def list_grants(self, *, limit: int = 50, offset: int = 0) -> list[Grant]:
+        """List all grants in the organization."""
+        items, _ = await self._get_list(
+            "/v1/grants",
+            params={"limit": str(limit), "offset": str(offset)},
+        )
+        return [Grant.model_validate(g) for g in items]
+
+    # --- Phase 4: Sessions ---
+
+    async def get_session_view(self, session_id: UUID) -> SessionViewResponse:
+        """Get a session with its decisions and summary."""
+        data = await self._get(f"/v1/sessions/{session_id}")
+        return SessionViewResponse.model_validate(data)
+
     # --- HTTP transport ---
 
-    async def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        token = await self._token_mgr.get_token(self._client)
-        resp = await self._client.post(
-            f"{self.base_url}{path}",
-            json=body,
-            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
-        )
-        return _handle_response(resp)
+    async def _post(self, path: str, body: dict[str, Any], extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
+        headers = {"User-Agent": _USER_AGENT, "X-Akashi-Session": str(self.session_id)}
+        if extra_headers:
+            headers.update(extra_headers)
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            token = await self._token_mgr.get_token(self._client)
+            headers["Authorization"] = f"Bearer {token}"
+            try:
+                resp = await self._client.post(
+                    f"{self.base_url}{path}",
+                    json=body,
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    await asyncio.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                await asyncio.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            return _handle_response(resp)
+        raise last_err  # type: ignore[misc]
 
-    async def _post_list(self, path: str, body: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]:
-        token = await self._token_mgr.get_token(self._client)
-        resp = await self._client.post(
-            f"{self.base_url}{path}",
-            json=body,
-            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
-        )
-        return _handle_list_body(resp)
+    async def _post_list(self, path: str, body: dict[str, Any], extra_headers: dict[str, str] | None = None) -> tuple[list[Any], dict[str, Any]]:
+        headers = {"User-Agent": _USER_AGENT, "X-Akashi-Session": str(self.session_id)}
+        if extra_headers:
+            headers.update(extra_headers)
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            token = await self._token_mgr.get_token(self._client)
+            headers["Authorization"] = f"Bearer {token}"
+            try:
+                resp = await self._client.post(
+                    f"{self.base_url}{path}",
+                    json=body,
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    await asyncio.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                await asyncio.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            return _handle_list_body(resp)
+        raise last_err  # type: ignore[misc]
 
     async def _get(self, path: str, *, params: dict[str, str] | None = None) -> dict[str, Any]:
-        token = await self._token_mgr.get_token(self._client)
-        resp = await self._client.get(
-            f"{self.base_url}{path}",
-            params=params,
-            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
-        )
-        return _handle_response(resp)
+        headers = {"User-Agent": _USER_AGENT, "X-Akashi-Session": str(self.session_id)}
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            token = await self._token_mgr.get_token(self._client)
+            headers["Authorization"] = f"Bearer {token}"
+            try:
+                resp = await self._client.get(
+                    f"{self.base_url}{path}",
+                    params=params,
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    await asyncio.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                await asyncio.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            return _handle_response(resp)
+        raise last_err  # type: ignore[misc]
 
     async def _get_list(self, path: str, *, params: dict[str, str] | None = None) -> tuple[list[Any], dict[str, Any]]:
-        token = await self._token_mgr.get_token(self._client)
-        resp = await self._client.get(
-            f"{self.base_url}{path}",
-            params=params,
-            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
-        )
-        return _handle_list_body(resp)
+        headers = {"User-Agent": _USER_AGENT, "X-Akashi-Session": str(self.session_id)}
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            token = await self._token_mgr.get_token(self._client)
+            headers["Authorization"] = f"Bearer {token}"
+            try:
+                resp = await self._client.get(
+                    f"{self.base_url}{path}",
+                    params=params,
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    await asyncio.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                await asyncio.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            return _handle_list_body(resp)
+        raise last_err  # type: ignore[misc]
 
     async def _patch(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        token = await self._token_mgr.get_token(self._client)
-        resp = await self._client.patch(
-            f"{self.base_url}{path}",
-            json=body,
-            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
-        )
-        return _handle_response(resp)
+        headers = {"User-Agent": _USER_AGENT, "X-Akashi-Session": str(self.session_id)}
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            token = await self._token_mgr.get_token(self._client)
+            headers["Authorization"] = f"Bearer {token}"
+            try:
+                resp = await self._client.patch(
+                    f"{self.base_url}{path}",
+                    json=body,
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    await asyncio.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                await asyncio.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            return _handle_response(resp)
+        raise last_err  # type: ignore[misc]
+
+    async def _put(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        headers = {"User-Agent": _USER_AGENT, "X-Akashi-Session": str(self.session_id)}
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            token = await self._token_mgr.get_token(self._client)
+            headers["Authorization"] = f"Bearer {token}"
+            try:
+                resp = await self._client.put(
+                    f"{self.base_url}{path}",
+                    json=body,
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    await asyncio.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                await asyncio.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            return _handle_response(resp)
+        raise last_err  # type: ignore[misc]
 
     async def _delete(self, path: str) -> None:
-        token = await self._token_mgr.get_token(self._client)
-        resp = await self._client.delete(
-            f"{self.base_url}{path}",
-            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
-        )
-        _handle_no_content(resp)
+        headers = {"User-Agent": _USER_AGENT, "X-Akashi-Session": str(self.session_id)}
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            token = await self._token_mgr.get_token(self._client)
+            headers["Authorization"] = f"Bearer {token}"
+            try:
+                resp = await self._client.delete(
+                    f"{self.base_url}{path}",
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    await asyncio.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                await asyncio.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            _handle_no_content(resp)
+            return
+        raise last_err  # type: ignore[misc]
+
+    async def _delete_with_body(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        headers = {"User-Agent": _USER_AGENT, "X-Akashi-Session": str(self.session_id)}
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            token = await self._token_mgr.get_token(self._client)
+            headers["Authorization"] = f"Bearer {token}"
+            try:
+                resp = await self._client.request(
+                    "DELETE",
+                    f"{self.base_url}{path}",
+                    json=body,
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    await asyncio.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                await asyncio.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            return _handle_response(resp)
+        raise last_err  # type: ignore[misc]
 
     async def _get_no_auth(self, path: str) -> dict[str, Any]:
-        resp = await self._client.get(
+        headers = {"User-Agent": _USER_AGENT, "X-Akashi-Session": str(self.session_id)}
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                resp = await self._client.get(
+                    f"{self.base_url}{path}",
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    await asyncio.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                await asyncio.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            return _handle_response(resp)
+        raise last_err  # type: ignore[misc]
+
+    async def _post_no_auth(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        resp = await self._client.post(
             f"{self.base_url}{path}",
+            json=body,
             headers={"User-Agent": _USER_AGENT},
         )
+        if len(resp.content) > _MAX_RESPONSE_BYTES:
+            raise AkashiError("Response body exceeds 10 MiB limit")
         return _handle_response(resp)
 
 
@@ -704,11 +1276,15 @@ class AkashiSyncClient:
         api_key: str,
         *,
         timeout: float = 30.0,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_base_delay: float = DEFAULT_RETRY_BASE_DELAY,
         session_id: UUID | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.agent_id = agent_id
         self.session_id: UUID = session_id if session_id is not None else uuid4()
+        self._max_retries = max_retries
+        self._retry_base_delay = retry_base_delay
         self._token_mgr = TokenManager(
             base_url=self.base_url,
             agent_id=agent_id,
@@ -738,19 +1314,14 @@ class AkashiSyncClient:
         data = self._post("/v1/check", _build_check_body(decision_type, query, agent_id, limit))
         return CheckResponse.model_validate(data)
 
-    def trace(self, request: TraceRequest) -> TraceResponse:
+    def trace(self, request: TraceRequest, *, idempotency_key: str | None = None) -> TraceResponse:
         """Record a decision trace."""
-        token = self._token_mgr.get_token_sync(self._client)
-        resp = self._client.post(
-            f"{self.base_url}/v1/trace",
-            json=_build_trace_body(self.agent_id, request),
-            headers={
-                "Authorization": f"Bearer {token}",
-                "User-Agent": _USER_AGENT,
-                "X-Akashi-Session": str(self.session_id),
-            },
+        idem_key = idempotency_key or str(uuid4())
+        data = self._post(
+            "/v1/trace",
+            _build_trace_body(self.agent_id, request),
+            extra_headers={"X-Idempotency-Key": idem_key},
         )
-        data = _handle_response(resp)
         return TraceResponse.model_validate(data)
 
     def query(
@@ -811,9 +1382,16 @@ class AkashiSyncClient:
         data = self._post("/v1/runs", _build_create_run_body(self.agent_id, req))
         return AgentRun.model_validate(data)
 
-    def append_events(self, run_id: UUID, events: list[EventInput]) -> None:
+    def append_events(
+        self, run_id: UUID, events: list[EventInput], *, idempotency_key: str | None = None,
+    ) -> None:
         """Append events to an existing run."""
-        self._post(f"/v1/runs/{run_id}/events", _build_append_events_body(events))
+        idem_key = idempotency_key or str(uuid4())
+        self._post(
+            f"/v1/runs/{run_id}/events",
+            _build_append_events_body(events),
+            extra_headers={"X-Idempotency-Key": idem_key},
+        )
 
     def complete_run(
         self,
@@ -821,10 +1399,16 @@ class AkashiSyncClient:
         status: str,
         *,
         metadata: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
     ) -> AgentRun:
         """Mark a run as completed or failed."""
+        idem_key = idempotency_key or str(uuid4())
         req = CompleteRunRequest(status=status, metadata=metadata or {})
-        data = self._post(f"/v1/runs/{run_id}/complete", _build_complete_run_body(req))
+        data = self._post(
+            f"/v1/runs/{run_id}/complete",
+            _build_complete_run_body(req),
+            extra_headers={"X-Idempotency-Key": idem_key},
+        )
         return AgentRun.model_validate(data)
 
     def get_run(self, run_id: UUID) -> GetRunResponse:
@@ -945,64 +1529,572 @@ class AkashiSyncClient:
         data = self._get_no_auth("/health")
         return HealthResponse.model_validate(data)
 
+    # --- Phase 2: Decision details ---
+
+    def get_decision(self, decision_id: UUID) -> Decision:
+        """Get a single decision by ID."""
+        data = self._get(f"/v1/decisions/{decision_id}")
+        return Decision.model_validate(data)
+
+    def get_decision_conflicts(
+        self,
+        decision_id: UUID,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[DecisionConflict]:
+        """List conflicts for a specific decision."""
+        params: dict[str, str] = {"limit": str(limit), "offset": str(offset)}
+        if status:
+            params["status"] = status
+        items, _ = self._get_list(f"/v1/decisions/{decision_id}/conflicts", params=params)
+        return [DecisionConflict.model_validate(c) for c in items]
+
+    def get_decision_lineage(self, decision_id: UUID) -> LineageResponse:
+        """Get the precedent lineage for a decision."""
+        data = self._get(f"/v1/decisions/{decision_id}/lineage")
+        return LineageResponse.model_validate(data)
+
+    def get_decision_timeline(
+        self,
+        *,
+        granularity: str = "day",
+        from_time: datetime | None = None,
+        to_time: datetime | None = None,
+        agent_id: str | None = None,
+        project: str | None = None,
+    ) -> TimelineResponse:
+        """Get a bucketed timeline of decisions."""
+        params: dict[str, str] = {"granularity": granularity}
+        if from_time:
+            params["from"] = from_time.isoformat()
+        if to_time:
+            params["to"] = to_time.isoformat()
+        if agent_id:
+            params["agent_id"] = agent_id
+        if project:
+            params["project"] = project
+        data = self._get("/v1/decisions/timeline", params=params)
+        return TimelineResponse.model_validate(data)
+
+    def get_decision_facets(self) -> FacetsResponse:
+        """Get available decision type and project facets."""
+        data = self._get("/v1/decisions/facets")
+        return FacetsResponse.model_validate(data)
+
+    def retract_decision(self, decision_id: UUID, reason: str = "") -> Decision:
+        """Retract (soft-delete) a decision."""
+        data = self._delete_with_body(
+            f"/v1/decisions/{decision_id}",
+            {"reason": reason} if reason else {},
+        )
+        return Decision.model_validate(data)
+
+    def erase_decision(self, decision_id: UUID, reason: str = "") -> EraseDecisionResponse:
+        """GDPR-erase a decision (irreversible)."""
+        data = self._post(
+            f"/v1/decisions/{decision_id}/erase",
+            {"reason": reason} if reason else {},
+        )
+        return EraseDecisionResponse.model_validate(data)
+
+    # --- Phase 2: Conflict management ---
+
+    def get_conflict(self, conflict_id: UUID) -> ConflictDetail:
+        """Get a single conflict with recommendation."""
+        data = self._get(f"/v1/conflicts/{conflict_id}")
+        return ConflictDetail.model_validate(data)
+
+    def adjudicate_conflict(self, conflict_id: UUID, req: AdjudicateConflictRequest) -> ConflictDetail:
+        """Adjudicate a conflict by recording a resolution decision."""
+        data = self._post(
+            f"/v1/conflicts/{conflict_id}/adjudicate",
+            req.model_dump(exclude_none=True),
+        )
+        return ConflictDetail.model_validate(data)
+
+    def patch_conflict(self, conflict_id: UUID, req: ConflictStatusUpdate) -> DecisionConflict:
+        """Update a conflict's status (resolve or mark false positive)."""
+        data = self._patch(
+            f"/v1/conflicts/{conflict_id}",
+            req.model_dump(exclude_none=True),
+        )
+        return DecisionConflict.model_validate(data)
+
+    def list_conflict_groups(
+        self,
+        *,
+        decision_type: str | None = None,
+        agent_id: str | None = None,
+        conflict_kind: str | None = None,
+        status: str | None = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> list[ConflictGroup]:
+        """List conflict groups."""
+        params: dict[str, str] = {"limit": str(limit), "offset": str(offset)}
+        if decision_type:
+            params["decision_type"] = decision_type
+        if agent_id:
+            params["agent_id"] = agent_id
+        if conflict_kind:
+            params["conflict_kind"] = conflict_kind
+        if status:
+            params["status"] = status
+        items, _ = self._get_list("/v1/conflict-groups", params=params)
+        return [ConflictGroup.model_validate(g) for g in items]
+
+    def resolve_conflict_group(
+        self,
+        group_id: UUID,
+        req: ResolveConflictGroupRequest,
+    ) -> ResolveConflictGroupResponse:
+        """Resolve all open conflicts in a group."""
+        data = self._patch(
+            f"/v1/conflict-groups/{group_id}/resolve",
+            req.model_dump(exclude_none=True),
+        )
+        return ResolveConflictGroupResponse.model_validate(data)
+
+    def get_conflict_analytics(
+        self,
+        *,
+        period: str | None = None,
+        from_time: datetime | None = None,
+        to_time: datetime | None = None,
+        agent_id: str | None = None,
+        decision_type: str | None = None,
+        conflict_kind: str | None = None,
+    ) -> ConflictAnalyticsResponse:
+        """Get conflict analytics summary."""
+        params: dict[str, str] = {}
+        if period:
+            params["period"] = period
+        if from_time:
+            params["from"] = from_time.isoformat()
+        if to_time:
+            params["to"] = to_time.isoformat()
+        if agent_id:
+            params["agent_id"] = agent_id
+        if decision_type:
+            params["decision_type"] = decision_type
+        if conflict_kind:
+            params["conflict_kind"] = conflict_kind
+        data = self._get("/v1/conflicts/analytics", params=params if params else None)
+        return ConflictAnalyticsResponse.model_validate(data)
+
+    # --- Phase 3: API key management ---
+
+    def create_key(self, req: CreateKeyRequest) -> APIKeyWithRawKey:
+        """Create a new API key."""
+        data = self._post("/v1/keys", req.model_dump(exclude_none=True))
+        return APIKeyWithRawKey.model_validate(data)
+
+    def list_keys(self, *, limit: int = 50, offset: int = 0) -> list[APIKey]:
+        """List API keys for the organization."""
+        items, _ = self._get_list("/v1/keys", params={"limit": str(limit), "offset": str(offset)})
+        return [APIKey.model_validate(k) for k in items]
+
+    def revoke_key(self, key_id: UUID) -> None:
+        """Revoke an API key."""
+        self._delete(f"/v1/keys/{key_id}")
+
+    def rotate_key(self, key_id: UUID) -> RotateKeyResponse:
+        """Rotate an API key (revoke old, create new)."""
+        data = self._post(f"/v1/keys/{key_id}/rotate", {})
+        return RotateKeyResponse.model_validate(data)
+
+    # --- Phase 3: Org settings ---
+
+    def get_org_settings(self) -> OrgSettings:
+        """Get organization settings."""
+        data = self._get("/v1/org/settings")
+        return OrgSettings.model_validate(data)
+
+    def set_org_settings(self, req: SetOrgSettingsRequest) -> OrgSettings:
+        """Update organization settings."""
+        data = self._put("/v1/org/settings", req.model_dump())
+        return OrgSettings.model_validate(data)
+
+    # --- Phase 3: Retention ---
+
+    def get_retention(self) -> RetentionPolicy:
+        """Get the retention policy."""
+        data = self._get("/v1/retention")
+        return RetentionPolicy.model_validate(data)
+
+    def set_retention(self, req: SetRetentionRequest) -> RetentionPolicy:
+        """Update the retention policy."""
+        data = self._put("/v1/retention", req.model_dump())
+        return RetentionPolicy.model_validate(data)
+
+    def purge_decisions(self, req: PurgeRequest) -> PurgeResponse:
+        """Purge decisions matching criteria (supports dry_run)."""
+        data = self._post("/v1/retention/purge", req.model_dump(exclude_none=True))
+        return PurgeResponse.model_validate(data)
+
+    def create_hold(self, req: CreateHoldRequest) -> RetentionHold:
+        """Create a retention hold to prevent purging."""
+        data = self._post(
+            "/v1/retention/hold",
+            req.model_dump(by_alias=True, exclude_none=True),
+        )
+        return RetentionHold.model_validate(data)
+
+    def release_hold(self, hold_id: UUID) -> None:
+        """Release a retention hold."""
+        self._delete(f"/v1/retention/hold/{hold_id}")
+
+    # --- Phase 3: Project links ---
+
+    def create_project_link(self, req: CreateProjectLinkRequest) -> ProjectLink:
+        """Create a link between two projects."""
+        data = self._post("/v1/project-links", req.model_dump())
+        return ProjectLink.model_validate(data)
+
+    def list_project_links(self, *, limit: int = 50, offset: int = 0) -> list[ProjectLink]:
+        """List project links."""
+        items, _ = self._get_list(
+            "/v1/project-links",
+            params={"limit": str(limit), "offset": str(offset)},
+        )
+        return [ProjectLink.model_validate(p) for p in items]
+
+    def delete_project_link(self, link_id: UUID) -> None:
+        """Delete a project link."""
+        self._delete(f"/v1/project-links/{link_id}")
+
+    def grant_all_project_links(self, link_type: str = "") -> dict[str, Any]:
+        """Grant cross-project access for all linked projects."""
+        return self._post(
+            "/v1/project-links/grant-all",
+            {"link_type": link_type} if link_type else {},
+        )
+
+    # --- Phase 3: Integrity, trace health, usage ---
+
+    def list_integrity_violations(self, *, limit: int = 50) -> IntegrityViolationsResponse:
+        """List integrity violations."""
+        data = self._get("/v1/integrity/violations", params={"limit": str(limit)})
+        return IntegrityViolationsResponse.model_validate(data)
+
+    def get_trace_health(
+        self,
+        *,
+        from_time: datetime | None = None,
+        to_time: datetime | None = None,
+    ) -> TraceHealthResponse:
+        """Get trace health metrics."""
+        params: dict[str, str] = {}
+        if from_time:
+            params["from"] = from_time.isoformat()
+        if to_time:
+            params["to"] = to_time.isoformat()
+        data = self._get("/v1/trace-health", params=params if params else None)
+        return TraceHealthResponse.model_validate(data)
+
+    def get_usage(self, *, period: str = "") -> UsageResponse:
+        """Get usage statistics."""
+        params = {"period": period} if period else None
+        data = self._get("/v1/usage", params=params)
+        return UsageResponse.model_validate(data)
+
+    # --- Phase 3: Auth ---
+
+    def scoped_token(self, req: ScopedTokenRequest) -> ScopedTokenResponse:
+        """Create a scoped token for delegated access."""
+        data = self._post("/v1/auth/scoped-token", req.model_dump())
+        return ScopedTokenResponse.model_validate(data)
+
+    def signup(self, req: SignupRequest) -> SignupResponse:
+        """Sign up a new organization (no auth required)."""
+        data = self._post_no_auth("/auth/signup", req.model_dump())
+        return SignupResponse.model_validate(data)
+
+    def get_config(self) -> ConfigResponse:
+        """Get server configuration (no auth required)."""
+        data = self._get_no_auth("/config")
+        return ConfigResponse.model_validate(data)
+
+    # --- Phase 4: Agent management ---
+
+    def get_agent(self, agent_id: str) -> Agent:
+        """Get a single agent by ID."""
+        data = self._get(f"/v1/agents/{agent_id}")
+        return Agent.model_validate(data)
+
+    def update_agent(self, agent_id: str, req: UpdateAgentRequest) -> Agent:
+        """Update an agent's name or metadata."""
+        data = self._patch(f"/v1/agents/{agent_id}", req.model_dump(exclude_none=True))
+        return Agent.model_validate(data)
+
+    def get_agent_stats(self, agent_id: str) -> AgentStatsResponse:
+        """Get statistics for a specific agent."""
+        data = self._get(f"/v1/agents/{agent_id}/stats")
+        return AgentStatsResponse.model_validate(data)
+
+    # --- Phase 4: Grants ---
+
+    def list_grants(self, *, limit: int = 50, offset: int = 0) -> list[Grant]:
+        """List all grants in the organization."""
+        items, _ = self._get_list(
+            "/v1/grants",
+            params={"limit": str(limit), "offset": str(offset)},
+        )
+        return [Grant.model_validate(g) for g in items]
+
+    # --- Phase 4: Sessions ---
+
+    def get_session_view(self, session_id: UUID) -> SessionViewResponse:
+        """Get a session with its decisions and summary."""
+        data = self._get(f"/v1/sessions/{session_id}")
+        return SessionViewResponse.model_validate(data)
+
     # --- HTTP transport ---
 
-    def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        token = self._token_mgr.get_token_sync(self._client)
-        resp = self._client.post(
-            f"{self.base_url}{path}",
-            json=body,
-            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
-        )
-        return _handle_response(resp)
+    def _post(self, path: str, body: dict[str, Any], extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
+        headers = {"User-Agent": _USER_AGENT, "X-Akashi-Session": str(self.session_id)}
+        if extra_headers:
+            headers.update(extra_headers)
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            token = self._token_mgr.get_token_sync(self._client)
+            headers["Authorization"] = f"Bearer {token}"
+            try:
+                resp = self._client.post(
+                    f"{self.base_url}{path}",
+                    json=body,
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    _time.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                _time.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            return _handle_response(resp)
+        raise last_err  # type: ignore[misc]
 
-    def _post_list(self, path: str, body: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]:
-        token = self._token_mgr.get_token_sync(self._client)
-        resp = self._client.post(
-            f"{self.base_url}{path}",
-            json=body,
-            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
-        )
-        return _handle_list_body(resp)
+    def _post_list(self, path: str, body: dict[str, Any], extra_headers: dict[str, str] | None = None) -> tuple[list[Any], dict[str, Any]]:
+        headers = {"User-Agent": _USER_AGENT, "X-Akashi-Session": str(self.session_id)}
+        if extra_headers:
+            headers.update(extra_headers)
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            token = self._token_mgr.get_token_sync(self._client)
+            headers["Authorization"] = f"Bearer {token}"
+            try:
+                resp = self._client.post(
+                    f"{self.base_url}{path}",
+                    json=body,
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    _time.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                _time.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            return _handle_list_body(resp)
+        raise last_err  # type: ignore[misc]
 
     def _get(self, path: str, *, params: dict[str, str] | None = None) -> dict[str, Any]:
-        token = self._token_mgr.get_token_sync(self._client)
-        resp = self._client.get(
-            f"{self.base_url}{path}",
-            params=params,
-            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
-        )
-        return _handle_response(resp)
+        headers = {"User-Agent": _USER_AGENT, "X-Akashi-Session": str(self.session_id)}
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            token = self._token_mgr.get_token_sync(self._client)
+            headers["Authorization"] = f"Bearer {token}"
+            try:
+                resp = self._client.get(
+                    f"{self.base_url}{path}",
+                    params=params,
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    _time.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                _time.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            return _handle_response(resp)
+        raise last_err  # type: ignore[misc]
 
     def _get_list(self, path: str, *, params: dict[str, str] | None = None) -> tuple[list[Any], dict[str, Any]]:
-        token = self._token_mgr.get_token_sync(self._client)
-        resp = self._client.get(
-            f"{self.base_url}{path}",
-            params=params,
-            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
-        )
-        return _handle_list_body(resp)
+        headers = {"User-Agent": _USER_AGENT, "X-Akashi-Session": str(self.session_id)}
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            token = self._token_mgr.get_token_sync(self._client)
+            headers["Authorization"] = f"Bearer {token}"
+            try:
+                resp = self._client.get(
+                    f"{self.base_url}{path}",
+                    params=params,
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    _time.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                _time.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            return _handle_list_body(resp)
+        raise last_err  # type: ignore[misc]
 
     def _patch(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        token = self._token_mgr.get_token_sync(self._client)
-        resp = self._client.patch(
-            f"{self.base_url}{path}",
-            json=body,
-            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
-        )
-        return _handle_response(resp)
+        headers = {"User-Agent": _USER_AGENT, "X-Akashi-Session": str(self.session_id)}
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            token = self._token_mgr.get_token_sync(self._client)
+            headers["Authorization"] = f"Bearer {token}"
+            try:
+                resp = self._client.patch(
+                    f"{self.base_url}{path}",
+                    json=body,
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    _time.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                _time.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            return _handle_response(resp)
+        raise last_err  # type: ignore[misc]
+
+    def _put(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        headers = {"User-Agent": _USER_AGENT, "X-Akashi-Session": str(self.session_id)}
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            token = self._token_mgr.get_token_sync(self._client)
+            headers["Authorization"] = f"Bearer {token}"
+            try:
+                resp = self._client.put(
+                    f"{self.base_url}{path}",
+                    json=body,
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    _time.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                _time.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            return _handle_response(resp)
+        raise last_err  # type: ignore[misc]
 
     def _delete(self, path: str) -> None:
-        token = self._token_mgr.get_token_sync(self._client)
-        resp = self._client.delete(
-            f"{self.base_url}{path}",
-            headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
-        )
-        _handle_no_content(resp)
+        headers = {"User-Agent": _USER_AGENT, "X-Akashi-Session": str(self.session_id)}
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            token = self._token_mgr.get_token_sync(self._client)
+            headers["Authorization"] = f"Bearer {token}"
+            try:
+                resp = self._client.delete(
+                    f"{self.base_url}{path}",
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    _time.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                _time.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            _handle_no_content(resp)
+            return
+        raise last_err  # type: ignore[misc]
+
+    def _delete_with_body(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        headers = {"User-Agent": _USER_AGENT, "X-Akashi-Session": str(self.session_id)}
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            token = self._token_mgr.get_token_sync(self._client)
+            headers["Authorization"] = f"Bearer {token}"
+            try:
+                resp = self._client.request(
+                    "DELETE",
+                    f"{self.base_url}{path}",
+                    json=body,
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    _time.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                _time.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            return _handle_response(resp)
+        raise last_err  # type: ignore[misc]
 
     def _get_no_auth(self, path: str) -> dict[str, Any]:
-        resp = self._client.get(
+        headers = {"User-Agent": _USER_AGENT, "X-Akashi-Session": str(self.session_id)}
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                resp = self._client.get(
+                    f"{self.base_url}{path}",
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                last_err = exc
+                if attempt < self._max_retries:
+                    _time.sleep(retry_delay(attempt, self._retry_base_delay))
+                    continue
+                raise
+            if is_retryable_status(resp.status_code) and attempt < self._max_retries:
+                ra = parse_retry_after(resp.headers.get("retry-after"))
+                _time.sleep(retry_delay(attempt, self._retry_base_delay, ra))
+                continue
+            _check_response_size(resp)
+            return _handle_response(resp)
+        raise last_err  # type: ignore[misc]
+
+    def _post_no_auth(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        resp = self._client.post(
             f"{self.base_url}{path}",
+            json=body,
             headers={"User-Agent": _USER_AGENT},
         )
+        if len(resp.content) > _MAX_RESPONSE_BYTES:
+            raise AkashiError("Response body exceeds 10 MiB limit")
         return _handle_response(resp)
