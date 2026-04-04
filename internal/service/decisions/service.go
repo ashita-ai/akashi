@@ -576,25 +576,33 @@ func (s *Service) postTraceAsync(ctx context.Context, orgID uuid.UUID, input Tra
 		}()
 	}
 
-	// Auto-assess based on observable signals.
-	if s.autoAssessor != nil {
-		assessCtx, assessCancel := context.WithTimeout(s.shutdownCtx, 10*time.Second)
-		defer assessCancel()
+	// Auto-assess based on observable signals. Runs in a goroutine so it
+	// doesn't block the trace response (DB queries + assessment writes).
+	if s.autoAssessor != nil && (input.SupersedesID != nil || input.PrecedentRef != nil) {
+		s.asyncWg.Add(1)
+		go func() {
+			defer s.asyncWg.Done()
+			defer func() {
+				if rec := recover(); rec != nil {
+					s.logger.Error("trace: auto-assessor panicked", "panic", rec, "decision_id", decision.ID)
+				}
+			}()
+			assessCtx, assessCancel := context.WithTimeout(s.shutdownCtx, 10*time.Second)
+			defer assessCancel()
 
-		if input.SupersedesID != nil {
-			s.autoAssessor.OnSuperseded(assessCtx, orgID, *input.SupersedesID, decision.ID)
-		}
-		if input.PrecedentRef != nil {
-			// Check citation count on the referenced decision. The count
-			// includes this new trace's citation (already committed).
-			citCount, err := s.db.GetPrecedentCitationCount(assessCtx, orgID, *input.PrecedentRef)
-			if err != nil {
-				s.logger.Warn("trace: failed to get citation count for auto-assessment",
-					"decision_id", *input.PrecedentRef, "error", err)
-			} else {
-				s.autoAssessor.OnCitationThreshold(assessCtx, orgID, *input.PrecedentRef, citCount)
+			if input.SupersedesID != nil {
+				s.autoAssessor.OnSuperseded(assessCtx, orgID, *input.SupersedesID, decision.ID)
 			}
-		}
+			if input.PrecedentRef != nil {
+				citCount, err := s.db.GetPrecedentCitationCount(assessCtx, orgID, *input.PrecedentRef)
+				if err != nil {
+					s.logger.Warn("trace: failed to get citation count for auto-assessment",
+						"decision_id", *input.PrecedentRef, "error", err)
+				} else {
+					s.autoAssessor.OnCitationThreshold(assessCtx, orgID, *input.PrecedentRef, citCount)
+				}
+			}
+		}()
 	}
 }
 

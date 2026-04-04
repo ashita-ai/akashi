@@ -31,6 +31,7 @@ type Store interface {
 	CreateAssessment(ctx context.Context, orgID uuid.UUID, a model.DecisionAssessment) (model.DecisionAssessment, error)
 	UpdateOutcomeScore(ctx context.Context, orgID, decisionID uuid.UUID, score *float32) error
 	GetAssessmentSummary(ctx context.Context, orgID, decisionID uuid.UUID) (model.AssessmentSummary, error)
+	HasAssessmentFromSource(ctx context.Context, orgID, decisionID uuid.UUID, source string) (bool, error)
 }
 
 // Assessor generates auto-assessments from observable signals.
@@ -72,9 +73,21 @@ func (a *Assessor) OnCitationThreshold(ctx context.Context, orgID, decisionID uu
 }
 
 // assess creates an assessment and updates the outcome score. All errors are
-// logged and swallowed — auto-assessment is non-fatal.
+// logged and swallowed — auto-assessment is non-fatal. Idempotent: skips if
+// an assessment from the same source already exists for this decision.
 func (a *Assessor) assess(ctx context.Context, orgID, decisionID uuid.UUID, outcome model.AssessmentOutcome, notes, source string) {
-	_, err := a.db.CreateAssessment(ctx, orgID, model.DecisionAssessment{
+	// Idempotency: don't create duplicate assessments from the same signal.
+	exists, err := a.db.HasAssessmentFromSource(ctx, orgID, decisionID, source)
+	if err != nil {
+		a.logger.Warn("autoassess: failed to check existing assessment",
+			"decision_id", decisionID, "source", source, "error", err)
+		return
+	}
+	if exists {
+		return
+	}
+
+	_, err = a.db.CreateAssessment(ctx, orgID, model.DecisionAssessment{
 		DecisionID:      decisionID,
 		OrgID:           orgID,
 		AssessorAgentID: "system:" + source,

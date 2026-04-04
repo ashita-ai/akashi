@@ -89,6 +89,7 @@ type Store interface {
 	CreateAssessment(ctx context.Context, orgID uuid.UUID, a model.DecisionAssessment) (model.DecisionAssessment, error)
 	UpdateOutcomeScore(ctx context.Context, orgID, decisionID uuid.UUID, score *float32) error
 	GetPrecedentCitationCount(ctx context.Context, orgID uuid.UUID, decisionID uuid.UUID) (int, error)
+	HasAssessmentFromSource(ctx context.Context, orgID, decisionID uuid.UUID, source string) (bool, error)
 
 	// ---- Claims ----
 

@@ -59,6 +59,12 @@ func BuildStandardTypes(overrides []string) map[string]bool {
 // is <= maxDist, or empty string if no close match exists. Exact matches
 // (distance 0) are not returned since they need no suggestion.
 func SuggestStandardType(input string, standardTypes map[string]bool, maxDist int) string {
+	// Short inputs produce false matches: "bug" (3 chars) is within distance 2
+	// of "build" (5 chars). Require the input to be long enough that a match
+	// represents a plausible typo, not a coincidence.
+	if len(input) < maxDist+3 {
+		return ""
+	}
 	best := ""
 	bestDist := maxDist + 1
 	for std := range standardTypes {

@@ -16,11 +16,12 @@ import (
 
 // fakeStore records CreateAssessment calls and returns configurable results.
 type fakeStore struct {
-	assessments []model.DecisionAssessment
-	createErr   error
-	summary     model.AssessmentSummary
-	summaryErr  error
-	scoreErr    error
+	assessments     []model.DecisionAssessment
+	createErr       error
+	summary         model.AssessmentSummary
+	summaryErr      error
+	scoreErr        error
+	existingSources map[string]bool // "decisionID:source" → true
 
 	updateScoreCalls []updateScoreCall
 }
@@ -36,7 +37,19 @@ func (f *fakeStore) CreateAssessment(_ context.Context, _ uuid.UUID, a model.Dec
 	}
 	a.ID = uuid.New()
 	f.assessments = append(f.assessments, a)
+	// Track for HasAssessmentFromSource.
+	if f.existingSources == nil {
+		f.existingSources = make(map[string]bool)
+	}
+	f.existingSources[a.DecisionID.String()+":"+a.Source] = true
 	return a, nil
+}
+
+func (f *fakeStore) HasAssessmentFromSource(_ context.Context, _ uuid.UUID, decisionID uuid.UUID, source string) (bool, error) {
+	if f.existingSources == nil {
+		return false, nil
+	}
+	return f.existingSources[decisionID.String()+":"+source], nil
 }
 
 func (f *fakeStore) GetAssessmentSummary(_ context.Context, _ uuid.UUID, _ uuid.UUID) (model.AssessmentSummary, error) {
@@ -123,6 +136,36 @@ func TestOnCitationThreshold_AboveThreshold(t *testing.T) {
 
 	require.Len(t, store.assessments, 1)
 	assert.Equal(t, model.AssessmentCorrect, store.assessments[0].Outcome)
+}
+
+func TestOnCitationThreshold_Idempotent(t *testing.T) {
+	store := &fakeStore{summary: model.AssessmentSummary{Total: 1, Correct: 1}}
+	a := New(store, testLogger())
+
+	decisionID := uuid.New()
+
+	// First call at threshold — should create assessment.
+	a.OnCitationThreshold(context.Background(), uuid.Nil, decisionID, CitationThreshold)
+	require.Len(t, store.assessments, 1)
+
+	// Second call (e.g., 4th citation) — should be skipped.
+	a.OnCitationThreshold(context.Background(), uuid.Nil, decisionID, CitationThreshold+1)
+	assert.Len(t, store.assessments, 1, "duplicate citation assessment should be skipped")
+}
+
+func TestOnSuperseded_Idempotent(t *testing.T) {
+	store := &fakeStore{summary: model.AssessmentSummary{Total: 1, PartiallyCorrect: 1}}
+	a := New(store, testLogger())
+
+	supersededID := uuid.New()
+	newID := uuid.New()
+
+	a.OnSuperseded(context.Background(), uuid.Nil, supersededID, newID)
+	require.Len(t, store.assessments, 1)
+
+	// Second supersession call — should be skipped.
+	a.OnSuperseded(context.Background(), uuid.Nil, supersededID, uuid.New())
+	assert.Len(t, store.assessments, 1, "duplicate supersession assessment should be skipped")
 }
 
 func TestAssess_CreateError_LogsAndContinues(t *testing.T) {

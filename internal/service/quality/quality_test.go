@@ -648,6 +648,17 @@ func TestSuggestStandardType_MissingUnderscore(t *testing.T) {
 	assert.Equal(t, "trade_off", result)
 }
 
+func TestSuggestStandardType_ShortInputRejected(t *testing.T) {
+	// "bug" (3 chars) with maxDist=2 would match "build" without the length guard.
+	types := map[string]bool{"build": true, "test": true}
+	assert.Equal(t, "", SuggestStandardType("bug", types, 2), "short input should not match")
+	assert.Equal(t, "", SuggestStandardType("bu", types, 2), "very short input should not match")
+	// "tset" (4 chars) with maxDist=2 has len >= maxDist+3 = 5? No, 4 < 5. Still rejected.
+	assert.Equal(t, "", SuggestStandardType("tset", types, 2), "4-char input with maxDist=2 should be rejected")
+	// "tests" (5 chars) with maxDist=2 should match "test" (distance 1).
+	assert.Equal(t, "test", SuggestStandardType("tests", types, 2), "5-char input with maxDist=2 should match")
+}
+
 // ---------------------------------------------------------------------------
 // levenshtein tests
 // ---------------------------------------------------------------------------

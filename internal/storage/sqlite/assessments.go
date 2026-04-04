@@ -313,3 +313,20 @@ func (l *LiteDB) GetPrecedentCitationCount(ctx context.Context, orgID uuid.UUID,
 	}
 	return count, nil
 }
+
+// HasAssessmentFromSource returns true if an assessment from the given source
+// already exists for this decision.
+func (l *LiteDB) HasAssessmentFromSource(ctx context.Context, orgID, decisionID uuid.UUID, source string) (bool, error) {
+	var exists bool
+	err := l.db.QueryRowContext(ctx,
+		`SELECT EXISTS(
+			SELECT 1 FROM decision_assessments
+			WHERE decision_id = ? AND org_id = ? AND source = ?
+		)`,
+		uuidStr(decisionID), uuidStr(orgID), source,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("sqlite: has assessment from source: %w", err)
+	}
+	return exists, nil
+}

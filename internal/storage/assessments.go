@@ -213,3 +213,20 @@ func (db *DB) GetPrecedentCitationCount(ctx context.Context, orgID uuid.UUID, de
 	}
 	return count, nil
 }
+
+// HasAssessmentFromSource returns true if an assessment from the given source
+// already exists for this decision. Used for idempotency in auto-assessment.
+func (db *DB) HasAssessmentFromSource(ctx context.Context, orgID, decisionID uuid.UUID, source string) (bool, error) {
+	var exists bool
+	err := db.pool.QueryRow(ctx,
+		`SELECT EXISTS(
+			SELECT 1 FROM decision_assessments
+			WHERE decision_id = $1 AND org_id = $2 AND source = $3
+		)`,
+		decisionID, orgID, source,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("storage: has assessment from source: %w", err)
+	}
+	return exists, nil
+}
