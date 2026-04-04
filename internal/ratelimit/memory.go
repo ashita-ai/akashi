@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"math"
 	"sync"
 	"time"
 )
@@ -45,21 +46,29 @@ func NewMemoryLimiter(rate float64, burst int) *MemoryLimiter {
 	return m
 }
 
-// Allow consumes one token from the bucket for key. Returns true if a token
-// was available (request should proceed), false otherwise (rate limited).
-func (m *MemoryLimiter) Allow(_ context.Context, key string) (bool, error) {
+// Allow consumes one token from the bucket for key. The returned Result
+// includes the bucket state so callers can populate rate limit headers.
+func (m *MemoryLimiter) Allow(_ context.Context, key string) (Result, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	now := time.Now()
+	burstInt := int(m.burst)
+
 	b, ok := m.buckets[key]
 	if !ok {
 		// First request for this key: start with a full bucket minus one token.
+		remaining := m.burst - 1
 		m.buckets[key] = &bucket{
-			tokens:     m.burst - 1,
+			tokens:     remaining,
 			lastAccess: now,
 		}
-		return true, nil
+		return Result{
+			Allowed:   true,
+			Limit:     burstInt,
+			Remaining: int(remaining),
+			ResetAt:   m.resetAt(now, remaining),
+		}, nil
 	}
 
 	// Refill tokens based on elapsed time.
@@ -71,10 +80,33 @@ func (m *MemoryLimiter) Allow(_ context.Context, key string) (bool, error) {
 	b.lastAccess = now
 
 	if b.tokens < 1 {
-		return false, nil
+		// Denied — compute when the next token arrives.
+		deficit := 1 - b.tokens
+		retrySeconds := deficit / m.rate
+		return Result{
+			Allowed:   false,
+			Limit:     burstInt,
+			Remaining: 0,
+			ResetAt:   now.Add(time.Duration(retrySeconds * float64(time.Second))),
+		}, nil
 	}
 	b.tokens--
-	return true, nil
+	return Result{
+		Allowed:   true,
+		Limit:     burstInt,
+		Remaining: int(b.tokens),
+		ResetAt:   m.resetAt(now, b.tokens),
+	}, nil
+}
+
+// resetAt computes when the bucket will be full given the current token count.
+func (m *MemoryLimiter) resetAt(now time.Time, tokens float64) time.Time {
+	if tokens >= m.burst {
+		return time.Time{} // already full
+	}
+	deficit := m.burst - tokens
+	seconds := deficit / m.rate
+	return now.Add(time.Duration(math.Ceil(seconds) * float64(time.Second)))
 }
 
 // Close stops the cleanup goroutine. Safe to call multiple times.

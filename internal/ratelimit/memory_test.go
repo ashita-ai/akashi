@@ -5,6 +5,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func closeLimiter(t *testing.T, m *MemoryLimiter) {
@@ -20,13 +23,11 @@ func TestMemoryLimiterAllowUnderBurst(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		ok, err := m.Allow(ctx, "k1")
-		if err != nil {
-			t.Fatalf("Allow returned error on request %d: %v", i, err)
-		}
-		if !ok {
-			t.Fatalf("expected Allow to return true for request %d (within burst)", i)
-		}
+		res, err := m.Allow(ctx, "k1")
+		require.NoError(t, err, "request %d", i)
+		assert.True(t, res.Allowed, "expected Allowed for request %d (within burst)", i)
+		assert.Equal(t, 5, res.Limit, "Limit should equal burst")
+		assert.GreaterOrEqual(t, res.Remaining, 0, "Remaining should be non-negative")
 	}
 }
 
@@ -37,23 +38,17 @@ func TestMemoryLimiterDenyAfterBurst(t *testing.T) {
 	ctx := context.Background()
 	// Exhaust the burst.
 	for i := 0; i < 3; i++ {
-		ok, err := m.Allow(ctx, "k1")
-		if err != nil {
-			t.Fatalf("Allow error: %v", err)
-		}
-		if !ok {
-			t.Fatalf("expected Allow=true for request %d", i)
-		}
+		res, err := m.Allow(ctx, "k1")
+		require.NoError(t, err)
+		assert.True(t, res.Allowed, "expected Allowed for request %d", i)
 	}
 
 	// Next request should be denied.
-	ok, err := m.Allow(ctx, "k1")
-	if err != nil {
-		t.Fatalf("Allow error: %v", err)
-	}
-	if ok {
-		t.Fatal("expected Allow=false after burst exhausted")
-	}
+	res, err := m.Allow(ctx, "k1")
+	require.NoError(t, err)
+	assert.False(t, res.Allowed, "expected denial after burst exhausted")
+	assert.Equal(t, 0, res.Remaining, "Remaining should be 0 when denied")
+	assert.False(t, res.ResetAt.IsZero(), "ResetAt should be set when denied")
 }
 
 func TestMemoryLimiterTokenRefill(t *testing.T) {
@@ -67,21 +62,15 @@ func TestMemoryLimiterTokenRefill(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		_, _ = m.Allow(ctx, "k1")
 	}
-	ok, _ := m.Allow(ctx, "k1")
-	if ok {
-		t.Fatal("should be denied immediately after exhausting burst")
-	}
+	res, _ := m.Allow(ctx, "k1")
+	assert.False(t, res.Allowed, "should be denied immediately after exhausting burst")
 
 	// Wait for refill.
 	time.Sleep(5 * time.Millisecond)
 
-	ok, err := m.Allow(ctx, "k1")
-	if err != nil {
-		t.Fatalf("Allow error: %v", err)
-	}
-	if !ok {
-		t.Fatal("expected Allow=true after refill period")
-	}
+	res, err := m.Allow(ctx, "k1")
+	require.NoError(t, err)
+	assert.True(t, res.Allowed, "expected Allowed after refill period")
 }
 
 func TestMemoryLimiterIndependentKeys(t *testing.T) {
@@ -90,20 +79,14 @@ func TestMemoryLimiterIndependentKeys(t *testing.T) {
 
 	ctx := context.Background()
 	// Exhaust key "a".
-	ok, _ := m.Allow(ctx, "a")
-	if !ok {
-		t.Fatal("first request for 'a' should succeed")
-	}
-	ok, _ = m.Allow(ctx, "a")
-	if ok {
-		t.Fatal("second request for 'a' should be denied")
-	}
+	res, _ := m.Allow(ctx, "a")
+	assert.True(t, res.Allowed, "first request for 'a' should succeed")
+	res, _ = m.Allow(ctx, "a")
+	assert.False(t, res.Allowed, "second request for 'a' should be denied")
 
 	// Key "b" should be unaffected.
-	ok, _ = m.Allow(ctx, "b")
-	if !ok {
-		t.Fatal("first request for 'b' should succeed")
-	}
+	res, _ = m.Allow(ctx, "b")
+	assert.True(t, res.Allowed, "first request for 'b' should succeed")
 }
 
 func TestMemoryLimiterConcurrent(t *testing.T) {
@@ -120,12 +103,12 @@ func TestMemoryLimiterConcurrent(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			for i := 0; i < 10; i++ {
-				ok, err := m.Allow(ctx, "shared")
+				res, err := m.Allow(ctx, "shared")
 				if err != nil {
 					t.Errorf("goroutine %d: Allow error: %v", idx, err)
 					return
 				}
-				if ok {
+				if res.Allowed {
 					allowed[idx]++
 				}
 			}
@@ -162,9 +145,7 @@ func TestMemoryLimiterEvictStale(t *testing.T) {
 	_, exists := m.buckets["stale"]
 	m.mu.Unlock()
 
-	if exists {
-		t.Fatal("expected stale bucket to be evicted")
-	}
+	assert.False(t, exists, "expected stale bucket to be evicted")
 }
 
 func TestMemoryLimiterEvictKeepsRecent(t *testing.T) {
@@ -180,37 +161,26 @@ func TestMemoryLimiterEvictKeepsRecent(t *testing.T) {
 	_, exists := m.buckets["recent"]
 	m.mu.Unlock()
 
-	if !exists {
-		t.Fatal("expected recent bucket to survive eviction")
-	}
+	assert.True(t, exists, "expected recent bucket to survive eviction")
 }
 
 func TestMemoryLimiterCloseIdempotent(t *testing.T) {
 	m := NewMemoryLimiter(10, 5)
 	// Double close should not panic.
-	if err := m.Close(); err != nil {
-		t.Fatalf("first Close error: %v", err)
-	}
-	if err := m.Close(); err != nil {
-		t.Fatalf("second Close error: %v", err)
-	}
+	require.NoError(t, m.Close(), "first Close")
+	require.NoError(t, m.Close(), "second Close")
 }
 
 func TestNoopLimiterAlwaysAllows(t *testing.T) {
 	var l NoopLimiter
 	ctx := context.Background()
 	for i := 0; i < 1000; i++ {
-		ok, err := l.Allow(ctx, "anything")
-		if err != nil {
-			t.Fatalf("NoopLimiter.Allow error: %v", err)
-		}
-		if !ok {
-			t.Fatal("NoopLimiter should always return true")
-		}
+		res, err := l.Allow(ctx, "anything")
+		require.NoError(t, err)
+		assert.True(t, res.Allowed, "NoopLimiter should always return Allowed")
+		assert.Equal(t, 0, res.Limit, "NoopLimiter Limit should be 0 (disabled)")
 	}
-	if err := l.Close(); err != nil {
-		t.Fatalf("NoopLimiter.Close error: %v", err)
-	}
+	require.NoError(t, l.Close())
 }
 
 func TestMemoryLimiterTokensCapAtBurst(t *testing.T) {
@@ -228,13 +198,44 @@ func TestMemoryLimiterTokensCapAtBurst(t *testing.T) {
 
 	// After refill, should be capped at burst (3). Consume 3 -> ok, 4th -> denied.
 	for i := 0; i < 3; i++ {
-		ok, _ := m.Allow(ctx, "k1")
-		if !ok {
-			t.Fatalf("expected Allow=true for request %d after long idle", i)
-		}
+		res, _ := m.Allow(ctx, "k1")
+		assert.True(t, res.Allowed, "expected Allowed for request %d after long idle", i)
 	}
-	ok, _ := m.Allow(ctx, "k1")
-	if ok {
-		t.Fatal("expected Allow=false after burst exhausted, even after long idle")
-	}
+	res, _ := m.Allow(ctx, "k1")
+	assert.False(t, res.Allowed, "expected denial after burst exhausted, even after long idle")
+}
+
+func TestMemoryLimiterResultHeaders(t *testing.T) {
+	m := NewMemoryLimiter(10, 3) // 10 rps, burst 3
+	defer closeLimiter(t, m)
+
+	ctx := context.Background()
+
+	// First request: 3 burst, 2 remaining after consuming one.
+	res, err := m.Allow(ctx, "hdr")
+	require.NoError(t, err)
+	assert.True(t, res.Allowed)
+	assert.Equal(t, 3, res.Limit)
+	assert.Equal(t, 2, res.Remaining)
+
+	// Second request: 1 remaining.
+	res, err = m.Allow(ctx, "hdr")
+	require.NoError(t, err)
+	assert.True(t, res.Allowed)
+	assert.Equal(t, 3, res.Limit)
+	assert.Equal(t, 1, res.Remaining)
+
+	// Third request: 0 remaining.
+	res, err = m.Allow(ctx, "hdr")
+	require.NoError(t, err)
+	assert.True(t, res.Allowed)
+	assert.Equal(t, 3, res.Limit)
+	assert.Equal(t, 0, res.Remaining)
+
+	// Fourth request: denied, ResetAt in the future.
+	res, err = m.Allow(ctx, "hdr")
+	require.NoError(t, err)
+	assert.False(t, res.Allowed)
+	assert.Equal(t, 0, res.Remaining)
+	assert.True(t, res.ResetAt.After(time.Now()), "ResetAt should be in the future")
 }
