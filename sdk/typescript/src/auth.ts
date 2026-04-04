@@ -58,7 +58,19 @@ export class TokenManager {
     });
 
     if (!resp.ok) {
-      throw new Error(`Token refresh failed: ${resp.status}`);
+      let detail = "";
+      try {
+        const errBody = (await resp.json()) as {
+          error?: { message?: string };
+        };
+        if (errBody.error?.message) {
+          detail = errBody.error.message;
+        }
+      } catch {
+        // Response may not be JSON; fall through to status-only message.
+      }
+      const suffix = detail || resp.statusText || String(resp.status);
+      throw new Error(`Token refresh failed (${resp.status}): ${suffix}`);
     }
 
     const body = (await resp.json()) as {

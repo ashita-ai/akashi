@@ -11,6 +11,23 @@ from datetime import datetime, timezone
 import httpx
 
 
+def _raise_auth_error(resp: httpx.Response) -> None:
+    """Raise on non-2xx auth responses, surfacing the server's error message."""
+    if resp.is_success:
+        return
+    detail = ""
+    try:
+        detail = resp.json().get("error", {}).get("message", "")
+    except Exception:
+        pass
+    msg = detail or resp.reason_phrase or str(resp.status_code)
+    raise httpx.HTTPStatusError(
+        f"Token refresh failed ({resp.status_code}): {msg}",
+        request=resp.request,
+        response=resp,
+    )
+
+
 @dataclass
 class TokenManager:
     """Manages JWT token lifecycle with automatic refresh.
@@ -71,7 +88,7 @@ class TokenManager:
             f"{self.base_url}/auth/token",
             json={"agent_id": self.agent_id, "api_key": self.api_key},
         )
-        resp.raise_for_status()
+        _raise_auth_error(resp)
         self._apply_token_response(resp.json()["data"])
 
     def _refresh_sync(self, client: httpx.Client) -> None:
@@ -79,5 +96,5 @@ class TokenManager:
             f"{self.base_url}/auth/token",
             json={"agent_id": self.agent_id, "api_key": self.api_key},
         )
-        resp.raise_for_status()
+        _raise_auth_error(resp)
         self._apply_token_response(resp.json()["data"])
