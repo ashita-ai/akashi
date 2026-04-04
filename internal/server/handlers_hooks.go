@@ -33,14 +33,18 @@ const hookMaxBodyBytes int64 = 256 << 10
 // supply an agent_id (e.g. legacy hook scripts), IsAnyRecent provides a
 // backwards-compatible fallback that behaves like the old global timestamp.
 type hookCheckStore struct {
-	mu     sync.RWMutex
-	checks map[string]time.Time // agent_id → last check time
+	mu            sync.RWMutex
+	checks        map[string]time.Time // agent_id → last check time
+	emptyProjects map[string]time.Time // project → marked-at time (0 decisions + 0 conflicts)
 }
 
 const hookCheckTTL = 10 * time.Minute
 
 func newHookCheckStore() *hookCheckStore {
-	return &hookCheckStore{checks: make(map[string]time.Time)}
+	return &hookCheckStore{
+		checks:        make(map[string]time.Time),
+		emptyProjects: make(map[string]time.Time),
+	}
 }
 
 // Record stores a check timestamp for the given agent.
@@ -76,7 +80,7 @@ func (s *hookCheckStore) IsAnyRecent() bool {
 	return false
 }
 
-// Cleanup evicts expired entries from the map.
+// Cleanup evicts expired entries from both maps.
 func (s *hookCheckStore) Cleanup() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -85,6 +89,46 @@ func (s *hookCheckStore) Cleanup() {
 			delete(s.checks, id)
 		}
 	}
+	for project, t := range s.emptyProjects {
+		if time.Since(t) >= hookCheckTTL {
+			delete(s.emptyProjects, project)
+		}
+	}
+}
+
+// MarkProjectEmpty records that a project has no decisions or conflicts.
+// Called during SessionStart when the project's audit trail is empty.
+func (s *hookCheckStore) MarkProjectEmpty(project string) {
+	if project == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emptyProjects[project] = time.Now()
+}
+
+// IsProjectEmpty returns true if the project was marked as having no decisions
+// or conflicts within the TTL window. Empty projects skip the edit gate since
+// there is nothing to check against.
+func (s *hookCheckStore) IsProjectEmpty(project string) bool {
+	if project == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	t, ok := s.emptyProjects[project]
+	return ok && time.Since(t) < hookCheckTTL
+}
+
+// ClearProjectEmpty removes the empty marker for a project. Called when a
+// decision is traced, so the edit gate re-engages for future checks.
+func (s *hookCheckStore) ClearProjectEmpty(project string) {
+	if project == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.emptyProjects, project)
 }
 
 // hookSessionStartInput is the JSON body sent by Claude Code / Cursor on SessionStart.
@@ -175,6 +219,7 @@ func (h *Handlers) HandleHookPreToolUse(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Fast path: in-memory check before shelling out to git.
 	allowed := false
 	if input.AgentID != "" {
 		allowed = h.hookChecks.IsRecent(input.AgentID)
@@ -184,6 +229,15 @@ func (h *Handlers) HandleHookPreToolUse(w http.ResponseWriter, r *http.Request) 
 		allowed = h.hookChecks.IsAnyRecent()
 	}
 	if allowed {
+		writeHookJSON(w, hookResponse{Continue: true, SuppressOutput: true})
+		return
+	}
+
+	// Short-circuit: if the project has no decision history, don't gate edits.
+	// The empty marker is set during SessionStart and cleared on first trace.
+	// This check comes after IsRecent because inferProjectFromCWD spawns a
+	// git subprocess, whereas IsRecent is a pure map lookup.
+	if project := inferProjectFromCWD(input.CWD); h.hookChecks.IsProjectEmpty(project) {
 		writeHookJSON(w, hookResponse{Continue: true, SuppressOutput: true})
 		return
 	}
@@ -209,6 +263,12 @@ func (h *Handlers) HandleHookPostToolUse(w http.ResponseWriter, r *http.Request)
 	switch {
 	case isAkashiTool(input.ToolName):
 		h.hookChecks.Record(input.AgentID)
+		// If a decision was just traced, the project is no longer empty.
+		if strings.Contains(input.ToolName, "trace") {
+			if project := inferProjectFromCWD(input.CWD); project != "" {
+				h.hookChecks.ClearProjectEmpty(project)
+			}
+		}
 		writeHookJSON(w, hookResponse{Continue: true, SuppressOutput: true})
 
 	case isBashTool(input.ToolName) && isGitCommit(input.ToolInput):
@@ -318,6 +378,8 @@ func (h *Handlers) autoTraceCommit(input hookPostToolUseInput, commitMsg string)
 
 	if _, err := h.decisionSvc.Trace(ctx, orgID, traceInput); err != nil {
 		h.logger.Warn("auto-trace failed", "error", err, "commit", truncateHook(commitMsg, 60))
+	} else {
+		h.hookChecks.ClearProjectEmpty(project)
 	}
 }
 
@@ -440,6 +502,16 @@ func (h *Handlers) buildSessionContext(ctx context.Context, project string) stri
 		conflicts = nil
 	}
 
+	// Track whether this project has any decision history.
+	// Empty projects get a relaxed edit gate in HandleHookPreToolUse.
+	if project != "" {
+		if len(recent) == 0 && len(conflicts) == 0 {
+			h.hookChecks.MarkProjectEmpty(project)
+		} else {
+			h.hookChecks.ClearProjectEmpty(project)
+		}
+	}
+
 	// Build header.
 	if project != "" {
 		parts = append(parts, fmt.Sprintf("[akashi] Project: %s | %d recent decisions | %d open conflicts",
@@ -477,7 +549,7 @@ func (h *Handlers) buildSessionContext(ctx context.Context, project string) stri
 		}
 	}
 
-	parts = append(parts, "\nCall akashi_check before decisions. Call akashi_trace after.")
+	parts = append(parts, "\nCall akashi_check before architecture/design decisions. Call akashi_trace after.")
 	return strings.Join(parts, "\n")
 }
 

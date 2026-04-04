@@ -508,6 +508,112 @@ func TestHelpers(t *testing.T) {
 	})
 }
 
+func TestHookCheckStore_EmptyProjects(t *testing.T) {
+	t.Run("empty string project is ignored", func(t *testing.T) {
+		s := newHookCheckStore()
+		s.MarkProjectEmpty("")
+		assert.False(t, s.IsProjectEmpty(""))
+	})
+
+	t.Run("mark and check", func(t *testing.T) {
+		s := newHookCheckStore()
+		s.MarkProjectEmpty("myproject")
+		assert.True(t, s.IsProjectEmpty("myproject"))
+		assert.False(t, s.IsProjectEmpty("other"))
+	})
+
+	t.Run("clear removes marker", func(t *testing.T) {
+		s := newHookCheckStore()
+		s.MarkProjectEmpty("myproject")
+		s.ClearProjectEmpty("myproject")
+		assert.False(t, s.IsProjectEmpty("myproject"))
+	})
+
+	t.Run("clear on non-existent project is safe", func(t *testing.T) {
+		s := newHookCheckStore()
+		s.ClearProjectEmpty("never-marked") // must not panic
+		assert.False(t, s.IsProjectEmpty("never-marked"))
+	})
+
+	t.Run("clear empty string is safe", func(t *testing.T) {
+		s := newHookCheckStore()
+		s.ClearProjectEmpty("") // must not panic
+	})
+
+	t.Run("cleanup evicts expired empty-project entries", func(t *testing.T) {
+		s := newHookCheckStore()
+		s.mu.Lock()
+		s.emptyProjects["stale"] = time.Now().Add(-hookCheckTTL - time.Second)
+		s.emptyProjects["fresh"] = time.Now()
+		s.mu.Unlock()
+
+		s.Cleanup()
+
+		assert.False(t, s.IsProjectEmpty("stale"), "expired entry should be evicted")
+		assert.True(t, s.IsProjectEmpty("fresh"), "unexpired entry should survive")
+	})
+
+	t.Run("expired entry returns false from IsProjectEmpty", func(t *testing.T) {
+		s := newHookCheckStore()
+		s.mu.Lock()
+		s.emptyProjects["old"] = time.Now().Add(-hookCheckTTL - time.Second)
+		s.mu.Unlock()
+
+		assert.False(t, s.IsProjectEmpty("old"), "entry past TTL should not count as empty")
+	})
+}
+
+func TestHandleHookPreToolUse_EmptyProjectBypass(t *testing.T) {
+	t.Run("edit allowed for empty project without check", func(t *testing.T) {
+		h := &Handlers{hookChecks: newHookCheckStore()}
+		// Mark the project that /tmp resolves to as empty.
+		project := inferProjectFromCWD("/tmp")
+		h.hookChecks.MarkProjectEmpty(project)
+
+		body := `{"session_id":"sess-1","agent_id":"agent-a","tool_name":"Edit","tool_input":{},"cwd":"/tmp"}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/hooks/pre-tool-use", strings.NewReader(body))
+		h.HandleHookPreToolUse(rec, req)
+
+		var resp hookResponse
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+		assert.True(t, resp.Continue, "edit should be allowed for empty project")
+		assert.True(t, resp.SuppressOutput)
+	})
+
+	t.Run("edit still gated for non-empty project", func(t *testing.T) {
+		h := &Handlers{hookChecks: newHookCheckStore()}
+		// Do NOT mark the project as empty — gate should still apply.
+		body := `{"session_id":"sess-1","agent_id":"agent-a","tool_name":"Edit","tool_input":{},"cwd":"/tmp"}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/hooks/pre-tool-use", strings.NewReader(body))
+		h.HandleHookPreToolUse(rec, req)
+
+		var resp hookResponse
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+		require.NotNil(t, resp.HookSpecificOutput)
+		assert.Equal(t, "deny", resp.HookSpecificOutput.PermissionDecision)
+	})
+}
+
+func TestHandleHookPostToolUse_TraceClearsEmptyProject(t *testing.T) {
+	h := &Handlers{hookChecks: newHookCheckStore()}
+	project := inferProjectFromCWD("/tmp")
+	h.hookChecks.MarkProjectEmpty(project)
+	assert.True(t, h.hookChecks.IsProjectEmpty(project), "precondition: project should be empty")
+
+	body := `{"session_id":"sess-1","agent_id":"agent-a","tool_name":"mcp__akashi__akashi_trace","tool_input":{},"cwd":"/tmp"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/hooks/post-tool-use", strings.NewReader(body))
+	h.HandleHookPostToolUse(rec, req)
+
+	assert.False(t, h.hookChecks.IsProjectEmpty(project), "project should no longer be empty after trace")
+
+	var resp hookResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	assert.True(t, resp.Continue)
+}
+
 func TestHookMaxBytesReader(t *testing.T) {
 	// Verify that all three hook handlers reject bodies larger than hookMaxBodyBytes
 	// by returning Continue=true (graceful degradation, not an error page).
