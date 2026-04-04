@@ -90,13 +90,16 @@ func (s *LiteScorer) ScoreForDecision(ctx context.Context, decisionID, orgID uui
 			conflictKind = "self_contradiction"
 		}
 
-		// Assign severity based on significance.
-		severity := "low"
-		switch {
-		case significance >= 0.6:
-			severity = "high"
-		case significance >= 0.35:
-			severity = "medium"
+		// Compute severity from decision metadata (type tier, category),
+		// independent of the significance score. See ADR-015.
+		severity := ComputeSeverity(SeverityInput{
+			DecisionTypeA: src.decisionType,
+			DecisionTypeB: cand.decisionType,
+			// LiteScorer has no access to decision confidence; zero values
+			// are treated as "unknown" by ComputeSeverity (no demotion).
+		})
+		if severity == "" {
+			severity = "low"
 		}
 
 		if err := s.insertConflict(ctx, orgID, conflictKind, src, cand, topicSim, outcomeDivergence, significance, severity, explanation); err != nil {
