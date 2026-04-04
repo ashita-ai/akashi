@@ -7,6 +7,6 @@
 -- Manual assessments remain append-only (an assessor revising their verdict
 -- is itself an auditable event).
 
-CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_assessments_auto_unique
+CREATE UNIQUE INDEX IF NOT EXISTS idx_assessments_auto_unique
     ON decision_assessments (decision_id, org_id, source)
     WHERE source != 'manual';
