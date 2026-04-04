@@ -1025,3 +1025,102 @@ type ConflictGroupsResponse struct {
 	Limit   int             `json:"limit"`
 	Offset  int             `json:"offset"`
 }
+
+// ---------------------------------------------------------------------------
+// Admin: conflict validation, evaluation, and labels
+// ---------------------------------------------------------------------------
+
+// ValidatePairRequest is the input for Client.ValidatePair.
+type ValidatePairRequest struct {
+	OutcomeA        string  `json:"outcome_a"`
+	OutcomeB        string  `json:"outcome_b"`
+	TypeA           string  `json:"type_a,omitempty"`
+	TypeB           string  `json:"type_b,omitempty"`
+	AgentA          string  `json:"agent_a,omitempty"`
+	AgentB          string  `json:"agent_b,omitempty"`
+	ReasoningA      string  `json:"reasoning_a,omitempty"`
+	ReasoningB      string  `json:"reasoning_b,omitempty"`
+	ProjectA        string  `json:"project_a,omitempty"`
+	ProjectB        string  `json:"project_b,omitempty"`
+	TopicSimilarity float64 `json:"topic_similarity,omitempty"`
+}
+
+// ValidatePairResponse is the output of Client.ValidatePair.
+type ValidatePairResponse struct {
+	Relationship string `json:"relationship"` // contradiction, supersession, complementary, refinement, unrelated
+	Category     string `json:"category"`     // factual, assessment, strategic, temporal
+	Severity     string `json:"severity"`     // critical, high, medium, low
+	Explanation  string `json:"explanation"`
+}
+
+// ConflictEvalMetrics holds aggregate metrics from a conflict evaluation run.
+type ConflictEvalMetrics struct {
+	TotalPairs           int     `json:"total_pairs"`
+	Errors               int     `json:"errors"`
+	RelationshipAccuracy float64 `json:"relationship_accuracy"`
+	ConflictPrecision    float64 `json:"conflict_precision"`
+	ConflictRecall       float64 `json:"conflict_recall"`
+	ConflictF1           float64 `json:"conflict_f1"`
+	TruePositives        int     `json:"true_positives"`
+	FalsePositives       int     `json:"false_positives"`
+	TrueNegatives        int     `json:"true_negatives"`
+	FalseNegatives       int     `json:"false_negatives"`
+	RelationshipHits     int     `json:"relationship_hits"`
+}
+
+// ConflictEvalResult holds per-pair results from a conflict evaluation run.
+type ConflictEvalResult struct {
+	Label                string `json:"label"`
+	ExpectedRelationship string `json:"expected_relationship"`
+	ActualRelationship   string `json:"actual_relationship"`
+	Correct              bool   `json:"correct"`
+	ConflictExpected     bool   `json:"conflict_expected"`
+	ConflictActual       bool   `json:"conflict_actual"`
+	Explanation          string `json:"explanation"`
+	Error                string `json:"error,omitempty"`
+}
+
+// ConflictEvalResponse is the output of Client.ConflictEval.
+type ConflictEvalResponse struct {
+	Metrics ConflictEvalMetrics  `json:"metrics"`
+	Results []ConflictEvalResult `json:"results"`
+}
+
+// UpsertConflictLabelRequest is the input for Client.UpsertConflictLabel.
+type UpsertConflictLabelRequest struct {
+	Label string `json:"label"` // genuine, related_not_contradicting, unrelated_false_positive
+	Notes string `json:"notes,omitempty"`
+}
+
+// ConflictLabel represents a human label applied to a scored conflict.
+type ConflictLabel struct {
+	ScoredConflictID uuid.UUID `json:"scored_conflict_id"`
+	OrgID            uuid.UUID `json:"org_id"`
+	Label            string    `json:"label"`
+	LabeledBy        string    `json:"labeled_by"`
+	LabeledAt        time.Time `json:"labeled_at"`
+	Notes            string    `json:"notes,omitempty"`
+}
+
+// ConflictLabelCounts holds aggregate label counts.
+type ConflictLabelCounts struct {
+	Genuine                 int `json:"genuine"`
+	RelatedNotContradicting int `json:"related_not_contradicting"`
+	UnrelatedFalsePositive  int `json:"unrelated_false_positive"`
+	Total                   int `json:"total"`
+}
+
+// ListConflictLabelsResponse is the output of Client.ListConflictLabels.
+type ListConflictLabelsResponse struct {
+	Labels []ConflictLabel     `json:"labels"`
+	Counts ConflictLabelCounts `json:"counts"`
+}
+
+// ScorerEvalResponse is the output of Client.ScorerEval.
+type ScorerEvalResponse struct {
+	Precision      float64 `json:"precision"`
+	TruePositives  int     `json:"true_positives"`
+	FalsePositives int     `json:"false_positives"`
+	TotalLabeled   int     `json:"total_labeled"`
+	Message        string  `json:"message,omitempty"`
+}

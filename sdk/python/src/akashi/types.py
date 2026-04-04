@@ -769,3 +769,91 @@ class SessionViewResponse(BaseModel):
     decisions: list[Decision] = Field(default_factory=list)
     decision_count: int = 0
     summary: SessionSummary = Field(default_factory=SessionSummary)
+
+
+# --- Admin: conflict validation, evaluation, and labels ---
+
+
+class ValidatePairRequest(BaseModel):
+    outcome_a: str
+    outcome_b: str
+    type_a: str = ""
+    type_b: str = ""
+    agent_a: str = ""
+    agent_b: str = ""
+    reasoning_a: str = ""
+    reasoning_b: str = ""
+    project_a: str = ""
+    project_b: str = ""
+    topic_similarity: float = 0.0
+
+
+class ValidatePairResponse(BaseModel):
+    relationship: str  # contradiction, supersession, complementary, refinement, unrelated
+    category: str  # factual, assessment, strategic, temporal
+    severity: str  # critical, high, medium, low
+    explanation: str
+
+
+class ConflictEvalMetrics(BaseModel):
+    total_pairs: int = 0
+    errors: int = 0
+    relationship_accuracy: float = 0.0
+    conflict_precision: float = 0.0
+    conflict_recall: float = 0.0
+    conflict_f1: float = 0.0
+    true_positives: int = 0
+    false_positives: int = 0
+    true_negatives: int = 0
+    false_negatives: int = 0
+    relationship_hits: int = 0
+
+
+class ConflictEvalResult(BaseModel):
+    label: str = ""
+    expected_relationship: str = ""
+    actual_relationship: str = ""
+    correct: bool = False
+    conflict_expected: bool = False
+    conflict_actual: bool = False
+    explanation: str = ""
+    error: str = ""
+
+
+class ConflictEvalResponse(BaseModel):
+    metrics: ConflictEvalMetrics = Field(default_factory=ConflictEvalMetrics)
+    results: list[ConflictEvalResult] = Field(default_factory=list)
+
+
+class UpsertConflictLabelRequest(BaseModel):
+    label: str  # genuine, related_not_contradicting, unrelated_false_positive
+    notes: str = ""
+
+
+class ConflictLabelRecord(BaseModel):
+    scored_conflict_id: UUID
+    org_id: UUID
+    label: str
+    labeled_by: str
+    labeled_at: datetime
+    notes: str = ""
+
+
+class ConflictLabelCounts(BaseModel):
+    genuine: int = 0
+    related_not_contradicting: int = 0
+    unrelated_false_positive: int = 0
+    total: int = 0
+
+
+class ListConflictLabelsResponse(BaseModel):
+    labels: list[ConflictLabelRecord] = Field(default_factory=list)
+    counts: ConflictLabelCounts = Field(default_factory=ConflictLabelCounts)
+
+
+class ScorerEvalResponse(BaseModel):
+    precision: float = 0.0
+    true_positives: int = 0
+    false_positives: int = 0
+    total_labeled: int = 0
+    message: str = ""
