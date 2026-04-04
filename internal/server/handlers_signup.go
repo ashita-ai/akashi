@@ -3,7 +3,9 @@ package server
 import (
 	"net/http"
 	"net/mail"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/model"
@@ -23,7 +25,13 @@ func (h *Handlers) HandleSignup(w http.ResponseWriter, r *http.Request) {
 		} else {
 			setRateLimitHeaders(w, res)
 			if !res.Allowed {
-				w.Header().Set("Retry-After", "1")
+				retryAfter := "1"
+				if !res.ResetAt.IsZero() {
+					if s := res.ResetAt.Unix() - time.Now().Unix(); s > 0 {
+						retryAfter = strconv.FormatInt(s, 10)
+					}
+				}
+				w.Header().Set("Retry-After", retryAfter)
 				writeError(w, r, http.StatusTooManyRequests, model.ErrCodeRateLimited, "rate limit exceeded")
 				return
 			}
