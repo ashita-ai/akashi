@@ -1986,3 +1986,271 @@ func TestTraceNormalizesDecisionType(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Admin conflict validation, evaluation, and labels
+// ---------------------------------------------------------------------------
+
+func TestValidatePair(t *testing.T) {
+	var receivedBody map[string]any
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"POST /v1/admin/conflicts/validate-pair": func(w http.ResponseWriter, r *http.Request) {
+			if err := json.NewDecoder(r.Body).Decode(&receivedBody); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{
+					"error": map[string]any{"code": "INVALID_INPUT", "message": err.Error()},
+				})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"data": map[string]any{
+					"relationship": "contradiction",
+					"category":     "factual",
+					"severity":     "high",
+					"explanation":  "These outcomes directly contradict each other.",
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	resp, err := client.ValidatePair(context.Background(), ValidatePairRequest{
+		OutcomeA: "use PostgreSQL",
+		OutcomeB: "use MongoDB",
+		TypeA:    "architecture",
+		TypeB:    "architecture",
+	})
+	if err != nil {
+		t.Fatalf("ValidatePair failed: %v", err)
+	}
+	if resp.Relationship != "contradiction" {
+		t.Errorf("expected relationship 'contradiction', got %q", resp.Relationship)
+	}
+	if resp.Severity != "high" {
+		t.Errorf("expected severity 'high', got %q", resp.Severity)
+	}
+	if receivedBody["outcome_a"] != "use PostgreSQL" {
+		t.Errorf("expected outcome_a 'use PostgreSQL', got %v", receivedBody["outcome_a"])
+	}
+}
+
+func TestConflictEval(t *testing.T) {
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"POST /v1/admin/conflicts/eval": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"data": map[string]any{
+					"metrics": map[string]any{
+						"total_pairs":           10,
+						"errors":                1,
+						"relationship_accuracy": 0.8,
+						"conflict_precision":    0.75,
+						"conflict_recall":       0.9,
+						"conflict_f1":           0.818,
+						"true_positives":        6,
+						"false_positives":       2,
+						"true_negatives":        1,
+						"false_negatives":       1,
+						"relationship_hits":     8,
+					},
+					"results": []map[string]any{
+						{
+							"label":                 "pair-1",
+							"expected_relationship": "contradiction",
+							"actual_relationship":   "contradiction",
+							"correct":               true,
+							"conflict_expected":      true,
+							"conflict_actual":        true,
+							"explanation":            "matched",
+						},
+					},
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	resp, err := client.ConflictEval(context.Background())
+	if err != nil {
+		t.Fatalf("ConflictEval failed: %v", err)
+	}
+	if resp.Metrics.TotalPairs != 10 {
+		t.Errorf("expected 10 total_pairs, got %d", resp.Metrics.TotalPairs)
+	}
+	if resp.Metrics.TruePositives != 6 {
+		t.Errorf("expected 6 true_positives, got %d", resp.Metrics.TruePositives)
+	}
+	if len(resp.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(resp.Results))
+	}
+	if !resp.Results[0].Correct {
+		t.Error("expected first result to be correct")
+	}
+}
+
+func TestUpsertAndGetConflictLabel(t *testing.T) {
+	conflictID := uuid.New()
+	orgID := uuid.New()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"PUT /v1/admin/conflicts/" + conflictID.String() + "/label": func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{
+					"error": map[string]any{"code": "INVALID_INPUT", "message": err.Error()},
+				})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"data": map[string]any{
+					"scored_conflict_id": conflictID,
+					"org_id":             orgID,
+					"label":              body["label"],
+					"labeled_by":         "test-agent",
+					"labeled_at":         now.Format(time.RFC3339),
+					"notes":              body["notes"],
+				},
+			})
+		},
+		"GET /v1/admin/conflicts/" + conflictID.String() + "/label": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"data": map[string]any{
+					"scored_conflict_id": conflictID,
+					"org_id":             orgID,
+					"label":              "genuine",
+					"labeled_by":         "test-agent",
+					"labeled_at":         now.Format(time.RFC3339),
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+
+	// Upsert
+	label, err := client.UpsertConflictLabel(context.Background(), conflictID, UpsertConflictLabelRequest{
+		Label: "genuine",
+		Notes: "confirmed by review",
+	})
+	if err != nil {
+		t.Fatalf("UpsertConflictLabel failed: %v", err)
+	}
+	if label.Label != "genuine" {
+		t.Errorf("expected label 'genuine', got %q", label.Label)
+	}
+	if label.ScoredConflictID != conflictID {
+		t.Errorf("expected scored_conflict_id %s, got %s", conflictID, label.ScoredConflictID)
+	}
+
+	// Get
+	got, err := client.GetConflictLabel(context.Background(), conflictID)
+	if err != nil {
+		t.Fatalf("GetConflictLabel failed: %v", err)
+	}
+	if got.Label != "genuine" {
+		t.Errorf("expected label 'genuine', got %q", got.Label)
+	}
+}
+
+func TestDeleteConflictLabel(t *testing.T) {
+	conflictID := uuid.New()
+	deleted := false
+
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"DELETE /v1/admin/conflicts/" + conflictID.String() + "/label": func(w http.ResponseWriter, _ *http.Request) {
+			deleted = true
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	if err := client.DeleteConflictLabel(context.Background(), conflictID); err != nil {
+		t.Fatalf("DeleteConflictLabel failed: %v", err)
+	}
+	if !deleted {
+		t.Error("expected delete handler to be called")
+	}
+}
+
+func TestListConflictLabels(t *testing.T) {
+	conflictID := uuid.New()
+	orgID := uuid.New()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"GET /v1/admin/conflict-labels": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"data": map[string]any{
+					"labels": []map[string]any{
+						{
+							"scored_conflict_id": conflictID,
+							"org_id":             orgID,
+							"label":              "genuine",
+							"labeled_by":         "reviewer",
+							"labeled_at":         now.Format(time.RFC3339),
+						},
+					},
+					"counts": map[string]any{
+						"genuine":                   1,
+						"related_not_contradicting": 0,
+						"unrelated_false_positive":  0,
+						"total":                     1,
+					},
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	resp, err := client.ListConflictLabels(context.Background())
+	if err != nil {
+		t.Fatalf("ListConflictLabels failed: %v", err)
+	}
+	if len(resp.Labels) != 1 {
+		t.Fatalf("expected 1 label, got %d", len(resp.Labels))
+	}
+	if resp.Labels[0].Label != "genuine" {
+		t.Errorf("expected label 'genuine', got %q", resp.Labels[0].Label)
+	}
+	if resp.Counts.Genuine != 1 {
+		t.Errorf("expected genuine count 1, got %d", resp.Counts.Genuine)
+	}
+	if resp.Counts.Total != 1 {
+		t.Errorf("expected total count 1, got %d", resp.Counts.Total)
+	}
+}
+
+func TestScorerEval(t *testing.T) {
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"POST /v1/admin/scorer-eval": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"data": map[string]any{
+					"precision":       0.85,
+					"true_positives":  17,
+					"false_positives": 3,
+					"total_labeled":   20,
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	resp, err := client.ScorerEval(context.Background())
+	if err != nil {
+		t.Fatalf("ScorerEval failed: %v", err)
+	}
+	if resp.Precision != 0.85 {
+		t.Errorf("expected precision 0.85, got %f", resp.Precision)
+	}
+	if resp.TruePositives != 17 {
+		t.Errorf("expected 17 true_positives, got %d", resp.TruePositives)
+	}
+	if resp.TotalLabeled != 20 {
+		t.Errorf("expected 20 total_labeled, got %d", resp.TotalLabeled)
+	}
+}

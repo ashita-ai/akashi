@@ -489,6 +489,19 @@ func (c *Client) ExportDecisions(ctx context.Context, opts *ExportOptions) (deci
 			if len(line) == 0 {
 				continue
 			}
+			var raw map[string]any
+			if jsonErr := json.Unmarshal(line, &raw); jsonErr != nil {
+				ech <- fmt.Errorf("akashi: decode export line: %w", jsonErr)
+				return
+			}
+			if _, ok := raw["__error"]; ok {
+				msg, _ := raw["message"].(string)
+				if msg == "" {
+					msg = "export terminated due to internal error"
+				}
+				ech <- &Error{StatusCode: 500, Code: "export_error", Message: msg}
+				return
+			}
 			var d Decision
 			if jsonErr := json.Unmarshal(line, &d); jsonErr != nil {
 				ech <- fmt.Errorf("akashi: decode export line: %w", jsonErr)
@@ -677,6 +690,76 @@ func (c *Client) ListGrants(ctx context.Context, opts *ListGrantsOptions) (*Gran
 func (c *Client) GetSessionView(ctx context.Context, sessionID uuid.UUID) (*SessionViewResponse, error) {
 	var resp SessionViewResponse
 	if err := c.get(ctx, "/v1/sessions/"+sessionID.String(), &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ---------------------------------------------------------------------------
+// Admin: conflict validation, evaluation, and labels
+// ---------------------------------------------------------------------------
+
+// ValidatePair asks the server's conflict validator to classify the
+// relationship between two decision outcomes. Requires admin role.
+func (c *Client) ValidatePair(ctx context.Context, req ValidatePairRequest) (*ValidatePairResponse, error) {
+	var resp ValidatePairResponse
+	if err := c.post(ctx, "/v1/admin/conflicts/validate-pair", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ConflictEval runs the conflict evaluation suite against all labeled
+// conflicts and returns precision/recall metrics. Requires admin role.
+func (c *Client) ConflictEval(ctx context.Context) (*ConflictEvalResponse, error) {
+	var resp ConflictEvalResponse
+	if err := c.post(ctx, "/v1/admin/conflicts/eval", nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// UpsertConflictLabel creates or updates a human label on a scored conflict.
+// Requires admin role.
+func (c *Client) UpsertConflictLabel(ctx context.Context, conflictID uuid.UUID, req UpsertConflictLabelRequest) (*ConflictLabel, error) {
+	var resp ConflictLabel
+	if err := c.put(ctx, "/v1/admin/conflicts/"+conflictID.String()+"/label", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// GetConflictLabel retrieves the human label for a scored conflict.
+// Requires admin role.
+func (c *Client) GetConflictLabel(ctx context.Context, conflictID uuid.UUID) (*ConflictLabel, error) {
+	var resp ConflictLabel
+	if err := c.get(ctx, "/v1/admin/conflicts/"+conflictID.String()+"/label", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// DeleteConflictLabel removes the human label from a scored conflict.
+// Requires admin role.
+func (c *Client) DeleteConflictLabel(ctx context.Context, conflictID uuid.UUID) error {
+	return c.doDelete(ctx, "/v1/admin/conflicts/"+conflictID.String()+"/label", nil)
+}
+
+// ListConflictLabels retrieves all conflict labels with aggregate counts.
+// Requires admin role.
+func (c *Client) ListConflictLabels(ctx context.Context) (*ListConflictLabelsResponse, error) {
+	var resp ListConflictLabelsResponse
+	if err := c.get(ctx, "/v1/admin/conflict-labels", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ScorerEval evaluates the conflict scorer's precision using human labels.
+// Requires admin role.
+func (c *Client) ScorerEval(ctx context.Context) (*ScorerEvalResponse, error) {
+	var resp ScorerEvalResponse
+	if err := c.post(ctx, "/v1/admin/scorer-eval", nil, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil

@@ -723,3 +723,90 @@ export interface SessionViewResponse {
   decision_count: number;
   summary: SessionSummary;
 }
+
+// --- Admin: conflict validation, evaluation, and labels ---
+
+export interface ValidatePairRequest {
+  outcome_a: string;
+  outcome_b: string;
+  type_a?: string;
+  type_b?: string;
+  agent_a?: string;
+  agent_b?: string;
+  reasoning_a?: string;
+  reasoning_b?: string;
+  project_a?: string;
+  project_b?: string;
+  topic_similarity?: number;
+}
+
+export interface ValidatePairResponse {
+  relationship: string;
+  category: string;
+  severity: string;
+  explanation: string;
+}
+
+export interface ConflictEvalMetrics {
+  total_pairs: number;
+  errors: number;
+  relationship_accuracy: number;
+  conflict_precision: number;
+  conflict_recall: number;
+  conflict_f1: number;
+  true_positives: number;
+  false_positives: number;
+  true_negatives: number;
+  false_negatives: number;
+  relationship_hits: number;
+}
+
+export interface ConflictEvalResult {
+  label: string;
+  expected_relationship: string;
+  actual_relationship: string;
+  correct: boolean;
+  conflict_expected: boolean;
+  conflict_actual: boolean;
+  explanation: string;
+  error?: string;
+}
+
+export interface ConflictEvalResponse {
+  metrics: ConflictEvalMetrics;
+  results: ConflictEvalResult[];
+}
+
+export interface UpsertConflictLabelRequest {
+  label: string;
+  notes?: string;
+}
+
+export interface ConflictLabelRecord {
+  scored_conflict_id: string;
+  org_id: string;
+  label: string;
+  labeled_by: string;
+  labeled_at: string;
+  notes?: string;
+}
+
+export interface ConflictLabelCounts {
+  genuine: number;
+  related_not_contradicting: number;
+  unrelated_false_positive: number;
+  total: number;
+}
+
+export interface ListConflictLabelsResponse {
+  labels: ConflictLabelRecord[];
+  counts: ConflictLabelCounts;
+}
+
+export interface ScorerEvalResponse {
+  precision: number;
+  true_positives: number;
+  false_positives: number;
+  total_labeled: number;
+  message?: string;
+}

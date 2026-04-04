@@ -23,7 +23,9 @@ import type {
   ConfigResponse,
   ConflictAnalyticsResponse,
   ConflictDetail,
+  ConflictEvalResponse,
   ConflictGroup,
+  ConflictLabelRecord,
   ConflictStatusUpdate,
   CreateAgentRequest,
   CreateGrantRequest,
@@ -42,6 +44,7 @@ import type {
   IntegrityViolationsResponse,
   AkashiConfig,
   LineageResponse,
+  ListConflictLabelsResponse,
   OrgSettings,
   ProjectLink,
   PurgeRequest,
@@ -56,6 +59,7 @@ import type {
   RotateKeyResponse,
   ScopedTokenRequest,
   ScopedTokenResponse,
+  ScorerEvalResponse,
   SearchResponse,
   SearchResult,
   SessionViewResponse,
@@ -68,7 +72,10 @@ import type {
   TraceRequest,
   TraceResponse,
   UpdateAgentRequest,
+  UpsertConflictLabelRequest,
   UsageResponse,
+  ValidatePairRequest,
+  ValidatePairResponse,
   VerifyResponse,
 } from "./types.js";
 import {
@@ -1060,6 +1067,123 @@ export class AkashiClient {
   /** Check server health. Does not require authentication. */
   async health(): Promise<HealthResponse> {
     return this.getNoAuth<HealthResponse>("/health");
+  }
+
+  // --- Admin: conflict validation, evaluation, and labels ---
+
+  /** Validate the relationship between two decision outcomes (admin-only). */
+  async validatePair(req: ValidatePairRequest): Promise<ValidatePairResponse> {
+    return this.post<ValidatePairResponse>("/v1/admin/conflicts/validate-pair", req);
+  }
+
+  /** Run the conflict evaluation suite against labeled conflicts (admin-only). */
+  async conflictEval(): Promise<ConflictEvalResponse> {
+    return this.post<ConflictEvalResponse>("/v1/admin/conflicts/eval", {});
+  }
+
+  /** Create or update a human label on a scored conflict (admin-only). */
+  async upsertConflictLabel(conflictId: string, req: UpsertConflictLabelRequest): Promise<ConflictLabelRecord> {
+    return this.put<ConflictLabelRecord>(
+      `/v1/admin/conflicts/${encodeURIComponent(conflictId)}/label`,
+      req,
+    );
+  }
+
+  /** Get the human label for a scored conflict (admin-only). */
+  async getConflictLabel(conflictId: string): Promise<ConflictLabelRecord> {
+    return this.get<ConflictLabelRecord>(
+      `/v1/admin/conflicts/${encodeURIComponent(conflictId)}/label`,
+    );
+  }
+
+  /** Delete the human label from a scored conflict (admin-only). */
+  async deleteConflictLabel(conflictId: string): Promise<void> {
+    return this.del(`/v1/admin/conflicts/${encodeURIComponent(conflictId)}/label`);
+  }
+
+  /** List all conflict labels with aggregate counts (admin-only). */
+  async listConflictLabels(): Promise<ListConflictLabelsResponse> {
+    return this.get<ListConflictLabelsResponse>("/v1/admin/conflict-labels");
+  }
+
+  /** Evaluate the conflict scorer's precision using human labels (admin-only). */
+  async scorerEval(): Promise<ScorerEvalResponse> {
+    return this.post<ScorerEvalResponse>("/v1/admin/scorer-eval", {});
+  }
+
+  /**
+   * Stream decisions as NDJSON (admin-only). Returns an async iterator of Decision objects.
+   * Call `break` or `return` on the iterator to cancel the stream.
+   */
+  async *exportDecisions(options?: {
+    agentId?: string;
+    decisionType?: string;
+    from?: string;
+    to?: string;
+  }): AsyncGenerator<Decision> {
+    const params = new URLSearchParams();
+    if (options?.agentId) params.set("agent_id", options.agentId);
+    if (options?.decisionType) params.set("decision_type", options.decisionType);
+    if (options?.from) params.set("from", options.from);
+    if (options?.to) params.set("to", options.to);
+    const qs = params.toString();
+    const path = `/v1/export/decisions${qs ? `?${qs}` : ""}`;
+
+    const token = await this.tokenManager.getToken();
+    // Use an AbortController so we can enforce a timeout on the connection/
+    // headers phase without aborting the long-lived streaming read loop.
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), this.timeoutMs);
+    let resp: Response;
+    try {
+      resp = await fetch(`${this.baseUrl}${path}`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "User-Agent": USER_AGENT,
+          "X-Akashi-Session": this.sessionId,
+        },
+        signal: ac.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!resp.ok) {
+      checkResponseSize(resp.headers.get("content-length"));
+      await handleResponse<never>(resp);
+    }
+    if (!resp.body) return;
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          const parsed = JSON.parse(trimmed);
+          if (parsed.__error) {
+            throw new ServerError(500, parsed.message || "Export terminated due to internal error");
+          }
+          yield parsed as Decision;
+        }
+      }
+      if (buffer.trim()) {
+        const parsed = JSON.parse(buffer.trim());
+        if (parsed.__error) {
+          throw new ServerError(500, parsed.message || "Export terminated due to internal error");
+        }
+        yield parsed as Decision;
+      }
+    } finally {
+      reader.releaseLock();
+    }
   }
 
   // --- HTTP transport ---

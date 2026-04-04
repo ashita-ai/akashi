@@ -24,6 +24,8 @@ from akashi.types import (
     AssessResponse,
     CheckResponse,
     CompleteRunRequest,
+    ConflictEvalResponse,
+    ConflictLabelRecord,
     CreateAgentRequest,
     CreateGrantRequest,
     CreateRunRequest,
@@ -34,9 +36,11 @@ from akashi.types import (
     GetRunResponse,
     Grant,
     HealthResponse,
+    ListConflictLabelsResponse,
     QueryFilters,
     QueryResponse,
     RevisionsResponse,
+    ScorerEvalResponse,
     SearchResponse,
     SearchResult,
     TemporalQueryRequest,
@@ -44,6 +48,9 @@ from akashi.types import (
     TraceEvidence,
     TraceRequest,
     TraceResponse,
+    UpsertConflictLabelRequest,
+    ValidatePairRequest,
+    ValidatePairResponse,
     VerifyResponse,
 )
 
@@ -76,6 +83,8 @@ __all__ = [
     "TemporalQueryRequest",
     "AssessOutcome",
     "AssessRequest",
+    "ValidatePairRequest",
+    "UpsertConflictLabelRequest",
     # Types — responses
     "TraceResponse",
     "CheckResponse",
@@ -87,6 +96,11 @@ __all__ = [
     "RevisionsResponse",
     "HealthResponse",
     "AssessResponse",
+    "ValidatePairResponse",
+    "ConflictEvalResponse",
+    "ConflictLabelRecord",
+    "ListConflictLabelsResponse",
+    "ScorerEvalResponse",
     # OTEL helpers
     "trace_id_from_context",
     # Exceptions

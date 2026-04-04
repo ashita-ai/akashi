@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import time as _time
+from collections.abc import AsyncIterator, Iterator
 from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -46,7 +48,9 @@ from akashi.types import (
     ConfigResponse,
     ConflictAnalyticsResponse,
     ConflictDetail,
+    ConflictEvalResponse,
     ConflictGroup,
+    ConflictLabelRecord,
     ConflictStatusUpdate,
     CreateAgentRequest,
     CreateGrantRequest,
@@ -63,6 +67,7 @@ from akashi.types import (
     HealthResponse,
     IntegrityViolationsResponse,
     LineageResponse,
+    ListConflictLabelsResponse,
     OrgSettings,
     ProjectLink,
     PurgeRequest,
@@ -77,6 +82,7 @@ from akashi.types import (
     RotateKeyResponse,
     ScopedTokenRequest,
     ScopedTokenResponse,
+    ScorerEvalResponse,
     SearchResponse,
     SearchResult,
     SessionViewResponse,
@@ -89,7 +95,10 @@ from akashi.types import (
     TraceRequest,
     TraceResponse,
     UpdateAgentRequest,
+    UpsertConflictLabelRequest,
     UsageResponse,
+    ValidatePairRequest,
+    ValidatePairResponse,
     VerifyResponse,
 )
 
@@ -1004,6 +1013,85 @@ class AkashiClient:
         data = await self._get(f"/v1/sessions/{session_id}")
         return SessionViewResponse.model_validate(data)
 
+    # --- Admin: conflict validation, evaluation, and labels ---
+
+    async def validate_pair(self, req: ValidatePairRequest) -> ValidatePairResponse:
+        """Validate the relationship between two decision outcomes (admin-only)."""
+        data = await self._post("/v1/admin/conflicts/validate-pair", req.model_dump(exclude_none=True))
+        return ValidatePairResponse.model_validate(data)
+
+    async def conflict_eval(self) -> ConflictEvalResponse:
+        """Run the conflict evaluation suite against labeled conflicts (admin-only)."""
+        data = await self._post("/v1/admin/conflicts/eval", {})
+        return ConflictEvalResponse.model_validate(data)
+
+    async def upsert_conflict_label(self, conflict_id: UUID, req: UpsertConflictLabelRequest) -> ConflictLabelRecord:
+        """Create or update a human label on a scored conflict (admin-only)."""
+        data = await self._put(f"/v1/admin/conflicts/{conflict_id}/label", req.model_dump(exclude_none=True))
+        return ConflictLabelRecord.model_validate(data)
+
+    async def get_conflict_label(self, conflict_id: UUID) -> ConflictLabelRecord:
+        """Get the human label for a scored conflict (admin-only)."""
+        data = await self._get(f"/v1/admin/conflicts/{conflict_id}/label")
+        return ConflictLabelRecord.model_validate(data)
+
+    async def delete_conflict_label(self, conflict_id: UUID) -> None:
+        """Delete the human label from a scored conflict (admin-only)."""
+        await self._delete(f"/v1/admin/conflicts/{conflict_id}/label")
+
+    async def list_conflict_labels(self) -> ListConflictLabelsResponse:
+        """List all conflict labels with aggregate counts (admin-only)."""
+        data = await self._get("/v1/admin/conflict-labels")
+        return ListConflictLabelsResponse.model_validate(data)
+
+    async def scorer_eval(self) -> ScorerEvalResponse:
+        """Evaluate the conflict scorer's precision using human labels (admin-only)."""
+        data = await self._post("/v1/admin/scorer-eval", {})
+        return ScorerEvalResponse.model_validate(data)
+
+    async def export_decisions(
+        self,
+        *,
+        agent_id: str | None = None,
+        decision_type: str | None = None,
+        from_time: datetime | None = None,
+        to_time: datetime | None = None,
+    ) -> AsyncIterator[Decision]:
+        """Stream decisions as NDJSON (admin-only). Yields Decision objects."""
+        params: dict[str, str] = {}
+        if agent_id:
+            params["agent_id"] = agent_id
+        if decision_type:
+            params["decision_type"] = decision_type
+        if from_time:
+            params["from"] = from_time.isoformat()
+        if to_time:
+            params["to"] = to_time.isoformat()
+
+        token = await self._token_mgr.get_token(self._client)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "User-Agent": _USER_AGENT,
+            "X-Akashi-Session": str(self.session_id),
+        }
+        async with self._client.stream(
+            "GET",
+            f"{self.base_url}/v1/export/decisions",
+            params=params if params else None,
+            headers=headers,
+        ) as resp:
+            if resp.status_code >= 400:
+                await resp.aread()
+                _check_response_size(resp)
+                _handle_response(resp)  # raises
+            async for line in resp.aiter_lines():
+                if not line.strip():
+                    continue
+                data = _json.loads(line)
+                if data.get("__error"):
+                    raise ServerError(data.get("message", "Export terminated due to internal error"))
+                yield Decision.model_validate(data)
+
     # --- HTTP transport ---
 
     async def _post(self, path: str, body: dict[str, Any], extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
@@ -1864,6 +1952,85 @@ class AkashiSyncClient:
         """Get a session with its decisions and summary."""
         data = self._get(f"/v1/sessions/{session_id}")
         return SessionViewResponse.model_validate(data)
+
+    # --- Admin: conflict validation, evaluation, and labels ---
+
+    def validate_pair(self, req: ValidatePairRequest) -> ValidatePairResponse:
+        """Validate the relationship between two decision outcomes (admin-only)."""
+        data = self._post("/v1/admin/conflicts/validate-pair", req.model_dump(exclude_none=True))
+        return ValidatePairResponse.model_validate(data)
+
+    def conflict_eval(self) -> ConflictEvalResponse:
+        """Run the conflict evaluation suite against labeled conflicts (admin-only)."""
+        data = self._post("/v1/admin/conflicts/eval", {})
+        return ConflictEvalResponse.model_validate(data)
+
+    def upsert_conflict_label(self, conflict_id: UUID, req: UpsertConflictLabelRequest) -> ConflictLabelRecord:
+        """Create or update a human label on a scored conflict (admin-only)."""
+        data = self._put(f"/v1/admin/conflicts/{conflict_id}/label", req.model_dump(exclude_none=True))
+        return ConflictLabelRecord.model_validate(data)
+
+    def get_conflict_label(self, conflict_id: UUID) -> ConflictLabelRecord:
+        """Get the human label for a scored conflict (admin-only)."""
+        data = self._get(f"/v1/admin/conflicts/{conflict_id}/label")
+        return ConflictLabelRecord.model_validate(data)
+
+    def delete_conflict_label(self, conflict_id: UUID) -> None:
+        """Delete the human label from a scored conflict (admin-only)."""
+        self._delete(f"/v1/admin/conflicts/{conflict_id}/label")
+
+    def list_conflict_labels(self) -> ListConflictLabelsResponse:
+        """List all conflict labels with aggregate counts (admin-only)."""
+        data = self._get("/v1/admin/conflict-labels")
+        return ListConflictLabelsResponse.model_validate(data)
+
+    def scorer_eval(self) -> ScorerEvalResponse:
+        """Evaluate the conflict scorer's precision using human labels (admin-only)."""
+        data = self._post("/v1/admin/scorer-eval", {})
+        return ScorerEvalResponse.model_validate(data)
+
+    def export_decisions(
+        self,
+        *,
+        agent_id: str | None = None,
+        decision_type: str | None = None,
+        from_time: datetime | None = None,
+        to_time: datetime | None = None,
+    ) -> Iterator[Decision]:
+        """Stream decisions as NDJSON (admin-only). Yields Decision objects."""
+        params: dict[str, str] = {}
+        if agent_id:
+            params["agent_id"] = agent_id
+        if decision_type:
+            params["decision_type"] = decision_type
+        if from_time:
+            params["from"] = from_time.isoformat()
+        if to_time:
+            params["to"] = to_time.isoformat()
+
+        token = self._token_mgr.get_token_sync(self._client)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "User-Agent": _USER_AGENT,
+            "X-Akashi-Session": str(self.session_id),
+        }
+        with self._client.stream(
+            "GET",
+            f"{self.base_url}/v1/export/decisions",
+            params=params if params else None,
+            headers=headers,
+        ) as resp:
+            if resp.status_code >= 400:
+                resp.read()
+                _check_response_size(resp)
+                _handle_response(resp)  # raises
+            for line in resp.iter_lines():
+                if not line.strip():
+                    continue
+                data = _json.loads(line)
+                if data.get("__error"):
+                    raise ServerError(data.get("message", "Export terminated due to internal error"))
+                yield Decision.model_validate(data)
 
     # --- HTTP transport ---
 
