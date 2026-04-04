@@ -80,14 +80,16 @@ func (m *MemoryLimiter) Allow(_ context.Context, key string) (Result, error) {
 	b.lastAccess = now
 
 	if b.tokens < 1 {
-		// Denied — compute when the next token arrives.
+		// Denied — compute when the next token arrives for Retry-After,
+		// and when the bucket will be full for X-RateLimit-Reset.
 		deficit := 1 - b.tokens
-		retrySeconds := deficit / m.rate
+		retryAfter := time.Duration(math.Ceil(deficit/m.rate) * float64(time.Second))
 		return Result{
-			Allowed:   false,
-			Limit:     burstInt,
-			Remaining: 0,
-			ResetAt:   now.Add(time.Duration(retrySeconds * float64(time.Second))),
+			Allowed:    false,
+			Limit:      burstInt,
+			Remaining:  0,
+			ResetAt:    m.resetAt(now, b.tokens),
+			RetryAfter: retryAfter,
 		}, nil
 	}
 	b.tokens--

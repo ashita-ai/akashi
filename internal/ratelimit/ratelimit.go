@@ -24,7 +24,13 @@ type Result struct {
 
 	// ResetAt is the time when the bucket will next be full.
 	// Zero value means the bucket is already full or limiting is disabled.
+	// This is always "time until full bucket" regardless of whether the
+	// request was allowed or denied — use RetryAfter for 429 Retry-After.
 	ResetAt time.Time
+
+	// RetryAfter is the duration a denied client should wait before retrying.
+	// Only set when Allowed is false. Zero means not applicable (request allowed).
+	RetryAfter time.Duration
 }
 
 // Limiter decides whether a request identified by key should be allowed.

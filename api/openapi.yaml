@@ -2552,6 +2552,20 @@ components:
         Ed25519-signed JWT obtained from `POST /auth/token`.
         Include as `Authorization: Bearer <token>`.
 
+  headers:
+    X-RateLimit-Limit:
+      schema:
+        type: integer
+      description: Maximum requests allowed per window (bucket capacity).
+    X-RateLimit-Remaining:
+      schema:
+        type: integer
+      description: Requests remaining in the current window.
+    X-RateLimit-Reset:
+      schema:
+        type: integer
+      description: Unix timestamp when the rate limit window resets (bucket fully replenished).
+
   parameters:
     RunIDPath:
       name: run_id
@@ -2620,17 +2634,11 @@ components:
             type: integer
           description: Seconds to wait before retrying.
         X-RateLimit-Limit:
-          schema:
-            type: integer
-          description: Maximum requests allowed per window (bucket capacity).
+          $ref: "#/components/headers/X-RateLimit-Limit"
         X-RateLimit-Remaining:
-          schema:
-            type: integer
-          description: Requests remaining in the current window.
+          $ref: "#/components/headers/X-RateLimit-Remaining"
         X-RateLimit-Reset:
-          schema:
-            type: integer
-          description: Unix timestamp when the rate limit window resets.
+          $ref: "#/components/headers/X-RateLimit-Reset"
       content:
         application/json:
           schema:

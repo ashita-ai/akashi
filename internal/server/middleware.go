@@ -650,6 +650,15 @@ func setRateLimitHeaders(w http.ResponseWriter, res ratelimit.Result) {
 	}
 }
 
+// retryAfterSeconds returns the Retry-After header value from a denied Result.
+// Falls back to "1" if the duration is zero or sub-second.
+func retryAfterSeconds(res ratelimit.Result) string {
+	if s := int64(res.RetryAfter.Seconds()); s > 0 {
+		return strconv.FormatInt(s, 10)
+	}
+	return "1"
+}
+
 // rateLimitMiddleware enforces per-key rate limiting on all requests.
 // Unauthenticated paths use IP-based keys; authenticated paths use
 // per-agent or per-API-key keys. Platform admins bypass rate limiting.
@@ -668,13 +677,7 @@ func rateLimitMiddleware(limiter ratelimit.Limiter, logger *slog.Logger, trustPr
 			if err == nil {
 				setRateLimitHeaders(w, res)
 				if !res.Allowed {
-					retryAfter := "1"
-					if !res.ResetAt.IsZero() {
-						if s := res.ResetAt.Unix() - time.Now().Unix(); s > 0 {
-							retryAfter = strconv.FormatInt(s, 10)
-						}
-					}
-					w.Header().Set("Retry-After", retryAfter)
+					w.Header().Set("Retry-After", retryAfterSeconds(res))
 					writeError(w, r, http.StatusTooManyRequests, model.ErrCodeRateLimited, "rate limit exceeded")
 					return
 				}
@@ -709,13 +712,7 @@ func rateLimitMiddleware(limiter ratelimit.Limiter, logger *slog.Logger, trustPr
 		}
 		setRateLimitHeaders(w, res)
 		if !res.Allowed {
-			retryAfter := "1"
-			if !res.ResetAt.IsZero() {
-				if s := res.ResetAt.Unix() - time.Now().Unix(); s > 0 {
-					retryAfter = strconv.FormatInt(s, 10)
-				}
-			}
-			w.Header().Set("Retry-After", retryAfter)
+			w.Header().Set("Retry-After", retryAfterSeconds(res))
 			writeError(w, r, http.StatusTooManyRequests, model.ErrCodeRateLimited, "rate limit exceeded")
 			return
 		}
