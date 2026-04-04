@@ -463,6 +463,14 @@ type mockStore struct {
 	insertClaimsCalls int
 }
 
+func (m *mockStore) ResolveDecisionTypeAlias(_ context.Context, _ uuid.UUID, _ string) (string, error) {
+	return "", nil
+}
+
+func (m *mockStore) CreateDecisionTypeAlias(_ context.Context, _ uuid.UUID, _, _, _ string) error {
+	return nil
+}
+
 func (m *mockStore) GetConflictCount(_ context.Context, _ uuid.UUID, _ uuid.UUID) (int, error) {
 	return m.conflictCount, m.conflictCountErr
 }
@@ -2398,4 +2406,69 @@ func TestTrace_WithAlternatives(t *testing.T) {
 // GenerateClaims exposes generateClaims for testing from within the package.
 func (s *Service) GenerateClaims(ctx context.Context, decisionID, orgID uuid.UUID, outcome string) error {
 	return s.generateClaims(ctx, decisionID, orgID, outcome)
+}
+
+// ---------------------------------------------------------------------------
+// bootstrapMetadata tests
+// ---------------------------------------------------------------------------
+
+func TestBootstrapMetadata_NilAgentContext(t *testing.T) {
+	input := &TraceInput{AgentContext: nil}
+	bootstrapMetadata(input)
+	assert.Nil(t, input.Metadata, "nil context should not create metadata")
+}
+
+func TestBootstrapMetadata_SessionID(t *testing.T) {
+	sid := uuid.New()
+	input := &TraceInput{SessionID: &sid}
+	bootstrapMetadata(input)
+	require.NotNil(t, input.Metadata)
+	assert.Equal(t, sid.String(), input.Metadata["session_id"])
+}
+
+func TestBootstrapMetadata_ExtractsToolAndModel(t *testing.T) {
+	input := &TraceInput{
+		AgentContext: map[string]any{
+			"server": map[string]any{"tool": "claude-code"},
+			"client": map[string]any{"model": "claude-opus-4-6"},
+		},
+	}
+	bootstrapMetadata(input)
+	require.NotNil(t, input.Metadata)
+	assert.Equal(t, "claude-code", input.Metadata["tool"])
+	assert.Equal(t, "claude-opus-4-6", input.Metadata["model"])
+}
+
+func TestBootstrapMetadata_DoesNotOverwriteExisting(t *testing.T) {
+	input := &TraceInput{
+		Metadata: map[string]any{"tool": "user-supplied"},
+		AgentContext: map[string]any{
+			"server": map[string]any{"tool": "server-derived"},
+		},
+	}
+	bootstrapMetadata(input)
+	assert.Equal(t, "user-supplied", input.Metadata["tool"], "agent-supplied metadata must not be overwritten")
+}
+
+func TestBootstrapMetadata_MissingNestedKeys(t *testing.T) {
+	// server exists but has no "tool" key; client is missing entirely.
+	input := &TraceInput{
+		AgentContext: map[string]any{
+			"server": map[string]any{"version": "1.0"},
+		},
+	}
+	bootstrapMetadata(input)
+	assert.Nil(t, input.Metadata, "no extractable fields should not create metadata")
+}
+
+func TestBootstrapMetadata_WrongTypeNested(t *testing.T) {
+	// server is a string instead of map[string]any — should not panic.
+	input := &TraceInput{
+		AgentContext: map[string]any{
+			"server": "not-a-map",
+			"client": 42,
+		},
+	}
+	bootstrapMetadata(input)
+	assert.Nil(t, input.Metadata, "wrong type should silently skip")
 }

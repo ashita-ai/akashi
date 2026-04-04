@@ -12,6 +12,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/ashita-ai/akashi/internal/authz"
+	"github.com/ashita-ai/akashi/internal/service/autoassess"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/storage"
@@ -64,6 +65,7 @@ type Server struct {
 	onCheck                     func(agentID string) // called when akashi_check is invoked; wires IDE hook gate
 	highConfidenceWarnThreshold float32              // confidence above this with no evidence triggers a warning
 	standardTypes               map[string]bool      // configurable set of standard decision types for tips
+	autoAssessor                *autoassess.Assessor // optional auto-assessor for conflict resolution signals
 }
 
 // SetCheckNotify registers a callback that fires whenever akashi_check is called.
@@ -71,6 +73,11 @@ type Server struct {
 // checks per-agent rather than per-machine.
 func (s *Server) SetCheckNotify(f func(agentID string)) {
 	s.onCheck = f
+}
+
+// SetAutoAssessor registers the auto-assessor for conflict resolution signals.
+func (s *Server) SetAutoAssessor(a *autoassess.Assessor) {
+	s.autoAssessor = a
 }
 
 // New creates and configures a new MCP server with all resources, tools, and prompts.

@@ -30,15 +30,19 @@ func (db *DB) CreateAssessment(ctx context.Context, orgID uuid.UUID, a model.Dec
 		return model.DecisionAssessment{}, ErrNotFound
 	}
 
+	source := a.Source
+	if source == "" {
+		source = model.AssessmentSourceManual
+	}
 	var out model.DecisionAssessment
 	err = db.pool.QueryRow(ctx, `
-		INSERT INTO decision_assessments (decision_id, org_id, assessor_agent_id, outcome, notes)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, decision_id, org_id, assessor_agent_id, outcome, notes, created_at`,
-		a.DecisionID, orgID, a.AssessorAgentID, string(a.Outcome), a.Notes,
+		INSERT INTO decision_assessments (decision_id, org_id, assessor_agent_id, outcome, notes, source)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, decision_id, org_id, assessor_agent_id, outcome, notes, source, created_at`,
+		a.DecisionID, orgID, a.AssessorAgentID, string(a.Outcome), a.Notes, source,
 	).Scan(
 		&out.ID, &out.DecisionID, &out.OrgID, &out.AssessorAgentID,
-		&out.Outcome, &out.Notes, &out.CreatedAt,
+		&out.Outcome, &out.Notes, &out.Source, &out.CreatedAt,
 	)
 	if err != nil {
 		return model.DecisionAssessment{}, fmt.Errorf("storage: assess: insert: %w", err)
@@ -77,7 +81,7 @@ func (db *DB) ListAssessments(ctx context.Context, orgID, decisionID uuid.UUID) 
 	}
 
 	rows, err := db.pool.Query(ctx, `
-		SELECT id, decision_id, org_id, assessor_agent_id, outcome, notes, created_at
+		SELECT id, decision_id, org_id, assessor_agent_id, outcome, notes, source, created_at
 		FROM decision_assessments
 		WHERE decision_id = $1 AND org_id = $2
 		ORDER BY created_at DESC`,
@@ -93,7 +97,7 @@ func (db *DB) ListAssessments(ctx context.Context, orgID, decisionID uuid.UUID) 
 		var a model.DecisionAssessment
 		if err := rows.Scan(
 			&a.ID, &a.DecisionID, &a.OrgID, &a.AssessorAgentID,
-			&a.Outcome, &a.Notes, &a.CreatedAt,
+			&a.Outcome, &a.Notes, &a.Source, &a.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("storage: list assessments: scan: %w", err)
 		}
@@ -193,4 +197,36 @@ func (db *DB) GetAssessmentSummaryBatch(ctx context.Context, orgID uuid.UUID, de
 		out[id] = s
 	}
 	return out, rows.Err()
+}
+
+// GetPrecedentCitationCount returns the number of active decisions that cite
+// the given decision as a precedent (precedent_ref = decisionID).
+func (db *DB) GetPrecedentCitationCount(ctx context.Context, orgID uuid.UUID, decisionID uuid.UUID) (int, error) {
+	var count int
+	err := db.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM decisions
+		 WHERE precedent_ref = $1 AND org_id = $2 AND valid_to IS NULL`,
+		decisionID, orgID,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("storage: precedent citation count: %w", err)
+	}
+	return count, nil
+}
+
+// HasAssessmentFromSource returns true if an assessment from the given source
+// already exists for this decision. Used for idempotency in auto-assessment.
+func (db *DB) HasAssessmentFromSource(ctx context.Context, orgID, decisionID uuid.UUID, source string) (bool, error) {
+	var exists bool
+	err := db.pool.QueryRow(ctx,
+		`SELECT EXISTS(
+			SELECT 1 FROM decision_assessments
+			WHERE decision_id = $1 AND org_id = $2 AND source = $3
+		)`,
+		decisionID, orgID, source,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("storage: has assessment from source: %w", err)
+	}
+	return exists, nil
 }

@@ -3850,3 +3850,61 @@ func TestCreateProjectAlias_ChainPrevention_AliasIsTarget(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, resolved)
 }
+
+// ---------- deriveAgentID tests ----------
+
+func TestDeriveAgentID_GenericAdminEnriched(t *testing.T) {
+	derived, enriched := deriveAgentID("admin", "claude-code")
+	assert.True(t, enriched)
+	assert.Equal(t, "claude-code", derived)
+}
+
+func TestDeriveAgentID_GenericSystemEnriched(t *testing.T) {
+	derived, enriched := deriveAgentID("system", "Cursor")
+	assert.True(t, enriched)
+	assert.Equal(t, "cursor", derived)
+}
+
+func TestDeriveAgentID_NonGenericUnchanged(t *testing.T) {
+	derived, enriched := deriveAgentID("my-agent", "claude-code")
+	assert.False(t, enriched)
+	assert.Equal(t, "my-agent", derived)
+}
+
+func TestDeriveAgentID_EmptyToolName(t *testing.T) {
+	derived, enriched := deriveAgentID("admin", "")
+	assert.False(t, enriched)
+	assert.Equal(t, "admin", derived)
+}
+
+func TestDeriveAgentID_WhitespaceToolName(t *testing.T) {
+	derived, enriched := deriveAgentID("admin", "   ")
+	assert.False(t, enriched)
+	assert.Equal(t, "admin", derived)
+}
+
+func TestDeriveAgentID_ToolNameWithSpaces(t *testing.T) {
+	derived, enriched := deriveAgentID("admin", "My Custom Tool")
+	assert.True(t, enriched)
+	assert.Equal(t, "my-custom-tool", derived)
+}
+
+func TestDeriveAgentID_ToolNameWithSpecialChars(t *testing.T) {
+	// Characters outside [a-z0-9-_.] are dropped.
+	derived, enriched := deriveAgentID("admin", "tool@v2!beta")
+	assert.True(t, enriched)
+	assert.Equal(t, "toolv2beta", derived)
+}
+
+func TestDeriveAgentID_ToolNameSanitizedToEmpty(t *testing.T) {
+	// All chars are invalid → falls back to original.
+	derived, enriched := deriveAgentID("admin", "!!!")
+	assert.False(t, enriched)
+	assert.Equal(t, "admin", derived)
+}
+
+func TestDeriveAgentID_PreservesDotsAndUnderscores(t *testing.T) {
+	derived, enriched := deriveAgentID("admin", "my_tool.v2")
+	assert.True(t, enriched)
+	assert.Equal(t, "my_tool.v2", derived)
+}

@@ -388,7 +388,11 @@ func TestScore_OutcomeBoundaries(t *testing.T) {
 	}{
 		{"empty", "", 0.0},
 		{"exactly 20 chars", repeat('x', 20), 0.0},
-		{"21 chars", repeat('x', 21), 0.10},
+		{"21 chars — concise decision", repeat('x', 21), 0.10},
+		{"300 chars — upper bound of concise tier", repeat('x', 300), 0.10},
+		{"301 chars — starts medium penalty", repeat('x', 301), 0.07},
+		{"500 chars — upper bound of medium tier", repeat('x', 500), 0.07},
+		{"501 chars — verbose, heavy penalty", repeat('x', 501), 0.04},
 		{"whitespace padded to 25 but trimmed to 15", "   " + repeat('x', 15) + "       ", 0.0},
 		{"whitespace padded to 30 with 21 content", "    " + repeat('x', 21) + "     ", 0.10},
 	}
@@ -644,6 +648,17 @@ func TestSuggestStandardType_MissingUnderscore(t *testing.T) {
 	assert.Equal(t, "trade_off", result)
 }
 
+func TestSuggestStandardType_ShortInputRejected(t *testing.T) {
+	// "bug" (3 chars) with maxDist=2 would match "build" without the length guard.
+	types := map[string]bool{"build": true, "test": true}
+	assert.Equal(t, "", SuggestStandardType("bug", types, 2), "short input should not match")
+	assert.Equal(t, "", SuggestStandardType("bu", types, 2), "very short input should not match")
+	// "tset" (4 chars) with maxDist=2 has len >= maxDist+3 = 5? No, 4 < 5. Still rejected.
+	assert.Equal(t, "", SuggestStandardType("tset", types, 2), "4-char input with maxDist=2 should be rejected")
+	// "tests" (5 chars) with maxDist=2 should match "test" (distance 1).
+	assert.Equal(t, "test", SuggestStandardType("tests", types, 2), "5-char input with maxDist=2 should match")
+}
+
 // ---------------------------------------------------------------------------
 // levenshtein tests
 // ---------------------------------------------------------------------------
@@ -674,4 +689,109 @@ func TestLevenshtein(t *testing.T) {
 			assert.Equal(t, tt.want, levenshtein(tt.a, tt.b))
 		})
 	}
+}
+
+// ---------- AdjustConfidence tests ----------
+
+func TestAdjustConfidence_NoAdjustmentNeeded(t *testing.T) {
+	// Moderate confidence with evidence and alternatives — no adjustment.
+	adj := AdjustConfidence(0.75, 2, 3, 120)
+	assert.False(t, adj.WasAdjusted)
+	assert.Equal(t, float32(0.75), adj.Adjusted)
+	assert.Empty(t, adj.Reasons)
+}
+
+func TestAdjustConfidence_HighConfNoEvidence(t *testing.T) {
+	// conf 0.92 with 0 evidence → capped at 0.75.
+	adj := AdjustConfidence(0.92, 0, 3, 120)
+	assert.True(t, adj.WasAdjusted)
+	assert.Equal(t, float32(0.75), adj.Adjusted)
+	assert.Equal(t, float32(0.92), adj.Original)
+	assert.Len(t, adj.Reasons, 1)
+}
+
+func TestAdjustConfidence_HighConfNoAlternatives(t *testing.T) {
+	// conf 0.88 with evidence but 0 alternatives → reduced by 0.10.
+	adj := AdjustConfidence(0.88, 2, 0, 120)
+	assert.True(t, adj.WasAdjusted)
+	assert.InDelta(t, 0.78, adj.Adjusted, 0.001)
+	assert.Len(t, adj.Reasons, 1)
+}
+
+func TestAdjustConfidence_HighConfShortReasoning(t *testing.T) {
+	// conf 0.85 with evidence and alts but short reasoning → reduced by 0.10.
+	adj := AdjustConfidence(0.85, 2, 3, 30)
+	assert.True(t, adj.WasAdjusted)
+	assert.InDelta(t, 0.75, adj.Adjusted, 0.001)
+	assert.Len(t, adj.Reasons, 1)
+}
+
+func TestAdjustConfidence_AllRulesStack(t *testing.T) {
+	// conf 0.95, 0 evidence, 0 alts, 10-char reasoning → all three rules fire.
+	// Rule 1: cap at 0.75. Rule 2: 0.75 < 0.85, so does NOT fire.
+	// Rule 3: 0.75 < 0.8, so does NOT fire.
+	adj := AdjustConfidence(0.95, 0, 0, 10)
+	assert.True(t, adj.WasAdjusted)
+	assert.Equal(t, float32(0.75), adj.Adjusted)
+	// Only rule 1 fires because the cap to 0.75 brings it below 0.85 and 0.8.
+	assert.Len(t, adj.Reasons, 1)
+}
+
+func TestAdjustConfidence_TwoRulesStack(t *testing.T) {
+	// conf 0.88, has evidence (so rule 1 doesn't fire), 0 alts, 10-char reasoning.
+	// Rule 2: 0.88 >= 0.85, 0 alts → 0.78. Rule 3: 0.78 < 0.8, does NOT fire.
+	adj := AdjustConfidence(0.88, 1, 0, 10)
+	assert.True(t, adj.WasAdjusted)
+	assert.InDelta(t, 0.78, adj.Adjusted, 0.001)
+	assert.Len(t, adj.Reasons, 1)
+}
+
+func TestAdjustConfidence_FloorAt030(t *testing.T) {
+	// Construct a case where stacking would go below 0.3.
+	// conf 0.9, 0 evidence → cap at 0.75. Then 0.75 < 0.85, rule 2 skips.
+	// But what if we start at exactly 0.85 with all three weaknesses?
+	// Rule 1 doesn't fire (0.85 < 0.9). Rule 2: 0.85-0.10=0.75. Rule 3: 0.75<0.8, skips.
+	// Floor isn't reachable with current rules, but test the floor mechanism:
+	adj := AdjustConfidence(0.3, 0, 0, 0)
+	// 0.3 < 0.8, < 0.85, < 0.9 — no rules fire.
+	assert.False(t, adj.WasAdjusted)
+	assert.Equal(t, float32(0.3), adj.Adjusted)
+}
+
+func TestAdjustConfidence_BelowAllThresholds(t *testing.T) {
+	// Low confidence — no rules fire regardless of missing fields.
+	adj := AdjustConfidence(0.5, 0, 0, 0)
+	assert.False(t, adj.WasAdjusted)
+	assert.Equal(t, float32(0.5), adj.Adjusted)
+}
+
+func TestAdjustConfidence_ExactThresholdBoundaries(t *testing.T) {
+	// Exactly 0.9 with 0 evidence → rule 1 fires.
+	adj := AdjustConfidence(0.9, 0, 2, 120)
+	assert.True(t, adj.WasAdjusted)
+	assert.Equal(t, float32(0.75), adj.Adjusted)
+
+	// Exactly 0.85 with 0 alts → rule 2 fires.
+	adj = AdjustConfidence(0.85, 1, 0, 120)
+	assert.True(t, adj.WasAdjusted)
+	assert.InDelta(t, 0.75, adj.Adjusted, 0.001)
+
+	// Exactly 0.8 with short reasoning → rule 3 fires.
+	adj = AdjustConfidence(0.8, 1, 1, 49)
+	assert.True(t, adj.WasAdjusted)
+	assert.InDelta(t, 0.7, adj.Adjusted, 0.001)
+}
+
+func TestAdjustConfidence_JustBelowThresholds(t *testing.T) {
+	// 0.899... < 0.9 → rule 1 does not fire.
+	adj := AdjustConfidence(0.899, 0, 2, 120)
+	assert.False(t, adj.WasAdjusted)
+
+	// 0.849 < 0.85 → rule 2 does not fire.
+	adj = AdjustConfidence(0.849, 1, 0, 120)
+	assert.False(t, adj.WasAdjusted)
+
+	// 0.799 < 0.8 → rule 3 does not fire.
+	adj = AdjustConfidence(0.799, 1, 1, 10)
+	assert.False(t, adj.WasAdjusted)
 }

@@ -314,6 +314,14 @@ const (
 	AssessmentPartiallyCorrect AssessmentOutcome = "partially_correct"
 )
 
+// Assessment source constants distinguish automatic from manual assessments.
+const (
+	AssessmentSourceManual       = "manual"
+	AssessmentSourceSupersession = "supersession"
+	AssessmentSourceConflict     = "conflict"
+	AssessmentSourceCitation     = "citation"
+)
+
 // DecisionAssessment is explicit outcome feedback from an agent that observed
 // whether a prior decision turned out to be correct. Immutable once written;
 // an assessor can revise by upserting (same decision_id + assessor_agent_id).
@@ -324,6 +332,7 @@ type DecisionAssessment struct {
 	AssessorAgentID string            `json:"assessor_agent_id"`
 	Outcome         AssessmentOutcome `json:"outcome"`
 	Notes           *string           `json:"notes,omitempty"`
+	Source          string            `json:"source"`
 	CreatedAt       time.Time         `json:"created_at"`
 }
 
