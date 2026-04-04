@@ -13,6 +13,7 @@ const checkCacheTTL = 5 * time.Minute
 // checkCacheEntry stores a serialized akashi_check response for a session.
 type checkCacheEntry struct {
 	content    string
+	hadResults bool // true when the check returned at least one decision
 	capturedAt time.Time
 }
 
@@ -33,13 +34,30 @@ func newCheckCache() *checkCache {
 }
 
 // Store saves a check result for the given session, replacing any previous entry.
-func (cc *checkCache) Store(sessionID, content string) {
+// hadResults indicates whether the check returned at least one decision.
+func (cc *checkCache) Store(sessionID, content string, hadResults bool) {
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
 	cc.cache[sessionID] = checkCacheEntry{
 		content:    content,
+		hadResults: hadResults,
 		capturedAt: time.Now(),
 	}
+}
+
+// HadResults returns whether the cached check for this session returned decisions.
+// Non-destructive: the entry remains in the cache for Drain to consume.
+func (cc *checkCache) HadResults(sessionID string) bool {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	entry, ok := cc.cache[sessionID]
+	if !ok {
+		return false
+	}
+	if time.Since(entry.capturedAt) > checkCacheTTL {
+		return false
+	}
+	return entry.hadResults
 }
 
 // Drain returns and removes the cached check result for the given session.

@@ -85,8 +85,11 @@ type Store interface {
 
 	GetDecisionOutcomeSignalsBatch(ctx context.Context, ids []uuid.UUID, orgID uuid.UUID) (map[uuid.UUID]model.OutcomeSignals, error)
 	GetAssessmentSummaryBatch(ctx context.Context, orgID uuid.UUID, decisionIDs []uuid.UUID) (map[uuid.UUID]model.AssessmentSummary, error)
+	GetAssessmentSummary(ctx context.Context, orgID, decisionID uuid.UUID) (model.AssessmentSummary, error)
 	CreateAssessment(ctx context.Context, orgID uuid.UUID, a model.DecisionAssessment) (model.DecisionAssessment, error)
 	UpdateOutcomeScore(ctx context.Context, orgID, decisionID uuid.UUID, score *float32) error
+	GetPrecedentCitationCount(ctx context.Context, orgID uuid.UUID, decisionID uuid.UUID) (int, error)
+	HasAssessmentFromSource(ctx context.Context, orgID, decisionID uuid.UUID, source string) (bool, error)
 
 	// ---- Claims ----
 
@@ -112,6 +115,16 @@ type Store interface {
 	// IsAliasTarget reports whether the given name is the canonical target
 	// (project_b) of any existing alias. Used to prevent alias chains.
 	IsAliasTarget(ctx context.Context, orgID uuid.UUID, name string) (bool, error)
+
+	// ---- Decision Type Aliases ----
+
+	// ResolveDecisionTypeAlias returns the canonical decision type for the given
+	// alias. Returns "" if no alias mapping exists.
+	ResolveDecisionTypeAlias(ctx context.Context, orgID uuid.UUID, alias string) (string, error)
+
+	// CreateDecisionTypeAlias upserts an alias→canonical mapping.
+	// Idempotent: if the alias already exists, updates the canonical target.
+	CreateDecisionTypeAlias(ctx context.Context, orgID uuid.UUID, alias, canonical, createdBy string) error
 
 	// ---- Idempotency ----
 

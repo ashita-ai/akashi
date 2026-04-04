@@ -50,6 +50,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/ratelimit"
 	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/server"
+	"github.com/ashita-ai/akashi/internal/service/autoassess"
 	"github.com/ashita-ai/akashi/internal/service/autoresolve"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
@@ -303,6 +304,12 @@ func New(opts ...Option) (*App, error) {
 	pctCache := search.NewPercentileCache()
 	decisionSvc.SetPercentileCache(pctCache)
 
+	// Auto-assessor: generates assessments from observable signals (supersession,
+	// conflict resolution, citation threshold). Wired into both the decision
+	// service (for trace-time signals) and the MCP server (for resolve-time signals).
+	assessor := autoassess.New(db, logger)
+	decisionSvc.SetAutoAssessor(assessor)
+
 	// Embedding backfills (non-fatal).
 	if n, err := decisionSvc.BackfillEmbeddings(context.Background(), 500); err != nil {
 		logger.Warn("embedding backfill failed", "error", err)
@@ -388,6 +395,7 @@ func New(opts ...Option) (*App, error) {
 
 	// MCP server.
 	mcpSrv := mcp.New(db, decisionSvc, grantCache, logger, version, cfg.HighConfidenceWarnThreshold, quality.BuildStandardTypes(cfg.StandardDecisionTypes))
+	mcpSrv.SetAutoAssessor(assessor)
 
 	// SSE broker.
 	var broker *server.Broker

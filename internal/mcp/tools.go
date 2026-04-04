@@ -619,7 +619,7 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 	// as evidence. Both handlers share the same MCP session.
 	if session := mcpserver.ClientSessionFromContext(ctx); session != nil {
 		if sid := session.SessionID(); sid != "" {
-			s.checkCache.Store(sid, string(resultData))
+			s.checkCache.Store(sid, string(resultData), len(resp.Decisions) > 0)
 		}
 	}
 
@@ -654,6 +654,16 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		} else {
 			return errorResult("agent_id is required"), nil
 		}
+	}
+
+	// Enrich generic agent IDs (e.g., "admin" from JWT) with the MCP tool
+	// name so decisions are attributable to the actual client, not the JWT
+	// default. The original ID is preserved in agent_context for auditability.
+	var agentIDEnriched bool
+	var originalAgentID string
+	if toolName := mcpToolName(ctx); toolName != "" {
+		originalAgentID = agentID
+		agentID, agentIDEnriched = deriveAgentID(agentID, toolName)
 	}
 
 	if decisionType == "" || outcome == "" {
@@ -810,6 +820,12 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		if project := inferProjectFromRootsWithGit(roots); project != "" {
 			serverCtx["project"] = project
 		}
+	}
+
+	// Record the original agent_id when it was enriched from the tool name,
+	// so the audit trail preserves the mapping from JWT default to derived ID.
+	if agentIDEnriched {
+		serverCtx["original_agent_id"] = originalAgentID
 	}
 
 	// API key prefix for server-verified attribution.
@@ -1022,8 +1038,33 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		Alternatives: alternatives,
 		Evidence:     evidence,
 	}, precedentRef != nil)
+
+	// Precedent penalty: when the agent called akashi_check, got results, but
+	// didn't cite any precedent, apply a -0.05 scoring penalty. This is a
+	// server-side incentive to build the attribution graph.
+	checkHadResults := false
+	if precedentRef == nil {
+		if session := mcpserver.ClientSessionFromContext(ctx); session != nil {
+			if sid := session.SessionID(); sid != "" {
+				checkHadResults = s.checkCache.HadResults(sid)
+			}
+		}
+	}
+	if checkHadResults {
+		completenessScore -= 0.05
+		if completenessScore < 0 {
+			completenessScore = 0
+		}
+	}
+
 	hasModel := clientCtx["model"] != nil || serverCtx["model"] != nil
 	missing := computeMissingFields(decisionType, outcome, confidence, reasoningPtr, alternatives, evidence, precedentRef != nil, hasModel, request.GetString("task", "") != "", s.standardTypes)
+
+	// Precedent nudge: when the agent called akashi_check, got results, but
+	// didn't cite any precedent, flag the missed opportunity and add a tip.
+	if checkHadResults {
+		missing = append(missing, "akashi_check returned relevant precedents but you didn't cite any — pass precedent_ref to build the attribution graph")
+	}
 
 	responseMap := map[string]any{
 		"run_id":             result.RunID,
@@ -1031,11 +1072,30 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		"status":             "recorded",
 		"completeness_score": fmt.Sprintf("%.0f%%", completenessScore*100),
 	}
+	// Surface decision type normalization when an alias or Levenshtein match
+	// changed the stored type from what the agent submitted.
+	if result.Decision.DecisionType != decisionType {
+		responseMap["decision_type_normalized"] = result.Decision.DecisionType
+		responseMap["original_decision_type"] = decisionType
+	}
 	if len(missing) > 0 {
 		responseMap["completeness_tips"] = missing
 	}
 	if warnings := model.HighConfidenceWarnings(confidence, len(evidence), s.highConfidenceWarnThreshold); len(warnings) > 0 {
 		responseMap["warnings"] = warnings
+	}
+	if checkHadResults {
+		responseMap["precedent_ref_missed"] = true
+	}
+
+	// Surface confidence adjustment so agents know their value was deflated.
+	reasoningLen := len(strings.TrimSpace(reasoning))
+	confAdj := quality.AdjustConfidence(confidence, len(evidence), len(alternatives), reasoningLen)
+	if confAdj.WasAdjusted {
+		responseMap["confidence_adjusted"] = true
+		responseMap["original_confidence"] = fmt.Sprintf("%.2f", confAdj.Original)
+		responseMap["stored_confidence"] = fmt.Sprintf("%.2f", confAdj.Adjusted)
+		responseMap["confidence_reasons"] = confAdj.Reasons
 	}
 
 	resultData, _ := json.Marshal(responseMap)
@@ -1162,6 +1222,61 @@ func computeMissingFields(decisionType, outcome string, confidence float32, reas
 var knownToolModels = map[string]string{
 	"claude-code":    "claude",
 	"claude-desktop": "claude",
+}
+
+// genericAgentIDs are agent IDs that represent the JWT default or system
+// accounts rather than a meaningful agent identity. When a trace arrives with
+// one of these IDs and the MCP session carries a tool name, we derive a
+// richer agent_id so that decisions are attributable to the actual tool.
+var genericAgentIDs = map[string]bool{
+	"admin":  true,
+	"system": true,
+}
+
+// deriveAgentID enriches a generic agent_id (e.g., "admin" from JWT defaults)
+// with the MCP tool name extracted from the session. Returns the original
+// agent_id unchanged when it is not generic or when no tool name is available.
+//
+// The derived format is "{tool}" (e.g., "claude-code"). The session prefix is
+// intentionally omitted to keep agent cardinality manageable — one agent per
+// tool, not one per session.
+func deriveAgentID(agentID, toolName string) (derived string, wasEnriched bool) {
+	if !genericAgentIDs[agentID] {
+		return agentID, false
+	}
+	toolName = strings.ToLower(strings.TrimSpace(toolName))
+	if toolName == "" {
+		return agentID, false
+	}
+	// Sanitize tool name to valid agent_id characters (a-z, 0-9, -, _, .).
+	var b strings.Builder
+	for i := 0; i < len(toolName); i++ {
+		c := toolName[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' {
+			b.WriteByte(c)
+		} else if c == ' ' {
+			b.WriteByte('-')
+		}
+		// Drop other characters silently.
+	}
+	derived = b.String()
+	if derived == "" || model.ValidateAgentID(derived) != nil {
+		return agentID, false
+	}
+	return derived, true
+}
+
+// mcpToolName extracts the MCP client tool name from the session context.
+// Returns "" when no session or client info is available.
+func mcpToolName(ctx context.Context) string {
+	session := mcpserver.ClientSessionFromContext(ctx)
+	if session == nil {
+		return ""
+	}
+	if cis, ok := session.(mcpserver.SessionWithClientInfo); ok {
+		return cis.GetClientInfo().Name
+	}
+	return ""
 }
 
 // inferModelFromToolName returns a model family identifier for well-known MCP
@@ -1617,36 +1732,47 @@ func (s *Server) resolveSingleConflict(
 		return errorResult(fmt.Sprintf("failed to update conflict: %v", err)), nil
 	}
 
-	// Cascade resolution when resolving with a winner in a group.
+	// Post-resolution: auto-assess conflict outcome and cascade to group.
 	var cascaded int
 	if status == "resolved" && winningDecisionID != nil {
-		// Fetch the conflict to check group membership for cascade.
 		conflict, cErr := s.db.GetConflict(ctx, conflictID, orgID)
-		if cErr == nil && conflict != nil && conflict.GroupID != nil {
-			cascadeAudit := storage.MutationAuditEntry{
-				OrgID:        orgID,
-				ActorAgentID: resolvedBy,
-				ActorRole:    actorRole,
-				Endpoint:     "mcp/akashi_resolve",
-				Operation:    "conflict_cascade_resolved",
-				ResourceType: "conflict",
-				ResourceID:   conflictID.String(),
-				Metadata:     map[string]any{"trigger_conflict_id": conflictID.String(), "winning_decision_id": winningDecisionID.String()},
+		if cErr == nil && conflict != nil {
+			// Auto-assess: winner is correct, loser is incorrect.
+			if s.autoAssessor != nil {
+				loserID := conflict.DecisionAID
+				if loserID == *winningDecisionID {
+					loserID = conflict.DecisionBID
+				}
+				s.autoAssessor.OnConflictResolved(ctx, orgID, *winningDecisionID, loserID)
 			}
-			var cascadeErr error
-			cascaded, cascadeErr = s.db.CascadeResolveByOutcome(ctx, orgID, *conflict.GroupID, *winningDecisionID, conflictID, cascadeSimilarityThreshold, cascadeAudit)
-			if cascadeErr != nil {
-				s.logger.Warn("mcp: resolution cascade failed",
-					"trigger_conflict_id", conflictID,
-					"group_id", conflict.GroupID,
-					"error", cascadeErr,
-				)
-			} else if cascaded > 0 {
-				s.logger.Info("mcp: resolution cascade resolved conflicts",
-					"trigger_conflict_id", conflictID,
-					"group_id", conflict.GroupID,
-					"cascade_resolved", cascaded,
-				)
+
+			// Cascade resolution to other conflicts in the same group.
+			if conflict.GroupID != nil {
+				cascadeAudit := storage.MutationAuditEntry{
+					OrgID:        orgID,
+					ActorAgentID: resolvedBy,
+					ActorRole:    actorRole,
+					Endpoint:     "mcp/akashi_resolve",
+					Operation:    "conflict_cascade_resolved",
+					ResourceType: "conflict",
+					ResourceID:   conflictID.String(),
+					Metadata:     map[string]any{"trigger_conflict_id": conflictID.String(), "winning_decision_id": winningDecisionID.String()},
+				}
+				var cascadeErr error
+				cascaded, cascadeErr = s.db.CascadeResolveByOutcome(ctx, orgID, *conflict.GroupID, *winningDecisionID, conflictID, cascadeSimilarityThreshold, cascadeAudit)
+				if cascadeErr != nil {
+					s.logger.Warn("mcp: resolution cascade failed",
+						"trigger_conflict_id", conflictID,
+						"group_id", conflict.GroupID,
+						"error", cascadeErr,
+					)
+				} else if cascaded > 0 {
+					s.logger.Info("mcp: resolution cascade resolved conflicts",
+						"trigger_conflict_id", conflictID,
+						"group_id", conflict.GroupID,
+						"cascade_resolved", cascaded,
+					)
+				}
 			}
 		}
 	}
