@@ -637,10 +637,35 @@ func clientIP(r *http.Request, trustProxy bool) string {
 	return host
 }
 
-// rateLimitMiddleware enforces per-key rate limiting on authenticated requests.
-// Unauthenticated paths pass through (auth middleware limits which paths skip auth).
-// Platform admins bypass rate limiting as a safety valve.
+// setRateLimitHeaders writes X-RateLimit-* headers from a ratelimit.Result.
+// Skipped when Limit is 0 (NoopLimiter / rate limiting disabled).
+func setRateLimitHeaders(w http.ResponseWriter, res ratelimit.Result) {
+	if res.Limit == 0 {
+		return
+	}
+	w.Header().Set("X-RateLimit-Limit", strconv.Itoa(res.Limit))
+	w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(res.Remaining))
+	if !res.ResetAt.IsZero() {
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(res.ResetAt.Unix(), 10))
+	}
+}
+
+// retryAfterSeconds returns the Retry-After header value from a denied Result.
+// Falls back to "1" if the duration is zero or sub-second.
+func retryAfterSeconds(res ratelimit.Result) string {
+	if s := int64(res.RetryAfter.Seconds()); s > 0 {
+		return strconv.FormatInt(s, 10)
+	}
+	return "1"
+}
+
+// rateLimitMiddleware enforces per-key rate limiting on all requests.
+// Unauthenticated paths use IP-based keys; authenticated paths use
+// per-agent or per-API-key keys. Platform admins bypass rate limiting.
 // On limiter error, the request is permitted (fail-open).
+//
+// All responses (both allowed and denied) include X-RateLimit-* headers
+// so clients can implement proactive throttling.
 func rateLimitMiddleware(limiter ratelimit.Limiter, logger *slog.Logger, trustProxy bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		claims := ctxutil.ClaimsFromContext(r.Context())
@@ -648,11 +673,14 @@ func rateLimitMiddleware(limiter ratelimit.Limiter, logger *slog.Logger, trustPr
 			// Unauthenticated path — apply IP-based rate limiting to protect
 			// endpoints like /auth/token from brute-force attacks.
 			key := "ip:" + clientIP(r, trustProxy)
-			allowed, err := limiter.Allow(r.Context(), key)
-			if err == nil && !allowed {
-				w.Header().Set("Retry-After", "1")
-				writeError(w, r, http.StatusTooManyRequests, model.ErrCodeRateLimited, "rate limit exceeded")
-				return
+			res, err := limiter.Allow(r.Context(), key)
+			if err == nil {
+				setRateLimitHeaders(w, res)
+				if !res.Allowed {
+					w.Header().Set("Retry-After", retryAfterSeconds(res))
+					writeError(w, r, http.StatusTooManyRequests, model.ErrCodeRateLimited, "rate limit exceeded")
+					return
+				}
 			}
 			next.ServeHTTP(w, r)
 			return
@@ -672,7 +700,7 @@ func rateLimitMiddleware(limiter ratelimit.Limiter, logger *slog.Logger, trustPr
 		} else {
 			key = "org:" + claims.OrgID.String() + ":agent:" + claims.AgentID
 		}
-		allowed, err := limiter.Allow(r.Context(), key)
+		res, err := limiter.Allow(r.Context(), key)
 		if err != nil {
 			// Fail-open: a broken limiter should not block all traffic.
 			logger.Warn("rate limiter error, permitting request",
@@ -682,8 +710,9 @@ func rateLimitMiddleware(limiter ratelimit.Limiter, logger *slog.Logger, trustPr
 			next.ServeHTTP(w, r)
 			return
 		}
-		if !allowed {
-			w.Header().Set("Retry-After", "1")
+		setRateLimitHeaders(w, res)
+		if !res.Allowed {
+			w.Header().Set("Retry-After", retryAfterSeconds(res))
 			writeError(w, r, http.StatusTooManyRequests, model.ErrCodeRateLimited, "rate limit exceeded")
 			return
 		}

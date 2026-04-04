@@ -1204,6 +1204,113 @@ func TestRateLimitMiddleware_XForwardedFor(t *testing.T) {
 	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
 }
 
+func TestRateLimitMiddleware_HeadersOnAllowedResponse(t *testing.T) {
+	limiter := ratelimit.NewMemoryLimiter(10, 5) // burst 5
+	defer func() { _ = limiter.Close() }()
+
+	logger := quietLogger()
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := rateLimitMiddleware(limiter, logger, false, inner)
+
+	// First request — should be allowed with headers present.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/some-path", nil)
+	req.RemoteAddr = "10.0.0.100:9000"
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "5", rec.Header().Get("X-RateLimit-Limit"), "Limit should equal burst")
+	assert.Equal(t, "4", rec.Header().Get("X-RateLimit-Remaining"), "Remaining should be burst-1 after first request")
+	assert.NotEmpty(t, rec.Header().Get("X-RateLimit-Reset"), "Reset header should be present")
+}
+
+func TestRateLimitMiddleware_HeadersOnDeniedResponse(t *testing.T) {
+	limiter := ratelimit.NewMemoryLimiter(1, 1) // burst 1
+	defer func() { _ = limiter.Close() }()
+
+	logger := quietLogger()
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := rateLimitMiddleware(limiter, logger, false, inner)
+
+	// Exhaust the burst.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/some-path", nil)
+	req.RemoteAddr = "10.0.0.200:9000"
+	handler.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// Second request — denied, should have all headers.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest("GET", "/some-path", nil)
+	req.RemoteAddr = "10.0.0.200:9000"
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
+	assert.Equal(t, "1", rec.Header().Get("X-RateLimit-Limit"))
+	assert.Equal(t, "0", rec.Header().Get("X-RateLimit-Remaining"))
+	assert.NotEmpty(t, rec.Header().Get("X-RateLimit-Reset"))
+	assert.NotEmpty(t, rec.Header().Get("Retry-After"))
+}
+
+func TestRateLimitMiddleware_HeadersOnAuthenticatedResponse(t *testing.T) {
+	limiter := ratelimit.NewMemoryLimiter(10, 3) // burst 3
+	defer func() { _ = limiter.Close() }()
+
+	logger := quietLogger()
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := rateLimitMiddleware(limiter, logger, false, inner)
+
+	claims := &auth.Claims{
+		AgentID: "header-test-agent",
+		Role:    model.RoleAgent,
+		OrgID:   uuid.New(),
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/v1/decisions", nil)
+	ctx := ctxutil.WithClaims(req.Context(), claims)
+	handler.ServeHTTP(rec, req.WithContext(ctx))
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "3", rec.Header().Get("X-RateLimit-Limit"))
+	assert.Equal(t, "2", rec.Header().Get("X-RateLimit-Remaining"))
+}
+
+func TestRateLimitMiddleware_NoHeadersForPlatformAdmin(t *testing.T) {
+	limiter := ratelimit.NewMemoryLimiter(1, 1)
+	defer func() { _ = limiter.Close() }()
+
+	logger := quietLogger()
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := rateLimitMiddleware(limiter, logger, false, inner)
+
+	claims := &auth.Claims{
+		AgentID: "admin",
+		Role:    model.RolePlatformAdmin,
+		OrgID:   uuid.New(),
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/v1/decisions", nil)
+	ctx := ctxutil.WithClaims(req.Context(), claims)
+	handler.ServeHTTP(rec, req.WithContext(ctx))
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, rec.Header().Get("X-RateLimit-Limit"), "platform admins bypass rate limiting — no headers")
+}
+
 // --- idempotencyKey ---
 
 func TestIdempotencyKey(t *testing.T) {

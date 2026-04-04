@@ -43,6 +43,22 @@ info:
       }
     }
     ```
+
+    ## Rate Limiting
+
+    All rate-limited responses include standard headers so clients can
+    implement proactive throttling:
+
+    | Header | Description |
+    |--------|-------------|
+    | `X-RateLimit-Limit` | Maximum requests per window (bucket capacity) |
+    | `X-RateLimit-Remaining` | Requests remaining in the current window |
+    | `X-RateLimit-Reset` | Unix timestamp when the window resets |
+
+    These headers appear on both successful (2xx) and rate-limited (429)
+    responses. A `Retry-After` header (seconds) is additionally included
+    on 429 responses. Platform admins are exempt from rate limiting and
+    will not receive these headers.
   version: 0.1.0
   license:
     name: Apache-2.0
@@ -2536,6 +2552,20 @@ components:
         Ed25519-signed JWT obtained from `POST /auth/token`.
         Include as `Authorization: Bearer <token>`.
 
+  headers:
+    X-RateLimit-Limit:
+      schema:
+        type: integer
+      description: Maximum requests allowed per window (bucket capacity).
+    X-RateLimit-Remaining:
+      schema:
+        type: integer
+      description: Requests remaining in the current window.
+    X-RateLimit-Reset:
+      schema:
+        type: integer
+      description: Unix timestamp when the rate limit window resets (bucket fully replenished).
+
   parameters:
     RunIDPath:
       name: run_id
@@ -2603,6 +2633,12 @@ components:
           schema:
             type: integer
           description: Seconds to wait before retrying.
+        X-RateLimit-Limit:
+          $ref: "#/components/headers/X-RateLimit-Limit"
+        X-RateLimit-Remaining:
+          $ref: "#/components/headers/X-RateLimit-Remaining"
+        X-RateLimit-Reset:
+          $ref: "#/components/headers/X-RateLimit-Reset"
       content:
         application/json:
           schema:

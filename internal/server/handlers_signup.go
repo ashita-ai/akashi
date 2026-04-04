@@ -17,13 +17,16 @@ func (h *Handlers) HandleSignup(w http.ResponseWriter, r *http.Request) {
 	// Dedicated rate limit: 1 RPS / burst 5 per source IP.
 	if h.signupLimiter != nil {
 		ip := clientIP(r, h.trustProxy)
-		allowed, err := h.signupLimiter.Allow(r.Context(), "signup:"+ip)
+		res, err := h.signupLimiter.Allow(r.Context(), "signup:"+ip)
 		if err != nil {
 			h.logger.Warn("signup rate limiter error, failing open", "error", err)
-		} else if !allowed {
-			w.Header().Set("Retry-After", "1")
-			writeError(w, r, http.StatusTooManyRequests, model.ErrCodeRateLimited, "rate limit exceeded")
-			return
+		} else {
+			setRateLimitHeaders(w, res)
+			if !res.Allowed {
+				w.Header().Set("Retry-After", retryAfterSeconds(res))
+				writeError(w, r, http.StatusTooManyRequests, model.ErrCodeRateLimited, "rate limit exceeded")
+				return
+			}
 		}
 	}
 
