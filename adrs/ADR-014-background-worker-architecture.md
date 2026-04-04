@@ -19,16 +19,16 @@ These workers provide foundational services consumed by other tiers:
 |--------|---------|-------------------|
 | `trace.Buffer` | In-memory event buffer with periodic flush to PostgreSQL via COPY; optional WAL for crash durability | `flushLoop` |
 | `search.OutboxWorker` | Polls `search_outbox` table, syncs changes to Qdrant (conditional — only if Qdrant configured) | `pollLoop` |
-| `server.Broker` | SSE broker for PostgreSQL LISTEN/NOTIFY; fans out conflict/decision notifications to subscribers (conditional — only if notify connection available) | notification loop |
 
 Infrastructure workers are started before the main loop goroutines and drained explicitly during shutdown, each with a dedicated timeout.
 
-### Tier 2: Main loop goroutines (11 registered loops)
+### Tier 2: Main loop goroutines (registered to `bgLoops` WaitGroup)
 
-All main loops are registered to a shared `bgLoops` `sync.WaitGroup` and launched in `App.Run()`. Each loop runs on a configurable ticker interval and is wrapped by the `runLoop` helper, which provides panic recovery with stack trace logging — a single bad tick cannot kill the goroutine.
+All main loops are registered to a shared `bgLoops` `sync.WaitGroup` and launched in `App.Run()`. Most loops run on a configurable ticker interval and are wrapped by the `runLoop` helper, which provides panic recovery with stack trace logging — a single bad tick cannot kill the goroutine.
 
 | Loop | Purpose | Default interval | Disableable |
 |------|---------|-----------------|-------------|
+| `server.Broker` | SSE broker for PostgreSQL LISTEN/NOTIFY; fans out conflict/decision notifications to subscribers (conditional — only if notify connection available) | N/A | No |
 | `conflictBackfillLoop` | One-shot backfill of conflict embeddings at startup; warms Ollama model | Once | No |
 | `conflictRefreshLoop` | Polls for new conflicts, fires async `OnConflictDetected` hooks | Configurable | No |
 | `integrityProofLoop` | Builds Merkle tree integrity proofs (ADR-013) | 5 min | No |
@@ -67,14 +67,29 @@ Post-trace async work is tracked in a dedicated `sync.WaitGroup` separate from `
 The `runLoop` helper (`akashi.go`) wraps every main loop tick in `defer recover()`:
 
 ```go
-func runLoop(ctx context.Context, name string, logger *slog.Logger, fn func(context.Context)) {
-    defer func() {
-        if r := recover(); r != nil {
-            logger.Error("background loop panic", "loop", name,
-                "panic", r, "stack", string(debug.Stack()))
+func (a *App) runLoop(ctx context.Context, name string, interval time.Duration, fn func(ctx context.Context)) {
+    ticker := time.NewTicker(interval)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case <-ticker.C:
+            func() {
+                defer func() {
+                    if r := recover(); r != nil {
+                        a.logger.Error("panic in background loop",
+                            "loop", name,
+                            "panic", r,
+                            "stack", string(debug.Stack()),
+                        )
+                    }
+                }()
+                fn(ctx)
+            }()
         }
-    }()
-    fn(ctx)
+    }
 }
 ```
 
@@ -82,7 +97,7 @@ A panic in one tick is logged with a full stack trace and the loop continues on 
 
 ### Shutdown sequence
 
-Shutdown proceeds in five ordered phases, each with a configurable timeout:
+Shutdown proceeds in six ordered phases, most with a configurable timeout:
 
 ```
 Phase 1: HTTP drain
@@ -104,7 +119,7 @@ Phase 4: Search outbox drain
       Timeout: ShutdownOutboxDrainTimeout
 
 Phase 5: Background loop drain
-  └─ Wait for bgLoops WaitGroup (all 11 loops + broker)
+  └─ Wait for bgLoops WaitGroup (all ticker loops + broker)
       Timeout: ShutdownLoopDrainTimeout
       Loops have already received cancellation; this waits for graceful exit
 

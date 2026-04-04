@@ -26,7 +26,7 @@ CREATE TABLE search_outbox (
 );
 ```
 
-A unique partial index on `(decision_id, operation)` makes enqueue idempotent — re-inserting the same decision+operation resets `attempts` to 0 and clears `locked_until` via `ON CONFLICT ... DO UPDATE`.
+A unique index on `(decision_id, operation)` makes enqueue idempotent — re-inserting the same decision+operation resets `attempts` to 0 and clears `locked_until` via `ON CONFLICT ... DO UPDATE`.
 
 ### Entry points
 
