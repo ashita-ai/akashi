@@ -275,8 +275,9 @@ func New(cfg ServerConfig) *Server {
 	// Config (no auth — feature flags for UI).
 	mux.HandleFunc("GET /config", h.HandleConfig)
 
-	// Health (no auth).
+	// Health & readiness (no auth).
 	mux.HandleFunc("GET /health", h.HandleHealth)
+	mux.HandleFunc("GET /readyz", h.HandleReadyz)
 
 	// MCP info (no auth) — lets clients confirm connectivity and discover auth schemes.
 	mux.HandleFunc("GET /mcp/info", h.HandleMCPInfo)
