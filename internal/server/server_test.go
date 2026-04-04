@@ -275,6 +275,23 @@ func TestHealthEndpoint(t *testing.T) {
 	assert.Equal(t, "connected", result.Data.Postgres)
 }
 
+func TestReadyzEndpoint(t *testing.T) {
+	t.Run("ready when database is reachable", func(t *testing.T) {
+		resp, err := http.Get(testSrv.URL + "/readyz")
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data model.ReadyzResponse `json:"data"`
+		}
+		data, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(data, &result))
+		assert.Equal(t, "ready", result.Data.Status)
+		assert.Equal(t, "connected", result.Data.Checks["postgres"])
+	})
+}
+
 func TestSecurityHeaders(t *testing.T) {
 	resp, err := http.Get(testSrv.URL + "/health")
 	require.NoError(t, err)
