@@ -1170,6 +1170,19 @@ func TestValidate_DBPoolMinExceedsMax(t *testing.T) {
 	}
 }
 
+func TestValidate_DBPoolMinWithoutMax(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.DBMaxConns = 0
+	cfg.DBMinConns = 10
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error when DBMinConns is set without DBMaxConns")
+	}
+	if !contains(err.Error(), "AKASHI_DB_MAX_CONNS must be set explicitly when AKASHI_DB_MIN_CONNS is set") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestValidate_DBPoolZeroDefaults(t *testing.T) {
 	cfg := validBaseConfig()
 	cfg.DBMaxConns = 0

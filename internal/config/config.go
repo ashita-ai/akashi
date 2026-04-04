@@ -338,6 +338,9 @@ func (c Config) Validate() error {
 	if c.DBMinConns < 0 {
 		errs = append(errs, errors.New("config: AKASHI_DB_MIN_CONNS must be >= 0"))
 	}
+	if c.DBMinConns > 0 && c.DBMaxConns == 0 {
+		errs = append(errs, errors.New("config: AKASHI_DB_MAX_CONNS must be set explicitly when AKASHI_DB_MIN_CONNS is set"))
+	}
 	if c.DBMaxConns > 0 && c.DBMinConns > c.DBMaxConns {
 		errs = append(errs, errors.New("config: AKASHI_DB_MIN_CONNS must not exceed AKASHI_DB_MAX_CONNS"))
 	}
