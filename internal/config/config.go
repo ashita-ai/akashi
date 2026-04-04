@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"runtime"
 	"strconv"
@@ -21,6 +22,8 @@ type Config struct {
 	// Database settings.
 	DatabaseURL string // PgBouncer or direct Postgres URL for queries.
 	NotifyURL   string // Direct Postgres URL for LISTEN/NOTIFY.
+	DBMaxConns  int32  // Max connections in the pool. 0 = pgxpool default (max(4, NumCPU)).
+	DBMinConns  int32  // Min idle connections kept open. 0 = pgxpool default (0).
 
 	// JWT settings.
 	JWTPrivateKeyPath string // Path to Ed25519 private key PEM file.
@@ -184,6 +187,21 @@ func Load() (Config, error) {
 	cfg.WALSegmentSize, errs = collectInt(errs, "AKASHI_WAL_SEGMENT_SIZE", 64*1024*1024)
 	cfg.WALSegmentRecords, errs = collectInt(errs, "AKASHI_WAL_SEGMENT_RECORDS", 100_000)
 
+	var dbMaxConns int
+	dbMaxConns, errs = collectInt(errs, "AKASHI_DB_MAX_CONNS", 0)
+	if dbMaxConns > math.MaxInt32 {
+		errs = append(errs, fmt.Errorf("config: AKASHI_DB_MAX_CONNS %d exceeds max (%d)", dbMaxConns, math.MaxInt32))
+	} else {
+		cfg.DBMaxConns = int32(dbMaxConns) //nolint:gosec // bounds checked above
+	}
+	var dbMinConns int
+	dbMinConns, errs = collectInt(errs, "AKASHI_DB_MIN_CONNS", 0)
+	if dbMinConns > math.MaxInt32 {
+		errs = append(errs, fmt.Errorf("config: AKASHI_DB_MIN_CONNS %d exceeds max (%d)", dbMinConns, math.MaxInt32))
+	} else {
+		cfg.DBMinConns = int32(dbMinConns) //nolint:gosec // bounds checked above
+	}
+
 	var maxReqBody int
 	maxReqBody, errs = collectInt(errs, "AKASHI_MAX_REQUEST_BODY_BYTES", 1*1024*1024)
 	cfg.MaxRequestBodyBytes = int64(maxReqBody)
@@ -313,6 +331,18 @@ func (c Config) Validate() error {
 
 	if c.DatabaseURL == "" {
 		errs = append(errs, errors.New("config: DATABASE_URL is required"))
+	}
+	if c.DBMaxConns < 0 {
+		errs = append(errs, errors.New("config: AKASHI_DB_MAX_CONNS must be >= 0"))
+	}
+	if c.DBMinConns < 0 {
+		errs = append(errs, errors.New("config: AKASHI_DB_MIN_CONNS must be >= 0"))
+	}
+	if c.DBMinConns > 0 && c.DBMaxConns == 0 {
+		errs = append(errs, errors.New("config: AKASHI_DB_MAX_CONNS must be set explicitly when AKASHI_DB_MIN_CONNS is set"))
+	}
+	if c.DBMaxConns > 0 && c.DBMinConns > c.DBMaxConns {
+		errs = append(errs, errors.New("config: AKASHI_DB_MIN_CONNS must not exceed AKASHI_DB_MAX_CONNS"))
 	}
 	if c.EmbeddingDimensions <= 0 {
 		errs = append(errs, errors.New("config: AKASHI_EMBEDDING_DIMENSIONS must be positive"))

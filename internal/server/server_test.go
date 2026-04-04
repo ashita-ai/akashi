@@ -105,7 +105,7 @@ func TestMain(m *testing.M) {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	db, err := storage.New(ctx, dsn, "", logger)
+	db, err := storage.New(ctx, dsn, "", logger, storage.PoolOptions{})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create DB: %v\n", err)
 		os.Exit(1)

@@ -147,7 +147,10 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	// Connect to database.
-	db, err := storage.New(context.Background(), cfg.DatabaseURL, cfg.NotifyURL, logger)
+	db, err := storage.New(context.Background(), cfg.DatabaseURL, cfg.NotifyURL, logger, storage.PoolOptions{
+		MaxConns: cfg.DBMaxConns,
+		MinConns: cfg.DBMinConns,
+	})
 	if err != nil {
 		_ = otelShutdown(context.Background())
 		return nil, fmt.Errorf("storage: %w", err)

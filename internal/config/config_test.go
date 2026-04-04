@@ -1081,6 +1081,8 @@ func TestLoad_AllEnvVarsHonored(t *testing.T) {
 	t.Setenv("AKASHI_IDEMPOTENCY_CLEANUP_INTERVAL", "2h")
 	t.Setenv("AKASHI_IDEMPOTENCY_COMPLETED_TTL", "72h")
 	t.Setenv("AKASHI_IDEMPOTENCY_ABANDONED_TTL", "36h")
+	t.Setenv("AKASHI_DB_MAX_CONNS", "25")
+	t.Setenv("AKASHI_DB_MIN_CONNS", "5")
 
 	cfg, err := Load()
 	if err != nil {
@@ -1146,6 +1148,48 @@ func TestLoad_AllEnvVarsHonored(t *testing.T) {
 	}
 	if cfg.IdempotencyAbandonedTTL != 36*time.Hour {
 		t.Fatalf("expected IdempotencyAbandonedTTL 36h, got %s", cfg.IdempotencyAbandonedTTL)
+	}
+	if cfg.DBMaxConns != 25 {
+		t.Fatalf("expected DBMaxConns 25, got %d", cfg.DBMaxConns)
+	}
+	if cfg.DBMinConns != 5 {
+		t.Fatalf("expected DBMinConns 5, got %d", cfg.DBMinConns)
+	}
+}
+
+func TestValidate_DBPoolMinExceedsMax(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.DBMaxConns = 5
+	cfg.DBMinConns = 10
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error when DBMinConns > DBMaxConns")
+	}
+	if !contains(err.Error(), "AKASHI_DB_MIN_CONNS must not exceed AKASHI_DB_MAX_CONNS") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_DBPoolMinWithoutMax(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.DBMaxConns = 0
+	cfg.DBMinConns = 10
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error when DBMinConns is set without DBMaxConns")
+	}
+	if !contains(err.Error(), "AKASHI_DB_MAX_CONNS must be set explicitly when AKASHI_DB_MIN_CONNS is set") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_DBPoolZeroDefaults(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.DBMaxConns = 0
+	cfg.DBMinConns = 0
+	err := cfg.Validate()
+	if err != nil {
+		t.Fatalf("expected no error with zero pool config, got: %v", err)
 	}
 }
 
