@@ -29,11 +29,16 @@ func (s *Server) registerTools() {
 		mcplib.NewTool("akashi_check",
 			mcplib.WithDescription(`Check the black box for decision precedents before making a new one.
 
-WHEN TO USE: BEFORE making any decision. This is the most important tool —
-it prevents contradictions and lets you build on prior work.
+WHEN TO USE: Before architecture, design, trade-off, or security decisions —
+choices where contradicting a prior decision would cause real damage.
 
-Call this FIRST. Pass a natural language query describing what you're about
-to decide, and optionally narrow by decision_type. If the audit trail shows
+DO NOT CALL for mechanical changes (formatting, typo fixes, renaming,
+test updates), pure implementation of an already-decided approach, or
+reading/exploring code. The IDE hook gate handles edit permissions
+automatically — you do not need to call this tool just to unlock edits.
+
+Pass a natural language query describing what you're about to decide,
+and optionally narrow by decision_type. If the audit trail shows
 precedents, factor them into your reasoning. If conflicts exist, resolve them.
 
 WHAT YOU GET BACK:

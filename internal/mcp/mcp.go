@@ -22,9 +22,9 @@ import (
 // without requiring per-project configuration (CLAUDE.md, agents.md, etc.).
 const serverInstructions = `You have access to Akashi, a decision audit trail for AI agents.
 
-WORKFLOW — follow this for every non-trivial decision:
+WORKFLOW — follow this for architecture, design, and trade-off decisions:
 
-1. BEFORE deciding: call akashi_check to look for prior decisions and active conflicts.
+1. BEFORE making an architecture, design, trade-off, or security decision: call akashi_check to look for prior decisions and active conflicts.
    Pass a natural language query describing what you're about to decide. Use the results
    to avoid contradicting prior work and to cite relevant precedents.
 
