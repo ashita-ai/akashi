@@ -61,6 +61,15 @@ func (f *fakeStore) UpdateOutcomeScore(_ context.Context, _ uuid.UUID, decisionI
 	return f.scoreErr
 }
 
+func (f *fakeStore) IsDuplicateKey(err error) bool {
+	if err == nil {
+		return false
+	}
+	return err == errDuplicateKey
+}
+
+var errDuplicateKey = fmt.Errorf("UNIQUE constraint failed")
+
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 }
@@ -176,6 +185,18 @@ func TestAssess_CreateError_LogsAndContinues(t *testing.T) {
 	a.OnSuperseded(context.Background(), uuid.Nil, uuid.New(), uuid.New())
 	assert.Empty(t, store.assessments)
 	assert.Empty(t, store.updateScoreCalls, "should not update score on create failure")
+}
+
+func TestAssess_DuplicateKey_TreatedAsNoOp(t *testing.T) {
+	// Simulates the race loser: HasAssessmentFromSource returns false (stale read),
+	// but CreateAssessment hits the partial unique index.
+	store := &fakeStore{createErr: errDuplicateKey}
+	a := New(store, testLogger())
+
+	// Should not panic or log a warning — the race winner already handled it.
+	a.OnSuperseded(context.Background(), uuid.Nil, uuid.New(), uuid.New())
+	assert.Empty(t, store.assessments)
+	assert.Empty(t, store.updateScoreCalls, "race loser should not update score")
 }
 
 func TestAssess_SummaryError_LogsAndContinues(t *testing.T) {

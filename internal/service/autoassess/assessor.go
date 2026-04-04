@@ -32,6 +32,7 @@ type Store interface {
 	UpdateOutcomeScore(ctx context.Context, orgID, decisionID uuid.UUID, score *float32) error
 	GetAssessmentSummary(ctx context.Context, orgID, decisionID uuid.UUID) (model.AssessmentSummary, error)
 	HasAssessmentFromSource(ctx context.Context, orgID, decisionID uuid.UUID, source string) (bool, error)
+	IsDuplicateKey(err error) bool
 }
 
 // Assessor generates auto-assessments from observable signals.
@@ -96,6 +97,13 @@ func (a *Assessor) assess(ctx context.Context, orgID, decisionID uuid.UUID, outc
 		Source:          source,
 	})
 	if err != nil {
+		// The partial unique index (idx_assessments_auto_unique) is the real
+		// idempotency guard. If a concurrent goroutine won the race, treat
+		// the constraint violation as a successful no-op — the winner already
+		// updated the outcome score.
+		if a.db.IsDuplicateKey(err) {
+			return
+		}
 		a.logger.Warn("autoassess: failed to create assessment",
 			"decision_id", decisionID, "source", source, "error", err)
 		return

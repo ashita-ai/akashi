@@ -202,6 +202,9 @@ CREATE TABLE IF NOT EXISTS decision_assessments (
     created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_assessments_decision ON decision_assessments(decision_id, org_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_assessments_auto_unique
+    ON decision_assessments(decision_id, org_id, source)
+    WHERE source != 'manual';
 
 CREATE TABLE IF NOT EXISTS decision_claims (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
