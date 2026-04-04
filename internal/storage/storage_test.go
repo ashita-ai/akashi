@@ -11170,3 +11170,231 @@ func TestProofLeaves_SurvivesGDPRErasure(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, ok, "proof should still verify after GDPR erasure via saved leaves")
 }
+
+// ---------------------------------------------------------------------------
+// GetDecisionLineage tests (issue #498)
+// ---------------------------------------------------------------------------
+
+func TestGetDecisionLineage_UpstreamPrecedent(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "lineage-up-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	// Create a precedent decision.
+	precedent, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "lineage_test", Outcome: "original_approach",
+		Confidence: 0.8, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Create a decision that cites the precedent.
+	child, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "lineage_test", Outcome: "follows_precedent",
+		Confidence: 0.85, PrecedentRef: &precedent.ID,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	lineage, err := testDB.GetDecisionLineage(ctx, child.ID, child.OrgID, 20)
+	require.NoError(t, err)
+
+	assert.Equal(t, child.ID, lineage.DecisionID)
+	require.NotNil(t, lineage.PrecededBy, "child should have an upstream precedent")
+	assert.Equal(t, precedent.ID, lineage.PrecededBy.ID)
+	assert.Equal(t, "original_approach", lineage.PrecededBy.Outcome)
+}
+
+func TestGetDecisionLineage_DownstreamCitations(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "lineage-down-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	root, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "lineage_test", Outcome: "root_decision",
+		Confidence: 0.9, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Create 3 decisions that cite root.
+	for i := range 3 {
+		_, err := testDB.CreateDecision(ctx, model.Decision{
+			RunID: run.ID, AgentID: agentID,
+			DecisionType: "lineage_test",
+			Outcome:      fmt.Sprintf("citer_%d_%s", i, suffix),
+			Confidence:   0.7, PrecedentRef: &root.ID,
+			Metadata: map[string]any{},
+		})
+		require.NoError(t, err)
+	}
+
+	lineage, err := testDB.GetDecisionLineage(ctx, root.ID, root.OrgID, 20)
+	require.NoError(t, err)
+
+	assert.Nil(t, lineage.PrecededBy, "root has no precedent")
+	require.Len(t, lineage.CitedBy, 3, "root should be cited by 3 decisions")
+	assert.False(t, lineage.CitedByMore, "3 citations is within limit of 20")
+}
+
+func TestGetDecisionLineage_PaginationHasMore(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "lineage-page-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	root, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "lineage_page_test", Outcome: "root_" + suffix,
+		Confidence: 0.9, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Create 5 citations with a small limit of 3 to test pagination.
+	for i := range 5 {
+		_, err := testDB.CreateDecision(ctx, model.Decision{
+			RunID: run.ID, AgentID: agentID,
+			DecisionType: "lineage_page_test",
+			Outcome:      fmt.Sprintf("page_citer_%d_%s", i, suffix),
+			Confidence:   0.6, PrecedentRef: &root.ID,
+			Metadata: map[string]any{},
+		})
+		require.NoError(t, err)
+	}
+
+	lineage, err := testDB.GetDecisionLineage(ctx, root.ID, root.OrgID, 3)
+	require.NoError(t, err)
+
+	require.Len(t, lineage.CitedBy, 3, "should be capped at limit")
+	assert.True(t, lineage.CitedByMore, "5 citations exceeds limit of 3, has_more should be true")
+}
+
+func TestGetDecisionLineage_OrgIsolation(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "lineage-org-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	root, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "lineage_org_test", Outcome: "root_" + suffix,
+		Confidence: 0.9, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Citation within the same org (default org).
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "lineage_org_test", Outcome: "same_org_citer_" + suffix,
+		Confidence: 0.7, PrecedentRef: &root.ID,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Query with a different org — should see neither the root nor its citation.
+	otherOrg := uuid.New()
+	_, err = testDB.GetDecisionLineage(ctx, root.ID, otherOrg, 20)
+	require.Error(t, err, "decision should not be found in a different org")
+
+	// Query with the correct org — should find the citation.
+	lineage, err := testDB.GetDecisionLineage(ctx, root.ID, root.OrgID, 20)
+	require.NoError(t, err)
+	require.Len(t, lineage.CitedBy, 1, "only the same-org citation should appear")
+}
+
+func TestGetDecisionLineage_SupersededExcludedFromCitedBy(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "lineage-supersede-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	root, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "lineage_supersede_test", Outcome: "root_" + suffix,
+		Confidence: 0.9, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Create a citation that will later be superseded (revised).
+	original, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "lineage_supersede_test", Outcome: "will_be_revised_" + suffix,
+		Confidence: 0.7, PrecedentRef: &root.ID,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Create a citation that stays active.
+	_, err = testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "lineage_supersede_test", Outcome: "stays_active_" + suffix,
+		Confidence: 0.75, PrecedentRef: &root.ID,
+		Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// Revise the first citation — this sets valid_to on the original.
+	_, err = testDB.ReviseDecision(ctx, original.ID, model.Decision{
+		RunID: run.ID, AgentID: agentID, OrgID: root.OrgID,
+		DecisionType: "lineage_supersede_test", Outcome: "revised_version_" + suffix,
+		Confidence: 0.8, PrecedentRef: &root.ID,
+		Metadata: map[string]any{},
+	}, nil)
+	require.NoError(t, err)
+
+	lineage, err := testDB.GetDecisionLineage(ctx, root.ID, root.OrgID, 20)
+	require.NoError(t, err)
+
+	// Should see the active citation and the revised version, but NOT the superseded original.
+	for _, entry := range lineage.CitedBy {
+		assert.NotEqual(t, original.ID, entry.ID,
+			"superseded decision (valid_to IS NOT NULL) must not appear in cited_by")
+	}
+	assert.Len(t, lineage.CitedBy, 2,
+		"should have the still-active citation and the new revised version")
+}
+
+func TestGetDecisionLineage_EmptyState(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "lineage-empty-" + suffix
+
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	// Decision with no precedent and no citations.
+	standalone, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: run.ID, AgentID: agentID,
+		DecisionType: "lineage_empty_test", Outcome: "alone_" + suffix,
+		Confidence: 0.5, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	lineage, err := testDB.GetDecisionLineage(ctx, standalone.ID, standalone.OrgID, 20)
+	require.NoError(t, err)
+
+	assert.Equal(t, standalone.ID, lineage.DecisionID)
+	assert.Nil(t, lineage.PrecededBy, "standalone decision has no precedent")
+	assert.Empty(t, lineage.CitedBy, "standalone decision has no citations")
+	assert.False(t, lineage.CitedByMore)
+}
+
+func TestGetDecisionLineage_NotFound(t *testing.T) {
+	ctx := context.Background()
+
+	_, err := testDB.GetDecisionLineage(ctx, uuid.New(), uuid.New(), 20)
+	require.Error(t, err, "querying a nonexistent decision should return an error")
+}
