@@ -152,6 +152,48 @@ describe("AkashiClient", () => {
       );
       expect(tokenCalls).toHaveLength(1);
     });
+
+    it("surfaces server error message on auth failure", async () => {
+      // Reset the client so no cached token exists.
+      client = new AkashiClient({
+        baseUrl: "http://localhost:8080",
+        agentId: "test-agent",
+        apiKey: "test-key",
+      });
+      mockFetch.mockReset();
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        statusText: "Unauthorized",
+        headers: mockHeaders(),
+        json: () =>
+          Promise.resolve({ error: { message: "invalid api key" } }),
+      } as Response);
+
+      await expect(client.check("x")).rejects.toThrow(
+        "Token refresh failed (401): invalid api key",
+      );
+    });
+
+    it("falls back to statusText when auth error body has no message", async () => {
+      client = new AkashiClient({
+        baseUrl: "http://localhost:8080",
+        agentId: "test-agent",
+        apiKey: "test-key",
+      });
+      mockFetch.mockReset();
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+        headers: mockHeaders(),
+        json: () => Promise.resolve({}),
+      } as Response);
+
+      await expect(client.check("x")).rejects.toThrow(
+        "Token refresh failed (503): Service Unavailable",
+      );
+    });
   });
 
   describe("check", () => {
@@ -972,6 +1014,17 @@ describe("AkashiClient", () => {
       const body = JSON.parse(lastCall[1].body);
       expect(body).toEqual({ as_of: "2024-06-01T00:00:00Z" });
       expect(body.filters).toBeUndefined();
+    });
+
+    it("accepts a Date object and converts to ISO string", async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse(200, { data: [] }));
+
+      const date = new Date("2024-06-01T12:00:00.000Z");
+      await client.temporalQuery(date);
+
+      const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+      const body = JSON.parse(lastCall[1].body);
+      expect(body.as_of).toBe("2024-06-01T12:00:00.000Z");
     });
   });
 

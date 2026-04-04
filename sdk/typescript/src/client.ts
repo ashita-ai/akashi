@@ -244,10 +244,12 @@ function buildCompleteRunBody(
 }
 
 function buildTemporalQueryBody(
-  asOf: string,
+  asOf: string | Date,
   filters?: QueryFilters,
 ): Record<string, unknown> {
-  const body: Record<string, unknown> = { as_of: asOf };
+  const body: Record<string, unknown> = {
+    as_of: asOf instanceof Date ? asOf.toISOString() : asOf,
+  };
   if (filters !== undefined) body.filters = filters;
   return body;
 }
@@ -652,7 +654,7 @@ export class AkashiClient {
 
   /** Query decisions as of a specific point in time. */
   async temporalQuery(
-    asOf: string,
+    asOf: string | Date,
     filters?: QueryFilters,
   ): Promise<Decision[]> {
     return this.post<Decision[]>(
