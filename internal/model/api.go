@@ -387,6 +387,12 @@ type HealthResponse struct {
 	Uptime       int64  `json:"uptime_seconds"`
 }
 
+// ReadyzResponse is the response for GET /readyz.
+type ReadyzResponse struct {
+	Status string            `json:"status"` // "ready" or "not_ready"
+	Checks map[string]string `json:"checks"` // per-dependency status
+}
+
 // Organization represents a tenant in the multi-tenancy model.
 type Organization struct {
 	ID        uuid.UUID `json:"id"`

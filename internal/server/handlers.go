@@ -401,6 +401,43 @@ func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, httpStatus, resp)
 }
 
+// HandleReadyz handles GET /readyz — a readiness probe for orchestrators.
+// Unlike /health (liveness), this returns 503 if any dependency required to
+// serve requests is unreachable, signalling that traffic should not be routed
+// to this instance.
+func (h *Handlers) HandleReadyz(w http.ResponseWriter, r *http.Request) {
+	checks := map[string]string{}
+	ready := true
+
+	if err := h.db.Ping(r.Context()); err != nil {
+		checks["postgres"] = "disconnected"
+		ready = false
+	} else {
+		checks["postgres"] = "connected"
+	}
+
+	if h.searcher != nil {
+		if err := h.searcher.Healthy(r.Context()); err != nil {
+			checks["qdrant"] = "disconnected"
+			ready = false
+		} else {
+			checks["qdrant"] = "connected"
+		}
+	}
+
+	status := "ready"
+	httpStatus := http.StatusOK
+	if !ready {
+		status = "not_ready"
+		httpStatus = http.StatusServiceUnavailable
+	}
+
+	writeJSON(w, r, httpStatus, model.ReadyzResponse{
+		Status: status,
+		Checks: checks,
+	})
+}
+
 // HandleMCPInfo handles GET /mcp/info (unauthenticated).
 // Returns static metadata about the MCP endpoint so clients can confirm
 // connectivity and discover supported auth schemes before adding credentials
