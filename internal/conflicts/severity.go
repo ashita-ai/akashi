@@ -62,17 +62,16 @@ func ComputeSeverity(input SeverityInput) string {
 	// Base severity from decision type tier.
 	sev := tierToBaseSeverity(effectiveTier)
 
-	// Promotion: both decisions high confidence on a high-tier type.
+	// Promotion (at most one applies — see ADR-015).
 	bothHighConf := input.ConfidenceA >= 0.7 && input.ConfidenceB >= 0.7
 	if bothHighConf && effectiveTier >= 3 {
+		// Both decisions high confidence on a high-tier type.
 		sev = promote(sev)
-	}
-
-	// Promotion: factual conflicts are harder to reconcile (objective truth
-	// disagreement vs. subjective assessment). Applies to tier 2+ only —
-	// tier 1 factual conflicts (e.g., two investigation conclusions) are
-	// common and not inherently severe.
-	if strings.ToLower(input.Category) == "factual" && effectiveTier >= 2 {
+	} else if strings.ToLower(input.Category) == "factual" && effectiveTier >= 2 {
+		// Factual conflicts are harder to reconcile (objective truth
+		// disagreement vs. subjective assessment). Applies to tier 2+ only —
+		// tier 1 factual conflicts (e.g., two investigation conclusions) are
+		// common and not inherently severe.
 		sev = promote(sev)
 	}
 

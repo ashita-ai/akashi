@@ -90,7 +90,7 @@ func (s *LiteScorer) ScoreForDecision(ctx context.Context, decisionID, orgID uui
 			conflictKind = "self_contradiction"
 		}
 
-		// Compute severity from decision metadata (type tier, category),
+		// Compute severity from decision metadata (type tier),
 		// independent of the significance score. See ADR-015.
 		severity := ComputeSeverity(SeverityInput{
 			DecisionTypeA: src.decisionType,

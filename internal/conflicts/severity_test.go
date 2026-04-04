@@ -245,4 +245,18 @@ func TestComputeSeverity_PromotionAndDemotionInteraction(t *testing.T) {
 		})
 		assert.Equal(t, "high", got)
 	})
+
+	t.Run("at most one promotion applies — high-conf factual tier 3", func(t *testing.T) {
+		// architecture: base medium. Both promotion conditions are true
+		// (high confidence + tier >= 3, and factual + tier >= 2), but
+		// ADR-015 mandates at most one promotion. Result: high, not beyond.
+		got := ComputeSeverity(SeverityInput{
+			DecisionTypeA: "architecture",
+			DecisionTypeB: "architecture",
+			ConfidenceA:   0.8,
+			ConfidenceB:   0.8,
+			Category:      "factual",
+		})
+		assert.Equal(t, "high", got)
+	})
 }
