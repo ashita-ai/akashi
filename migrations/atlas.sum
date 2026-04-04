@@ -1,4 +1,4 @@
-h1:4x5tjM1y9iC2s5ga4zbxOiCNC/4uRSBstm2Ah6PyyFQ=
+h1:tnyJkyy7ddLGH0Sw4SX+QmoEe2CxgIlBv1FkKZgKb/w=
 001_initial.sql h1:uhyGXto+QacAaGYb9ZTGjsBs5chlKi8O0eHz9aCQsrY=
 022_full_text_search.sql h1:9iwtA8MgCzAxDV9YkUBn0CLT9ePSmj3GcPoMGg8TXf0=
 023_fix_outbox_index.sql h1:OtMEFBcMRWej02+ghnBXlPr6BVq+LoA62Id9XUWfDNI=
@@ -69,3 +69,6 @@ h1:4x5tjM1y9iC2s5ga4zbxOiCNC/4uRSBstm2Ah6PyyFQ=
 088_unique_alias_per_project.sql h1:UY1u6IycabSjhWDRK9RDohqwSz/yDLgwQBwDWiRrSx8=
 089_fix_conflict_resolutions_trigger_and_proof_leaves_fk.sql h1:V4I0KLXGHcL24yvmbRd3Iei5yXDAYiL6xWYYKb5jMjA=
 090_decisions_org_created_index.sql h1:aCp2CB1qWHe7Jokn6EWlK8roQ9G6V2ck0XDTwNIuAeY=
+091_decision_type_aliases.sql h1:iw5tjUwEo7AzisF1v23QcIFgbQsMk44BLJm0ZgxMZCU=
+092_backfill_decision_types.sql h1:uDkaa1D1X9u/0Vsvx+HImlg2xn87WIN7/+qoYyGI56E=
+093_assessment_source.sql h1:V0mseo2bLixcTVDe/JgZS1DK9shjg/XkEX27TtqFFrs=

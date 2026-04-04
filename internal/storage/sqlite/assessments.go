@@ -15,16 +15,21 @@ func (l *LiteDB) CreateAssessment(ctx context.Context, orgID uuid.UUID, a model.
 	if a.ID == uuid.Nil {
 		a.ID = uuid.New()
 	}
+	source := a.Source
+	if source == "" {
+		source = model.AssessmentSourceManual
+	}
 	row := l.db.QueryRowContext(ctx,
-		`INSERT INTO decision_assessments (id, decision_id, org_id, assessor_agent_id, outcome, notes)
-		 VALUES (?, ?, ?, ?, ?, ?)
-		 RETURNING id, decision_id, org_id, assessor_agent_id, outcome, notes, created_at`,
+		`INSERT INTO decision_assessments (id, decision_id, org_id, assessor_agent_id, outcome, notes, source)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 RETURNING id, decision_id, org_id, assessor_agent_id, outcome, notes, source, created_at`,
 		uuidStr(a.ID),
 		uuidStr(a.DecisionID),
 		uuidStr(orgID),
 		a.AssessorAgentID,
 		string(a.Outcome),
 		a.Notes,
+		source,
 	)
 
 	var (
@@ -33,9 +38,10 @@ func (l *LiteDB) CreateAssessment(ctx context.Context, orgID uuid.UUID, a model.
 		orgIDStr     string
 		outcome      string
 		notes        sql.NullString
+		sourceStr    string
 		createdAtStr string
 	)
-	err := row.Scan(&idStr, &decIDStr, &orgIDStr, &a.AssessorAgentID, &outcome, &notes, &createdAtStr)
+	err := row.Scan(&idStr, &decIDStr, &orgIDStr, &a.AssessorAgentID, &outcome, &notes, &sourceStr, &createdAtStr)
 	if err != nil {
 		return model.DecisionAssessment{}, fmt.Errorf("sqlite: create assessment: %w", err)
 	}
@@ -47,6 +53,7 @@ func (l *LiteDB) CreateAssessment(ctx context.Context, orgID uuid.UUID, a model.
 	if notes.Valid {
 		a.Notes = &notes.String
 	}
+	a.Source = sourceStr
 	a.CreatedAt = parseTime(createdAtStr)
 	return a, nil
 }
@@ -252,4 +259,57 @@ func (l *LiteDB) GetDecisionOutcomeSignalsBatch(ctx context.Context, ids []uuid.
 		result[id] = sig
 	}
 	return result, acRows.Err()
+}
+
+// GetAssessmentSummary returns aggregated outcome counts for a decision,
+// counting only the latest assessment from each assessor.
+func (l *LiteDB) GetAssessmentSummary(ctx context.Context, orgID, decisionID uuid.UUID) (model.AssessmentSummary, error) {
+	rows, err := l.db.QueryContext(ctx,
+		`SELECT outcome, COUNT(*) FROM (
+		     SELECT outcome,
+		            ROW_NUMBER() OVER (PARTITION BY assessor_agent_id ORDER BY created_at DESC) AS rn
+		     FROM decision_assessments
+		     WHERE decision_id = ? AND org_id = ?
+		 ) WHERE rn = 1
+		 GROUP BY outcome`,
+		uuidStr(decisionID), uuidStr(orgID),
+	)
+	if err != nil {
+		return model.AssessmentSummary{}, fmt.Errorf("sqlite: get assessment summary: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	var s model.AssessmentSummary
+	for rows.Next() {
+		var outcome string
+		var count int
+		if err := rows.Scan(&outcome, &count); err != nil {
+			return model.AssessmentSummary{}, fmt.Errorf("sqlite: scan assessment summary: %w", err)
+		}
+		s.Total += count
+		switch model.AssessmentOutcome(outcome) {
+		case model.AssessmentCorrect:
+			s.Correct += count
+		case model.AssessmentIncorrect:
+			s.Incorrect += count
+		case model.AssessmentPartiallyCorrect:
+			s.PartiallyCorrect += count
+		}
+	}
+	return s, rows.Err()
+}
+
+// GetPrecedentCitationCount returns the number of active decisions that cite
+// the given decision as a precedent.
+func (l *LiteDB) GetPrecedentCitationCount(ctx context.Context, orgID uuid.UUID, decisionID uuid.UUID) (int, error) {
+	var count int
+	err := l.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM decisions
+		 WHERE precedent_ref = ? AND org_id = ? AND valid_to IS NULL`,
+		uuidStr(decisionID), uuidStr(orgID),
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: precedent citation count: %w", err)
+	}
+	return count, nil
 }

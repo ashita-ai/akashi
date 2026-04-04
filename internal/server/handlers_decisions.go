@@ -18,6 +18,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/integrity"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
+	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/service/tracehealth"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
@@ -188,6 +189,16 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	}
 	if warnings := model.HighConfidenceWarnings(req.Decision.Confidence, len(req.Decision.Evidence), h.highConfidenceWarnThreshold); len(warnings) > 0 {
 		resp["warnings"] = warnings
+	}
+	reasoningLen := 0
+	if req.Decision.Reasoning != nil {
+		reasoningLen = len(strings.TrimSpace(*req.Decision.Reasoning))
+	}
+	if confAdj := quality.AdjustConfidence(req.Decision.Confidence, len(req.Decision.Evidence), len(req.Decision.Alternatives), reasoningLen); confAdj.WasAdjusted {
+		resp["confidence_adjusted"] = true
+		resp["original_confidence"] = confAdj.Original
+		resp["stored_confidence"] = confAdj.Adjusted
+		resp["confidence_reasons"] = confAdj.Reasons
 	}
 
 	h.completeIdempotentWriteBestEffort(r, orgID, idem, http.StatusCreated, resp)

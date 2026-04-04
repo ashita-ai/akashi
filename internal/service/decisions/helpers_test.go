@@ -463,6 +463,14 @@ type mockStore struct {
 	insertClaimsCalls int
 }
 
+func (m *mockStore) ResolveDecisionTypeAlias(_ context.Context, _ uuid.UUID, _ string) (string, error) {
+	return "", nil
+}
+
+func (m *mockStore) CreateDecisionTypeAlias(_ context.Context, _ uuid.UUID, _, _, _ string) error {
+	return nil
+}
+
 func (m *mockStore) GetConflictCount(_ context.Context, _ uuid.UUID, _ uuid.UUID) (int, error) {
 	return m.conflictCount, m.conflictCountErr
 }

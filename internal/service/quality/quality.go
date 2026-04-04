@@ -232,10 +232,10 @@ func Score(d model.TraceDecision, hasPrecedentRef bool) float32 {
 	// Factor 4: Evidence provided (up to 0.15).
 	score += evidenceFactor(d.Evidence)
 
-	// Factor 5: Outcome is substantive (0.10).
-	if len(strings.TrimSpace(d.Outcome)) > 20 {
-		score += 0.10
-	}
+	// Factor 5: Outcome is substantive but concise (up to 0.10).
+	// Concise decision statements (20-300 chars) get full credit.
+	// Longer outcomes are penalized — they tend to be change logs, not decisions.
+	score += outcomeFactor(d.Outcome)
 
 	// Factor 6: Precedent reference links this decision to a prior one (0.10).
 	if hasPrecedentRef {
@@ -299,6 +299,24 @@ func evidenceFactor(evidence []model.TraceEvidence) float32 {
 	return 0
 }
 
+// outcomeFactor returns the outcome contribution (0, 0.04, 0.07, or 0.10).
+// Concise decision statements (20-300 chars) get full credit. Longer outcomes
+// are penalized because they tend to be commit-log rewrites rather than
+// decision statements.
+func outcomeFactor(outcome string) float32 {
+	n := len(strings.TrimSpace(outcome))
+	switch {
+	case n <= 20:
+		return 0
+	case n <= 300:
+		return 0.10
+	case n <= 500:
+		return 0.07
+	default:
+		return 0.04
+	}
+}
+
 // countSubstantiveRejections counts alternatives that have a
 // rejection reason longer than 20 characters (after trimming).
 func countSubstantiveRejections(alts []model.TraceAlternative) int {
@@ -309,6 +327,67 @@ func countSubstantiveRejections(alts []model.TraceAlternative) int {
 		}
 	}
 	return count
+}
+
+// ConfidenceAdjustment holds the result of AdjustConfidence.
+type ConfidenceAdjustment struct {
+	Adjusted    float32
+	Original    float32
+	WasAdjusted bool
+	Reasons     []string
+}
+
+// AdjustConfidence applies evidence-weighted deflation to self-reported confidence.
+// Agents consistently over-report confidence (avg 0.867 across 824 decisions).
+// Rather than relying on warnings that agents ignore, this adjusts the stored
+// value and preserves the original for auditability.
+//
+// Rules (applied independently, stacking):
+//   - conf >= 0.9 with 0 evidence items → cap at 0.75
+//   - conf >= 0.85 with 0 alternatives → reduce by 0.10
+//   - conf >= 0.8 with reasoning < 50 chars → reduce by 0.10
+//
+// The adjusted value is floored at 0.3 to avoid penalizing an otherwise
+// reasonable decision into absurdly low confidence.
+func AdjustConfidence(confidence float32, evidenceCount, altCount, reasoningLen int) ConfidenceAdjustment {
+	original := confidence
+
+	// Only adjust values in valid range. Out-of-range values should be
+	// rejected by the HTTP/MCP validation layers; if they reach here,
+	// pass them through unchanged so the DB CHECK constraint can catch them.
+	if confidence < 0 || confidence > 1 {
+		return ConfidenceAdjustment{
+			Adjusted:    confidence,
+			Original:    original,
+			WasAdjusted: false,
+		}
+	}
+
+	var reasons []string
+
+	if confidence >= 0.9 && evidenceCount == 0 {
+		confidence = 0.75
+		reasons = append(reasons, "confidence >= 0.9 with no evidence: capped at 0.75")
+	}
+	if confidence >= 0.85 && altCount == 0 {
+		confidence -= 0.10
+		reasons = append(reasons, "confidence >= 0.85 with no alternatives: reduced by 0.10")
+	}
+	if confidence >= 0.8 && reasoningLen < 50 {
+		confidence -= 0.10
+		reasons = append(reasons, "confidence >= 0.8 with reasoning < 50 chars: reduced by 0.10")
+	}
+
+	if confidence < 0.3 {
+		confidence = 0.3
+	}
+
+	return ConfidenceAdjustment{
+		Adjusted:    confidence,
+		Original:    original,
+		WasAdjusted: confidence != original,
+		Reasons:     reasons,
+	}
 }
 
 // ComputeOutcomeScore computes an outcome score (0.0-1.0) from assessment counts.

@@ -198,6 +198,7 @@ CREATE TABLE IF NOT EXISTS decision_assessments (
     assessor_agent_id TEXT NOT NULL,
     outcome           TEXT NOT NULL,
     notes             TEXT,
+    source            TEXT NOT NULL DEFAULT 'manual',
     created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_assessments_decision ON decision_assessments(decision_id, org_id);

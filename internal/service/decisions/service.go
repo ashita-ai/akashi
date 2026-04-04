@@ -58,6 +58,8 @@ type Service struct {
 
 	percentileCache *search.PercentileCache // nil = use log fallback in ReScore.
 	rescoreMetrics  *search.ReScoreMetrics  // nil = skip signal contribution recording.
+	standardTypes   map[string]bool         // nil = use quality.DefaultStandardDecisionTypes.
+	autoAssessor    AutoAssessor            // nil = skip auto-assessment.
 
 	// asyncWg tracks in-flight post-trace goroutines (claim generation,
 	// conflict scoring) so Shutdown can wait for them before closing the DB.
@@ -75,6 +77,64 @@ func (s *Service) SetPercentileCache(c *search.PercentileCache) { s.percentileCa
 
 // SetReScoreMetrics configures per-signal contribution metrics for ReScore.
 func (s *Service) SetReScoreMetrics(m *search.ReScoreMetrics) { s.rescoreMetrics = m }
+
+// SetStandardTypes configures the set of canonical decision types used for
+// Levenshtein-based auto-aliasing. When nil, quality.DefaultStandardDecisionTypes is used.
+func (s *Service) SetStandardTypes(types map[string]bool) { s.standardTypes = types }
+
+// AutoAssessor generates outcome assessments from observable signals.
+type AutoAssessor interface {
+	OnSuperseded(ctx context.Context, orgID, supersededID, newID uuid.UUID)
+	OnCitationThreshold(ctx context.Context, orgID, decisionID uuid.UUID, citationCount int)
+}
+
+// SetAutoAssessor configures automatic assessment generation from
+// supersession and citation signals.
+func (s *Service) SetAutoAssessor(a AutoAssessor) { s.autoAssessor = a }
+
+// effectiveStandardTypes returns the configured standard types or the defaults.
+func (s *Service) effectiveStandardTypes() map[string]bool {
+	if s.standardTypes != nil {
+		return s.standardTypes
+	}
+	return quality.DefaultStandardDecisionTypes
+}
+
+// bootstrapMetadata populates the trace metadata with fields derived from
+// AgentContext when the agent didn't supply them. This makes tool, model,
+// and session queryable without requiring agents to populate metadata.
+// Agent-supplied metadata keys are never overwritten.
+func bootstrapMetadata(input *TraceInput) {
+	// Collect bootstrap fields from agent_context.
+	fields := make(map[string]any)
+	if input.SessionID != nil {
+		fields["session_id"] = input.SessionID.String()
+	}
+	if ctx := input.AgentContext; ctx != nil {
+		if server, ok := ctx["server"].(map[string]any); ok {
+			if tool, ok := server["tool"].(string); ok && tool != "" {
+				fields["tool"] = tool
+			}
+		}
+		if client, ok := ctx["client"].(map[string]any); ok {
+			if m, ok := client["model"].(string); ok && m != "" {
+				fields["model"] = m
+			}
+		}
+	}
+	if len(fields) == 0 {
+		return
+	}
+
+	if input.Metadata == nil {
+		input.Metadata = make(map[string]any, len(fields))
+	}
+	for k, v := range fields {
+		if _, exists := input.Metadata[k]; !exists {
+			input.Metadata[k] = v
+		}
+	}
+}
 
 // SetClaimExtractor configures an LLM-based claim extractor. When set,
 // generateClaims uses the extractor instead of regex-based SplitClaims,
@@ -245,6 +305,28 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 	// normalization point — all paths (HTTP, MCP, SDK) converge here.
 	input.Decision.DecisionType = strings.ToLower(strings.TrimSpace(input.Decision.DecisionType))
 
+	// 0b. Resolve decision type aliases (e.g., "refactoring" → "refactor").
+	// Check the alias table first, then fall back to Levenshtein matching
+	// against standard types. Auto-create alias on Levenshtein match.
+	if canonical, err := s.db.ResolveDecisionTypeAlias(ctx, orgID, input.Decision.DecisionType); err == nil && canonical != "" {
+		if input.Metadata == nil {
+			input.Metadata = make(map[string]any)
+		}
+		input.Metadata["original_decision_type"] = input.Decision.DecisionType
+		input.Decision.DecisionType = canonical
+	} else if suggested := quality.SuggestStandardType(input.Decision.DecisionType, s.effectiveStandardTypes(), 2); suggested != "" {
+		// Close Levenshtein match found — auto-create alias for future lookups.
+		if aliasErr := s.db.CreateDecisionTypeAlias(ctx, orgID, input.Decision.DecisionType, suggested, "system:levenshtein-auto"); aliasErr != nil {
+			s.logger.Warn("trace: failed to auto-create decision type alias",
+				"alias", input.Decision.DecisionType, "canonical", suggested, "error", aliasErr)
+		}
+		if input.Metadata == nil {
+			input.Metadata = make(map[string]any)
+		}
+		input.Metadata["original_decision_type"] = input.Decision.DecisionType
+		input.Decision.DecisionType = suggested
+	}
+
 	// 0a. Set OTEL span attributes for trace correlation.
 	span := trace.SpanFromContext(ctx)
 	span.SetAttributes(
@@ -300,6 +382,32 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 
 	// 2. Compute quality score.
 	qualityScore := quality.Score(input.Decision, input.PrecedentRef != nil)
+
+	// 2a. Adjust confidence based on evidence, alternatives, and reasoning.
+	// This deflates self-reported confidence that isn't supported by substance.
+	reasoningLen := 0
+	if input.Decision.Reasoning != nil {
+		reasoningLen = len(strings.TrimSpace(*input.Decision.Reasoning))
+	}
+	confAdj := quality.AdjustConfidence(
+		input.Decision.Confidence,
+		len(input.Decision.Evidence),
+		len(input.Decision.Alternatives),
+		reasoningLen,
+	)
+	if confAdj.WasAdjusted {
+		input.Decision.Confidence = confAdj.Adjusted
+		if input.Metadata == nil {
+			input.Metadata = make(map[string]any)
+		}
+		input.Metadata["original_confidence"] = confAdj.Original
+		input.Metadata["confidence_adjustment_reasons"] = confAdj.Reasons
+	}
+
+	// 2b. Bootstrap metadata from agent_context when agent-supplied metadata
+	// is empty. This makes tool/model/session queryable via the metadata JSONB
+	// column without requiring agents to populate it explicitly.
+	bootstrapMetadata(&input)
 
 	// 3. Build alternatives.
 	alts := make([]model.Alternative, len(input.Decision.Alternatives))
@@ -466,6 +574,27 @@ func (s *Service) postTraceAsync(ctx context.Context, orgID uuid.UUID, input Tra
 			defer cancel()
 			s.conflictScorer.ScoreForDecision(scoreCtx, decision.ID, orgID)
 		}()
+	}
+
+	// Auto-assess based on observable signals.
+	if s.autoAssessor != nil {
+		assessCtx, assessCancel := context.WithTimeout(s.shutdownCtx, 10*time.Second)
+		defer assessCancel()
+
+		if input.SupersedesID != nil {
+			s.autoAssessor.OnSuperseded(assessCtx, orgID, *input.SupersedesID, decision.ID)
+		}
+		if input.PrecedentRef != nil {
+			// Check citation count on the referenced decision. The count
+			// includes this new trace's citation (already committed).
+			citCount, err := s.db.GetPrecedentCitationCount(assessCtx, orgID, *input.PrecedentRef)
+			if err != nil {
+				s.logger.Warn("trace: failed to get citation count for auto-assessment",
+					"decision_id", *input.PrecedentRef, "error", err)
+			} else {
+				s.autoAssessor.OnCitationThreshold(assessCtx, orgID, *input.PrecedentRef, citCount)
+			}
+		}
 	}
 }
 

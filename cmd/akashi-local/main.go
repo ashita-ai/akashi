@@ -25,6 +25,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/mcp"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/search"
+	"github.com/ashita-ai/akashi/internal/service/autoassess"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
 	"github.com/ashita-ai/akashi/internal/storage/sqlite"
@@ -85,8 +86,13 @@ func run() int {
 
 	decisionSvc := decisions.New(db, embedder, searcher, logger, conflictScorer)
 
+	// Auto-assessor for generating assessments from observable signals.
+	assessor := autoassess.New(db, logger)
+	decisionSvc.SetAutoAssessor(assessor)
+
 	// nil grantCache: no caching needed for single-user local mode.
 	mcpSrv := mcp.New(db, decisionSvc, nil, logger, version, 0.85, nil)
+	mcpSrv.SetAutoAssessor(assessor)
 
 	// Fixed local identity: platform_admin on the default org.
 	// This bypasses all RBAC checks and gives full access.
