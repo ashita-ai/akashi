@@ -111,7 +111,7 @@ func MustStartTimescaleDB() *TestContainer {
 
 // NewTestDB creates a storage.DB connected to this container and runs all migrations.
 func (tc *TestContainer) NewTestDB(ctx context.Context, logger *slog.Logger) (*storage.DB, error) {
-	db, err := storage.New(ctx, tc.DSN, "", logger)
+	db, err := storage.New(ctx, tc.DSN, "", logger, storage.PoolOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("testutil: create DB: %w", err)
 	}
@@ -125,7 +125,7 @@ func (tc *TestContainer) NewTestDB(ctx context.Context, logger *slog.Logger) (*s
 // pointing to this container and runs all migrations. The dedicated notify
 // connection enables testing LISTEN/NOTIFY, WaitForNotification, and reconnect.
 func (tc *TestContainer) NewTestDBWithNotify(ctx context.Context, logger *slog.Logger) (*storage.DB, error) {
-	db, err := storage.New(ctx, tc.DSN, tc.DSN, logger)
+	db, err := storage.New(ctx, tc.DSN, tc.DSN, logger, storage.PoolOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("testutil: create DB with notify: %w", err)
 	}

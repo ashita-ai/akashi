@@ -41,14 +41,32 @@ type DB struct {
 // Compile-time assertion: *DB satisfies Store.
 var _ Store = (*DB)(nil)
 
+// PoolOptions configures connection pool sizing. Zero values use pgxpool defaults.
+type PoolOptions struct {
+	MaxConns int32 // Maximum connections in the pool. 0 = pgxpool default (max(4, NumCPU)).
+	MinConns int32 // Minimum idle connections kept open. 0 = pgxpool default (0).
+}
+
 // New creates a new DB with a connection pool.
 // poolDSN should point to PgBouncer (or directly to Postgres in dev).
 // notifyDSN should point directly to Postgres for LISTEN/NOTIFY support.
-func New(ctx context.Context, poolDSN, notifyDSN string, logger *slog.Logger) (*DB, error) {
+func New(ctx context.Context, poolDSN, notifyDSN string, logger *slog.Logger, opts PoolOptions) (*DB, error) {
 	poolCfg, err := pgxpool.ParseConfig(poolDSN)
 	if err != nil {
 		return nil, fmt.Errorf("storage: parse pool DSN: %w", err)
 	}
+
+	if opts.MaxConns > 0 {
+		poolCfg.MaxConns = opts.MaxConns
+	}
+	if opts.MinConns > 0 {
+		poolCfg.MinConns = opts.MinConns
+	}
+
+	logger.Info("storage: pool configured",
+		"max_conns", poolCfg.MaxConns,
+		"min_conns", poolCfg.MinConns,
+	)
 
 	// Register pgvector types on each new connection so COPY can encode vectors.
 	// The registration is best-effort: if the vector extension hasn't been
