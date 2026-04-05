@@ -68,7 +68,7 @@ from akashi.types import (
     IntegrityViolationsResponse,
     LineageResponse,
     ListConflictLabelsResponse,
-    OrgSettings,
+    OrgSettingsData,
     ProjectLink,
     PurgeRequest,
     PurgeResponse,
@@ -86,7 +86,6 @@ from akashi.types import (
     SearchResponse,
     SearchResult,
     SessionViewResponse,
-    SetOrgSettingsRequest,
     SetRetentionRequest,
     SignupRequest,
     SignupResponse,
@@ -890,15 +889,15 @@ class AkashiClient:
 
     # --- Phase 3: Org settings ---
 
-    async def get_org_settings(self) -> OrgSettings:
+    async def get_org_settings(self) -> OrgSettingsData:
         """Get organization settings."""
         data = await self._get("/v1/org/settings")
-        return OrgSettings.model_validate(data)
+        return OrgSettingsData.model_validate(data)
 
-    async def set_org_settings(self, req: SetOrgSettingsRequest) -> OrgSettings:
+    async def set_org_settings(self, req: OrgSettingsData) -> OrgSettingsData:
         """Update organization settings."""
         data = await self._put("/v1/org/settings", req.model_dump())
-        return OrgSettings.model_validate(data)
+        return OrgSettingsData.model_validate(data)
 
     # --- Phase 3: Retention ---
 
@@ -1887,15 +1886,15 @@ class AkashiSyncClient:
 
     # --- Phase 3: Org settings ---
 
-    def get_org_settings(self) -> OrgSettings:
+    def get_org_settings(self) -> OrgSettingsData:
         """Get organization settings."""
         data = self._get("/v1/org/settings")
-        return OrgSettings.model_validate(data)
+        return OrgSettingsData.model_validate(data)
 
-    def set_org_settings(self, req: SetOrgSettingsRequest) -> OrgSettings:
+    def set_org_settings(self, req: OrgSettingsData) -> OrgSettingsData:
         """Update organization settings."""
         data = self._put("/v1/org/settings", req.model_dump())
-        return OrgSettings.model_validate(data)
+        return OrgSettingsData.model_validate(data)
 
     # --- Phase 3: Retention ---
 
