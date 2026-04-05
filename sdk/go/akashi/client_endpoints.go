@@ -339,8 +339,8 @@ func (c *Client) RotateKey(ctx context.Context, keyID uuid.UUID) (*RotateKeyResp
 // ---------------------------------------------------------------------------
 
 // GetOrgSettings retrieves the organization's settings.
-func (c *Client) GetOrgSettings(ctx context.Context) (*OrgSettings, error) {
-	var resp OrgSettings
+func (c *Client) GetOrgSettings(ctx context.Context) (*OrgSettingsData, error) {
+	var resp OrgSettingsData
 	if err := c.get(ctx, "/v1/org/settings", &resp); err != nil {
 		return nil, err
 	}
@@ -348,8 +348,8 @@ func (c *Client) GetOrgSettings(ctx context.Context) (*OrgSettings, error) {
 }
 
 // SetOrgSettings updates the organization's settings. Requires admin role.
-func (c *Client) SetOrgSettings(ctx context.Context, req SetOrgSettingsRequest) (*OrgSettings, error) {
-	var resp OrgSettings
+func (c *Client) SetOrgSettings(ctx context.Context, req OrgSettingsData) (*OrgSettingsData, error) {
+	var resp OrgSettingsData
 	if err := c.put(ctx, "/v1/org/settings", req, &resp); err != nil {
 		return nil, err
 	}

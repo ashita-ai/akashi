@@ -1,6 +1,6 @@
 # ADR-009: Distribution tiers — local-lite and cloud-hosted MCP
 
-**Status:** Accepted — local-lite tier not yet implemented (issue #312)
+**Status:** Accepted — local-lite tier implemented (cmd/akashi-local, internal/storage/sqlite)
 **Date:** 2026-03-06
 **Amends:** ADR-004 (MCP and framework integrations as primary distribution channels)
 
@@ -31,7 +31,7 @@ Two concrete gaps compound the problem:
 
 ### Local-lite
 
-A self-contained binary published to npm as `@akashi/local`. Writes to SQLite at `~/.akashi/akashi.db`. No Docker, no Postgres, no Qdrant, no Ollama. Starts in under 3 seconds.
+A self-contained binary published to npm as `@akashi/local`. Writes to SQLite at `~/.akashi/local.db`. No Docker, no Postgres, no Qdrant, no Ollama. Starts in under 3 seconds.
 
 MCP config:
 ```json

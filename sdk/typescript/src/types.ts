@@ -171,10 +171,12 @@ export interface Agent {
   org_id: string;
   name: string;
   role: string;
+  email?: string;
   tags: string[];
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+  last_seen?: string;
 }
 
 /** An access grant between agents. */
@@ -222,6 +224,8 @@ export interface TraceRequest {
   evidence?: TraceEvidence[];
   precedentRef?: string;
   precedentReason?: string;
+  supersedesId?: string;
+  traceId?: string;
   metadata?: Record<string, unknown>;
   context?: Record<string, unknown>;
   /** Optional idempotency key for safe retries. Auto-generated if omitted. */
@@ -241,11 +245,18 @@ export interface TraceEvidence {
   metrics?: Record<string, number>;
 }
 
+export interface TimeRange {
+  from?: string;
+  to?: string;
+}
+
 export interface QueryFilters {
   agent_id?: string[];
+  run_id?: string;
   decision_type?: string;
   confidence_min?: number;
   outcome?: string;
+  time_range?: TimeRange;
   /** Composite agent identity filters (spec 31). */
   session_id?: string;
   tool?: string;
@@ -322,11 +333,26 @@ export interface TraceResponse {
   event_count: number;
 }
 
+/** Summarises a resolved conflict: which approach prevailed and which was rejected. */
+export interface ConflictResolution {
+  id: string;
+  decision_type: string;
+  winning_decision_id: string;
+  winning_agent: string;
+  winning_outcome: string;
+  losing_agent: string;
+  losing_outcome: string;
+  explanation?: string;
+  resolution_note?: string;
+  resolved_at: string;
+}
+
 export interface CheckResponse {
   has_precedent: boolean;
   decisions: Decision[];
   conflicts?: DecisionConflict[];
   conflicts_unavailable?: boolean;
+  prior_resolutions?: ConflictResolution[];
 }
 
 export interface QueryResponse {
@@ -340,6 +366,7 @@ export interface QueryResponse {
 export interface SearchResult {
   decision: Decision;
   similarity_score: number;
+  qdrant_rank?: number;
 }
 
 export interface SearchResponse {
@@ -390,6 +417,7 @@ export interface AssessResponse {
   assessor_agent_id: string;
   outcome: AssessOutcome;
   notes?: string;
+  source: string;
   created_at: string;
 }
 
@@ -401,9 +429,10 @@ export interface ConflictRecommendation {
   confidence: number;
 }
 
-export interface ConflictDetail {
-  decision_conflict: DecisionConflict;
+/** Extends DecisionConflict with detail-only fields. Server uses anonymous embed so all fields are at top level. */
+export interface ConflictDetail extends DecisionConflict {
   recommendation?: ConflictRecommendation;
+  reopens_resolution?: ConflictResolution;
 }
 
 export interface LineageEntry {
@@ -508,12 +537,16 @@ export interface ConflictGroup {
   open_conflicts?: DecisionConflict[];
 }
 
+export interface TimePeriod {
+  start: string;
+  end: string;
+}
+
 export interface ConflictAnalyticsSummary {
-  total_conflicts: number;
-  open: number;
-  resolved: number;
-  false_positives: number;
-  avg_days_to_resolution: number;
+  total_detected: number;
+  total_resolved: number;
+  mean_time_to_resolution_hours?: number | null;
+  false_positive_rate: number;
 }
 
 export interface ConflictAgentPairStats {
@@ -522,36 +555,32 @@ export interface ConflictAgentPairStats {
   count: number;
   open: number;
   resolved: number;
-  false_positives: number;
 }
 
 export interface ConflictTypeStats {
   decision_type: string;
   count: number;
-  open: number;
+  avg_significance: number;
 }
 
 export interface ConflictSeverityStats {
   severity: string;
   count: number;
-  open: number;
 }
 
-export interface ConflictDailyTrend {
+export interface ConflictTrendPoint {
   date: string;
   detected: number;
   resolved: number;
 }
 
 export interface ConflictAnalyticsResponse {
-  period: string;
-  from: string;
-  to: string;
+  period: TimePeriod;
   summary: ConflictAnalyticsSummary;
   by_agent_pair: ConflictAgentPairStats[];
   by_decision_type: ConflictTypeStats[];
   by_severity: ConflictSeverityStats[];
-  daily_trend: ConflictDailyTrend[];
+  trend: ConflictTrendPoint[];
 }
 
 // --- Phase 3: Admin & configuration types ---
@@ -564,12 +593,23 @@ export interface APIKeyInfo {
   label: string;
   created_by?: string;
   created_at: string;
+  last_used_at?: string;
   expires_at?: string;
   revoked_at?: string;
 }
 
+/** Flattened: server uses anonymous embed, so all APIKey fields are at top level alongside raw_key. */
 export interface APIKeyWithRawKey {
-  api_key: APIKeyInfo;
+  id: string;
+  prefix: string;
+  agent_id: string;
+  org_id?: string;
+  label: string;
+  created_by?: string;
+  created_at: string;
+  last_used_at?: string;
+  expires_at?: string;
+  revoked_at?: string;
   raw_key: string;
 }
 
@@ -584,19 +624,20 @@ export interface RotateKeyResponse {
   revoked_key_id: string;
 }
 
-export interface ConflictResolutionSettings {
-  auto_resolve_threshold: number;
-  enable_cascade_resolution: boolean;
-  cascade_similarity_threshold: number;
+export type AutoResolveWinner = "recency" | "confidence" | "consensus";
+export type ReopenedPolicy = "escalate";
+
+export interface ConflictResolutionPolicy {
+  auto_resolve_after_days: number;
+  auto_resolve_winner: AutoResolveWinner;
+  auto_resolve_max_severity: string;
+  never_auto_resolve_severities: string[];
+  reopened_resolution_policy: ReopenedPolicy;
 }
 
-export interface OrgSettings {
-  conflict_resolution: ConflictResolutionSettings;
-  updated_at: string;
-}
-
-export interface SetOrgSettingsRequest {
-  conflict_resolution: ConflictResolutionSettings;
+/** Response/request payload for org settings endpoints. */
+export interface OrgSettingsData {
+  conflict_resolution?: ConflictResolutionPolicy;
 }
 
 export interface RetentionHold {

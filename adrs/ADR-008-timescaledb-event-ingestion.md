@@ -78,7 +78,7 @@ The `InsertEvents` function uses pgx's `CopyFrom`, which maps to the PostgreSQL 
 
 ### No foreign keys from the hypertable
 
-TimescaleDB does not support foreign key constraints originating from hypertables. The `run_id` column in `agent_events` references `agent_runs(id)` conceptually, but referential integrity is enforced at the application layer. This is documented in migration 002:
+TimescaleDB does not support foreign key constraints originating from hypertables. The `run_id` column in `agent_events` references `agent_runs(id)` conceptually, but referential integrity is enforced at the application layer. This is documented in migration 001:
 
 ```sql
 -- FK constraints FROM hypertables are not supported by TimescaleDB,

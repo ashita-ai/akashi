@@ -34,7 +34,7 @@ Option 3 was chosen for its simplicity, correctness, and independence from the r
 
 ### Backward compatibility
 
-Proofs created before migration 082 have no rows in `proof_leaves`. The verification code falls back to `GetDecisionHashesForBatch` for these proofs, preserving existing behavior. Over time, as old proofs age out of the audit window, all verified proofs will use snapshotted leaves.
+Proofs created before migration 084 have no rows in `proof_leaves`. The verification code falls back to `GetDecisionHashesForBatch` for these proofs, preserving existing behavior. Over time, as old proofs age out of the audit window, all verified proofs will use snapshotted leaves.
 
 ## Consequences
 

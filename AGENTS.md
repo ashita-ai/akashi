@@ -53,11 +53,11 @@ make ci                                  # full local CI mirror
 ```
 cmd/akashi/          Server entrypoint. Config loading, dependency wiring, signal handling.
 internal/
-  server/            HTTP handlers (handlers*.go), middleware (middleware.go), SSE broker, MCP server.
+  server/            HTTP handlers (handlers*.go), middleware (middleware.go), SSE broker.
   storage/           PostgreSQL queries. One file per entity (decisions.go, agents.go, events.go...).
   storage/sqlite/    SQLite storage backend for local/lite mode (build tag: lite).
-  service/           Business logic. decisions/ (trace pipeline), embedding/, quality/, trace/ (event buffer, WAL),
-                     autoassess/, autoresolve/, tracehealth/.
+  service/           Business logic. decisions/ (trace pipeline), embedding/, quality/, query/, search/,
+                     trace/ (event buffer, WAL), autoassess/, autoresolve/, tracehealth/.
   model/             Domain types. Decision, AgentEvent, Alternative, Evidence, etc.
   config/            Env var loading and validation.
   auth/              JWT issuing/verification, API key hashing (Argon2id).
@@ -71,16 +71,16 @@ internal/
   ratelimit/         Pluggable token bucket rate limiter.
   telemetry/         OpenTelemetry setup (traces + metrics).
   testutil/          Shared test helpers (testcontainers, test DB, test logger).
-migrations/          Sequential SQL files (001..098). Atlas-managed checksums.
+migrations/          SQL files (001, 022..099). Atlas-managed checksums.
 adrs/                Technical architecture decision records (ADR-001 through ADR-015).
 sdk/                 Go, Python, TypeScript client SDKs.
 ui/                  React 19 SPA (audit dashboard). Embedded via go:embed when built with -tags ui.
-docs/                Configuration reference, .env.example.
+docs/                Configuration reference.
 ```
 
 ## Architecture patterns
 
-**Multi-tenancy via org_id.** Every query MUST include `AND org_id = $N`. There are 231 org_id filters across the storage layer. Missing one is a data leak. When adding a new query, always scope by org_id.
+**Multi-tenancy via org_id.** Every query MUST include `AND org_id = $N`. There are 400+ org_id references across the storage layer. Missing one is a data leak. When adding a new query, always scope by org_id.
 
 **Bi-temporal model.** Decisions have `valid_from`/`valid_to` (business time) and `transaction_time` (system time). Active records have `valid_to IS NULL`. Always include this filter in queries that should return current state.
 
@@ -88,7 +88,7 @@ docs/                Configuration reference, .env.example.
 
 **Handler pattern.** All handlers are methods on the `Handlers` struct. Routes are registered in `server.go` using Go 1.22+ `METHOD /path` syntax with middleware wrappers (`adminOnly`, `writeRole`, `readRole`).
 
-**RBAC enforcement.** The auth middleware extracts claims. Role-based middleware (`adminOnly`, `writeRole`, `readRole`) gates route access. Within handlers, `authz.FilterByAccess` post-filters query results for fine-grained grant checking.
+**RBAC enforcement.** The auth middleware extracts claims. Role-based middleware (`adminOnly`, `writeRole`, `readRole`) gates route access. Within handlers, `filterDecisionsByAccess` in `server/authz.go` post-filters query results for fine-grained grant checking.
 
 ## How to add a new API endpoint
 
