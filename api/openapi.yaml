@@ -1480,6 +1480,11 @@ paths:
             type: string
             enum: [factual, assessment, strategic, temporal]
           description: Filter by category.
+        - name: project
+          in: query
+          schema:
+            type: string
+          description: Filter by project name (matches project_a or project_b).
         - name: limit
           in: query
           schema:

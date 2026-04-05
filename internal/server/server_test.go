@@ -10771,9 +10771,16 @@ func TestHandleDecisionConflicts_Nonexistent(t *testing.T) {
 // Coverage push: HandleListConflicts — combined filters
 // ===========================================================================
 
+func TestHandleListConflicts_WithProjectFilter(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflicts?project=my-project", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
 func TestHandleListConflicts_CombinedFilters(t *testing.T) {
 	resp, err := authedRequest("GET",
-		testSrv.URL+"/v1/conflicts?status=open&severity=high&decision_type=implementation&agent_id=test-agent&limit=10&offset=0",
+		testSrv.URL+"/v1/conflicts?status=open&severity=high&decision_type=implementation&agent_id=test-agent&project=my-project&limit=10&offset=0",
 		adminToken, nil)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()

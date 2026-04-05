@@ -687,6 +687,10 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, input CheckInput) 
 			dt := input.DecisionType
 			conflictFilter.DecisionType = &dt
 		}
+		if input.Project != "" {
+			p := input.Project
+			conflictFilter.Project = &p
+		}
 		listed, err := s.db.ListConflicts(ctx, orgID, conflictFilter, input.Limit, 0)
 		if err != nil {
 			conflictErr = err

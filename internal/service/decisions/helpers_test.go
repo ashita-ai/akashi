@@ -1657,6 +1657,7 @@ func (m *checkStore) ListConflicts(_ context.Context, _ uuid.UUID, filters stora
 	if m.conflictsErr != nil {
 		return nil, m.conflictsErr
 	}
+	result := m.conflicts
 	// Respect StatusIn filter to match production SQL behavior.
 	if len(filters.StatusIn) > 0 {
 		allowed := make(map[string]bool, len(filters.StatusIn))
@@ -1664,14 +1665,25 @@ func (m *checkStore) ListConflicts(_ context.Context, _ uuid.UUID, filters stora
 			allowed[s] = true
 		}
 		var filtered []model.DecisionConflict
-		for _, c := range m.conflicts {
+		for _, c := range result {
 			if allowed[c.Status] {
 				filtered = append(filtered, c)
 			}
 		}
-		return filtered, nil
+		result = filtered
 	}
-	return m.conflicts, nil
+	// Respect Project filter to match production SQL behavior.
+	if filters.Project != nil {
+		var filtered []model.DecisionConflict
+		for _, c := range result {
+			if (c.ProjectA != nil && *c.ProjectA == *filters.Project) ||
+				(c.ProjectB != nil && *c.ProjectB == *filters.Project) {
+				filtered = append(filtered, c)
+			}
+		}
+		result = filtered
+	}
+	return result, nil
 }
 
 func (m *checkStore) GetResolvedConflictsByType(_ context.Context, _ uuid.UUID, _ string, _ int) ([]model.ConflictResolution, error) {
@@ -1797,6 +1809,52 @@ func TestCheck_WithProjectAndAgentFilters(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, resp.HasPrecedent)
+}
+
+func TestCheck_ProjectFilterAppliesToConflicts(t *testing.T) {
+	t.Parallel()
+	myProject := "my-project"
+	otherProject := "other-project"
+	ms := &checkStore{
+		conflicts: []model.DecisionConflict{
+			{Status: "open", ProjectA: &myProject, ProjectB: &myProject},
+			{Status: "open", ProjectA: &otherProject, ProjectB: &otherProject},
+			{Status: "open", ProjectA: &myProject, ProjectB: &otherProject},
+		},
+	}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	resp, err := svc.Check(context.Background(), uuid.Nil, CheckInput{
+		DecisionType: "arch", Project: "my-project", Limit: 10,
+	})
+	require.NoError(t, err)
+	// Should only return conflicts where at least one side matches "my-project" (2 of 3).
+	assert.Len(t, resp.Conflicts, 2)
+	for _, c := range resp.Conflicts {
+		assert.True(t,
+			(c.ProjectA != nil && *c.ProjectA == "my-project") ||
+				(c.ProjectB != nil && *c.ProjectB == "my-project"),
+			"conflict should involve my-project")
+	}
+}
+
+func TestCheck_NoProjectFilterReturnsAllConflicts(t *testing.T) {
+	t.Parallel()
+	projA := "project-a"
+	projB := "project-b"
+	ms := &checkStore{
+		conflicts: []model.DecisionConflict{
+			{Status: "open", ProjectA: &projA, ProjectB: &projA},
+			{Status: "open", ProjectA: &projB, ProjectB: &projB},
+		},
+	}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+
+	resp, err := svc.Check(context.Background(), uuid.Nil, CheckInput{
+		DecisionType: "arch", Limit: 10,
+	})
+	require.NoError(t, err)
+	assert.Len(t, resp.Conflicts, 2, "without project filter, all conflicts should be returned")
 }
 
 // ---------------------------------------------------------------------------

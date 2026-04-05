@@ -670,5 +670,8 @@ func parseConflictFilters(r *http.Request) storage.ConflictFilters {
 	if st := r.URL.Query().Get("status"); st != "" {
 		filters.Status = &st
 	}
+	if proj := r.URL.Query().Get("project"); proj != "" {
+		filters.Project = &proj
+	}
 	return filters
 }
