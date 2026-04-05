@@ -47,6 +47,8 @@ export interface Decision {
   /** Consensus scoring: computed at query time. */
   agreement_count?: number;
   conflict_count?: number;
+  /** Consensus weight [0.5, 1.0]: only on detail view. */
+  consensus_weight?: number | null;
   /** Outcome signals: temporal, graph, and fate signals. */
   supersession_velocity_hours?: number | null;
   precedent_citation_count?: number;

@@ -50,8 +50,9 @@ type Decision struct {
 	Evidence     []Evidence    `json:"evidence,omitempty"`
 
 	// Consensus scoring: computed at query time from embedding similarity cluster.
-	AgreementCount int `json:"agreement_count"`
-	ConflictCount  int `json:"conflict_count"`
+	AgreementCount  int      `json:"agreement_count"`
+	ConflictCount   int      `json:"conflict_count"`
+	ConsensusWeight *float64 `json:"consensus_weight,omitempty"`
 
 	// Outcome signals: temporal, graph, and fate signals computed at query time.
 	SupersessionVelocityHours *float64     `json:"supersession_velocity_hours"`

@@ -59,10 +59,8 @@ func Decision(d model.Decision) map[string]any {
 	}
 
 	// Consensus weight: [0.5, 1.0]; only include when there's meaningful data.
-	total := d.AgreementCount + d.ConflictCount
-	if total > 0 {
-		cw := 0.5 + 0.5*float64(d.AgreementCount)/float64(max(1, total))
-		m["consensus_weight"] = math.Round(cw*1000) / 1000 // 3 decimal places
+	if cw := model.ComputeConsensusWeight(d.AgreementCount, d.ConflictCount); cw != nil {
+		m["consensus_weight"] = *cw
 	}
 
 	// Assessment summary: explicit correctness feedback from agents.
