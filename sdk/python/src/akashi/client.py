@@ -68,7 +68,7 @@ from akashi.types import (
     IntegrityViolationsResponse,
     LineageResponse,
     ListConflictLabelsResponse,
-    OrgSettings,
+    OrgSettingsData,
     ProjectLink,
     PurgeRequest,
     PurgeResponse,
@@ -86,7 +86,6 @@ from akashi.types import (
     SearchResponse,
     SearchResult,
     SessionViewResponse,
-    SetOrgSettingsRequest,
     SetRetentionRequest,
     SignupRequest,
     SignupResponse,
@@ -116,12 +115,18 @@ def _build_check_body(
     query: str | None,
     agent_id: str | None,
     limit: int,
+    project: str | None = None,
+    format: str | None = None,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {"decision_type": decision_type, "limit": limit}
     if query is not None:
         body["query"] = query
     if agent_id is not None:
         body["agent_id"] = agent_id
+    if project is not None:
+        body["project"] = project
+    if format is not None:
+        body["format"] = format
     return body
 
 
@@ -190,6 +195,10 @@ def _build_trace_body(agent_id: str, request: TraceRequest) -> dict[str, Any]:
         body["precedent_ref"] = str(request.precedent_ref)
     if request.precedent_reason is not None:
         body["precedent_reason"] = request.precedent_reason
+    if request.supersedes_id is not None:
+        body["supersedes_id"] = str(request.supersedes_id)
+    if request.trace_id is not None:
+        body["trace_id"] = request.trace_id
     if request.metadata:
         body["metadata"] = request.metadata
 
@@ -471,10 +480,12 @@ class AkashiClient:
         query: str | None = None,
         *,
         agent_id: str | None = None,
+        project: str | None = None,
         limit: int = 5,
+        format: str | None = None,
     ) -> CheckResponse:
         """Check for existing decisions before making a new one."""
-        data = await self._post("/v1/check", _build_check_body(decision_type, query, agent_id, limit))
+        data = await self._post("/v1/check", _build_check_body(decision_type, query, agent_id, limit, project, format))
         return CheckResponse.model_validate(data)
 
     async def trace(self, request: TraceRequest, *, idempotency_key: str | None = None) -> TraceResponse:
@@ -878,15 +889,15 @@ class AkashiClient:
 
     # --- Phase 3: Org settings ---
 
-    async def get_org_settings(self) -> OrgSettings:
+    async def get_org_settings(self) -> OrgSettingsData:
         """Get organization settings."""
         data = await self._get("/v1/org/settings")
-        return OrgSettings.model_validate(data)
+        return OrgSettingsData.model_validate(data)
 
-    async def set_org_settings(self, req: SetOrgSettingsRequest) -> OrgSettings:
+    async def set_org_settings(self, req: OrgSettingsData) -> OrgSettingsData:
         """Update organization settings."""
         data = await self._put("/v1/org/settings", req.model_dump())
-        return OrgSettings.model_validate(data)
+        return OrgSettingsData.model_validate(data)
 
     # --- Phase 3: Retention ---
 
@@ -1466,10 +1477,12 @@ class AkashiSyncClient:
         query: str | None = None,
         *,
         agent_id: str | None = None,
+        project: str | None = None,
         limit: int = 5,
+        format: str | None = None,
     ) -> CheckResponse:
         """Check for existing decisions before making a new one."""
-        data = self._post("/v1/check", _build_check_body(decision_type, query, agent_id, limit))
+        data = self._post("/v1/check", _build_check_body(decision_type, query, agent_id, limit, project, format))
         return CheckResponse.model_validate(data)
 
     def trace(self, request: TraceRequest, *, idempotency_key: str | None = None) -> TraceResponse:
@@ -1873,15 +1886,15 @@ class AkashiSyncClient:
 
     # --- Phase 3: Org settings ---
 
-    def get_org_settings(self) -> OrgSettings:
+    def get_org_settings(self) -> OrgSettingsData:
         """Get organization settings."""
         data = self._get("/v1/org/settings")
-        return OrgSettings.model_validate(data)
+        return OrgSettingsData.model_validate(data)
 
-    def set_org_settings(self, req: SetOrgSettingsRequest) -> OrgSettings:
+    def set_org_settings(self, req: OrgSettingsData) -> OrgSettingsData:
         """Update organization settings."""
         data = self._put("/v1/org/settings", req.model_dump())
-        return OrgSettings.model_validate(data)
+        return OrgSettingsData.model_validate(data)
 
     # --- Phase 3: Retention ---
 

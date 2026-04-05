@@ -243,7 +243,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/APIResponse_Agent"
+                $ref: "#/components/schemas/APIResponse_CreateAgentResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "403":
@@ -368,6 +368,12 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: Agent data is covered by an active legal hold and cannot be deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /v1/agents/{agent_id}/stats:
     get:
@@ -928,6 +934,12 @@ paths:
             default: 10
             minimum: 1
             maximum: 1000
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
       responses:
         "200":
           description: Recent decisions.
@@ -1091,28 +1103,26 @@ paths:
             type: string
             enum: [open, resolved, false_positive]
           description: Filter by conflict status.
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 200
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
       responses:
         "200":
           description: Conflicts involving this decision.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  data:
-                    type: object
-                    properties:
-                      decision_id:
-                        type: string
-                        format: uuid
-                      conflicts:
-                        type: array
-                        items:
-                          $ref: "#/components/schemas/DecisionConflict"
-                      total:
-                        type: integer
-                  meta:
-                    $ref: "#/components/schemas/ResponseMeta"
+                $ref: "#/components/schemas/APIResponse_DecisionConflictList"
         "400":
           $ref: "#/components/responses/BadRequest"
 
@@ -1845,6 +1855,19 @@ paths:
         data, including decision quality, evidence coverage, and conflict
         resolution rates. Identifies gaps and returns an overall status.
         Requires `admin` role or higher.
+      parameters:
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Start of time range (RFC 3339).
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: End of time range (RFC 3339).
       responses:
         "200":
           description: Trace health metrics.
@@ -2056,7 +2079,7 @@ paths:
           in: query
           schema:
             type: integer
-            default: 100
+            default: 50
             minimum: 1
             maximum: 1000
         - name: offset
@@ -2132,6 +2155,12 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: Key is already revoked and cannot be rotated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   # ── Usage ────────────────────────────────────────────────────────
   /v1/usage:
@@ -4445,6 +4474,25 @@ components:
           items:
             type: string
           description: Quality warnings (e.g. high confidence with no evidence).
+        embedding_skipped:
+          type: boolean
+          description: True when semantic embedding was skipped (e.g. no Qdrant connection).
+        confidence_adjusted:
+          type: boolean
+          description: True when the stored confidence differs from the submitted value.
+        original_confidence:
+          type: number
+          format: float
+          description: Submitted confidence before quality adjustment.
+        stored_confidence:
+          type: number
+          format: float
+          description: Confidence value actually persisted after adjustment.
+        confidence_reasons:
+          type: array
+          items:
+            type: string
+          description: Reasons why confidence was adjusted.
 
     AppendEventsResponse:
       type: object
@@ -4697,6 +4745,34 @@ components:
       properties:
         data:
           $ref: "#/components/schemas/Agent"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    CreateAgentResponse:
+      type: object
+      required: [agent, api_key]
+      properties:
+        agent:
+          $ref: "#/components/schemas/Agent"
+        api_key:
+          type: object
+          required: [id, prefix]
+          properties:
+            id:
+              type: string
+              format: uuid
+            prefix:
+              type: string
+        raw_key:
+          type: string
+          description: The full API key, shown only once at creation time.
+
+    APIResponse_CreateAgentResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/CreateAgentResponse"
         meta:
           $ref: "#/components/schemas/ResponseMeta"
 
@@ -6307,6 +6383,17 @@ components:
       properties:
         data:
           $ref: "#/components/schemas/DecisionConflict"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_DecisionConflictList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/DecisionConflict"
         meta:
           $ref: "#/components/schemas/ResponseMeta"
 

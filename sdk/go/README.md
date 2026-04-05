@@ -53,8 +53,8 @@ func main() {
         Confidence:   0.85,
         Reasoning:    &reasoning,
         Alternatives: []akashi.TraceAlternative{
-            {Label: "gpt-4o", Selected: true},
-            {Label: "claude-3-haiku", Selected: false},
+            {Label: "gpt-4o"},
+            {Label: "claude-3-haiku"},
         },
     })
     if err != nil {

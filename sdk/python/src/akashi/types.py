@@ -182,10 +182,12 @@ class Agent(BaseModel):
     org_id: UUID
     name: str
     role: str
+    email: str | None = None
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
+    last_seen: datetime | None = None
 
 
 class Grant(BaseModel):
@@ -236,6 +238,8 @@ class TraceRequest(BaseModel):
     evidence: list[TraceEvidence] = Field(default_factory=list)
     precedent_ref: UUID | None = None
     precedent_reason: str | None = None
+    supersedes_id: UUID | None = None
+    trace_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     context: dict[str, Any] = Field(default_factory=dict)
 
@@ -257,13 +261,22 @@ class TraceEvidence(BaseModel):
     metrics: dict[str, float] | None = None
 
 
+class TimeRange(BaseModel):
+    """Time range for query filters."""
+
+    from_: datetime | None = Field(default=None, alias="from")
+    to: datetime | None = None
+
+
 class QueryFilters(BaseModel):
     """Structured filters for decision queries."""
 
     agent_id: list[str] | None = None
+    run_id: UUID | None = None
     decision_type: str | None = None
     confidence_min: float | None = Field(default=None, ge=0.0, le=1.0)
     outcome: str | None = None
+    time_range: TimeRange | None = None
     session_id: str | None = None
     tool: str | None = None
     model: str | None = None
@@ -276,7 +289,9 @@ class CheckRequest(BaseModel):
     decision_type: str
     query: str | None = None
     agent_id: str | None = None
+    project: str | None = None
     limit: int = Field(default=5, ge=1, le=100)
+    format: str | None = None  # "full" (default) or "concise"
 
 
 class CreateRunRequest(BaseModel):
@@ -341,6 +356,21 @@ class TraceResponse(BaseModel):
     event_count: int = 0
 
 
+class ConflictResolution(BaseModel):
+    """Summarises a resolved conflict: which approach prevailed and which was rejected."""
+
+    id: UUID
+    decision_type: str
+    winning_decision_id: UUID
+    winning_agent: str
+    winning_outcome: str
+    losing_agent: str
+    losing_outcome: str
+    explanation: str | None = None
+    resolution_note: str | None = None
+    resolved_at: datetime
+
+
 class CheckResponse(BaseModel):
     """Response from a precedent check."""
 
@@ -348,6 +378,7 @@ class CheckResponse(BaseModel):
     decisions: list[Decision]
     conflicts: list[DecisionConflict] = Field(default_factory=list)
     conflicts_unavailable: bool = False
+    prior_resolutions: list[ConflictResolution] = Field(default_factory=list)
 
 
 class QueryResponse(BaseModel):
@@ -365,6 +396,7 @@ class SearchResult(BaseModel):
 
     decision: Decision
     similarity_score: float
+    qdrant_rank: int | None = None
 
 
 class SearchResponse(BaseModel):
@@ -426,6 +458,7 @@ class AssessResponse(BaseModel):
     assessor_agent_id: str
     outcome: AssessOutcome
     notes: str | None = None
+    source: str = ""
     created_at: datetime
 
 
@@ -438,9 +471,11 @@ class ConflictRecommendation(BaseModel):
     confidence: float
 
 
-class ConflictDetail(BaseModel):
-    decision_conflict: DecisionConflict
+class ConflictDetail(DecisionConflict):
+    """Extends DecisionConflict with detail-only fields. Server uses anonymous embed so all fields are at top level."""
+
     recommendation: ConflictRecommendation | None = None
+    reopens_resolution: ConflictResolution | None = None
 
 
 class LineageEntry(BaseModel):
@@ -545,12 +580,18 @@ class ConflictGroup(BaseModel):
     open_conflicts: list[DecisionConflict] = Field(default_factory=list)
 
 
+class TimePeriod(BaseModel):
+    """Defines the start and end of an analytics window."""
+
+    start: datetime
+    end: datetime
+
+
 class ConflictAnalyticsSummary(BaseModel):
-    total_conflicts: int = 0
-    open: int = 0
-    resolved: int = 0
-    false_positives: int = 0
-    avg_days_to_resolution: float = 0.0
+    total_detected: int = 0
+    total_resolved: int = 0
+    mean_time_to_resolution_hours: float | None = None
+    false_positive_rate: float = 0.0
 
 
 class ConflictAgentPairStats(BaseModel):
@@ -559,36 +600,32 @@ class ConflictAgentPairStats(BaseModel):
     count: int = 0
     open: int = 0
     resolved: int = 0
-    false_positives: int = 0
 
 
 class ConflictTypeStats(BaseModel):
     decision_type: str
     count: int = 0
-    open: int = 0
+    avg_significance: float = 0.0
 
 
 class ConflictSeverityStats(BaseModel):
     severity: str
     count: int = 0
-    open: int = 0
 
 
-class ConflictDailyTrend(BaseModel):
+class ConflictTrendPoint(BaseModel):
     date: str
     detected: int = 0
     resolved: int = 0
 
 
 class ConflictAnalyticsResponse(BaseModel):
-    period: str = ""
-    from_time: datetime | None = Field(default=None, alias="from")
-    to_time: datetime | None = Field(default=None, alias="to")
+    period: TimePeriod
     summary: ConflictAnalyticsSummary = Field(default_factory=ConflictAnalyticsSummary)
     by_agent_pair: list[ConflictAgentPairStats] = Field(default_factory=list)
     by_decision_type: list[ConflictTypeStats] = Field(default_factory=list)
     by_severity: list[ConflictSeverityStats] = Field(default_factory=list)
-    daily_trend: list[ConflictDailyTrend] = Field(default_factory=list)
+    trend: list[ConflictTrendPoint] = Field(default_factory=list)
 
 
 # --- Phase 3: Admin & configuration types ---
@@ -602,12 +639,24 @@ class APIKey(BaseModel):
     label: str = ""
     created_by: str = ""
     created_at: datetime
+    last_used_at: datetime | None = None
     expires_at: datetime | None = None
     revoked_at: datetime | None = None
 
 
 class APIKeyWithRawKey(BaseModel):
-    api_key: APIKey
+    """Flattened: server uses anonymous embed, so all APIKey fields are at top level."""
+
+    id: UUID
+    prefix: str
+    agent_id: str
+    org_id: UUID | None = None
+    label: str = ""
+    created_by: str = ""
+    created_at: datetime
+    last_used_at: datetime | None = None
+    expires_at: datetime | None = None
+    revoked_at: datetime | None = None
     raw_key: str
 
 
@@ -622,19 +671,20 @@ class RotateKeyResponse(BaseModel):
     revoked_key_id: UUID
 
 
-class ConflictResolutionSettings(BaseModel):
-    auto_resolve_threshold: float = 0.95
-    enable_cascade_resolution: bool = True
-    cascade_similarity_threshold: float = 0.8
+class ConflictResolutionPolicy(BaseModel):
+    """Auto-resolution policy for an org's conflicts."""
+
+    auto_resolve_after_days: int = 7
+    auto_resolve_winner: str = "recency"  # recency, confidence, consensus
+    auto_resolve_max_severity: str = "medium"  # low, medium, high, critical
+    never_auto_resolve_severities: list[str] = Field(default_factory=list)
+    reopened_resolution_policy: str = "escalate"
 
 
-class OrgSettings(BaseModel):
-    conflict_resolution: ConflictResolutionSettings = Field(default_factory=ConflictResolutionSettings)
-    updated_at: datetime | None = None
+class OrgSettingsData(BaseModel):
+    """Response/request payload for org settings endpoints."""
 
-
-class SetOrgSettingsRequest(BaseModel):
-    conflict_resolution: ConflictResolutionSettings
+    conflict_resolution: ConflictResolutionPolicy | None = None
 
 
 class RetentionHold(BaseModel):
