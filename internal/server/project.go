@@ -57,6 +57,7 @@ func normalizeTraceProject(
 	serverProject string,
 	resolveAlias func(project string) string,
 	projectKnown func(project string) bool,
+	hasAnyProjects func() bool,
 	logger *slog.Logger,
 ) string {
 	clientProject, _ := clientCtx["project"].(string)
@@ -74,8 +75,13 @@ func normalizeTraceProject(
 		return ""
 	}
 
-	// If the server already confirmed the client value, or the client sent nothing, done.
+	// Neither server nor client provided a project. Reject unless this is
+	// a brand-new org with no projects yet (bootstrapping).
 	if clientProject == "" {
+		if hasAnyProjects != nil && hasAnyProjects() {
+			logger.Warn("rejected trace with no project")
+			return "project is required: provide project in context, set repo_url, or configure MCP roots so the server can detect the project from git"
+		}
 		return ""
 	}
 
