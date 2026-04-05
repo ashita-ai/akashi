@@ -754,6 +754,14 @@ class AkashiClient:
         )
         return Decision.model_validate(data)
 
+    async def patch_decision(self, decision_id: UUID, *, project: str | None = None) -> Decision:
+        """Update mutable metadata on a decision (e.g. project)."""
+        body: dict[str, Any] = {}
+        if project is not None:
+            body["project"] = project
+        data = await self._patch(f"/v1/decisions/{decision_id}", body)
+        return Decision.model_validate(data)
+
     async def erase_decision(self, decision_id: UUID, reason: str = "") -> EraseDecisionResponse:
         """GDPR-erase a decision (irreversible)."""
         data = await self._post(
@@ -1739,6 +1747,14 @@ class AkashiSyncClient:
             f"/v1/decisions/{decision_id}",
             {"reason": reason} if reason else {},
         )
+        return Decision.model_validate(data)
+
+    def patch_decision(self, decision_id: UUID, *, project: str | None = None) -> Decision:
+        """Update mutable metadata on a decision (e.g. project)."""
+        body: dict[str, Any] = {}
+        if project is not None:
+            body["project"] = project
+        data = self._patch(f"/v1/decisions/{decision_id}", body)
         return Decision.model_validate(data)
 
     def erase_decision(self, decision_id: UUID, reason: str = "") -> EraseDecisionResponse:

@@ -151,6 +151,7 @@ func New(cfg ServerConfig) *Server {
 	mux.Handle("GET /v1/agents/{agent_id}/stats", adminOnly(http.HandlerFunc(h.HandleAgentStats)))
 	mux.Handle("PATCH /v1/agents/{agent_id}/tags", adminOnly(http.HandlerFunc(h.HandleUpdateAgentTags)))
 	mux.Handle("DELETE /v1/agents/{agent_id}", adminOnly(http.HandlerFunc(h.HandleDeleteAgent)))
+	mux.Handle("PATCH /v1/decisions/{id}", adminOnly(http.HandlerFunc(h.HandlePatchDecision)))
 	mux.Handle("DELETE /v1/decisions/{id}", adminOnly(http.HandlerFunc(h.HandleRetractDecision)))
 	mux.Handle("GET /v1/export/decisions", adminOnly(http.HandlerFunc(h.HandleExportDecisions)))
 

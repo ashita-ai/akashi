@@ -1189,3 +1189,59 @@ func (h *Handlers) HandleGetDecisionLineage(w http.ResponseWriter, r *http.Reque
 
 	writeJSON(w, r, http.StatusOK, lineage)
 }
+
+// HandlePatchDecision handles PATCH /v1/decisions/{id} (admin-only).
+// Currently supports updating the project field on a decision.
+func (h *Handlers) HandlePatchDecision(w http.ResponseWriter, r *http.Request) {
+	orgID := OrgIDFromContext(r.Context())
+
+	id, err := parsePathUUID(r, "id")
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid decision id")
+		return
+	}
+
+	var req struct {
+		Project *string `json:"project"`
+	}
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
+		return
+	}
+
+	if req.Project == nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "at least one field must be provided (project)")
+		return
+	}
+
+	if *req.Project == "" {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "project must not be empty")
+		return
+	}
+
+	claims := ClaimsFromContext(r.Context())
+	audit := h.buildAuditEntry(r, orgID,
+		"decision_project_updated", "decision", id.String(),
+		nil, nil,
+		map[string]any{"updated_by": claims.ActorID(), "project": *req.Project},
+	)
+
+	_, err = h.db.UpdateDecisionProject(r.Context(), orgID, id, *req.Project, &audit)
+	if err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "decision not found")
+			return
+		}
+		h.writeInternalError(w, r, "failed to update decision project", err)
+		return
+	}
+
+	// Return the updated decision.
+	decision, err := h.db.GetDecision(r.Context(), orgID, id, storage.GetDecisionOpts{CurrentOnly: true})
+	if err != nil {
+		h.writeInternalError(w, r, "failed to get decision after project update", err)
+		return
+	}
+
+	writeJSON(w, r, http.StatusOK, decision)
+}

@@ -801,6 +801,49 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: patchDecision
+      tags: [Decisions]
+      summary: Update mutable decision metadata
+      description: |
+        Updates mutable metadata on a decision. Currently supports changing the
+        `project` field. The project column is a GENERATED column derived from
+        `agent_context`, so this endpoint updates `agent_context.client.project`
+        and the generated column recomputes automatically. Requires `admin` role.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Decision UUID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                project:
+                  type: string
+                  minLength: 1
+                  description: New project name to assign to this decision.
+              required:
+                - project
+      responses:
+        "200":
+          description: Decision updated. Returns the full decision with new project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_Decision"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
     delete:
       operationId: retractDecision
       tags: [Decisions]
