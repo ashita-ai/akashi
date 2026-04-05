@@ -838,6 +838,14 @@ type GrantAllProjectLinksResponse struct {
 	LinksCreated int `json:"links_created"`
 }
 
+// SubscriptionEvent represents a single event received from the SSE stream.
+// EventType is the SSE event name (e.g. "akashi_decisions" or "akashi_conflicts").
+// Data contains the parsed JSON payload.
+type SubscriptionEvent struct {
+	EventType string         `json:"event_type"`
+	Data      map[string]any `json:"data"`
+}
+
 // ExportOptions are optional filters for Client.ExportDecisions.
 type ExportOptions struct {
 	AgentID      string
