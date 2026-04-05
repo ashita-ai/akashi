@@ -1,12 +1,10 @@
 package server
 
 import (
-	"errors"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/storage"
@@ -74,8 +72,8 @@ func (h *Handlers) HandleUpsertConflictLabel(w http.ResponseWriter, r *http.Requ
 		Notes:            req.Notes,
 	}
 	if err := h.db.UpsertConflictLabel(r.Context(), cl); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, r, http.StatusConflict, model.ErrCodeConflict, "conflict belongs to a different organization")
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
 			return
 		}
 		h.writeInternalError(w, r, "failed to upsert conflict label", err)
@@ -97,7 +95,7 @@ func (h *Handlers) HandleGetConflictLabel(w http.ResponseWriter, r *http.Request
 
 	cl, err := h.db.GetConflictLabel(r.Context(), conflictID, orgID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if isNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "label not found")
 			return
 		}
@@ -119,7 +117,7 @@ func (h *Handlers) HandleDeleteConflictLabel(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := h.db.DeleteConflictLabel(r.Context(), conflictID, orgID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if isNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "label not found")
 			return
 		}
