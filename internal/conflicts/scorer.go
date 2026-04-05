@@ -794,6 +794,23 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			}
 		}
 
+		// Severity fallback: when the LLM/external scorer did not provide
+		// severity, compute it from decision metadata (type tier, confidence,
+		// category). This ensures severity reflects impact independent of the
+		// significance score. See ADR-015.
+		if severity == nil {
+			computed := ComputeSeverity(SeverityInput{
+				DecisionTypeA: d.DecisionType,
+				DecisionTypeB: cand.DecisionType,
+				ConfidenceA:   d.Confidence,
+				ConfidenceB:   cand.Confidence,
+				Category:      derefString(category),
+			})
+			if computed != "" {
+				severity = &computed
+			}
+		}
+
 		kind := model.ConflictKindCrossAgent
 		if d.AgentID == cand.AgentID {
 			kind = model.ConflictKindSelfContradiction
