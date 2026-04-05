@@ -154,10 +154,7 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resolvedBy := claims.AgentID
-	if resolvedBy == "" {
-		resolvedBy = claims.Subject
-	}
+	resolvedBy := claims.ActorID()
 
 	fpLabel := storage.ComputeFPLabel(req.Status, req.FalsePositiveLabel)
 
@@ -231,10 +228,7 @@ func (h *Handlers) HandleResolveConflictGroup(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	resolvedBy := claims.AgentID
-	if resolvedBy == "" {
-		resolvedBy = claims.Subject
-	}
+	resolvedBy := claims.ActorID()
 
 	audit := h.buildAuditEntry(r, orgID,
 		"conflict_group_resolved", "conflict_group", groupID.String(),
@@ -324,10 +318,7 @@ func (h *Handlers) HandleAdjudicateConflict(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	resolverAgent := claims.AgentID
-	if resolverAgent == "" {
-		resolverAgent = claims.Subject
-	}
+	resolverAgent := claims.ActorID()
 
 	// Ensure the resolver agent exists (auto-create if admin+).
 	autoRegAudit := h.buildAuditEntry(r, orgID, "", "agent", resolverAgent, nil, nil, nil)

@@ -140,9 +140,7 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 
 	if agentContext == nil {
 		h.clearIdempotentWrite(r, orgID, idem)
-		writeJSON(w, r, http.StatusBadRequest, map[string]string{
-			"error": "project validation failed: unknown project name",
-		})
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "project validation failed: unknown project name")
 		return
 	}
 
@@ -938,10 +936,7 @@ func (h *Handlers) HandleRetractDecision(w http.ResponseWriter, r *http.Request)
 	}
 
 	claims := ClaimsFromContext(r.Context())
-	retractedBy := claims.AgentID
-	if retractedBy == "" {
-		retractedBy = claims.Subject
-	}
+	retractedBy := claims.ActorID()
 
 	audit := h.buildAuditEntry(r, orgID,
 		"decision_retracted", "decision", id.String(),
@@ -1004,10 +999,7 @@ func (h *Handlers) HandleEraseDecision(w http.ResponseWriter, r *http.Request) {
 	}
 
 	claims := ClaimsFromContext(r.Context())
-	erasedBy := claims.AgentID
-	if erasedBy == "" {
-		erasedBy = claims.Subject
-	}
+	erasedBy := claims.ActorID()
 
 	audit := h.buildAuditEntry(r, orgID,
 		"decision_erased", "decision", id.String(),

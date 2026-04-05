@@ -172,4 +172,8 @@ Helper functions:
 
 ## Retry and rate limiting
 
-The SDK does not retry failed requests automatically. When the server returns HTTP 429, the error satisfies `IsRateLimited()`. Callers should implement their own retry logic with exponential backoff. The server includes `Retry-After` headers on rate-limited responses.
+The SDK automatically retries failed requests using exponential backoff with jitter. By default, up to 3 retries are attempted for HTTP 429 (rate limited) and 5xx (server error) responses. The base delay is 500ms, doubling each attempt up to a 30s cap. Disable retries by setting `MaxRetries` to `intPtr(0)` in the client `Config`. When the server returns a `Retry-After` header, that value takes precedence over the computed delay.
+
+| Error helper | Status code |
+|---|---|
+| `IsValidation(err)` | HTTP 400 |
