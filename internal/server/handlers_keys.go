@@ -237,13 +237,6 @@ func (h *Handlers) HandleGetUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Enrich with key metadata using a single batch query to avoid N+1 round-trips.
-	type keyUsage struct {
-		KeyID   *uuid.UUID `json:"key_id"`
-		Prefix  string     `json:"prefix"`
-		Label   string     `json:"label"`
-		AgentID string     `json:"agent_id"`
-		Count   int        `json:"decisions"`
-	}
 
 	// Collect managed key IDs (skip uuid.Nil = legacy / unattributed).
 	var keyIDs []uuid.UUID
@@ -264,10 +257,10 @@ func (h *Handlers) HandleGetUsage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var keyUsages []keyUsage
+	var keyUsages []model.UsageByKey
 	for keyID, count := range byKey {
 		if keyID == uuid.Nil {
-			keyUsages = append(keyUsages, keyUsage{
+			keyUsages = append(keyUsages, model.UsageByKey{
 				KeyID:   nil,
 				Prefix:  "",
 				Label:   "(legacy)",
@@ -278,7 +271,7 @@ func (h *Handlers) HandleGetUsage(w http.ResponseWriter, r *http.Request) {
 		}
 		kid := keyID
 		if k, ok := keysByID[keyID]; ok {
-			keyUsages = append(keyUsages, keyUsage{
+			keyUsages = append(keyUsages, model.UsageByKey{
 				KeyID:   &kid,
 				Prefix:  k.Prefix,
 				Label:   k.Label,
@@ -287,7 +280,7 @@ func (h *Handlers) HandleGetUsage(w http.ResponseWriter, r *http.Request) {
 			})
 		} else {
 			// Key was deleted — show ID only. Best-effort.
-			keyUsages = append(keyUsages, keyUsage{
+			keyUsages = append(keyUsages, model.UsageByKey{
 				KeyID: &kid,
 				Count: count,
 			})
@@ -301,20 +294,16 @@ func (h *Handlers) HandleGetUsage(w http.ResponseWriter, r *http.Request) {
 			agentCounts[ku.AgentID] += ku.Count
 		}
 	}
-	type agentUsage struct {
-		AgentID   string `json:"agent_id"`
-		Decisions int    `json:"decisions"`
-	}
-	var byAgent []agentUsage
+	var byAgent []model.UsageByAgent
 	for aid, cnt := range agentCounts {
-		byAgent = append(byAgent, agentUsage{AgentID: aid, Decisions: cnt})
+		byAgent = append(byAgent, model.UsageByAgent{AgentID: aid, Decisions: cnt})
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"org_id":          orgID,
-		"period":          periodStr,
-		"total_decisions": total,
-		"by_key":          keyUsages,
-		"by_agent":        byAgent,
+	writeJSON(w, r, http.StatusOK, model.GetUsageResponse{
+		OrgID:          orgID,
+		Period:         periodStr,
+		TotalDecisions: total,
+		ByKey:          keyUsages,
+		ByAgent:        byAgent,
 	})
 }

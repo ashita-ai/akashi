@@ -123,16 +123,15 @@ func (h *Handlers) HandleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := map[string]any{
-		"agent": agent,
-		"api_key": map[string]any{
-			"id":     apiKey.ID,
-			"prefix": apiKey.Prefix,
+	resp := model.CreateAgentResponse{
+		Agent: agent,
+		APIKey: model.CreateAgentAPIKeyInfo{
+			ID:     apiKey.ID,
+			Prefix: apiKey.Prefix,
 		},
 	}
 	if showRawKey {
-		// Raw key is shown exactly once when server-generated.
-		resp["raw_key"] = rawKey
+		resp.RawKey = rawKey
 	}
 	writeJSON(w, r, http.StatusCreated, resp)
 }
@@ -433,9 +432,9 @@ func (h *Handlers) HandleAgentStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"agent_id": agentID,
-		"stats":    stats,
+	writeJSON(w, r, http.StatusOK, model.AgentStatsResponse{
+		AgentID: agentID,
+		Stats:   stats,
 	})
 }
 
@@ -503,9 +502,9 @@ func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		_ = h.db.CompleteDeletionLog(r.Context(), orgID, logID, countMap)
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"agent_id": agentID,
-		"deleted":  result,
+	writeJSON(w, r, http.StatusOK, model.DeleteAgentResponse{
+		AgentID: agentID,
+		Deleted: result,
 	})
 }
 

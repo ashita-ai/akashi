@@ -65,14 +65,14 @@ func (h *Handlers) HandleGetDecisionProof(w http.ResponseWriter, r *http.Request
 	}
 
 	// 4. Return the proof with a self-verification check.
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"decision_id":  decisionID,
-		"content_hash": contentHash,
-		"proof_id":     proof.ID,
-		"root_hash":    rootHash,
-		"batch_start":  proof.BatchStart,
-		"batch_end":    proof.BatchEnd,
-		"proof_path":   steps,
-		"verified":     rootHash == proof.RootHash,
+	writeJSON(w, r, http.StatusOK, model.DecisionProofResponse{
+		DecisionID:  decisionID,
+		ContentHash: contentHash,
+		ProofID:     proof.ID,
+		RootHash:    rootHash,
+		BatchStart:  proof.BatchStart,
+		BatchEnd:    proof.BatchEnd,
+		ProofPath:   steps,
+		Verified:    rootHash == proof.RootHash,
 	})
 }
