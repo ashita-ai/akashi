@@ -5945,6 +5945,13 @@ func TestHandleListConflicts_WithConflictKindFilter(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
+func TestHandleListConflicts_InvalidConflictKind(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflicts?conflict_kind=factaul", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 func TestHandleListConflicts_WithDecisionTypeFilter(t *testing.T) {
 	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflicts?decision_type=architecture", adminToken, nil)
 	require.NoError(t, err)
@@ -9825,10 +9832,17 @@ func TestHandleListConflictGroups_WithAgentFilter(t *testing.T) {
 }
 
 func TestHandleListConflictGroups_WithConflictKindFilter(t *testing.T) {
-	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflict-groups?conflict_kind=direct", adminToken, nil)
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflict-groups?conflict_kind=cross_agent", adminToken, nil)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleListConflictGroups_InvalidConflictKind(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflict-groups?conflict_kind=direct", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
 // ===========================================================================
@@ -9889,10 +9903,17 @@ func TestHandleConflictAnalytics_WithDecisionTypeFilter(t *testing.T) {
 }
 
 func TestHandleConflictAnalytics_WithConflictKindFilter(t *testing.T) {
-	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflicts/analytics?conflict_kind=direct", adminToken, nil)
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflicts/analytics?conflict_kind=self_contradiction", adminToken, nil)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHandleConflictAnalytics_InvalidConflictKind(t *testing.T) {
+	resp, err := authedRequest("GET", testSrv.URL+"/v1/conflicts/analytics?conflict_kind=direct", adminToken, nil)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
 func TestHandleGetUsage_ValidPastPeriod(t *testing.T) {
