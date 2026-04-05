@@ -12,6 +12,23 @@ import (
 	"time"
 )
 
+// Secret wraps a sensitive string value. Its String and GoString methods
+// return a redacted placeholder so keys never appear in logs or fmt output.
+type Secret string
+
+func (s Secret) String() string {
+	if s == "" {
+		return ""
+	}
+	return "[REDACTED]"
+}
+
+func (s Secret) GoString() string { return s.String() }
+
+// Value returns the underlying secret for use in API calls and hashing.
+// Callers should never log the returned value.
+func (s Secret) Value() string { return string(s) }
+
 // Config holds all application configuration.
 type Config struct {
 	// Server settings.
@@ -31,24 +48,25 @@ type Config struct {
 	JWTExpiration     time.Duration
 
 	// Admin bootstrap.
-	AdminAPIKey string // API key for the initial admin agent.
+	AdminAPIKey Secret // API key for the initial admin agent.
 
 	// Embedding provider settings.
 	EmbeddingProvider   string // "auto", "openai", "ollama", or "noop"
-	OpenAIAPIKey        string
+	OpenAIAPIKey        Secret
 	EmbeddingModel      string
 	EmbeddingDimensions int // Vector dimensions; must match the chosen model's output.
 	OllamaURL           string
 	OllamaModel         string
 
 	// OTEL settings.
-	OTELEndpoint string
-	OTELInsecure bool // Use HTTP instead of HTTPS for OTEL exporter (default: false).
-	ServiceName  string
+	OTELEndpoint   string
+	OTELInsecure   bool    // Use HTTP instead of HTTPS for OTEL exporter (default: false).
+	OTELSampleRate float64 // Fraction of traces to sample (0.0-1.0). Default: 1.0 (all traces).
+	ServiceName    string
 
 	// Qdrant vector search settings.
 	QdrantURL          string // gRPC-compatible URL (e.g. "https://xyz.cloud.qdrant.io:6334")
-	QdrantAPIKey       string
+	QdrantAPIKey       Secret
 	QdrantCollection   string
 	OutboxPollInterval time.Duration
 	OutboxBatchSize    int
@@ -124,7 +142,7 @@ type Config struct {
 
 	// IDE hook endpoint settings.
 	HooksEnabled bool   // Enable /hooks/* IDE integration endpoints (default: true).
-	HooksAPIKey  string // Optional API key for non-localhost hook access (default: "" = localhost only).
+	HooksAPIKey  Secret // Optional API key for non-localhost hook access (default: "" = localhost only).
 	AutoTrace    bool   // Auto-trace git commits from PostToolUse hooks (default: true).
 
 	// Completeness profile overrides (tip filtering, not scoring).
@@ -151,16 +169,16 @@ func Load() (Config, error) {
 		NotifyURL:                envStr("NOTIFY_URL", "postgres://akashi:akashi@localhost:5432/akashi?sslmode=disable"),
 		JWTPrivateKeyPath:        envStr("AKASHI_JWT_PRIVATE_KEY", ""),
 		JWTPublicKeyPath:         envStr("AKASHI_JWT_PUBLIC_KEY", ""),
-		AdminAPIKey:              envStr("AKASHI_ADMIN_API_KEY", ""),
+		AdminAPIKey:              Secret(envStr("AKASHI_ADMIN_API_KEY", "")),
 		EmbeddingProvider:        envStr("AKASHI_EMBEDDING_PROVIDER", "auto"),
-		OpenAIAPIKey:             envStr("OPENAI_API_KEY", ""),
+		OpenAIAPIKey:             Secret(envStr("OPENAI_API_KEY", "")),
 		EmbeddingModel:           envStr("AKASHI_EMBEDDING_MODEL", "text-embedding-3-small"),
 		OllamaURL:                envStr("OLLAMA_URL", "http://localhost:11434"),
 		OllamaModel:              envStr("OLLAMA_MODEL", "mxbai-embed-large"),
 		OTELEndpoint:             envStr("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		ServiceName:              envStr("OTEL_SERVICE_NAME", "akashi"),
 		QdrantURL:                envStr("QDRANT_URL", ""),
-		QdrantAPIKey:             envStr("QDRANT_API_KEY", ""),
+		QdrantAPIKey:             Secret(envStr("QDRANT_API_KEY", "")),
 		QdrantCollection:         envStr("QDRANT_COLLECTION", "akashi_decisions"),
 		ConflictLLMModel:         envStr("AKASHI_CONFLICT_LLM_MODEL", ""),
 		CrossEncoderURL:          envStr("AKASHI_CONFLICT_CROSS_ENCODER_URL", ""),
@@ -169,7 +187,7 @@ func Load() (Config, error) {
 		WALSyncMode:              envStr("AKASHI_WAL_SYNC_MODE", "batch"),
 		LogLevel:                 envStr("AKASHI_LOG_LEVEL", "info"),
 		CORSAllowedOrigins:       envStrSlice("AKASHI_CORS_ALLOWED_ORIGINS", nil),
-		HooksAPIKey:              envStr("AKASHI_HOOKS_API_KEY", ""),
+		HooksAPIKey:              Secret(envStr("AKASHI_HOOKS_API_KEY", "")),
 		CompletenessProfilesJSON: envStr("AKASHI_COMPLETENESS_PROFILES", ""),
 		StandardDecisionTypes:    envStrSlice("AKASHI_STANDARD_DECISION_TYPES", nil),
 	}
@@ -244,6 +262,7 @@ func Load() (Config, error) {
 	cfg.RateLimitEnabled, errs = collectBool(errs, "AKASHI_RATE_LIMIT_ENABLED", true)
 	cfg.TrustProxy, errs = collectBool(errs, "AKASHI_TRUST_PROXY", false)
 	cfg.OTELInsecure, errs = collectBool(errs, "OTEL_EXPORTER_OTLP_INSECURE", false)
+	cfg.OTELSampleRate, errs = collectFloat64(errs, "AKASHI_OTEL_SAMPLE_RATE", 1.0)
 	cfg.SkipEmbeddedMigrations, errs = collectBool(errs, "AKASHI_SKIP_EMBEDDED_MIGRATIONS", false)
 	cfg.EnableDestructiveDelete, errs = collectBool(errs, "AKASHI_ENABLE_DESTRUCTIVE_DELETE", false)
 	cfg.WALDisable, errs = collectBool(errs, "AKASHI_WAL_DISABLE", false)
@@ -421,6 +440,9 @@ func (c Config) Validate() error {
 	// Early-exit floor must be non-negative (0 disables) and must not exceed
 	// the significance threshold, otherwise early exit prunes candidates that
 	// would pass the threshold check.
+	if c.OTELSampleRate < 0 || c.OTELSampleRate > 1 {
+		errs = append(errs, errors.New("config: AKASHI_OTEL_SAMPLE_RATE must be between 0.0 and 1.0"))
+	}
 	if c.ConflictEarlyExitFloor < 0 {
 		errs = append(errs, errors.New("config: AKASHI_CONFLICT_EARLY_EXIT_FLOOR must be >= 0 (0 disables early exit)"))
 	}

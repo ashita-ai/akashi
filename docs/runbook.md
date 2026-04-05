@@ -85,7 +85,7 @@ For AWS ALB/NLB target groups, use `/health` with expected status 200.
 
 ### OTEL Metrics
 
-Metrics are exported via OTLP/HTTP to the endpoint specified by `OTEL_EXPORTER_OTLP_ENDPOINT`. The metric reader flushes every 15 seconds. Traces are batched every 5 seconds. If the endpoint is not set, OTEL is disabled (no-op providers).
+Metrics are exported via OTLP/HTTP to the endpoint specified by `OTEL_EXPORTER_OTLP_ENDPOINT`. The metric reader flushes every 15 seconds. Traces are batched every 5 seconds. If the endpoint is not set, OTEL is disabled (no-op providers). Set `AKASHI_OTEL_SAMPLE_RATE` (0.0–1.0, default 1.0) to enable head sampling when trace volume is high.
 
 | Metric                         | Type      | Unit | Labels                                                    |
 |--------------------------------|-----------|------|-----------------------------------------------------------|

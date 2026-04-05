@@ -24,7 +24,7 @@ type Shutdown func(ctx context.Context) error
 // Init configures the global OpenTelemetry tracer and meter providers.
 // If endpoint is empty, OTEL is disabled and no-op providers are used.
 // Returns a shutdown function that must be called during graceful shutdown.
-func Init(ctx context.Context, endpoint, serviceName, version string, insecure bool) (Shutdown, error) {
+func Init(ctx context.Context, endpoint, serviceName, version string, insecure bool, sampleRate float64) (Shutdown, error) {
 	if endpoint == "" {
 		return func(ctx context.Context) error { return nil }, nil
 	}
@@ -51,10 +51,18 @@ func Init(ctx context.Context, endpoint, serviceName, version string, insecure b
 		return nil, fmt.Errorf("telemetry: create trace exporter: %w", err)
 	}
 
+	var sampler sdktrace.Sampler
+	if sampleRate < 1.0 {
+		sampler = sdktrace.ParentBased(sdktrace.TraceIDRatioBased(sampleRate))
+	} else {
+		sampler = sdktrace.AlwaysSample()
+	}
+
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(traceExp,
 			sdktrace.WithBatchTimeout(5*time.Second),
 		),
+		sdktrace.WithSampler(sampler),
 		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)

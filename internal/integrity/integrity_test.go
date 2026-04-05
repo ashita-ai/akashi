@@ -306,3 +306,145 @@ func TestComputeContentHash_MicrosecondTruncation(t *testing.T) {
 		t.Fatal("VerifyContentHash should succeed when stored hash was computed from nanosecond time and verified with DB microsecond time")
 	}
 }
+
+func TestGenerateMerkleProof_SingleLeaf(t *testing.T) {
+	leaf := "abc123"
+	steps, root, err := GenerateMerkleProof([]string{leaf}, leaf)
+	require.NoError(t, err)
+	assert.Nil(t, steps, "single leaf should have no proof steps")
+	assert.Equal(t, leaf, root, "single leaf should be the root")
+}
+
+func TestGenerateMerkleProof_TwoLeaves(t *testing.T) {
+	leaves := []string{"aaa", "bbb"}
+	// Test proof for the first leaf.
+	steps, root, err := GenerateMerkleProof(leaves, "aaa")
+	require.NoError(t, err)
+	require.Len(t, steps, 1)
+	assert.Equal(t, "bbb", steps[0].Hash, "sibling of first leaf should be second leaf")
+	assert.True(t, steps[0].IsRight, "sibling should be on the right")
+
+	// Verify root matches BuildMerkleRoot.
+	expectedRoot, err := BuildMerkleRoot(leaves)
+	require.NoError(t, err)
+	assert.Equal(t, expectedRoot, root)
+
+	// Test proof for the second leaf.
+	steps, root, err = GenerateMerkleProof(leaves, "bbb")
+	require.NoError(t, err)
+	require.Len(t, steps, 1)
+	assert.Equal(t, "aaa", steps[0].Hash, "sibling of second leaf should be first leaf")
+	assert.False(t, steps[0].IsRight, "sibling should be on the left")
+	assert.Equal(t, expectedRoot, root)
+}
+
+func TestGenerateMerkleProof_OddLeaves(t *testing.T) {
+	leaves := []string{"aaa", "bbb", "ccc"}
+	steps, root, err := GenerateMerkleProof(leaves, "ccc")
+	require.NoError(t, err)
+	assert.NotEmpty(t, steps, "odd leaf should still produce proof steps")
+
+	expectedRoot, err := BuildMerkleRoot(leaves)
+	require.NoError(t, err)
+	assert.Equal(t, expectedRoot, root)
+}
+
+func TestGenerateMerkleProof_PowerOfTwo(t *testing.T) {
+	leaves := []string{"aaa", "bbb", "ccc", "ddd"}
+	for _, target := range leaves {
+		steps, root, err := GenerateMerkleProof(leaves, target)
+		require.NoError(t, err)
+		assert.Len(t, steps, 2, "4 leaves => tree depth 2 => 2 proof steps for %s", target)
+
+		expectedRoot, err := BuildMerkleRoot(leaves)
+		require.NoError(t, err)
+		assert.Equal(t, expectedRoot, root)
+	}
+}
+
+func TestGenerateMerkleProof_LeafNotFound(t *testing.T) {
+	leaves := []string{"aaa", "bbb", "ccc"}
+	_, _, err := GenerateMerkleProof(leaves, "zzz")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrLeafNotFound)
+}
+
+func TestGenerateMerkleProof_EmptyLeaves(t *testing.T) {
+	_, _, err := GenerateMerkleProof(nil, "anything")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrLeafNotFound)
+}
+
+func TestGenerateMerkleProof_UnsortedLeaves(t *testing.T) {
+	_, _, err := GenerateMerkleProof([]string{"bbb", "aaa"}, "aaa")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnsortedLeaves)
+}
+
+func TestGenerateMerkleProof_SingleLeafNotFound(t *testing.T) {
+	_, _, err := GenerateMerkleProof([]string{"aaa"}, "bbb")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrLeafNotFound)
+}
+
+func TestVerifyMerkleProof_RoundTrip(t *testing.T) {
+	// Verify that GenerateMerkleProof + VerifyMerkleProof round-trips for every
+	// leaf in trees of varying sizes.
+	for _, size := range []int{1, 2, 3, 4, 5, 7, 8, 16, 17} {
+		leaves := make([]string, size)
+		for i := range leaves {
+			sum := sha256.Sum256([]byte{byte(i)})
+			leaves[i] = hex.EncodeToString(sum[:])
+		}
+		// Leaves are already sorted since SHA-256 of 0x00..0x10 are deterministic,
+		// but let's sort explicitly to be safe.
+		strings.Join(leaves, "") // force evaluation
+		// Actually sort them.
+		sortedLeaves := make([]string, len(leaves))
+		copy(sortedLeaves, leaves)
+		for i := 1; i < len(sortedLeaves); i++ {
+			for j := i; j > 0 && sortedLeaves[j] < sortedLeaves[j-1]; j-- {
+				sortedLeaves[j], sortedLeaves[j-1] = sortedLeaves[j-1], sortedLeaves[j]
+			}
+		}
+
+		expectedRoot, err := BuildMerkleRoot(sortedLeaves)
+		require.NoError(t, err, "size=%d", size)
+
+		for _, target := range sortedLeaves {
+			steps, root, err := GenerateMerkleProof(sortedLeaves, target)
+			require.NoError(t, err, "size=%d target=%s", size, target[:8])
+			assert.Equal(t, expectedRoot, root, "size=%d target=%s root mismatch", size, target[:8])
+			assert.True(t, VerifyMerkleProof(target, steps, expectedRoot),
+				"size=%d target=%s verification failed", size, target[:8])
+		}
+	}
+}
+
+func TestVerifyMerkleProof_RejectsTamperedLeaf(t *testing.T) {
+	leaves := []string{"aaa", "bbb", "ccc", "ddd"}
+	steps, _, err := GenerateMerkleProof(leaves, "bbb")
+	require.NoError(t, err)
+
+	root, err := BuildMerkleRoot(leaves)
+	require.NoError(t, err)
+
+	// Correct leaf verifies.
+	assert.True(t, VerifyMerkleProof("bbb", steps, root))
+	// Tampered leaf does not verify.
+	assert.False(t, VerifyMerkleProof("zzz", steps, root))
+}
+
+func TestVerifyMerkleProof_RejectsWrongRoot(t *testing.T) {
+	leaves := []string{"aaa", "bbb", "ccc", "ddd"}
+	steps, _, err := GenerateMerkleProof(leaves, "aaa")
+	require.NoError(t, err)
+
+	assert.False(t, VerifyMerkleProof("aaa", steps, "wrong_root_hash"))
+}
+
+func TestVerifyMerkleProof_EmptySteps(t *testing.T) {
+	// Single leaf: proof is empty, root == leaf.
+	assert.True(t, VerifyMerkleProof("abc", nil, "abc"))
+	assert.False(t, VerifyMerkleProof("abc", nil, "xyz"))
+}
