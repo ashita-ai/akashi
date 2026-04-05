@@ -749,6 +749,15 @@ func TestHandlersCritical_SetRetentionValidation(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		require.NoError(t, json.Unmarshal(body, &result))
 		assert.Equal(t, 90, result.Data.RetentionDays)
+
+		// Reset to nil so downstream tests (e.g. TestHandleGetRetention_Default)
+		// that assert on a clean default org are not contaminated.
+		t.Cleanup(func() {
+			r, err := authedRequest("PUT", testSrv.URL+"/v1/retention", adminToken, map[string]any{})
+			if err == nil {
+				_ = r.Body.Close()
+			}
+		})
 	})
 
 	t.Run("agent role forbidden", func(t *testing.T) {
