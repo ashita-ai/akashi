@@ -62,3 +62,12 @@ func IsConflict(err error) bool {
 	}
 	return false
 }
+
+// IsValidation returns true if the error is a 400 (Bad Request).
+func IsValidation(err error) bool {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.StatusCode == 400
+	}
+	return false
+}

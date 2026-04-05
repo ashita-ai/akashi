@@ -117,10 +117,7 @@ func (h *Handlers) HandlePurge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Real purge: log it, run it, complete the log.
-	initiatedBy := claims.AgentID
-	if initiatedBy == "" {
-		initiatedBy = claims.Subject
-	}
+	initiatedBy := claims.ActorID()
 	criteria := map[string]any{"before": req.Before}
 	if req.DecisionType != nil {
 		criteria["decision_type"] = *req.DecisionType
@@ -190,10 +187,7 @@ func (h *Handlers) HandleCreateHold(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	createdBy := claims.AgentID
-	if createdBy == "" {
-		createdBy = claims.Subject
-	}
+	createdBy := claims.ActorID()
 
 	hold, err := h.db.CreateHold(r.Context(), storage.RetentionHold{
 		OrgID:         orgID,

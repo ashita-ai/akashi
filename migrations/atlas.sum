@@ -1,4 +1,4 @@
-h1:vTLufahee4qqYGB8jsF/f1QpynGun74sfh29rh82A9w=
+h1:axTPutZVL39OUIYpvyvKGM6CroMjnz2cf3TjEQCBluY=
 001_initial.sql h1:uhyGXto+QacAaGYb9ZTGjsBs5chlKi8O0eHz9aCQsrY=
 022_full_text_search.sql h1:9iwtA8MgCzAxDV9YkUBn0CLT9ePSmj3GcPoMGg8TXf0=
 023_fix_outbox_index.sql h1:OtMEFBcMRWej02+ghnBXlPr6BVq+LoA62Id9XUWfDNI=
@@ -74,4 +74,5 @@ h1:vTLufahee4qqYGB8jsF/f1QpynGun74sfh29rh82A9w=
 093_assessment_source.sql h1:SyYfiA9g5tN+++HNrB04Yu9F12y7FxITrq1TIBmuwUM=
 094_assessment_auto_unique.sql h1:IIA60QUSBud/PrzwOwCOFr8MUdFQf/6hJddZTx02C5w=
 095_fix_workspace_project_names.sql h1:B8y2Z+jLBJ3euqcyq5RFC/fcb2V9PiF9EdtV5IjCgHU=
-096_project_links_org_fk.sql h1:o8ZOWUIugTqKFc6B3OQ44Q8DGvs4r7GRL6xPU607LC8=
+096_backfill_decision_types_with_trigger_bypass.sql h1:lTZh5HZ+i7Skiv4Vzi6iGdQ5HJQRIeEffakIpBK2rKo=
+097_project_links_org_fk.sql h1:bbU3dgYzxdKYepsbGYEIXHGA7TyufjxURXD6VqIFRkU=

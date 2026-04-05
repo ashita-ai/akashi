@@ -115,11 +115,12 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	// Build agent context concurrently with the idempotency check — they're independent.
 	// agentContext may call GetAPIKeyByID (DB round trip); idempotency calls BeginIdempotency.
 	var agentContext map[string]any
+	var projectErr string
 	var ctxWg sync.WaitGroup
 	ctxWg.Add(1)
 	go func() {
 		defer ctxWg.Done()
-		agentContext = h.buildTraceAgentContext(r, orgID, claims, req, resolvedAgent)
+		agentContext, projectErr = h.buildTraceAgentContext(r, orgID, claims, req, resolvedAgent)
 	}()
 
 	idemPayload := struct {
@@ -140,9 +141,7 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 
 	if agentContext == nil {
 		h.clearIdempotentWrite(r, orgID, idem)
-		writeJSON(w, r, http.StatusBadRequest, map[string]string{
-			"error": "project validation failed: unknown project name",
-		})
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, projectErr)
 		return
 	}
 
@@ -227,7 +226,7 @@ func (h *Handlers) buildTraceAgentContext(
 	claims *auth.Claims,
 	req model.TraceRequest,
 	resolvedAgent model.Agent,
-) map[string]any {
+) (map[string]any, string) {
 	serverCtx := map[string]any{}
 	clientCtx := map[string]any{}
 
@@ -308,9 +307,17 @@ func (h *Handlers) buildTraceAgentContext(
 			}
 			return !hasProjects
 		},
+		func() bool {
+			hasProjects, err := h.db.HasAnyProjects(r.Context(), orgID)
+			if err != nil {
+				h.logger.Error("has-any-projects check failed", "error", err)
+				return false // fail open for bootstrapping
+			}
+			return hasProjects
+		},
 		h.logger,
 	); errMsg != "" {
-		return nil
+		return nil, errMsg
 	}
 
 	agentContext := map[string]any{}
@@ -320,7 +327,7 @@ func (h *Handlers) buildTraceAgentContext(
 	if len(clientCtx) > 0 {
 		agentContext["client"] = clientCtx
 	}
-	return agentContext
+	return agentContext, ""
 }
 
 // HandleGetDecision handles GET /v1/decisions/{id} (reader+).
@@ -938,10 +945,7 @@ func (h *Handlers) HandleRetractDecision(w http.ResponseWriter, r *http.Request)
 	}
 
 	claims := ClaimsFromContext(r.Context())
-	retractedBy := claims.AgentID
-	if retractedBy == "" {
-		retractedBy = claims.Subject
-	}
+	retractedBy := claims.ActorID()
 
 	audit := h.buildAuditEntry(r, orgID,
 		"decision_retracted", "decision", id.String(),
@@ -1004,10 +1008,7 @@ func (h *Handlers) HandleEraseDecision(w http.ResponseWriter, r *http.Request) {
 	}
 
 	claims := ClaimsFromContext(r.Context())
-	erasedBy := claims.AgentID
-	if erasedBy == "" {
-		erasedBy = claims.Subject
-	}
+	erasedBy := claims.ActorID()
 
 	audit := h.buildAuditEntry(r, orgID,
 		"decision_erased", "decision", id.String(),

@@ -333,6 +333,10 @@ func (h *Handlers) autoTraceCommit(input hookPostToolUseInput, commitMsg string)
 	defer cancel()
 
 	project := inferProjectFromCWD(input.CWD)
+	if project == "" {
+		h.logger.Warn("auto-trace skipped: could not detect project from git remote", "cwd", input.CWD)
+		return
+	}
 
 	// Extract reasoning from the commit body. Fall back to generic label.
 	reasoning := "auto-traced from git commit via IDE hook"

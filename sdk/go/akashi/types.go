@@ -21,10 +21,10 @@ type Decision struct {
 	Metadata          map[string]any `json:"metadata"`
 	CompletenessScore float32        `json:"completeness_score"`
 	OutcomeScore      *float32       `json:"outcome_score,omitempty"`
-	PrecedentRef    *uuid.UUID `json:"precedent_ref,omitempty"`
-	PrecedentReason *string    `json:"precedent_reason,omitempty"`
-	SupersedesID    *uuid.UUID `json:"supersedes_id,omitempty"`
-	ContentHash     string     `json:"content_hash,omitempty"`
+	PrecedentRef      *uuid.UUID     `json:"precedent_ref,omitempty"`
+	PrecedentReason   *string        `json:"precedent_reason,omitempty"`
+	SupersedesID      *uuid.UUID     `json:"supersedes_id,omitempty"`
+	ContentHash       string         `json:"content_hash,omitempty"`
 
 	// Composite agent identity: session and runtime context from the calling agent.
 	SessionID    *uuid.UUID     `json:"session_id,omitempty"`

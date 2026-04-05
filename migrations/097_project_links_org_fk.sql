@@ -1,4 +1,4 @@
--- 096: Add missing foreign key from project_links.org_id to organizations.
+-- 097: Add missing foreign key from project_links.org_id to organizations.
 -- Migration 063 created the project_links table with org_id but omitted the FK constraint,
 -- allowing orphaned rows to survive organization deletion.
 
