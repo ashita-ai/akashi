@@ -38,7 +38,8 @@ func repoNameFromURL(rawURL string) string {
 
 // normalizeTraceProject examines the client-supplied context for a trace
 // request and resolves the canonical project name. It modifies clientCtx
-// in place when normalization finds a better name.
+// in place when normalization finds a better name, and returns an error
+// string when the project name is rejected.
 //
 // Resolution order:
 //  1. serverProject — the server-inferred project (from MCP roots + git remote
@@ -46,8 +47,8 @@ func repoNameFromURL(rawURL string) string {
 //     a verified source (the server ran git, not the client's self-report).
 //  2. repo_url in clientCtx — parsed to extract the repo name.
 //  3. Alias lookup via resolveAlias — checks project_links for known mappings.
-//  4. Client-supplied value as-is — logged as a warning when it doesn't match
-//     any canonical project and couldn't be resolved.
+//  4. Validation against known projects — rejects unknown project names to
+//     prevent workspace directory names from leaking into the project field.
 //
 // When the project name changes, the original value is preserved under the
 // "project_submitted" key for the audit trail.
@@ -55,8 +56,9 @@ func normalizeTraceProject(
 	clientCtx map[string]any,
 	serverProject string,
 	resolveAlias func(project string) string,
+	projectKnown func(project string) bool,
 	logger *slog.Logger,
-) {
+) string {
 	clientProject, _ := clientCtx["project"].(string)
 
 	// Step 1: Server-inferred project takes precedence (derived from git remote).
@@ -69,12 +71,12 @@ func normalizeTraceProject(
 			clientCtx["project_submitted"] = clientProject
 		}
 		clientCtx["project"] = serverProject
-		return
+		return ""
 	}
 
 	// If the server already confirmed the client value, or the client sent nothing, done.
 	if clientProject == "" {
-		return
+		return ""
 	}
 
 	// Step 2: Parse repo_url from client context if available.
@@ -87,7 +89,7 @@ func normalizeTraceProject(
 			)
 			clientCtx["project_submitted"] = clientProject
 			clientCtx["project"] = canonical
-			return
+			return ""
 		}
 	}
 
@@ -100,10 +102,19 @@ func normalizeTraceProject(
 			)
 			clientCtx["project_submitted"] = clientProject
 			clientCtx["project"] = canonical
-			return
+			return ""
 		}
 	}
 
-	// Step 4: Accept as-is. No warning — unrecognized names are common for
-	// new projects that simply haven't been seen before.
+	// Step 4: Validate against known projects. If projectKnown is nil
+	// (e.g. test callers that don't wire up the DB), accept the value.
+	if projectKnown != nil && !projectKnown(clientProject) {
+		logger.Warn("rejected unknown project name",
+			"project", clientProject,
+		)
+		delete(clientCtx, "project")
+		return "unknown project " + clientProject + ": provide a valid repo_url or ask an admin to create a project alias"
+	}
+
+	return ""
 }

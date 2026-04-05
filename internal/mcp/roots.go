@@ -158,12 +158,14 @@ func gitRepoName(path string) string {
 	return filepath.Base(remote)
 }
 
-// inferProjectFromRootsWithGit extracts a likely project name from the first
-// file:// root URI, preferring the git origin remote name over the directory
-// basename. Falls back to directory basename when git detection fails (no remote,
-// not a git repo, or git not available).
+// inferProjectFromRootsWithGit extracts a project name from the first file://
+// root URI by inspecting its git origin remote. Returns empty string when git
+// detection fails (no remote, not a git repo, git not available, or the server
+// cannot access the client's filesystem).
 //
-// Returns empty string if no usable root is found.
+// Deliberately does NOT fall back to the directory basename — when the server
+// runs remotely, the root path is a client-side path (e.g. a Conductor workspace
+// directory) whose basename is a workspace name, not a repository name.
 func inferProjectFromRootsWithGit(roots []mcplib.Root) string {
 	for _, root := range roots {
 		if !strings.HasPrefix(root.URI, "file://") {
@@ -180,7 +182,6 @@ func inferProjectFromRootsWithGit(roots []mcplib.Root) string {
 		if name := gitRepoName(path); name != "" {
 			return name
 		}
-		return filepath.Base(path)
 	}
 	return ""
 }

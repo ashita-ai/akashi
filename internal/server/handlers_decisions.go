@@ -138,6 +138,14 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 
 	ctxWg.Wait()
 
+	if agentContext == nil {
+		h.clearIdempotentWrite(r, orgID, idem)
+		writeJSON(w, r, http.StatusBadRequest, map[string]string{
+			"error": "project validation failed: unknown project name",
+		})
+		return
+	}
+
 	result, err := h.decisionSvc.Trace(r.Context(), orgID, decisions.TraceInput{
 		AgentID:         req.AgentID,
 		TraceID:         req.TraceID,
@@ -271,7 +279,7 @@ func (h *Handlers) buildTraceAgentContext(
 
 	// Normalize project name: resolve workspace aliases, repo_url parsing,
 	// and server-inferred values to a canonical project name.
-	normalizeTraceProject(
+	if errMsg := normalizeTraceProject(
 		clientCtx,
 		"", // HTTP handler has no server-inferred project (can't run git on client's machine)
 		func(project string) string {
@@ -281,8 +289,29 @@ func (h *Handlers) buildTraceAgentContext(
 			}
 			return canonical
 		},
+		func(project string) bool {
+			exists, err := h.db.ProjectExists(r.Context(), orgID, project)
+			if err != nil {
+				// DB error — fail closed. Reject the project rather than
+				// silently accepting an unvalidated name.
+				h.logger.Error("project existence check failed", "project", project, "error", err)
+				return false
+			}
+			if exists {
+				return true
+			}
+			// First-ever project in this org — accept to bootstrap.
+			hasProjects, hpErr := h.db.HasAnyProjects(r.Context(), orgID)
+			if hpErr != nil {
+				h.logger.Error("has-any-projects check failed", "error", hpErr)
+				return false
+			}
+			return !hasProjects
+		},
 		h.logger,
-	)
+	); errMsg != "" {
+		return nil
+	}
 
 	agentContext := map[string]any{}
 	if len(serverCtx) > 0 {

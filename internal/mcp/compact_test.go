@@ -1096,15 +1096,15 @@ func TestRootURIs_ExtractsURIs(t *testing.T) {
 
 // ---------- inferProjectFromRootsWithGit tests ----------
 
-func TestInferProjectFromRootsWithGit_FallsBackToDirName(t *testing.T) {
+func TestInferProjectFromRootsWithGit_NonGitDirReturnsEmpty(t *testing.T) {
 	// Use a path that is definitely not a git repo.
 	tmpDir := t.TempDir()
 	roots := []mcplib.Root{
 		{URI: "file://" + tmpDir},
 	}
 	result := inferProjectFromRootsWithGit(roots)
-	// Should fall back to directory basename since tmpDir is not a git repo.
-	assert.NotEmpty(t, result)
+	// Must NOT fall back to directory basename — that leaks workspace names.
+	assert.Empty(t, result)
 }
 
 func TestInferProjectFromRootsWithGit_EmptyRoots(t *testing.T) {

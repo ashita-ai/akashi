@@ -22,3 +22,15 @@ func (l *LiteDB) CreateProjectAlias(_ context.Context, _ uuid.UUID, _, _, _ stri
 func (l *LiteDB) IsAliasTarget(_ context.Context, _ uuid.UUID, _ string) (bool, error) {
 	return false, nil
 }
+
+// ProjectExists always returns true in lite mode — project validation is
+// a server-mode feature. Lite mode accepts any project name.
+func (l *LiteDB) ProjectExists(_ context.Context, _ uuid.UUID, _ string) (bool, error) {
+	return true, nil
+}
+
+// HasAnyProjects always returns false in lite mode — no project-level
+// validation is performed.
+func (l *LiteDB) HasAnyProjects(_ context.Context, _ uuid.UUID) (bool, error) {
+	return false, nil
+}
