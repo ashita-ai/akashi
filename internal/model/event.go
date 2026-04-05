@@ -16,24 +16,20 @@ const (
 	EventAgentRunFailed    EventType = "AgentRunFailed"
 
 	// Decision events.
-	EventDecisionStarted        EventType = "DecisionStarted"
-	EventAlternativeConsidered  EventType = "AlternativeConsidered"
-	EventEvidenceGathered       EventType = "EvidenceGathered"
-	EventReasoningStepCompleted EventType = "ReasoningStepCompleted"
-	EventDecisionMade           EventType = "DecisionMade"
-	EventDecisionRevised        EventType = "DecisionRevised"
-	EventDecisionSuperseded     EventType = "DecisionSuperseded"
-	EventDecisionRetracted      EventType = "DecisionRetracted"
-	EventDecisionErased         EventType = "DecisionErased"
+	EventDecisionStarted    EventType = "DecisionStarted"
+	EventDecisionMade       EventType = "DecisionMade"
+	EventDecisionRevised    EventType = "DecisionRevised"
+	EventDecisionSuperseded EventType = "DecisionSuperseded"
+	EventDecisionRetracted  EventType = "DecisionRetracted"
+	EventDecisionErased     EventType = "DecisionErased"
 
 	// Tool events.
 	EventToolCallStarted   EventType = "ToolCallStarted"
 	EventToolCallCompleted EventType = "ToolCallCompleted"
 
 	// Coordination events.
-	EventAgentHandoff       EventType = "AgentHandoff"
-	EventConsensusRequested EventType = "ConsensusRequested"
-	EventConflictDetected   EventType = "ConflictDetected"
+	EventAgentHandoff     EventType = "AgentHandoff"
+	EventConflictDetected EventType = "ConflictDetected"
 )
 
 // AgentEvent is an append-only event in the event log.

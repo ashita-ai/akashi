@@ -116,15 +116,13 @@ type Alternative struct {
 type SourceType string
 
 const (
-	SourceDocument      SourceType = "document"
-	SourceAPIResponse   SourceType = "api_response"
-	SourceAgentOutput   SourceType = "agent_output"
-	SourceUserInput     SourceType = "user_input"
-	SourceSearchResult  SourceType = "search_result"
-	SourceToolOutput    SourceType = "tool_output"
-	SourceMemory        SourceType = "memory"
-	SourceDatabaseQuery SourceType = "database_query"
-	SourceMetrics       SourceType = "metrics"
+	SourceDocument     SourceType = "document"
+	SourceAPIResponse  SourceType = "api_response"
+	SourceUserInput    SourceType = "user_input"
+	SourceSearchResult SourceType = "search_result"
+	SourceToolOutput   SourceType = "tool_output"
+	SourceMemory       SourceType = "memory"
+	SourceMetrics      SourceType = "metrics"
 )
 
 // Evidence represents supporting information for a decision. Immutable.
