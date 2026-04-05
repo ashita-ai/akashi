@@ -172,7 +172,7 @@ Helper functions:
 
 ## Retry and rate limiting
 
-The SDK automatically retries failed requests using exponential backoff with jitter. By default, up to 3 retries are attempted for HTTP 429 (rate limited) and 5xx (server error) responses. The base delay is 500ms, doubling each attempt up to a 30s cap. Disable retries by setting `MaxRetries` to `intPtr(0)` in the client `Config`. When the server returns a `Retry-After` header, that value takes precedence over the computed delay.
+The SDK automatically retries failed requests using exponential backoff with jitter. By default, up to 3 retries are attempted for HTTP 429 (rate limited) and 5xx (server error) responses. The base delay is 500ms, doubling each attempt up to a 30s cap. Disable retries by setting `MaxRetries` to `&n` (where `n := 0`) in the client `Config`. When the server returns a `Retry-After` header, that value takes precedence over the computed delay.
 
 | Error helper | Status code |
 |---|---|
