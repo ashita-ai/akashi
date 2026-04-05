@@ -84,7 +84,7 @@ export interface Decision {
   // Outcome signals
   agreement_count?: number;
   conflict_count?: number;
-  supersession_velocity?: number | null;
+  supersession_velocity_hours?: number | null;
   precedent_citation_count?: number;
   conflict_fate?: ConflictFate;
   // Assessment summary

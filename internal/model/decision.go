@@ -73,7 +73,7 @@ type Decision struct {
 	ConflictCount  int `json:"conflict_count"`
 
 	// Outcome signals (Spec 35): temporal, graph, and fate signals computed at query time.
-	SupersessionVelocityHours *float64     `json:"supersession_velocity"`
+	SupersessionVelocityHours *float64     `json:"supersession_velocity_hours"`
 	PrecedentCitationCount    int          `json:"precedent_citation_count"`
 	ConflictFate              ConflictFate `json:"conflict_fate"`
 
