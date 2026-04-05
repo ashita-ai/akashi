@@ -1,3 +1,5 @@
+//go:build integration
+
 package server_test
 
 import (
@@ -6,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,14 +16,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcptransport "github.com/mark3labs/mcp-go/client/transport"
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/mcp"
@@ -32,7 +31,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/service/embedding"
 	"github.com/ashita-ai/akashi/internal/service/trace"
 	"github.com/ashita-ai/akashi/internal/storage"
-	"github.com/ashita-ai/akashi/migrations"
+	"github.com/ashita-ai/akashi/internal/testutil"
 )
 
 var (
@@ -65,57 +64,17 @@ func TestMain(m *testing.M) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	req := testcontainers.ContainerRequest{
-		Image:        "timescale/timescaledb:latest-pg18",
-		ExposedPorts: []string{"5432/tcp"},
-		Env: map[string]string{
-			"POSTGRES_USER":     "akashi",
-			"POSTGRES_PASSWORD": "akashi",
-			"POSTGRES_DB":       "akashi",
-		},
-		WaitingFor: wait.ForLog("database system is ready to accept connections").
-			WithOccurrence(2).
-			WithStartupTimeout(60 * time.Second),
-	}
+	tc := testutil.MustStartTimescaleDB()
+	testcontainer = tc.Container
 
-	var err error
-	testcontainer, err = testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
+	logger := testutil.TestLogger()
+
+	db, err := tc.NewTestDB(ctx, logger)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to start container: %v\n", err)
-		os.Exit(1)
-	}
-
-	host, _ := testcontainer.Host(ctx)
-	port, _ := testcontainer.MappedPort(ctx, "5432")
-	dsn := fmt.Sprintf("postgres://akashi:akashi@%s:%s/akashi?sslmode=disable", host, port.Port())
-
-	// Enable extensions before creating the storage layer so pgvector types
-	// get registered on the pool's AfterConnect hook.
-	bootstrapConn, err := pgx.Connect(ctx, dsn)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to bootstrap connection: %v\n", err)
-		os.Exit(1)
-	}
-	_, _ = bootstrapConn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS vector")
-	_, _ = bootstrapConn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS timescaledb")
-	_ = bootstrapConn.Close(ctx)
-
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-
-	db, err := storage.New(ctx, dsn, "", logger, storage.PoolOptions{})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create DB: %v\n", err)
+		fmt.Fprintf(os.Stderr, "server_test: failed to create test DB: %v\n", err)
 		os.Exit(1)
 	}
 	testDB = db
-
-	if err := db.RunMigrations(ctx, migrations.FS); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to run migrations: %v\n", err)
-		os.Exit(1)
-	}
 
 	jwtMgr, _ := auth.NewJWTManager("", "", 24*time.Hour)
 	embedder := embedding.NewNoopProvider(1024)
@@ -320,7 +279,7 @@ func TestOpenAPISpec(t *testing.T) {
 	t.Run("embedded spec is served", func(t *testing.T) {
 		spec := []byte("openapi: \"3.1.0\"\ninfo:\n  title: Test\n  version: 0.0.1\npaths: {}\n")
 		h := server.NewHandlers(server.HandlersDeps{
-			Logger:              slog.New(slog.NewTextHandler(os.Stderr, nil)),
+			Logger:              testutil.TestLogger(),
 			Version:             "test",
 			MaxRequestBodyBytes: 1 * 1024 * 1024,
 			OpenAPISpec:         spec,

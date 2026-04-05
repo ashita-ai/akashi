@@ -1,4 +1,4 @@
-//go:build !lite
+//go:build !lite && integration
 
 package storage_test
 

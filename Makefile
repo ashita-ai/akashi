@@ -1,4 +1,4 @@
-.PHONY: all build build-local build-ui build-with-ui test lint fmt vet clean docker-up docker-down ci security tidy \
+.PHONY: all build build-local build-ui build-with-ui test test-unit test-integration lint fmt vet clean docker-up docker-down ci security tidy \
        dev-ui migrate-apply migrate-lint migrate-hash migrate-diff migrate-status migrate-validate \
        check-doc-consistency verify-restore reconcile-qdrant reconcile-qdrant-repair \
        archive-events-dry-run archive-events verify-exit-criteria install-hooks clean-hooks coverage
@@ -36,11 +36,17 @@ build-with-ui: build-ui
 dev-ui:
 	cd ui && npm run dev
 
-test:
+test: ## Run all tests (unit + integration)
+	$(GO) test $(GOFLAGS) -tags integration ./... -v
+
+test-unit: ## Run unit tests only (no containers, fast)
 	$(GO) test $(GOFLAGS) ./... -v
 
-coverage: ## Run tests with coverage and enforce 50% threshold
-	$(GO) test $(GOFLAGS) -coverprofile=coverage.out ./...
+test-integration: ## Run integration tests only (requires Docker)
+	$(GO) test $(GOFLAGS) -tags integration -run 'Test' ./internal/storage/ ./internal/server/ ./internal/authz/ ./internal/conflicts/ ./internal/mcp/ ./internal/service/... ./internal/search/ -v
+
+coverage: ## Run all tests with coverage and enforce 50% threshold
+	$(GO) test $(GOFLAGS) -tags integration -coverprofile=coverage.out ./...
 	bash scripts/check_coverage.sh coverage.out 50
 
 # NOTE: CI uses golangci-lint v2.11.0. Install locally with:

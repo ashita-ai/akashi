@@ -1,3 +1,5 @@
+//go:build integration
+
 package trace
 
 import (
@@ -5,7 +7,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -52,11 +53,6 @@ func TestMain(m *testing.M) {
 	}()
 
 	os.Exit(code)
-}
-
-// testLogger returns a logger for use within individual tests.
-func testLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 }
 
 // createTestRun creates a run with a unique agent ID for test isolation.

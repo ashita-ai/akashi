@@ -33,7 +33,8 @@ atlas migrate validate --dir file://migrations
 
 **Before every push (mandatory, CI runs with `-race`):**
 ```sh
-go test -race -count=1 ./...
+go test -race -count=1 ./...                       # unit tests only (fast, no containers)
+go test -race -count=1 -tags integration ./...     # full suite (unit + integration, requires Docker)
 ```
 
 **Build:**
