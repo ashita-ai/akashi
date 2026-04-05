@@ -43,8 +43,8 @@ coverage: ## Run tests with coverage and enforce 50% threshold
 	$(GO) test $(GOFLAGS) -coverprofile=coverage.out ./...
 	bash scripts/check_coverage.sh coverage.out 50
 
-# NOTE: CI uses golangci-lint v2.8.0. Install locally with:
-#   go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.8.0
+# NOTE: CI uses golangci-lint v2.11.0. Install locally with:
+#   go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.0
 lint:
 	golangci-lint run ./...
 
