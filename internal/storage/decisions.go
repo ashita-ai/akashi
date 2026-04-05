@@ -2107,33 +2107,6 @@ func (db *DB) GetCitationPercentilesForOrg(ctx context.Context, orgID uuid.UUID)
 	return breakpoints, nil
 }
 
-// LineageEntry is a compact summary of a decision in a lineage chain.
-// Note: precedent_reason is intentionally omitted here. Each entry's own
-// precedent_reason describes why it cited *its* predecessor — not why the
-// queried decision cited it. Surfacing it on LineageEntry would mislead
-// readers into thinking it explains the link they're looking at. The full
-// Decision object carries precedent_reason unambiguously.
-type LineageEntry struct {
-	ID           uuid.UUID  `json:"id"`
-	RunID        uuid.UUID  `json:"run_id"`
-	AgentID      string     `json:"agent_id"`
-	DecisionType string     `json:"decision_type"`
-	Outcome      string     `json:"outcome"`
-	Confidence   float32    `json:"confidence"`
-	Project      *string    `json:"project,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	ValidFrom    time.Time  `json:"valid_from"`
-	ValidTo      *time.Time `json:"valid_to,omitempty"`
-}
-
-// DecisionLineage holds the upstream precedent and downstream citations for a decision.
-type DecisionLineage struct {
-	DecisionID  uuid.UUID      `json:"decision_id"`
-	PrecededBy  *LineageEntry  `json:"preceded_by"`
-	CitedBy     []LineageEntry `json:"cited_by"`
-	CitedByMore bool           `json:"cited_by_has_more"`
-}
-
 const lineageCols = `id, run_id, agent_id, decision_type, outcome, confidence, project, created_at, valid_from, valid_to`
 
 func scanLineageEntry(row pgxRowScanner) (LineageEntry, error) {

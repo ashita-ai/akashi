@@ -5,21 +5,10 @@ package storage
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
-
-// ConflictLabel represents a ground truth label for a scored conflict.
-type ConflictLabel struct {
-	ScoredConflictID uuid.UUID
-	OrgID            uuid.UUID
-	Label            string // "genuine", "related_not_contradicting", "unrelated_false_positive"
-	LabeledBy        string
-	LabeledAt        time.Time
-	Notes            *string
-}
 
 // UpsertConflictLabel inserts or updates a ground truth label for a scored conflict.
 // Returns pgx.ErrNoRows if the scored_conflict_id does not exist or belongs to a different org.

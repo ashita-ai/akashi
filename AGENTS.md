@@ -52,6 +52,8 @@ make ci                                  # full local CI mirror
 
 ```
 cmd/akashi/          Server entrypoint. Config loading, dependency wiring, signal handling.
+cmd/akashi-local/    Local-lite MCP server (SQLite, stdio transport, zero-infra). See ADR-009.
+cmd/eval-conflicts/  Offline evaluation tool for conflict detection precision/recall.
 internal/
   server/            HTTP handlers (handlers*.go), middleware (middleware.go), SSE broker, MCP server.
   storage/           PostgreSQL queries. One file per entity (decisions.go, agents.go, events.go...).
@@ -71,7 +73,7 @@ internal/
   ratelimit/         Pluggable token bucket rate limiter.
   telemetry/         OpenTelemetry setup (traces + metrics).
   testutil/          Shared test helpers (testcontainers, test DB, test logger).
-migrations/          Sequential SQL files (001..098). Atlas-managed checksums.
+migrations/          Sequential SQL files (001..099). Atlas-managed checksums.
 adrs/                Technical architecture decision records (ADR-001 through ADR-015).
 sdk/                 Go, Python, TypeScript client SDKs.
 ui/                  React 19 SPA (audit dashboard). Embedded via go:embed when built with -tags ui.

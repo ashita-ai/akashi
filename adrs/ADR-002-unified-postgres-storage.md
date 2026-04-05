@@ -18,7 +18,7 @@ As of 2026-02-19, a full audit confirmed that the `Searcher` interface has only 
 
 **Qdrant owns all ANN (approximate nearest neighbor) search.** Both cloud and self-hosted deployments use Qdrant for vector search. The OSS docker-compose bundles Qdrant. There is no pgvector HNSW search path for user-facing queries.
 
-**pgvector stores embedding columns; HNSW indexes are dropped.** The `decisions.embedding` and `decisions.outcome_embedding` columns are retained as source of truth for Qdrant outbox sync and pairwise similarity computation on fetched candidate sets. The HNSW indexes on these columns are being removed (tracked in #192) — they impose large RAM costs for queries that should go to Qdrant.
+**pgvector stores embedding columns; HNSW indexes are dropped.** The `decisions.embedding` and `decisions.outcome_embedding` columns are retained as source of truth for Qdrant outbox sync and pairwise similarity computation on fetched candidate sets. The HNSW indexes on these columns were removed in migration 049.
 
 **Text search is the explicit, documented fallback when Qdrant is unavailable.** This is not a bug. When Qdrant is down, `akashi_check` degrades to keyword search. A response header (`X-Search-Backend`) distinguishes degraded responses. Fallback events are logged as warnings.
 
@@ -76,11 +76,11 @@ If Qdrant returns an error, is unreachable, or is not configured, the service la
 
 ## Open work
 
-| Issue | Description |
-|-------|-------------|
-| #192 | Drop pgvector HNSW indexes; migrate conflict scorer ANN to Qdrant |
-| #198 | GetConsensusScoresBatch O(N×50) ANN per page — becomes N Qdrant queries after #192 |
-| #203 | Add Qdrant to OSS docker-compose (prerequisite for #192) |
+| Issue | Description | Status |
+|-------|-------------|--------|
+| #192 | Drop pgvector HNSW indexes; migrate conflict scorer ANN to Qdrant | Done (migration 049 dropped all three HNSW indexes) |
+| #198 | GetConsensusScoresBatch O(N×50) ANN per page — becomes N Qdrant queries | Open |
+| #203 | Add Qdrant to OSS docker-compose | Open |
 
 ## Migration triggers for further specialization
 
@@ -95,7 +95,7 @@ If Qdrant returns an error, is unreachable, or is not configured, the service la
 - Migrations are forward-only SQL files in `migrations/`.
 - The `Searcher` interface abstracts the vector search backend.
 - Docker Compose for OSS will bundle Qdrant (tracked in #203). Until #203 is resolved, OSS users without Qdrant get text search.
-- The `decisions.embedding` and `decisions.outcome_embedding` columns are retained. Their HNSW indexes will be dropped in a future migration (#192).
+- The `decisions.embedding` and `decisions.outcome_embedding` columns are retained. Their HNSW indexes were dropped in migration 049 (#192).
 
 ## References
 
