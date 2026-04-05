@@ -86,6 +86,10 @@ func adminCtx() context.Context {
 
 // traceRequest builds a CallToolRequest for akashi_trace with the given arguments.
 func traceRequest(args map[string]any) mcplib.CallToolRequest {
+	// Default project for tests — project is required when the org has existing projects.
+	if _, hasProject := args["project"]; !hasProject {
+		args["project"] = "test-project"
+	}
 	return mcplib.CallToolRequest{
 		Params: mcplib.CallToolParams{
 			Name:      "akashi_trace",
@@ -1621,7 +1625,7 @@ func TestHandleTrace_WithProjectContext(t *testing.T) {
 		"decision_type": "architecture",
 		"outcome":       "project context test",
 		"confidence":    0.8,
-		"project":       "akashi",
+		"project":       "test-project",
 	}))
 	require.NoError(t, err)
 	require.False(t, result.IsError)
@@ -1638,7 +1642,7 @@ func TestHandleTrace_WithProjectContext(t *testing.T) {
 
 	clientCtx, ok := dec.AgentContext["client"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, "akashi", clientCtx["project"])
+	assert.Equal(t, "test-project", clientCtx["project"])
 }
 
 // ---------- handleConflicts severity/category filtering ----------

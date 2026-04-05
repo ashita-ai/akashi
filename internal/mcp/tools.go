@@ -958,6 +958,28 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		}
 	}
 
+	// Reject traces with no project when the org already has projects.
+	// Project can come from server inference (MCP roots + git) or client self-report.
+	finalProject, _ := clientCtx["project"].(string)
+	if finalProject == "" {
+		if sp, _ := serverCtx["project"].(string); sp != "" {
+			finalProject = sp
+		}
+	}
+	if finalProject == "" {
+		hasProjects, hpErr := s.db.HasAnyProjects(ctx, orgID)
+		if hpErr != nil {
+			s.logger.Error("has-any-projects check failed", "error", hpErr)
+			return errorResult(fmt.Sprintf("project validation failed: %v", hpErr)), nil
+		}
+		if hasProjects {
+			return errorResult(
+				"project is required: provide project in the trace call, set repo_url in context, " +
+					"or configure MCP roots so the server can detect the project from git",
+			), nil
+		}
+	}
+
 	// Assemble namespaced agent_context.
 	agentContext := map[string]any{}
 	if len(serverCtx) > 0 {
