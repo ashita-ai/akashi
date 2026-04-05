@@ -1,4 +1,4 @@
--- 097: Fix remaining decisions with NULL or incorrect project assignments.
+-- 098: Fix remaining decisions with NULL or incorrect project assignments.
 --
 -- Migration 095 fixed workspace names that leaked via the filepath.Base bug,
 -- but only caught cases where project_submitted existed as a correction hint.

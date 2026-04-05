@@ -19,12 +19,14 @@ from akashi.types import (
     AgentEvent,
     AgentRun,
     Alternative,
+    AssessmentSummary,
     AssessOutcome,
     AssessRequest,
     AssessResponse,
     CheckResponse,
     CompleteRunRequest,
     ConflictEvalResponse,
+    ConflictFate,
     ConflictLabelRecord,
     CreateAgentRequest,
     CreateGrantRequest,
@@ -103,6 +105,8 @@ __all__ = [
     "ConflictLabelRecord",
     "ListConflictLabelsResponse",
     "ScorerEvalResponse",
+    "ConflictFate",
+    "AssessmentSummary",
     # OTEL helpers
     "trace_id_from_context",
     # Exceptions

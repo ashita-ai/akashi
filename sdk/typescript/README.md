@@ -7,8 +7,8 @@ TypeScript client for the [Akashi](../../README.md) decision audit API -- versio
 ## Install
 
 ```bash
-npm install akashi
-# or from source:
+npm install github:ashita-ai/akashi#path:sdk/typescript
+# or from a local checkout:
 cd sdk/typescript && npm install && npx tsc
 ```
 
