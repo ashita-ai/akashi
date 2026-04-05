@@ -116,6 +116,14 @@ type Store interface {
 	// (project_b) of any existing alias. Used to prevent alias chains.
 	IsAliasTarget(ctx context.Context, orgID uuid.UUID, name string) (bool, error)
 
+	// ProjectExists checks whether a project name has been used in any active
+	// decision within the org.
+	ProjectExists(ctx context.Context, orgID uuid.UUID, project string) (bool, error)
+
+	// HasAnyProjects checks whether any decisions with a non-null project exist
+	// in the org. Used to distinguish first-ever project from unknown project.
+	HasAnyProjects(ctx context.Context, orgID uuid.UUID) (bool, error)
+
 	// ---- Decision Type Aliases ----
 
 	// ResolveDecisionTypeAlias returns the canonical decision type for the given

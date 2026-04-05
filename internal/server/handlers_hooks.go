@@ -591,16 +591,15 @@ func extractCommitMessage(command string) string {
 	return ""
 }
 
-// inferProjectFromCWD extracts a project name from a directory path,
-// preferring the git remote name over the directory basename.
+// inferProjectFromCWD extracts a project name from a directory path using the
+// git origin remote. Returns empty string when git detection fails. Does NOT
+// fall back to directory basename — for orchestration tools like Conductor,
+// the basename is a workspace name, not the repository name.
 func inferProjectFromCWD(cwd string) string {
 	if cwd == "" {
 		return ""
 	}
-	if name := gitRepoNameFromPath(cwd); name != "" {
-		return name
-	}
-	return filepath.Base(cwd)
+	return gitRepoNameFromPath(cwd)
 }
 
 // gitRepoNameFromPath runs git to get the origin remote name for a path.

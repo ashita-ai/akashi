@@ -920,6 +920,41 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 			)
 			clientCtx["project_submitted"] = clientProject
 			clientCtx["project"] = canonical
+		} else {
+			// No alias found. Validate against known projects to prevent
+			// workspace directory names (e.g. "riyadh-v1") from leaking
+			// into the project field. If the org already has projects and
+			// this name isn't one of them, reject the trace.
+			known, existsErr := s.db.ProjectExists(ctx, orgID, clientProject)
+			if existsErr != nil {
+				// DB error — fail closed rather than silently accepting
+				// an unvalidated project name.
+				s.logger.Error("project existence check failed",
+					"project", clientProject, "error", existsErr)
+				return errorResult(fmt.Sprintf(
+					"project validation failed: %v", existsErr,
+				)), nil
+			}
+			if !known {
+				hasProjects, hpErr := s.db.HasAnyProjects(ctx, orgID)
+				if hpErr != nil {
+					s.logger.Error("has-any-projects check failed", "error", hpErr)
+					return errorResult(fmt.Sprintf(
+						"project validation failed: %v", hpErr,
+					)), nil
+				}
+				if hasProjects {
+					return errorResult(fmt.Sprintf(
+						"unknown project %q: no server-side git verification available and no alias mapping exists. "+
+							"Ensure MCP roots are configured so the server can verify the project from git, "+
+							"or ask an admin to create a project alias",
+						clientProject,
+					)), nil
+				}
+				// First-ever project in this org — accept it to bootstrap.
+				s.logger.Info("accepting unverified project for new org",
+					"project", clientProject, "org_id", orgID)
+			}
 		}
 	}
 

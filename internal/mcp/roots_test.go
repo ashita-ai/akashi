@@ -116,10 +116,11 @@ func TestInferProjectFromRootsWithGit(t *testing.T) {
 		assert.Equal(t, "ssh-project", inferProjectFromRootsWithGit(roots))
 	})
 
-	t.Run("non-git path falls back to directory name", func(t *testing.T) {
+	t.Run("non-git path returns empty", func(t *testing.T) {
 		roots := []mcplib.Root{{URI: "file:///tmp/my-cool-project"}}
-		// /tmp/my-cool-project doesn't exist so git fails; falls back to directory name.
-		assert.Equal(t, "my-cool-project", inferProjectFromRootsWithGit(roots))
+		// /tmp/my-cool-project doesn't exist so git fails; must NOT fall back to
+		// directory name (which could be a workspace name, not a repo name).
+		assert.Empty(t, inferProjectFromRootsWithGit(roots))
 	})
 
 	t.Run("non-file URI skipped", func(t *testing.T) {

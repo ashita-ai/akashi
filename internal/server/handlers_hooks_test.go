@@ -2,8 +2,10 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,20 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// makeTestGitRepo creates a temporary git repository with a fake origin remote.
+// Returns the directory path. Skips the test if git is not available.
+func makeTestGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "-C", dir, "init").CombinedOutput(); err != nil { //nolint:gosec
+		t.Skipf("git unavailable: %s", out)
+	}
+	if out, err := exec.Command("git", "-C", dir, "remote", "add", "origin", "https://github.com/test/test-repo.git").CombinedOutput(); err != nil { //nolint:gosec
+		t.Skipf("git remote add failed: %s", out)
+	}
+	return dir
+}
 
 func TestHookCheckStore(t *testing.T) {
 	t.Run("empty store returns false", func(t *testing.T) {
@@ -430,22 +446,16 @@ func TestHelpers(t *testing.T) {
 			cwd  string
 			want string
 		}{
-			{"directory basename", "/home/user/myproject", "myproject"},
+			// Non-git directories return empty — no basename fallback.
+			{"non-git directory", "/home/user/myproject", ""},
 			{"empty string", "", ""},
-			{"root directory", "/", "/"},
-			{"nested path", "/a/b/c/deep-project", "deep-project"},
+			{"root directory", "/", ""},
+			{"nested non-git path", "/a/b/c/deep-project", ""},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				got := inferProjectFromCWD(tt.cwd)
-				// When the CWD is not a git repo, falls back to filepath.Base.
-				// The exact result for git repos depends on the system, so we just
-				// verify non-empty CWDs produce a non-empty result.
-				if tt.want != "" {
-					assert.NotEmpty(t, got)
-				} else {
-					assert.Equal(t, tt.want, got)
-				}
+				assert.Equal(t, tt.want, got)
 			})
 		}
 	})
@@ -565,12 +575,14 @@ func TestHookCheckStore_EmptyProjects(t *testing.T) {
 
 func TestHandleHookPreToolUse_EmptyProjectBypass(t *testing.T) {
 	t.Run("edit allowed for empty project without check", func(t *testing.T) {
+		dir := makeTestGitRepo(t)
 		h := &Handlers{hookChecks: newHookCheckStore()}
-		// Mark the project that /tmp resolves to as empty.
-		project := inferProjectFromCWD("/tmp")
+		// Mark the project that the git repo resolves to as empty.
+		project := inferProjectFromCWD(dir)
+		require.NotEmpty(t, project, "test git repo should resolve to a project name")
 		h.hookChecks.MarkProjectEmpty(project)
 
-		body := `{"session_id":"sess-1","agent_id":"agent-a","tool_name":"Edit","tool_input":{},"cwd":"/tmp"}`
+		body := fmt.Sprintf(`{"session_id":"sess-1","agent_id":"agent-a","tool_name":"Edit","tool_input":{},"cwd":%q}`, dir)
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/hooks/pre-tool-use", strings.NewReader(body))
 		h.HandleHookPreToolUse(rec, req)
@@ -582,9 +594,10 @@ func TestHandleHookPreToolUse_EmptyProjectBypass(t *testing.T) {
 	})
 
 	t.Run("edit still gated for non-empty project", func(t *testing.T) {
+		dir := makeTestGitRepo(t)
 		h := &Handlers{hookChecks: newHookCheckStore()}
 		// Do NOT mark the project as empty — gate should still apply.
-		body := `{"session_id":"sess-1","agent_id":"agent-a","tool_name":"Edit","tool_input":{},"cwd":"/tmp"}`
+		body := fmt.Sprintf(`{"session_id":"sess-1","agent_id":"agent-a","tool_name":"Edit","tool_input":{},"cwd":%q}`, dir)
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/hooks/pre-tool-use", strings.NewReader(body))
 		h.HandleHookPreToolUse(rec, req)
@@ -597,12 +610,14 @@ func TestHandleHookPreToolUse_EmptyProjectBypass(t *testing.T) {
 }
 
 func TestHandleHookPostToolUse_TraceClearsEmptyProject(t *testing.T) {
+	dir := makeTestGitRepo(t)
 	h := &Handlers{hookChecks: newHookCheckStore()}
-	project := inferProjectFromCWD("/tmp")
+	project := inferProjectFromCWD(dir)
+	require.NotEmpty(t, project, "test git repo should resolve to a project name")
 	h.hookChecks.MarkProjectEmpty(project)
 	assert.True(t, h.hookChecks.IsProjectEmpty(project), "precondition: project should be empty")
 
-	body := `{"session_id":"sess-1","agent_id":"agent-a","tool_name":"mcp__akashi__akashi_trace","tool_input":{},"cwd":"/tmp"}`
+	body := fmt.Sprintf(`{"session_id":"sess-1","agent_id":"agent-a","tool_name":"mcp__akashi__akashi_trace","tool_input":{},"cwd":%q}`, dir)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/hooks/post-tool-use", strings.NewReader(body))
 	h.HandleHookPostToolUse(rec, req)
@@ -886,8 +901,8 @@ func TestGitBranchTask_CurrentRepo(t *testing.T) {
 
 func TestInferProjectFromCWD_NonGitDir(t *testing.T) {
 	result := inferProjectFromCWD("/tmp")
-	// Falls back to filepath.Base
-	assert.Equal(t, "tmp", result)
+	// Non-git directories return empty — no basename fallback.
+	assert.Empty(t, result)
 }
 
 func TestWriteHookJSON_Success(t *testing.T) {

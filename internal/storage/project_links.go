@@ -292,6 +292,40 @@ func (db *DB) DistinctDecisionTypes(ctx context.Context, orgID uuid.UUID) ([]str
 	return types, rows.Err()
 }
 
+// ProjectExists checks whether a project name has been used in any active decision within the org.
+// Used to validate client-supplied project names against known projects.
+func (db *DB) ProjectExists(ctx context.Context, orgID uuid.UUID, project string) (bool, error) {
+	var exists bool
+	err := db.pool.QueryRow(ctx,
+		`SELECT EXISTS(
+		     SELECT 1 FROM decisions
+		     WHERE org_id = $1 AND project = $2 AND valid_to IS NULL
+		 )`,
+		orgID, project,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("storage: project exists: %w", err)
+	}
+	return exists, nil
+}
+
+// HasAnyProjects checks whether any decisions with a non-null project exist in the org.
+// Used to distinguish "first-ever project" from "unknown project name".
+func (db *DB) HasAnyProjects(ctx context.Context, orgID uuid.UUID) (bool, error) {
+	var exists bool
+	err := db.pool.QueryRow(ctx,
+		`SELECT EXISTS(
+		     SELECT 1 FROM decisions
+		     WHERE org_id = $1 AND project IS NOT NULL AND valid_to IS NULL
+		 )`,
+		orgID,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("storage: has any projects: %w", err)
+	}
+	return exists, nil
+}
+
 // DistinctProjects returns all distinct project names used in decisions within an org.
 func (db *DB) DistinctProjects(ctx context.Context, orgID uuid.UUID) ([]string, error) {
 	rows, err := db.pool.Query(ctx,
