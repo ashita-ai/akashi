@@ -9145,7 +9145,7 @@ func TestHandleListKeys_WithPagination(t *testing.T) {
 
 // ===========================================================================
 // ===========================================================================
-// Coverage push: HandlePatchConflict ��� patch various fields
+// Coverage push: HandlePatchConflict — patch various fields
 // ===========================================================================
 
 func TestHandlePatchConflict_InvalidUUID(t *testing.T) {

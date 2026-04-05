@@ -766,7 +766,7 @@ func (a *App) conflictRefreshLoop(ctx context.Context) {
 						hooks := a.decisionHooks
 						logger := a.logger
 						go func() {
-							hookCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+							hookCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 							defer cancel()
 							for _, h := range hooks {
 								if err := h.OnConflictDetected(hookCtx, conflict); err != nil {
