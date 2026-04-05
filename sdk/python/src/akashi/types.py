@@ -144,7 +144,7 @@ class Grant(BaseModel):
     """A fine-grained access grant between agents."""
 
     id: UUID
-    org_id: UUID
+    org_id: UUID | None = None
     grantor_id: UUID
     grantee_id: UUID
     resource_type: str
