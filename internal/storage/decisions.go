@@ -12,7 +12,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pgvector/pgvector-go"
 
 	"github.com/ashita-ai/akashi/internal/integrity"
@@ -48,14 +47,9 @@ func scanOneDecision(row pgxRowScanner) (model.Decision, error) {
 	return d, nil
 }
 
-// txExecer is satisfied by both pgx.Tx and *pgxpool.Pool.
-type txExecer interface {
-	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
-}
-
 // queueSearchOutbox inserts or resets a search outbox entry for a decision.
 // operation must be "upsert" or "delete".
-func queueSearchOutbox(ctx context.Context, exec txExecer, decisionID, orgID uuid.UUID, operation string) error {
+func queueSearchOutbox(ctx context.Context, exec pgxExecer, decisionID, orgID uuid.UUID, operation string) error {
 	_, err := exec.Exec(ctx,
 		`INSERT INTO search_outbox (decision_id, org_id, operation)
 		 VALUES ($1, $2, $3)
