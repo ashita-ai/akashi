@@ -19,12 +19,11 @@ type Decision struct {
 	Confidence        float32        `json:"confidence"`
 	Reasoning         *string        `json:"reasoning,omitempty"`
 	Metadata          map[string]any `json:"metadata"`
-	CompletenessScore float64        `json:"completeness_score"`
-	OutcomeScore      *float64       `json:"outcome_score,omitempty"`
+	CompletenessScore float32        `json:"completeness_score"`
+	OutcomeScore      *float32       `json:"outcome_score,omitempty"`
 	PrecedentRef      *uuid.UUID     `json:"precedent_ref,omitempty"`
 	SupersedesID      *uuid.UUID     `json:"supersedes_id,omitempty"`
 	ContentHash       string         `json:"content_hash,omitempty"`
-	Tags              []string       `json:"tags,omitempty"`
 
 	// Composite agent identity: session and runtime context from the calling agent.
 	SessionID    *uuid.UUID     `json:"session_id,omitempty"`
@@ -132,10 +131,8 @@ type TraceRequest struct {
 
 // TraceAlternative is an alternative in a trace request.
 type TraceAlternative struct {
-	Label           string   `json:"label"`
-	Score           *float32 `json:"score,omitempty"`
-	Selected        bool     `json:"selected"`
-	RejectionReason *string  `json:"rejection_reason,omitempty"`
+	Label           string  `json:"label"`
+	RejectionReason *string `json:"rejection_reason,omitempty"`
 }
 
 // TraceEvidence is evidence in a trace request.
@@ -245,6 +242,9 @@ const (
 	EventReasoningStepCompleted EventType = "ReasoningStepCompleted"
 	EventDecisionMade           EventType = "DecisionMade"
 	EventDecisionRevised        EventType = "DecisionRevised"
+	EventDecisionSuperseded     EventType = "DecisionSuperseded"
+	EventDecisionRetracted      EventType = "DecisionRetracted"
+	EventDecisionErased         EventType = "DecisionErased"
 	EventToolCallStarted        EventType = "ToolCallStarted"
 	EventToolCallCompleted      EventType = "ToolCallCompleted"
 	EventAgentHandoff           EventType = "AgentHandoff"
@@ -261,8 +261,6 @@ type AgentEvent struct {
 	SequenceNum int64          `json:"sequence_num"`
 	OccurredAt  time.Time      `json:"occurred_at"`
 	AgentID     string         `json:"agent_id"`
-	TraceID     string         `json:"trace_id,omitempty"`
-	SpanID      string         `json:"span_id,omitempty"`
 	Payload     map[string]any `json:"payload"`
 	CreatedAt   time.Time      `json:"created_at"`
 }
