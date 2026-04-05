@@ -612,7 +612,6 @@ func TestGenerateCheckSummary_ResolvedConflicts(t *testing.T) {
 
 func ptrFloat64(f float64) *float64 { return &f }
 
-// TestBuildOpenConflictSummary_BFavored verifies that the B-side asymmetry path
 // TestGenerateCheckSummary_OutcomeSignals verifies that outcome signals are
 // appended to the most recent decision summary line.
 func TestGenerateCheckSummary_OutcomeSignals(t *testing.T) {
