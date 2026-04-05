@@ -123,7 +123,7 @@ func (h *Handlers) HandleGrantAllProjectLinks(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"links_created": created,
+	writeJSON(w, r, http.StatusOK, model.GrantAllProjectLinksResponse{
+		LinksCreated: created,
 	})
 }

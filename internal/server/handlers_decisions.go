@@ -186,26 +186,24 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
-	resp := map[string]any{
-		"run_id":      result.RunID,
-		"decision_id": result.DecisionID,
-		"event_count": result.EventCount,
-	}
-	if result.EmbeddingSkipped {
-		resp["embedding_skipped"] = true
+	resp := model.TraceResponse{
+		RunID:            result.RunID,
+		DecisionID:       result.DecisionID,
+		EventCount:       result.EventCount,
+		EmbeddingSkipped: result.EmbeddingSkipped,
 	}
 	if warnings := model.HighConfidenceWarnings(req.Decision.Confidence, len(req.Decision.Evidence), h.highConfidenceWarnThreshold); len(warnings) > 0 {
-		resp["warnings"] = warnings
+		resp.Warnings = warnings
 	}
 	reasoningLen := 0
 	if req.Decision.Reasoning != nil {
 		reasoningLen = len(strings.TrimSpace(*req.Decision.Reasoning))
 	}
 	if confAdj := quality.AdjustConfidence(req.Decision.Confidence, len(req.Decision.Evidence), len(req.Decision.Alternatives), reasoningLen); confAdj.WasAdjusted {
-		resp["confidence_adjusted"] = true
-		resp["original_confidence"] = confAdj.Original
-		resp["stored_confidence"] = confAdj.Adjusted
-		resp["confidence_reasons"] = confAdj.Reasons
+		resp.ConfidenceAdjusted = true
+		resp.OriginalConfidence = confAdj.Original
+		resp.StoredConfidence = confAdj.Adjusted
+		resp.ConfidenceReasons = confAdj.Reasons
 	}
 
 	h.completeIdempotentWriteBestEffort(r, orgID, idem, http.StatusCreated, resp)
@@ -476,9 +474,9 @@ func (h *Handlers) HandleTemporalQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"as_of":     req.AsOf,
-		"decisions": decisions,
+	writeJSON(w, r, http.StatusOK, model.TemporalQueryResponse{
+		AsOf:      req.AsOf,
+		Decisions: decisions,
 	})
 }
 
@@ -707,10 +705,10 @@ func (h *Handlers) HandleDecisionRevisions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"decision_id": id,
-		"revisions":   revisions,
-		"count":       len(revisions),
+	writeJSON(w, r, http.StatusOK, model.DecisionRevisionsResponse{
+		DecisionID: id,
+		Revisions:  revisions,
+		Count:      len(revisions),
 	})
 }
 
@@ -743,51 +741,47 @@ func (h *Handlers) HandleVerifyDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	resp := map[string]any{"decision_id": id}
+	resp := model.VerifyDecisionResponse{DecisionID: id}
 
 	switch {
 	case d.ValidTo != nil:
-		// Decision was retracted — still verify hash integrity but report retracted status.
-		resp["status"] = "retracted"
-		resp["retracted_at"] = d.ValidTo.UTC().Format(time.RFC3339Nano)
+		resp.Status = "retracted"
+		resp.RetractedAt = d.ValidTo.UTC().Format(time.RFC3339Nano)
 		if d.ContentHash == "" {
-			resp["verified"] = false
-			resp["message"] = "this decision was created before content hashing was enabled"
+			verified := false
+			resp.Verified = &verified
+			resp.Message = "this decision was created before content hashing was enabled"
 		} else {
 			valid := integrity.VerifyContentHash(d.ContentHash, d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
-			resp["verified"] = valid
-			resp["content_hash"] = d.ContentHash
+			resp.Verified = &valid
+			resp.ContentHash = d.ContentHash
 		}
 	case d.ContentHash == "":
-		// Pre-migration decisions have no hash — don't report them as tampered.
-		resp["status"] = "no_hash"
-		resp["message"] = "this decision was created before content hashing was enabled"
+		resp.Status = "no_hash"
+		resp.Message = "this decision was created before content hashing was enabled"
 	default:
-		// Check for GDPR erasure before standard verification.
 		erasure, erasureErr := h.db.GetDecisionErasure(r.Context(), orgID, id)
 		switch {
 		case erasureErr == nil:
-			// Decision has been erased — verify the erased hash matches.
 			valid := integrity.VerifyContentHash(d.ContentHash, d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
-			resp["status"] = "erased"
-			resp["valid"] = valid
-			resp["content_hash"] = d.ContentHash
-			resp["original_hash"] = erasure.OriginalHash
-			resp["erased_at"] = erasure.ErasedAt
-			resp["erased_by"] = erasure.ErasedBy
+			resp.Status = "erased"
+			resp.Valid = &valid
+			resp.ContentHash = d.ContentHash
+			resp.OriginalHash = erasure.OriginalHash
+			resp.ErasedAt = &erasure.ErasedAt
+			resp.ErasedBy = erasure.ErasedBy
 		case !isNotFoundError(erasureErr):
 			h.writeInternalError(w, r, "failed to check erasure status", erasureErr)
 			return
 		default:
-			// No erasure — standard verification.
 			valid := integrity.VerifyContentHash(d.ContentHash, d.ID, d.DecisionType, d.Outcome, d.Confidence, d.Reasoning, d.ValidFrom)
-			resp["valid"] = valid
+			resp.Valid = &valid
 			if valid {
-				resp["status"] = "verified"
+				resp.Status = "verified"
 			} else {
-				resp["status"] = "tampered"
+				resp.Status = "tampered"
 			}
-			resp["content_hash"] = d.ContentHash
+			resp.ContentHash = d.ContentHash
 		}
 	}
 
@@ -818,9 +812,9 @@ func (h *Handlers) HandleListIntegrityViolations(w http.ResponseWriter, r *http.
 		return
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"violations": violations,
-		"count":      len(violations),
+	writeJSON(w, r, http.StatusOK, model.IntegrityViolationsResponse{
+		Violations: violations,
+		Count:      len(violations),
 	})
 }
 
@@ -876,10 +870,10 @@ func (h *Handlers) HandleSessionView(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(decs) == 0 {
-		writeJSON(w, r, http.StatusOK, map[string]any{
-			"session_id":     sid,
-			"decisions":      []any{},
-			"decision_count": 0,
+		writeJSON(w, r, http.StatusOK, model.SessionViewResponse{
+			SessionID:     sid,
+			Decisions:     []model.Decision{},
+			DecisionCount: 0,
 		})
 		return
 	}
@@ -909,16 +903,16 @@ func (h *Handlers) HandleSessionView(w http.ResponseWriter, r *http.Request) {
 	}
 	avgConfidence := totalConf / float64(len(decs))
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"session_id":     sid,
-		"decisions":      decs,
-		"decision_count": len(decs),
-		"summary": map[string]any{
-			"started_at":     startedAt,
-			"ended_at":       endedAt,
-			"duration_secs":  duration,
-			"decision_types": decisionTypes,
-			"avg_confidence": avgConfidence,
+	writeJSON(w, r, http.StatusOK, model.SessionViewResponse{
+		SessionID:     sid,
+		Decisions:     decs,
+		DecisionCount: len(decs),
+		Summary: &model.SessionViewSummary{
+			StartedAt:     startedAt,
+			EndedAt:       endedAt,
+			DurationSecs:  duration,
+			DecisionTypes: decisionTypes,
+			AvgConfidence: avgConfidence,
 		},
 	})
 }
@@ -1030,14 +1024,14 @@ func (h *Handlers) HandleEraseDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"decision_id":         id,
-		"erased_at":           result.Erasure.ErasedAt,
-		"original_hash":       result.Erasure.OriginalHash,
-		"erased_hash":         result.Erasure.ErasedHash,
-		"alternatives_erased": result.AlternativesErased,
-		"evidence_erased":     result.EvidenceErased,
-		"claims_erased":       result.ClaimsErased,
+	writeJSON(w, r, http.StatusOK, model.EraseDecisionResponse{
+		DecisionID:         id,
+		ErasedAt:           &result.Erasure.ErasedAt,
+		OriginalHash:       result.Erasure.OriginalHash,
+		ErasedHash:         result.Erasure.ErasedHash,
+		AlternativesErased: result.AlternativesErased,
+		EvidenceErased:     result.EvidenceErased,
+		ClaimsErased:       result.ClaimsErased,
 	})
 }
 
