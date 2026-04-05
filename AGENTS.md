@@ -52,6 +52,8 @@ make ci                                  # full local CI mirror
 
 ```
 cmd/akashi/          Server entrypoint. Config loading, dependency wiring, signal handling.
+cmd/akashi-local/    Local-lite MCP server (SQLite, stdio transport, zero-infra). See ADR-009.
+cmd/eval-conflicts/  Offline evaluation tool for conflict detection precision/recall.
 internal/
   server/            HTTP handlers (handlers*.go), middleware (middleware.go), SSE broker.
   storage/           PostgreSQL queries. One file per entity (decisions.go, agents.go, events.go...).

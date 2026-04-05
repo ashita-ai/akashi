@@ -9,12 +9,27 @@ package storage
 import (
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/pgvector/pgvector-go"
 
 	"github.com/ashita-ai/akashi/internal/model"
 )
+
+// ---------------------------------------------------------------------------
+// Conflict label types (shared between full and lite builds)
+// ---------------------------------------------------------------------------
+
+// ConflictLabel represents a ground truth label for a scored conflict.
+type ConflictLabel struct {
+	ScoredConflictID uuid.UUID
+	OrgID            uuid.UUID
+	Label            string // "genuine", "related_not_contradicting", "unrelated_false_positive"
+	LabeledBy        string
+	LabeledAt        time.Time
+	Notes            *string
+}
 
 // ---------------------------------------------------------------------------
 // Trace types (originally in trace.go)
@@ -311,6 +326,72 @@ type DecisionTypeCompleteness struct {
 	AvgCompleteness float64 `json:"avg_completeness"`
 	ExpectedMin     float64 `json:"expected_min,omitempty"` // per-type health threshold
 	Status          string  `json:"status,omitempty"`       // "healthy" or "needs_attention"
+}
+
+// ---------------------------------------------------------------------------
+// Lineage types (shared between full and lite builds)
+// ---------------------------------------------------------------------------
+
+// LineageEntry is a compact summary of a decision in a lineage chain.
+// Note: precedent_reason is intentionally omitted here. Each entry's own
+// precedent_reason describes why it cited *its* predecessor — not why the
+// queried decision cited it. Surfacing it on LineageEntry would mislead
+// readers into thinking it explains the link they're looking at. The full
+// Decision object carries precedent_reason unambiguously.
+type LineageEntry struct {
+	ID           uuid.UUID  `json:"id"`
+	RunID        uuid.UUID  `json:"run_id"`
+	AgentID      string     `json:"agent_id"`
+	DecisionType string     `json:"decision_type"`
+	Outcome      string     `json:"outcome"`
+	Confidence   float32    `json:"confidence"`
+	Project      *string    `json:"project,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	ValidFrom    time.Time  `json:"valid_from"`
+	ValidTo      *time.Time `json:"valid_to,omitempty"`
+}
+
+// DecisionLineage holds the upstream precedent and downstream citations for a decision.
+type DecisionLineage struct {
+	DecisionID  uuid.UUID      `json:"decision_id"`
+	PrecededBy  *LineageEntry  `json:"preceded_by"`
+	CitedBy     []LineageEntry `json:"cited_by"`
+	CitedByMore bool           `json:"cited_by_has_more"`
+}
+
+// ---------------------------------------------------------------------------
+// Utility functions (shared between full and lite builds)
+// ---------------------------------------------------------------------------
+
+// TruncateOutcome returns the first maxLen characters of s, or s if shorter.
+// Used to derive human-readable group_topic labels from outcome text.
+func TruncateOutcome(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen])
+}
+
+// ComputeCalibrated determines if high-confidence decisions actually outperform mid-confidence.
+// With outcome data: high-conf avg_outcome must be >= mid-conf avg_outcome.
+// Without: high-conf revision rate must be <= mid-conf revision rate.
+func ComputeCalibrated(tiers map[string]*ConfidenceTier, hasOutcomeData bool) bool {
+	high, mid := tiers["high"], tiers["mid"]
+	if high == nil || mid == nil {
+		return true // insufficient data to determine miscalibration
+	}
+
+	if hasOutcomeData && high.AvgOutcome != nil && mid.AvgOutcome != nil {
+		return *high.AvgOutcome >= *mid.AvgOutcome
+	}
+
+	// Temporal proxy: high-confidence decisions should not be revised more often.
+	if high.Total >= 5 && mid.Total >= 5 {
+		return high.RevisionRate <= mid.RevisionRate
+	}
+
+	return true // not enough data to call it miscalibrated
 }
 
 // ---------------------------------------------------------------------------

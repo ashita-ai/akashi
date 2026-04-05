@@ -336,28 +336,6 @@ func (db *DB) GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID, fro
 	return cal, nil
 }
 
-// ComputeCalibrated determines whether confidence predicts outcomes.
-// With outcome data: high-conf avg_outcome must be >= mid-conf avg_outcome.
-// Without: high-conf revision rate must be <= mid-conf revision rate.
-// Exported so the sqlite package can reuse it.
-func ComputeCalibrated(tiers map[string]*ConfidenceTier, hasOutcomeData bool) bool {
-	high, mid := tiers["high"], tiers["mid"]
-	if high == nil || mid == nil {
-		return true // insufficient data to determine miscalibration
-	}
-
-	if hasOutcomeData && high.AvgOutcome != nil && mid.AvgOutcome != nil {
-		return *high.AvgOutcome >= *mid.AvgOutcome
-	}
-
-	// Temporal proxy: high-confidence decisions should not be revised more often.
-	if high.Total >= 5 && mid.Total >= 5 {
-		return high.RevisionRate <= mid.RevisionRate
-	}
-
-	return true // not enough data to call it miscalibrated
-}
-
 // bucketCount is a sql.Scanner adapter that appends a ConfidenceBucket to the
 // distribution's Buckets slice when scanned. This avoids 10 temporary variables.
 type bucketCount struct {

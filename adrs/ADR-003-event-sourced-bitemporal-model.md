@@ -38,6 +38,7 @@ Event-sourced architecture with bi-temporal columns:
 AgentRunStarted, AgentRunCompleted, AgentRunFailed
 DecisionStarted, AlternativeConsidered, EvidenceGathered
 ReasoningStepCompleted, DecisionMade, DecisionRevised
+DecisionSuperseded, DecisionRetracted, DecisionErased
 ToolCallStarted, ToolCallCompleted
 AgentHandoff, ConsensusRequested, ConflictDetected
 ```

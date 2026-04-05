@@ -53,6 +53,14 @@ These are background eviction loops owned by their parent structs, not registere
 
 These are closed explicitly during the cleanup phase of shutdown, after all other workers have drained.
 
+### Tier 3b: Request-scoped worker pools
+
+| Component | Purpose | Workers | Shutdown |
+|-----------|---------|---------|----------|
+| `TouchLastSeenWorkers` | Drains a buffered channel of agent `last_seen` and API key `last_used_at` updates, batching DB writes off the request hot path | 4 | Workers exit when `touchLastSeenCh` is closed during server shutdown |
+
+These are launched at `Server` initialization and run for the lifetime of the HTTP server. They are not registered to `bgLoops` because they are owned by the `Server` struct, not the `App`.
+
 ### Tier 4: Async on-demand goroutines (spawned per-event)
 
 | Type | Purpose | Tracking |

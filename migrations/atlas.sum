@@ -1,4 +1,4 @@
-h1:OvG5/dhb2mcFHMEfXGg8UOun6234AqVO8gFlKM36FZ8=
+h1:yhDmKsnNfmQRGJfYGiW5wfWWuR0oyCUhr1/z+OmAmnw=
 001_initial.sql h1:uhyGXto+QacAaGYb9ZTGjsBs5chlKi8O0eHz9aCQsrY=
 022_full_text_search.sql h1:9iwtA8MgCzAxDV9YkUBn0CLT9ePSmj3GcPoMGg8TXf0=
 023_fix_outbox_index.sql h1:OtMEFBcMRWej02+ghnBXlPr6BVq+LoA62Id9XUWfDNI=
@@ -78,3 +78,4 @@ h1:OvG5/dhb2mcFHMEfXGg8UOun6234AqVO8gFlKM36FZ8=
 097_project_links_org_fk.sql h1:bbU3dgYzxdKYepsbGYEIXHGA7TyufjxURXD6VqIFRkU=
 098_fix_remaining_project_assignments.sql h1:hh9aiqeQcFEjQI4qt5in6JnQflujJhQi8WYVq/yWAxQ=
 099_tamper_evidence_fk_tighten.sql h1:5gBoilnQtObLjOcitnfZ697TPLC2X8tP+0QIixpv+yE=
+100_audit_fk_hardening.sql h1:3sOiy8hVCrCJbRvlvm5v9AGtOLnmz3dtsJxXuwL1AKI=

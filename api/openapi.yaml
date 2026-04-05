@@ -1355,6 +1355,38 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
 
+  /v1/integrity/proof/{id}:
+    get:
+      operationId: getDecisionProof
+      tags: [Integrity]
+      summary: Get Merkle inclusion proof for a decision
+      description: |
+        Returns a Merkle inclusion proof for a specific decision, allowing
+        external auditors to verify that the decision is part of the
+        tamper-evident audit trail without reconstructing the entire batch.
+        Requires `reader` role or higher.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The decision ID to generate a proof for.
+      responses:
+        "200":
+          description: Merkle inclusion proof for the decision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_DecisionProof"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /v1/conflicts/analytics:
     get:
       operationId: getConflictAnalytics
@@ -5410,6 +5442,61 @@ components:
           $ref: "#/components/schemas/VerifyResponse"
         meta:
           $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_DecisionProof:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/DecisionProof"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    DecisionProof:
+      type: object
+      required: [decision_id, content_hash, proof_id, root_hash, batch_start, batch_end, proof_path, verified]
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+          description: The decision this proof covers.
+        content_hash:
+          type: string
+          description: SHA-256 content hash of the decision.
+        proof_id:
+          type: string
+          format: uuid
+          description: The integrity proof batch that contains this decision.
+        root_hash:
+          type: string
+          description: Merkle root hash of the proof batch.
+        batch_start:
+          type: string
+          format: date-time
+          description: Start of the time window covered by the proof batch.
+        batch_end:
+          type: string
+          format: date-time
+          description: End of the time window covered by the proof batch.
+        proof_path:
+          type: array
+          items:
+            $ref: "#/components/schemas/MerkleProofStep"
+          description: Sibling hashes from leaf to root forming the inclusion proof.
+        verified:
+          type: boolean
+          description: Whether the reconstructed root matches the stored root hash.
+
+    MerkleProofStep:
+      type: object
+      required: [hash, is_right]
+      properties:
+        hash:
+          type: string
+          description: Sibling hash at this level of the Merkle tree.
+        is_right:
+          type: boolean
+          description: True if this sibling is on the right side of the pair.
 
     TraceHealthMetrics:
       type: object
