@@ -59,11 +59,15 @@ func (h *Handlers) HandleExportDecisions(w http.ResponseWriter, r *http.Request)
 	for {
 		decisions, err := h.db.ExportDecisionsCursor(r.Context(), orgID, filters, cursor, pageSize)
 		if err != nil {
-			h.logger.Error("export failed", "error", err)
 			if cursor == nil {
 				// Headers not yet sent — we can still return a proper error response.
-				writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "export failed")
+				h.writeInternalError(w, r, "export failed", err)
 			} else {
+				h.logger.Error("export failed mid-stream",
+					"error", err,
+					"method", r.Method,
+					"path", r.URL.Path,
+					"request_id", RequestIDFromContext(r.Context()))
 				// Headers already sent — write an error sentinel as the last NDJSON line
 				// so consumers can detect the truncation instead of silently accepting
 				// a partial export as complete.
