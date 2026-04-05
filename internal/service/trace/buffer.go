@@ -419,6 +419,26 @@ func (b *Buffer) flushOnce(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
+	// Advance WAL checkpoint BEFORE trimming the in-memory buffer. This
+	// ordering matters for crash safety: if we trimmed first and then
+	// crashed before the checkpoint advanced, the WAL would replay
+	// already-persisted events on next startup. The idempotent recovery
+	// path handles duplicates, but the replay causes unnecessary write
+	// amplification — and if checkpoint writes fail persistently (e.g.
+	// filesystem full), WAL segments can never be reclaimed. By
+	// checkpointing first, a crash after checkpoint but before trim only
+	// causes the buffer to re-flush events that are already in Postgres
+	// (harmless: COPY into existing rows is a no-op via idempotency).
+	if b.wal != nil && batchWALLSN > 0 {
+		if err := b.wal.CheckpointLSN(batchWALLSN); err != nil {
+			// Non-fatal: events are durable in Postgres. We log and continue
+			// so the buffer trim still happens — otherwise the buffer grows
+			// unbounded while checkpoint is broken. The WAL may replay these
+			// events on next startup; the idempotent recovery path deduplicates.
+			b.logger.Warn("trace: wal checkpoint failed (events are durable in postgres)", "error", err)
+		}
+	}
+
 	// Remove only the flushed prefix. New events appended while COPY was in
 	// progress remain queued for the next flush. Audit entries are similarly
 	// trimmed — only the snapshot we flushed is removed.
@@ -435,15 +455,6 @@ func (b *Buffer) flushOnce(ctx context.Context) (bool, error) {
 		b.audits = nil
 	}
 	b.mu.Unlock()
-
-	// Advance WAL checkpoint after successful COPY.
-	if b.wal != nil && batchWALLSN > 0 {
-		if err := b.wal.CheckpointLSN(batchWALLSN); err != nil {
-			// Non-fatal: events are in Postgres. The WAL will replay them on
-			// next startup, and the idempotent recovery path handles duplicates.
-			b.logger.Warn("trace: wal checkpoint failed (events are durable in postgres)", "error", err)
-		}
-	}
 
 	b.logger.Info("trace: batch flushed",
 		"batch_size", count,

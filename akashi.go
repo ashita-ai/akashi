@@ -132,7 +132,7 @@ func New(opts ...Option) (*App, error) {
 	logger.Info("akashi starting", "version", version, "port", cfg.Port)
 
 	// Initialize OpenTelemetry.
-	otelShutdown, err := telemetry.Init(ctx(opts), cfg.OTELEndpoint, cfg.ServiceName, version, cfg.OTELInsecure)
+	otelShutdown, err := telemetry.Init(ctx(opts), cfg.OTELEndpoint, cfg.ServiceName, version, cfg.OTELInsecure, cfg.OTELSampleRate)
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: %w", err)
 	}
@@ -215,7 +215,7 @@ func New(opts ...Option) (*App, error) {
 		var idxErr error
 		qdrantIndex, idxErr = search.NewQdrantIndex(search.QdrantConfig{
 			URL:        cfg.QdrantURL,
-			APIKey:     cfg.QdrantAPIKey,
+			APIKey:     cfg.QdrantAPIKey.Value(),
 			Collection: cfg.QdrantCollection,
 			Dims:       uint64(cfg.EmbeddingDimensions), //nolint:gosec // validated positive in config.Validate
 		}, logger)
@@ -476,7 +476,7 @@ func New(opts ...Option) (*App, error) {
 		Middlewares:                 middlewares,
 		DecisionHooks:               decisionHooks,
 		HooksEnabled:                cfg.HooksEnabled,
-		HooksAPIKey:                 cfg.HooksAPIKey,
+		HooksAPIKey:                 cfg.HooksAPIKey.Value(),
 		AutoTrace:                   cfg.AutoTrace,
 		SignupEnabled:               cfg.SignupEnabled,
 		ResolutionRecorder:          conflictScorer,
@@ -490,7 +490,7 @@ func New(opts ...Option) (*App, error) {
 	mcpSrv.SetCheckNotify(srv.Handlers().NotifyCheckCalled)
 
 	// Seed admin agent.
-	if err := srv.Handlers().SeedAdmin(context.Background(), cfg.AdminAPIKey); err != nil {
+	if err := srv.Handlers().SeedAdmin(context.Background(), cfg.AdminAPIKey.Value()); err != nil {
 		db.Close(context.Background())
 		_ = otelShutdown(context.Background())
 		return nil, fmt.Errorf("admin seed: %w", err)
@@ -1450,7 +1450,7 @@ func newEmbeddingProvider(cfg config.Config, logger *slog.Logger) embedding.Prov
 			return embedding.NewNoopProvider(dims)
 		}
 		logger.Info("embedding provider: openai", "model", cfg.EmbeddingModel, "dimensions", dims)
-		p, err := embedding.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.EmbeddingModel, dims)
+		p, err := embedding.NewOpenAIProvider(cfg.OpenAIAPIKey.Value(), cfg.EmbeddingModel, dims)
 		if err != nil {
 			logger.Error("openai provider init failed", "error", err)
 			return embedding.NewNoopProvider(dims)
@@ -1471,7 +1471,7 @@ func newEmbeddingProvider(cfg config.Config, logger *slog.Logger) embedding.Prov
 		}
 		if cfg.OpenAIAPIKey != "" {
 			logger.Info("embedding provider: openai (auto-detected)", "model", cfg.EmbeddingModel, "dimensions", dims)
-			p, err := embedding.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.EmbeddingModel, dims)
+			p, err := embedding.NewOpenAIProvider(cfg.OpenAIAPIKey.Value(), cfg.EmbeddingModel, dims)
 			if err != nil {
 				logger.Error("openai provider init failed", "error", err)
 				return embedding.NewNoopProvider(dims)
@@ -1490,7 +1490,7 @@ func newConflictValidator(cfg config.Config, logger *slog.Logger) conflicts.Vali
 	}
 	if cfg.OpenAIAPIKey != "" {
 		logger.Info("conflict validator: openai (gpt-4o-mini)")
-		return conflicts.NewOpenAIValidator(cfg.OpenAIAPIKey, "gpt-4o-mini")
+		return conflicts.NewOpenAIValidator(cfg.OpenAIAPIKey.Value(), "gpt-4o-mini")
 	}
 	logger.Info("conflict validator: noop (no LLM configured, embedding-only conflicts)")
 	return conflicts.NoopValidator{}
@@ -1508,7 +1508,7 @@ func newClaimExtractor(cfg config.Config, logger *slog.Logger) conflicts.ClaimEx
 	}
 	if cfg.OpenAIAPIKey != "" {
 		logger.Info("claim extractor: openai (gpt-4o-mini)")
-		return conflicts.NewOpenAIExtractor(cfg.OpenAIAPIKey, "gpt-4o-mini")
+		return conflicts.NewOpenAIExtractor(cfg.OpenAIAPIKey.Value(), "gpt-4o-mini")
 	}
 	logger.Warn("claim extraction LLM requested but no LLM configured, using regex fallback")
 	return nil

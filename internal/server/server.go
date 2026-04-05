@@ -88,7 +88,7 @@ type ServerConfig struct {
 
 	// IDE hook integration.
 	HooksEnabled bool   // Enable /hooks/* IDE integration endpoints.
-	HooksAPIKey  string // Optional API key for non-localhost hook access.
+	HooksAPIKey  string // Optional API key for non-localhost hook access (already unwrapped from config.Secret).
 	AutoTrace    bool   // Auto-trace git commits from PostToolUse hooks.
 
 	// Conflict metrics.
@@ -220,6 +220,7 @@ func New(cfg ServerConfig) *Server {
 	// Integrity verification (reader+) and violations (admin-only).
 	mux.Handle("GET /v1/verify/{id}", readRole(http.HandlerFunc(h.HandleVerifyDecision)))
 	mux.Handle("GET /v1/integrity/violations", adminOnly(http.HandlerFunc(h.HandleListIntegrityViolations)))
+	mux.Handle("GET /v1/integrity/proof/{id}", readRole(http.HandlerFunc(h.HandleGetDecisionProof)))
 
 	// Subscription endpoint (reader+).
 	mux.Handle("GET /v1/subscribe", readRole(http.HandlerFunc(h.HandleSubscribe)))

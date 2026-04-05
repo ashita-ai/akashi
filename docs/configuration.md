@@ -102,6 +102,7 @@ The OSS distribution uses an in-memory token bucket. Enterprise deployments can 
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | _(empty)_ | OTLP HTTP endpoint. Empty = OTEL disabled |
 | `OTEL_EXPORTER_OTLP_INSECURE` | `false` | Use HTTP instead of HTTPS for OTLP |
 | `OTEL_SERVICE_NAME` | `akashi` | Service name in OTEL spans and metrics |
+| `AKASHI_OTEL_SAMPLE_RATE` | `1.0` | Fraction of traces to sample (0.0–1.0). Uses `ParentBased(TraceIDRatioBased)` when < 1.0 |
 
 ## Conflict Detection
 
