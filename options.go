@@ -20,7 +20,6 @@ type resolvedOptions struct {
 	searcher          Searcher
 	conflictScorer    ConflictScorer
 	eventHooks        []EventHook
-	policyEvaluator   PolicyEvaluator
 	routeRegistrars   []RouteRegistrar
 	middlewares       []Middleware
 	extraMigrations   []fs.FS
@@ -72,13 +71,6 @@ func WithSearcher(s Searcher) Option {
 // Candidate finding via Qdrant still runs in OSS; this replaces only the confirmation step.
 func WithConflictScorer(cs ConflictScorer) Option {
 	return func(o *resolvedOptions) { o.conflictScorer = cs }
-}
-
-// WithPolicyEvaluator sets the policy engine for advisory and enforcement checks.
-// Only the last call wins. The policy evaluator is not wired to any call sites yet —
-// this option reserves the extension point for a future spec.
-func WithPolicyEvaluator(pe PolicyEvaluator) Option {
-	return func(o *resolvedOptions) { o.policyEvaluator = pe }
 }
 
 // WithEventHook registers an event hook to receive decision lifecycle notifications.

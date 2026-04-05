@@ -41,15 +41,6 @@ type EventHook interface {
 	OnConflictDetected(ctx context.Context, conflict Conflict) error
 }
 
-// PolicyEvaluator checks decisions against organizational rules.
-// Advisory: called during akashi_check (surfaced as warnings).
-// Enforcement: called during /v1/trace (returns HTTP 422 on violation if action="enforce").
-// This interface is defined now to reserve the extension point; the enterprise
-// policy engine implementation is a future spec.
-type PolicyEvaluator interface {
-	Evaluate(ctx context.Context, orgID uuid.UUID, decision Decision, action string) ([]Violation, error)
-}
-
 // RouteRegistrar registers additional routes on the shared HTTP mux.
 // Enterprise routes share the mux, auth chain, and OTEL instrumentation with OSS routes.
 // The function is called once during App.New() after all OSS routes are registered.

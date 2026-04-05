@@ -77,14 +77,6 @@ type ConflictScore struct {
 	Explanation string
 }
 
-// Violation is a policy rule violation returned by PolicyEvaluator.
-// Defined here for interface completeness; the policy engine is a future enterprise feature.
-type Violation struct {
-	Rule     string
-	Severity string
-	Message  string
-}
-
 // SearchFilters mirrors model.QueryFilters for use in the public Searcher interface.
 // All fields are primitive types or stdlib types — no internal package imports.
 type SearchFilters struct {

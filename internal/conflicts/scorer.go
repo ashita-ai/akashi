@@ -1182,69 +1182,6 @@ func (s *Scorer) ClearAllConflicts(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// CleanupTransitiveGroupConflicts marks redundant group conflicts as false
-// positives. For each conflict group with 3+ open conflicts, keeps only the
-// highest-significance conflict and marks the rest as false_positive with a
-// system note. This is a one-time cleanup for existing data; the transitive
-// group dedup filter in scoreForDecision prevents future accumulation.
-// Returns the number of conflicts cleaned up.
-// SECURITY: Intentionally global — one-time startup cleanup across all orgs.
-func (s *Scorer) CleanupTransitiveGroupConflicts(ctx context.Context) (int, error) {
-	tx, err := s.db.Pool().Begin(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("conflicts: begin transitive cleanup tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	// For each group with 3+ open conflicts, keep only the one with highest
-	// significance, mark the rest as false_positive.
-	tag, err := tx.Exec(ctx, `
-		WITH ranked AS (
-			SELECT id, group_id,
-				ROW_NUMBER() OVER (PARTITION BY group_id ORDER BY COALESCE(significance, 0) DESC) AS rn
-			FROM scored_conflicts
-			WHERE status = 'open'
-			  AND group_id IN (
-				SELECT group_id FROM scored_conflicts
-				WHERE status = 'open' AND group_id IS NOT NULL
-				GROUP BY group_id HAVING count(*) >= 3
-			  )
-		)
-		UPDATE scored_conflicts SET
-			status = 'false_positive',
-			resolved_at = now(),
-			resolved_by = 'system',
-			resolution_note = 'system: transitive group dedup cleanup'
-		WHERE id IN (SELECT id FROM ranked WHERE rn > 1)
-		  AND status = 'open'`)
-	if err != nil {
-		return 0, fmt.Errorf("conflicts: transitive cleanup: %w", err)
-	}
-	n := int(tag.RowsAffected())
-
-	if n > 0 {
-		if err := storage.InsertMutationAuditTx(ctx, tx, storage.MutationAuditEntry{
-			ActorAgentID: "system",
-			ActorRole:    "platform_admin",
-			Operation:    "cleanup_transitive_group_conflicts",
-			ResourceType: "scored_conflicts",
-			BeforeData:   map[string]any{"count": n},
-			AfterData:    map[string]any{"marked_false_positive": n},
-			Metadata:     map[string]any{"reason": "transitive_group_dedup_cleanup"},
-		}); err != nil {
-			return 0, fmt.Errorf("conflicts: audit transitive cleanup: %w", err)
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("conflicts: commit transitive cleanup: %w", err)
-	}
-	if n > 0 {
-		s.logger.Warn("startup: cleaned up transitive group conflicts", "marked_false_positive", n)
-	}
-	return n, nil
-}
-
 // isComplementaryWorkflowPair returns true if the decision pair matches a
 // structural pattern where two decisions are about the same topic but are
 // complementary rather than contradictory. These patterns are invisible to

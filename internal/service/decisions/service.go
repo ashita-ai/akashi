@@ -78,10 +78,6 @@ func (s *Service) SetPercentileCache(c *search.PercentileCache) { s.percentileCa
 // SetReScoreMetrics configures per-signal contribution metrics for ReScore.
 func (s *Service) SetReScoreMetrics(m *search.ReScoreMetrics) { s.rescoreMetrics = m }
 
-// SetStandardTypes configures the set of canonical decision types used for
-// Levenshtein-based auto-aliasing. When nil, quality.DefaultStandardDecisionTypes is used.
-func (s *Service) SetStandardTypes(types map[string]bool) { s.standardTypes = types }
-
 // AutoAssessor generates outcome assessments from observable signals.
 type AutoAssessor interface {
 	OnSuperseded(ctx context.Context, orgID, supersededID, newID uuid.UUID)
