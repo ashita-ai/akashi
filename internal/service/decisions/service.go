@@ -1056,8 +1056,9 @@ func (s *Service) SemanticSearchAvailable() bool {
 }
 
 // ErrAgentNotFound indicates the agent does not exist and the caller lacks
-// permission to auto-create it.
-var ErrAgentNotFound = errors.New("agent_id not found in this organization")
+// permission to auto-create it. It wraps storage.ErrAgentNotFound so callers
+// can match either the service-level or storage-level sentinel.
+var ErrAgentNotFound = fmt.Errorf("agent_id not found in this organization: %w", storage.ErrAgentNotFound)
 
 // ResolveOrCreateAgent looks up an agent by agent_id within an org. If the
 // agent does not exist and the caller has admin+ privileges, it auto-registers
