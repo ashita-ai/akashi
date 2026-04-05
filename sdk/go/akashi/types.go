@@ -618,6 +618,11 @@ type FacetsResponse struct {
 	Projects []string `json:"projects"`
 }
 
+// PatchDecisionRequest is the input for Client.PatchDecision.
+type PatchDecisionRequest struct {
+	Project *string `json:"project,omitempty"`
+}
+
 // RetractDecisionRequest is the optional input for Client.RetractDecision.
 type RetractDecisionRequest struct {
 	Reason string `json:"reason,omitempty"`
