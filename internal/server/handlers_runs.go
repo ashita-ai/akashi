@@ -189,9 +189,9 @@ func (h *Handlers) HandleAppendEvents(w http.ResponseWriter, r *http.Request) {
 		h.clearIdempotentWrite(r, orgID, idem)
 		switch {
 		case errors.Is(err, tracesvc.ErrBufferAtCapacity):
-			writeError(w, r, http.StatusServiceUnavailable, model.ErrCodeConflict, "event buffer is full, retry shortly")
+			writeError(w, r, http.StatusServiceUnavailable, model.ErrCodeServiceUnavailable, "event buffer is full, retry shortly")
 		case errors.Is(err, tracesvc.ErrBufferDraining):
-			writeError(w, r, http.StatusServiceUnavailable, model.ErrCodeConflict, "server is shutting down, retry on another instance")
+			writeError(w, r, http.StatusServiceUnavailable, model.ErrCodeServiceUnavailable, "server is shutting down, retry on another instance")
 		default:
 			h.writeInternalError(w, r, "failed to buffer events", err)
 		}
