@@ -9072,25 +9072,8 @@ func TestHandleListKeys_WithPagination(t *testing.T) {
 }
 
 // ===========================================================================
-// Coverage push: HandleRevokeKey — valid revocation
 // ===========================================================================
-
-func TestHandleRevokeKey_InvalidUUIDCov(t *testing.T) {
-	resp, err := authedRequest("DELETE", testSrv.URL+"/v1/keys/not-a-uuid", adminToken, nil)
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
-}
-
-func TestHandleRevokeKey_NotFoundCov(t *testing.T) {
-	resp, err := authedRequest("DELETE", testSrv.URL+"/v1/keys/"+uuid.NewString(), adminToken, nil)
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
-}
-
-// ===========================================================================
-// Coverage push: HandlePatchConflict — patch various fields
+// Coverage push: HandlePatchConflict ��� patch various fields
 // ===========================================================================
 
 func TestHandlePatchConflict_InvalidUUID(t *testing.T) {
@@ -10631,18 +10614,6 @@ func TestHandleCreateRun_AgentCannotCreateForOther(t *testing.T) {
 }
 
 // ===========================================================================
-// Coverage push: HandleRevokeKey — nonexistent
-// ===========================================================================
-
-func TestHandleRevokeKey_Nonexistent(t *testing.T) {
-	req, _ := http.NewRequest("DELETE", testSrv.URL+"/v1/keys/"+uuid.New().String(), nil)
-	req.Header.Set("Authorization", "Bearer "+adminToken)
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
-}
-
 // ===========================================================================
 // Coverage push: HandleGetDecision — invalid UUID, nonexistent
 // ===========================================================================

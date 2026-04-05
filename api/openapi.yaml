@@ -1986,16 +1986,8 @@ paths:
             format: uuid
           description: The UUID of the key to revoke.
       responses:
-        "200":
-          description: Key revoked.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    example: revoked
+        "204":
+          description: Key revoked. No content returned.
         "400":
           $ref: "#/components/responses/BadRequest"
         "403":

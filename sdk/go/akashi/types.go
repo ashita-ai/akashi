@@ -21,13 +21,22 @@ type Decision struct {
 	Metadata          map[string]any `json:"metadata"`
 	CompletenessScore float32        `json:"completeness_score"`
 	OutcomeScore      *float32       `json:"outcome_score,omitempty"`
-	PrecedentRef      *uuid.UUID     `json:"precedent_ref,omitempty"`
-	SupersedesID      *uuid.UUID     `json:"supersedes_id,omitempty"`
-	ContentHash       string         `json:"content_hash,omitempty"`
+	PrecedentRef    *uuid.UUID `json:"precedent_ref,omitempty"`
+	PrecedentReason *string    `json:"precedent_reason,omitempty"`
+	SupersedesID    *uuid.UUID `json:"supersedes_id,omitempty"`
+	ContentHash     string     `json:"content_hash,omitempty"`
 
 	// Composite agent identity: session and runtime context from the calling agent.
 	SessionID    *uuid.UUID     `json:"session_id,omitempty"`
 	AgentContext map[string]any `json:"agent_context,omitempty"`
+
+	// First-class attribution columns (indexed fast-path).
+	Tool    *string `json:"tool,omitempty"`
+	Model   *string `json:"model,omitempty"`
+	Project *string `json:"project,omitempty"`
+
+	// API key attribution.
+	APIKeyID *uuid.UUID `json:"api_key_id,omitempty"`
 
 	// Bi-temporal columns.
 	ValidFrom       time.Time  `json:"valid_from"`
@@ -39,6 +48,18 @@ type Decision struct {
 	// Joined data (populated by queries that request includes).
 	Alternatives []Alternative `json:"alternatives,omitempty"`
 	Evidence     []Evidence    `json:"evidence,omitempty"`
+
+	// Consensus scoring: computed at query time from embedding similarity cluster.
+	AgreementCount int `json:"agreement_count"`
+	ConflictCount  int `json:"conflict_count"`
+
+	// Outcome signals: temporal, graph, and fate signals computed at query time.
+	SupersessionVelocityHours *float64     `json:"supersession_velocity_hours"`
+	PrecedentCitationCount    int          `json:"precedent_citation_count"`
+	ConflictFate              ConflictFate `json:"conflict_fate"`
+
+	// Assessment summary: populated on single-decision GET; nil in list responses.
+	AssessmentSummary *AssessmentSummary `json:"assessment_summary,omitempty"`
 }
 
 // Alternative represents an option considered for a decision.
@@ -51,10 +72,26 @@ type Alternative struct {
 	CreatedAt       time.Time      `json:"created_at"`
 }
 
+// ConflictFate tracks how a decision fared in resolved conflict pairs.
+type ConflictFate struct {
+	Won              int `json:"won"`
+	Lost             int `json:"lost"`
+	ResolvedNoWinner int `json:"resolved_no_winner"`
+}
+
+// AssessmentSummary is a precomputed count of assessments by outcome.
+type AssessmentSummary struct {
+	Total            int `json:"total"`
+	Correct          int `json:"correct"`
+	Incorrect        int `json:"incorrect"`
+	PartiallyCorrect int `json:"partially_correct"`
+}
+
 // Evidence represents supporting information for a decision.
 type Evidence struct {
 	ID             uuid.UUID          `json:"id"`
 	DecisionID     uuid.UUID          `json:"decision_id"`
+	OrgID          uuid.UUID          `json:"org_id"`
 	SourceType     string             `json:"source_type"`
 	SourceURI      *string            `json:"source_uri,omitempty"`
 	Content        string             `json:"content"`
@@ -74,6 +111,7 @@ const (
 
 // DecisionConflict represents a detected conflict between two decisions.
 type DecisionConflict struct {
+	ID                uuid.UUID    `json:"id"`
 	ConflictKind      ConflictKind `json:"conflict_kind"`
 	DecisionAID       uuid.UUID    `json:"decision_a_id"`
 	DecisionBID       uuid.UUID    `json:"decision_b_id"`
@@ -98,6 +136,38 @@ type DecisionConflict struct {
 	OutcomeDivergence *float64     `json:"outcome_divergence,omitempty"`
 	Significance      *float64     `json:"significance,omitempty"`
 	ScoringMethod     string       `json:"scoring_method,omitempty"`
+	Explanation       *string      `json:"explanation,omitempty"`
+
+	// Conflict lifecycle: category, severity, and resolution state.
+	Category       *string    `json:"category,omitempty"`
+	Severity       *string    `json:"severity,omitempty"`
+	Status         string     `json:"status"`
+	ResolvedBy     *string    `json:"resolved_by,omitempty"`
+	ResolvedAt     *time.Time `json:"resolved_at,omitempty"`
+	ResolutionNote *string    `json:"resolution_note,omitempty"`
+
+	// Precision fields.
+	Relationship         *string    `json:"relationship,omitempty"`
+	ConfidenceWeight     *float64   `json:"confidence_weight,omitempty"`
+	TemporalDecay        *float64   `json:"temporal_decay,omitempty"`
+	ResolutionDecisionID *uuid.UUID `json:"resolution_decision_id,omitempty"`
+
+	// Winner: which of the two decisions prevailed in resolution.
+	WinningDecisionID *uuid.UUID `json:"winning_decision_id,omitempty"`
+
+	// Group: canonical conflict group this pair belongs to.
+	GroupID *uuid.UUID `json:"group_id,omitempty"`
+
+	// Claim fragments from claim-level scoring.
+	ClaimTextA *string `json:"claim_text_a,omitempty"`
+	ClaimTextB *string `json:"claim_text_b,omitempty"`
+
+	// Links to prior resolved conflict this one contradicts.
+	ReopensResolutionID *uuid.UUID `json:"reopens_resolution_id,omitempty"`
+
+	// Denormalized project names for project-scoped queries.
+	ProjectA *string `json:"project_a,omitempty"`
+	ProjectB *string `json:"project_b,omitempty"`
 }
 
 // --- Request types ---

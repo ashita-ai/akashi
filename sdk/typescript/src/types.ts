@@ -1,3 +1,18 @@
+/** Tracks how a decision fared in resolved conflict pairs. */
+export interface ConflictFate {
+  won: number;
+  lost: number;
+  resolved_no_winner: number;
+}
+
+/** Precomputed count of assessments by outcome. */
+export interface AssessmentSummary {
+  total: number;
+  correct: number;
+  incorrect: number;
+  partially_correct: number;
+}
+
 /** A recorded decision with bi-temporal modeling. */
 export interface Decision {
   id: string;
@@ -19,12 +34,26 @@ export interface Decision {
   /** Composite agent identity (spec 31). */
   session_id?: string;
   agent_context?: Record<string, unknown>;
+  /** First-class attribution columns. */
+  tool?: string;
+  model?: string;
+  project?: string;
+  api_key_id?: string;
   valid_from: string;
   valid_to?: string;
   transaction_time: string;
   created_at: string;
   alternatives?: Alternative[];
   evidence?: Evidence[];
+  /** Consensus scoring: computed at query time. */
+  agreement_count?: number;
+  conflict_count?: number;
+  /** Outcome signals: temporal, graph, and fate signals. */
+  supersession_velocity_hours?: number | null;
+  precedent_citation_count?: number;
+  conflict_fate?: ConflictFate;
+  /** Assessment summary: populated on single-decision GET. */
+  assessment_summary?: AssessmentSummary | null;
 }
 
 /** An option considered for a decision. */
@@ -41,6 +70,7 @@ export interface Alternative {
 export interface Evidence {
   id: string;
   decision_id: string;
+  org_id: string;
   source_type: string;
   source_uri?: string;
   content: string;
@@ -54,6 +84,7 @@ export type ConflictKind = "cross_agent" | "self_contradiction";
 
 /** A detected conflict between two decisions. */
 export interface DecisionConflict {
+  id: string;
   conflict_kind: ConflictKind;
   decision_a_id: string;
   decision_b_id: string;
@@ -78,6 +109,31 @@ export interface DecisionConflict {
   outcome_divergence?: number;
   significance?: number;
   scoring_method?: string;
+  explanation?: string;
+  /** Conflict lifecycle: category, severity, and resolution state. */
+  category?: string;
+  severity?: string;
+  status: string;
+  resolved_by?: string;
+  resolved_at?: string;
+  resolution_note?: string;
+  /** Precision fields. */
+  relationship?: string;
+  confidence_weight?: number;
+  temporal_decay?: number;
+  resolution_decision_id?: string;
+  /** Winner: which decision prevailed in resolution. */
+  winning_decision_id?: string;
+  /** Group: canonical conflict group this pair belongs to. */
+  group_id?: string;
+  /** Claim fragments from claim-level scoring. */
+  claim_text_a?: string;
+  claim_text_b?: string;
+  /** Links to prior resolved conflict this one contradicts. */
+  reopens_resolution_id?: string;
+  /** Denormalized project names. */
+  project_a?: string;
+  project_b?: string;
 }
 
 /** An agent run (a unit of work that can contain decisions and events). */
@@ -226,6 +282,7 @@ export interface CreateAgentRequest {
   name: string;
   role: string;
   apiKey: string;
+  tags?: string[];
   metadata?: Record<string, unknown>;
 }
 
