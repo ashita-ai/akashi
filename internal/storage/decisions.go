@@ -2354,11 +2354,17 @@ func (db *DB) UpdateDecisionProject(ctx context.Context, orgID, decisionID uuid.
 		}
 
 		// Update agent_context JSONB to set client.project.
-		// jsonb_set creates the 'client' key if absent, then sets 'project' within it.
+		// jsonb_set's create_if_missing only applies to the leaf key, not intermediate
+		// keys. The inner jsonb_set ensures the 'client' object exists before the outer
+		// one sets 'project' within it.
 		_, err = tx.Exec(ctx,
 			`UPDATE decisions
 			 SET agent_context = jsonb_set(
-			     COALESCE(agent_context, '{}'::jsonb),
+			     jsonb_set(
+			         COALESCE(agent_context, '{}'::jsonb),
+			         '{client}',
+			         COALESCE(COALESCE(agent_context, '{}'::jsonb) -> 'client', '{}'::jsonb)
+			     ),
 			     '{client,project}',
 			     to_jsonb($1::text),
 			     true

@@ -1239,7 +1239,7 @@ func (h *Handlers) HandlePatchDecision(w http.ResponseWriter, r *http.Request) {
 	// Return the updated decision.
 	decision, err := h.db.GetDecision(r.Context(), orgID, id, storage.GetDecisionOpts{CurrentOnly: true})
 	if err != nil {
-		w.WriteHeader(http.StatusNoContent)
+		h.writeInternalError(w, r, "failed to get decision after project update", err)
 		return
 	}
 

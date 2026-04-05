@@ -20,7 +20,11 @@
 -- ============================================================
 UPDATE decisions
 SET agent_context = jsonb_set(
-    COALESCE(agent_context, '{}'::jsonb),
+    jsonb_set(
+        COALESCE(agent_context, '{}'::jsonb),
+        '{client}',
+        COALESCE(COALESCE(agent_context, '{}'::jsonb) -> 'client', '{}'::jsonb)
+    ),
     '{client,project}',
     '"akashi"'::jsonb,
     true
@@ -43,7 +47,11 @@ AND valid_to IS NULL;
 -- ============================================================
 UPDATE decisions
 SET agent_context = jsonb_set(
-    COALESCE(agent_context, '{}'::jsonb),
+    jsonb_set(
+        COALESCE(agent_context, '{}'::jsonb),
+        '{client}',
+        COALESCE(COALESCE(agent_context, '{}'::jsonb) -> 'client', '{}'::jsonb)
+    ),
     '{client,project}',
     '"tessera"'::jsonb,
     true
@@ -59,7 +67,11 @@ AND valid_to IS NULL;
 -- ============================================================
 UPDATE decisions
 SET agent_context = jsonb_set(
-    COALESCE(agent_context, '{}'::jsonb),
+    jsonb_set(
+        COALESCE(agent_context, '{}'::jsonb),
+        '{client}',
+        COALESCE(COALESCE(agent_context, '{}'::jsonb) -> 'client', '{}'::jsonb)
+    ),
     '{client,project}',
     '"akashi"'::jsonb,
     true
@@ -82,7 +94,11 @@ AND valid_to IS NULL;
 -- ============================================================
 UPDATE decisions
 SET agent_context = jsonb_set(
-    COALESCE(agent_context, '{}'::jsonb),
+    jsonb_set(
+        COALESCE(agent_context, '{}'::jsonb),
+        '{client}',
+        COALESCE(COALESCE(agent_context, '{}'::jsonb) -> 'client', '{}'::jsonb)
+    ),
     '{client,project}',
     '"tessera"'::jsonb,
     true
@@ -136,7 +152,11 @@ AND valid_to IS NULL;
 -- ============================================================
 UPDATE decisions
 SET agent_context = jsonb_set(
-    COALESCE(agent_context, '{}'::jsonb),
+    jsonb_set(
+        COALESCE(agent_context, '{}'::jsonb),
+        '{client}',
+        COALESCE(COALESCE(agent_context, '{}'::jsonb) -> 'client', '{}'::jsonb)
+    ),
     '{client,project}',
     '"mimir"'::jsonb,
     true
@@ -159,7 +179,11 @@ AND valid_to IS NULL;
 -- ============================================================
 UPDATE decisions
 SET agent_context = jsonb_set(
-    COALESCE(agent_context, '{}'::jsonb),
+    jsonb_set(
+        COALESCE(agent_context, '{}'::jsonb),
+        '{client}',
+        COALESCE(COALESCE(agent_context, '{}'::jsonb) -> 'client', '{}'::jsonb)
+    ),
     '{client,project}',
     '"ashita-ai"'::jsonb,
     true
