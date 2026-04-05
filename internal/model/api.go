@@ -217,14 +217,15 @@ type ErrorDetail struct {
 
 // ErrorCode constants for standard API error codes.
 const (
-	ErrCodeInvalidInput   = "INVALID_INPUT"
-	ErrCodeUnauthorized   = "UNAUTHORIZED"
-	ErrCodeForbidden      = "FORBIDDEN"
-	ErrCodeNotFound       = "NOT_FOUND"
-	ErrCodeConflict       = "CONFLICT"
-	ErrCodeInternalError  = "INTERNAL_ERROR"
-	ErrCodeRateLimited    = "RATE_LIMITED"
-	ErrCodeNotImplemented = "NOT_IMPLEMENTED"
+	ErrCodeInvalidInput       = "INVALID_INPUT"
+	ErrCodeUnauthorized       = "UNAUTHORIZED"
+	ErrCodeForbidden          = "FORBIDDEN"
+	ErrCodeNotFound           = "NOT_FOUND"
+	ErrCodeConflict           = "CONFLICT"
+	ErrCodeInternalError      = "INTERNAL_ERROR"
+	ErrCodeRateLimited        = "RATE_LIMITED"
+	ErrCodeNotImplemented     = "NOT_IMPLEMENTED"
+	ErrCodeServiceUnavailable = "SERVICE_UNAVAILABLE"
 )
 
 // CreateRunRequest is the request body for POST /v1/runs.
