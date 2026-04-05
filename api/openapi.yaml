@@ -5253,21 +5253,21 @@ components:
 
     APIResponse_KeyList:
       type: object
-      required: [data, meta]
+      required: [data, has_more, limit, offset, meta]
       properties:
         data:
-          type: object
-          properties:
-            keys:
-              type: array
-              items:
-                $ref: "#/components/schemas/APIKey"
-            total:
-              type: integer
-            limit:
-              type: integer
-            offset:
-              type: integer
+          type: array
+          items:
+            $ref: "#/components/schemas/APIKey"
+        total:
+          type: integer
+          nullable: true
+        has_more:
+          type: boolean
+        limit:
+          type: integer
+        offset:
+          type: integer
         meta:
           $ref: "#/components/schemas/ResponseMeta"
 
