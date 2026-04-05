@@ -115,11 +115,12 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	// Build agent context concurrently with the idempotency check — they're independent.
 	// agentContext may call GetAPIKeyByID (DB round trip); idempotency calls BeginIdempotency.
 	var agentContext map[string]any
+	var projectErr string
 	var ctxWg sync.WaitGroup
 	ctxWg.Add(1)
 	go func() {
 		defer ctxWg.Done()
-		agentContext = h.buildTraceAgentContext(r, orgID, claims, req, resolvedAgent)
+		agentContext, projectErr = h.buildTraceAgentContext(r, orgID, claims, req, resolvedAgent)
 	}()
 
 	idemPayload := struct {
@@ -140,9 +141,7 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 
 	if agentContext == nil {
 		h.clearIdempotentWrite(r, orgID, idem)
-		writeJSON(w, r, http.StatusBadRequest, map[string]string{
-			"error": "project validation failed: unknown project name",
-		})
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, projectErr)
 		return
 	}
 
@@ -227,7 +226,7 @@ func (h *Handlers) buildTraceAgentContext(
 	claims *auth.Claims,
 	req model.TraceRequest,
 	resolvedAgent model.Agent,
-) map[string]any {
+) (map[string]any, string) {
 	serverCtx := map[string]any{}
 	clientCtx := map[string]any{}
 
@@ -318,7 +317,7 @@ func (h *Handlers) buildTraceAgentContext(
 		},
 		h.logger,
 	); errMsg != "" {
-		return nil
+		return nil, errMsg
 	}
 
 	agentContext := map[string]any{}
@@ -328,7 +327,7 @@ func (h *Handlers) buildTraceAgentContext(
 	if len(clientCtx) > 0 {
 		agentContext["client"] = clientCtx
 	}
-	return agentContext
+	return agentContext, ""
 }
 
 // HandleGetDecision handles GET /v1/decisions/{id} (reader+).
