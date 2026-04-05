@@ -2254,3 +2254,164 @@ func TestScorerEval(t *testing.T) {
 		t.Errorf("expected 20 total_labeled, got %d", resp.TotalLabeled)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Subscribe (SSE)
+// ---------------------------------------------------------------------------
+
+func TestSubscribeReceivesEvents(t *testing.T) {
+	eventCount := atomic.Int32{}
+
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"GET /v1/subscribe": func(w http.ResponseWriter, r *http.Request) {
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				http.Error(w, "streaming not supported", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.WriteHeader(http.StatusOK)
+			flusher.Flush()
+
+			// Send a keepalive, then a decision event, then a conflict event.
+			_, _ = w.Write([]byte(":keepalive\n\n"))
+			flusher.Flush()
+
+			_, _ = w.Write([]byte("event: akashi_decisions\ndata: {\"decision_id\":\"abc-123\",\"agent_id\":\"agent-1\",\"org_id\":\"org-1\",\"outcome\":\"chose Go\"}\n\n"))
+			flusher.Flush()
+
+			_, _ = w.Write([]byte("event: akashi_conflicts\ndata: {\"source\":\"scorer\",\"org_id\":\"org-1\"}\n\n"))
+			flusher.Flush()
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	events, errs, cancelSub := client.Subscribe(ctx)
+	defer cancelSub()
+
+	var received []SubscriptionEvent
+	for evt := range events {
+		received = append(received, evt)
+		eventCount.Add(1)
+		if eventCount.Load() >= 2 {
+			cancelSub()
+		}
+	}
+
+	// Drain errors channel.
+	for err := range errs {
+		t.Fatalf("unexpected error from Subscribe: %v", err)
+	}
+
+	if len(received) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(received))
+	}
+	if received[0].EventType != "akashi_decisions" {
+		t.Errorf("expected first event type 'akashi_decisions', got %q", received[0].EventType)
+	}
+	if received[0].Data["decision_id"] != "abc-123" {
+		t.Errorf("expected decision_id 'abc-123', got %v", received[0].Data["decision_id"])
+	}
+	if received[1].EventType != "akashi_conflicts" {
+		t.Errorf("expected second event type 'akashi_conflicts', got %q", received[1].EventType)
+	}
+	if received[1].Data["source"] != "scorer" {
+		t.Errorf("expected source 'scorer', got %v", received[1].Data["source"])
+	}
+}
+
+func TestSubscribeSkipsKeepalive(t *testing.T) {
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"GET /v1/subscribe": func(w http.ResponseWriter, r *http.Request) {
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				http.Error(w, "streaming not supported", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher.Flush()
+
+			// Send multiple keepalives and one real event.
+			_, _ = w.Write([]byte(":keepalive\n\n"))
+			_, _ = w.Write([]byte(":keepalive\n\n"))
+			_, _ = w.Write([]byte("event: akashi_decisions\ndata: {\"decision_id\":\"xyz\"}\n\n"))
+			flusher.Flush()
+		},
+	})
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	events, errs, cancelSub := client.Subscribe(ctx)
+	defer cancelSub()
+
+	var received []SubscriptionEvent
+	for evt := range events {
+		received = append(received, evt)
+		cancelSub()
+	}
+	for err := range errs {
+		t.Fatalf("unexpected error from Subscribe: %v", err)
+	}
+
+	if len(received) != 1 {
+		t.Fatalf("expected 1 event (keepalives filtered), got %d", len(received))
+	}
+	if received[0].Data["decision_id"] != "xyz" {
+		t.Errorf("expected decision_id 'xyz', got %v", received[0].Data["decision_id"])
+	}
+}
+
+func TestSubscribeHandlesServerError(t *testing.T) {
+	srv := mockServer(t, map[string]http.HandlerFunc{
+		"GET /v1/subscribe": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"error": map[string]any{"code": "FORBIDDEN", "message": "insufficient permissions"},
+			})
+		},
+	})
+	defer srv.Close()
+
+	noRetry := 0
+	client, err := NewClient(Config{
+		BaseURL:    srv.URL,
+		AgentID:    "test-agent",
+		APIKey:     "test-key",
+		Timeout:    5 * time.Second,
+		MaxRetries: &noRetry,
+	})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+
+	events, errs, cancelSub := client.Subscribe(context.Background())
+	defer cancelSub()
+
+	// Events channel should be empty.
+	for range events {
+		t.Fatal("expected no events")
+	}
+
+	var gotErr error
+	for e := range errs {
+		gotErr = e
+	}
+	if gotErr == nil {
+		t.Fatal("expected error from Subscribe when server returns 403")
+	}
+	apiErr, ok := gotErr.(*Error)
+	if !ok {
+		t.Fatalf("expected *Error, got %T: %v", gotErr, gotErr)
+	}
+	if apiErr.StatusCode != http.StatusForbidden {
+		t.Errorf("expected status 403, got %d", apiErr.StatusCode)
+	}
+}

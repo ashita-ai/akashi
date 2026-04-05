@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -519,6 +520,100 @@ func (c *Client) ExportDecisions(ctx context.Context, opts *ExportOptions) (deci
 	}()
 
 	return dch, ech, cancelFn
+}
+
+// Subscribe opens an SSE connection to /v1/subscribe and returns a channel
+// of real-time decision and conflict events scoped to the caller's org.
+// The caller must call the returned cancel function when done to close the
+// connection and release resources.
+//
+// The SSE connection uses a dedicated HTTP client with no timeout so that
+// long-lived idle connections are not killed. Keepalive comments from the
+// server are silently consumed.
+func (c *Client) Subscribe(ctx context.Context) (events <-chan SubscriptionEvent, errs <-chan error, cancel func()) {
+	ctx, cancelFn := context.WithCancel(ctx)
+	ech := make(chan SubscriptionEvent, 64)
+	errch := make(chan error, 1)
+
+	go func() {
+		defer close(ech)
+		defer close(errch)
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/subscribe", nil)
+		if err != nil {
+			errch <- fmt.Errorf("akashi: create subscribe request: %w", err)
+			return
+		}
+		req.Header.Set("Accept", "text/event-stream")
+
+		// Use execRequest for auth headers, but override the response handling
+		// since SSE is a long-lived stream rather than a single response.
+		resp, err := c.execRequest(ctx, req)
+		if err != nil {
+			errch <- err
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode >= 400 {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
+			errch <- parseErrorResponse(resp.StatusCode, body)
+			return
+		}
+
+		scanner := bufio.NewScanner(resp.Body)
+		var eventType string
+		var dataBuf bytes.Buffer
+
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			// SSE comment (keepalive).
+			if strings.HasPrefix(line, ":") {
+				continue
+			}
+
+			// Empty line = end of event.
+			if line == "" {
+				if eventType != "" && dataBuf.Len() > 0 {
+					var data map[string]any
+					if jsonErr := json.Unmarshal(dataBuf.Bytes(), &data); jsonErr != nil {
+						errch <- fmt.Errorf("akashi: decode SSE data: %w", jsonErr)
+						return
+					}
+					evt := SubscriptionEvent{
+						EventType: eventType,
+						Data:      data,
+					}
+					select {
+					case ech <- evt:
+					case <-ctx.Done():
+						return
+					}
+				}
+				eventType = ""
+				dataBuf.Reset()
+				continue
+			}
+
+			if strings.HasPrefix(line, "event: ") {
+				eventType = strings.TrimPrefix(line, "event: ")
+			} else if strings.HasPrefix(line, "data: ") {
+				if dataBuf.Len() > 0 {
+					dataBuf.WriteByte('\n')
+				}
+				dataBuf.WriteString(strings.TrimPrefix(line, "data: "))
+			}
+		}
+		if scanErr := scanner.Err(); scanErr != nil {
+			// context cancellation is expected — don't report it.
+			if ctx.Err() == nil {
+				errch <- fmt.Errorf("akashi: read SSE stream: %w", scanErr)
+			}
+		}
+	}()
+
+	return ech, errch, cancelFn
 }
 
 // ListIntegrityViolations retrieves detected hash mismatches.

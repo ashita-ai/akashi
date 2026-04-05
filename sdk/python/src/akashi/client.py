@@ -90,6 +90,7 @@ from akashi.types import (
     SetRetentionRequest,
     SignupRequest,
     SignupResponse,
+    SubscriptionEvent,
     TimelineResponse,
     TraceHealthResponse,
     TraceRequest,
@@ -1092,6 +1093,53 @@ class AkashiClient:
                     raise ServerError(data.get("message", "Export terminated due to internal error"))
                 yield Decision.model_validate(data)
 
+    async def subscribe(self) -> AsyncIterator[SubscriptionEvent]:
+        """Open an SSE connection to ``GET /v1/subscribe`` and yield real-time events.
+
+        Yields :class:`SubscriptionEvent` instances for decision and conflict
+        notifications scoped to the caller's organization. Keepalive comments
+        from the server are silently consumed.
+
+        The connection stays open until the caller breaks out of the iterator
+        or the server closes it.
+        """
+        token = await self._token_mgr.get_token(self._client)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "User-Agent": _USER_AGENT,
+            "X-Akashi-Session": str(self.session_id),
+            "Accept": "text/event-stream",
+        }
+        async with self._client.stream(
+            "GET",
+            f"{self.base_url}/v1/subscribe",
+            headers=headers,
+            timeout=None,
+        ) as resp:
+            if resp.status_code >= 400:
+                await resp.aread()
+                _check_response_size(resp)
+                _handle_response(resp)  # raises
+            event_type = ""
+            data_buf: list[str] = []
+            async for raw_line in resp.aiter_lines():
+                line = raw_line.rstrip("\n")
+                # SSE comment (keepalive).
+                if line.startswith(":"):
+                    continue
+                # Empty line = end of event.
+                if line == "":
+                    if event_type and data_buf:
+                        payload = _json.loads("\n".join(data_buf))
+                        yield SubscriptionEvent(event_type=event_type, data=payload)
+                    event_type = ""
+                    data_buf = []
+                    continue
+                if line.startswith("event: "):
+                    event_type = line[7:]
+                elif line.startswith("data: "):
+                    data_buf.append(line[6:])
+
     # --- HTTP transport ---
 
     async def _post(self, path: str, body: dict[str, Any], extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
@@ -2031,6 +2079,53 @@ class AkashiSyncClient:
                 if data.get("__error"):
                     raise ServerError(data.get("message", "Export terminated due to internal error"))
                 yield Decision.model_validate(data)
+
+    def subscribe(self) -> Iterator[SubscriptionEvent]:
+        """Open an SSE connection to ``GET /v1/subscribe`` and yield real-time events.
+
+        Yields :class:`SubscriptionEvent` instances for decision and conflict
+        notifications scoped to the caller's organization. Keepalive comments
+        from the server are silently consumed.
+
+        The connection stays open until the caller breaks out of the iterator
+        or the server closes it.
+        """
+        token = self._token_mgr.get_token_sync(self._client)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "User-Agent": _USER_AGENT,
+            "X-Akashi-Session": str(self.session_id),
+            "Accept": "text/event-stream",
+        }
+        with self._client.stream(
+            "GET",
+            f"{self.base_url}/v1/subscribe",
+            headers=headers,
+            timeout=None,
+        ) as resp:
+            if resp.status_code >= 400:
+                resp.read()
+                _check_response_size(resp)
+                _handle_response(resp)  # raises
+            event_type = ""
+            data_buf: list[str] = []
+            for raw_line in resp.iter_lines():
+                line = raw_line.rstrip("\n")
+                # SSE comment (keepalive).
+                if line.startswith(":"):
+                    continue
+                # Empty line = end of event.
+                if line == "":
+                    if event_type and data_buf:
+                        payload = _json.loads("\n".join(data_buf))
+                        yield SubscriptionEvent(event_type=event_type, data=payload)
+                    event_type = ""
+                    data_buf = []
+                    continue
+                if line.startswith("event: "):
+                    event_type = line[7:]
+                elif line.startswith("data: "):
+                    data_buf.append(line[6:])
 
     # --- HTTP transport ---
 

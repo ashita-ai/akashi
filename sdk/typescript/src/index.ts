@@ -109,4 +109,5 @@ export type {
   ConflictLabelCounts,
   ListConflictLabelsResponse,
   ScorerEvalResponse,
+  SubscriptionEvent,
 } from "./types.js";

@@ -169,6 +169,13 @@ class HealthResponse(BaseModel):
     uptime_seconds: int
 
 
+class SubscriptionEvent(BaseModel):
+    """A single event from the SSE subscribe stream."""
+
+    event_type: str
+    data: dict[str, Any]
+
+
 # --- Request types ---
 
 
