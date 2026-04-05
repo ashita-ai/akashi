@@ -20,7 +20,11 @@ func (h *Handlers) HandleListConflicts(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	orgID := OrgIDFromContext(r.Context())
 
-	filters := parseConflictFilters(r)
+	filters, err := parseConflictFilters(r)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, err.Error())
+		return
+	}
 	limit := queryLimit(r, 25)
 	offset := queryOffset(r)
 
@@ -63,6 +67,11 @@ func (h *Handlers) HandleListConflictGroups(w http.ResponseWriter, r *http.Reque
 		filters.AgentID = &aid
 	}
 	if ck := r.URL.Query().Get("conflict_kind"); ck != "" {
+		if !model.ValidConflictKind(ck) {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+				errInvalidConflictKind(ck).Error())
+			return
+		}
 		filters.ConflictKind = &ck
 	}
 	if st := r.URL.Query().Get("status"); st != "" {
@@ -556,6 +565,11 @@ func (h *Handlers) HandleConflictAnalytics(w http.ResponseWriter, r *http.Reques
 		filters.DecisionType = &v
 	}
 	if v := r.URL.Query().Get("conflict_kind"); v != "" {
+		if !model.ValidConflictKind(v) {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+				errInvalidConflictKind(v).Error())
+			return
+		}
 		filters.ConflictKind = &v
 	}
 
@@ -650,7 +664,8 @@ func (h *Handlers) executeCascadeResolution(r *http.Request, orgID uuid.UUID, co
 }
 
 // parseConflictFilters extracts conflict filter parameters from the request query string.
-func parseConflictFilters(r *http.Request) storage.ConflictFilters {
+// Returns an error if conflict_kind is present but not a recognized value.
+func parseConflictFilters(r *http.Request) (storage.ConflictFilters, error) {
 	filters := storage.ConflictFilters{}
 	if dt := r.URL.Query().Get("decision_type"); dt != "" {
 		filters.DecisionType = &dt
@@ -659,6 +674,9 @@ func parseConflictFilters(r *http.Request) storage.ConflictFilters {
 		filters.AgentID = &aid
 	}
 	if ck := r.URL.Query().Get("conflict_kind"); ck != "" {
+		if !model.ValidConflictKind(ck) {
+			return filters, errInvalidConflictKind(ck)
+		}
 		filters.ConflictKind = &ck
 	}
 	if sev := r.URL.Query().Get("severity"); sev != "" {
@@ -673,5 +691,10 @@ func parseConflictFilters(r *http.Request) storage.ConflictFilters {
 	if proj := r.URL.Query().Get("project"); proj != "" {
 		filters.Project = &proj
 	}
-	return filters
+	return filters, nil
+}
+
+// invalidConflictKindMsg builds a user-facing message listing valid conflict_kind values.
+func errInvalidConflictKind(got string) error {
+	return errors.New("invalid conflict_kind " + got + "; valid values are cross_agent, self_contradiction")
 }

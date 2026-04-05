@@ -165,6 +165,17 @@ const (
 	ConflictKindSelfContradiction ConflictKind = "self_contradiction"
 )
 
+// ValidConflictKinds is the set of recognized conflict_kind values.
+var ValidConflictKinds = map[ConflictKind]bool{
+	ConflictKindCrossAgent:        true,
+	ConflictKindSelfContradiction: true,
+}
+
+// ValidConflictKind reports whether k is a recognized conflict kind.
+func ValidConflictKind(k string) bool {
+	return ValidConflictKinds[ConflictKind(k)]
+}
+
 // DecisionConflict represents a detected conflict between two decisions.
 type DecisionConflict struct {
 	ID                uuid.UUID    `json:"id"`
