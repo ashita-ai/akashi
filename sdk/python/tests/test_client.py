@@ -140,6 +140,7 @@ def _grant_json() -> dict:
 def _conflict_json() -> dict:
     """Return a minimal valid DecisionConflict JSON payload."""
     return {
+        "id": str(uuid.uuid4()),
         "conflict_kind": "cross_agent",
         "decision_a_id": str(uuid.uuid4()),
         "decision_b_id": str(uuid.uuid4()),

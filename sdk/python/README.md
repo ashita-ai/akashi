@@ -7,8 +7,8 @@ Python client for the [Akashi](../../README.md) decision audit API -- version co
 ## Install
 
 ```bash
-pip install akashi
-# or from source:
+pip install git+https://github.com/ashita-ai/akashi.git#subdirectory=sdk/python
+# or from a local checkout:
 pip install -e sdk/python
 ```
 

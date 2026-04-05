@@ -10,6 +10,23 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
+class ConflictFate(BaseModel):
+    """Tracks how a decision fared in resolved conflict pairs."""
+
+    won: int = 0
+    lost: int = 0
+    resolved_no_winner: int = 0
+
+
+class AssessmentSummary(BaseModel):
+    """Precomputed count of assessments by outcome."""
+
+    total: int = 0
+    correct: int = 0
+    incorrect: int = 0
+    partially_correct: int = 0
+
+
 class Decision(BaseModel):
     """A recorded decision with bi-temporal modeling."""
 
@@ -30,12 +47,22 @@ class Decision(BaseModel):
     content_hash: str = ""
     session_id: UUID | None = None
     agent_context: dict[str, Any] = Field(default_factory=dict)
+    tool: str | None = None
+    model: str | None = None
+    project: str | None = None
+    api_key_id: UUID | None = None
     valid_from: datetime
     valid_to: datetime | None = None
     transaction_time: datetime
     created_at: datetime
     alternatives: list[Alternative] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
+    agreement_count: int = 0
+    conflict_count: int = 0
+    supersession_velocity_hours: float | None = None
+    precedent_citation_count: int = 0
+    conflict_fate: ConflictFate = Field(default_factory=lambda: ConflictFate())
+    assessment_summary: AssessmentSummary | None = None
 
 
 class Alternative(BaseModel):
@@ -54,6 +81,7 @@ class Evidence(BaseModel):
 
     id: UUID
     decision_id: UUID
+    org_id: UUID
     source_type: str
     source_uri: str | None = None
     content: str
@@ -71,6 +99,7 @@ class ConflictKind(str, Enum):
 class DecisionConflict(BaseModel):
     """A detected conflict between two decisions."""
 
+    id: UUID
     conflict_kind: ConflictKind
     decision_a_id: UUID
     decision_b_id: UUID
@@ -95,6 +124,24 @@ class DecisionConflict(BaseModel):
     outcome_divergence: float | None = None
     significance: float | None = None
     scoring_method: str = ""
+    explanation: str | None = None
+    category: str | None = None
+    severity: str | None = None
+    status: str = "open"
+    resolved_by: str | None = None
+    resolved_at: datetime | None = None
+    resolution_note: str | None = None
+    relationship: str | None = None
+    confidence_weight: float | None = None
+    temporal_decay: float | None = None
+    resolution_decision_id: UUID | None = None
+    winning_decision_id: UUID | None = None
+    group_id: UUID | None = None
+    claim_text_a: str | None = None
+    claim_text_b: str | None = None
+    reopens_resolution_id: UUID | None = None
+    project_a: str | None = None
+    project_b: str | None = None
 
 
 class AgentRun(BaseModel):
@@ -261,6 +308,7 @@ class CreateAgentRequest(BaseModel):
     name: str
     role: str
     api_key: str
+    tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
