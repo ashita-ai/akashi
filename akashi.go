@@ -999,7 +999,7 @@ func (a *App) verifyProofsForOrg(ctx context.Context, orgID uuid.UUID, proofs []
 		// Verify Merkle root.
 		// Prefer snapshotted proof_leaves (survives retention purge and GDPR erasure).
 		// Fall back to re-querying decisions for proofs created before migration 082.
-		hashes, err := a.db.GetProofLeaves(ctx, p.ID)
+		hashes, err := a.db.GetProofLeaves(ctx, orgID, p.ID)
 		if err != nil {
 			a.logger.Warn("integrity audit: failed to fetch proof leaves",
 				"org_id", orgID, "proof_id", p.ID, "error", err)
@@ -1304,7 +1304,7 @@ func (a *App) runRetention(ctx context.Context) {
 			"claims":       counts.Claims,
 			"events":       counts.Events,
 		}
-		if cerr := a.db.CompleteDeletionLog(opCtx, logID, countMap); cerr != nil {
+		if cerr := a.db.CompleteDeletionLog(opCtx, org.OrgID, logID, countMap); cerr != nil {
 			a.logger.Warn("retention: failed to complete deletion log", "org_id", org.OrgID, "error", cerr)
 		}
 
