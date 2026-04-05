@@ -3592,7 +3592,12 @@ components:
         severity:
           type: string
           enum: [critical, high, medium, low]
-          description: Severity of the conflict.
+          description: >-
+            Impact severity of the conflict, independent of the significance
+            score. Derived from decision type tier (security > architecture >
+            trade_off > code_review), decision confidence levels, and conflict
+            category. Critical is reserved for precedent escalation and LLM
+            judgment. May be null for legacy conflicts.
         status:
           type: string
           enum: [open, resolved, false_positive]
