@@ -24,13 +24,13 @@ func (h *Handlers) HandleGetRetention(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"retention_days":          policy.RetentionDays,
-		"retention_exclude_types": policy.RetentionExcludeTypes,
-		"last_run":                policy.LastRunAt,
-		"last_run_deleted":        policy.LastRunDeleted,
-		"next_run":                policy.NextRunAt,
-		"holds":                   holds,
+	writeJSON(w, r, http.StatusOK, model.RetentionPolicyResponse{
+		RetentionDays:         policy.RetentionDays,
+		RetentionExcludeTypes: policy.RetentionExcludeTypes,
+		LastRun:               policy.LastRunAt,
+		LastRunDeleted:        policy.LastRunDeleted,
+		NextRun:               policy.NextRunAt,
+		Holds:                 holds,
 	})
 }
 
@@ -68,12 +68,12 @@ func (h *Handlers) HandleSetRetention(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"retention_days":          policy.RetentionDays,
-		"retention_exclude_types": policy.RetentionExcludeTypes,
-		"last_run":                policy.LastRunAt,
-		"last_run_deleted":        policy.LastRunDeleted,
-		"next_run":                policy.NextRunAt,
+	writeJSON(w, r, http.StatusOK, model.RetentionPolicyResponse{
+		RetentionDays:         policy.RetentionDays,
+		RetentionExcludeTypes: policy.RetentionExcludeTypes,
+		LastRun:               policy.LastRunAt,
+		LastRunDeleted:        policy.LastRunDeleted,
+		NextRun:               policy.NextRunAt,
 	})
 }
 
@@ -109,9 +109,9 @@ func (h *Handlers) HandlePurge(w http.ResponseWriter, r *http.Request) {
 			h.writeInternalError(w, r, "failed to count eligible decisions", err)
 			return
 		}
-		writeJSON(w, r, http.StatusOK, map[string]any{
-			"dry_run":      true,
-			"would_delete": counts,
+		writeJSON(w, r, http.StatusOK, model.PurgeResponse{
+			DryRun:      true,
+			WouldDelete: counts,
 		})
 		return
 	}
@@ -147,9 +147,9 @@ func (h *Handlers) HandlePurge(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = h.db.CompleteDeletionLog(r.Context(), orgID, logID, countMap)
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"dry_run": false,
-		"deleted": countMap,
+	writeJSON(w, r, http.StatusOK, model.PurgeResponse{
+		DryRun:  false,
+		Deleted: countMap,
 	})
 }
 

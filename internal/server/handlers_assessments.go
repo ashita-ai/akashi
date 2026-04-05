@@ -140,10 +140,10 @@ func (h *Handlers) HandleListAssessments(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{
-		"decision_id": decisionID,
-		"summary":     summary,
-		"assessments": assessments,
-		"count":       len(assessments),
+	writeJSON(w, r, http.StatusOK, model.AssessmentListResponse{
+		DecisionID:  decisionID,
+		Summary:     summary,
+		Assessments: assessments,
+		Count:       len(assessments),
 	})
 }
