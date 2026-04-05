@@ -308,6 +308,14 @@ func (h *Handlers) buildTraceAgentContext(
 			}
 			return !hasProjects
 		},
+		func() bool {
+			hasProjects, err := h.db.HasAnyProjects(r.Context(), orgID)
+			if err != nil {
+				h.logger.Error("has-any-projects check failed", "error", err)
+				return false // fail open for bootstrapping
+			}
+			return hasProjects
+		},
 		h.logger,
 	); errMsg != "" {
 		return nil

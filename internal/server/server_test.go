@@ -518,6 +518,7 @@ func TestTraceConvenience(t *testing.T) {
 					{SourceType: "document", Content: "Test evidence"},
 				},
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -534,6 +535,7 @@ func TestQueryEndpoint(t *testing.T) {
 				Outcome:      "passed",
 				Confidence:   0.95,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 
@@ -682,6 +684,7 @@ func TestMCPTraceAndQuery(t *testing.T) {
 				"outcome":       "mcp_approved",
 				"confidence":    0.85,
 				"reasoning":     "tested via MCP protocol",
+				"project":       "test-project",
 			},
 		},
 	})
@@ -767,6 +770,7 @@ func TestMCPCheckTool(t *testing.T) {
 				"outcome":       "chose Redis for session caching",
 				"confidence":    0.85,
 				"reasoning":     "Redis handles expected QPS, TTL prevents stale reads",
+				"project":       "test-project",
 			},
 		},
 	})
@@ -854,6 +858,7 @@ func TestMCPQueryRecentDecisions(t *testing.T) {
 				"decision_type": "feature_scope",
 				"outcome":       "included pagination in API response",
 				"confidence":    0.9,
+				"project":       "test-project",
 			},
 		},
 	})
@@ -949,6 +954,7 @@ func TestCheckEndpoint(t *testing.T) {
 				Outcome:      "chose JWT for API auth",
 				Confidence:   0.9,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 
@@ -1102,6 +1108,7 @@ func TestDeleteAgentData(t *testing.T) {
 					{SourceType: "document", Content: "test evidence for GDPR"},
 				},
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -1211,6 +1218,7 @@ func TestAccessGrantEnforcement(t *testing.T) {
 				Outcome:      "granted",
 				Confidence:   0.9,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 
@@ -1357,6 +1365,7 @@ func TestMCPTraceDefaultAgentID(t *testing.T) {
 				"decision_type": "trade_off",
 				"outcome":       "default agent_id test",
 				"confidence":    0.7,
+				"project":       "test-project",
 			},
 		},
 	})
@@ -1403,6 +1412,7 @@ func TestMCPTraceAutoRegister(t *testing.T) {
 				"decision_type": "architecture",
 				"outcome":       "auto-registered agent test",
 				"confidence":    0.8,
+				"project":       "test-project",
 			},
 		},
 	})
@@ -1444,6 +1454,7 @@ func TestTraceAutoRegisterHTTP(t *testing.T) {
 				Outcome:      "http auto-register test",
 				Confidence:   0.75,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -1481,6 +1492,7 @@ func TestTraceAutoRegisterHTTP(t *testing.T) {
 				Outcome:      "should fail",
 				Confidence:   0.5,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp3.Body.Close() }()
@@ -1497,6 +1509,7 @@ func TestHandleTrace_MissingDecisionType(t *testing.T) {
 				Outcome:      "some-outcome",
 				Confidence:   0.5,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -1518,6 +1531,7 @@ func TestHandleTrace_MissingOutcome(t *testing.T) {
 				Outcome:      "",
 				Confidence:   0.5,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -1540,6 +1554,7 @@ func TestHandleTrace_InvalidConfidence(t *testing.T) {
 					Outcome:      "some-outcome",
 					Confidence:   -0.1,
 				},
+				Context: map[string]any{"project": "test-project"},
 			})
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
@@ -1561,6 +1576,7 @@ func TestHandleTrace_InvalidConfidence(t *testing.T) {
 					Outcome:      "some-outcome",
 					Confidence:   1.5,
 				},
+				Context: map[string]any{"project": "test-project"},
 			})
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
@@ -1583,6 +1599,7 @@ func TestHandleTrace_InvalidAgentID(t *testing.T) {
 				Outcome:      "some-outcome",
 				Confidence:   0.5,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -1604,6 +1621,7 @@ func TestHandleTrace_SessionHeader(t *testing.T) {
 			Outcome:      "verified session header accepted",
 			Confidence:   0.8,
 		},
+		Context: map[string]any{"project": "test-project"},
 	})
 	req, err := http.NewRequest("POST", testSrv.URL+"/v1/trace", bytes.NewReader(body))
 	require.NoError(t, err)
@@ -1637,6 +1655,7 @@ func TestHandleTrace_IdempotencyReplay(t *testing.T) {
 			Outcome:      "idempotent",
 			Confidence:   0.9,
 		},
+		Context: map[string]any{"project": "test-project"},
 	}
 
 	resp1, err := authedRequestWithHeaders("POST", testSrv.URL+"/v1/trace", agentToken, body, map[string]string{
@@ -1705,6 +1724,7 @@ func TestHandleTrace_IdempotencyPayloadMismatch(t *testing.T) {
 			Outcome:      "first",
 			Confidence:   0.8,
 		},
+		Context: map[string]any{"project": "test-project"},
 	}, map[string]string{"Idempotency-Key": key})
 	require.NoError(t, err)
 	defer func() { _ = resp1.Body.Close() }()
@@ -1717,6 +1737,7 @@ func TestHandleTrace_IdempotencyPayloadMismatch(t *testing.T) {
 			Outcome:      "second",
 			Confidence:   0.8,
 		},
+		Context: map[string]any{"project": "test-project"},
 	}, map[string]string{"Idempotency-Key": key})
 	require.NoError(t, err)
 	defer func() { _ = resp2.Body.Close() }()
@@ -1931,6 +1952,7 @@ func TestHandleVerifyDecision_Active(t *testing.T) {
 				Confidence:   0.9,
 				Reasoning:    ptrStr("testing verify on active decision"),
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = traceResp.Body.Close() }()
@@ -1974,6 +1996,7 @@ func TestHandleVerifyDecision_Retracted(t *testing.T) {
 				Confidence:   0.75,
 				Reasoning:    ptrStr("testing verify on retracted decision"),
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = traceResp.Body.Close() }()
@@ -2276,6 +2299,7 @@ func TestHandleQuery_PaginationResponse(t *testing.T) {
 				Outcome:      "verifying pagination fields",
 				Confidence:   0.7,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 
@@ -2339,6 +2363,7 @@ func TestHandleTemporalQuery_Valid(t *testing.T) {
 				Outcome:      "temporal query validation",
 				Confidence:   0.85,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 
@@ -2383,6 +2408,7 @@ func TestHandleSearch_ValidQuery(t *testing.T) {
 				Outcome:      "validated search response structure",
 				Confidence:   0.9,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 
@@ -2418,6 +2444,7 @@ func TestHandleSessionView_WithDecisions(t *testing.T) {
 			Outcome:      "decision within session",
 			Confidence:   0.75,
 		},
+		Context: map[string]any{"project": "test-project"},
 	})
 
 	req, err := http.NewRequest("POST", testSrv.URL+"/v1/trace", bytes.NewReader(body))
@@ -2667,6 +2694,7 @@ func TestHandleGetDecision(t *testing.T) {
 				Confidence:   0.8,
 				Reasoning:    ptrStr("for get decision test"),
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = traceResp.Body.Close() }()
@@ -2895,6 +2923,7 @@ func TestMCPAssessTool(t *testing.T) {
 				"decision_type": "assess_tool_test",
 				"outcome":       "chose the right approach",
 				"confidence":    0.9,
+				"project":       "test-project",
 			},
 		},
 	})
@@ -3035,6 +3064,7 @@ func TestMCPTraceIdempotencyKey(t *testing.T) {
 		"outcome":         "chose postgres",
 		"confidence":      0.85,
 		"idempotency_key": idemKey,
+		"project":         "test-project",
 	}
 
 	// First call — should record and return a decision_id.
@@ -3096,6 +3126,7 @@ func seedConflict(t *testing.T) (decisionAID, decisionBID, conflictID uuid.UUID)
 				Outcome:      outcome,
 				Confidence:   confidence,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 		require.NoError(t, tErr)
 		defer func() { _ = resp.Body.Close() }()
@@ -3231,6 +3262,7 @@ func TestHandleRetractDecision(t *testing.T) {
 				Confidence:   0.85,
 				Reasoning:    ptrStr("retraction test"),
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = traceResp.Body.Close() }()
@@ -3346,6 +3378,7 @@ func seedConflictGroup(t *testing.T) (groupID uuid.UUID, conflictIDs [2]uuid.UUI
 				Outcome:      outcome,
 				Confidence:   confidence,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 		require.NoError(t, tErr)
 		defer func() { _ = resp.Body.Close() }()
@@ -3557,6 +3590,7 @@ func TestHandleEraseDecision(t *testing.T) {
 					{SourceType: "document", Content: "PII evidence content", SourceURI: ptrStr("https://example.com/pii")},
 				},
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = traceResp.Body.Close() }()
@@ -3711,6 +3745,7 @@ func TestConflictAnalytics(t *testing.T) {
 				Outcome:      outcome,
 				Confidence:   confidence,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 		require.NoError(t, tErr)
 		defer func() { _ = resp.Body.Close() }()
@@ -4580,6 +4615,7 @@ func TestHandleListAssessments_HappyPath(t *testing.T) {
 				Outcome:      "approved",
 				Confidence:   0.85,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = traceResp.Body.Close() }()
@@ -4652,6 +4688,7 @@ func TestHandleListAssessments_EmptyList(t *testing.T) {
 				Outcome:      "denied",
 				Confidence:   0.5,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = traceResp.Body.Close() }()
@@ -4801,6 +4838,7 @@ func TestHandleAgentHistory_HappyPath(t *testing.T) {
 				Outcome:      "approved",
 				Confidence:   0.8,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	_ = traceResp.Body.Close()
@@ -5392,6 +5430,7 @@ func TestHandleTrace_WithSessionHeader(t *testing.T) {
 				Outcome:      "use structured logging everywhere",
 				Confidence:   0.9,
 			},
+			Context: map[string]any{"project": "test-project"},
 		},
 		map[string]string{"X-Session-ID": "test-session-abc"})
 	require.NoError(t, err)
@@ -5448,6 +5487,7 @@ func TestHandleDecisionConflicts_Valid(t *testing.T) {
 			Outcome:      "use gRPC for internal services",
 			Confidence:   0.85,
 		},
+		Context: map[string]any{"project": "test-project"},
 	})
 	require.NoError(t, err)
 	var traceResult struct {
@@ -5474,6 +5514,7 @@ func TestHandleDecisionRevisions_Valid(t *testing.T) {
 			Outcome:      "use REST for public API",
 			Confidence:   0.8,
 		},
+		Context: map[string]any{"project": "test-project"},
 	})
 	require.NoError(t, err)
 	var traceResult struct {
@@ -5622,6 +5663,7 @@ func TestHandleAssessDecision_InvalidOutcome(t *testing.T) {
 			Outcome:      "use DynamoDB for sessions",
 			Confidence:   0.7,
 		},
+		Context: map[string]any{"project": "test-project"},
 	})
 	require.NoError(t, err)
 	var traceResult struct {
@@ -5656,6 +5698,7 @@ func TestHandleAssessDecision_ForbiddenWithoutGrant(t *testing.T) {
 			Outcome:      "test outcome",
 			Confidence:   0.7,
 		},
+		Context: map[string]any{"project": "test-project"},
 	})
 	require.NoError(t, err)
 	var traceResult struct {
@@ -5684,6 +5727,7 @@ func TestHandleAssessDecision_OwnDecisionSucceeds(t *testing.T) {
 			Outcome:      "test outcome",
 			Confidence:   0.8,
 		},
+		Context: map[string]any{"project": "test-project"},
 	})
 	require.NoError(t, err)
 	var traceResult struct {
@@ -5716,6 +5760,7 @@ func TestHandleAssessDecision_SucceedsWithGrant(t *testing.T) {
 			Outcome:      "test outcome",
 			Confidence:   0.6,
 		},
+		Context: map[string]any{"project": "test-project"},
 	})
 	require.NoError(t, err)
 	var traceResult struct {
@@ -5958,6 +6003,7 @@ func TestHandleTrace_WithAlternatives(t *testing.T) {
 					{Label: "no pooling"}, {Label: "pgbouncer"},
 				},
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -6057,6 +6103,7 @@ func TestHandleTrace_NoDecisionType(t *testing.T) {
 				Outcome:    "some outcome",
 				Confidence: 0.9,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -6071,6 +6118,7 @@ func TestHandleTrace_NoOutcome(t *testing.T) {
 				DecisionType: "architecture",
 				Confidence:   0.9,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -6085,6 +6133,7 @@ func TestHandleTrace_MissingAgentID(t *testing.T) {
 				Outcome:      "some outcome",
 				Confidence:   0.9,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -7138,6 +7187,7 @@ func TestHandleTrace_AgentCannotTraceForOther(t *testing.T) {
 			"outcome":       "should fail",
 			"confidence":    0.5,
 		},
+		"context": map[string]any{"project": "test-project"},
 	})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -7190,6 +7240,7 @@ func TestHandleDeleteAgent_BlockedByLegalHold(t *testing.T) {
 			"outcome":       "test outcome for hold",
 			"confidence":    0.9,
 		},
+		"context": map[string]any{"project": "test-project"},
 	})
 	require.NoError(t, err)
 	_ = traceResp.Body.Close()
@@ -7303,6 +7354,7 @@ func TestHandleEraseDecision_BlockedByLegalHold(t *testing.T) {
 			"outcome":       "test outcome for erasure hold",
 			"confidence":    0.9,
 		},
+		"context": map[string]any{"project": "test-project"},
 	})
 	require.NoError(t, err)
 	var traceResult struct {
@@ -7365,6 +7417,7 @@ func TestHandleListAssessments_AccessDeniedForReader(t *testing.T) {
 			"outcome":       "test",
 			"confidence":    0.5,
 		},
+		"context": map[string]any{"project": "test-project"},
 	})
 	require.NoError(t, err)
 	var traceResult struct {
@@ -7505,6 +7558,7 @@ func TestHandleDecisionConflicts_WithPagination(t *testing.T) {
 			"outcome":       "test outcome",
 			"confidence":    0.9,
 		},
+		"context": map[string]any{"project": "test-project"},
 	})
 	require.NoError(t, err)
 	var traceResult struct {
@@ -7651,6 +7705,7 @@ func TestHandleGetDecision_ForbiddenForReader(t *testing.T) {
 			"outcome":       "test",
 			"confidence":    0.5,
 		},
+		"context": map[string]any{"project": "test-project"},
 	})
 	require.NoError(t, err)
 	var traceResult struct {
@@ -7849,6 +7904,7 @@ func TestHandleTrace_WithAkashiUserAgent(t *testing.T) {
 		},
 		"context": map[string]any{
 			"custom_key": "custom_value",
+			"project":    "test-project",
 		},
 	}, map[string]string{
 		"User-Agent": "akashi-go/0.1.0",
@@ -7870,6 +7926,7 @@ func TestHandleTrace_AdminTracesForAnotherAgent(t *testing.T) {
 			"outcome":       "admin tracing for test-agent",
 			"confidence":    0.7,
 		},
+		"context": map[string]any{"project": "test-project"},
 	})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -7889,6 +7946,7 @@ func TestHandleTrace_WithPrecedentRefAndTraceID(t *testing.T) {
 			"outcome":       "original decision",
 			"confidence":    0.9,
 		},
+		"context": map[string]any{"project": "test-project"},
 	})
 	require.NoError(t, err)
 	var result struct {
@@ -7912,6 +7970,7 @@ func TestHandleTrace_WithPrecedentRefAndTraceID(t *testing.T) {
 			"confidence":    0.8,
 			"reasoning":     "Building on prior decision",
 		},
+		"context": map[string]any{"project": "test-project"},
 	})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -7933,6 +7992,7 @@ func TestHandleTrace_WithSessionHeaderAndContext(t *testing.T) {
 		},
 		"context": map[string]any{
 			"workspace": "/tmp/test",
+			"project":   "test-project",
 		},
 	}, map[string]string{
 		"X-Akashi-Session": sessionID,
@@ -7956,6 +8016,7 @@ func TestHandleVerifyDecision_VerifiedDecision(t *testing.T) {
 			"confidence":    0.95,
 			"reasoning":     "test reasoning for verification",
 		},
+		"context": map[string]any{"project": "test-project"},
 	})
 	require.NoError(t, err)
 	var result struct {
@@ -7997,6 +8058,7 @@ func TestHandleVerifyDecision_RetractedDecision(t *testing.T) {
 			"outcome":       "will be retracted",
 			"confidence":    0.8,
 		},
+		"context": map[string]any{"project": "test-project"},
 	})
 	require.NoError(t, err)
 	var result struct {
@@ -8046,6 +8108,7 @@ func TestHandleSessionView_WithMultipleDecisionsSameSession(t *testing.T) {
 				"outcome":       fmt.Sprintf("decision %d in session", i+1),
 				"confidence":    0.7,
 			},
+			"context": map[string]any{"project": "test-project"},
 		}, map[string]string{
 			"X-Akashi-Session": sessionID,
 		})
@@ -8274,6 +8337,7 @@ func TestHandleRetractDecision_WithReason(t *testing.T) {
 			"outcome":       "will retract with reason",
 			"confidence":    0.8,
 		},
+		"context": map[string]any{"project": "test-project"},
 	})
 	require.NoError(t, err)
 	var result struct {
@@ -8384,6 +8448,7 @@ func TestHandleTrace_ConfidenceAboveOne(t *testing.T) {
 				"outcome":       "use redis",
 				"confidence":    1.5, // > 1 is invalid
 			},
+			"context": map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -8399,6 +8464,7 @@ func TestHandleTrace_ConfidenceBelowZero(t *testing.T) {
 				"outcome":       "use redis",
 				"confidence":    -0.1,
 			},
+			"context": map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -8414,6 +8480,7 @@ func TestHandleTrace_AgentCantTraceForOther(t *testing.T) {
 				"outcome":       "use redis",
 				"confidence":    0.8,
 			},
+			"context": map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -8429,6 +8496,7 @@ func TestHandleTrace_BadAgentIDFormat(t *testing.T) {
 				"outcome":       "use redis",
 				"confidence":    0.8,
 			},
+			"context": map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -8445,6 +8513,7 @@ func TestHandleTrace_SessionHeaderUUID(t *testing.T) {
 				"outcome":       "traced with session",
 				"confidence":    0.7,
 			},
+			"context": map[string]any{"project": "test-project"},
 		}, map[string]string{
 			"X-Akashi-Session": sessionID,
 		})
@@ -8462,6 +8531,7 @@ func TestHandleTrace_WithIdempotencyKey(t *testing.T) {
 			"outcome":       "idempotent trace",
 			"confidence":    0.9,
 		},
+		"context": map[string]any{"project": "test-project"},
 	}
 
 	// First call.
@@ -8503,6 +8573,7 @@ func TestHandleTrace_IdempotencyPayloadMismatchCov(t *testing.T) {
 				"outcome":       "first payload",
 				"confidence":    0.9,
 			},
+			"context": map[string]any{"project": "test-project"},
 		}, map[string]string{"Idempotency-Key": idemKey})
 	require.NoError(t, err)
 	defer func() { _ = resp1.Body.Close() }()
@@ -8518,6 +8589,7 @@ func TestHandleTrace_IdempotencyPayloadMismatchCov(t *testing.T) {
 				"outcome":       "different payload",
 				"confidence":    0.5,
 			},
+			"context": map[string]any{"project": "test-project"},
 		}, map[string]string{"Idempotency-Key": idemKey})
 	require.NoError(t, err)
 	defer func() { _ = resp2.Body.Close() }()
@@ -8534,7 +8606,7 @@ func TestHandleTrace_WithContext(t *testing.T) {
 				"confidence":    0.7,
 			},
 			"context": map[string]any{
-				"project": "akashi",
+				"project": "test-project",
 				"tool":    "claude-code",
 			},
 		}, map[string]string{
@@ -10056,6 +10128,7 @@ func TestHandleTemporalQuery_WithAgentIDsFilter(t *testing.T) {
 				Outcome:      "use agent filter",
 				Confidence:   0.8,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	_ = traceResp.Body.Close()
@@ -10121,6 +10194,7 @@ func TestHandleTrace_NonexistentAgentForNonAdmin(t *testing.T) {
 				Outcome:      "test",
 				Confidence:   0.5,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -10136,6 +10210,7 @@ func TestHandleTrace_AdminTracesNonexistentAgent(t *testing.T) {
 				Outcome:      "auto registered",
 				Confidence:   0.7,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -10152,6 +10227,7 @@ func TestHandleTrace_DecisionTypeOverMaxLen(t *testing.T) {
 				Outcome:      "chosen",
 				Confidence:   0.5,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -10862,6 +10938,7 @@ func TestHandleTrace_XModelHeader(t *testing.T) {
 			"outcome":       "test model header inference",
 			"confidence":    0.8,
 		},
+		"context": map[string]any{"project": "test-project"},
 	}, map[string]string{
 		"X-Model": "claude-opus-4-6",
 	})
@@ -10904,7 +10981,8 @@ func TestHandleTrace_ExplicitModelTakesPriorityOverXModelHeader(t *testing.T) {
 			"confidence":    0.8,
 		},
 		"context": map[string]any{
-			"model": "gpt-4o",
+			"model":   "gpt-4o",
+			"project": "test-project",
 		},
 	}, map[string]string{
 		"X-Model": "claude-opus-4-6",
@@ -11095,6 +11173,7 @@ func TestHandleTrace_HighConfNoEvidence_ReturnsWarning(t *testing.T) {
 				"outcome":       "chose Postgres for high-confidence-warning test",
 				"confidence":    0.9,
 			},
+			"context": map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -11122,6 +11201,7 @@ func TestHandleTrace_HighConfWithEvidence_NoWarning(t *testing.T) {
 					{"source_type": "document", "content": "benchmark results showing 10x throughput"},
 				},
 			},
+			"context": map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -11140,6 +11220,7 @@ func TestHandleTrace_LowConfNoEvidence_NoWarning(t *testing.T) {
 				"outcome":       "low confidence decision",
 				"confidence":    0.7,
 			},
+			"context": map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -11165,6 +11246,7 @@ func TestHandleGetRun_EnrichmentsBasic(t *testing.T) {
 				Confidence:   0.85,
 				Reasoning:    &reasoning,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	require.Equal(t, http.StatusCreated, traceResp.StatusCode)
@@ -11258,6 +11340,7 @@ func TestHandleGetRun_NoEnrichmentsWithoutParam(t *testing.T) {
 				Outcome:      "should not enrich",
 				Confidence:   0.5,
 			},
+			Context: map[string]any{"project": "test-project"},
 		})
 	require.NoError(t, err)
 	require.Equal(t, http.StatusCreated, traceResp.StatusCode)
