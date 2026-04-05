@@ -250,7 +250,7 @@ func (h *Handlers) HandleResolveConflictGroup(w http.ResponseWriter, r *http.Req
 			return
 		}
 		if errors.Is(err, storage.ErrRevisedDecisions) {
-			writeError(w, r, http.StatusConflict, model.ErrCodeInvalidInput,
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
 				"some conflicts in the group reference revised decisions and cannot be resolved with a winner")
 			return
 		}

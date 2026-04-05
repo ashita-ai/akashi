@@ -97,7 +97,7 @@ claude mcp add --transport http --scope user akashi http://localhost:8080/mcp \
 | [Subsystems](docs/subsystems.md) | Embeddings, rate limiting, Qdrant pipeline |
 | [Runbook](docs/runbook.md) | Health checks, monitoring, troubleshooting |
 | [Diagrams](docs/diagrams.md) | Write path, read path, auth flow, schema |
-| [ADRs](adrs/) | 10 architecture decision records |
+| [ADRs](adrs/) | 15 architecture decision records |
 | [OpenAPI](api/openapi.yaml) | Full API spec (also at `GET /openapi.yaml`) |
 
 ## License
