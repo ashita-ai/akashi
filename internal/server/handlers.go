@@ -195,7 +195,7 @@ func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 	if auditErr := h.recordMutationAuditBestEffort(r, matched.OrgID,
 		"token_issued", "auth_token", matched.AgentID, nil, nil, auditMeta,
 	); auditErr != nil {
-		slog.Error("failed to audit token issuance",
+		h.logger.Error("failed to audit token issuance",
 			"agent_id", matched.AgentID, "org_id", matched.OrgID, "error", auditErr)
 	}
 
@@ -266,7 +266,7 @@ func (h *Handlers) HandleScopedToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("scoped token issued",
+	h.logger.Info("scoped token issued",
 		"issuer", claims.AgentID,
 		"as_agent_id", target.AgentID,
 		"as_role", target.Role,
@@ -283,7 +283,7 @@ func (h *Handlers) HandleScopedToken(w http.ResponseWriter, r *http.Request) {
 			"token_exp":   expiresAt,
 		},
 	); auditErr != nil {
-		slog.Error("failed to audit scoped token issuance",
+		h.logger.Error("failed to audit scoped token issuance",
 			"issuer", claims.AgentID, "as_agent_id", target.AgentID, "error", auditErr)
 	}
 

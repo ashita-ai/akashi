@@ -55,19 +55,24 @@ cmd/akashi/          Server entrypoint. Config loading, dependency wiring, signa
 internal/
   server/            HTTP handlers (handlers*.go), middleware (middleware.go), SSE broker, MCP server.
   storage/           PostgreSQL queries. One file per entity (decisions.go, agents.go, events.go...).
-  service/           Business logic. decisions/ (trace pipeline), embedding/, quality/, trace/ (event buffer, WAL).
+  storage/sqlite/    SQLite storage backend for local/lite mode (build tag: lite).
+  service/           Business logic. decisions/ (trace pipeline), embedding/, quality/, trace/ (event buffer, WAL),
+                     autoassess/, autoresolve/, tracehealth/.
   model/             Domain types. Decision, AgentEvent, Alternative, Evidence, Grant, etc.
   config/            Env var loading and validation.
   auth/              JWT issuing/verification, API key hashing (Argon2id).
   authz/             RBAC enforcement, grant cache, access filtering.
+  compact/           Compact representation utilities.
   conflicts/         Embedding-based conflict detection + LLM validation.
+  ctxutil/           Context utility helpers including audit context.
   integrity/         SHA-256 content hashes, Merkle tree proofs.
+  mcp/               MCP server: tool definitions, resources, prompts, session tracking.
   search/            Qdrant vector search with PostgreSQL text fallback.
   ratelimit/         Pluggable token bucket rate limiter.
   telemetry/         OpenTelemetry setup (traces + metrics).
   testutil/          Shared test helpers (testcontainers, test DB, test logger).
-migrations/          Sequential SQL files (001..085). Atlas-managed checksums.
-adrs/                Technical architecture decision records (ADR-001 through ADR-011).
+migrations/          Sequential SQL files (001..096). Atlas-managed checksums.
+adrs/                Technical architecture decision records (ADR-001 through ADR-015).
 sdk/                 Go, Python, TypeScript client SDKs.
 ui/                  React 19 SPA (audit dashboard). Embedded via go:embed when built with -tags ui.
 docs/                Configuration reference, .env.example.

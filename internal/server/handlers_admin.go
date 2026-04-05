@@ -475,10 +475,7 @@ func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	claims := ClaimsFromContext(r.Context())
-	initiatedBy := claims.AgentID
-	if initiatedBy == "" {
-		initiatedBy = claims.Subject
-	}
+	initiatedBy := claims.ActorID()
 
 	audit := h.buildAuditEntry(r, orgID, "delete_agent", "agent", agentID,
 		map[string]any{"agent_id": agentID}, nil, nil)

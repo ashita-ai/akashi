@@ -37,10 +37,7 @@ func (h *Handlers) HandleSetOrgSettings(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	updatedBy := claims.AgentID
-	if updatedBy == "" {
-		updatedBy = claims.Subject
-	}
+	updatedBy := claims.ActorID()
 
 	audit := h.buildAuditEntry(r, orgID,
 		"org_settings_updated", "org_settings", orgID.String(),

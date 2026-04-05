@@ -307,11 +307,11 @@ func (db *DB) UpdateAgent(ctx context.Context, orgID uuid.UUID, agentID string, 
 		     metadata = CASE WHEN $2::jsonb IS NOT NULL THEN metadata || $2::jsonb ELSE metadata END,
 		     updated_at = now()
 		 WHERE org_id = $3 AND agent_id = $4
-		 RETURNING id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at`,
+		 RETURNING id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at, last_seen`,
 		name, metadata, orgID, agentID,
 	).Scan(
 		&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
-		&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt,
+		&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt, &a.LastSeen,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -333,11 +333,11 @@ func (db *DB) UpdateAgentWithAudit(ctx context.Context, orgID uuid.UUID, agentID
 			     metadata = CASE WHEN $2::jsonb IS NOT NULL THEN metadata || $2::jsonb ELSE metadata END,
 			     updated_at = now()
 			 WHERE org_id = $3 AND agent_id = $4
-			 RETURNING id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at`,
+			 RETURNING id, agent_id, org_id, name, role, api_key_hash, email, tags, metadata, created_at, updated_at, last_seen`,
 			name, metadata, orgID, agentID,
 		).Scan(
 			&a.ID, &a.AgentID, &a.OrgID, &a.Name, &a.Role, &a.APIKeyHash, &a.Email,
-			&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt,
+			&a.Tags, &a.Metadata, &a.CreatedAt, &a.UpdatedAt, &a.LastSeen,
 		)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {

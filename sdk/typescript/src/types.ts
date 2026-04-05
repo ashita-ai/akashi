@@ -15,7 +15,6 @@ export interface Decision {
   precedent_reason?: string;
   supersedes_id?: string;
   content_hash?: string;
-  tags?: string[];
   /** Composite agent identity (spec 31). */
   session_id?: string;
   agent_context?: Record<string, unknown>;
@@ -103,8 +102,6 @@ export interface AgentEvent {
   sequence_num: number;
   occurred_at: string;
   agent_id: string;
-  trace_id?: string;
-  span_id?: string;
   payload: Record<string, unknown>;
   created_at: string;
 }
@@ -175,8 +172,6 @@ export interface TraceRequest {
 
 export interface TraceAlternative {
   label: string;
-  score?: number;
-  selected?: boolean;
   rejection_reason?: string;
 }
 
