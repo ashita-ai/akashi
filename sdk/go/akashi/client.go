@@ -512,11 +512,14 @@ func (c *Client) Health(ctx context.Context) (*HealthResponse, error) {
 // traceBody is the wire format for POST /v1/trace. The server expects a
 // nested "decision" object rather than flat fields.
 type traceBody struct {
-	AgentID      string         `json:"agent_id"`
-	Decision     traceDecision  `json:"decision"`
-	PrecedentRef *uuid.UUID     `json:"precedent_ref,omitempty"`
-	Metadata     map[string]any `json:"metadata,omitempty"`
-	Context      map[string]any `json:"context,omitempty"`
+	AgentID         string         `json:"agent_id"`
+	TraceID         *string        `json:"trace_id,omitempty"`
+	Decision        traceDecision  `json:"decision"`
+	PrecedentRef    *uuid.UUID     `json:"precedent_ref,omitempty"`
+	PrecedentReason *string        `json:"precedent_reason,omitempty"`
+	SupersedesID    *uuid.UUID     `json:"supersedes_id,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
+	Context         map[string]any `json:"context,omitempty"`
 }
 
 type traceDecision struct {
@@ -543,6 +546,7 @@ func buildTraceBody(agentID string, req TraceRequest) traceBody {
 
 	return traceBody{
 		AgentID: agentID,
+		TraceID: req.TraceID,
 		Decision: traceDecision{
 			DecisionType: strings.ToLower(strings.TrimSpace(req.DecisionType)),
 			Outcome:      req.Outcome,
@@ -551,9 +555,11 @@ func buildTraceBody(agentID string, req TraceRequest) traceBody {
 			Alternatives: req.Alternatives,
 			Evidence:     req.Evidence,
 		},
-		PrecedentRef: req.PrecedentRef,
-		Metadata:     req.Metadata,
-		Context:      ctx,
+		PrecedentRef:    req.PrecedentRef,
+		PrecedentReason: req.PrecedentReason,
+		SupersedesID:    req.SupersedesID,
+		Metadata:        req.Metadata,
+		Context:         ctx,
 	}
 }
 

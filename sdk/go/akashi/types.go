@@ -178,7 +178,9 @@ type CheckRequest struct {
 	DecisionType string `json:"decision_type"`
 	Query        string `json:"query,omitempty"`
 	AgentID      string `json:"agent_id,omitempty"`
+	Project      string `json:"project,omitempty"`
 	Limit        int    `json:"limit,omitempty"`
+	Format       string `json:"format,omitempty"` // "full" (default) or "concise"
 }
 
 // TraceRequest is the input for Client.Trace.
@@ -187,9 +189,11 @@ type TraceRequest struct {
 	Outcome      string             `json:"outcome"`
 	Confidence   float32            `json:"confidence"`
 	Reasoning    *string            `json:"reasoning,omitempty"`
-	PrecedentRef *uuid.UUID         `json:"precedent_ref,omitempty"`
-	SupersedesID *uuid.UUID         `json:"supersedes_id,omitempty"`
-	Alternatives []TraceAlternative `json:"alternatives,omitempty"`
+	PrecedentRef    *uuid.UUID         `json:"precedent_ref,omitempty"`
+	PrecedentReason *string            `json:"precedent_reason,omitempty"`
+	SupersedesID    *uuid.UUID         `json:"supersedes_id,omitempty"`
+	TraceID         *string            `json:"trace_id,omitempty"` // OTEL trace ID correlation
+	Alternatives    []TraceAlternative `json:"alternatives,omitempty"`
 	Evidence     []TraceEvidence    `json:"evidence,omitempty"`
 	Metadata     map[string]any     `json:"metadata,omitempty"`
 	Context      map[string]any     `json:"context,omitempty"`
@@ -217,16 +221,24 @@ type TraceEvidence struct {
 
 // QueryFilters are structured filters for decision queries.
 type QueryFilters struct {
-	AgentIDs      []string `json:"agent_id,omitempty"`
-	DecisionType  *string  `json:"decision_type,omitempty"`
-	ConfidenceMin *float32 `json:"confidence_min,omitempty"`
-	Outcome       *string  `json:"outcome,omitempty"`
+	AgentIDs      []string   `json:"agent_id,omitempty"`
+	RunID         *uuid.UUID `json:"run_id,omitempty"`
+	DecisionType  *string    `json:"decision_type,omitempty"`
+	ConfidenceMin *float32   `json:"confidence_min,omitempty"`
+	Outcome       *string    `json:"outcome,omitempty"`
+	TimeRange     *TimeRange `json:"time_range,omitempty"`
 
 	// Filters for composite agent identity fields (session, tool, model, project).
 	SessionID *string `json:"session_id,omitempty"`
 	Tool      *string `json:"tool,omitempty"`
 	Model     *string `json:"model,omitempty"`
 	Project   *string `json:"project,omitempty"`
+}
+
+// TimeRange defines a time range for queries.
+type TimeRange struct {
+	From *time.Time `json:"from,omitempty"`
+	To   *time.Time `json:"to,omitempty"`
 }
 
 // QueryOptions control ordering and pagination for Client.Query.
@@ -239,12 +251,29 @@ type QueryOptions struct {
 
 // --- Response types ---
 
+// ConflictResolution summarises a resolved conflict for use in check responses.
+// It tells an agent which approach prevailed so they can avoid resurrecting the
+// losing side of an already-resolved disagreement.
+type ConflictResolution struct {
+	ID                uuid.UUID  `json:"id"`
+	DecisionType      string     `json:"decision_type"`
+	WinningDecisionID uuid.UUID  `json:"winning_decision_id"`
+	WinningAgent      string     `json:"winning_agent"`
+	WinningOutcome    string     `json:"winning_outcome"`
+	LosingAgent       string     `json:"losing_agent"`
+	LosingOutcome     string     `json:"losing_outcome"`
+	Explanation       *string    `json:"explanation,omitempty"`
+	ResolutionNote    *string    `json:"resolution_note,omitempty"`
+	ResolvedAt        time.Time  `json:"resolved_at"`
+}
+
 // CheckResponse is the output of Client.Check.
 type CheckResponse struct {
-	HasPrecedent         bool               `json:"has_precedent"`
-	Decisions            []Decision         `json:"decisions"`
-	Conflicts            []DecisionConflict `json:"conflicts,omitempty"`
-	ConflictsUnavailable bool               `json:"conflicts_unavailable,omitempty"`
+	HasPrecedent         bool                 `json:"has_precedent"`
+	Decisions            []Decision           `json:"decisions"`
+	Conflicts            []DecisionConflict   `json:"conflicts,omitempty"`
+	ConflictsUnavailable bool                 `json:"conflicts_unavailable,omitempty"`
+	PriorResolutions     []ConflictResolution `json:"prior_resolutions,omitempty"`
 }
 
 // TraceResponse is the output of Client.Trace.
@@ -267,6 +296,7 @@ type QueryResponse struct {
 type SearchResult struct {
 	Decision        Decision `json:"decision"`
 	SimilarityScore float32  `json:"similarity_score"`
+	QdrantRank      int      `json:"qdrant_rank,omitempty"` // 1-based position in Qdrant ANN results; 0 for text-fallback.
 }
 
 // SearchResponse is the output of Client.Search.
@@ -356,10 +386,12 @@ type Agent struct {
 	OrgID     uuid.UUID      `json:"org_id"`
 	Name      string         `json:"name"`
 	Role      AgentRole      `json:"role"`
+	Email     *string        `json:"email,omitempty"`
 	Tags      []string       `json:"tags"`
 	Metadata  map[string]any `json:"metadata"`
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
+	LastSeen  *time.Time     `json:"last_seen,omitempty"`
 }
 
 // --- Grant types ---
@@ -536,6 +568,7 @@ type AssessResponse struct {
 	AssessorAgentID string        `json:"assessor_agent_id"`
 	Outcome         AssessOutcome `json:"outcome"`
 	Notes           string        `json:"notes,omitempty"`
+	Source          string        `json:"source"`
 	CreatedAt       time.Time     `json:"created_at"`
 }
 
@@ -544,9 +577,58 @@ type AssessResponse struct {
 // ---------------------------------------------------------------------------
 
 // ConflictDetail is the enriched output of Client.GetConflict.
+// ConflictDetail extends DecisionConflict with computed fields for the detail
+// endpoint. The server uses an anonymous embed, so all DecisionConflict fields
+// are serialized at the top level alongside recommendation and reopens_resolution.
 type ConflictDetail struct {
-	DecisionConflict DecisionConflict        `json:"decision_conflict"`
-	Recommendation   *ConflictRecommendation `json:"recommendation,omitempty"`
+	// All DecisionConflict fields are inlined at the top level.
+	ID                uuid.UUID    `json:"id"`
+	ConflictKind      ConflictKind `json:"conflict_kind"`
+	DecisionAID       uuid.UUID    `json:"decision_a_id"`
+	DecisionBID       uuid.UUID    `json:"decision_b_id"`
+	OrgID             uuid.UUID    `json:"org_id"`
+	AgentA            string       `json:"agent_a"`
+	AgentB            string       `json:"agent_b"`
+	RunA              uuid.UUID    `json:"run_a"`
+	RunB              uuid.UUID    `json:"run_b"`
+	DecisionType      string       `json:"decision_type"`
+	DecisionTypeA     string       `json:"decision_type_a"`
+	DecisionTypeB     string       `json:"decision_type_b"`
+	OutcomeA          string       `json:"outcome_a"`
+	OutcomeB          string       `json:"outcome_b"`
+	ConfidenceA       float32      `json:"confidence_a"`
+	ConfidenceB       float32      `json:"confidence_b"`
+	ReasoningA        *string      `json:"reasoning_a,omitempty"`
+	ReasoningB        *string      `json:"reasoning_b,omitempty"`
+	DecidedAtA        time.Time    `json:"decided_at_a"`
+	DecidedAtB        time.Time    `json:"decided_at_b"`
+	DetectedAt        time.Time    `json:"detected_at"`
+	TopicSimilarity   *float64     `json:"topic_similarity,omitempty"`
+	OutcomeDivergence *float64     `json:"outcome_divergence,omitempty"`
+	Significance      *float64     `json:"significance,omitempty"`
+	ScoringMethod     string       `json:"scoring_method,omitempty"`
+	Explanation       *string      `json:"explanation,omitempty"`
+	Category          *string      `json:"category,omitempty"`
+	Severity          *string      `json:"severity,omitempty"`
+	Status            string       `json:"status"`
+	ResolvedBy        *string      `json:"resolved_by,omitempty"`
+	ResolvedAt        *time.Time   `json:"resolved_at,omitempty"`
+	ResolutionNote    *string      `json:"resolution_note,omitempty"`
+	Relationship      *string      `json:"relationship,omitempty"`
+	ConfidenceWeight  *float64     `json:"confidence_weight,omitempty"`
+	TemporalDecay     *float64     `json:"temporal_decay,omitempty"`
+	ResolutionDecisionID *uuid.UUID `json:"resolution_decision_id,omitempty"`
+	WinningDecisionID    *uuid.UUID `json:"winning_decision_id,omitempty"`
+	GroupID              *uuid.UUID `json:"group_id,omitempty"`
+	ClaimTextA        *string      `json:"claim_text_a,omitempty"`
+	ClaimTextB        *string      `json:"claim_text_b,omitempty"`
+	ReopensResolutionID *uuid.UUID `json:"reopens_resolution_id,omitempty"`
+	ProjectA          *string      `json:"project_a,omitempty"`
+	ProjectB          *string      `json:"project_b,omitempty"`
+
+	// Detail-only fields.
+	Recommendation    *ConflictRecommendation `json:"recommendation,omitempty"`
+	ReopensResolution *ConflictResolution      `json:"reopens_resolution,omitempty"`
 }
 
 // ConflictRecommendation is the server's suggested resolution for a conflict.
@@ -705,52 +787,54 @@ type ConflictGroupOptions struct {
 }
 
 // ConflictAnalyticsResponse is the output of Client.GetConflictAnalytics.
+// Matches canonical model.ConflictAnalytics.
 type ConflictAnalyticsResponse struct {
-	Period         string                   `json:"period"`
-	From           time.Time                `json:"from"`
-	To             time.Time                `json:"to"`
-	Summary        ConflictAnalyticsSummary `json:"summary"`
-	ByAgentPair    []ConflictAgentPairStats `json:"by_agent_pair"`
-	ByDecisionType []ConflictTypeStats      `json:"by_decision_type"`
-	BySeverity     []ConflictSeverityStats  `json:"by_severity"`
-	DailyTrend     []ConflictDailyTrend     `json:"daily_trend"`
+	Period         TimePeriod                  `json:"period"`
+	Summary        ConflictAnalyticsSummary    `json:"summary"`
+	ByAgentPair    []ConflictAgentPairStats    `json:"by_agent_pair"`
+	ByDecisionType []ConflictTypeStats         `json:"by_decision_type"`
+	BySeverity     []ConflictSeverityStats     `json:"by_severity"`
+	Trend          []ConflictTrendPoint        `json:"trend"`
+}
+
+// TimePeriod defines the start and end of an analytics window.
+type TimePeriod struct {
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
 }
 
 // ConflictAnalyticsSummary holds aggregate conflict metrics.
 type ConflictAnalyticsSummary struct {
-	TotalConflicts      int     `json:"total_conflicts"`
-	Open                int     `json:"open"`
-	Resolved            int     `json:"resolved"`
-	FalsePositives      int     `json:"false_positives"`
-	AvgDaysToResolution float64 `json:"avg_days_to_resolution"`
+	TotalDetected             int      `json:"total_detected"`
+	TotalResolved             int      `json:"total_resolved"`
+	MeanTimeToResolutionHours *float64 `json:"mean_time_to_resolution_hours"`
+	FalsePositiveRate         float64  `json:"false_positive_rate"`
 }
 
 // ConflictAgentPairStats holds conflict counts for an agent pair.
 type ConflictAgentPairStats struct {
-	AgentA         string `json:"agent_a"`
-	AgentB         string `json:"agent_b"`
-	Count          int    `json:"count"`
-	Open           int    `json:"open"`
-	Resolved       int    `json:"resolved"`
-	FalsePositives int    `json:"false_positives"`
+	AgentA   string `json:"agent_a"`
+	AgentB   string `json:"agent_b"`
+	Count    int    `json:"count"`
+	Open     int    `json:"open"`
+	Resolved int    `json:"resolved"`
 }
 
 // ConflictTypeStats holds conflict counts for a decision type.
 type ConflictTypeStats struct {
-	DecisionType string `json:"decision_type"`
-	Count        int    `json:"count"`
-	Open         int    `json:"open"`
+	DecisionType    string  `json:"decision_type"`
+	Count           int     `json:"count"`
+	AvgSignificance float64 `json:"avg_significance"`
 }
 
 // ConflictSeverityStats holds conflict counts by severity level.
 type ConflictSeverityStats struct {
 	Severity string `json:"severity"`
 	Count    int    `json:"count"`
-	Open     int    `json:"open"`
 }
 
-// ConflictDailyTrend holds daily conflict detection/resolution counts.
-type ConflictDailyTrend struct {
+// ConflictTrendPoint holds daily conflict detection/resolution counts.
+type ConflictTrendPoint struct {
 	Date     string `json:"date"`
 	Detected int    `json:"detected"`
 	Resolved int    `json:"resolved"`
@@ -772,22 +856,33 @@ type ConflictAnalyticsOptions struct {
 
 // APIKey represents an API key (without the raw secret).
 type APIKey struct {
-	ID        uuid.UUID  `json:"id"`
-	Prefix    string     `json:"prefix"`
-	AgentID   string     `json:"agent_id"`
-	OrgID     uuid.UUID  `json:"org_id"`
-	Label     string     `json:"label"`
-	CreatedBy string     `json:"created_by,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
-	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	ID         uuid.UUID  `json:"id"`
+	Prefix     string     `json:"prefix"`
+	AgentID    string     `json:"agent_id"`
+	OrgID      uuid.UUID  `json:"org_id"`
+	Label      string     `json:"label"`
+	CreatedBy  string     `json:"created_by,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
 }
 
 // APIKeyWithRawKey is the response when creating or rotating a key.
-// The raw key is returned exactly once.
+// The raw key is returned exactly once. The server's Go type uses an anonymous
+// embed, so all APIKey fields are serialized at the top level alongside raw_key.
 type APIKeyWithRawKey struct {
-	APIKey APIKey `json:"api_key"`
-	RawKey string `json:"raw_key"`
+	ID         uuid.UUID  `json:"id"`
+	Prefix     string     `json:"prefix"`
+	AgentID    string     `json:"agent_id"`
+	OrgID      uuid.UUID  `json:"org_id"`
+	Label      string     `json:"label"`
+	CreatedBy  string     `json:"created_by,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	RawKey     string     `json:"raw_key"`
 }
 
 // CreateKeyRequest is the input for Client.CreateKey.
@@ -803,22 +898,36 @@ type RotateKeyResponse struct {
 	RevokedKeyID uuid.UUID        `json:"revoked_key_id"`
 }
 
-// OrgSettings represents organization-level configuration.
-type OrgSettings struct {
-	ConflictResolution ConflictResolutionSettings `json:"conflict_resolution"`
-	UpdatedAt          time.Time                  `json:"updated_at"`
+// AutoResolveWinner is the strategy for selecting the winning decision
+// during auto-resolution of conflicts.
+type AutoResolveWinner string
+
+const (
+	WinnerRecency    AutoResolveWinner = "recency"
+	WinnerConfidence AutoResolveWinner = "confidence"
+	WinnerConsensus  AutoResolveWinner = "consensus"
+)
+
+// ReopenedPolicy controls what happens when a conflict reopens a prior resolution.
+type ReopenedPolicy string
+
+const (
+	ReopenEscalate ReopenedPolicy = "escalate"
+)
+
+// ConflictResolutionPolicy holds the auto-resolution policy for an org's conflicts.
+type ConflictResolutionPolicy struct {
+	AutoResolveAfterDays       int               `json:"auto_resolve_after_days"`
+	AutoResolveWinner          AutoResolveWinner `json:"auto_resolve_winner"`
+	AutoResolveMaxSeverity     string            `json:"auto_resolve_max_severity"`
+	NeverAutoResolveSeverities []string          `json:"never_auto_resolve_severities"`
+	ReopenedResolutionPolicy   ReopenedPolicy    `json:"reopened_resolution_policy"`
 }
 
-// ConflictResolutionSettings configures automatic conflict handling.
-type ConflictResolutionSettings struct {
-	AutoResolveThreshold       float64 `json:"auto_resolve_threshold"`
-	EnableCascadeResolution    bool    `json:"enable_cascade_resolution"`
-	CascadeSimilarityThreshold float64 `json:"cascade_similarity_threshold"`
-}
-
-// SetOrgSettingsRequest is the input for Client.SetOrgSettings.
-type SetOrgSettingsRequest struct {
-	ConflictResolution ConflictResolutionSettings `json:"conflict_resolution"`
+// OrgSettingsData is the response/request payload for org settings endpoints.
+// The GET handler returns settings.Settings (this type), not the full OrgSettings row.
+type OrgSettingsData struct {
+	ConflictResolution *ConflictResolutionPolicy `json:"conflict_resolution,omitempty"`
 }
 
 // RetentionPolicy is the output of Client.GetRetention.

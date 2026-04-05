@@ -36,8 +36,8 @@ const resp = await client.trace({
   confidence: 0.85,
   reasoning: "Best quality-to-cost ratio",
   alternatives: [
-    { label: "gpt-4o", selected: true, score: 0.92 },
-    { label: "claude-3-haiku", selected: false, score: 0.78 },
+    { label: "gpt-4o" },
+    { label: "claude-3-haiku" },
   ],
 });
 console.log(`Recorded decision ${resp.decision_id}`);

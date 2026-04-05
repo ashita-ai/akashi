@@ -24,7 +24,6 @@ All configuration is via environment variables. See [`.env.example`](../.env.exa
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | — | PostgreSQL connection string for queries and writes. In production, point this at PgBouncer; in local dev, point directly at Postgres (port 5432) |
 | `NOTIFY_URL` | `postgres://akashi:akashi@localhost:5432/akashi?sslmode=disable` | Direct Postgres connection for LISTEN/NOTIFY (SSE). Must bypass PgBouncer — transaction-mode poolers do not support LISTEN. Set `NOTIFY_URL=` to disable SSE push entirely |
 | `AKASHI_DB_MAX_CONNS` | `0` (pgxpool default: `max(4, NumCPU)`) | Maximum connections in the pool. With 11+ background workers, HTTP handlers, and async goroutines, production deployments should set this explicitly (e.g. 20–50) to avoid pool exhaustion |
 | `AKASHI_DB_MIN_CONNS` | `0` (pgxpool default: `0`) | Minimum idle connections kept open. Setting this avoids cold-start latency when traffic arrives after an idle period |

@@ -45,7 +45,7 @@ import type {
   AkashiConfig,
   LineageResponse,
   ListConflictLabelsResponse,
-  OrgSettings,
+  OrgSettingsData,
   ProjectLink,
   PurgeRequest,
   PurgeResponse,
@@ -63,7 +63,6 @@ import type {
   SearchResponse,
   SearchResult,
   SessionViewResponse,
-  SetOrgSettingsRequest,
   SetRetentionRequest,
   SignupRequest,
   SignupResponse,
@@ -100,6 +99,8 @@ function buildCheckBody(
   query: string | undefined,
   agentId: string | undefined,
   limit: number,
+  project?: string,
+  format?: string,
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     decision_type: decisionType,
@@ -107,6 +108,8 @@ function buildCheckBody(
   };
   if (query !== undefined) body.query = query;
   if (agentId !== undefined) body.agent_id = agentId;
+  if (project !== undefined) body.project = project;
+  if (format !== undefined) body.format = format;
   return body;
 }
 
@@ -178,6 +181,9 @@ function buildTraceBody(
     body.precedent_ref = request.precedentRef;
   if (request.precedentReason !== undefined)
     body.precedent_reason = request.precedentReason;
+  if (request.supersedesId !== undefined)
+    body.supersedes_id = request.supersedesId;
+  if (request.traceId !== undefined) body.trace_id = request.traceId;
   if (request.metadata !== undefined) body.metadata = request.metadata;
   if (Object.keys(ctx).length > 0) body.context = ctx;
   return body;
@@ -487,11 +493,11 @@ export class AkashiClient {
   async check(
     decisionType: string,
     query?: string,
-    options?: { agentId?: string; limit?: number },
+    options?: { agentId?: string; limit?: number; project?: string; format?: string },
   ): Promise<CheckResponse> {
     return this.post<CheckResponse>(
       "/v1/check",
-      buildCheckBody(decisionType, query, options?.agentId, options?.limit ?? 5),
+      buildCheckBody(decisionType, query, options?.agentId, options?.limit ?? 5, options?.project, options?.format),
     );
   }
 
@@ -925,13 +931,13 @@ export class AkashiClient {
   // --- Phase 3: Org settings ---
 
   /** Get org-level settings. */
-  async getOrgSettings(): Promise<OrgSettings> {
-    return this.get<OrgSettings>("/v1/org/settings");
+  async getOrgSettings(): Promise<OrgSettingsData> {
+    return this.get<OrgSettingsData>("/v1/org/settings");
   }
 
   /** Update org-level settings. */
-  async setOrgSettings(req: SetOrgSettingsRequest): Promise<OrgSettings> {
-    return this.put<OrgSettings>("/v1/org/settings", req);
+  async setOrgSettings(req: OrgSettingsData): Promise<OrgSettingsData> {
+    return this.put<OrgSettingsData>("/v1/org/settings", req);
   }
 
   // --- Phase 3: Retention ---

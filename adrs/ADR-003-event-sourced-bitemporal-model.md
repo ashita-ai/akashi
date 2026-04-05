@@ -24,7 +24,7 @@ Event-sourced architecture with bi-temporal columns:
 | `agent_runs` | Top-level execution context | Yes (status transitions: running → completed/failed) |
 | `agent_events` | Append-only event log (TimescaleDB hypertable) | No (append only) |
 | `decisions` | Decision entities with embeddings | Bi-temporal |
-| `alternatives` | Alternatives considered with scores | No |
+| `alternatives` | Alternatives considered | No |
 | `evidence` | Evidence links with embeddings and provenance | No |
 | `agents` | Registered agents with roles and API key hashes | Yes |
 | `access_grants` | Fine-grained inter-agent permissions | Yes |
