@@ -3513,6 +3513,19 @@ components:
           description: |
             Number of open conflicts involving this decision.
             Computed at query time.
+        supersession_velocity_hours:
+          type: number
+          format: float
+          nullable: true
+          description: |
+            Hours between this decision's valid_from and the superseding
+            decision's valid_from. Null when the decision has not been
+            superseded. Computed at query time; not stored.
+        precedent_citation_count:
+          type: integer
+          description: |
+            Number of later decisions that reference this decision as a
+            precedent. Computed at query time.
         consensus_weight:
           type: number
           format: float
