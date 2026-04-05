@@ -453,7 +453,10 @@ func (db *DB) deleteBatch(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID)
 		); err != nil {
 			return fmt.Errorf("storage: archive alternatives batch: %w", err)
 		}
-		tag, err = tx.Exec(ctx, `DELETE FROM alternatives WHERE decision_id = ANY($1)`, ids)
+		tag, err = tx.Exec(ctx,
+			`DELETE FROM alternatives WHERE decision_id = ANY($1)
+		 AND decision_id IN (SELECT id FROM decisions WHERE org_id = $2)`,
+			ids, orgID)
 		if err != nil {
 			return fmt.Errorf("storage: delete alternatives batch: %w", err)
 		}
