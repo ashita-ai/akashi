@@ -4,8 +4,6 @@ package mcp
 // The MCP layer calls these wrappers; the HTTP API can import internal/compact directly.
 
 import (
-	"github.com/google/uuid"
-
 	"github.com/ashita-ai/akashi/internal/compact"
 	"github.com/ashita-ai/akashi/internal/model"
 )
@@ -42,20 +40,4 @@ func actionNeeded(conflicts []model.DecisionConflict) bool {
 
 func compactResolution(r model.ConflictResolution) map[string]any {
 	return compact.Resolution(r)
-}
-
-func generateContextNote(d model.Decision) string {
-	return compact.GenerateContextNote(d)
-}
-
-func buildOpenConflictSummary(open int, maxSeverity string, decisions []model.Decision, conflicts []model.DecisionConflict) string {
-	return compact.BuildOpenConflictSummary(open, maxSeverity, decisions, conflicts)
-}
-
-func decisionAgreementCount(decisions []model.Decision, id uuid.UUID) int {
-	return compact.DecisionAgreementCount(decisions, id)
-}
-
-func truncate(s string, maxLen int) string {
-	return compact.Truncate(s, maxLen)
 }
