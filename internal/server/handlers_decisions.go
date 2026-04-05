@@ -393,6 +393,7 @@ func (h *Handlers) HandleGetDecision(w http.ResponseWriter, r *http.Request) {
 	if consensusErr == nil {
 		d.AgreementCount = agreementCount
 		d.ConflictCount = conflictCount
+		d.ConsensusWeight = model.ComputeConsensusWeight(agreementCount, conflictCount)
 	}
 	if signalsErr == nil {
 		d.SupersessionVelocityHours = signals.SupersessionVelocityHours

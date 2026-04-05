@@ -485,6 +485,8 @@ paths:
                 $ref: "#/components/schemas/APIResponse_GetRunResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -513,10 +515,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/APIResponse_AppendEventsResponse"
+        "202":
+          description: Events buffered but flush failed; will retry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_AppendEventsResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          description: Buffer at capacity or server shutting down.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /v1/runs/{run_id}/complete:
     post:
@@ -546,6 +562,8 @@ paths:
                 $ref: "#/components/schemas/APIResponse_AgentRun"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -664,7 +682,6 @@ paths:
                         sprint: "2026-Q1"
                         ticket: "ARCH-142"
                       completeness_score: 0.85
-                      quality_score: 0.85
                       valid_from: "2026-01-15T10:30:00Z"
                       transaction_time: "2026-01-15T10:30:00Z"
                       created_at: "2026-01-15T10:30:00Z"
@@ -770,6 +787,8 @@ paths:
                 $ref: "#/components/schemas/APIResponse_AgentHistoryResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
 
   /v1/decisions/{id}:
     get:
@@ -1011,6 +1030,8 @@ paths:
                 $ref: "#/components/schemas/APIResponse_RevisionsResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -1040,6 +1061,8 @@ paths:
                 $ref: "#/components/schemas/APIResponse_DecisionLineage"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -1188,6 +1211,8 @@ paths:
                     $ref: "#/components/schemas/ResponseMeta"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -1273,6 +1298,8 @@ paths:
                 $ref: "#/components/schemas/APIResponse_VerifyResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -3411,7 +3438,6 @@ components:
         - confidence
         - metadata
         - completeness_score
-        - quality_score
         - valid_from
         - transaction_time
         - created_at
@@ -3457,13 +3483,6 @@ components:
             Computed as (correct + 0.5 * partially_correct) / total from the
             decision_assessments table. Null when no assessments exist. Updated
             on each new assessment via POST /v1/decisions/{id}/assess.
-        quality_score:
-          type: number
-          format: float
-          deprecated: true
-          description: >
-            Deprecated alias for completeness_score. Emitted alongside completeness_score for
-            one release cycle. Use completeness_score in new code.
         precedent_ref:
           type: string
           format: uuid
@@ -3574,10 +3593,12 @@ components:
           format: float
           minimum: 0.5
           maximum: 1
+          nullable: true
           description: |
             0.5 + 0.5 × (agreement_count / max(1, agreement_count + conflict_count)).
-            Range [0.5, 1.0]. Only present when at least one agreement or conflict exists.
-            Not stored — computed at response time.
+            Range [0.5, 1.0]. Null when no agreements or conflicts exist.
+            Not stored — computed at response time. Only populated on
+            GET /v1/decisions/{id} (detail view); omitted from list endpoints.
         alternatives:
           type: array
           items:
@@ -3640,6 +3661,15 @@ components:
         relevance_score:
           type: number
           format: float
+        metrics:
+          type: object
+          additionalProperties:
+            type: number
+            format: double
+          description: |
+            Numeric metrics associated with this evidence (e.g. accuracy, f1).
+            Only present when the evidence source_type is "metrics" or the
+            caller provided metric values.
         metadata:
           type: object
           additionalProperties: true

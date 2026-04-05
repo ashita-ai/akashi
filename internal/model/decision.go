@@ -1,11 +1,25 @@
 package model
 
 import (
+	"math"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/pgvector/pgvector-go"
 )
+
+// ComputeConsensusWeight returns the consensus weight for a decision given
+// its agreement and conflict counts. Returns nil when both are zero (no data).
+// Formula: 0.5 + 0.5 × (agreements / max(1, agreements + conflicts)), range [0.5, 1.0].
+func ComputeConsensusWeight(agreementCount, conflictCount int) *float64 {
+	total := agreementCount + conflictCount
+	if total == 0 {
+		return nil
+	}
+	cw := 0.5 + 0.5*float64(agreementCount)/float64(total)
+	cw = math.Round(cw*1000) / 1000 // 3 decimal places
+	return &cw
+}
 
 // Decision is a first-class decision entity with bi-temporal modeling.
 // Created from DecisionMade events and revised via DecisionRevised events.
@@ -71,6 +85,11 @@ type Decision struct {
 	// Returns 0 for decisions without embeddings.
 	AgreementCount int `json:"agreement_count"`
 	ConflictCount  int `json:"conflict_count"`
+
+	// ConsensusWeight (Spec 34): [0.5, 1.0], computed from agreement/conflict ratio.
+	// Only present on GET /v1/decisions/{id} (detail view), not list endpoints.
+	// nil when no agreements or conflicts exist.
+	ConsensusWeight *float64 `json:"consensus_weight,omitempty"`
 
 	// Outcome signals (Spec 35): temporal, graph, and fate signals computed at query time.
 	SupersessionVelocityHours *float64     `json:"supersession_velocity_hours"`
