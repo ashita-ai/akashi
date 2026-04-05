@@ -139,6 +139,7 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	ctxWg.Wait()
 
 	if agentContext == nil {
+		h.clearIdempotentWrite(r, orgID, idem)
 		writeJSON(w, r, http.StatusBadRequest, map[string]string{
 			"error": "project validation failed: unknown project name",
 		})
@@ -290,12 +291,22 @@ func (h *Handlers) buildTraceAgentContext(
 		},
 		func(project string) bool {
 			exists, err := h.db.ProjectExists(r.Context(), orgID, project)
-			if err == nil && exists {
+			if err != nil {
+				// DB error — fail closed. Reject the project rather than
+				// silently accepting an unvalidated name.
+				h.logger.Error("project existence check failed", "project", project, "error", err)
+				return false
+			}
+			if exists {
 				return true
 			}
 			// First-ever project in this org — accept to bootstrap.
 			hasProjects, hpErr := h.db.HasAnyProjects(r.Context(), orgID)
-			return hpErr != nil || !hasProjects
+			if hpErr != nil {
+				h.logger.Error("has-any-projects check failed", "error", hpErr)
+				return false
+			}
+			return !hasProjects
 		},
 		h.logger,
 	); errMsg != "" {
