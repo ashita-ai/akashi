@@ -3248,6 +3248,109 @@ func TestHandlePatchConflict_WinningDecisionID(t *testing.T) {
 	_ = decisionBID
 }
 
+// ---- HandlePatchDecision --------------------------------------------------
+
+func TestHandlePatchDecision(t *testing.T) {
+	// Trace a decision to patch.
+	dt := "patch_test_" + uuid.NewString()[:8]
+	traceResp, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken,
+		model.TraceRequest{
+			AgentID: "test-agent",
+			Decision: model.TraceDecision{
+				DecisionType: dt,
+				Outcome:      "will be patched",
+				Confidence:   0.7,
+				Reasoning:    ptrStr("patch test"),
+			},
+			Context: map[string]any{"project": "test-project"},
+		})
+	require.NoError(t, err)
+	defer func() { _ = traceResp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, traceResp.StatusCode)
+
+	var traceResult struct {
+		Data struct {
+			DecisionID uuid.UUID `json:"decision_id"`
+		} `json:"data"`
+	}
+	traceBody, _ := io.ReadAll(traceResp.Body)
+	require.NoError(t, json.Unmarshal(traceBody, &traceResult))
+	decisionID := traceResult.Data.DecisionID
+	require.NotEqual(t, uuid.Nil, decisionID)
+
+	t.Run("non-admin gets 403", func(t *testing.T) {
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/decisions/"+decisionID.String(), agentToken,
+			map[string]string{"project": "new-project"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("invalid UUID returns 400", func(t *testing.T) {
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/decisions/not-a-uuid", adminToken,
+			map[string]string{"project": "new-project"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("missing project field returns 400", func(t *testing.T) {
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/decisions/"+decisionID.String(), adminToken,
+			map[string]string{})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("empty project returns 400", func(t *testing.T) {
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/decisions/"+decisionID.String(), adminToken,
+			map[string]string{"project": ""})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("nonexistent ID returns 404", func(t *testing.T) {
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/decisions/"+uuid.New().String(), adminToken,
+			map[string]string{"project": "new-project"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("successful project update", func(t *testing.T) {
+		resp, err := authedRequest("PATCH", testSrv.URL+"/v1/decisions/"+decisionID.String(), adminToken,
+			map[string]string{"project": "new-project"})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data model.Decision `json:"data"`
+		}
+		body, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(body, &result))
+		assert.Equal(t, decisionID, result.Data.ID)
+		require.NotNil(t, result.Data.Project)
+		assert.Equal(t, "new-project", *result.Data.Project)
+	})
+
+	t.Run("GET confirms project updated", func(t *testing.T) {
+		resp, err := authedRequest("GET", testSrv.URL+"/v1/decisions/"+decisionID.String(), agentToken, nil)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var result struct {
+			Data model.Decision `json:"data"`
+		}
+		body, _ := io.ReadAll(resp.Body)
+		require.NoError(t, json.Unmarshal(body, &result))
+		require.NotNil(t, result.Data.Project)
+		assert.Equal(t, "new-project", *result.Data.Project)
+	})
+}
+
 // ---- HandleRetractDecision ------------------------------------------------
 
 func TestHandleRetractDecision(t *testing.T) {

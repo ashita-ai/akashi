@@ -2333,3 +2333,71 @@ func (db *DB) GetDecisionLineageBatch(ctx context.Context, ids []uuid.UUID, orgI
 
 	return result, nil
 }
+
+// UpdateDecisionProject updates the project field on a decision by setting the
+// client.project key in agent_context JSONB. The project column is GENERATED
+// ALWAYS from agent_context, so this is the only correct way to change it.
+// agent_context is listed as mutable in the immutability trigger (migration 036).
+func (db *DB) UpdateDecisionProject(ctx context.Context, orgID, decisionID uuid.UUID, project string, audit *MutationAuditEntry) (string, error) {
+	var oldProject *string
+	err := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		// Fetch the current project for the audit before/after record.
+		err := tx.QueryRow(ctx,
+			`SELECT project FROM decisions WHERE id = $1 AND org_id = $2 AND valid_to IS NULL`,
+			decisionID, orgID,
+		).Scan(&oldProject)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("storage: decision %s: %w", decisionID, ErrNotFound)
+			}
+			return fmt.Errorf("storage: fetch decision for project update: %w", err)
+		}
+
+		// Update agent_context JSONB to set client.project.
+		// jsonb_set creates the 'client' key if absent, then sets 'project' within it.
+		_, err = tx.Exec(ctx,
+			`UPDATE decisions
+			 SET agent_context = jsonb_set(
+			     COALESCE(agent_context, '{}'::jsonb),
+			     '{client,project}',
+			     to_jsonb($1::text),
+			     true
+			 )
+			 WHERE id = $2 AND org_id = $3 AND valid_to IS NULL`,
+			project, decisionID, orgID,
+		)
+		if err != nil {
+			return fmt.Errorf("storage: update decision project: %w", err)
+		}
+
+		// Queue search index update so the project filter takes effect in search.
+		if err := queueSearchOutbox(ctx, tx, decisionID, orgID, "upsert"); err != nil {
+			return fmt.Errorf("storage: queue search outbox in project update: %w", err)
+		}
+
+		// Record mutation audit entry.
+		if audit != nil {
+			audit.Operation = "decision_project_updated"
+			audit.ResourceType = "decision"
+			audit.ResourceID = decisionID.String()
+			var before any = nil
+			if oldProject != nil {
+				before = *oldProject
+			}
+			audit.BeforeData = map[string]any{"project": before}
+			audit.AfterData = map[string]any{"project": project}
+			if err := InsertMutationAuditTx(ctx, tx, *audit); err != nil {
+				return fmt.Errorf("storage: audit in project update tx: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	prev := ""
+	if oldProject != nil {
+		prev = *oldProject
+	}
+	return prev, nil
+}

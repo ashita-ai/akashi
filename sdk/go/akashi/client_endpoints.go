@@ -135,6 +135,27 @@ func (c *Client) RetractDecision(ctx context.Context, decisionID uuid.UUID, reas
 	return &resp, nil
 }
 
+// PatchDecision updates mutable metadata on a decision.
+// Currently supports updating the project field. Requires admin role.
+func (c *Client) PatchDecision(ctx context.Context, decisionID uuid.UUID, patch PatchDecisionRequest) (*Decision, error) {
+	encoded, err := json.Marshal(patch)
+	if err != nil {
+		return nil, fmt.Errorf("akashi: marshal request body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.baseURL+"/v1/decisions/"+decisionID.String(), bytes.NewReader(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("akashi: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	var resp Decision
+	if err := c.doRequest(ctx, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // EraseDecision permanently erases a decision's content (GDPR).
 // Requires org_owner or higher role.
 func (c *Client) EraseDecision(ctx context.Context, decisionID uuid.UUID, reason string) (*EraseDecisionResponse, error) {

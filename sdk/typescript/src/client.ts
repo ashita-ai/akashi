@@ -807,6 +807,14 @@ export class AkashiClient {
     );
   }
 
+  /** Update mutable metadata on a decision (e.g. project). Requires admin role. */
+  async patchDecision(decisionId: string, patch: { project?: string }): Promise<Decision> {
+    return this.patch<Decision>(
+      `/v1/decisions/${encodeURIComponent(decisionId)}`,
+      patch,
+    );
+  }
+
   /** GDPR-erase a decision, replacing content with hashed placeholders. */
   async eraseDecision(decisionId: string, reason?: string): Promise<EraseDecisionResponse> {
     return this.post<EraseDecisionResponse>(
