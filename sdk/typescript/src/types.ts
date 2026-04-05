@@ -147,6 +147,14 @@ export interface HealthResponse {
   uptime_seconds: number;
 }
 
+/** A single event from the SSE subscribe stream. */
+export interface SubscriptionEvent {
+  /** SSE event name (e.g. "akashi_decisions" or "akashi_conflicts"). */
+  eventType: string;
+  /** Parsed JSON payload. */
+  data: Record<string, unknown>;
+}
+
 // --- Request types ---
 
 /** Request body for recording a decision. */

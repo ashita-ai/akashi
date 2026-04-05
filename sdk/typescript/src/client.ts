@@ -67,6 +67,7 @@ import type {
   SetRetentionRequest,
   SignupRequest,
   SignupResponse,
+  SubscriptionEvent,
   TimelineResponse,
   TraceHealthResponse,
   TraceRequest,
@@ -1180,6 +1181,79 @@ export class AkashiClient {
           throw new ServerError(500, parsed.message || "Export terminated due to internal error");
         }
         yield parsed as Decision;
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  /**
+   * Open an SSE connection to `GET /v1/subscribe` and yield real-time events.
+   *
+   * Yields {@link SubscriptionEvent} instances for decision and conflict
+   * notifications scoped to the caller's organization. Keepalive comments
+   * from the server are silently consumed.
+   *
+   * Pass an `AbortSignal` to cancel the connection:
+   * ```ts
+   * const ac = new AbortController();
+   * for await (const event of client.subscribe({ signal: ac.signal })) {
+   *   console.log(event.eventType, event.data);
+   * }
+   * ```
+   */
+  async *subscribe(options?: {
+    signal?: AbortSignal;
+  }): AsyncGenerator<SubscriptionEvent> {
+    const token = await this.tokenManager.getToken();
+    const resp = await fetch(`${this.baseUrl}/v1/subscribe`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "User-Agent": USER_AGENT,
+        "X-Akashi-Session": this.sessionId,
+        Accept: "text/event-stream",
+      },
+      signal: options?.signal,
+    });
+    if (!resp.ok) {
+      checkResponseSize(resp.headers.get("content-length"));
+      await handleResponse<never>(resp);
+    }
+    if (!resp.body) return;
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let eventType = "";
+    const dataBuf: string[] = [];
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const rawLine of lines) {
+          const line = rawLine.trimEnd();
+          // SSE comment (keepalive).
+          if (line.startsWith(":")) continue;
+          // Empty line = end of event.
+          if (line === "") {
+            if (eventType && dataBuf.length > 0) {
+              const payload = JSON.parse(dataBuf.join("\n"));
+              yield { eventType, data: payload };
+            }
+            eventType = "";
+            dataBuf.length = 0;
+            continue;
+          }
+          if (line.startsWith("event: ")) {
+            eventType = line.slice(7);
+          } else if (line.startsWith("data: ")) {
+            dataBuf.push(line.slice(6));
+          }
+        }
       }
     } finally {
       reader.releaseLock();
