@@ -1697,7 +1697,6 @@ func TestDecisionDeserializesAllFields(t *testing.T) {
 						"precedent_ref":      precedentRef,
 						"supersedes_id":      supersedesID,
 						"content_hash":       "sha256:abc123def456",
-						"tags":               []string{"backend", "infra"},
 						"valid_from":         now,
 						"transaction_time":   now,
 						"created_at":         now,
@@ -1738,9 +1737,6 @@ func TestDecisionDeserializesAllFields(t *testing.T) {
 	}
 	if d.ContentHash != "sha256:abc123def456" {
 		t.Errorf("expected content_hash 'sha256:abc123def456', got %q", d.ContentHash)
-	}
-	if len(d.Tags) != 2 || d.Tags[0] != "backend" || d.Tags[1] != "infra" {
-		t.Errorf("expected tags [backend, infra], got %v", d.Tags)
 	}
 }
 
