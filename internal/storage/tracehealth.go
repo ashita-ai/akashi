@@ -336,7 +336,6 @@ func (db *DB) GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID, fro
 	return cal, nil
 }
 
-// ComputeCalibrated determines whether confidence predicts outcomes.
 // bucketCount is a sql.Scanner adapter that appends a ConfidenceBucket to the
 // distribution's Buckets slice when scanned. This avoids 10 temporary variables.
 type bucketCount struct {
