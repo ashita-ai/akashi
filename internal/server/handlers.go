@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -297,6 +298,11 @@ func (h *Handlers) HandleScopedToken(w http.ResponseWriter, r *http.Request) {
 // HandleSubscribe handles GET /v1/subscribe (SSE).
 func (h *Handlers) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	if h.broker == nil {
+		h.logger.Error("SSE not available",
+			"error", "broker not initialized (LISTEN/NOTIFY not configured)",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"request_id", RequestIDFromContext(r.Context()))
 		writeError(w, r, http.StatusServiceUnavailable, model.ErrCodeInternalError,
 			"SSE not available (LISTEN/NOTIFY not configured)")
 		return
@@ -304,7 +310,7 @@ func (h *Handlers) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "streaming not supported")
+		h.writeInternalError(w, r, "streaming not supported", errors.New("http.Flusher not implemented"))
 		return
 	}
 
