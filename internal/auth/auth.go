@@ -31,6 +31,15 @@ type Claims struct {
 	ScopedBy string          `json:"scoped_by,omitempty"`  // Set when issued via POST /auth/scoped-token; contains the issuing admin's agent_id.
 }
 
+// ActorID returns the best available identity for the authenticated caller.
+// It prefers AgentID (set on API-key auth) and falls back to Subject (set on JWT auth).
+func (c *Claims) ActorID() string {
+	if c.AgentID != "" {
+		return c.AgentID
+	}
+	return c.Subject
+}
+
 // MaxScopedTokenTTL is the maximum lifetime of a scoped token.
 const MaxScopedTokenTTL = time.Hour
 

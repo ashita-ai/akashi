@@ -1424,7 +1424,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ConflictDetail"
+                $ref: "#/components/schemas/APIResponse_ConflictDetail"
         "404":
           $ref: "#/components/responses/NotFound"
     patch:
@@ -1454,7 +1454,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DecisionConflict"
+                $ref: "#/components/schemas/APIResponse_DecisionConflict"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -1491,7 +1491,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DecisionConflict"
+                $ref: "#/components/schemas/APIResponse_DecisionConflict"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -1527,7 +1527,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ConflictGroupResolveResult"
+                $ref: "#/components/schemas/APIResponse_ConflictGroupResolveResult"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -1543,7 +1543,7 @@ paths:
         and returns the classified relationship (contradiction, complementary,
         refinement, supersession, or unrelated).
         Returns 501 if no LLM validator is configured.
-        Requires `platform_admin` role.
+        Requires `admin` role or higher.
       requestBody:
         required: true
         content:
@@ -1556,7 +1556,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ValidatePairResponse"
+                $ref: "#/components/schemas/APIResponse_ValidatePairResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "501":
@@ -1572,7 +1572,7 @@ paths:
         LLM conflict validator and returns precision, recall, F1, and
         per-pair results. Used to measure validator accuracy.
         Returns 501 if no LLM validator is configured.
-        Requires `platform_admin` role.
+        Requires `admin` role or higher.
       requestBody:
         required: false
         content:
@@ -1585,7 +1585,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ConflictEvalResponse"
+                $ref: "#/components/schemas/APIResponse_ConflictEvalResponse"
         "501":
           description: No LLM conflict validator configured.
 
@@ -1598,7 +1598,7 @@ paths:
         Inserts or updates a human-verified label for a scored conflict.
         Labels are used for precision/recall evaluation of the conflict scorer.
         Returns 409 if the conflict belongs to a different organization.
-        Requires `platform_admin` role.
+        Requires `admin` role or higher.
       parameters:
         - name: id
           in: path
@@ -1619,7 +1619,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/LabelResponse"
+                $ref: "#/components/schemas/APIResponse_LabelResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "409":
@@ -1630,7 +1630,7 @@ paths:
       summary: Get a ground truth label for a scored conflict
       description: |
         Returns the human-verified label for a single scored conflict.
-        Requires `platform_admin` role.
+        Requires `admin` role or higher.
       parameters:
         - name: id
           in: path
@@ -1645,7 +1645,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/LabelResponse"
+                $ref: "#/components/schemas/APIResponse_LabelResponse"
         "404":
           $ref: "#/components/responses/NotFound"
     delete:
@@ -1654,7 +1654,7 @@ paths:
       summary: Delete a ground truth label for a scored conflict
       description: |
         Removes the label for a scored conflict. Used for re-labeling workflows.
-        Requires `platform_admin` role.
+        Requires `admin` role or higher.
       parameters:
         - name: id
           in: path
@@ -1676,14 +1676,14 @@ paths:
       summary: List all ground truth labels for the organization
       description: |
         Returns all conflict labels and aggregate counts for the caller's organization.
-        Requires `platform_admin` role.
+        Requires `admin` role or higher.
       responses:
         "200":
           description: Labels and counts.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ListLabelsResponse"
+                $ref: "#/components/schemas/APIResponse_ListLabelsResponse"
 
   /v1/admin/scorer-eval:
     post:
@@ -1693,14 +1693,14 @@ paths:
       description: |
         Computes precision from ground truth labels on existing scored conflicts.
         Precision = genuine / (genuine + related_not_contradicting + unrelated_false_positive).
-        Requires `platform_admin` role.
+        Requires `admin` role or higher.
       responses:
         "200":
           description: Scorer evaluation result.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ScorerEvalResponse"
+                $ref: "#/components/schemas/APIResponse_ScorerEvalResponse"
 
   /v1/check:
     post:
@@ -1931,7 +1931,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CreateKeyResponse"
+                $ref: "#/components/schemas/APIResponse_CreateKeyResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "403":
@@ -1986,16 +1986,8 @@ paths:
             format: uuid
           description: The UUID of the key to revoke.
       responses:
-        "200":
-          description: Key revoked.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    example: revoked
+        "204":
+          description: Key revoked. No content returned.
         "400":
           $ref: "#/components/responses/BadRequest"
         "403":
@@ -2026,7 +2018,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RotateKeyResponse"
+                $ref: "#/components/schemas/APIResponse_RotateKeyResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "403":
@@ -6114,5 +6106,95 @@ components:
       properties:
         data:
           $ref: "#/components/schemas/GrantAllProjectLinksResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_CreateKeyResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/CreateKeyResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_RotateKeyResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/RotateKeyResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_ConflictDetail:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ConflictDetail"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_DecisionConflict:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/DecisionConflict"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_ConflictGroupResolveResult:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ConflictGroupResolveResult"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_ValidatePairResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ValidatePairResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_ConflictEvalResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ConflictEvalResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_LabelResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/LabelResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_ListLabelsResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ListLabelsResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_ScorerEvalResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ScorerEvalResponse"
         meta:
           $ref: "#/components/schemas/ResponseMeta"

@@ -28,7 +28,6 @@ class Decision(BaseModel):
     precedent_reason: str | None = None
     supersedes_id: UUID | None = None
     content_hash: str = ""
-    tags: list[str] = Field(default_factory=list)
     session_id: UUID | None = None
     agent_context: dict[str, Any] = Field(default_factory=dict)
     valid_from: datetime
@@ -123,8 +122,6 @@ class AgentEvent(BaseModel):
     sequence_num: int
     occurred_at: datetime
     agent_id: str
-    trace_id: str = ""
-    span_id: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 
@@ -147,6 +144,7 @@ class Grant(BaseModel):
     """A fine-grained access grant between agents."""
 
     id: UUID
+    org_id: UUID | None = None
     grantor_id: UUID
     grantee_id: UUID
     resource_type: str
