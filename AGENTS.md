@@ -58,7 +58,7 @@ internal/
   storage/sqlite/    SQLite storage backend for local/lite mode (build tag: lite).
   service/           Business logic. decisions/ (trace pipeline), embedding/, quality/, trace/ (event buffer, WAL),
                      autoassess/, autoresolve/, tracehealth/.
-  model/             Domain types. Decision, AgentEvent, Alternative, Evidence, Grant, etc.
+  model/             Domain types. Decision, AgentEvent, Alternative, Evidence, etc.
   config/            Env var loading and validation.
   auth/              JWT issuing/verification, API key hashing (Argon2id).
   authz/             RBAC enforcement, grant cache, access filtering.
@@ -71,7 +71,7 @@ internal/
   ratelimit/         Pluggable token bucket rate limiter.
   telemetry/         OpenTelemetry setup (traces + metrics).
   testutil/          Shared test helpers (testcontainers, test DB, test logger).
-migrations/          Sequential SQL files (001..097). Atlas-managed checksums.
+migrations/          Sequential SQL files (001..098). Atlas-managed checksums.
 adrs/                Technical architecture decision records (ADR-001 through ADR-015).
 sdk/                 Go, Python, TypeScript client SDKs.
 ui/                  React 19 SPA (audit dashboard). Embedded via go:embed when built with -tags ui.

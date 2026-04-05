@@ -59,6 +59,7 @@ class Decision(BaseModel):
     evidence: list[Evidence] = Field(default_factory=list)
     agreement_count: int = 0
     conflict_count: int = 0
+    consensus_weight: float | None = None
     supersession_velocity_hours: float | None = None
     precedent_citation_count: int = 0
     conflict_fate: ConflictFate = Field(default_factory=lambda: ConflictFate())
