@@ -9,7 +9,7 @@ This guide covers local development setup, common workflows, and the architectur
 - **Go 1.26+** ([install](https://go.dev/dl/))
 - **Docker** (for testcontainers and the local stack)
 - **Atlas CLI** ([install](https://atlasgo.io/getting-started#installation)) — database migration tool
-- **golangci-lint v2.9.0** — `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0`
+- **golangci-lint v2.11.0** — `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.0`
 - **Node.js 20+** (only if working on the UI)
 
 ### Starting the test database
