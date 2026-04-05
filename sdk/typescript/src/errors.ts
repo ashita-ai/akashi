@@ -17,6 +17,14 @@ export class AuthenticationError extends AkashiError {
   }
 }
 
+/** Raised when the JWT token has expired and could not be refreshed. */
+export class TokenExpiredError extends AuthenticationError {
+  constructor(message = "Token expired") {
+    super(message);
+    this.name = "TokenExpiredError";
+  }
+}
+
 /** Raised when the agent lacks permission (403). */
 export class AuthorizationError extends AkashiError {
   constructor(message = "Insufficient permissions") {

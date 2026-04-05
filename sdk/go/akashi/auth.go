@@ -145,14 +145,20 @@ func (tm *tokenManager) refresh(ctx context.Context) (string, time.Time, error) 
 				Message string `json:"message"`
 			} `json:"error"`
 		}
+		var msg string
 		if json.Unmarshal(body, &errEnv) == nil && errEnv.Error.Message != "" {
-			return "", time.Time{}, fmt.Errorf("akashi: auth failed (%d): %s", resp.StatusCode, errEnv.Error.Message)
+			msg = errEnv.Error.Message
+		} else {
+			msg = string(body)
+			if msg == "" {
+				msg = http.StatusText(resp.StatusCode)
+			}
 		}
-		msg := string(body)
-		if msg == "" {
-			msg = http.StatusText(resp.StatusCode)
+		baseErr := fmt.Errorf("akashi: auth failed (%d): %s", resp.StatusCode, msg)
+		if resp.StatusCode == http.StatusUnauthorized {
+			return "", time.Time{}, &TokenExpiredError{Err: baseErr}
 		}
-		return "", time.Time{}, fmt.Errorf("akashi: auth failed (%d): %s", resp.StatusCode, msg)
+		return "", time.Time{}, baseErr
 	}
 
 	var envelope authResponseEnvelope
