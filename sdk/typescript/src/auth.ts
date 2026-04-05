@@ -1,5 +1,7 @@
 /** Token management for Akashi API authentication. */
 
+import { TokenExpiredError } from "./errors.js";
+
 export class TokenManager {
   private token = "";
   private expiresAt = 0;
@@ -70,6 +72,11 @@ export class TokenManager {
         // Response may not be JSON; fall through to status-only message.
       }
       const suffix = detail || resp.statusText || String(resp.status);
+      if (resp.status === 401) {
+        throw new TokenExpiredError(
+          `Token refresh failed (${resp.status}): ${suffix}`,
+        );
+      }
       throw new Error(`Token refresh failed (${resp.status}): ${suffix}`);
     }
 
