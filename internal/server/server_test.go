@@ -2122,12 +2122,12 @@ func TestHandleCreateAndListKeys(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp2.StatusCode)
 
 	var list struct {
-		Data model.APIKeyResponse `json:"data"`
+		Data []model.APIKey `json:"data"`
 	}
 	listData, _ := io.ReadAll(resp2.Body)
 	require.NoError(t, json.Unmarshal(listData, &list))
 	found := false
-	for _, k := range list.Data.Keys {
+	for _, k := range list.Data {
 		if k.ID == created.Data.ID {
 			found = true
 			break
@@ -9232,18 +9232,16 @@ func TestHandleListKeys_WithPagination(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var result struct {
-		Data struct {
-			Keys    []json.RawMessage `json:"keys"`
-			Total   int               `json:"total"`
-			Limit   int               `json:"limit"`
-			Offset  int               `json:"offset"`
-			HasMore bool              `json:"has_more"`
-		} `json:"data"`
+		Data    []json.RawMessage `json:"data"`
+		Total   *int              `json:"total"`
+		Limit   int               `json:"limit"`
+		Offset  int               `json:"offset"`
+		HasMore bool              `json:"has_more"`
 	}
 	body, _ := io.ReadAll(resp.Body)
 	require.NoError(t, json.Unmarshal(body, &result))
-	assert.Equal(t, 10, result.Data.Limit)
-	assert.Equal(t, 0, result.Data.Offset)
+	assert.Equal(t, 10, result.Limit)
+	assert.Equal(t, 0, result.Offset)
 }
 
 // ===========================================================================
@@ -9721,11 +9719,9 @@ func TestHandleRotateKey_Success(t *testing.T) {
 	resp, err := authedRequest("GET", testSrv.URL+"/v1/keys?limit=100", adminToken, nil)
 	require.NoError(t, err)
 	var keysResp struct {
-		Data struct {
-			Keys []struct {
-				ID      uuid.UUID `json:"id"`
-				AgentID string    `json:"agent_id"`
-			} `json:"keys"`
+		Data []struct {
+			ID      uuid.UUID `json:"id"`
+			AgentID string    `json:"agent_id"`
 		} `json:"data"`
 	}
 	body, _ := io.ReadAll(resp.Body)
@@ -9733,7 +9729,7 @@ func TestHandleRotateKey_Success(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &keysResp))
 
 	var keyID uuid.UUID
-	for _, k := range keysResp.Data.Keys {
+	for _, k := range keysResp.Data {
 		if k.AgentID == "rotate-agent" {
 			keyID = k.ID
 			break

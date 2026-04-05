@@ -40,15 +40,6 @@ type CreateKeyRequest struct {
 	ExpiresAt *string `json:"expires_at,omitempty"` // RFC3339
 }
 
-// APIKeyResponse is the list response for GET /v1/keys.
-type APIKeyResponse struct {
-	Keys    []APIKey `json:"keys"`
-	Total   int      `json:"total"`
-	Limit   int      `json:"limit"`
-	Offset  int      `json:"offset"`
-	HasMore bool     `json:"has_more"`
-}
-
 // RotateKeyResponse is the response for POST /v1/keys/{id}/rotate.
 type RotateKeyResponse struct {
 	NewKey       APIKeyWithRawKey `json:"new_key"`

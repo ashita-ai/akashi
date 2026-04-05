@@ -316,11 +316,9 @@ func TestHandlersCritical_RotateKeyOldKeyStopsWorking(t *testing.T) {
 	listResp, err := authedRequest("GET", testSrv.URL+"/v1/keys?limit=200", adminToken, nil)
 	require.NoError(t, err)
 	var keysResult struct {
-		Data struct {
-			Keys []struct {
-				ID      uuid.UUID `json:"id"`
-				AgentID string    `json:"agent_id"`
-			} `json:"keys"`
+		Data []struct {
+			ID      uuid.UUID `json:"id"`
+			AgentID string    `json:"agent_id"`
 		} `json:"data"`
 	}
 	listBody, _ := io.ReadAll(listResp.Body)
@@ -328,7 +326,7 @@ func TestHandlersCritical_RotateKeyOldKeyStopsWorking(t *testing.T) {
 	require.NoError(t, json.Unmarshal(listBody, &keysResult))
 
 	var keyID uuid.UUID
-	for _, k := range keysResult.Data.Keys {
+	for _, k := range keysResult.Data {
 		if k.AgentID == rotAgentID {
 			keyID = k.ID
 			break

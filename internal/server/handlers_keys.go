@@ -108,13 +108,8 @@ func (h *Handlers) HandleListKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, r, http.StatusOK, model.APIKeyResponse{
-		Keys:    keys,
-		Total:   total,
-		Limit:   limit,
-		Offset:  offset,
-		HasMore: offset+len(keys) < total,
-	})
+	ptotal := total
+	writeListJSON(w, r, keys, &ptotal, offset+len(keys) < total, limit, offset)
 }
 
 // HandleRevokeKey handles DELETE /v1/keys/{id} (admin-only).
