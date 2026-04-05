@@ -71,3 +71,26 @@ func IsValidation(err error) bool {
 	}
 	return false
 }
+
+// TokenExpiredError indicates that the JWT token has expired and could not
+// be refreshed. It wraps an underlying error with additional context.
+type TokenExpiredError struct {
+	Err error
+}
+
+func (e *TokenExpiredError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("akashi: token expired: %v", e.Err)
+	}
+	return "akashi: token expired"
+}
+
+func (e *TokenExpiredError) Unwrap() error {
+	return e.Err
+}
+
+// IsTokenExpired returns true if the error indicates a token expiry.
+func IsTokenExpired(err error) bool {
+	var te *TokenExpiredError
+	return errors.As(err, &te)
+}

@@ -8,6 +8,7 @@ export {
   AuthenticationError,
   AuthorizationError,
   NotFoundError,
+  TokenExpiredError,
   ValidationError,
   ConflictError,
   RateLimitError,

@@ -122,8 +122,8 @@ type DecisionConflict struct {
 	RunA              uuid.UUID    `json:"run_a"`
 	RunB              uuid.UUID    `json:"run_b"`
 	DecisionType      string       `json:"decision_type"`
-	DecisionTypeA     string       `json:"decision_type_a"`
-	DecisionTypeB     string       `json:"decision_type_b"`
+	DecisionTypeA     *string      `json:"decision_type_a,omitempty"`
+	DecisionTypeB     *string      `json:"decision_type_b,omitempty"`
 	OutcomeA          string       `json:"outcome_a"`
 	OutcomeB          string       `json:"outcome_b"`
 	ConfidenceA       float32      `json:"confidence_a"`
@@ -592,8 +592,8 @@ type ConflictDetail struct {
 	RunA              uuid.UUID    `json:"run_a"`
 	RunB              uuid.UUID    `json:"run_b"`
 	DecisionType      string       `json:"decision_type"`
-	DecisionTypeA     string       `json:"decision_type_a"`
-	DecisionTypeB     string       `json:"decision_type_b"`
+	DecisionTypeA     *string      `json:"decision_type_a,omitempty"`
+	DecisionTypeB     *string      `json:"decision_type_b,omitempty"`
 	OutcomeA          string       `json:"outcome_a"`
 	OutcomeB          string       `json:"outcome_b"`
 	ConfidenceA       float32      `json:"confidence_a"`
