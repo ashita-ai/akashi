@@ -97,6 +97,8 @@ tags:
     description: Cross-project conflict scope links (admin-only)
   - name: Settings
     description: Organization settings and policies
+  - name: Hooks
+    description: IDE hook endpoints (conditional, localhost-only)
   - name: System
     description: Health, SSE, and infrastructure
 
@@ -1774,6 +1776,37 @@ paths:
 
   # ── Access Grants ──────────────────────────────────────────────────
   /v1/grants:
+    get:
+      operationId: listGrants
+      tags: [Access]
+      summary: List all access grants
+      description: |
+        List all access grants in the caller's organization.
+        Requires `admin` role or higher.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+          description: Maximum number of grants to return (1-1000).
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+          description: Number of grants to skip.
+      responses:
+        "200":
+          description: List of access grants.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_GrantList"
+        "403":
+          $ref: "#/components/responses/Forbidden"
     post:
       operationId: createGrant
       tags: [Access]
@@ -2501,11 +2534,12 @@ paths:
     post:
       operationId: mcpRequest
       tags: [System]
-      summary: MCP StreamableHTTP transport
+      summary: Send an MCP JSON-RPC request
       description: |
-        Model Context Protocol endpoint. Speaks MCP protocol over HTTP,
-        not REST. See the [MCP specification](https://modelcontextprotocol.io/)
-        for protocol details. Requires `reader` role or higher.
+        Model Context Protocol endpoint (StreamableHTTP transport). Sends a
+        JSON-RPC request and receives a JSON-RPC response. See the
+        [MCP specification](https://modelcontextprotocol.io/) for protocol
+        details. Requires `reader` role or higher.
       requestBody:
         required: true
         content:
@@ -2523,6 +2557,133 @@ paths:
                 description: MCP JSON-RPC response.
         "403":
           $ref: "#/components/responses/Forbidden"
+    get:
+      operationId: mcpStream
+      tags: [System]
+      summary: Open MCP SSE stream
+      description: |
+        Opens a Server-Sent Events stream for receiving server-to-client
+        MCP notifications. Part of the StreamableHTTP transport.
+        Requires `reader` role or higher.
+      responses:
+        "200":
+          description: SSE stream of MCP notifications.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    delete:
+      operationId: mcpSessionEnd
+      tags: [System]
+      summary: Terminate MCP session
+      description: |
+        Terminates an active MCP session. Part of the StreamableHTTP
+        transport. Requires `reader` role or higher.
+      responses:
+        "200":
+          description: Session terminated.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /mcp/info:
+    get:
+      operationId: getMCPInfo
+      tags: [System]
+      summary: MCP discovery info
+      description: |
+        Returns static metadata about the MCP endpoint: server version,
+        transport type, and supported auth schemes. Unauthenticated — lets
+        clients confirm connectivity and discover how to authenticate before
+        adding credentials to their config.
+      security: []
+      responses:
+        "200":
+          description: MCP endpoint metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_MCPInfo"
+
+  # ── IDE Hooks ──────────────────────────────────────────────────────
+  # These endpoints are conditionally registered (AKASHI_HOOKS_ENABLED=true)
+  # and restricted to localhost via IP check + optional API key.
+
+  /hooks/session-start:
+    post:
+      operationId: hookSessionStart
+      tags: [Hooks]
+      summary: IDE session start hook
+      description: |
+        Called by Claude Code / Cursor on session start. Returns recent
+        decisions and open conflicts as `additionalContext` for injection
+        into the IDE session. Conditional — only registered when
+        `AKASHI_HOOKS_ENABLED=true`. Restricted to localhost.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HookSessionStartInput"
+      responses:
+        "200":
+          description: Hook response with session context.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HookResponse"
+
+  /hooks/pre-tool-use:
+    post:
+      operationId: hookPreToolUse
+      tags: [Hooks]
+      summary: IDE pre-tool-use hook
+      description: |
+        Called before an edit tool (Edit, Write, MultiEdit) executes.
+        Gates edits until `akashi_check` has been called recently.
+        Non-edit tools pass through immediately. Conditional — only
+        registered when `AKASHI_HOOKS_ENABLED=true`. Restricted to localhost.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HookPreToolUseInput"
+      responses:
+        "200":
+          description: Hook response (continue or deny).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HookResponse"
+
+  /hooks/post-tool-use:
+    post:
+      operationId: hookPostToolUse
+      tags: [Hooks]
+      summary: IDE post-tool-use hook
+      description: |
+        Called after a tool completes. Records `akashi_check`/`akashi_trace`
+        completion markers and optionally auto-traces git commits.
+        Conditional — only registered when `AKASHI_HOOKS_ENABLED=true`.
+        Restricted to localhost.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HookPostToolUseInput"
+      responses:
+        "200":
+          description: Hook response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HookResponse"
 
   /openapi.yaml:
     get:
@@ -4761,6 +4922,143 @@ components:
           $ref: "#/components/schemas/AccessGrant"
         meta:
           $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_GrantList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccessGrant"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    APIResponse_MCPInfo:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/MCPInfoResponse"
+        meta:
+          $ref: "#/components/schemas/ResponseMeta"
+
+    MCPInfoResponse:
+      type: object
+      required: [version, transport, auth]
+      properties:
+        version:
+          type: string
+          description: Server version.
+        transport:
+          type: string
+          description: MCP transport type (always "streamable-http").
+        auth:
+          type: object
+          required: [schemes, preferred, note]
+          properties:
+            schemes:
+              type: array
+              items:
+                type: string
+              description: Supported auth schemes.
+              example: ["ApiKey", "Bearer"]
+            preferred:
+              type: string
+              description: Recommended auth scheme.
+              example: ApiKey
+            note:
+              type: string
+              description: Human-readable guidance on auth configuration.
+
+    HookSessionStartInput:
+      type: object
+      properties:
+        session_id:
+          type: string
+        cwd:
+          type: string
+          description: Current working directory of the IDE session.
+        source:
+          type: string
+          description: Session source (e.g. "startup", "resume").
+        model:
+          type: string
+          description: LLM model in use.
+
+    HookPreToolUseInput:
+      type: object
+      properties:
+        session_id:
+          type: string
+        agent_id:
+          type: string
+        tool_name:
+          type: string
+          description: Name of the tool about to execute.
+        tool_input:
+          type: object
+          description: Tool input parameters.
+        hook_event_name:
+          type: string
+        cwd:
+          type: string
+
+    HookPostToolUseInput:
+      type: object
+      properties:
+        session_id:
+          type: string
+        agent_id:
+          type: string
+        tool_name:
+          type: string
+          description: Name of the tool that just executed.
+        tool_input:
+          type: object
+          description: Tool input parameters.
+        tool_response:
+          type: string
+          description: Tool output/response text.
+        hook_event_name:
+          type: string
+        cwd:
+          type: string
+
+    HookResponse:
+      type: object
+      properties:
+        continue:
+          type: boolean
+          description: Whether the IDE should continue with the action.
+        suppressOutput:
+          type: boolean
+          description: Whether to suppress hook output in the IDE.
+        hookSpecificOutput:
+          type: object
+          description: Hook-specific fields returned to the IDE.
+          properties:
+            hookEventName:
+              type: string
+            additionalContext:
+              type: string
+              description: Context injected into the session (SessionStart).
+            message:
+              type: string
+              description: Message displayed to the user (PostToolUse).
+            permissionDecision:
+              type: string
+              enum: [allow, deny]
+              description: Whether to allow or deny the tool (PreToolUse).
+            permissionDecisionReason:
+              type: string
+              description: Reason for the permission decision.
+        decision:
+          type: string
+        reason:
+          type: string
+        systemMessage:
+          type: string
 
     APIResponse_KeyList:
       type: object
