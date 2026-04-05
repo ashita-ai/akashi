@@ -420,7 +420,7 @@ function OutcomeSignals({ decision }: { decision: Decision }) {
   const hasFate = decision.conflict_fate && (decision.conflict_fate.won > 0 || decision.conflict_fate.lost > 0 || decision.conflict_fate.resolved_no_winner > 0);
   const hasAssessment = decision.assessment_summary && decision.assessment_summary.total > 0;
   const hasCitations = (decision.precedent_citation_count ?? 0) > 0;
-  const hasSupersession = decision.supersession_velocity != null;
+  const hasSupersession = decision.supersession_velocity_hours != null;
   const hasConsensus = (decision.agreement_count ?? 0) > 0 || (decision.conflict_count ?? 0) > 0;
 
   if (!hasFate && !hasAssessment && !hasCitations && !hasSupersession && !hasConsensus) return null;
@@ -464,9 +464,9 @@ function OutcomeSignals({ decision }: { decision: Decision }) {
         {/* Supersession velocity */}
         {hasSupersession && (
           <div className="text-xs text-muted-foreground">
-            Superseded after {decision.supersession_velocity! < 1
-              ? `${Math.round(decision.supersession_velocity! * 60)}m`
-              : `${decision.supersession_velocity!.toFixed(1)}h`}
+            Superseded after {decision.supersession_velocity_hours! < 1
+              ? `${Math.round(decision.supersession_velocity_hours! * 60)}m`
+              : `${decision.supersession_velocity_hours!.toFixed(1)}h`}
           </div>
         )}
 
