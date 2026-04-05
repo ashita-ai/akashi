@@ -61,7 +61,7 @@ func StartTouchLastSeenWorkers(db *storage.DB, n int) {
 					slog.Warn("failed to update agent last_seen", "agent_id", req.agentID, "error", err)
 				}
 				if req.apiKeyID != nil {
-					if err := db.TouchAPIKeyLastUsed(bgCtx, *req.apiKeyID); err != nil {
+					if err := db.TouchAPIKeyLastUsed(bgCtx, req.orgID, *req.apiKeyID); err != nil {
 						slog.Warn("failed to update api key last_used_at", "key_id", req.apiKeyID, "error", err)
 					}
 				}

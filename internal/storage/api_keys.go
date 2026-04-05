@@ -279,10 +279,10 @@ func (db *DB) RotateAPIKeyWithAudit(ctx context.Context, orgID uuid.UUID, oldKey
 // TouchAPIKeyLastUsed updates the last_used_at timestamp for an API key.
 // Called from the auth middleware on successful authentication via a managed key.
 // Uses a fire-and-forget pattern — callers should not block on the result.
-func (db *DB) TouchAPIKeyLastUsed(ctx context.Context, keyID uuid.UUID) error {
+func (db *DB) TouchAPIKeyLastUsed(ctx context.Context, orgID, keyID uuid.UUID) error {
 	_, err := db.pool.Exec(ctx,
-		`UPDATE api_keys SET last_used_at = now() WHERE id = $1`,
-		keyID,
+		`UPDATE api_keys SET last_used_at = now() WHERE id = $1 AND org_id = $2`,
+		keyID, orgID,
 	)
 	if err != nil {
 		return fmt.Errorf("storage: touch api key last_used: %w", err)

@@ -266,10 +266,10 @@ func (db *DB) StartDeletionLog(ctx context.Context, orgID uuid.UUID, trigger, in
 }
 
 // CompleteDeletionLog records the final counts and sets completed_at.
-func (db *DB) CompleteDeletionLog(ctx context.Context, logID uuid.UUID, counts map[string]any) error {
+func (db *DB) CompleteDeletionLog(ctx context.Context, orgID, logID uuid.UUID, counts map[string]any) error {
 	_, err := db.pool.Exec(ctx,
-		`UPDATE deletion_log SET deleted_counts = $2, completed_at = now() WHERE id = $1`,
-		logID, counts,
+		`UPDATE deletion_log SET deleted_counts = $2, completed_at = now() WHERE id = $1 AND org_id = $3`,
+		logID, counts, orgID,
 	)
 	if err != nil {
 		return fmt.Errorf("storage: complete deletion log: %w", err)

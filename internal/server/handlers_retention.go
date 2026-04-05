@@ -148,7 +148,7 @@ func (h *Handlers) HandlePurge(w http.ResponseWriter, r *http.Request) {
 		"claims":       counts.Claims,
 		"events":       counts.Events,
 	}
-	_ = h.db.CompleteDeletionLog(r.Context(), logID, countMap)
+	_ = h.db.CompleteDeletionLog(r.Context(), orgID, logID, countMap)
 
 	writeJSON(w, r, http.StatusOK, map[string]any{
 		"dry_run": false,

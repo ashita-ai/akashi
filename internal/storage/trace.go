@@ -278,8 +278,8 @@ func (db *DB) createTraceInTx(ctx context.Context, tx pgx.Tx, params CreateTrace
 
 	// 5. Complete run.
 	if _, err := tx.Exec(ctx,
-		`UPDATE agent_runs SET status = $1, completed_at = $2 WHERE id = $3`,
-		string(model.RunStatusCompleted), now, run.ID,
+		`UPDATE agent_runs SET status = $1, completed_at = $2 WHERE id = $3 AND org_id = $4`,
+		string(model.RunStatusCompleted), now, run.ID, params.OrgID,
 	); err != nil {
 		return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: complete run in trace tx: %w", err)
 	}

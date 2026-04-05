@@ -392,8 +392,8 @@ func (db *DB) EraseDecision(
 		// Check idempotency: if already erased, return error.
 		var alreadyErased bool
 		err = tx.QueryRow(ctx,
-			`SELECT EXISTS(SELECT 1 FROM decision_erasures WHERE decision_id = $1)`,
-			decisionID,
+			`SELECT EXISTS(SELECT 1 FROM decision_erasures WHERE decision_id = $1 AND org_id = $2)`,
+			decisionID, orgID,
 		).Scan(&alreadyErased)
 		if err != nil {
 			return fmt.Errorf("storage: check existing erasure: %w", err)

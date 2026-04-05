@@ -3504,7 +3504,7 @@ func TestAPIKeyLifecycle(t *testing.T) {
 	require.ErrorIs(t, err, storage.ErrNotFound)
 
 	// Touch last used.
-	err = testDB.TouchAPIKeyLastUsed(ctx, key.ID)
+	err = testDB.TouchAPIKeyLastUsed(ctx, uuid.Nil, key.ID)
 	require.NoError(t, err)
 
 	gotKey2, err := testDB.GetAPIKeyByID(ctx, uuid.Nil, key.ID)
@@ -3869,7 +3869,7 @@ func TestDeletionLogLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, uuid.Nil, logID)
 
-	err = testDB.CompleteDeletionLog(ctx, logID, map[string]any{"decisions": 5})
+	err = testDB.CompleteDeletionLog(ctx, uuid.Nil, logID, map[string]any{"decisions": 5})
 	require.NoError(t, err)
 }
 
@@ -7458,7 +7458,7 @@ func TestFindDecisionsMissingOutcomeEmbedding_DefaultLimit(t *testing.T) {
 func TestTouchAPIKeyLastUsed_NonExistent(t *testing.T) {
 	ctx := context.Background()
 	// Touching a nonexistent key should not error (fire-and-forget pattern).
-	err := testDB.TouchAPIKeyLastUsed(ctx, uuid.New())
+	err := testDB.TouchAPIKeyLastUsed(ctx, uuid.Nil, uuid.New())
 	require.NoError(t, err)
 }
 
@@ -10983,12 +10983,12 @@ func TestProofLeaves_CreateAndGet(t *testing.T) {
 	leaves := []string{"aaa_hash", "bbb_hash", "ccc_hash"}
 	require.NoError(t, testDB.CreateProofLeaves(ctx, proofID, orgID, leaves))
 
-	got, err := testDB.GetProofLeaves(ctx, proofID)
+	got, err := testDB.GetProofLeaves(ctx, orgID, proofID)
 	require.NoError(t, err)
 	assert.Equal(t, leaves, got, "leaves should round-trip in sorted order")
 
 	// No leaves for a random proof.
-	empty, err := testDB.GetProofLeaves(ctx, uuid.New())
+	empty, err := testDB.GetProofLeaves(ctx, orgID, uuid.New())
 	require.NoError(t, err)
 	assert.Empty(t, empty)
 }
@@ -11076,7 +11076,7 @@ func TestProofLeaves_SurvivesRetentionPurge(t *testing.T) {
 	assert.Empty(t, remaining, "decisions should be purged")
 
 	// But proof_leaves survive — verification still passes.
-	savedLeaves, err := testDB.GetProofLeaves(ctx, proofID)
+	savedLeaves, err := testDB.GetProofLeaves(ctx, orgID, proofID)
 	require.NoError(t, err)
 	require.Len(t, savedLeaves, count, "proof leaves should survive retention purge")
 
@@ -11161,7 +11161,7 @@ func TestProofLeaves_SurvivesGDPRErasure(t *testing.T) {
 	assert.False(t, ok, "verifying against mutated decisions table should fail")
 
 	// But proof_leaves preserve the original hashes — verification passes.
-	savedLeaves, err := testDB.GetProofLeaves(ctx, proofID)
+	savedLeaves, err := testDB.GetProofLeaves(ctx, orgID, proofID)
 	require.NoError(t, err)
 	require.Len(t, savedLeaves, 1)
 	assert.Equal(t, hashes[0], savedLeaves[0], "proof leaves should preserve original hash")

@@ -239,12 +239,12 @@ func (db *DB) CreateProofLeaves(ctx context.Context, proofID, orgID uuid.UUID, l
 // GetProofLeaves returns the leaf hashes for a proof, ordered lexicographically.
 // Falls back to GetDecisionHashesForBatch when no leaves are stored (proofs
 // created before migration 082).
-func (db *DB) GetProofLeaves(ctx context.Context, proofID uuid.UUID) ([]string, error) {
+func (db *DB) GetProofLeaves(ctx context.Context, orgID, proofID uuid.UUID) ([]string, error) {
 	rows, err := db.pool.Query(ctx,
 		`SELECT leaf_hash FROM proof_leaves
-		 WHERE proof_id = $1
+		 WHERE proof_id = $1 AND org_id = $2
 		 ORDER BY leaf_hash ASC`,
-		proofID,
+		proofID, orgID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("storage: get proof leaves: %w", err)

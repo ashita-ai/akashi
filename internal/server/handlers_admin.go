@@ -503,7 +503,7 @@ func (h *Handlers) HandleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 			"claims":       result.Claims,
 			"events":       result.Events,
 		}
-		_ = h.db.CompleteDeletionLog(r.Context(), logID, countMap)
+		_ = h.db.CompleteDeletionLog(r.Context(), orgID, logID, countMap)
 	}
 
 	writeJSON(w, r, http.StatusOK, map[string]any{
