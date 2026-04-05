@@ -17,7 +17,7 @@ All three audiences ultimately need the same backend operations: trace a decisio
 The codebase already has the building blocks:
 
 - An HTTP API at `/v1/*` with full CRUD: trace, query, search, check, subscribe (SSE), temporal queries, export, and agent management.
-- An MCP server at `/mcp` (mark3labs/mcp-go, StreamableHTTP transport) co-hosted in the same binary, exposing Resources (`akashi://session/current`, `akashi://decisions/recent`, `akashi://agent/{id}/history`), Tools (`akashi_check`, `akashi_trace`, `akashi_query`, `akashi_conflicts`, `akashi_assess`, `akashi_stats`), and Prompts (`before-decision`, `after-decision`, `agent-setup`).
+- An MCP server at `/mcp` (mark3labs/mcp-go, StreamableHTTP transport) co-hosted in the same binary, exposing Resources (`akashi://session/current`, `akashi://decisions/recent`, `akashi://agent/{id}/history`), Tools (`akashi_check`, `akashi_trace`, `akashi_query`, `akashi_conflicts`, `akashi_assess`, `akashi_stats`, `akashi_resolve`), and Prompts (`before-decision`, `after-decision`, `agent-setup`).
 - A shared service layer (`internal/service/decisions/`) that both HTTP handlers and MCP handlers delegate to, ensuring consistent behavior for embedding generation, quality scoring, and transactional writes.
 - SDKs for Go (`sdk/go/akashi/`), Python (`sdk/python/src/akashi/`), and TypeScript (`sdk/typescript/src/`) that wrap the HTTP API with typed clients, auth helpers, and middleware hooks.
 

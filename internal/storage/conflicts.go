@@ -832,16 +832,6 @@ func (db *DB) FindOrCreateTopicGroup(
 	return groupID, nil
 }
 
-// truncateOutcome returns the first maxLen characters of s, or s if shorter.
-// Used to derive human-readable group_topic labels from outcome text.
-func TruncateOutcome(s string, maxLen int) string {
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	return string(runes[:maxLen])
-}
-
 // listOpenConflictsByGroupIDs batch-fetches all open conflicts
 // for the given set of conflict_group IDs within an org. Returns conflicts ordered
 // by group_id then significance DESC so callers can attach them in display order

@@ -1,6 +1,6 @@
 # ADR-009: Distribution tiers — local-lite and cloud-hosted MCP
 
-**Status:** Accepted — local-lite tier not yet implemented (issue #312)
+**Status:** Accepted — local-lite tier implemented (issue #312 closed)
 **Date:** 2026-03-06
 **Amends:** ADR-004 (MCP and framework integrations as primary distribution channels)
 
@@ -22,7 +22,7 @@ Two concrete gaps compound the problem:
 
 | Layer | Target | Integration effort | Status |
 |-------|--------|--------------------|--------|
-| **Local-lite** (`npx @akashi/local`) | Individuals evaluating the workflow | Zero config — no server, no auth | Planned (#312) |
+| **Local-lite** (`npx @akashi/local`) | Individuals evaluating the workflow | Zero config — no server, no auth | Shipped |
 | MCP server (self-hosted) | Teams running their own infra | Docker Compose + API key | Shipped |
 | **Cloud-hosted MCP** | Teams without infra | One API key | Planned (#313, #314) |
 | Framework integrations | Agent builders | One import + decorator | Shipped |
@@ -48,7 +48,7 @@ MCP config:
 No URL, no token, no auth. Same trust model as other local MCP servers.
 
 **Included in local-lite:**
-- All 6 MCP tools with identical signatures to the full server
+- All 7 MCP tools with identical signatures to the full server
 - SQLite storage — decisions, events, assessments, basic conflicts
 - Text search via SQLite FTS5 (always available, zero config)
 - Semantic search via brute-force cosine similarity (available when an embedding provider is configured)
