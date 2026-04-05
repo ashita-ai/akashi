@@ -125,7 +125,11 @@ func (h *Handlers) HandleAuthToken(w http.ResponseWriter, r *http.Request) {
 	// Phase 1: check managed api_keys table.
 	var matched *model.Agent
 	var matchedKeyID *uuid.UUID
-	managedKeys, _ := h.db.GetActiveAPIKeysByAgentIDGlobal(r.Context(), req.AgentID)
+	managedKeys, err := h.db.GetActiveAPIKeysByAgentIDGlobal(r.Context(), req.AgentID)
+	if err != nil {
+		h.logger.Warn("managed key lookup failed, falling through to legacy",
+			"agent_id", req.AgentID, "error", err)
+	}
 	for _, k := range managedKeys {
 		valid, verr := auth.VerifyAPIKey(req.APIKey, k.KeyHash)
 		if verr != nil || !valid {
