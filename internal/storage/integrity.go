@@ -262,6 +262,49 @@ func (db *DB) GetProofLeaves(ctx context.Context, orgID, proofID uuid.UUID) ([]s
 	return leaves, rows.Err()
 }
 
+// FindProofForDecision finds the integrity proof batch that contains a given
+// decision, along with the decision's content hash. It locates the decision's
+// created_at timestamp and finds the proof whose (batch_start, batch_end]
+// interval contains it.
+//
+// Returns (nil, "", nil) if no proof covers this decision.
+func (db *DB) FindProofForDecision(ctx context.Context, orgID, decisionID uuid.UUID) (*IntegrityProof, string, error) {
+	// Step 1: get the decision's content_hash and created_at.
+	var contentHash string
+	var createdAt time.Time
+	err := db.pool.QueryRow(ctx,
+		`SELECT content_hash, created_at FROM decisions
+		 WHERE id = $1 AND org_id = $2
+		   AND content_hash IS NOT NULL AND content_hash != ''`,
+		decisionID, orgID,
+	).Scan(&contentHash, &createdAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, "", nil
+		}
+		return nil, "", fmt.Errorf("storage: find decision hash for proof: %w", err)
+	}
+
+	// Step 2: find the proof batch where batch_start < created_at <= batch_end.
+	var p IntegrityProof
+	err = db.pool.QueryRow(ctx,
+		`SELECT id, org_id, batch_start, batch_end, decision_count, root_hash, previous_root, created_at
+		 FROM integrity_proofs
+		 WHERE org_id = $1 AND batch_start < $2 AND batch_end >= $2
+		 ORDER BY created_at DESC
+		 LIMIT 1`,
+		orgID, createdAt,
+	).Scan(&p.ID, &p.OrgID, &p.BatchStart, &p.BatchEnd, &p.DecisionCount, &p.RootHash, &p.PreviousRoot, &p.CreatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, "", nil
+		}
+		return nil, "", fmt.Errorf("storage: find proof for decision: %w", err)
+	}
+
+	return &p, contentHash, nil
+}
+
 // ListOrganizationIDs returns all active organization IDs.
 func (db *DB) ListOrganizationIDs(ctx context.Context) ([]uuid.UUID, error) {
 	rows, err := db.pool.Query(ctx, `SELECT id FROM organizations ORDER BY id`)

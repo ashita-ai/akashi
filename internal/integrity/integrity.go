@@ -120,6 +120,113 @@ func hashPair(a, b string) string {
 // that would undermine tamper-evidence.
 var ErrUnsortedLeaves = errors.New("integrity: BuildMerkleRoot called with unsorted leaves")
 
+// ErrLeafNotFound is returned when GenerateMerkleProof is called with a target
+// leaf that does not exist in the leaf set.
+var ErrLeafNotFound = errors.New("integrity: target leaf not found in leaf set")
+
+// MerkleProofStep represents one step in a Merkle inclusion proof.
+// Each step provides the sibling hash at one level of the tree, along with
+// whether that sibling is on the right side of the pair.
+type MerkleProofStep struct {
+	Hash    string `json:"hash"`
+	IsRight bool   `json:"is_right"` // true if this sibling is on the right
+}
+
+// GenerateMerkleProof returns the inclusion proof path for a target leaf.
+// The proof consists of sibling hashes at each level of the tree, from leaf to root.
+// Returns ErrUnsortedLeaves if leaves aren't sorted, and ErrLeafNotFound if
+// the target isn't in the leaf set.
+//
+// The returned proof steps, combined with the target leaf, are sufficient to
+// reconstruct the root hash — use VerifyMerkleProof to check against a known root.
+func GenerateMerkleProof(leaves []string, targetLeaf string) ([]MerkleProofStep, string, error) {
+	if len(leaves) == 0 {
+		return nil, "", ErrLeafNotFound
+	}
+	if len(leaves) == 1 {
+		if leaves[0] != targetLeaf {
+			return nil, "", ErrLeafNotFound
+		}
+		// Single leaf is the root; no siblings needed.
+		return nil, leaves[0], nil
+	}
+
+	// Validate sort order.
+	for i := 1; i < len(leaves); i++ {
+		prev := leaves[i-1] //nolint:gosec // i starts at 1, so i-1 is always >= 0
+		if leaves[i] < prev {
+			return nil, "", fmt.Errorf("%w at index %d: %q < %q", ErrUnsortedLeaves, i, leaves[i], prev)
+		}
+	}
+
+	// Find the target leaf's index.
+	targetIdx := -1
+	for i, l := range leaves {
+		if l == targetLeaf {
+			targetIdx = i
+			break
+		}
+	}
+	if targetIdx < 0 {
+		return nil, "", ErrLeafNotFound
+	}
+
+	// Build the tree level by level, tracking the target's position
+	// and collecting sibling hashes along the path to the root.
+	level := make([]string, len(leaves))
+	copy(level, leaves)
+	idx := targetIdx
+
+	var steps []MerkleProofStep
+
+	for len(level) > 1 {
+		var next []string
+		nextIdx := idx / 2
+
+		for i := 0; i < len(level); i += 2 {
+			if i+1 < len(level) {
+				next = append(next, hashPair(level[i], level[i+1]))
+				// If this pair contains our target, record the sibling.
+				if i == idx || i+1 == idx {
+					if idx%2 == 0 {
+						// Target is on the left; sibling is on the right.
+						steps = append(steps, MerkleProofStep{Hash: level[i+1], IsRight: true})
+					} else {
+						// Target is on the right; sibling is on the left.
+						steps = append(steps, MerkleProofStep{Hash: level[i], IsRight: false})
+					}
+				}
+			} else {
+				// Odd node: hash with itself.
+				next = append(next, hashPair(level[i], level[i]))
+				if i == idx {
+					// Target is the unpaired node; sibling is itself (on the right).
+					steps = append(steps, MerkleProofStep{Hash: level[i], IsRight: true})
+				}
+			}
+		}
+		level = next
+		idx = nextIdx
+	}
+
+	return steps, level[0], nil
+}
+
+// VerifyMerkleProof checks that a leaf hash, combined with the given proof steps,
+// reconstructs the expected root hash. This is the verification counterpart to
+// GenerateMerkleProof.
+func VerifyMerkleProof(leafHash string, steps []MerkleProofStep, expectedRoot string) bool {
+	current := leafHash
+	for _, step := range steps {
+		if step.IsRight {
+			current = hashPair(current, step.Hash)
+		} else {
+			current = hashPair(step.Hash, current)
+		}
+	}
+	return current == expectedRoot
+}
+
 // BuildMerkleRoot constructs a Merkle tree from leaf hashes and returns the root.
 // Leaves must be sorted lexicographically for determinism; this function validates
 // sort order and returns an error if the precondition is violated, since unsorted
