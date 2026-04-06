@@ -6,54 +6,48 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func TestCheckCache_StoreAndDrain(t *testing.T) {
+func TestCheckCache_StoreAndHadResults(t *testing.T) {
 	cc := newCheckCache()
 
-	cc.Store("session-1", `{"has_precedent": true, "summary": "test"}`, true)
+	cc.Store("session-1", true)
+	assert.True(t, cc.HadResults("session-1"))
 
-	result := cc.Drain("session-1")
-	require.NotEmpty(t, result)
-	assert.Contains(t, result, "has_precedent")
+	cc.Store("session-2", false)
+	assert.False(t, cc.HadResults("session-2"))
 }
 
-func TestCheckCache_DrainClearsEntry(t *testing.T) {
+func TestCheckCache_HadResults_ConsumeOnRead(t *testing.T) {
 	cc := newCheckCache()
 
-	cc.Store("session-1", "check result", false)
-
-	first := cc.Drain("session-1")
-	require.Equal(t, "check result", first)
-
-	second := cc.Drain("session-1")
-	assert.Empty(t, second, "second drain should return empty after entry was consumed")
+	cc.Store("session-1", true)
+	assert.True(t, cc.HadResults("session-1"), "first call should return true")
+	assert.False(t, cc.HadResults("session-1"), "second call should return false after consume")
 }
 
-func TestCheckCache_DrainMissing(t *testing.T) {
+func TestCheckCache_HadResults_Missing(t *testing.T) {
 	cc := newCheckCache()
-	assert.Empty(t, cc.Drain("nonexistent"))
+	assert.False(t, cc.HadResults("nonexistent"))
 }
 
 func TestCheckCache_SessionIsolation(t *testing.T) {
 	cc := newCheckCache()
 
-	cc.Store("session-1", "result-1", true)
-	cc.Store("session-2", "result-2", false)
+	cc.Store("session-1", true)
+	cc.Store("session-2", false)
 
-	assert.Equal(t, "result-1", cc.Drain("session-1"))
-	assert.Equal(t, "result-2", cc.Drain("session-2"))
+	assert.True(t, cc.HadResults("session-1"))
+	assert.False(t, cc.HadResults("session-2"))
 }
 
 func TestCheckCache_StoreOverwritesPrevious(t *testing.T) {
 	cc := newCheckCache()
 
-	cc.Store("session-1", "old check", false)
-	cc.Store("session-1", "new check", true)
+	cc.Store("session-1", false)
+	cc.Store("session-1", true)
 
-	result := cc.Drain("session-1")
-	assert.Equal(t, "new check", result, "latest store should overwrite previous")
+	assert.True(t, cc.HadResults("session-1"), "latest store should overwrite previous")
 }
 
 func TestCheckCache_TTLExpiry(t *testing.T) {
@@ -62,47 +56,18 @@ func TestCheckCache_TTLExpiry(t *testing.T) {
 	// Inject an expired entry directly.
 	cc.mu.Lock()
 	cc.cache["session-1"] = checkCacheEntry{
-		content:    "stale check",
 		hadResults: true,
 		capturedAt: time.Now().Add(-checkCacheTTL - time.Second),
 	}
 	cc.mu.Unlock()
 
-	result := cc.Drain("session-1")
-	assert.Empty(t, result, "expired entry should be discarded")
+	assert.False(t, cc.HadResults("session-1"), "expired entry should report no results")
 
-	// Verify the entry was removed from the cache.
+	// Verify the entry was cleaned up.
 	cc.mu.Lock()
 	_, exists := cc.cache["session-1"]
 	cc.mu.Unlock()
 	assert.False(t, exists, "expired entry should be deleted from cache")
-}
-
-func TestCheckCache_HadResults(t *testing.T) {
-	cc := newCheckCache()
-
-	cc.Store("s1", "result with decisions", true)
-	cc.Store("s2", "empty result", false)
-
-	assert.True(t, cc.HadResults("s1"), "should report results when stored with hadResults=true")
-	assert.False(t, cc.HadResults("s2"), "should report no results when stored with hadResults=false")
-	assert.False(t, cc.HadResults("s3"), "should report no results for missing session")
-
-	// HadResults is non-destructive — Drain should still work.
-	assert.Equal(t, "result with decisions", cc.Drain("s1"))
-}
-
-func TestCheckCache_HadResults_TTLExpiry(t *testing.T) {
-	cc := newCheckCache()
-	cc.mu.Lock()
-	cc.cache["s1"] = checkCacheEntry{
-		content:    "stale",
-		hadResults: true,
-		capturedAt: time.Now().Add(-checkCacheTTL - time.Second),
-	}
-	cc.mu.Unlock()
-
-	assert.False(t, cc.HadResults("s1"), "expired entry should report no results")
 }
 
 func TestCheckCache_ConcurrentAccess(t *testing.T) {
@@ -114,16 +79,16 @@ func TestCheckCache_ConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			cc.Store("session-1", "result", false)
+			cc.Store("session-1", n%2 == 0)
 		}(i)
 	}
 
-	// Concurrent drains.
+	// Concurrent reads.
 	for range 10 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = cc.Drain("session-1")
+			_ = cc.HadResults("session-1")
 		}()
 	}
 
