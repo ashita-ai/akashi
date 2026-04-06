@@ -61,7 +61,7 @@ type Server struct {
 	grantCache                  *authz.GrantCache  // optional cache for LoadGrantedSet
 	logger                      *slog.Logger
 	rootsCache                  *rootsCache          // caches MCP roots per session (one request per session)
-	checkCache                  *checkCache          // caches last akashi_check response per session for evidence auto-attach
+	checkCache                  *checkCache          // tracks whether akashi_check returned results per session for precedent nudge
 	onCheck                     func(agentID string) // called when akashi_check is invoked; wires IDE hook gate
 	highConfidenceWarnThreshold float32              // confidence above this with no evidence triggers a warning
 	standardTypes               map[string]bool      // configurable set of standard decision types for tips

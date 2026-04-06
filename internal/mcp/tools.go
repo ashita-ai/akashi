@@ -624,11 +624,11 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 
 	resultData, _ := json.MarshalIndent(result, "", "  ")
 
-	// Cache the compact check response so handleTrace can auto-inject it
-	// as evidence. Both handlers share the same MCP session.
+	// Cache whether the check returned results so handleTrace can nudge the
+	// agent to cite precedents. Both handlers share the same MCP session.
 	if session := mcpserver.ClientSessionFromContext(ctx); session != nil {
 		if sid := session.SessionID(); sid != "" {
-			s.checkCache.Store(sid, string(resultData), len(resp.Decisions) > 0)
+			s.checkCache.Store(sid, len(resp.Decisions) > 0)
 		}
 	}
 
@@ -1059,29 +1059,9 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		apiKeyID = claims.APIKeyID
 	}
 
-	// Auto-append the preceding akashi_check response as evidence. This
-	// injects the research step into the decision record automatically,
-	// complementing any evidence the agent already provided. Appending
-	// rather than replacing means agents that provide 1 manual item plus
-	// a check result reach the 2-item threshold for full evidence credit.
-	if session := mcpserver.ClientSessionFromContext(ctx); session != nil {
-		if sid := session.SessionID(); sid != "" {
-			if checkResult := s.checkCache.Drain(sid); checkResult != "" {
-				relevance := float32(0.6)
-				sourceURI := "akashi://check"
-				evidence = append(evidence, model.TraceEvidence{
-					SourceType:     "tool_output",
-					SourceURI:      &sourceURI,
-					Content:        checkResult,
-					RelevanceScore: &relevance,
-				})
-			}
-		}
-	}
-
 	// Cap combined evidence at the model limit. This runs after all append
-	// operations (JSON parse, convenience params, check-cache auto-attach)
-	// so the cap is applied to the final evidence set.
+	// operations (JSON parse, convenience params) so the cap is applied to
+	// the final evidence set.
 	if len(evidence) > model.MaxEvidenceCount {
 		evidence = evidence[:model.MaxEvidenceCount]
 	}
