@@ -755,11 +755,6 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	)
 	evidence = append(evidence, convEvidence...)
 
-	// Cap combined evidence at the model limit.
-	if len(evidence) > model.MaxEvidenceCount {
-		evidence = evidence[:model.MaxEvidenceCount]
-	}
-
 	// Parse alternatives JSON if provided. Same lenient approach as evidence:
 	// log and continue rather than rejecting the whole trace.
 	var alternatives []model.TraceAlternative
@@ -1082,6 +1077,13 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 				})
 			}
 		}
+	}
+
+	// Cap combined evidence at the model limit. This runs after all append
+	// operations (JSON parse, convenience params, check-cache auto-attach)
+	// so the cap is applied to the final evidence set.
+	if len(evidence) > model.MaxEvidenceCount {
+		evidence = evidence[:model.MaxEvidenceCount]
 	}
 
 	result, err := s.decisionSvc.Trace(ctx, orgID, decisions.TraceInput{
