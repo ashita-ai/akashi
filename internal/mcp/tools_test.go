@@ -3110,28 +3110,28 @@ func TestComputeMissingFields_EvidenceTips(t *testing.T) {
 		noTip    bool
 	}{
 		{
-			name:     "no evidence — actionable tip with examples",
+			name:     "no evidence — actionable tip with convenience params",
 			evidence: nil,
-			wantTip:  "Add evidence to make this trace verifiable: attach file paths, error messages, test output, benchmark numbers, or the constraint that drove the choice",
+			wantTip:  "Add evidence for +15%: use evidence_snippets=",
 		},
 		{
 			name:     "empty slice — same as nil",
 			evidence: []model.TraceEvidence{},
-			wantTip:  "Add evidence to make this trace verifiable",
+			wantTip:  "Add evidence for +15%: use evidence_snippets=",
 		},
 		{
 			name: "one evidence item — nudge for more",
 			evidence: []model.TraceEvidence{
 				{SourceType: "tool_output", Content: "test passed"},
 			},
-			wantTip: "Add 1 more evidence item for full credit",
+			wantTip: "Add 1 more evidence item for +5%: use evidence_snippets or evidence_files",
 		},
 		{
-			name: "one evidence item tip includes examples",
+			name: "one evidence item tip mentions convenience params",
 			evidence: []model.TraceEvidence{
 				{SourceType: "tool_output", Content: "test passed"},
 			},
-			wantTip: "file path, error message, test result, or benchmark number",
+			wantTip: "evidence_snippets or evidence_files",
 		},
 		{
 			name: "two evidence items — no tip",

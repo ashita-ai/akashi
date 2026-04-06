@@ -702,10 +702,10 @@ func TestAdjustConfidence_NoAdjustmentNeeded(t *testing.T) {
 }
 
 func TestAdjustConfidence_HighConfNoEvidence(t *testing.T) {
-	// conf 0.92 with 0 evidence → capped at 0.75.
+	// conf 0.92 with 0 evidence → reduced by 0.15 = 0.77.
 	adj := AdjustConfidence(0.92, 0, 3, 120)
 	assert.True(t, adj.WasAdjusted)
-	assert.Equal(t, float32(0.75), adj.Adjusted)
+	assert.InDelta(t, 0.77, adj.Adjusted, 0.001)
 	assert.Equal(t, float32(0.92), adj.Original)
 	assert.Len(t, adj.Reasons, 1)
 }
@@ -727,14 +727,25 @@ func TestAdjustConfidence_HighConfShortReasoning(t *testing.T) {
 }
 
 func TestAdjustConfidence_AllRulesStack(t *testing.T) {
-	// conf 0.95, 0 evidence, 0 alts, 10-char reasoning → all three rules fire.
-	// Rule 1: cap at 0.75. Rule 2: 0.75 < 0.85, so does NOT fire.
-	// Rule 3: 0.75 < 0.8, so does NOT fire.
+	// conf 0.95, 0 evidence, 0 alts, 10-char reasoning → rules try to stack:
+	// Rule 1: 0.95 - 0.15 = ~0.80 (float32 gives 0.79999995).
+	// Rule 2: 0.7999 < 0.85, does NOT fire.
+	// Rule 3: 0.7999 < 0.8, does NOT fire (float32 precision).
+	// Only rule 1 fires.
 	adj := AdjustConfidence(0.95, 0, 0, 10)
 	assert.True(t, adj.WasAdjusted)
-	assert.Equal(t, float32(0.75), adj.Adjusted)
-	// Only rule 1 fires because the cap to 0.75 brings it below 0.85 and 0.8.
+	assert.InDelta(t, 0.80, adj.Adjusted, 0.001)
 	assert.Len(t, adj.Reasons, 1)
+}
+
+func TestAdjustConfidence_EvidenceAndReasoningStack(t *testing.T) {
+	// conf 0.96, 0 evidence, has alts, short reasoning → two rules stack:
+	// Rule 1: 0.96 - 0.15 = 0.81. Rule 2: skipped (has alts).
+	// Rule 3: 0.81 >= 0.8, reasoning < 50 → 0.81 - 0.10 = 0.71.
+	adj := AdjustConfidence(0.96, 0, 3, 10)
+	assert.True(t, adj.WasAdjusted)
+	assert.InDelta(t, 0.71, adj.Adjusted, 0.01)
+	assert.Len(t, adj.Reasons, 2)
 }
 
 func TestAdjustConfidence_TwoRulesStack(t *testing.T) {
@@ -747,15 +758,21 @@ func TestAdjustConfidence_TwoRulesStack(t *testing.T) {
 }
 
 func TestAdjustConfidence_FloorAt030(t *testing.T) {
-	// Construct a case where stacking would go below 0.3.
-	// conf 0.9, 0 evidence → cap at 0.75. Then 0.75 < 0.85, rule 2 skips.
-	// But what if we start at exactly 0.85 with all three weaknesses?
-	// Rule 1 doesn't fire (0.85 < 0.9). Rule 2: 0.85-0.10=0.75. Rule 3: 0.75<0.8, skips.
-	// Floor isn't reachable with current rules, but test the floor mechanism:
+	// conf 0.3, all weaknesses — but 0.3 < 0.8, so no rules fire.
 	adj := AdjustConfidence(0.3, 0, 0, 0)
-	// 0.3 < 0.8, < 0.85, < 0.9 — no rules fire.
 	assert.False(t, adj.WasAdjusted)
 	assert.Equal(t, float32(0.3), adj.Adjusted)
+}
+
+func TestAdjustConfidence_FloorPreventsUnderflow(t *testing.T) {
+	// conf 0.85, 0 evidence, 0 alts, short reasoning → all three rules try:
+	// Rule 1: 0.85 - 0.15 = 0.70. Rule 2: 0.70 < 0.85, skip.
+	// Rule 3: 0.70 < 0.8, skip. Final = 0.70.
+	// Now test with higher conf to approach the floor:
+	// conf 0.80, 0 evidence → 0.80 - 0.15 = 0.65. Rule 3: 0.65 < 0.8, skip.
+	adj := AdjustConfidence(0.80, 0, 0, 10)
+	assert.True(t, adj.WasAdjusted)
+	assert.InDelta(t, 0.65, adj.Adjusted, 0.001)
 }
 
 func TestAdjustConfidence_BelowAllThresholds(t *testing.T) {
@@ -766,10 +783,10 @@ func TestAdjustConfidence_BelowAllThresholds(t *testing.T) {
 }
 
 func TestAdjustConfidence_ExactThresholdBoundaries(t *testing.T) {
-	// Exactly 0.9 with 0 evidence → rule 1 fires.
+	// Exactly 0.9 with 0 evidence → rule 1 fires: 0.9 - 0.15 = 0.75.
 	adj := AdjustConfidence(0.9, 0, 2, 120)
 	assert.True(t, adj.WasAdjusted)
-	assert.Equal(t, float32(0.75), adj.Adjusted)
+	assert.InDelta(t, 0.75, adj.Adjusted, 0.001)
 
 	// Exactly 0.85 with 0 alts → rule 2 fires.
 	adj = AdjustConfidence(0.85, 1, 0, 120)
@@ -783,15 +800,15 @@ func TestAdjustConfidence_ExactThresholdBoundaries(t *testing.T) {
 }
 
 func TestAdjustConfidence_JustBelowThresholds(t *testing.T) {
-	// 0.899... < 0.9 → rule 1 does not fire.
-	adj := AdjustConfidence(0.899, 0, 2, 120)
+	// 0.799 < 0.8 → rule 1 does not fire (no evidence).
+	adj := AdjustConfidence(0.799, 0, 2, 120)
 	assert.False(t, adj.WasAdjusted)
 
-	// 0.849 < 0.85 → rule 2 does not fire.
+	// 0.849 < 0.85 → rule 2 does not fire (no alts).
 	adj = AdjustConfidence(0.849, 1, 0, 120)
 	assert.False(t, adj.WasAdjusted)
 
-	// 0.799 < 0.8 → rule 3 does not fire.
+	// 0.799 < 0.8 → rule 3 does not fire (short reasoning).
 	adj = AdjustConfidence(0.799, 1, 1, 10)
 	assert.False(t, adj.WasAdjusted)
 }

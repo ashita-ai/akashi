@@ -349,7 +349,7 @@ type ConfidenceAdjustment struct {
 // value and preserves the original for auditability.
 //
 // Rules (applied independently, stacking):
-//   - conf >= 0.9 with 0 evidence items → cap at 0.75
+//   - conf >= 0.8 with 0 evidence items → reduce by 0.15
 //   - conf >= 0.85 with 0 alternatives → reduce by 0.10
 //   - conf >= 0.8 with reasoning < 50 chars → reduce by 0.10
 //
@@ -371,9 +371,9 @@ func AdjustConfidence(confidence float32, evidenceCount, altCount, reasoningLen 
 
 	var reasons []string
 
-	if confidence >= 0.9 && evidenceCount == 0 {
-		confidence = 0.75
-		reasons = append(reasons, "confidence >= 0.9 with no evidence: capped at 0.75")
+	if confidence >= 0.8 && evidenceCount == 0 {
+		confidence -= 0.15
+		reasons = append(reasons, "confidence >= 0.8 with no evidence: reduced by 0.15")
 	}
 	if confidence >= 0.85 && altCount == 0 {
 		confidence -= 0.10

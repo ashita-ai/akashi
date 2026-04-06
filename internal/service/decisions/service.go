@@ -82,11 +82,20 @@ func (s *Service) SetReScoreMetrics(m *search.ReScoreMetrics) { s.rescoreMetrics
 type AutoAssessor interface {
 	OnSuperseded(ctx context.Context, orgID, supersededID, newID uuid.UUID)
 	OnCitationThreshold(ctx context.Context, orgID, decisionID uuid.UUID, citationCount int)
+	OnConflictResolved(ctx context.Context, orgID, winnerID, loserID uuid.UUID)
 }
 
 // SetAutoAssessor configures automatic assessment generation from
-// supersession and citation signals.
+// supersession, citation, and conflict resolution signals.
 func (s *Service) SetAutoAssessor(a AutoAssessor) { s.autoAssessor = a }
+
+// AssessConflictResolution delegates to the auto-assessor to record outcome
+// assessments for conflict winners and losers. No-op when auto-assessor is nil.
+func (s *Service) AssessConflictResolution(ctx context.Context, orgID, winnerID, loserID uuid.UUID) {
+	if s.autoAssessor != nil {
+		s.autoAssessor.OnConflictResolved(ctx, orgID, winnerID, loserID)
+	}
+}
 
 // effectiveStandardTypes returns the configured standard types or the defaults.
 func (s *Service) effectiveStandardTypes() map[string]bool {
