@@ -6,6 +6,7 @@
 package model
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,6 +20,26 @@ const (
 	RunStatusCompleted RunStatus = "completed"
 	RunStatusFailed    RunStatus = "failed"
 )
+
+// IsTerminal reports whether the status represents an end state
+// from which no further transitions are allowed.
+func (s RunStatus) IsTerminal() bool {
+	return s == RunStatusCompleted || s == RunStatusFailed
+}
+
+// ValidateTransition checks whether moving from the current status to next
+// is a legal state transition. The valid state machine is:
+//
+//	running → completed
+//	running → failed
+//
+// Terminal states (completed, failed) reject all further transitions.
+func (s RunStatus) ValidateTransition(next RunStatus) error {
+	if s == RunStatusRunning && (next == RunStatusCompleted || next == RunStatusFailed) {
+		return nil
+	}
+	return fmt.Errorf("invalid run status transition: %q → %q", s, next)
+}
 
 // AgentRun is the top-level execution context for an agent.
 // Corresponds to an OTEL trace. Immutable once created.
