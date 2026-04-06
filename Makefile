@@ -1,5 +1,5 @@
 .PHONY: all build build-local build-ui build-with-ui test test-unit test-integration lint fmt vet clean docker-up docker-down ci security tidy \
-       dev-ui migrate-apply migrate-lint migrate-hash migrate-diff migrate-status migrate-validate \
+       dev-ui migrate-apply migrate-lint migrate-hash migrate-diff migrate-status migrate-validate new-migration \
        check-doc-consistency verify-restore reconcile-qdrant reconcile-qdrant-repair \
        archive-events-dry-run archive-events verify-exit-criteria install-hooks clean-hooks coverage
 
@@ -107,6 +107,16 @@ migrate-status: ## Show migration status
 
 migrate-validate: ## Validate migration file integrity (checksums + SQL)
 	$(ATLAS) migrate validate --dir file://migrations
+
+new-migration: ## Create a new migration file (usage: make new-migration name=add_foo_index)
+	@test -n "$(name)" || (echo "usage: make new-migration name=<migration_name>" && exit 1)
+	@LAST=$$(ls migrations/*.sql 2>/dev/null | sed 's|.*/||' | sort -n | tail -1 | grep -o '^[0-9]*'); \
+	NEXT=$$(printf "%03d" $$(( $${LAST:-0} + 1 ))); \
+	FILE="migrations/$${NEXT}_$(name).sql"; \
+	DESC=$$(echo "$(name)" | tr '_' ' '); \
+	echo "-- $${NEXT}: $${DESC}." > "$$FILE"; \
+	$(ATLAS) migrate hash --dir file://migrations; \
+	echo "Created $$FILE"
 
 verify-restore: ## Run post-restore DB verification checks (requires DATABASE_URL)
 	bash scripts/verify_restore.sh
