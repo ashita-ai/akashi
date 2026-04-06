@@ -61,7 +61,7 @@ console.log(`Recorded decision ${resp.decision_id}`);
 
 The client automatically retries requests that fail with transient errors:
 
-- **Retried:** 429 (rate limit), 500, 502, 503, 504, and network errors (e.g. `fetch` failures)
+- **Retried:** 429 (rate limit), all 5xx server errors, and network errors (e.g. `fetch` failures)
 - **Not retried:** 400, 401, 403, 404, 409, 422 — these indicate client-side issues that won't resolve on retry
 
 Backoff uses exponential delay with ±25% jitter: `baseDelay × 2^attempt`. The delay is capped at 30 seconds. When a `Retry-After` header is present on a 429 response, the client respects it if it exceeds the calculated delay.
