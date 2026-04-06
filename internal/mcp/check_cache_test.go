@@ -18,6 +18,14 @@ func TestCheckCache_StoreAndHadResults(t *testing.T) {
 	assert.False(t, cc.HadResults("session-2"))
 }
 
+func TestCheckCache_HadResults_ConsumeOnRead(t *testing.T) {
+	cc := newCheckCache()
+
+	cc.Store("session-1", true)
+	assert.True(t, cc.HadResults("session-1"), "first call should return true")
+	assert.False(t, cc.HadResults("session-1"), "second call should return false after consume")
+}
+
 func TestCheckCache_HadResults_Missing(t *testing.T) {
 	cc := newCheckCache()
 	assert.False(t, cc.HadResults("nonexistent"))

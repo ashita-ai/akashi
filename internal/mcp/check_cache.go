@@ -41,7 +41,9 @@ func (cc *checkCache) Store(sessionID string, hadResults bool) {
 	}
 }
 
-// HadResults returns whether the cached check for this session returned decisions.
+// HadResults returns whether the cached check for this session returned
+// decisions and removes the entry. Consume-on-read ensures the precedent
+// penalty in handleTrace fires at most once per check-then-trace cycle.
 func (cc *checkCache) HadResults(sessionID string) bool {
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
@@ -49,8 +51,8 @@ func (cc *checkCache) HadResults(sessionID string) bool {
 	if !ok {
 		return false
 	}
+	delete(cc.cache, sessionID)
 	if time.Since(entry.capturedAt) > checkCacheTTL {
-		delete(cc.cache, sessionID)
 		return false
 	}
 	return entry.hadResults
