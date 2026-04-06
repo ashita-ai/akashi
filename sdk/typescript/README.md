@@ -53,6 +53,30 @@ console.log(`Recorded decision ${resp.decision_id}`);
 | `agentId` | `string` | yes | | Agent identifier |
 | `apiKey` | `string` | yes | | Secret for JWT acquisition |
 | `timeoutMs` | `number` | no | `30000` | Request timeout in ms |
+| `sessionId` | `string` | no | auto-generated UUID | Override session identifier |
+| `maxRetries` | `number` | no | `3` | Maximum retries on transient errors |
+| `retryBaseDelayMs` | `number` | no | `500` | Base delay for exponential backoff (ms) |
+
+### Retry behavior
+
+The client automatically retries requests that fail with transient errors:
+
+- **Retried:** 429 (rate limit), all 5xx server errors, and network errors (e.g. `fetch` failures)
+- **Not retried:** 400, 401, 403, 404, 409, 422 — these indicate client-side issues that won't resolve on retry
+
+Backoff uses exponential delay with ±25% jitter: `baseDelay × 2^attempt`. The delay is capped at 30 seconds. When a `Retry-After` header is present on a 429 response, the client respects it if it exceeds the calculated delay.
+
+```typescript
+const client = new AkashiClient({
+  baseUrl: "http://localhost:8080",
+  agentId: "my-agent",
+  apiKey: "my-api-key",
+  maxRetries: 5,            // up to 5 retries (6 total attempts)
+  retryBaseDelayMs: 1000,   // start at 1s, then 2s, 4s, 8s, 16s
+});
+```
+
+Set `maxRetries: 0` to disable retries entirely.
 
 ### Methods
 
