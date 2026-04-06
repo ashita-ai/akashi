@@ -165,7 +165,7 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 				mcplib.Required(),
 			),
 			mcplib.WithNumber("confidence",
-				mcplib.Description("How certain you are (0.0-1.0). Most decisions should be 0.4-0.8. See calibration guide above. Defaults to 0.5 if omitted."),
+				mcplib.Description("How certain you are (0.0-1.0). Most decisions should be 0.4-0.8. See calibration guide above. Defaults to 0.4 if omitted."),
 				mcplib.Min(0),
 				mcplib.Max(1),
 			),
@@ -186,6 +186,15 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 			),
 			mcplib.WithString("evidence",
 				mcplib.Description(`JSON array of supporting facts. Each item: {"source_type":"<type>","content":"<text>","source_uri":"<optional>","relevance_score":<0-1 optional>}. source_type values: document, api_response, agent_output, user_input, search_result, tool_output, memory, database_query.`),
+			),
+			mcplib.WithString("evidence_files",
+				mcplib.Description(`Comma-separated file paths referenced in this decision. Each path becomes an evidence record (source_type="document"). Much easier than constructing evidence JSON. Example: "internal/server/handlers.go,adrs/007.md"`),
+			),
+			mcplib.WithString("evidence_snippets",
+				mcplib.Description(`Observations separated by "|||". Each snippet becomes an evidence record (source_type="tool_output"). Use for test output, error messages, benchmark numbers, or any factual observation. Example: "test suite passed with 0 failures|||latency p99 dropped from 120ms to 45ms"`),
+			),
+			mcplib.WithString("evidence_urls",
+				mcplib.Description(`Comma-separated URLs referenced in this decision. Each URL becomes an evidence record (source_type="document"). Example: "https://docs.example.com/api,https://github.com/org/repo/issues/42"`),
 			),
 			mcplib.WithString("alternatives",
 				mcplib.Description(`JSON array of options you considered and rejected. Each item: {"label":"<description of option>","rejection_reason":"<why you didn't choose it>"}. Providing alternatives improves completeness scoring and helps future agents understand your reasoning. Example: [{"label":"Use Redis for caching","rejection_reason":"adds operational overhead for our traffic levels"},{"label":"In-memory cache","rejection_reason":"not shared across instances"}]`),
@@ -644,7 +653,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	// idempotency hash matches regardless of casing.
 	decisionType := strings.ToLower(strings.TrimSpace(request.GetString("decision_type", "")))
 	outcome := request.GetString("outcome", "")
-	confidence := float32(request.GetFloat("confidence", 0.5))
+	confidence := float32(request.GetFloat("confidence", 0.4))
 	reasoning := request.GetString("reasoning", "")
 
 	// Default agent_id to the caller's authenticated identity.
@@ -735,6 +744,20 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 				return errorResult(fmt.Sprintf("evidence[%d].source_uri: %v", i, err)), nil
 			}
 		}
+	}
+
+	// Append convenience evidence from the simpler parameters. These are
+	// easier for agents to provide than constructing raw JSON.
+	convEvidence := parseConvenienceEvidence(
+		request.GetString("evidence_files", ""),
+		request.GetString("evidence_snippets", ""),
+		request.GetString("evidence_urls", ""),
+	)
+	evidence = append(evidence, convEvidence...)
+
+	// Cap combined evidence at the model limit.
+	if len(evidence) > model.MaxEvidenceCount {
+		evidence = evidence[:model.MaxEvidenceCount]
 	}
 
 	// Parse alternatives JSON if provided. Same lenient approach as evidence:
@@ -1041,22 +1064,22 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		apiKeyID = claims.APIKeyID
 	}
 
-	// Auto-attach the preceding akashi_check response as evidence when the
-	// agent provided none. This injects the research step into the decision
-	// record automatically, rather than suggesting it after the fact.
-	if len(evidence) == 0 {
-		if session := mcpserver.ClientSessionFromContext(ctx); session != nil {
-			if sid := session.SessionID(); sid != "" {
-				if checkResult := s.checkCache.Drain(sid); checkResult != "" {
-					relevance := float32(0.6)
-					sourceURI := "akashi://check"
-					evidence = []model.TraceEvidence{{
-						SourceType:     "tool_output",
-						SourceURI:      &sourceURI,
-						Content:        checkResult,
-						RelevanceScore: &relevance,
-					}}
-				}
+	// Auto-append the preceding akashi_check response as evidence. This
+	// injects the research step into the decision record automatically,
+	// complementing any evidence the agent already provided. Appending
+	// rather than replacing means agents that provide 1 manual item plus
+	// a check result reach the 2-item threshold for full evidence credit.
+	if session := mcpserver.ClientSessionFromContext(ctx); session != nil {
+		if sid := session.SessionID(); sid != "" {
+			if checkResult := s.checkCache.Drain(sid); checkResult != "" {
+				relevance := float32(0.6)
+				sourceURI := "akashi://check"
+				evidence = append(evidence, model.TraceEvidence{
+					SourceType:     "tool_output",
+					SourceURI:      &sourceURI,
+					Content:        checkResult,
+					RelevanceScore: &relevance,
+				})
 			}
 		}
 	}
@@ -1222,9 +1245,9 @@ func computeMissingFields(decisionType, outcome string, confidence float32, reas
 	if profile.MinEvidence > 0 {
 		if len(evidence) < 2 {
 			if len(evidence) == 0 {
-				tips = append(tips, "Add evidence to make this trace verifiable: attach file paths, error messages, test output, benchmark numbers, or the constraint that drove the choice (source_type + content, 2+ items for +15%)")
+				tips = append(tips, "Add evidence for +15%: use evidence_snippets=\"fact one|||fact two\" or evidence_files=\"path/to/file\" — much easier than constructing JSON")
 			} else {
-				tips = append(tips, "Add 1 more evidence item for full credit — e.g. a file path, error message, test result, or benchmark number (+5%)")
+				tips = append(tips, "Add 1 more evidence item for +5%: use evidence_snippets or evidence_files to attach a second item")
 			}
 		}
 	}
@@ -1269,6 +1292,62 @@ func computeMissingFields(decisionType, outcome string, confidence float32, reas
 	}
 
 	return tips
+}
+
+// parseConvenienceEvidence converts the convenience evidence parameters
+// (evidence_files, evidence_snippets, evidence_urls) into TraceEvidence
+// records. These are appended to any evidence parsed from the raw JSON
+// parameter, lowering the barrier to providing evidence.
+func parseConvenienceEvidence(files, snippets, urls string) []model.TraceEvidence {
+	var result []model.TraceEvidence
+
+	if files != "" {
+		for _, raw := range strings.Split(files, ",") {
+			path := strings.TrimSpace(raw)
+			if path == "" {
+				continue
+			}
+			result = append(result, model.TraceEvidence{
+				SourceType: string(model.SourceDocument),
+				SourceURI:  &path,
+				Content:    "Referenced file: " + path,
+			})
+		}
+	}
+
+	if snippets != "" {
+		for _, raw := range strings.Split(snippets, "|||") {
+			snippet := strings.TrimSpace(raw)
+			if snippet == "" {
+				continue
+			}
+			result = append(result, model.TraceEvidence{
+				SourceType: string(model.SourceToolOutput),
+				Content:    snippet,
+			})
+		}
+	}
+
+	if urls != "" {
+		for _, raw := range strings.Split(urls, ",") {
+			u := strings.TrimSpace(raw)
+			if u == "" {
+				continue
+			}
+			if err := model.ValidateSourceURI(u); err != nil {
+				// Skip invalid URLs silently — same lenient approach as
+				// evidence JSON parse failures.
+				continue
+			}
+			result = append(result, model.TraceEvidence{
+				SourceType: string(model.SourceDocument),
+				SourceURI:  &u,
+				Content:    u,
+			})
+		}
+	}
+
+	return result
 }
 
 // knownToolModels maps MCP client tool names (lowercase) to model families.

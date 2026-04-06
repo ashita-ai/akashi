@@ -379,6 +379,15 @@ func (h *Handlers) HandleAdjudicateConflict(w http.ResponseWriter, r *http.Reque
 		h.resolutionRecorder.RecordResolution(r.Context(), "resolved", string(conflict.ConflictKind), 1)
 	}
 
+	// Auto-assess winner/loser when a winning decision was declared.
+	if req.WinningDecisionID != nil {
+		loserID := conflict.DecisionBID
+		if *req.WinningDecisionID == conflict.DecisionBID {
+			loserID = conflict.DecisionAID
+		}
+		h.decisionSvc.AssessConflictResolution(r.Context(), orgID, *req.WinningDecisionID, loserID)
+	}
+
 	// Resolution cascade: auto-resolve related conflicts in the same group.
 	if req.WinningDecisionID != nil {
 		h.executeCascadeResolution(r, orgID, *conflict, *req.WinningDecisionID)
