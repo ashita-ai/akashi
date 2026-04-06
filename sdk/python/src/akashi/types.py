@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ConflictFate(BaseModel):
@@ -259,6 +259,21 @@ class TraceEvidence(BaseModel):
     content: str = ""
     relevance_score: float | None = None
     metrics: dict[str, float] | None = None
+
+    @model_validator(mode="after")
+    def _validate_content_and_metrics(self) -> TraceEvidence:
+        if self.source_type == "metrics":
+            if not self.metrics:
+                raise ValueError("metrics field is required when source_type is 'metrics'")
+        else:
+            if not self.content:
+                raise ValueError(
+                    f"content is required when source_type is '{self.source_type}' "
+                    f"(only source_type='metrics' may omit content)"
+                )
+            if self.metrics:
+                raise ValueError("metrics field is only allowed when source_type is 'metrics'")
+        return self
 
 
 class TimeRange(BaseModel):
