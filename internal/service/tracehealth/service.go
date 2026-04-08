@@ -288,7 +288,7 @@ func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts 
 
 	if openConflicts > 0 && totalConflicts > 0 {
 		gaps = append(gaps, fmt.Sprintf(
-			"%d of %d conflicts are unresolved.", openConflicts, totalConflicts))
+			"%d of %d conflict groups are unresolved.", openConflicts, totalConflicts))
 	}
 
 	if len(gaps) < 3 && qs.BelowHalf > 0 {

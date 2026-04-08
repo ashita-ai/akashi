@@ -499,6 +499,9 @@ func (h *Handlers) buildSessionContext(ctx context.Context, project string) stri
 	// to show the deduplicated count of unresolved disagreements.
 	openStatus := "open"
 	groupFilter := storage.ConflictGroupFilters{Status: &openStatus}
+	if project != "" {
+		groupFilter.Project = &project
+	}
 	conflictGroups, err := h.db.ListConflictGroups(ctx, orgID, groupFilter, 5, 0)
 	if err != nil {
 		h.logger.Debug("hook session-start: list conflict groups failed", "error", err)

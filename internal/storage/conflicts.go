@@ -152,11 +152,11 @@ func (db *DB) GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID, from
 	gArgs := []any{orgID}
 	if from != nil {
 		gArgs = append(gArgs, *from)
-		gq += fmt.Sprintf(" AND cg.first_detected_at >= $%d", len(gArgs))
+		gq += fmt.Sprintf(" AND cg.last_detected_at >= $%d", len(gArgs))
 	}
 	if to != nil {
 		gArgs = append(gArgs, *to)
-		gq += fmt.Sprintf(" AND cg.last_detected_at < $%d", len(gArgs))
+		gq += fmt.Sprintf(" AND cg.first_detected_at < $%d", len(gArgs))
 	}
 	err = db.pool.QueryRow(ctx, gq, gArgs...).Scan(&c.TotalGroups, &c.OpenGroups)
 	if err != nil {
@@ -900,6 +900,11 @@ func conflictGroupWhere(f ConflictGroupFilters, argOffset int) (string, []any) {
 	if f.ConflictKind != nil {
 		clause += fmt.Sprintf(" AND cg.conflict_kind = $%d", argOffset)
 		args = append(args, *f.ConflictKind)
+		argOffset++
+	}
+	if f.Project != nil {
+		clause += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM scored_conflicts sc_p WHERE sc_p.group_id = cg.id AND (sc_p.project_a = $%d OR sc_p.project_b = $%d))", argOffset, argOffset)
+		args = append(args, *f.Project)
 		argOffset++ //nolint:ineffassign
 	}
 	return clause, args

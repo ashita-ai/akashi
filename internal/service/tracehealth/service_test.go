@@ -110,7 +110,7 @@ func TestComputeGaps_UnresolvedConflicts(t *testing.T) {
 
 	found := false
 	for _, g := range gaps {
-		if g == "7 of 10 conflicts are unresolved." {
+		if g == "7 of 10 conflict groups are unresolved." {
 			found = true
 		}
 	}

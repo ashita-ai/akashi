@@ -130,6 +130,9 @@ type ConflictGroupFilters struct {
 	DecisionType *string
 	AgentID      *string
 	ConflictKind *string
+	// Project restricts results to groups that have at least one member
+	// conflict matching the given project (via project_a or project_b).
+	Project *string
 	// Status restricts results to groups that have at least one member
 	// conflict matching this exact status (e.g. "open", "resolved",
 	// "false_positive"). When nil, all groups are returned.

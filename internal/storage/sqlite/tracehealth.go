@@ -124,11 +124,11 @@ func (l *LiteDB) GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID, f
 		 FROM conflict_groups cg WHERE cg.org_id = ?`
 	gArgs := []any{uuidStr(orgID)}
 	if from != nil {
-		gq += " AND cg.first_detected_at >= ?"
+		gq += " AND cg.last_detected_at >= ?"
 		gArgs = append(gArgs, from.UTC().Format("2006-01-02T15:04:05.999999999Z"))
 	}
 	if to != nil {
-		gq += " AND cg.last_detected_at < ?"
+		gq += " AND cg.first_detected_at < ?"
 		gArgs = append(gArgs, to.UTC().Format("2006-01-02T15:04:05.999999999Z"))
 	}
 	err = l.db.QueryRowContext(ctx, gq, gArgs...).Scan(&cc.TotalGroups, &cc.OpenGroups)
