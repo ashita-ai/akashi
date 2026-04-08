@@ -494,35 +494,34 @@ func (h *Handlers) buildSessionContext(ctx context.Context, project string) stri
 		recent = nil
 	}
 
-	// Query open conflicts — scoped by project when known.
+	// Query open conflict groups — scoped by project when known.
+	// Use conflict_groups with open_count > 0 (not individual scored_conflicts)
+	// to show the deduplicated count of unresolved disagreements.
 	openStatus := "open"
-	conflictFilter := storage.ConflictFilters{Status: &openStatus}
-	if project != "" {
-		conflictFilter.Project = &project
-	}
-	conflicts, err := h.db.ListConflicts(ctx, orgID, conflictFilter, 5, 0)
+	groupFilter := storage.ConflictGroupFilters{Status: &openStatus}
+	conflictGroups, err := h.db.ListConflictGroups(ctx, orgID, groupFilter, 5, 0)
 	if err != nil {
-		h.logger.Debug("hook session-start: list conflicts failed", "error", err)
-		conflicts = nil
+		h.logger.Debug("hook session-start: list conflict groups failed", "error", err)
+		conflictGroups = nil
 	}
 
 	// Track whether this project has any decision history.
 	// Empty projects get a relaxed edit gate in HandleHookPreToolUse.
 	if project != "" {
-		if len(recent) == 0 && len(conflicts) == 0 {
+		if len(recent) == 0 && len(conflictGroups) == 0 {
 			h.hookChecks.MarkProjectEmpty(project)
 		} else {
 			h.hookChecks.ClearProjectEmpty(project)
 		}
 	}
 
-	// Build header.
+	// Build header — report deduplicated conflict group count, not raw scored_conflicts.
 	if project != "" {
 		parts = append(parts, fmt.Sprintf("[akashi] Project: %s | %d recent decisions | %d open conflicts",
-			project, len(recent), len(conflicts)))
+			project, len(recent), len(conflictGroups)))
 	} else {
 		parts = append(parts, fmt.Sprintf("[akashi] %d recent decisions | %d open conflicts",
-			len(recent), len(conflicts)))
+			len(recent), len(conflictGroups)))
 	}
 
 	// Compact decision summaries.
@@ -537,19 +536,21 @@ func (h *Handlers) buildSessionContext(ctx context.Context, project string) stri
 		}
 	}
 
-	// Conflict summary.
-	if len(conflicts) > 0 {
+	// Conflict group summary — use the representative conflict for display.
+	if len(conflictGroups) > 0 {
 		parts = append(parts, "\nOpen conflicts:")
-		for _, c := range conflicts {
+		for _, g := range conflictGroups {
 			severity := "unknown"
-			if c.Severity != nil {
-				severity = *c.Severity
-			}
 			explanation := ""
-			if c.Explanation != nil {
-				explanation = ": " + truncateHook(*c.Explanation, 80)
+			if g.Representative != nil {
+				if g.Representative.Severity != nil {
+					severity = *g.Representative.Severity
+				}
+				if g.Representative.Explanation != nil {
+					explanation = ": " + truncateHook(*g.Representative.Explanation, 80)
+				}
 			}
-			parts = append(parts, fmt.Sprintf("- [%s] %s vs %s%s", severity, c.AgentA, c.AgentB, explanation))
+			parts = append(parts, fmt.Sprintf("- [%s] %s vs %s%s", severity, g.AgentA, g.AgentB, explanation))
 		}
 	}
 

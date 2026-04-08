@@ -85,10 +85,13 @@ func (l *LiteDB) GetEvidenceCoverageStats(ctx context.Context, orgID uuid.UUID, 
 	}, nil
 }
 
-// GetConflictStatusCounts returns conflict status breakdown for an org.
+// GetConflictStatusCounts returns conflict status breakdown for an org,
+// including both individual scored_conflicts counts and deduplicated conflict_group counts.
 // When from/to are non-nil, only conflicts with detected_at in [from, to) are included.
 func (l *LiteDB) GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (storage.ConflictStatusCounts, error) {
 	var cc storage.ConflictStatusCounts
+
+	// Individual scored_conflicts counts.
 	q := `SELECT
 		     COUNT(*),
 		     COALESCE(SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END), 0),
@@ -109,6 +112,30 @@ func (l *LiteDB) GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID, f
 	if err != nil {
 		return storage.ConflictStatusCounts{}, fmt.Errorf("sqlite: conflict status counts: %w", err)
 	}
+
+	// Group-level counts — SQLite conflict_groups has no open_count column,
+	// so we compute it via a subquery join against scored_conflicts.
+	gq := `SELECT
+		     COUNT(DISTINCT cg.id),
+		     COALESCE(SUM(CASE WHEN EXISTS (
+		         SELECT 1 FROM scored_conflicts sc2
+		         WHERE sc2.group_id = cg.id AND sc2.status = 'open'
+		     ) THEN 1 ELSE 0 END), 0)
+		 FROM conflict_groups cg WHERE cg.org_id = ?`
+	gArgs := []any{uuidStr(orgID)}
+	if from != nil {
+		gq += " AND cg.first_detected_at >= ?"
+		gArgs = append(gArgs, from.UTC().Format("2006-01-02T15:04:05.999999999Z"))
+	}
+	if to != nil {
+		gq += " AND cg.last_detected_at < ?"
+		gArgs = append(gArgs, to.UTC().Format("2006-01-02T15:04:05.999999999Z"))
+	}
+	err = l.db.QueryRowContext(ctx, gq, gArgs...).Scan(&cc.TotalGroups, &cc.OpenGroups)
+	if err != nil {
+		return storage.ConflictStatusCounts{}, fmt.Errorf("sqlite: conflict group counts: %w", err)
+	}
+
 	return cc, nil
 }
 

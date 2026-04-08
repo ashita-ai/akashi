@@ -230,6 +230,7 @@ func TestCompute_HealthyOrg(t *testing.T) {
 		},
 		conflictCounts: storage.ConflictStatusCounts{
 			Total: 10, Open: 1, Resolved: 6, FalsePositive: 3,
+			TotalGroups: 4, OpenGroups: 1,
 		},
 		outcomeSignals: storage.OutcomeSignalsSummary{
 			DecisionsTotal:   100,
@@ -275,8 +276,10 @@ func TestCompute_HealthyOrg(t *testing.T) {
 
 	// Conflicts populated when total > 0.
 	require.NotNil(t, m.Conflicts)
-	assert.Equal(t, 10, m.Conflicts.Total)
-	assert.Equal(t, 1, m.Conflicts.Open)
+	assert.Equal(t, 4, m.Conflicts.TotalGroups)
+	assert.Equal(t, 1, m.Conflicts.OpenGroups)
+	assert.Equal(t, 10, m.Conflicts.TotalIndividual)
+	assert.Equal(t, 1, m.Conflicts.OpenIndividual)
 	assert.Equal(t, 6, m.Conflicts.Resolved)
 	assert.Equal(t, 3, m.Conflicts.FalsePositive)
 	assert.InDelta(t, 60.0, m.Conflicts.ResolvedPct, 0.1)

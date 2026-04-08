@@ -104,11 +104,17 @@ type ConflictFilters struct {
 }
 
 // ConflictStatusCounts holds the number of conflicts in each resolution status.
+// It tracks both individual scored_conflicts rows and deduplicated conflict_groups.
 type ConflictStatusCounts struct {
+	// Individual scored_conflicts counts.
 	Total         int
 	Open          int
 	Resolved      int
 	FalsePositive int
+
+	// Group-level counts (deduplicated by conflict_groups).
+	TotalGroups int
+	OpenGroups  int
 }
 
 // FalsePositiveRate holds the false-positive rate over a rolling 30-day window.
