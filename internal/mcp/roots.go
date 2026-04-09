@@ -186,6 +186,52 @@ func inferProjectFromRootsWithGit(roots []mcplib.Root) string {
 	return ""
 }
 
+// gitBranchFromRoots extracts the current git branch from the first file://
+// root URI by running `git rev-parse --abbrev-ref HEAD`. Returns empty string
+// when git detection fails (not a git repo, detached HEAD, git not available,
+// or the server cannot access the client's filesystem).
+//
+// Same access pattern as inferProjectFromRootsWithGit — the server must have
+// filesystem access to the root path, which is true for local MCP sessions
+// but not for remote ones.
+func gitBranchFromRoots(roots []mcplib.Root) string {
+	for _, root := range roots {
+		if !strings.HasPrefix(root.URI, "file://") {
+			continue
+		}
+		parsed, err := url.Parse(root.URI)
+		if err != nil {
+			continue
+		}
+		path := filepath.Clean(parsed.Path)
+		if path == "" || path == "/" || path == "." {
+			continue
+		}
+		if branch := gitBranch(path); branch != "" {
+			return branch
+		}
+	}
+	return ""
+}
+
+// gitBranch returns the current branch name at the given path by running
+// `git rev-parse --abbrev-ref HEAD`. Returns "" for detached HEAD, errors,
+// or timeout.
+func gitBranch(path string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	branch := strings.TrimSpace(string(out))
+	// "HEAD" is returned for detached HEAD state — not useful as branch context.
+	if branch == "" || branch == "HEAD" {
+		return ""
+	}
+	return branch
+}
+
 // rootURIs extracts the URI strings from a slice of roots.
 func rootURIs(roots []mcplib.Root) []string {
 	if len(roots) == 0 {
