@@ -110,10 +110,13 @@ func (db *DB) CountConflicts(ctx context.Context, orgID uuid.UUID, filters Confl
 	return count, nil
 }
 
-// GetConflictStatusCounts returns the number of conflicts per resolution status for an org.
+// GetConflictStatusCounts returns the number of conflicts per resolution status for an org,
+// including both individual scored_conflicts counts and deduplicated conflict_group counts.
 // When from/to are non-nil, only conflicts with detected_at in [from, to) are included.
 func (db *DB) GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID, from, to *time.Time) (ConflictStatusCounts, error) {
 	var c ConflictStatusCounts
+
+	// Individual scored_conflicts counts.
 	q := `
 		SELECT count(*),
 		       count(*) FILTER (WHERE status = 'open'),
@@ -135,6 +138,31 @@ func (db *DB) GetConflictStatusCounts(ctx context.Context, orgID uuid.UUID, from
 	if err != nil {
 		return c, fmt.Errorf("storage: conflict status counts: %w", err)
 	}
+
+	// Group-level counts — derived from scored_conflicts since conflict_groups
+	// has no denormalized open_count column.
+	gq := `
+		SELECT count(*),
+		       count(*) FILTER (WHERE EXISTS (
+		           SELECT 1 FROM scored_conflicts sc2
+		           WHERE sc2.group_id = cg.id AND sc2.status = 'open'
+		       ))
+		FROM conflict_groups cg
+		WHERE cg.org_id = $1`
+	gArgs := []any{orgID}
+	if from != nil {
+		gArgs = append(gArgs, *from)
+		gq += fmt.Sprintf(" AND cg.last_detected_at >= $%d", len(gArgs))
+	}
+	if to != nil {
+		gArgs = append(gArgs, *to)
+		gq += fmt.Sprintf(" AND cg.first_detected_at < $%d", len(gArgs))
+	}
+	err = db.pool.QueryRow(ctx, gq, gArgs...).Scan(&c.TotalGroups, &c.OpenGroups)
+	if err != nil {
+		return c, fmt.Errorf("storage: conflict group counts: %w", err)
+	}
+
 	return c, nil
 }
 
@@ -872,6 +900,11 @@ func conflictGroupWhere(f ConflictGroupFilters, argOffset int) (string, []any) {
 	if f.ConflictKind != nil {
 		clause += fmt.Sprintf(" AND cg.conflict_kind = $%d", argOffset)
 		args = append(args, *f.ConflictKind)
+		argOffset++
+	}
+	if f.Project != nil {
+		clause += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM scored_conflicts sc_p WHERE sc_p.group_id = cg.id AND (sc_p.project_a = $%d OR sc_p.project_b = $%d))", argOffset, argOffset)
+		args = append(args, *f.Project)
 		argOffset++ //nolint:ineffassign
 	}
 	return clause, args
