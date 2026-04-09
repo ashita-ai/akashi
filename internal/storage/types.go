@@ -104,11 +104,17 @@ type ConflictFilters struct {
 }
 
 // ConflictStatusCounts holds the number of conflicts in each resolution status.
+// It tracks both individual scored_conflicts rows and deduplicated conflict_groups.
 type ConflictStatusCounts struct {
+	// Individual scored_conflicts counts.
 	Total         int
 	Open          int
 	Resolved      int
 	FalsePositive int
+
+	// Group-level counts (deduplicated by conflict_groups).
+	TotalGroups int
+	OpenGroups  int
 }
 
 // FalsePositiveRate holds the false-positive rate over a rolling 30-day window.
@@ -124,6 +130,9 @@ type ConflictGroupFilters struct {
 	DecisionType *string
 	AgentID      *string
 	ConflictKind *string
+	// Project restricts results to groups that have at least one member
+	// conflict matching the given project (via project_a or project_b).
+	Project *string
 	// Status restricts results to groups that have at least one member
 	// conflict matching this exact status (e.g. "open", "resolved",
 	// "false_positive"). When nil, all groups are returned.

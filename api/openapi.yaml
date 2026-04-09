@@ -5678,24 +5678,30 @@ components:
 
     TraceHealthConflictMetrics:
       type: object
-      required: [total, open, resolved, false_positive, resolved_pct]
+      required: [total_groups, open_groups, total_individual, open_individual, resolved, false_positive, resolved_pct]
       properties:
-        total:
+        total_groups:
           type: integer
-          description: Total number of detected conflicts.
-        open:
+          description: Total number of conflict groups (deduplicated).
+        open_groups:
           type: integer
-          description: Number of unresolved conflicts.
+          description: Number of conflict groups with at least one open conflict.
+        total_individual:
+          type: integer
+          description: Total number of individual scored conflict rows.
+        open_individual:
+          type: integer
+          description: Number of individual unresolved scored conflicts.
         resolved:
           type: integer
-          description: Number of resolved conflicts.
+          description: Number of resolved individual conflicts.
         false_positive:
           type: integer
-          description: Number of conflicts dismissed as false positives.
+          description: Number of individual conflicts dismissed as false positives.
         resolved_pct:
           type: number
           format: double
-          description: Percentage of conflicts that have been resolved (0–100).
+          description: Percentage of individual conflicts that have been resolved (0–100).
 
     DecisionTypeCompleteness:
       type: object

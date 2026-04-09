@@ -76,6 +76,10 @@ func (l *LiteDB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, filter
 		conds = append(conds, "cg.conflict_kind = ?")
 		args = append(args, *filters.ConflictKind)
 	}
+	if filters.Project != nil {
+		conds = append(conds, "EXISTS (SELECT 1 FROM scored_conflicts sc_p WHERE sc_p.group_id = cg.id AND (sc_p.project_a = ? OR sc_p.project_b = ?))")
+		args = append(args, *filters.Project, *filters.Project)
+	}
 
 	where := "WHERE " + strings.Join(conds, " AND ")
 

@@ -54,12 +54,16 @@ type EvidenceMetrics struct {
 }
 
 // ConflictMetrics tracks conflict detection and resolution rates.
+// Group-level counts (TotalGroups, OpenGroups) are the deduplicated signal;
+// individual counts (Total, Open, etc.) reflect raw scored_conflicts rows.
 type ConflictMetrics struct {
-	Total         int     `json:"total"`
-	Open          int     `json:"open"`
-	Resolved      int     `json:"resolved"`
-	FalsePositive int     `json:"false_positive"`
-	ResolvedPct   float64 `json:"resolved_pct"`
+	TotalGroups     int     `json:"total_groups"`
+	OpenGroups      int     `json:"open_groups"`
+	TotalIndividual int     `json:"total_individual"`
+	OpenIndividual  int     `json:"open_individual"`
+	Resolved        int     `json:"resolved"`
+	FalsePositive   int     `json:"false_positive"`
+	ResolvedPct     float64 `json:"resolved_pct"`
 }
 
 // Service computes trace health metrics.
@@ -214,11 +218,13 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 
 	if cc.Total > 0 {
 		m.Conflicts = &ConflictMetrics{
-			Total:         cc.Total,
-			Open:          cc.Open,
-			Resolved:      cc.Resolved,
-			FalsePositive: cc.FalsePositive,
-			ResolvedPct:   resolvedPct,
+			TotalGroups:     cc.TotalGroups,
+			OpenGroups:      cc.OpenGroups,
+			TotalIndividual: cc.Total,
+			OpenIndividual:  cc.Open,
+			Resolved:        cc.Resolved,
+			FalsePositive:   cc.FalsePositive,
+			ResolvedPct:     resolvedPct,
 		}
 	}
 
@@ -247,8 +253,8 @@ func (s *Service) Compute(ctx context.Context, orgID uuid.UUID, from, to *time.T
 		m.CompletenessByType = cbt
 	}
 
-	m.Gaps = computeGaps(qs, cc.Total, cc.Open, os, cd, cal)
-	m.Status = computeStatus(qs, cc.Open)
+	m.Gaps = computeGaps(qs, cc.TotalGroups, cc.OpenGroups, os, cd, cal)
+	m.Status = computeStatus(qs, cc.OpenGroups)
 
 	return m, nil
 }
@@ -282,7 +288,7 @@ func computeGaps(qs storage.DecisionQualityStats, totalConflicts, openConflicts 
 
 	if openConflicts > 0 && totalConflicts > 0 {
 		gaps = append(gaps, fmt.Sprintf(
-			"%d of %d conflicts are unresolved.", openConflicts, totalConflicts))
+			"%d of %d conflict groups are unresolved.", openConflicts, totalConflicts))
 	}
 
 	if len(gaps) < 3 && qs.BelowHalf > 0 {

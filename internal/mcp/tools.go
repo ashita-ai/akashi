@@ -320,8 +320,8 @@ WHEN TO USE: When you want to see what contradictions or disagreements
 exist in the decision trail. Useful for understanding where agents
 disagree and what needs resolution.
 
-Returns conflicts filtered by type, agent, status, severity, or category.
-All statuses are shown by default; pass status to narrow results.`),
+Returns conflict groups filtered by type, agent, status, severity, or category.
+Defaults to groups with open conflicts; pass status="all" to see everything.`),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithIdempotentHintAnnotation(true),
 			mcplib.WithOpenWorldHintAnnotation(false),
@@ -332,7 +332,7 @@ All statuses are shown by default; pass status to narrow results.`),
 				mcplib.Description("Filter by agent involved in the conflict"),
 			),
 			mcplib.WithString("status",
-				mcplib.Description("Filter by status: open, resolved, false_positive. Shows all statuses by default."),
+				mcplib.Description("Filter by status: open (default), resolved, false_positive, or all."),
 			),
 			mcplib.WithString("severity",
 				mcplib.Description("Filter by severity: critical, high, medium, low"),
@@ -1573,12 +1573,16 @@ func (s *Server) handleConflicts(ctx context.Context, request mcplib.CallToolReq
 	limit := request.GetInt("limit", 10)
 	format := request.GetString("format", "concise")
 
-	// Build group filters. By default the MCP tool shows all groups so agents
-	// see both open and resolved conflicts. Agents can pass status="open",
-	// "resolved", etc. to narrow results.
+	// Build group filters. Default to showing only groups with open conflicts,
+	// since that's the actionable signal. Pass status="all" to see everything,
+	// or status="resolved"/"false_positive" to narrow differently.
 	statusFilter := request.GetString("status", "")
 	groupFilters := storage.ConflictGroupFilters{}
-	if statusFilter != "" && statusFilter != "all" {
+	if statusFilter == "" {
+		// Default: only groups with at least one open conflict.
+		open := "open"
+		groupFilters.Status = &open
+	} else if statusFilter != "all" {
 		groupFilters.Status = &statusFilter
 	}
 	if dt := request.GetString("decision_type", ""); dt != "" {
