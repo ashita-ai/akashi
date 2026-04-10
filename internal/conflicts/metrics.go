@@ -14,14 +14,16 @@ import (
 
 // Metrics holds pre-created OpenTelemetry instruments for conflict detection.
 type Metrics struct {
-	detected            metric.Int64Counter
-	resolved            metric.Int64Counter
-	llmCalls            metric.Int64Counter
-	candidatesEvaluated metric.Int64Counter
-	claimLevelWins      metric.Int64Counter
-	workflowFiltered    metric.Int64Counter
-	coordinatedFiltered metric.Int64Counter
-	outcomeSimFiltered  metric.Int64Counter
+	detected               metric.Int64Counter
+	resolved               metric.Int64Counter
+	llmCalls               metric.Int64Counter
+	candidatesEvaluated    metric.Int64Counter
+	claimLevelWins         metric.Int64Counter
+	workflowFiltered       metric.Int64Counter
+	coordinatedFiltered    metric.Int64Counter
+	crossBranchFiltered    metric.Int64Counter
+	selfCorrectionFiltered metric.Int64Counter
+	outcomeSimFiltered     metric.Int64Counter
 
 	confidenceFloorFiltered metric.Int64Counter
 	noopClaimGateFiltered   metric.Int64Counter
@@ -127,6 +129,22 @@ func (s *Scorer) registerMetrics() {
 	if err != nil {
 		s.logger.Warn("conflicts: failed to create akashi.conflicts.coordinated_filtered metric", "error", err)
 		s.metrics.coordinatedFiltered, _ = meter.Int64Counter("akashi.conflicts.coordinated_filtered.fallback")
+	}
+
+	s.metrics.crossBranchFiltered, err = meter.Int64Counter("akashi.conflicts.cross_branch_filtered",
+		metric.WithDescription("Candidate pairs filtered by cross-branch mechanical operation suppression"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.cross_branch_filtered metric", "error", err)
+		s.metrics.crossBranchFiltered, _ = meter.Int64Counter("akashi.conflicts.cross_branch_filtered.fallback")
+	}
+
+	s.metrics.selfCorrectionFiltered, err = meter.Int64Counter("akashi.conflicts.self_correction_filtered",
+		metric.WithDescription("Candidate pairs auto-marked false positive as same-branch same-agent self-corrections"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.self_correction_filtered metric", "error", err)
+		s.metrics.selfCorrectionFiltered, _ = meter.Int64Counter("akashi.conflicts.self_correction_filtered.fallback")
 	}
 
 	s.metrics.outcomeSimFiltered, err = meter.Int64Counter("akashi.conflicts.outcome_sim_filtered",
