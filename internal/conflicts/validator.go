@@ -35,6 +35,8 @@ type ValidateInput struct {
 	SessionIDB        string
 	FullOutcomeA      string // full outcome when OutcomeA is a claim fragment
 	FullOutcomeB      string
+	BranchA           string // git branch from agent_context
+	BranchB           string
 	TopicSimilarity   float64 // decision-level embedding similarity (0–1); 0 means unavailable
 	PrecedentLinked   bool    // true when one decision cites the other via precedent_ref
 	OutcomeSimilarity float64 // outcome embedding similarity (0–1); 0 means unavailable
@@ -130,6 +132,24 @@ func formatPrompt(input ValidateInput) string {
 			"If the two decisions clearly refer to DIFFERENT named systems, classify as UNRELATED — different codebases cannot contradict each other. " +
 			"Only classify as CONTRADICTION if both decisions are clearly about the SAME system and make incompatible claims about it.\n")
 	}
+	// --- Branch context (#692: cross-branch false positives) ---
+	if input.BranchA != "" && input.BranchB != "" {
+		if input.BranchA != input.BranchB {
+			fmt.Fprintf(&b, "DIFFERENT BRANCHES: Decision A was made on branch %q; Decision B was made on branch %q. "+
+				"Decisions on different branches often represent parallel work (e.g. both rebasing, both renumbering migrations) "+
+				"rather than genuine disagreement. Consider whether this is parallel correct work or an actual conflict.\n",
+				input.BranchA, input.BranchB)
+		} else {
+			fmt.Fprintf(&b, "Same branch: %s\n", input.BranchA)
+		}
+	} else if input.BranchA != "" || input.BranchB != "" {
+		branch := input.BranchA
+		if branch == "" {
+			branch = input.BranchB
+		}
+		fmt.Fprintf(&b, "Branch context: one decision was on branch %q, the other has no branch recorded.\n", branch)
+	}
+
 	if input.TaskA != "" {
 		fmt.Fprintf(&b, "Task (%s): %s\n", input.AgentA, compact.Truncate(input.TaskA, 100))
 	}

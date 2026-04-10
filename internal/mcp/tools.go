@@ -181,6 +181,9 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 			mcplib.WithString("project",
 				mcplib.Description(`The repository or project name (e.g. "akashi", "my-langchain-app"). Auto-detected from the git remote when omitted — prefer omitting unless you know the exact canonical name. Do NOT use workspace directory names.`),
 			),
+			mcplib.WithString("git_branch",
+				mcplib.Description(`The git branch you're working on (e.g. "main", "feature/add-caching"). Auto-detected from the working directory when omitted. Used for branch-aware conflict suppression — parallel operations on different branches won't generate spurious conflicts.`),
+			),
 			mcplib.WithString("idempotency_key",
 				mcplib.Description("Optional key for retry safety. Same key + same payload replays the original response. Same key + different payload returns an error. Use a UUID or deterministic identifier per logical operation."),
 			),
@@ -838,6 +841,9 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		if project := inferProjectFromRootsWithGit(roots); project != "" {
 			serverCtx["project"] = project
 		}
+		if branch := gitBranchFromRoots(roots); branch != "" {
+			serverCtx["git_branch"] = branch
+		}
 	}
 
 	// Record the original agent_id when it was enriched from the tool name,
@@ -863,6 +869,9 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	}
 	if r := request.GetString("project", ""); r != "" {
 		clientCtx["project"] = r
+	}
+	if gb := request.GetString("git_branch", ""); gb != "" {
+		clientCtx["git_branch"] = gb
 	}
 
 	// Server-inferred model from MCP tool name. Only set when the agent

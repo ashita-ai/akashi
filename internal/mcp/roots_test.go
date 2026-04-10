@@ -160,6 +160,55 @@ func TestRootURIs(t *testing.T) {
 	}
 }
 
+func TestGitBranch(t *testing.T) {
+	t.Run("returns branch name from git repo", func(t *testing.T) {
+		dir := makeGitRepo(t, "https://github.com/example/my-service.git")
+		// makeGitRepo runs git init which creates a default branch.
+		// We need at least one commit for HEAD to be valid.
+		if out, err := exec.Command("git", "-C", dir, "commit", "--allow-empty", "-m", "init").CombinedOutput(); err != nil { //nolint:gosec
+			t.Skipf("git commit failed: %s", out)
+		}
+		branch := gitBranch(dir)
+		assert.NotEmpty(t, branch, "should detect a branch in a git repo with commits")
+		assert.NotEqual(t, "HEAD", branch, "should not return HEAD for non-detached state")
+	})
+
+	t.Run("non-existent path returns empty", func(t *testing.T) {
+		assert.Empty(t, gitBranch("/tmp/no-such-directory-akashi-test-xyz"))
+	})
+
+	t.Run("non-git directory returns empty", func(t *testing.T) {
+		dir := t.TempDir()
+		assert.Empty(t, gitBranch(dir))
+	})
+}
+
+func TestGitBranchFromRoots(t *testing.T) {
+	t.Run("empty roots returns empty", func(t *testing.T) {
+		assert.Empty(t, gitBranchFromRoots(nil))
+	})
+
+	t.Run("git repo returns branch", func(t *testing.T) {
+		dir := makeGitRepo(t, "https://github.com/example/my-service.git")
+		if out, err := exec.Command("git", "-C", dir, "commit", "--allow-empty", "-m", "init").CombinedOutput(); err != nil { //nolint:gosec
+			t.Skipf("git commit failed: %s", out)
+		}
+		roots := []mcplib.Root{{URI: "file://" + dir}}
+		branch := gitBranchFromRoots(roots)
+		assert.NotEmpty(t, branch, "should detect branch from roots")
+	})
+
+	t.Run("non-file URI skipped", func(t *testing.T) {
+		roots := []mcplib.Root{{URI: "https://example.com/repo"}}
+		assert.Empty(t, gitBranchFromRoots(roots))
+	})
+
+	t.Run("non-git path returns empty", func(t *testing.T) {
+		roots := []mcplib.Root{{URI: "file:///tmp/no-such-akashi-test"}}
+		assert.Empty(t, gitBranchFromRoots(roots))
+	})
+}
+
 func TestRootsCache(t *testing.T) {
 	cache := newRootsCache()
 

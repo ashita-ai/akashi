@@ -615,6 +615,32 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			continue
 		}
 
+		// Cross-branch mechanical operation filter: suppress conflict when two
+		// decisions on different branches both describe mechanical operations
+		// (migration renumbering, rebase conflict resolution). These are
+		// parallel correct work, not disagreement. See issue #692.
+		if isCrossBranchMechanical(d, sc.cand) {
+			s.metrics.crossBranchFiltered.Add(ctx, 1)
+			s.logger.Debug("conflict scorer: cross-branch mechanical filter suppressed pair",
+				"decision_a", decisionID, "decision_b", sc.cand.ID,
+				"branch_a", nestedContextString(d.AgentContext, "git_branch"),
+				"branch_b", nestedContextString(sc.cand.AgentContext, "git_branch"))
+			continue
+		}
+
+		// Same-branch self-correction filter: when the same agent revises
+		// their own decision on the same branch, this is iterative refinement
+		// rather than a self-contradiction. Auto-suppress before LLM call.
+		// See issue #692 §3.
+		if isSameBranchSelfCorrection(d, sc.cand) {
+			s.metrics.selfCorrectionFiltered.Add(ctx, 1)
+			s.logger.Debug("conflict scorer: same-branch self-correction suppressed pair",
+				"decision_a", decisionID, "decision_b", sc.cand.ID,
+				"agent_id", d.AgentID,
+				"branch", nestedContextString(d.AgentContext, "git_branch"))
+			continue
+		}
+
 		// Outcome similarity floor: when outcome embeddings are nearly
 		// identical AND the pair did not qualify for the directToScorer
 		// bypass, suppress as complementary. This catches coordinated
@@ -738,6 +764,8 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				SessionIDB:        uuidString(cand.SessionID),
 				FullOutcomeA:      d.Outcome,
 				FullOutcomeB:      cand.Outcome,
+				BranchA:           nestedContextString(d.AgentContext, "git_branch"),
+				BranchB:           nestedContextString(cand.AgentContext, "git_branch"),
 				TopicSimilarity:   sc.topicSim,
 				PrecedentLinked:   isPrecedentLinked(d, cand),
 				OutcomeSimilarity: sc.outcomeSim,
@@ -853,6 +881,21 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			EarliestPossibleAt: &earliestAt,
 			ProjectA:           d.Project,
 			ProjectB:           cand.Project,
+		}
+
+		// Annotate explanation with branch context when both branches are
+		// known. This ensures the stored conflict record surfaces branch
+		// information even when viewing conflicts outside the scorer context.
+		branchA := nestedContextString(d.AgentContext, "git_branch")
+		branchB := nestedContextString(cand.AgentContext, "git_branch")
+		if branchA != "" && branchB != "" && branchA != branchB {
+			note := fmt.Sprintf(" [Branch context: Decision A on %q, Decision B on %q — consider whether this represents parallel work.]", branchA, branchB)
+			if c.Explanation != nil {
+				annotated := *c.Explanation + note
+				c.Explanation = &annotated
+			} else {
+				c.Explanation = &note
+			}
 		}
 
 		// Topic-aware group assignment: find or create a group whose
@@ -1303,6 +1346,77 @@ func isCoordinatedChange(d, cand model.Decision) bool {
 	}
 
 	return false
+}
+
+// mechanicalKeywords are outcome substrings that indicate a mechanical/routine
+// operation (migration renumbering, rebase conflict resolution, version bumps)
+// rather than a genuine design or architecture decision.
+var mechanicalKeywords = []string{
+	"renumber",
+	"renumbering",
+	"renumbered",
+	"migration",
+	"rebase",
+	"rebasing",
+	"rebased",
+	"merge conflict",
+	"merge conflicts",
+	"merged origin/main",
+	"merged main",
+	"version bump",
+	"bumped version",
+}
+
+// isMechanicalOperation returns true when the outcome text describes a routine
+// mechanical operation like migration renumbering or rebase conflict resolution.
+// These operations produce semantically similar outcomes across branches but
+// represent parallel correct work, not disagreement.
+func isMechanicalOperation(outcome string) bool {
+	lower := strings.ToLower(outcome)
+	for _, kw := range mechanicalKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// isCrossBranchMechanical returns true when two decisions are on different git
+// branches and both describe mechanical operations (e.g. migration renumbering
+// during a rebase). These are parallel correct work whose resolution is
+// determined by merge order, not a genuine conflict.
+//
+// Requires both decisions to have branch metadata in agent_context and for the
+// branches to differ. Same-branch or missing-branch pairs are not affected.
+func isCrossBranchMechanical(d, cand model.Decision) bool {
+	branchA := nestedContextString(d.AgentContext, "git_branch")
+	branchB := nestedContextString(cand.AgentContext, "git_branch")
+
+	if branchA == "" || branchB == "" || branchA == branchB {
+		return false
+	}
+
+	return isMechanicalOperation(d.Outcome) && isMechanicalOperation(cand.Outcome)
+}
+
+// isSameBranchSelfCorrection returns true when the same agent made two
+// sequential decisions on the same branch — a self-correction pattern, not a
+// contradiction. The later decision supersedes the earlier one as part of
+// iterative work on the same branch.
+//
+// Requires both decisions to have branch metadata, be from the same agent,
+// and be on the same branch. The temporal order doesn't matter — the fact
+// that the same agent revised their own decision on the same branch is
+// sufficient to classify this as a self-correction.
+func isSameBranchSelfCorrection(d, cand model.Decision) bool {
+	if d.AgentID != cand.AgentID {
+		return false
+	}
+
+	branchA := nestedContextString(d.AgentContext, "git_branch")
+	branchB := nestedContextString(cand.AgentContext, "git_branch")
+
+	return branchA != "" && branchB != "" && branchA == branchB
 }
 
 // isPrecedentLinked returns true if either decision cites the other via
