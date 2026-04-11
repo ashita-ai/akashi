@@ -121,20 +121,6 @@ func (tc *TestContainer) NewTestDB(ctx context.Context, logger *slog.Logger) (*s
 	return db, nil
 }
 
-// NewTestDBWithNotify creates a storage.DB with both pool and notify DSN
-// pointing to this container and runs all migrations. The dedicated notify
-// connection enables testing LISTEN/NOTIFY, WaitForNotification, and reconnect.
-func (tc *TestContainer) NewTestDBWithNotify(ctx context.Context, logger *slog.Logger) (*storage.DB, error) {
-	db, err := storage.New(ctx, tc.DSN, tc.DSN, logger, storage.PoolOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("testutil: create DB with notify: %w", err)
-	}
-	if err := db.RunMigrations(ctx, migrations.FS); err != nil {
-		return nil, fmt.Errorf("testutil: run migrations (notify): %w", err)
-	}
-	return db, nil
-}
-
 // Terminate stops and removes the container.
 func (tc *TestContainer) Terminate() {
 	_ = tc.Container.Terminate(context.Background())
