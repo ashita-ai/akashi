@@ -956,19 +956,6 @@ func TestHandleHookPreToolUse_EditAfterCheck(t *testing.T) {
 	assert.True(t, resp.SuppressOutput)
 }
 
-// TestHandlePostCommit_AutoTraceResponseShape exercises the autoTrace=true
-// branch in handlePostCommit by verifying the HTTP response shape without
-// waiting for the background goroutine (which would need a real decisionSvc).
-// We set a custom recover wrapper on the goroutine via a channel check.
-func TestHandlePostCommit_AutoTraceResponseShape(t *testing.T) {
-	// handlePostCommit when autoTrace=true writes the response synchronously
-	// before launching autoTraceCommit in a goroutine. We can verify the
-	// response shape; the goroutine will panic (nil decisionSvc) but recover
-	// happens outside our concern for this test. Skip if -race because the
-	// panic goroutine may cause flakes.
-	t.Skip("skipped: autoTraceCommit requires a real decisionSvc to avoid nil panic in goroutine")
-}
-
 // TestHandleHookSessionStart_ValidBody exercises HandleHookSessionStart
 // with a valid JSON body. Since buildSessionContext calls h.db which panics
 // with nil, we just test the invalid JSON path and the response shape.

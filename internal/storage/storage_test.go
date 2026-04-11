@@ -11398,3 +11398,832 @@ func TestGetDecisionLineage_NotFound(t *testing.T) {
 	_, err := testDB.GetDecisionLineage(ctx, uuid.New(), uuid.New(), 20)
 	require.Error(t, err, "querying a nonexistent decision should return an error")
 }
+
+// ---------------------------------------------------------------------------
+// Tests: GetConflictResolution
+// ---------------------------------------------------------------------------
+
+func TestGetConflictResolution_ResolvedConflict(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "gcr-a-" + suffix
+	agentB := "gcr-b-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: "gcr_test",
+		Outcome: "use gRPC", Confidence: 0.8,
+	})
+	require.NoError(t, err)
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: "gcr_test",
+		Outcome: "use REST", Confidence: 0.7,
+	})
+	require.NoError(t, err)
+
+	topicSim := 0.9
+	outcomeDiv := 0.85
+	sig := topicSim * outcomeDiv
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "gcr_test", DecisionTypeB: "gcr_test",
+		OutcomeA: "use gRPC", OutcomeB: "use REST",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+
+	// Before resolution, GetConflictResolution should return nil.
+	res, err := testDB.GetConflictResolution(ctx, conflictID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Nil(t, res, "unresolved conflict should return nil")
+
+	// Resolve with dA as winner.
+	resNote := "gRPC chosen for performance"
+	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
+		"resolved", "reviewer", &resNote, &dA.ID, nil,
+		storage.MutationAuditEntry{
+			RequestID: "gcr-" + suffix, OrgID: uuid.Nil,
+			ActorAgentID: "reviewer", ActorRole: "admin",
+			Operation: "resolve_conflict", ResourceType: "conflict",
+		})
+	require.NoError(t, err)
+
+	// Now GetConflictResolution should return the resolution.
+	res, err = testDB.GetConflictResolution(ctx, conflictID, uuid.Nil)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+
+	assert.Equal(t, conflictID, res.ID)
+	assert.Equal(t, "gcr_test", res.DecisionType)
+	assert.Equal(t, dA.ID, res.WinningDecisionID)
+	assert.Equal(t, "use gRPC", res.WinningOutcome)
+	assert.Equal(t, "use REST", res.LosingOutcome)
+	// Agent slot mapping depends on UUID byte ordering vs string ordering
+	// (InsertScoredConflict normalizes them independently for group lookup).
+	// Verify both agents are present without assuming which is winner/loser.
+	agents := []string{res.WinningAgent, res.LosingAgent}
+	assert.Contains(t, agents, agentA)
+	assert.Contains(t, agents, agentB)
+	require.NotNil(t, res.ResolutionNote)
+	assert.Equal(t, "gRPC chosen for performance", *res.ResolutionNote)
+	assert.False(t, res.ResolvedAt.IsZero())
+}
+
+func TestGetConflictResolution_WinnerIsDecisionB(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "gcr-bwin-a-" + suffix
+	agentB := "gcr-bwin-b-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: "gcr_bwin",
+		Outcome: "outcome_alpha", Confidence: 0.6,
+	})
+	require.NoError(t, err)
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: "gcr_bwin",
+		Outcome: "outcome_beta", Confidence: 0.9,
+	})
+	require.NoError(t, err)
+
+	topicSim := 0.88
+	outcomeDiv := 0.82
+	sig := topicSim * outcomeDiv
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "gcr_bwin", DecisionTypeB: "gcr_bwin",
+		OutcomeA: "outcome_alpha", OutcomeB: "outcome_beta",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+
+	// Resolve with dB as winner — tests the CASE expression reversal.
+	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
+		"resolved", "lead", nil, &dB.ID, nil,
+		storage.MutationAuditEntry{
+			RequestID: "gcr-bwin-" + suffix, OrgID: uuid.Nil,
+			ActorAgentID: "lead", ActorRole: "admin",
+			Operation: "resolve_conflict", ResourceType: "conflict",
+		})
+	require.NoError(t, err)
+
+	res, err := testDB.GetConflictResolution(ctx, conflictID, uuid.Nil)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+
+	assert.Equal(t, dB.ID, res.WinningDecisionID)
+	// InsertScoredConflict normalizes by UUID order (bytes.Compare), so the
+	// stored slot positions may differ from the caller's A/B designation.
+	// Verify the outcome mapping is consistent: winning outcome matches dB,
+	// losing outcome matches dA.
+	assert.Equal(t, "outcome_beta", res.WinningOutcome)
+	assert.Equal(t, "outcome_alpha", res.LosingOutcome)
+	// Verify agents are present (the exact mapping depends on UUID ordering
+	// which swaps all fields as a unit, so just check both agents appear).
+	agents := []string{res.WinningAgent, res.LosingAgent}
+	assert.Contains(t, agents, agentA)
+	assert.Contains(t, agents, agentB)
+	assert.Nil(t, res.Explanation, "no explanation was set")
+	assert.Nil(t, res.ResolutionNote, "no resolution note was set")
+}
+
+func TestGetConflictResolution_NotFound(t *testing.T) {
+	ctx := context.Background()
+
+	res, err := testDB.GetConflictResolution(ctx, uuid.New(), uuid.Nil)
+	require.NoError(t, err)
+	assert.Nil(t, res, "nonexistent conflict should return nil, not error")
+}
+
+func TestGetConflictResolution_WrongOrg(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "gcr-org-a-" + suffix
+	agentB := "gcr-org-b-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: "gcr_org",
+		Outcome: "x", Confidence: 0.5,
+	})
+	require.NoError(t, err)
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: "gcr_org",
+		Outcome: "y", Confidence: 0.5,
+	})
+	require.NoError(t, err)
+
+	topicSim := 0.9
+	outcomeDiv := 0.8
+	sig := 0.72
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "gcr_org", DecisionTypeB: "gcr_org",
+		OutcomeA: "x", OutcomeB: "y",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+
+	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
+		"resolved", "admin", nil, &dA.ID, nil,
+		storage.MutationAuditEntry{
+			RequestID: "gcr-org-" + suffix, OrgID: uuid.Nil,
+			ActorAgentID: "admin", ActorRole: "admin",
+			Operation: "resolve_conflict", ResourceType: "conflict",
+		})
+	require.NoError(t, err)
+
+	// Query with a different org — should not find it.
+	res, err := testDB.GetConflictResolution(ctx, conflictID, uuid.New())
+	require.NoError(t, err)
+	assert.Nil(t, res, "wrong org_id should not return the resolution")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: HasGroupParticipation
+// ---------------------------------------------------------------------------
+
+func TestHasGroupParticipation_BothPresent(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "hgp-a-" + suffix
+	agentB := "hgp-b-" + suffix
+	agentC := "hgp-c-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+	runC, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentC})
+	require.NoError(t, err)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: "hgp_test",
+		Outcome: "approach_a", Confidence: 0.8,
+	})
+	require.NoError(t, err)
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: "hgp_test",
+		Outcome: "approach_b", Confidence: 0.7,
+	})
+	require.NoError(t, err)
+	dC, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runC.ID, AgentID: agentC, DecisionType: "hgp_test",
+		Outcome: "approach_c", Confidence: 0.6,
+	})
+	require.NoError(t, err)
+
+	// Create a group manually.
+	var groupID uuid.UUID
+	err = testDB.Pool().QueryRow(ctx,
+		`INSERT INTO conflict_groups (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic)
+		 VALUES ($1, $2, $3, 'cross_agent', 'hgp_test', 'testing')
+		 RETURNING id`,
+		uuid.Nil, agentA, agentB,
+	).Scan(&groupID)
+	require.NoError(t, err)
+
+	// Insert conflict A↔B in the group.
+	topicSim := 0.9
+	outcomeDiv := 0.85
+	sig := topicSim * outcomeDiv
+	_, err = testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "hgp_test", DecisionTypeB: "hgp_test",
+		OutcomeA: "approach_a", OutcomeB: "approach_b",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text", GroupID: &groupID,
+	})
+	require.NoError(t, err)
+
+	// Insert conflict A↔C in the same group.
+	_, err = testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dC.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentC,
+		DecisionTypeA: "hgp_test", DecisionTypeB: "hgp_test",
+		OutcomeA: "approach_a", OutcomeB: "approach_c",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text", GroupID: &groupID,
+	})
+	require.NoError(t, err)
+
+	// B and C both participate in the group (B via A↔B, C via A↔C).
+	has, err := testDB.HasGroupParticipation(ctx, uuid.Nil, groupID, dB.ID, dC.ID)
+	require.NoError(t, err)
+	assert.True(t, has, "both B and C participate in group via separate conflicts")
+
+	// A and B also both participate.
+	has, err = testDB.HasGroupParticipation(ctx, uuid.Nil, groupID, dA.ID, dB.ID)
+	require.NoError(t, err)
+	assert.True(t, has, "A and B directly participate in the group")
+}
+
+func TestHasGroupParticipation_OnlyOnePresent(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "hgp-one-a-" + suffix
+	agentB := "hgp-one-b-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: "hgp_one",
+		Outcome: "x", Confidence: 0.5,
+	})
+	require.NoError(t, err)
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: "hgp_one",
+		Outcome: "y", Confidence: 0.5,
+	})
+	require.NoError(t, err)
+
+	// Create a group with A↔B conflict.
+	var groupID uuid.UUID
+	err = testDB.Pool().QueryRow(ctx,
+		`INSERT INTO conflict_groups (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic)
+		 VALUES ($1, $2, $3, 'cross_agent', 'hgp_one', 'test')
+		 RETURNING id`,
+		uuid.Nil, agentA, agentB,
+	).Scan(&groupID)
+	require.NoError(t, err)
+
+	topicSim := 0.9
+	outcomeDiv := 0.85
+	sig := topicSim * outcomeDiv
+	_, err = testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "hgp_one", DecisionTypeB: "hgp_one",
+		OutcomeA: "x", OutcomeB: "y",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text", GroupID: &groupID,
+	})
+	require.NoError(t, err)
+
+	// Query with A and an outsider decision not in any conflict in the group.
+	outsider := uuid.New()
+	has, err := testDB.HasGroupParticipation(ctx, uuid.Nil, groupID, dA.ID, outsider)
+	require.NoError(t, err)
+	assert.False(t, has, "outsider decision does not participate in group")
+}
+
+func TestHasGroupParticipation_NeitherPresent(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	// Create an empty group (no conflicts inserted).
+	var groupID uuid.UUID
+	err := testDB.Pool().QueryRow(ctx,
+		`INSERT INTO conflict_groups (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic)
+		 VALUES ($1, $2, $3, 'cross_agent', 'hgp_none_`+suffix+`', 'test')
+		 RETURNING id`,
+		uuid.Nil, "hgp-none-a-"+suffix, "hgp-none-b-"+suffix,
+	).Scan(&groupID)
+	require.NoError(t, err)
+
+	has, err := testDB.HasGroupParticipation(ctx, uuid.Nil, groupID, uuid.New(), uuid.New())
+	require.NoError(t, err)
+	assert.False(t, has, "no decisions in group means no participation")
+}
+
+func TestHasGroupParticipation_WrongOrg(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "hgp-worg-a-" + suffix
+	agentB := "hgp-worg-b-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: "hgp_worg",
+		Outcome: "a", Confidence: 0.5,
+	})
+	require.NoError(t, err)
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: "hgp_worg",
+		Outcome: "b", Confidence: 0.5,
+	})
+	require.NoError(t, err)
+
+	var groupID uuid.UUID
+	err = testDB.Pool().QueryRow(ctx,
+		`INSERT INTO conflict_groups (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic)
+		 VALUES ($1, $2, $3, 'cross_agent', 'hgp_worg', 'test')
+		 RETURNING id`,
+		uuid.Nil, agentA, agentB,
+	).Scan(&groupID)
+	require.NoError(t, err)
+
+	topicSim := 0.9
+	outcomeDiv := 0.85
+	sig := topicSim * outcomeDiv
+	_, err = testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "hgp_worg", DecisionTypeB: "hgp_worg",
+		OutcomeA: "a", OutcomeB: "b",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text", GroupID: &groupID,
+	})
+	require.NoError(t, err)
+
+	// Wrong org should not see the participation.
+	has, err := testDB.HasGroupParticipation(ctx, uuid.New(), groupID, dA.ID, dB.ID)
+	require.NoError(t, err)
+	assert.False(t, has, "wrong org should not see participation")
+}
+
+func TestHasGroupParticipation_IgnoresFalsePositives(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "hgp-fp-a-" + suffix
+	agentB := "hgp-fp-b-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: "hgp_fp",
+		Outcome: "a", Confidence: 0.5,
+	})
+	require.NoError(t, err)
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: "hgp_fp",
+		Outcome: "b", Confidence: 0.5,
+	})
+	require.NoError(t, err)
+
+	var groupID uuid.UUID
+	err = testDB.Pool().QueryRow(ctx,
+		`INSERT INTO conflict_groups (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic)
+		 VALUES ($1, $2, $3, 'cross_agent', 'hgp_fp', 'test')
+		 RETURNING id`,
+		uuid.Nil, agentA, agentB,
+	).Scan(&groupID)
+	require.NoError(t, err)
+
+	topicSim := 0.9
+	outcomeDiv := 0.85
+	sig := topicSim * outcomeDiv
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "hgp_fp", DecisionTypeB: "hgp_fp",
+		OutcomeA: "a", OutcomeB: "b",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text", GroupID: &groupID,
+	})
+	require.NoError(t, err)
+
+	// Mark as false_positive — HasGroupParticipation only counts open/resolved.
+	fpLabel := "unrelated_false_positive"
+	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
+		"false_positive", "admin", nil, nil, &fpLabel,
+		storage.MutationAuditEntry{
+			RequestID: "hgp-fp-" + suffix, OrgID: uuid.Nil,
+			ActorAgentID: "admin", ActorRole: "admin",
+			Operation: "false_positive_conflict", ResourceType: "conflict",
+		})
+	require.NoError(t, err)
+
+	has, err := testDB.HasGroupParticipation(ctx, uuid.Nil, groupID, dA.ID, dB.ID)
+	require.NoError(t, err)
+	assert.False(t, has, "false_positive conflicts should not count as participation")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: IncrementGroupTimesReopened
+// ---------------------------------------------------------------------------
+
+func TestIncrementGroupTimesReopened(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	var groupID uuid.UUID
+	err := testDB.Pool().QueryRow(ctx,
+		`INSERT INTO conflict_groups (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic)
+		 VALUES ($1, $2, $3, 'cross_agent', 'igtr_`+suffix+`', 'test')
+		 RETURNING id`,
+		uuid.Nil, "igtr-a-"+suffix, "igtr-b-"+suffix,
+	).Scan(&groupID)
+	require.NoError(t, err)
+
+	// Verify initial value is 0.
+	var timesReopened int
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT times_reopened FROM conflict_groups WHERE id = $1`, groupID,
+	).Scan(&timesReopened)
+	require.NoError(t, err)
+	assert.Equal(t, 0, timesReopened, "initial times_reopened should be 0")
+
+	// Increment once.
+	err = testDB.IncrementGroupTimesReopened(ctx, groupID, uuid.Nil)
+	require.NoError(t, err)
+
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT times_reopened FROM conflict_groups WHERE id = $1`, groupID,
+	).Scan(&timesReopened)
+	require.NoError(t, err)
+	assert.Equal(t, 1, timesReopened)
+
+	// Increment again — should be atomic and additive.
+	err = testDB.IncrementGroupTimesReopened(ctx, groupID, uuid.Nil)
+	require.NoError(t, err)
+
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT times_reopened FROM conflict_groups WHERE id = $1`, groupID,
+	).Scan(&timesReopened)
+	require.NoError(t, err)
+	assert.Equal(t, 2, timesReopened)
+}
+
+func TestIncrementGroupTimesReopened_WrongOrg(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	var groupID uuid.UUID
+	err := testDB.Pool().QueryRow(ctx,
+		`INSERT INTO conflict_groups (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic)
+		 VALUES ($1, $2, $3, 'cross_agent', 'igtr_worg_`+suffix+`', 'test')
+		 RETURNING id`,
+		uuid.Nil, "igtr-worg-a-"+suffix, "igtr-worg-b-"+suffix,
+	).Scan(&groupID)
+	require.NoError(t, err)
+
+	// Increment with wrong org — should not error but should not change anything.
+	err = testDB.IncrementGroupTimesReopened(ctx, groupID, uuid.New())
+	require.NoError(t, err)
+
+	var timesReopened int
+	err = testDB.Pool().QueryRow(ctx,
+		`SELECT times_reopened FROM conflict_groups WHERE id = $1`, groupID,
+	).Scan(&timesReopened)
+	require.NoError(t, err)
+	assert.Equal(t, 0, timesReopened, "wrong org should not increment counter")
+}
+
+// ---------------------------------------------------------------------------
+// Tests: FindReopenedResolution
+// ---------------------------------------------------------------------------
+
+// makeEmbeddingAtDim creates a 1024-dim vector with `value` at dimension `dim`
+// and zeros elsewhere. Two vectors at the same dimension have cosine
+// similarity = 1.0; vectors at different dimensions are orthogonal (sim = 0.0).
+// Use different dims across tests to prevent cross-test interference in the
+// shared integration database.
+func makeEmbeddingAtDim(dim int, value float32) pgvector.Vector {
+	v := make([]float32, 1024)
+	v[dim] = value
+	return pgvector.NewVector(v)
+}
+
+func TestFindReopenedResolution_MatchFound(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "frr-a-" + suffix
+	agentB := "frr-b-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	// Create the original conflict pair with embeddings.
+	// Use dims 10/11 — unique to this test to avoid cross-test interference.
+	embWinner := makeEmbeddingAtDim(10, 1.0)
+	embLoser := makeEmbeddingAtDim(11, 1.0)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: "frr_test",
+		Outcome: "use Redis", Confidence: 0.8,
+	})
+	require.NoError(t, err)
+	err = testDB.BackfillOutcomeEmbedding(ctx, dA.ID, uuid.Nil, embWinner)
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: "frr_test",
+		Outcome: "use Memcached", Confidence: 0.7,
+	})
+	require.NoError(t, err)
+	err = testDB.BackfillOutcomeEmbedding(ctx, dB.ID, uuid.Nil, embLoser)
+	require.NoError(t, err)
+
+	// Insert and resolve the original conflict with dA as winner.
+	topicSim := 0.9
+	outcomeDiv := 0.85
+	sig := topicSim * outcomeDiv
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "frr_test", DecisionTypeB: "frr_test",
+		OutcomeA: "use Redis", OutcomeB: "use Memcached",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+
+	resNote := "Redis wins"
+	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
+		"resolved", "reviewer", &resNote, &dA.ID, nil,
+		storage.MutationAuditEntry{
+			RequestID: "frr-" + suffix, OrgID: uuid.Nil,
+			ActorAgentID: "reviewer", ActorRole: "admin",
+			Operation: "resolve_conflict", ResourceType: "conflict",
+		})
+	require.NoError(t, err)
+
+	// Create NEW decisions with embeddings in the same directions.
+	agentC := "frr-c-" + suffix
+	agentD := "frr-d-" + suffix
+	runC, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentC})
+	require.NoError(t, err)
+	runD, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentD})
+	require.NoError(t, err)
+
+	// newEmbA aligns with the winner (dim 10), newEmbB aligns with the loser (dim 11).
+	newEmbA := makeEmbeddingAtDim(10, 0.95)
+	newEmbB := makeEmbeddingAtDim(11, 0.95)
+
+	dC, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runC.ID, AgentID: agentC, DecisionType: "frr_test",
+		Outcome: "use Redis again", Confidence: 0.9,
+	})
+	require.NoError(t, err)
+
+	dD, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runD.ID, AgentID: agentD, DecisionType: "frr_test",
+		Outcome: "use Memcached again", Confidence: 0.6,
+	})
+	require.NoError(t, err)
+
+	// FindReopenedResolution should find the prior resolution.
+	match, err := testDB.FindReopenedResolution(ctx, uuid.Nil,
+		dC.ID, dD.ID, newEmbA, newEmbB, 0.80)
+	require.NoError(t, err)
+	require.NotNil(t, match, "should find the prior resolution that is contradicted")
+
+	assert.Equal(t, conflictID, match.ResolutionID)
+	assert.Equal(t, "use Redis", match.WinningOutcome)
+	// WinningAgent may not match the decision's original agent due to
+	// independent string normalization of agent slots in InsertScoredConflict.
+	assert.Contains(t, []string{agentA, agentB}, match.WinningAgent,
+		"winning agent should be one of the original agents")
+	require.NotNil(t, match.ResolutionNote)
+	assert.Equal(t, "Redis wins", *match.ResolutionNote)
+	assert.Greater(t, match.OutcomeSimilarity, 0.80)
+}
+
+func TestFindReopenedResolution_NoMatch_BelowThreshold(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "frr-lo-a-" + suffix
+	agentB := "frr-lo-b-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	// Use dims 20/21 — unique to this test.
+	embA := makeEmbeddingAtDim(20, 1.0)
+	embB := makeEmbeddingAtDim(21, 1.0)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: "frr_lo",
+		Outcome: "approach_a", Confidence: 0.8,
+	})
+	require.NoError(t, err)
+	err = testDB.BackfillOutcomeEmbedding(ctx, dA.ID, uuid.Nil, embA)
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: "frr_lo",
+		Outcome: "approach_b", Confidence: 0.7,
+	})
+	require.NoError(t, err)
+	err = testDB.BackfillOutcomeEmbedding(ctx, dB.ID, uuid.Nil, embB)
+	require.NoError(t, err)
+
+	topicSim := 0.9
+	outcomeDiv := 0.85
+	sig := topicSim * outcomeDiv
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "frr_lo", DecisionTypeB: "frr_lo",
+		OutcomeA: "approach_a", OutcomeB: "approach_b",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+
+	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
+		"resolved", "admin", nil, &dA.ID, nil,
+		storage.MutationAuditEntry{
+			RequestID: "frr-lo-" + suffix, OrgID: uuid.Nil,
+			ActorAgentID: "admin", ActorRole: "admin",
+			Operation: "resolve_conflict", ResourceType: "conflict",
+		})
+	require.NoError(t, err)
+
+	// Both new embeddings point in the same direction (dim 20) — no cross-match
+	// because there's no loser-aligned embedding.
+	sameDir := makeEmbeddingAtDim(20, 1.0)
+	match, err := testDB.FindReopenedResolution(ctx, uuid.Nil,
+		uuid.New(), uuid.New(), sameDir, sameDir, 0.99)
+	require.NoError(t, err)
+	assert.Nil(t, match, "embeddings that don't cross-match should return nil")
+}
+
+func TestFindReopenedResolution_NoMatch_UnresolvedConflict(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "frr-unres-a-" + suffix
+	agentB := "frr-unres-b-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	// Use dims 30/31 — unique to this test.
+	embA := makeEmbeddingAtDim(30, 1.0)
+	embB := makeEmbeddingAtDim(31, 1.0)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: "frr_unres",
+		Outcome: "x", Confidence: 0.8,
+	})
+	require.NoError(t, err)
+	err = testDB.BackfillOutcomeEmbedding(ctx, dA.ID, uuid.Nil, embA)
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: "frr_unres",
+		Outcome: "y", Confidence: 0.7,
+	})
+	require.NoError(t, err)
+	err = testDB.BackfillOutcomeEmbedding(ctx, dB.ID, uuid.Nil, embB)
+	require.NoError(t, err)
+
+	// Insert conflict but do NOT resolve it.
+	topicSim := 0.9
+	outcomeDiv := 0.85
+	sig := topicSim * outcomeDiv
+	_, err = testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "frr_unres", DecisionTypeB: "frr_unres",
+		OutcomeA: "x", OutcomeB: "y",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+
+	// Even with matching embeddings, unresolved conflicts should not match.
+	match, err := testDB.FindReopenedResolution(ctx, uuid.Nil,
+		uuid.New(), uuid.New(), embA, embB, 0.50)
+	require.NoError(t, err)
+	assert.Nil(t, match, "unresolved conflict should not be found")
+}
+
+func TestFindReopenedResolution_ExcludesSameDecisions(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "frr-self-a-" + suffix
+	agentB := "frr-self-b-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	// Use dims 40/41 — unique to this test.
+	embA := makeEmbeddingAtDim(40, 1.0)
+	embB := makeEmbeddingAtDim(41, 1.0)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: "frr_self",
+		Outcome: "x", Confidence: 0.8,
+	})
+	require.NoError(t, err)
+	err = testDB.BackfillOutcomeEmbedding(ctx, dA.ID, uuid.Nil, embA)
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: "frr_self",
+		Outcome: "y", Confidence: 0.7,
+	})
+	require.NoError(t, err)
+	err = testDB.BackfillOutcomeEmbedding(ctx, dB.ID, uuid.Nil, embB)
+	require.NoError(t, err)
+
+	topicSim := 0.9
+	outcomeDiv := 0.85
+	sig := topicSim * outcomeDiv
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "frr_self", DecisionTypeB: "frr_self",
+		OutcomeA: "x", OutcomeB: "y",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+
+	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
+		"resolved", "admin", nil, &dA.ID, nil,
+		storage.MutationAuditEntry{
+			RequestID: "frr-self-" + suffix, OrgID: uuid.Nil,
+			ActorAgentID: "admin", ActorRole: "admin",
+			Operation: "resolve_conflict", ResourceType: "conflict",
+		})
+	require.NoError(t, err)
+
+	// Query with the SAME decision IDs as the resolved conflict — should be
+	// excluded to prevent a conflict from "reopening" itself.
+	match, err := testDB.FindReopenedResolution(ctx, uuid.Nil,
+		dA.ID, dB.ID, embA, embB, 0.50)
+	require.NoError(t, err)
+	assert.Nil(t, match, "should exclude conflicts involving the same decisions")
+}
