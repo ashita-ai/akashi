@@ -17,6 +17,7 @@ All configuration is via environment variables. See [`.env.example`](../.env.exa
 | `AKASHI_READ_TIMEOUT` | `30s` | HTTP read timeout |
 | `AKASHI_WRITE_TIMEOUT` | `30s` | HTTP write timeout |
 | `AKASHI_MAX_REQUEST_BODY_BYTES` | `1048576` | Max request body size (1 MB) |
+| `AKASHI_EXPORT_PAGE_SIZE` | `100` | Batch size for `GET /v1/export/decisions` NDJSON streaming (keyset pagination). Larger values reduce round-trips on large exports; smaller values lower per-page memory. Must be between 1 and 10000 |
 | `AKASHI_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `AKASHI_CORS_ALLOWED_ORIGINS` | _(empty)_ | Comma-separated allowed CORS origins. Empty = deny cross-origin browser requests unless same-origin |
 

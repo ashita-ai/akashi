@@ -51,7 +51,12 @@ func (h *Handlers) HandleExportDecisions(w http.ResponseWriter, r *http.Request)
 	// Stream in pages using keyset (cursor-based) pagination to avoid O(offset)
 	// degradation. Each page uses (valid_from, id) > (last_seen) instead of OFFSET,
 	// so every page is O(1) regardless of position in the result set.
-	const pageSize = 100
+	//
+	// Page size is operator-tunable via AKASHI_EXPORT_PAGE_SIZE. Larger pages
+	// reduce round-trips at the cost of per-page memory and single-query latency;
+	// smaller pages suit memory-constrained deployments. Bounds (1–10000) are
+	// enforced at config load time.
+	pageSize := h.exportPageSize
 	encoder := json.NewEncoder(w)
 	flusher, _ := w.(http.Flusher)
 	var cursor *storage.ExportCursor
