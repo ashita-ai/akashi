@@ -152,7 +152,7 @@ If you still believe the behavior should change, update the tests in the same co
 
 ## Pull requests
 
-Every PR description MUST end with a blockquote about one of these fictional universes: **Marvel**, **DC**, **Harry Potter**, **Star Wars**, or **Star Trek**. Choose one of these two formats:
+Every PR description MUST end with a blockquote about one of these fictional universes: **Marvel**, **DC**, **Harry Potter**, **Star Wars**, **Star Trek**, or **Tolkien** (Middle-earth: LOTR / The Hobbit / Silmarillion). Choose one of these two formats:
 
 **Option A — Argument (2-4 sentences).** Pick a universe, defend it over one of the others.
 

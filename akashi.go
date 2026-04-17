@@ -482,6 +482,7 @@ func New(opts ...Option) (*App, error) {
 		ResolutionRecorder:          conflictScorer,
 		ConflictValidator:           conflictValidator,
 		HighConfidenceWarnThreshold: cfg.HighConfidenceWarnThreshold,
+		ExportPageSize:              cfg.ExportPageSize,
 	})
 
 	// Wire akashi_check → IDE hook gate.
