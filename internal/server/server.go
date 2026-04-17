@@ -99,6 +99,11 @@ type ServerConfig struct {
 
 	// Trace quality warnings.
 	HighConfidenceWarnThreshold float32
+
+	// Export streaming.
+	// Page size for GET /v1/export/decisions NDJSON pagination. Zero = use
+	// the handler's default (100). Validated at config load (1–10000).
+	ExportPageSize int
 }
 
 // New creates a new HTTP server with all routes configured.
@@ -123,6 +128,7 @@ func New(cfg ServerConfig) *Server {
 		ResolutionRecorder:          cfg.ResolutionRecorder,
 		ConflictValidator:           cfg.ConflictValidator,
 		HighConfidenceWarnThreshold: cfg.HighConfidenceWarnThreshold,
+		ExportPageSize:              cfg.ExportPageSize,
 	})
 
 	mux := http.NewServeMux()

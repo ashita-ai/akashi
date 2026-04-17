@@ -60,6 +60,9 @@ type Handlers struct {
 	// highConfidenceWarnThreshold triggers a response warning when confidence
 	// exceeds this value and no evidence items are provided (default 0.85).
 	highConfidenceWarnThreshold float32
+	// exportPageSize is the batch size used by HandleExportDecisions when
+	// streaming NDJSON via keyset pagination. Validated at config load (1–10000).
+	exportPageSize int
 }
 
 // HandlersDeps holds all dependencies for constructing Handlers.
@@ -84,6 +87,7 @@ type HandlersDeps struct {
 	ResolutionRecorder          conflicts.ResolutionRecorder
 	ConflictValidator           conflicts.Validator
 	HighConfidenceWarnThreshold float32
+	ExportPageSize              int
 }
 
 // NewHandlers creates a new Handlers with all dependencies.
@@ -110,7 +114,20 @@ func NewHandlers(d HandlersDeps) *Handlers {
 		resolutionRecorder:          d.ResolutionRecorder,
 		conflictValidator:           d.ConflictValidator,
 		highConfidenceWarnThreshold: d.HighConfidenceWarnThreshold,
+		exportPageSize:              exportPageSizeOrDefault(d.ExportPageSize),
 	}
+}
+
+// exportPageSizeOrDefault returns a safe page size for export pagination.
+// Configuration's Validate enforces the bound, but callers constructing Handlers
+// directly (tests, future embedders) may leave the field zero. We fall back to
+// the documented default of 100 rather than using 0 — a zero page size would
+// make ExportDecisionsCursor return empty results indefinitely.
+func exportPageSizeOrDefault(n int) int {
+	if n <= 0 {
+		return 100
+	}
+	return n
 }
 
 // HandleAuthToken handles POST /auth/token.

@@ -129,6 +129,7 @@ type Config struct {
 	IdempotencyCompletedTTL       time.Duration // Retention for completed idempotency records.
 	IdempotencyAbandonedTTL       time.Duration // Hard TTL for abandoned in-progress idempotency records.
 	MaxRequestBodyBytes           int64         // Maximum request body size in bytes.
+	ExportPageSize                int           // Page size for streaming NDJSON exports (default 100).
 	RetentionInterval             time.Duration // How often the background retention worker runs (default 24h).
 	ClaimRetryInterval            time.Duration // How often to retry failed claim embeddings (default 2m).
 	PercentileRefreshInterval     time.Duration // How often to refresh signal percentile caches (default 1h).
@@ -204,6 +205,7 @@ func Load() (Config, error) {
 	cfg.ConflictLLMThreads, errs = collectInt(errs, "AKASHI_CONFLICT_LLM_THREADS", defaultLLMThreads)
 	cfg.WALSegmentSize, errs = collectInt(errs, "AKASHI_WAL_SEGMENT_SIZE", 64*1024*1024)
 	cfg.WALSegmentRecords, errs = collectInt(errs, "AKASHI_WAL_SEGMENT_RECORDS", 100_000)
+	cfg.ExportPageSize, errs = collectInt(errs, "AKASHI_EXPORT_PAGE_SIZE", 100)
 
 	var dbMaxConns int
 	dbMaxConns, errs = collectInt(errs, "AKASHI_DB_MAX_CONNS", 0)
@@ -368,6 +370,12 @@ func (c Config) Validate() error {
 	}
 	if c.MaxRequestBodyBytes <= 0 {
 		errs = append(errs, errors.New("config: AKASHI_MAX_REQUEST_BODY_BYTES must be positive"))
+	}
+	// Export page size bounds: below 1 breaks pagination (empty pages loop forever or
+	// skip termination check); above 10,000 invites memory blowups per COPY batch and
+	// long single-query latencies that starve other connections in the pool.
+	if c.ExportPageSize < 1 || c.ExportPageSize > 10_000 {
+		errs = append(errs, fmt.Errorf("config: AKASHI_EXPORT_PAGE_SIZE must be between 1 and 10000 (got %d)", c.ExportPageSize))
 	}
 	if c.Port < 1 || c.Port > 65535 {
 		errs = append(errs, errors.New("config: AKASHI_PORT must be between 1 and 65535"))

@@ -832,6 +832,7 @@ func validBaseConfig() Config {
 		RateLimitRPS:               100,
 		RateLimitBurst:             200,
 		WALDir:                     "./data/wal",
+		ExportPageSize:             100,
 	}
 }
 
@@ -1272,4 +1273,88 @@ func TestEmbeddingModelThresholds_Unknown(t *testing.T) {
 	if claimSim != 0.60 || claimDiv != 0.15 || decSim != 0.70 {
 		t.Fatalf("expected mxbai-embed-large defaults, got: %f, %f, %f", claimSim, claimDiv, decSim)
 	}
+}
+
+func TestLoad_ExportPageSizeDefault(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected Load() to succeed with defaults, got: %v", err)
+	}
+	if cfg.ExportPageSize != 100 {
+		t.Fatalf("expected default ExportPageSize 100, got %d", cfg.ExportPageSize)
+	}
+}
+
+func TestLoad_ExportPageSizeOverride(t *testing.T) {
+	t.Setenv("AKASHI_EXPORT_PAGE_SIZE", "500")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected Load() to succeed, got: %v", err)
+	}
+	if cfg.ExportPageSize != 500 {
+		t.Fatalf("expected ExportPageSize 500, got %d", cfg.ExportPageSize)
+	}
+}
+
+func TestLoad_ExportPageSizeInvalid(t *testing.T) {
+	t.Setenv("AKASHI_EXPORT_PAGE_SIZE", "not-a-number")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected Load() to fail for non-integer AKASHI_EXPORT_PAGE_SIZE")
+	}
+	if !contains(err.Error(), "AKASHI_EXPORT_PAGE_SIZE") {
+		t.Fatalf("error should mention AKASHI_EXPORT_PAGE_SIZE, got: %s", err.Error())
+	}
+}
+
+func TestLoad_ExportPageSizeBounds(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"zero rejected", "0"},
+		{"negative rejected", "-1"},
+		{"above max rejected", "10001"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AKASHI_EXPORT_PAGE_SIZE", tc.value)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("expected Load() to fail for AKASHI_EXPORT_PAGE_SIZE=%s", tc.value)
+			}
+			if !contains(err.Error(), "AKASHI_EXPORT_PAGE_SIZE") {
+				t.Fatalf("error should mention AKASHI_EXPORT_PAGE_SIZE, got: %s", err.Error())
+			}
+			if !contains(err.Error(), "between 1 and 10000") {
+				t.Fatalf("error should mention bounds, got: %s", err.Error())
+			}
+		})
+	}
+}
+
+func TestLoad_ExportPageSizeBoundaries(t *testing.T) {
+	t.Run("minimum accepted", func(t *testing.T) {
+		t.Setenv("AKASHI_EXPORT_PAGE_SIZE", "1")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("expected Load() to accept 1, got: %v", err)
+		}
+		if cfg.ExportPageSize != 1 {
+			t.Fatalf("expected ExportPageSize 1, got %d", cfg.ExportPageSize)
+		}
+	})
+	t.Run("maximum accepted", func(t *testing.T) {
+		t.Setenv("AKASHI_EXPORT_PAGE_SIZE", "10000")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("expected Load() to accept 10000, got: %v", err)
+		}
+		if cfg.ExportPageSize != 10000 {
+			t.Fatalf("expected ExportPageSize 10000, got %d", cfg.ExportPageSize)
+		}
+	})
 }
