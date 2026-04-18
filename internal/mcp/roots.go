@@ -232,6 +232,32 @@ func gitBranch(path string) string {
 	return branch
 }
 
+// parseRepoNameFromURL extracts the canonical repo name from a git remote URL.
+// Accepts SSH form (git@host:org/repo.git), HTTPS form (https://host/org/repo.git),
+// with or without the .git suffix. Returns "" for empty or obviously-malformed input.
+//
+// Uses the same normalization as gitRepoName: strip .git, then filepath.Base.
+// So git@github.com:ArdentAILabs/mono.git → "mono", matching the flat-namespace
+// canonical scheme used elsewhere. Callers that want the org prefix must not
+// rely on this function.
+func parseRepoNameFromURL(repoURL string) string {
+	trimmed := strings.TrimSpace(repoURL)
+	if trimmed == "" {
+		return ""
+	}
+	// Reject anything without a repo separator — not a URL we can parse.
+	if !strings.ContainsAny(trimmed, ":/") {
+		return ""
+	}
+	trimmed = strings.TrimSuffix(trimmed, "/")
+	trimmed = strings.TrimSuffix(trimmed, ".git")
+	base := filepath.Base(trimmed)
+	if base == "." || base == "/" || base == "" {
+		return ""
+	}
+	return base
+}
+
 // rootURIs extracts the URI strings from a slice of roots.
 func rootURIs(roots []mcplib.Root) []string {
 	if len(roots) == 0 {

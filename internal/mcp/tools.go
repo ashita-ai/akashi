@@ -76,6 +76,12 @@ regardless of whether they were tagged "architecture" or "trade_off".`),
 			mcplib.WithString("project",
 				mcplib.Description("Optional: filter by project name (e.g. \"akashi\", \"my-langchain-app\"). Auto-detected from the working directory when omitted. Pass \"*\" to disable filtering and see decisions across all projects."),
 			),
+			mcplib.WithString("cwd",
+				mcplib.Description(`Absolute path to your current git working directory. Used as a fallback when MCP roots are unavailable — the server runs git there to determine the canonical project name.`),
+			),
+			mcplib.WithString("repo_url",
+				mcplib.Description(`Git remote URL (e.g. "git@github.com:org/repo.git"). Used as a fallback when cwd is also unavailable. Parsed server-side to extract the canonical project name.`),
+			),
 			mcplib.WithNumber("limit",
 				mcplib.Description("Maximum number of precedents to return"),
 				mcplib.Min(1),
@@ -179,7 +185,13 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 				mcplib.Description(`What you're working on (e.g. "codebase review", "implement rate limiting"). Groups related decisions.`),
 			),
 			mcplib.WithString("project",
-				mcplib.Description(`The repository or project name (e.g. "akashi", "my-langchain-app"). Auto-detected from the git remote when omitted — prefer omitting unless you know the exact canonical name. Do NOT use workspace directory names.`),
+				mcplib.Description(`The repository or project name (e.g. "akashi", "my-langchain-app"). Auto-detected from the git remote when omitted — prefer omitting unless you know the exact canonical name. Do NOT use workspace directory names. If the server rejects your value with "unknown project", retry with cwd or repo_url instead of guessing again.`),
+			),
+			mcplib.WithString("cwd",
+				mcplib.Description(`Absolute path to your current git working directory. When provided, the server runs "git -C <cwd> remote get-url origin" to determine the canonical project name — more reliable than self-reporting the project string. Use this when MCP roots aren't configured, or when a trace has been rejected as "unknown project".`),
+			),
+			mcplib.WithString("repo_url",
+				mcplib.Description(`The git remote URL of the repository (e.g. "git@github.com:org/repo.git" or "https://github.com/org/repo"). The server parses this to extract the canonical project name. Useful when you know the remote URL but can't supply a local path (e.g. running outside a working copy).`),
 			),
 			mcplib.WithString("git_branch",
 				mcplib.Description(`The git branch you're working on (e.g. "main", "feature/add-caching"). Auto-detected from the working directory when omitted. Used for branch-aware conflict suppression — parallel operations on different branches won't generate spurious conflicts.`),
@@ -272,6 +284,12 @@ EXAMPLES:
 			mcplib.WithString("project",
 				mcplib.Description("Filter by project name (e.g. \"akashi\", \"my-langchain-app\"). Auto-detected from the working directory when omitted. Pass \"*\" to query across all projects. Applied in both modes."),
 			),
+			mcplib.WithString("cwd",
+				mcplib.Description(`Absolute path to your current git working directory. Used as a fallback when MCP roots are unavailable — the server runs git there to determine the canonical project name.`),
+			),
+			mcplib.WithString("repo_url",
+				mcplib.Description(`Git remote URL (e.g. "git@github.com:org/repo.git"). Used as a fallback when cwd is also unavailable. Parsed server-side to extract the canonical project name.`),
+			),
 			mcplib.WithNumber("limit",
 				mcplib.Description("Maximum results to return"),
 				mcplib.Min(1),
@@ -345,6 +363,12 @@ Defaults to groups with open conflicts; pass status="all" to see everything.`),
 			),
 			mcplib.WithString("project",
 				mcplib.Description("Filter by project name. Auto-detected from the working directory when omitted. Pass \"*\" to disable filtering and see conflicts across all projects."),
+			),
+			mcplib.WithString("cwd",
+				mcplib.Description(`Absolute path to your current git working directory. Used as a fallback when MCP roots are unavailable — the server runs git there to determine the canonical project name.`),
+			),
+			mcplib.WithString("repo_url",
+				mcplib.Description(`Git remote URL (e.g. "git@github.com:org/repo.git"). Used as a fallback when cwd is also unavailable. Parsed server-side to extract the canonical project name.`),
 			),
 			mcplib.WithNumber("limit",
 				mcplib.Description("Maximum results to return"),
@@ -469,9 +493,21 @@ func (s *Server) resolveProjectFilter(ctx context.Context, request mcplib.CallTo
 		}
 		return &explicit
 	}
-	// Auto-detect from MCP roots.
+	// Auto-detect: MCP roots first (server-initiated), then client-provided
+	// cwd (server runs git), then repo_url (server parses the URL). All three
+	// are server-verified — none trusts a raw project string from the agent.
 	if roots := s.requestRoots(ctx); len(roots) > 0 {
 		if project := inferProjectFromRootsWithGit(roots); project != "" {
+			return &project
+		}
+	}
+	if cwd := request.GetString("cwd", ""); cwd != "" {
+		if project := gitRepoName(cwd); project != "" {
+			return &project
+		}
+	}
+	if repoURL := request.GetString("repo_url", ""); repoURL != "" {
+		if project := parseRepoNameFromURL(repoURL); project != "" {
 			return &project
 		}
 	}
@@ -846,6 +882,30 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		}
 	}
 
+	// Fallback inference when MCP roots didn't yield a project: try the
+	// client-supplied cwd (server runs git) then repo_url (server parses).
+	// These are still server-verified — we run git ourselves — but don't
+	// require the MCP roots handshake, which many clients don't implement.
+	if _, hasProject := serverCtx["project"]; !hasProject {
+		if cwd := request.GetString("cwd", ""); cwd != "" {
+			if project := gitRepoName(cwd); project != "" {
+				serverCtx["project"] = project
+			}
+			if _, hasBranch := serverCtx["git_branch"]; !hasBranch {
+				if branch := gitBranch(cwd); branch != "" {
+					serverCtx["git_branch"] = branch
+				}
+			}
+		}
+	}
+	if _, hasProject := serverCtx["project"]; !hasProject {
+		if repoURL := request.GetString("repo_url", ""); repoURL != "" {
+			if project := parseRepoNameFromURL(repoURL); project != "" {
+				serverCtx["project"] = project
+			}
+		}
+	}
+
 	// Record the original agent_id when it was enriched from the tool name,
 	// so the audit trail preserves the mapping from JWT default to derived ID.
 	if agentIDEnriched {
@@ -973,8 +1033,10 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 				if hasProjects {
 					return errorResult(fmt.Sprintf(
 						"unknown project %q: no server-side git verification available and no alias mapping exists. "+
-							"Ensure MCP roots are configured so the server can verify the project from git, "+
-							"or ask an admin to create a project alias",
+							"Retry this call with cwd set to your current git working directory "+
+							"(the server will run git there to find the canonical name), "+
+							"or with repo_url set to the repo's git remote URL. "+
+							"If neither is available, ensure MCP roots are configured or ask an admin to create a project alias.",
 						clientProject,
 					)), nil
 				}
@@ -1001,7 +1063,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		}
 		if hasProjects {
 			return errorResult(
-				"project is required: provide project in the trace call, set repo_url in context, " +
+				"project is required: pass project, cwd, or repo_url on the trace call, " +
 					"or configure MCP roots so the server can detect the project from git",
 			), nil
 		}

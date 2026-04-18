@@ -129,6 +129,31 @@ func TestInferProjectFromRootsWithGit(t *testing.T) {
 	})
 }
 
+func TestParseRepoNameFromURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		repoURL string
+		want    string
+	}{
+		{"SSH with .git", "git@github.com:ArdentAILabs/mono.git", "mono"},
+		{"SSH without .git", "git@github.com:ArdentAILabs/mono", "mono"},
+		{"HTTPS with .git", "https://github.com/ArdentAILabs/mono.git", "mono"},
+		{"HTTPS without .git", "https://github.com/ArdentAILabs/mono", "mono"},
+		{"HTTPS with trailing slash", "https://github.com/org/repo/", "repo"},
+		{"nested GitLab path", "git@gitlab.com:team/subgroup/repo.git", "repo"},
+		{"whitespace trimmed", "  https://github.com/org/repo.git\n", "repo"},
+		{"empty returns empty", "", ""},
+		{"whitespace only returns empty", "   ", ""},
+		{"no separator returns empty", "just-a-name", ""},
+		{"only separator returns empty", "/", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, parseRepoNameFromURL(tt.repoURL))
+		})
+	}
+}
+
 func TestRootURIs(t *testing.T) {
 	tests := []struct {
 		name  string
