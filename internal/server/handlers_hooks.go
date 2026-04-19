@@ -190,7 +190,8 @@ func (h *Handlers) HandleHookSessionStart(w http.ResponseWriter, r *http.Request
 	}
 
 	project := inferProjectFromCWD(input.CWD)
-	recentContext := h.buildSessionContext(r.Context(), project)
+	taskLabel := suggestedTaskLabel(input.CWD)
+	recentContext := h.buildSessionContext(r.Context(), project, taskLabel)
 
 	writeHookJSON(w, hookResponse{
 		HookSpecificOutput: &hookSpecific{
@@ -459,7 +460,7 @@ func gitBranchTask(cwd string) string {
 // are left intact to preserve meaningful context in the audit trail.
 func stripBranchPrefix(branch string) string {
 	prefixes := []string{
-		"feature/", "fix/", "bugfix/", "hotfix/",
+		"feature/", "feat/", "fix/", "bugfix/", "hotfix/",
 		"chore/", "refactor/", "docs/", "test/",
 	}
 	for _, p := range prefixes {
@@ -470,9 +471,39 @@ func stripBranchPrefix(branch string) string {
 	return branch
 }
 
+// branchHashRe matches a bare commit-hash-shaped branch name (7–40 hex chars).
+// Such names carry no task-label meaning and should be suppressed from the
+// session-start suggestion.
+var branchHashRe = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
+
+// suggestedTaskLabel returns a session-scoped task label derived from the
+// current git branch, or "" when no meaningful label can be produced.
+// Filters applied (in order):
+//   - empty cwd, non-git dir, or detached HEAD → "" (via gitBranchTask)
+//   - trunk branches (main / master / develop / trunk / HEAD) → ""
+//   - bare commit-hash-shaped names (7–40 hex chars) → ""
+//
+// Anything else — including personal prefixes like "evanvolgas/…" and
+// "release/v2.1" — is passed through so the agent sees the concrete label.
+func suggestedTaskLabel(cwd string) string {
+	label := gitBranchTask(cwd)
+	if label == "" {
+		return ""
+	}
+	switch strings.ToLower(label) {
+	case "main", "master", "develop", "trunk", "head":
+		return ""
+	}
+	if branchHashRe.MatchString(strings.ToLower(label)) {
+		return ""
+	}
+	return label
+}
+
 // buildSessionContext creates a compact text summary of recent decisions and conflicts
-// for injection into the IDE session context.
-func (h *Handlers) buildSessionContext(ctx context.Context, project string) string {
+// for injection into the IDE session context. When taskLabel is non-empty, a one-line
+// hint is appended so the agent can use it as the task field in akashi_trace calls.
+func (h *Handlers) buildSessionContext(ctx context.Context, project, taskLabel string) string {
 	// Use the default org (uuid.Nil) for unauthenticated hook queries.
 	orgID := uuid.Nil
 
@@ -555,6 +586,13 @@ func (h *Handlers) buildSessionContext(ctx context.Context, project string) stri
 			}
 			parts = append(parts, fmt.Sprintf("- [%s] %s vs %s%s", severity, g.AgentA, g.AgentB, explanation))
 		}
+	}
+
+	if taskLabel != "" {
+		parts = append(parts, fmt.Sprintf(
+			"\nSuggested task label for this session: %q (from current git branch).\nPass as the task field in akashi_trace calls to group related decisions.",
+			taskLabel,
+		))
 	}
 
 	parts = append(parts, "\nCall akashi_check before architecture/design decisions. Call akashi_trace after.")
