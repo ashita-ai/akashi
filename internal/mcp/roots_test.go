@@ -135,17 +135,36 @@ func TestParseRepoNameFromURL(t *testing.T) {
 		repoURL string
 		want    string
 	}{
+		// Accepted inputs.
 		{"SSH with .git", "git@github.com:ArdentAILabs/mono.git", "mono"},
 		{"SSH without .git", "git@github.com:ArdentAILabs/mono", "mono"},
 		{"HTTPS with .git", "https://github.com/ArdentAILabs/mono.git", "mono"},
 		{"HTTPS without .git", "https://github.com/ArdentAILabs/mono", "mono"},
 		{"HTTPS with trailing slash", "https://github.com/org/repo/", "repo"},
+		{"HTTPS with port", "https://github.com:443/org/repo.git", "repo"},
+		{"ssh scheme URL", "ssh://git@github.com/org/repo.git", "repo"},
+		{"file scheme URL", "file:///srv/git/mirror/repo.git", "repo"},
 		{"nested GitLab path", "git@gitlab.com:team/subgroup/repo.git", "repo"},
 		{"whitespace trimmed", "  https://github.com/org/repo.git\n", "repo"},
+		// Query strings and fragments must be stripped, not pass through.
+		{"query string stripped", "https://github.com/org/repo.git?foo=bar", "repo"},
+		{"fragment stripped", "https://github.com/org/repo.git#readme", "repo"},
+		{"query without .git", "https://github.com/org/repo?utm=x", "repo"},
+		// Rejected inputs — each previously slipped through and became a
+		// garbage entry in decisions.project / project_links.
 		{"empty returns empty", "", ""},
 		{"whitespace only returns empty", "   ", ""},
 		{"no separator returns empty", "just-a-name", ""},
 		{"only separator returns empty", "/", ""},
+		{"bare filesystem path rejected", "/etc/passwd", ""},
+		{"scheme with no path rejected", "https://", ""},
+		{"lone colon rejected", "a:", ""},
+		{"leading colon rejected", ":b", ""},
+		{"double colon rejected", "::", ""},
+		{"SSH with empty path rejected", "git@host:", ""},
+		{"SSH pointing at .git only rejected", "git@host:.git", ""},
+		{"SSH pointing at dot rejected", "git@host:.", ""},
+		{"path traversal rejected", "foo/..", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
