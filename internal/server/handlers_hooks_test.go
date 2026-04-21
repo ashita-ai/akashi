@@ -28,6 +28,18 @@ func makeTestGitRepo(t *testing.T) string {
 	return dir
 }
 
+// makeTestGitRepoOnBranch creates a temporary git repository whose current
+// branch is the given name. Uses `git symbolic-ref` on an unborn HEAD so it
+// works on any git version without needing an initial commit.
+func makeTestGitRepoOnBranch(t *testing.T, branch string) string {
+	t.Helper()
+	dir := makeTestGitRepo(t)
+	if out, err := exec.Command("git", "-C", dir, "symbolic-ref", "HEAD", "refs/heads/"+branch).CombinedOutput(); err != nil { //nolint:gosec
+		t.Skipf("git symbolic-ref failed: %s", out)
+	}
+	return dir
+}
+
 func TestHookCheckStore(t *testing.T) {
 	t.Run("empty store returns false", func(t *testing.T) {
 		s := newHookCheckStore()
@@ -830,6 +842,7 @@ func TestStripBranchPrefix(t *testing.T) {
 		want   string
 	}{
 		{"feature prefix", "feature/add-widget", "add-widget"},
+		{"feat prefix", "feat/add-widget", "add-widget"},
 		{"fix prefix", "fix/null-pointer", "null-pointer"},
 		{"bugfix prefix", "bugfix/crash-on-start", "crash-on-start"},
 		{"hotfix prefix", "hotfix/security-patch", "security-patch"},
@@ -897,6 +910,64 @@ func TestGitBranchTask_CurrentRepo(t *testing.T) {
 	// Running in a real git repo should return something non-empty
 	// (unless detached HEAD in CI). Just verify no panic.
 	_ = gitBranchTask(".")
+}
+
+func TestSuggestedTaskLabel(t *testing.T) {
+	t.Run("empty cwd", func(t *testing.T) {
+		assert.Empty(t, suggestedTaskLabel(""))
+	})
+
+	t.Run("non-git path", func(t *testing.T) {
+		assert.Empty(t, suggestedTaskLabel("/nonexistent/path/that/does/not/exist"))
+	})
+
+	t.Run("suppresses trunk branches", func(t *testing.T) {
+		for _, branch := range []string{"main", "master", "develop", "trunk"} {
+			t.Run(branch, func(t *testing.T) {
+				dir := makeTestGitRepoOnBranch(t, branch)
+				assert.Empty(t, suggestedTaskLabel(dir), "trunk branch %q must not surface as a task label", branch)
+			})
+		}
+	})
+
+	t.Run("suppresses trunk branches case-insensitively", func(t *testing.T) {
+		dir := makeTestGitRepoOnBranch(t, "MAIN")
+		assert.Empty(t, suggestedTaskLabel(dir))
+	})
+
+	t.Run("suppresses bare commit-hash names", func(t *testing.T) {
+		// 8 hex chars — shape of a short commit hash.
+		dir := makeTestGitRepoOnBranch(t, "deadbeef")
+		assert.Empty(t, suggestedTaskLabel(dir))
+	})
+
+	t.Run("suppresses full-length hash names", func(t *testing.T) {
+		dir := makeTestGitRepoOnBranch(t, "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0")
+		assert.Empty(t, suggestedTaskLabel(dir))
+	})
+
+	t.Run("strips known prefixes", func(t *testing.T) {
+		dir := makeTestGitRepoOnBranch(t, "feat/dashboard-period-selector")
+		assert.Equal(t, "dashboard-period-selector", suggestedTaskLabel(dir))
+	})
+
+	t.Run("passes through username prefixes", func(t *testing.T) {
+		dir := makeTestGitRepoOnBranch(t, "evanvolgas/gh-issue-fix")
+		assert.Equal(t, "evanvolgas/gh-issue-fix", suggestedTaskLabel(dir))
+	})
+
+	t.Run("passes through hyphenated task name without prefix", func(t *testing.T) {
+		// Not a trunk branch and not hash-shaped — should pass through.
+		dir := makeTestGitRepoOnBranch(t, "add-webhook-retries")
+		assert.Equal(t, "add-webhook-retries", suggestedTaskLabel(dir))
+	})
+
+	t.Run("name shorter than 7 hex chars is not a hash", func(t *testing.T) {
+		// "abc" is all-hex but too short to be a commit hash; treat as a
+		// legitimate label rather than stripping it.
+		dir := makeTestGitRepoOnBranch(t, "abc")
+		assert.Equal(t, "abc", suggestedTaskLabel(dir))
+	})
 }
 
 func TestInferProjectFromCWD_NonGitDir(t *testing.T) {
