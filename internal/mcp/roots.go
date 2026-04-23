@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +13,13 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )
+
+// validRepoName constrains what parseRepoNameFromURL will accept as a repo
+// name. The result is written straight into decisions.project and the
+// project_links alias table, so anything that isn't clearly a repo-shaped
+// identifier must be rejected at the boundary. GitHub, GitLab, and Bitbucket
+// all reject names outside this shape, so no real remote URL is excluded.
+var validRepoName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // rootsRequestTimeout bounds the synchronous round-trip to the client.
 // If the client doesn't respond in time, we skip roots gracefully.
@@ -230,6 +238,51 @@ func gitBranch(path string) string {
 		return ""
 	}
 	return branch
+}
+
+// parseRepoNameFromURL extracts the canonical repo name from a git remote URL.
+// Accepts scheme-bearing URLs (https://host/org/repo(.git)?, ssh://…, file://…)
+// and SSH shorthand (user@host:org/repo(.git)?). Query strings and fragments
+// are stripped. Bare filesystem paths and anything whose final segment isn't a
+// repo-shaped identifier return "".
+//
+// The returned name is flat — git@github.com:ArdentAILabs/mono.git → "mono",
+// matching the canonical scheme used elsewhere. Callers that need the org
+// prefix must not rely on this function.
+func parseRepoNameFromURL(repoURL string) string {
+	trimmed := strings.TrimSpace(repoURL)
+	if trimmed == "" {
+		return ""
+	}
+	var path string
+	switch {
+	case strings.Contains(trimmed, "://"):
+		// Scheme-bearing URL. net/url gives us the path without query/fragment
+		// and with any port on the host already removed.
+		u, err := url.Parse(trimmed)
+		if err != nil {
+			return ""
+		}
+		path = u.Path
+	case !strings.HasPrefix(trimmed, "/"):
+		// SSH shorthand: user@host:org/repo(.git)?. The first colon separates
+		// the host from the path. Reject empty-path and empty-host forms.
+		i := strings.Index(trimmed, ":")
+		if i <= 0 || i >= len(trimmed)-1 {
+			return ""
+		}
+		path = trimmed[i+1:]
+	default:
+		// Bare filesystem path (e.g. "/etc/passwd"). Not a git remote.
+		return ""
+	}
+	path = strings.TrimSuffix(path, "/")
+	path = strings.TrimSuffix(path, ".git")
+	base := filepath.Base(path)
+	if !validRepoName.MatchString(base) {
+		return ""
+	}
+	return base
 }
 
 // rootURIs extracts the URI strings from a slice of roots.
