@@ -1341,6 +1341,64 @@ func TestResolveProjectFilter(t *testing.T) {
 		// so resolveProjectFilter should return nil.
 		assert.Nil(t, result)
 	})
+
+	t.Run("cwd fallback when no explicit project or roots", func(t *testing.T) {
+		ctx := adminCtx()
+		dir := makeGitRepo(t, "git@github.com:ArdentAILabs/mono.git")
+		req := mcplib.CallToolRequest{
+			Params: mcplib.CallToolParams{
+				Arguments: map[string]any{"cwd": dir},
+			},
+		}
+		result := testServer.resolveProjectFilter(ctx, req)
+		require.NotNil(t, result)
+		assert.Equal(t, "mono", *result)
+	})
+
+	t.Run("repo_url fallback when cwd also missing", func(t *testing.T) {
+		ctx := adminCtx()
+		req := mcplib.CallToolRequest{
+			Params: mcplib.CallToolParams{
+				Arguments: map[string]any{
+					"repo_url": "https://github.com/ArdentAILabs/mono.git",
+				},
+			},
+		}
+		result := testServer.resolveProjectFilter(ctx, req)
+		require.NotNil(t, result)
+		assert.Equal(t, "mono", *result)
+	})
+
+	t.Run("cwd takes precedence over repo_url", func(t *testing.T) {
+		ctx := adminCtx()
+		dir := makeGitRepo(t, "git@github.com:cwd-wins/cwd-repo.git")
+		req := mcplib.CallToolRequest{
+			Params: mcplib.CallToolParams{
+				Arguments: map[string]any{
+					"cwd":      dir,
+					"repo_url": "https://github.com/loser/url-repo.git",
+				},
+			},
+		}
+		result := testServer.resolveProjectFilter(ctx, req)
+		require.NotNil(t, result)
+		assert.Equal(t, "cwd-repo", *result, "cwd should beat repo_url when both are set")
+	})
+
+	t.Run("non-git cwd falls through to repo_url", func(t *testing.T) {
+		ctx := adminCtx()
+		req := mcplib.CallToolRequest{
+			Params: mcplib.CallToolParams{
+				Arguments: map[string]any{
+					"cwd":      t.TempDir(), // valid path, but not a git repo
+					"repo_url": "git@github.com:org/fallback-repo.git",
+				},
+			},
+		}
+		result := testServer.resolveProjectFilter(ctx, req)
+		require.NotNil(t, result)
+		assert.Equal(t, "fallback-repo", *result)
+	})
 }
 
 // ---------- handleCheck: full format ----------
@@ -3768,6 +3826,124 @@ func TestHandleTrace_AliasNormalizesProjectOnFallback(t *testing.T) {
 
 	require.NotNil(t, stored.Project, "decision should have a project")
 	assert.Equal(t, canonical, *stored.Project, "project should be normalized to canonical via alias")
+}
+
+func TestHandleTrace_CwdRescuesHallucinatedProject(t *testing.T) {
+	// Regression test for the mono incident: an agent self-reports a
+	// hallucinated project name but also passes cwd. The server should run
+	// git in cwd, discover the canonical name, normalize the decision to it,
+	// and auto-create an alias so future submissions of the same bad name
+	// land on the canonical.
+	ctx := adminCtx()
+	agentID := "cwd-rescue-" + uuid.New().String()[:8]
+	_, _ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
+
+	canonical := "canonical-" + uuid.New().String()[:8]
+	hallucinated := "wrong-" + uuid.New().String()[:8]
+	dir := makeGitRepo(t, "git@github.com:ArdentAILabs/"+canonical+".git")
+
+	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
+		"agent_id":      agentID,
+		"decision_type": "architecture",
+		"outcome":       "cwd rescue test decision",
+		"confidence":    0.6,
+		"project":       hallucinated,
+		"cwd":           dir,
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "trace should succeed: %s", parseToolText(t, result))
+
+	var resp struct {
+		DecisionID string `json:"decision_id"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+
+	decID, err := uuid.Parse(resp.DecisionID)
+	require.NoError(t, err)
+	stored, err := testDB.GetDecision(ctx, uuid.Nil, decID, storage.GetDecisionOpts{})
+	require.NoError(t, err)
+	require.NotNil(t, stored.Project)
+	assert.Equal(t, canonical, *stored.Project, "stored project should be the cwd-inferred canonical, not the hallucinated name")
+
+	// The auto-alias path should have fired so a future trace with the
+	// hallucinated name alone can be normalized without cwd.
+	resolved, err := testDB.ResolveProjectAlias(ctx, uuid.Nil, hallucinated)
+	require.NoError(t, err)
+	assert.Equal(t, canonical, resolved, "auto-alias should map hallucinated → canonical")
+}
+
+func TestHandleTrace_RepoURLInfersProject(t *testing.T) {
+	// When neither MCP roots nor cwd are available, repo_url should still
+	// allow the server to derive the canonical project name.
+	ctx := adminCtx()
+	agentID := "repo-url-" + uuid.New().String()[:8]
+	_, _ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
+
+	canonical := "urlrepo-" + uuid.New().String()[:8]
+	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
+		"agent_id":      agentID,
+		"decision_type": "architecture",
+		"outcome":       "repo_url inference test decision",
+		"confidence":    0.6,
+		"project":       "",
+		"repo_url":      "https://github.com/ArdentAILabs/" + canonical + ".git",
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "trace should succeed: %s", parseToolText(t, result))
+
+	var resp struct {
+		DecisionID string `json:"decision_id"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+
+	decID, err := uuid.Parse(resp.DecisionID)
+	require.NoError(t, err)
+	stored, err := testDB.GetDecision(ctx, uuid.Nil, decID, storage.GetDecisionOpts{})
+	require.NoError(t, err)
+	require.NotNil(t, stored.Project)
+	assert.Equal(t, canonical, *stored.Project, "stored project should be the repo_url-derived canonical")
+}
+
+func TestHandleTrace_UnknownProjectErrorSuggestsCwd(t *testing.T) {
+	// When the rejection fires, the error message should tell the agent how
+	// to recover: retry with cwd or repo_url. This is the behavioral gap that
+	// let the mono incident's sibling agent silently skip the trace.
+	ctx := adminCtx()
+	agentID := "unk-err-" + uuid.New().String()[:8]
+	_, _ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
+
+	// Seed via cwd so the org has at least one known project regardless of
+	// test ordering. mustTrace would fail here because its default project
+	// "test-project" isn't guaranteed to exist as a canonical name yet.
+	seedDir := makeGitRepo(t, "git@github.com:seed-org/seedrepo.git")
+	seedResp, seedErr := testServer.handleTrace(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name: "akashi_trace",
+			Arguments: map[string]any{
+				"agent_id":      agentID,
+				"decision_type": "investigation",
+				"outcome":       "seed decision to establish a known project",
+				"confidence":    0.5,
+				"cwd":           seedDir,
+			},
+		},
+	})
+	require.NoError(t, seedErr)
+	require.False(t, seedResp.IsError, "seed trace should succeed: %s", parseToolText(t, seedResp))
+
+	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
+		"agent_id":      agentID,
+		"decision_type": "architecture",
+		"outcome":       "should be rejected",
+		"confidence":    0.6,
+		"project":       "totally-hallucinated-" + uuid.New().String()[:8],
+	}))
+	require.NoError(t, err)
+	require.True(t, result.IsError, "expected rejection for unknown project")
+	text := parseToolText(t, result)
+	assert.Contains(t, text, "unknown project")
+	assert.Contains(t, text, "cwd", "error should suggest retrying with cwd")
+	assert.Contains(t, text, "repo_url", "error should suggest retrying with repo_url")
 }
 
 func TestResolveProjectFilter_ResolvesAlias(t *testing.T) {
