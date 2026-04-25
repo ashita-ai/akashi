@@ -500,6 +500,20 @@ func (h *Handlers) NotifyCheckCalled(agentID string) {
 	h.hookChecks.Record(agentID)
 }
 
+// NotifyTraceComplete records the outcome of an akashi_trace tool call.
+// On error, the agent's most-recent-rejection marker is set so the
+// post-commit hook can warn at git commit time. On success, the marker is
+// cleared (the agent recovered, no warning needed). This wires the
+// "agent burned trace attempts and silently committed" failure mode to
+// a visible warning at the next commit.
+func (h *Handlers) NotifyTraceComplete(agentID string, isError bool, errMsg string) {
+	if isError {
+		h.hookChecks.MarkTraceErrored(agentID, errMsg)
+	} else {
+		h.hookChecks.ClearTraceError(agentID)
+	}
+}
+
 // CleanupHookChecks evicts expired entries from the hook check store.
 // Called periodically by the background cleanup loop in akashi.go.
 func (h *Handlers) CleanupHookChecks() {

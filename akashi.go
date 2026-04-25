@@ -490,6 +490,12 @@ func New(opts ...Option) (*App, error) {
 	// PreToolUse hook knows a check was performed and allows edits.
 	mcpSrv.SetCheckNotify(srv.Handlers().NotifyCheckCalled)
 
+	// Wire akashi_trace outcomes → IDE hook gate. On rejection, the
+	// post-commit hook surfaces a warning so the agent can't silently
+	// commit after a failed trace; on success, any prior rejection
+	// marker is cleared.
+	mcpSrv.SetTraceCompleteNotify(srv.Handlers().NotifyTraceComplete)
+
 	// Seed admin agent.
 	if err := srv.Handlers().SeedAdmin(context.Background(), cfg.AdminAPIKey.Value()); err != nil {
 		db.Close(context.Background())

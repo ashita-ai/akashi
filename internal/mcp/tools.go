@@ -679,13 +679,29 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 	}, nil
 }
 
-func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest) (toolResult *mcplib.CallToolResult, err error) {
 	orgID := ctxutil.OrgIDFromContext(ctx)
 	claims := ctxutil.ClaimsFromContext(ctx)
 
 	if claims == nil {
 		return errorResult("authentication required"), nil
 	}
+
+	// Notify the IDE hook gate of every trace outcome — success clears any
+	// "last trace failed" marker, failure sets it. The post-commit hook
+	// reads this to warn when an agent committed after a rejected trace.
+	// Use the JWT-claimed identity (pre-enrichment) to match how the IDE
+	// hook script scopes its own per-agent state.
+	defer func() {
+		if s.onTraceComplete == nil || claims == nil || claims.AgentID == "" {
+			return
+		}
+		if toolResult != nil && toolResult.IsError {
+			s.onTraceComplete(claims.AgentID, true, firstTextContent(toolResult))
+		} else if toolResult != nil {
+			s.onTraceComplete(claims.AgentID, false, "")
+		}
+	}()
 
 	agentID := request.GetString("agent_id", "")
 	// Normalize decision_type for validation and hash computation. The service
