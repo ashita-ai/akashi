@@ -32,18 +32,36 @@ const hookMaxBodyBytes int64 = 256 << 10
 // different agent running on the same machine. When the caller does not
 // supply an agent_id (e.g. legacy hook scripts), IsAnyRecent provides a
 // backwards-compatible fallback that behaves like the old global timestamp.
+//
+// It also tracks the most recent unresolved akashi_trace failure per agent
+// so the post-commit hook can warn when an agent commits after a rejected
+// trace — closing the "burn attempts then silently commit" failure mode.
 type hookCheckStore struct {
 	mu            sync.RWMutex
-	checks        map[string]time.Time // agent_id → last check time
-	emptyProjects map[string]time.Time // project → marked-at time (0 decisions + 0 conflicts)
+	checks        map[string]time.Time   // agent_id → last check time
+	emptyProjects map[string]time.Time   // project → marked-at time (0 decisions + 0 conflicts)
+	traceErrors   map[string]traceErrEnt // agent_id → most recent trace error (cleared by next success)
 }
 
 const hookCheckTTL = 10 * time.Minute
+
+// traceErrorTTL bounds how long a stale errored trace continues to surface
+// at commit time. Long enough to span "decided X, ran tests for 30 minutes,
+// fixed something, then committed", short enough that yesterday's error
+// doesn't leak into tomorrow's session.
+const traceErrorTTL = 1 * time.Hour
+
+// traceErrEnt records a single unresolved trace failure.
+type traceErrEnt struct {
+	at  time.Time
+	msg string
+}
 
 func newHookCheckStore() *hookCheckStore {
 	return &hookCheckStore{
 		checks:        make(map[string]time.Time),
 		emptyProjects: make(map[string]time.Time),
+		traceErrors:   make(map[string]traceErrEnt),
 	}
 }
 
@@ -80,7 +98,7 @@ func (s *hookCheckStore) IsAnyRecent() bool {
 	return false
 }
 
-// Cleanup evicts expired entries from both maps.
+// Cleanup evicts expired entries from all three maps.
 func (s *hookCheckStore) Cleanup() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -92,6 +110,11 @@ func (s *hookCheckStore) Cleanup() {
 	for project, t := range s.emptyProjects {
 		if time.Since(t) >= hookCheckTTL {
 			delete(s.emptyProjects, project)
+		}
+	}
+	for id, ent := range s.traceErrors {
+		if time.Since(ent.at) >= traceErrorTTL {
+			delete(s.traceErrors, id)
 		}
 	}
 }
@@ -129,6 +152,48 @@ func (s *hookCheckStore) ClearProjectEmpty(project string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.emptyProjects, project)
+}
+
+// MarkTraceErrored records that the agent's most recent akashi_trace call
+// returned an error result. Empty agent_id is ignored — recording "" would
+// let any legacy caller (which also has agentID="") trigger the warning,
+// defeating per-agent isolation.
+func (s *hookCheckStore) MarkTraceErrored(agentID, msg string) {
+	if agentID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.traceErrors[agentID] = traceErrEnt{at: time.Now(), msg: msg}
+}
+
+// ClearTraceError removes any errored-trace marker for the agent. Called
+// after a successful trace so the post-commit hook stops warning once the
+// agent has recovered.
+func (s *hookCheckStore) ClearTraceError(agentID string) {
+	if agentID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.traceErrors, agentID)
+}
+
+// LastTraceError returns the most recent unresolved trace error for the
+// agent, or ("", false) if none exists or the marker has expired. The
+// returned message is the human-readable text the MCP server emitted to
+// the agent at rejection time.
+func (s *hookCheckStore) LastTraceError(agentID string) (string, bool) {
+	if agentID == "" {
+		return "", false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ent, ok := s.traceErrors[agentID]
+	if !ok || time.Since(ent.at) >= traceErrorTTL {
+		return "", false
+	}
+	return ent.msg, true
 }
 
 // hookSessionStartInput is the JSON body sent by Claude Code / Cursor on SessionStart.
@@ -286,6 +351,11 @@ func (h *Handlers) HandleHookPostToolUse(w http.ResponseWriter, r *http.Request)
 // the subject from `git log -1 --format=%s` instead of parsing the command
 // string. This correctly handles HEREDOC commits, --amend, and editor-based
 // messages that the old regex-based parser could not.
+//
+// If the agent's most recent akashi_trace was rejected, prepend a warning
+// so the rejection becomes visible at commit time. This catches the
+// "burned attempts then silently committed" failure mode where an agent
+// gives up on a trace and ships the commit anyway.
 func (h *Handlers) handlePostCommit(w http.ResponseWriter, input hookPostToolUseInput) {
 	commitMsg := gitCommitSubject(input.CWD)
 	if commitMsg == "" {
@@ -296,13 +366,21 @@ func (h *Handlers) handlePostCommit(w http.ResponseWriter, input hookPostToolUse
 		commitMsg = "commit (message not parsed)"
 	}
 
+	traceWarning := ""
+	if errMsg, ok := h.hookChecks.LastTraceError(input.AgentID); ok {
+		traceWarning = fmt.Sprintf(
+			"[akashi] WARNING: your last akashi_trace was rejected and never retried successfully — committing anyway. Last error: %s\n",
+			truncateHook(errMsg, 200),
+		)
+	}
+
 	if h.autoTrace {
 		go h.autoTraceCommit(input, commitMsg)
 		writeHookJSON(w, hookResponse{
 			Continue: true,
 			HookSpecificOutput: &hookSpecific{
 				HookEventName: "PostToolUse",
-				Message:       fmt.Sprintf("[akashi] auto-traced commit: %s", truncateHook(commitMsg, 80)),
+				Message:       traceWarning + fmt.Sprintf("[akashi] auto-traced commit: %s", truncateHook(commitMsg, 80)),
 			},
 		})
 		return
@@ -312,7 +390,7 @@ func (h *Handlers) handlePostCommit(w http.ResponseWriter, input hookPostToolUse
 		Continue: true,
 		HookSpecificOutput: &hookSpecific{
 			HookEventName: "PostToolUse",
-			Message: fmt.Sprintf(
+			Message: traceWarning + fmt.Sprintf(
 				"[akashi] Call akashi_trace with decision_type=\"implementation\", outcome=%q, confidence=0.6",
 				truncateHook(commitMsg, 100),
 			),

@@ -34,3 +34,9 @@ func (l *LiteDB) ProjectExists(_ context.Context, _ uuid.UUID, _ string) (bool, 
 func (l *LiteDB) HasAnyProjects(_ context.Context, _ uuid.UUID) (bool, error) {
 	return false, nil
 }
+
+// DistinctProjects returns nil in lite mode. Project suggestions are a
+// server-mode feature; lite mode skips the validation that would surface them.
+func (l *LiteDB) DistinctProjects(_ context.Context, _ uuid.UUID) ([]string, error) {
+	return nil, nil
+}

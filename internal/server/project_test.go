@@ -38,7 +38,7 @@ func TestNormalizeTraceProject_ServerInferredOverridesClient(t *testing.T) {
 	clientCtx := map[string]any{"project": "dubai"}
 	logger := slog.Default()
 
-	errMsg := normalizeTraceProject(clientCtx, "akashi", nil, nil, nil, logger)
+	errMsg := normalizeTraceProject(clientCtx, "akashi", nil, nil, nil, nil, logger)
 
 	assert.Empty(t, errMsg)
 	assert.Equal(t, "akashi", clientCtx["project"])
@@ -49,7 +49,7 @@ func TestNormalizeTraceProject_ServerMatchesClient(t *testing.T) {
 	clientCtx := map[string]any{"project": "akashi"}
 	logger := slog.Default()
 
-	errMsg := normalizeTraceProject(clientCtx, "akashi", nil, nil, nil, logger)
+	errMsg := normalizeTraceProject(clientCtx, "akashi", nil, nil, nil, nil, logger)
 
 	assert.Empty(t, errMsg)
 	assert.Equal(t, "akashi", clientCtx["project"])
@@ -64,7 +64,7 @@ func TestNormalizeTraceProject_RepoURLOverridesClient(t *testing.T) {
 	}
 	logger := slog.Default()
 
-	errMsg := normalizeTraceProject(clientCtx, "", nil, nil, nil, logger)
+	errMsg := normalizeTraceProject(clientCtx, "", nil, nil, nil, nil, logger)
 
 	assert.Empty(t, errMsg)
 	assert.Equal(t, "akashi", clientCtx["project"])
@@ -84,7 +84,7 @@ func TestNormalizeTraceProject_AliasLookup(t *testing.T) {
 	clientCtx := map[string]any{"project": "bamako"}
 	logger := slog.Default()
 
-	errMsg := normalizeTraceProject(clientCtx, "", resolveAlias, nil, nil, logger)
+	errMsg := normalizeTraceProject(clientCtx, "", resolveAlias, nil, nil, nil, logger)
 
 	assert.Empty(t, errMsg)
 	assert.Equal(t, "akashi", clientCtx["project"])
@@ -99,7 +99,7 @@ func TestNormalizeTraceProject_NoChangeWhenCanonical(t *testing.T) {
 	resolveAlias := func(_ string) string { return "" }
 	projectKnown := func(project string) bool { return project == "akashi" }
 
-	errMsg := normalizeTraceProject(clientCtx, "", resolveAlias, projectKnown, nil, logger)
+	errMsg := normalizeTraceProject(clientCtx, "", resolveAlias, projectKnown, nil, nil, logger)
 
 	assert.Empty(t, errMsg)
 	assert.Equal(t, "akashi", clientCtx["project"])
@@ -113,7 +113,7 @@ func TestNormalizeTraceProject_EmptyClientProject_NewOrg(t *testing.T) {
 	logger := slog.Default()
 	hasAnyProjects := func() bool { return false }
 
-	errMsg := normalizeTraceProject(clientCtx, "", nil, nil, hasAnyProjects, logger)
+	errMsg := normalizeTraceProject(clientCtx, "", nil, nil, hasAnyProjects, nil, logger)
 
 	assert.Empty(t, errMsg)
 	_, hasProject := clientCtx["project"]
@@ -126,7 +126,7 @@ func TestNormalizeTraceProject_EmptyClientProject_ExistingOrg(t *testing.T) {
 	logger := slog.Default()
 	hasAnyProjects := func() bool { return true }
 
-	errMsg := normalizeTraceProject(clientCtx, "", nil, nil, hasAnyProjects, logger)
+	errMsg := normalizeTraceProject(clientCtx, "", nil, nil, hasAnyProjects, nil, logger)
 
 	assert.Contains(t, errMsg, "project is required")
 }
@@ -136,7 +136,7 @@ func TestNormalizeTraceProject_EmptyClientProject_NilHasAnyProjects(t *testing.T
 	clientCtx := map[string]any{}
 	logger := slog.Default()
 
-	errMsg := normalizeTraceProject(clientCtx, "", nil, nil, nil, logger)
+	errMsg := normalizeTraceProject(clientCtx, "", nil, nil, nil, nil, logger)
 
 	assert.Empty(t, errMsg)
 	_, hasProject := clientCtx["project"]
@@ -148,7 +148,7 @@ func TestNormalizeTraceProject_ServerInferredSetsProject(t *testing.T) {
 	clientCtx := map[string]any{"model": "claude-opus-4-6"}
 	logger := slog.Default()
 
-	errMsg := normalizeTraceProject(clientCtx, "akashi", nil, nil, nil, logger)
+	errMsg := normalizeTraceProject(clientCtx, "akashi", nil, nil, nil, nil, logger)
 
 	assert.Empty(t, errMsg)
 	assert.Equal(t, "akashi", clientCtx["project"])
@@ -164,7 +164,7 @@ func TestNormalizeTraceProject_ServerTakesPriorityOverRepoURL(t *testing.T) {
 	}
 	logger := slog.Default()
 
-	errMsg := normalizeTraceProject(clientCtx, "akashi", nil, nil, nil, logger)
+	errMsg := normalizeTraceProject(clientCtx, "akashi", nil, nil, nil, nil, logger)
 
 	assert.Empty(t, errMsg)
 	assert.Equal(t, "akashi", clientCtx["project"])
@@ -178,7 +178,7 @@ func TestNormalizeTraceProject_RejectsUnknownProject(t *testing.T) {
 	resolveAlias := func(_ string) string { return "" }
 	projectKnown := func(_ string) bool { return false }
 
-	errMsg := normalizeTraceProject(clientCtx, "", resolveAlias, projectKnown, nil, logger)
+	errMsg := normalizeTraceProject(clientCtx, "", resolveAlias, projectKnown, nil, nil, logger)
 
 	assert.Contains(t, errMsg, "unknown project winnipeg-v1")
 	_, hasProject := clientCtx["project"]
@@ -192,8 +192,27 @@ func TestNormalizeTraceProject_NilProjectKnownAcceptsValue(t *testing.T) {
 
 	resolveAlias := func(_ string) string { return "" }
 
-	errMsg := normalizeTraceProject(clientCtx, "", resolveAlias, nil, nil, logger)
+	errMsg := normalizeTraceProject(clientCtx, "", resolveAlias, nil, nil, nil, logger)
 
 	assert.Empty(t, errMsg)
 	assert.Equal(t, "new-project", clientCtx["project"])
+}
+
+func TestNormalizeTraceProject_RejectionIncludesSuggestion(t *testing.T) {
+	// Reproduces the mono incident: an agent submits an org-prefixed name
+	// when the canonical is the basename. The rejection error must point
+	// the agent at the canonical so it can recover without guessing again.
+	clientCtx := map[string]any{"project": "ardent-mono"}
+	logger := slog.Default()
+
+	resolveAlias := func(_ string) string { return "" }
+	projectKnown := func(_ string) bool { return false }
+	listKnownProjects := func() []string { return []string{"akashi", "mono", "tiger"} }
+
+	errMsg := normalizeTraceProject(clientCtx, "", resolveAlias, projectKnown, nil, listKnownProjects, logger)
+
+	assert.Contains(t, errMsg, "unknown project ardent-mono")
+	assert.Contains(t, errMsg, "Did you mean")
+	assert.Contains(t, errMsg, `"mono"`)
+	assert.Contains(t, errMsg, "Known projects")
 }

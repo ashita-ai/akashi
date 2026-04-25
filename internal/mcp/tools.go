@@ -17,6 +17,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/authz"
 	"github.com/ashita-ai/akashi/internal/ctxutil"
 	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/projectsuggest"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/service/tracehealth"
@@ -678,13 +679,29 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 	}, nil
 }
 
-func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest) (toolResult *mcplib.CallToolResult, err error) {
 	orgID := ctxutil.OrgIDFromContext(ctx)
 	claims := ctxutil.ClaimsFromContext(ctx)
 
 	if claims == nil {
 		return errorResult("authentication required"), nil
 	}
+
+	// Notify the IDE hook gate of every trace outcome — success clears any
+	// "last trace failed" marker, failure sets it. The post-commit hook
+	// reads this to warn when an agent committed after a rejected trace.
+	// Use the JWT-claimed identity (pre-enrichment) to match how the IDE
+	// hook script scopes its own per-agent state.
+	defer func() {
+		if s.onTraceComplete == nil || claims == nil || claims.AgentID == "" {
+			return
+		}
+		if toolResult != nil && toolResult.IsError {
+			s.onTraceComplete(claims.AgentID, true, firstTextContent(toolResult))
+		} else if toolResult != nil {
+			s.onTraceComplete(claims.AgentID, false, "")
+		}
+	}()
 
 	agentID := request.GetString("agent_id", "")
 	// Normalize decision_type for validation and hash computation. The service
@@ -1031,13 +1048,19 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 					)), nil
 				}
 				if hasProjects {
+					var suffix string
+					if known, kerr := s.db.DistinctProjects(ctx, orgID); kerr == nil {
+						suffix = projectsuggest.FormatRejectionSuffix(clientProject, known)
+					} else {
+						s.logger.Warn("distinct projects lookup failed (suggestions suppressed)", "error", kerr)
+					}
 					return errorResult(fmt.Sprintf(
 						"unknown project %q: no server-side git verification available and no alias mapping exists. "+
 							"Retry this call with cwd set to your current git working directory "+
 							"(the server will run git there to find the canonical name), "+
 							"or with repo_url set to the repo's git remote URL. "+
-							"If neither is available, ensure MCP roots are configured or ask an admin to create a project alias.",
-						clientProject,
+							"If neither is available, ensure MCP roots are configured or ask an admin to create a project alias.%s",
+						clientProject, suffix,
 					)), nil
 				}
 				// First-ever project in this org — accept it to bootstrap.

@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"path"
 	"strings"
+
+	"github.com/ashita-ai/akashi/internal/projectsuggest"
 )
 
 // repoNameFromURL extracts a repository name from a git remote URL.
@@ -52,12 +54,17 @@ func repoNameFromURL(rawURL string) string {
 //
 // When the project name changes, the original value is preserved under the
 // "project_submitted" key for the audit trail.
+//
+// listKnownProjects, when non-nil, supplies the org's known project names so
+// the rejection error can include "did you mean" suggestions. Errors from
+// the lookup are non-fatal — callers fall back to the bare rejection.
 func normalizeTraceProject(
 	clientCtx map[string]any,
 	serverProject string,
 	resolveAlias func(project string) string,
 	projectKnown func(project string) bool,
 	hasAnyProjects func() bool,
+	listKnownProjects func() []string,
 	logger *slog.Logger,
 ) string {
 	clientProject, _ := clientCtx["project"].(string)
@@ -119,7 +126,11 @@ func normalizeTraceProject(
 			"project", clientProject,
 		)
 		delete(clientCtx, "project")
-		return "unknown project " + clientProject + ": provide a valid repo_url or ask an admin to create a project alias"
+		suffix := ""
+		if listKnownProjects != nil {
+			suffix = projectsuggest.FormatRejectionSuffix(clientProject, listKnownProjects())
+		}
+		return "unknown project " + clientProject + ": provide a valid repo_url or ask an admin to create a project alias." + suffix
 	}
 
 	return ""

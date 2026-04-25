@@ -55,16 +55,18 @@ Be honest about confidence — most decisions warrant 0.4-0.8, not 0.9+. Referen
 
 // Server wraps the MCP server with Akashi's service layer.
 type Server struct {
-	mcpServer                   *mcpserver.MCPServer
-	db                          storage.Store      // for resources (read-only queries)
-	decisionSvc                 *decisions.Service // for tools (shared business logic)
-	grantCache                  *authz.GrantCache  // optional cache for LoadGrantedSet
-	logger                      *slog.Logger
-	rootsCache                  *rootsCache          // caches MCP roots per session (one request per session)
-	checkCache                  *checkCache          // tracks whether akashi_check returned results per session for precedent nudge
-	onCheck                     func(agentID string) // called when akashi_check is invoked; wires IDE hook gate
-	highConfidenceWarnThreshold float32              // confidence above this with no evidence triggers a warning
-	standardTypes               map[string]bool      // configurable set of standard decision types for tips
+	mcpServer       *mcpserver.MCPServer
+	db              storage.Store      // for resources (read-only queries)
+	decisionSvc     *decisions.Service // for tools (shared business logic)
+	grantCache      *authz.GrantCache  // optional cache for LoadGrantedSet
+	logger          *slog.Logger
+	rootsCache      *rootsCache // caches MCP roots per session (one request per session)
+	checkCache      *checkCache // tracks whether akashi_check returned results per session for precedent nudge
+	onCheck         func(agentID string)
+	onTraceComplete func(agentID string, isError bool, errMsg string)
+
+	highConfidenceWarnThreshold float32
+	standardTypes               map[string]bool
 	autoAssessor                *autoassess.Assessor // optional auto-assessor for conflict resolution signals
 }
 
@@ -73,6 +75,15 @@ type Server struct {
 // checks per-agent rather than per-machine.
 func (s *Server) SetCheckNotify(f func(agentID string)) {
 	s.onCheck = f
+}
+
+// SetTraceCompleteNotify registers a callback that fires after every
+// akashi_trace tool call, with isError reflecting whether the call returned
+// an error result. The hook layer uses this to surface a warning at git
+// commit time when the agent's last trace was rejected — closing the
+// "agent burns attempts then silently commits" failure mode.
+func (s *Server) SetTraceCompleteNotify(f func(agentID string, isError bool, errMsg string)) {
+	s.onTraceComplete = f
 }
 
 // SetAutoAssessor registers the auto-assessor for conflict resolution signals.
@@ -127,4 +138,20 @@ func errorResult(msg string) *mcplib.CallToolResult {
 		},
 		IsError: true,
 	}
+}
+
+// firstTextContent returns the text of the first TextContent block in a
+// tool result, or "" if none is present. Used to surface a concise summary
+// of why a tool call errored when notifying downstream consumers (e.g. the
+// IDE hook gate's last-trace-error tracker).
+func firstTextContent(result *mcplib.CallToolResult) string {
+	if result == nil {
+		return ""
+	}
+	for _, c := range result.Content {
+		if tc, ok := c.(mcplib.TextContent); ok {
+			return tc.Text
+		}
+	}
+	return ""
 }
