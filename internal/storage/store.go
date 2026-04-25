@@ -124,6 +124,11 @@ type Store interface {
 	// in the org. Used to distinguish first-ever project from unknown project.
 	HasAnyProjects(ctx context.Context, orgID uuid.UUID) (bool, error)
 
+	// DistinctProjects returns all distinct project names used in active
+	// decisions within the org. Used to surface "did you mean" suggestions
+	// when an unknown project name is rejected.
+	DistinctProjects(ctx context.Context, orgID uuid.UUID) ([]string, error)
+
 	// ---- Decision Type Aliases ----
 
 	// ResolveDecisionTypeAlias returns the canonical decision type for the given

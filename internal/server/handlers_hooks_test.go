@@ -1063,3 +1063,135 @@ func TestHandleHookPostToolUse_BashNonGitCommit(t *testing.T) {
 	assert.True(t, resp.Continue)
 	assert.True(t, resp.SuppressOutput)
 }
+
+func TestHookCheckStore_TraceErrorMarker(t *testing.T) {
+	t.Run("LastTraceError is empty by default", func(t *testing.T) {
+		s := newHookCheckStore()
+		_, ok := s.LastTraceError("agent-a")
+		assert.False(t, ok)
+	})
+
+	t.Run("MarkTraceErrored makes LastTraceError visible to same agent", func(t *testing.T) {
+		s := newHookCheckStore()
+		s.MarkTraceErrored("agent-a", "unknown project \"foo\"")
+		msg, ok := s.LastTraceError("agent-a")
+		assert.True(t, ok)
+		assert.Equal(t, "unknown project \"foo\"", msg)
+	})
+
+	t.Run("MarkTraceErrored does not bleed across agents", func(t *testing.T) {
+		// Per-agent isolation: agent-a's failure must not surface as a
+		// warning in agent-b's commit hook.
+		s := newHookCheckStore()
+		s.MarkTraceErrored("agent-a", "rejected")
+		_, ok := s.LastTraceError("agent-b")
+		assert.False(t, ok)
+	})
+
+	t.Run("ClearTraceError removes the marker", func(t *testing.T) {
+		// Successful trace after a failure clears the warning — the
+		// agent recovered, no need to surface the prior rejection at
+		// commit time.
+		s := newHookCheckStore()
+		s.MarkTraceErrored("agent-a", "rejected")
+		s.ClearTraceError("agent-a")
+		_, ok := s.LastTraceError("agent-a")
+		assert.False(t, ok)
+	})
+
+	t.Run("expired trace error returns false", func(t *testing.T) {
+		s := newHookCheckStore()
+		s.mu.Lock()
+		s.traceErrors["stale-agent"] = traceErrEnt{
+			at:  time.Now().Add(-(traceErrorTTL + time.Second)),
+			msg: "old rejection",
+		}
+		s.mu.Unlock()
+		_, ok := s.LastTraceError("stale-agent")
+		assert.False(t, ok, "errors older than the TTL should not surface")
+	})
+
+	t.Run("cleanup evicts expired trace errors", func(t *testing.T) {
+		s := newHookCheckStore()
+		s.MarkTraceErrored("fresh-agent", "fresh")
+		s.mu.Lock()
+		s.traceErrors["stale-agent"] = traceErrEnt{
+			at:  time.Now().Add(-(traceErrorTTL + time.Second)),
+			msg: "stale",
+		}
+		s.mu.Unlock()
+		s.Cleanup()
+		s.mu.RLock()
+		_, staleExists := s.traceErrors["stale-agent"]
+		_, freshExists := s.traceErrors["fresh-agent"]
+		s.mu.RUnlock()
+		assert.False(t, staleExists)
+		assert.True(t, freshExists)
+	})
+
+	t.Run("empty agent_id is ignored by Mark/Clear/LastTraceError", func(t *testing.T) {
+		// Mirrors Record's behavior: an empty agent_id must never set or
+		// match a marker, otherwise legacy callers that omit agent_id
+		// would all collide on a single key.
+		s := newHookCheckStore()
+		s.MarkTraceErrored("", "would collide")
+		_, ok := s.LastTraceError("")
+		assert.False(t, ok)
+	})
+}
+
+func TestNotifyTraceComplete_SetsAndClearsMarker(t *testing.T) {
+	h := &Handlers{hookChecks: newHookCheckStore()}
+
+	h.NotifyTraceComplete("agent-a", true, "unknown project \"ardent-mono\"")
+	msg, ok := h.hookChecks.LastTraceError("agent-a")
+	assert.True(t, ok, "errored trace should set the marker")
+	assert.Contains(t, msg, "ardent-mono")
+
+	h.NotifyTraceComplete("agent-a", false, "")
+	_, ok = h.hookChecks.LastTraceError("agent-a")
+	assert.False(t, ok, "successful trace should clear the marker")
+}
+
+func TestHandleHookPostToolUse_GitCommitWarnsAfterTraceError(t *testing.T) {
+	// End-to-end shape of the new flow: agent's last akashi_trace was
+	// rejected, agent commits anyway, the post-commit hook surfaces a
+	// visible warning so the rejection doesn't disappear silently.
+	h := &Handlers{
+		hookChecks: newHookCheckStore(),
+		autoTrace:  false,
+	}
+	h.NotifyTraceComplete("agent-a", true, `unknown project "ardent-mono": retry with cwd or repo_url`)
+
+	body := `{"session_id":"sess-1","agent_id":"agent-a","tool_name":"Bash","tool_input":{"command":"git commit -m 'fix'"},"cwd":"/tmp"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/hooks/post-tool-use", strings.NewReader(body))
+	h.HandleHookPostToolUse(rec, req)
+
+	var resp hookResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	require.NotNil(t, resp.HookSpecificOutput)
+	assert.Contains(t, resp.HookSpecificOutput.Message, "WARNING")
+	assert.Contains(t, resp.HookSpecificOutput.Message, "ardent-mono",
+		"warning should embed the rejection text so the agent sees what to fix")
+}
+
+func TestHandleHookPostToolUse_GitCommitNoWarningWhenTraceSucceeded(t *testing.T) {
+	// Negative case: when the agent's last trace succeeded (or no recent
+	// trace happened at all), the commit hook is silent on the trace
+	// front. Prevents stale warnings polluting unrelated commits.
+	h := &Handlers{
+		hookChecks: newHookCheckStore(),
+		autoTrace:  false,
+	}
+
+	body := `{"session_id":"sess-1","agent_id":"agent-clean","tool_name":"Bash","tool_input":{"command":"git commit -m 'fix'"},"cwd":"/tmp"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/hooks/post-tool-use", strings.NewReader(body))
+	h.HandleHookPostToolUse(rec, req)
+
+	var resp hookResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	require.NotNil(t, resp.HookSpecificOutput)
+	assert.NotContains(t, resp.HookSpecificOutput.Message, "WARNING")
+}

@@ -313,6 +313,14 @@ func (h *Handlers) buildTraceAgentContext(
 			}
 			return hasProjects
 		},
+		func() []string {
+			projects, err := h.db.DistinctProjects(r.Context(), orgID)
+			if err != nil {
+				h.logger.Warn("distinct projects lookup failed (suggestions suppressed)", "error", err)
+				return nil
+			}
+			return projects
+		},
 		h.logger,
 	); errMsg != "" {
 		return nil, errMsg
