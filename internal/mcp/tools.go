@@ -17,6 +17,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/authz"
 	"github.com/ashita-ai/akashi/internal/ctxutil"
 	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/projectsuggest"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/service/tracehealth"
@@ -1031,13 +1032,19 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 					)), nil
 				}
 				if hasProjects {
+					var suffix string
+					if known, kerr := s.db.DistinctProjects(ctx, orgID); kerr == nil {
+						suffix = projectsuggest.FormatRejectionSuffix(clientProject, known)
+					} else {
+						s.logger.Warn("distinct projects lookup failed (suggestions suppressed)", "error", kerr)
+					}
 					return errorResult(fmt.Sprintf(
 						"unknown project %q: no server-side git verification available and no alias mapping exists. "+
 							"Retry this call with cwd set to your current git working directory "+
 							"(the server will run git there to find the canonical name), "+
 							"or with repo_url set to the repo's git remote URL. "+
-							"If neither is available, ensure MCP roots are configured or ask an admin to create a project alias.",
-						clientProject,
+							"If neither is available, ensure MCP roots are configured or ask an admin to create a project alias.%s",
+						clientProject, suffix,
 					)), nil
 				}
 				// First-ever project in this org — accept it to bootstrap.

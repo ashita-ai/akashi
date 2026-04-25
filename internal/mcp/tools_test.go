@@ -3944,6 +3944,51 @@ func TestHandleTrace_UnknownProjectErrorSuggestsCwd(t *testing.T) {
 	assert.Contains(t, text, "unknown project")
 	assert.Contains(t, text, "cwd", "error should suggest retrying with cwd")
 	assert.Contains(t, text, "repo_url", "error should suggest retrying with repo_url")
+	assert.Contains(t, text, "Known projects",
+		"rejection should enumerate known projects so the agent can pick one without guessing")
+}
+
+func TestHandleTrace_UnknownProjectErrorSuggestsCanonical(t *testing.T) {
+	// The mono-incident pattern: an org-prefixed name like "ardent-mono"
+	// when the canonical is "mono". The rejection error must point the
+	// agent at the canonical via "Did you mean" so it can recover on the
+	// next attempt rather than burn more tries on hallucinated names.
+	ctx := adminCtx()
+	agentID := "unk-sug-" + uuid.New().String()[:8]
+	_, _ = testSvc.ResolveOrCreateAgent(ctx, uuid.Nil, agentID, model.RoleAdmin, nil)
+
+	// Seed a canonical project named exactly "mono" (the basename the
+	// suggester should derive from "ardent-mono"). We fake-create the
+	// repo so the cwd path establishes "mono" as a known project.
+	seedDir := makeGitRepo(t, "git@github.com:seed-org/mono.git")
+	seedResp, seedErr := testServer.handleTrace(ctx, mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name: "akashi_trace",
+			Arguments: map[string]any{
+				"agent_id":      agentID,
+				"decision_type": "investigation",
+				"outcome":       "seed mono as a known project for suggestion test",
+				"confidence":    0.5,
+				"cwd":           seedDir,
+			},
+		},
+	})
+	require.NoError(t, seedErr)
+	require.False(t, seedResp.IsError, "seed trace should succeed: %s", parseToolText(t, seedResp))
+
+	result, err := testServer.handleTrace(ctx, traceRequest(map[string]any{
+		"agent_id":      agentID,
+		"decision_type": "architecture",
+		"outcome":       "should be rejected with a 'did you mean mono' hint",
+		"confidence":    0.6,
+		"project":       "ardent-mono",
+	}))
+	require.NoError(t, err)
+	require.True(t, result.IsError, "expected rejection for org-prefixed unknown project")
+	text := parseToolText(t, result)
+	assert.Contains(t, text, "Did you mean")
+	assert.Contains(t, text, `"mono"`,
+		"rejection should suggest the canonical 'mono' from the org-prefixed submission")
 }
 
 func TestResolveProjectFilter_ResolvesAlias(t *testing.T) {
