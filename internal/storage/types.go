@@ -137,6 +137,12 @@ type ConflictGroupFilters struct {
 	// conflict matching this exact status (e.g. "open", "resolved",
 	// "false_positive"). When nil, all groups are returned.
 	Status *string
+	// DetectedSince restricts results to groups whose last_detected_at is
+	// at or after this timestamp. Used by the SessionStart hook to keep old,
+	// long-unresolved disagreements from dominating the surfaced list — the
+	// reasoning being that a group quiet for weeks is unlikely to be relevant
+	// to the agent's current task. When nil, no time bound is applied.
+	DetectedSince *time.Time
 }
 
 // ---------------------------------------------------------------------------

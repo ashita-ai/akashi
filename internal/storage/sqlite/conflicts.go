@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -53,16 +54,13 @@ func (l *LiteDB) ListConflicts(ctx context.Context, orgID uuid.UUID, filters sto
 	return scanConflictRows(rows)
 }
 
-// ListConflictGroups returns grouped conflicts.
-func (l *LiteDB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, filters storage.ConflictGroupFilters, limit, offset int) ([]model.ConflictGroup, error) {
-	if limit <= 0 {
-		limit = 20
-	}
-
-	var conds []string
-	var args []any
-	conds = append(conds, "cg.org_id = ?")
-	args = append(args, uuidStr(orgID))
+// conflictGroupWhere builds the shared WHERE clause for ListConflictGroups
+// and CountConflictGroups. Pre-pends "cg.org_id = ?" so callers don't have
+// to. Status is intentionally excluded — it requires aggregation over
+// scored_conflicts and is built per-call as a HAVING clause.
+func conflictGroupWhere(orgID uuid.UUID, filters storage.ConflictGroupFilters) (string, []any) {
+	conds := []string{"cg.org_id = ?"}
+	args := []any{uuidStr(orgID)}
 
 	if filters.DecisionType != nil {
 		conds = append(conds, "cg.decision_type = ?")
@@ -80,8 +78,27 @@ func (l *LiteDB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, filter
 		conds = append(conds, "EXISTS (SELECT 1 FROM scored_conflicts sc_p WHERE sc_p.group_id = cg.id AND (sc_p.project_a = ? OR sc_p.project_b = ?))")
 		args = append(args, *filters.Project, *filters.Project)
 	}
+	if filters.DetectedSince != nil {
+		// last_detected_at is written by the column DEFAULT (datetime('now'),
+		// space-separated, no fractional seconds). Callers pass RFC3339Nano
+		// (T-separated, with Z). These don't compare correctly as raw text:
+		// space (0x20) sorts before T (0x54), so a stale local-format time
+		// can collate after a fresher ISO time. Wrap both sides in datetime()
+		// to canonicalize to UTC second precision.
+		conds = append(conds, "datetime(cg.last_detected_at) >= datetime(?)")
+		args = append(args, filters.DetectedSince.UTC().Format(time.RFC3339Nano))
+	}
 
-	where := "WHERE " + strings.Join(conds, " AND ")
+	return "WHERE " + strings.Join(conds, " AND "), args
+}
+
+// ListConflictGroups returns grouped conflicts.
+func (l *LiteDB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, filters storage.ConflictGroupFilters, limit, offset int) ([]model.ConflictGroup, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	where, args := conflictGroupWhere(orgID, filters)
 
 	// Status filter semantics:
 	//   - "open": groups with at least one open conflict
@@ -171,6 +188,56 @@ func (l *LiteDB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, filter
 		return []model.ConflictGroup{}, nil
 	}
 	return groups, nil
+}
+
+// CountConflictGroups returns the total number of conflict groups matching
+// the filters. Mirrors the Postgres semantics: when Status is set, the count
+// reflects groups whose member scored_conflicts satisfy the status predicate
+// ("open" = at least one open; "resolved" = all closed; "false_positive" =
+// all closed and at least one labeled false_positive).
+func (l *LiteDB) CountConflictGroups(ctx context.Context, orgID uuid.UUID, filters storage.ConflictGroupFilters) (int, error) {
+	where, args := conflictGroupWhere(orgID, filters)
+
+	if filters.Status == nil {
+		q := fmt.Sprintf( //nolint:gosec // G201
+			`SELECT COUNT(*) FROM conflict_groups cg %s`, where,
+		)
+		var n int
+		if err := l.db.QueryRowContext(ctx, q, args...).Scan(&n); err != nil {
+			return 0, fmt.Errorf("sqlite: count conflict groups: %w", err)
+		}
+		return n, nil
+	}
+
+	// Status branch: wrap the per-group filter in a sub-SELECT and apply the
+	// same EXISTS-based predicates ListConflictGroups uses, so counts and
+	// listings always agree.
+	var statusPred string
+	switch *filters.Status {
+	case "open":
+		statusPred = "EXISTS (SELECT 1 FROM scored_conflicts sc WHERE sc.group_id = cg.id AND sc.status = ?)"
+		args = append(args, *filters.Status)
+	case "resolved":
+		statusPred = "NOT EXISTS (SELECT 1 FROM scored_conflicts sc WHERE sc.group_id = cg.id AND sc.status = 'open')" +
+			" AND EXISTS (SELECT 1 FROM scored_conflicts sc WHERE sc.group_id = cg.id)"
+	case "false_positive":
+		statusPred = "NOT EXISTS (SELECT 1 FROM scored_conflicts sc WHERE sc.group_id = cg.id AND sc.status = 'open')" +
+			" AND EXISTS (SELECT 1 FROM scored_conflicts sc WHERE sc.group_id = cg.id AND sc.status = 'false_positive')"
+	default:
+		statusPred = "EXISTS (SELECT 1 FROM scored_conflicts sc WHERE sc.group_id = cg.id AND sc.status = ?)"
+		args = append(args, *filters.Status)
+	}
+
+	q := fmt.Sprintf( //nolint:gosec // G201
+		`SELECT COUNT(*) FROM conflict_groups cg %s AND %s`,
+		where, statusPred,
+	)
+
+	var n int
+	if err := l.db.QueryRowContext(ctx, q, args...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("sqlite: count conflict groups (status=%s): %w", *filters.Status, err)
+	}
+	return n, nil
 }
 
 // loadRepresentativeConflict loads the most significant open conflict in a group.

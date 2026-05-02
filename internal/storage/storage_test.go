@@ -5518,6 +5518,184 @@ func TestListConflictGroups_Limits(t *testing.T) {
 	_ = groups
 }
 
+// TestListConflictGroups_DetectedSinceFilter exercises the recency window
+// the SessionStart hook applies. Without this filter, weeks-old unresolved
+// disagreements dominate the per-session nudge regardless of whether they
+// relate to the agent's current task. The test seeds two isolated groups
+// (with unique decision_type suffixes to avoid colliding with concurrent
+// tests against the shared testDB) and asserts that DetectedSince correctly
+// partitions them by last_detected_at.
+func TestListConflictGroups_DetectedSinceFilter(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	decType := "ds_filter_" + suffix
+	agentA := "ds-a-" + suffix
+	agentB := "ds-b-" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	// Four decisions — two distinct (a,b) pairs — because
+	// scored_conflicts has UNIQUE(decision_a_id, decision_b_id) and the
+	// ON CONFLICT upsert reassigns the row's group_id, which would
+	// collapse both groups into one populated group.
+	dA1, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: decType,
+		Outcome: "fresh-a", Confidence: 0.7,
+	})
+	require.NoError(t, err)
+	dB1, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: decType,
+		Outcome: "fresh-b", Confidence: 0.7,
+	})
+	require.NoError(t, err)
+	dA2, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, DecisionType: decType,
+		Outcome: "stale-a", Confidence: 0.7,
+	})
+	require.NoError(t, err)
+	dB2, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, DecisionType: decType,
+		Outcome: "stale-b", Confidence: 0.7,
+	})
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	freshAt := now.Add(-1 * time.Hour)
+	staleAt := now.Add(-30 * 24 * time.Hour)
+
+	// Two groups distinguished by conflict_kind to satisfy the
+	// (org_id, agent_a, agent_b, conflict_kind, decision_type) UNIQUE constraint.
+	var freshID, staleID uuid.UUID
+	err = testDB.Pool().QueryRow(ctx,
+		`INSERT INTO conflict_groups (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic, first_detected_at, last_detected_at)
+		 VALUES ($1, $2, $3, 'cross_agent', $4, 'recency-test', $5, $5)
+		 RETURNING id`,
+		uuid.Nil, agentA, agentB, decType, freshAt,
+	).Scan(&freshID)
+	require.NoError(t, err)
+
+	err = testDB.Pool().QueryRow(ctx,
+		`INSERT INTO conflict_groups (org_id, agent_a, agent_b, conflict_kind, decision_type, group_topic, first_detected_at, last_detected_at)
+		 VALUES ($1, $2, $3, 'self_contradiction', $4, 'recency-test', $5, $5)
+		 RETURNING id`,
+		uuid.Nil, agentA, agentB, decType, staleAt,
+	).Scan(&staleID)
+	require.NoError(t, err)
+
+	// Each group needs at least one open scored_conflict so the Status="open"
+	// filter (which the hook always applies) leaves it visible.
+	topicSim := 0.9
+	outcomeDiv := 0.85
+	sig := topicSim * outcomeDiv
+	_, err = testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA1.ID, DecisionBID: dB1.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: decType, DecisionTypeB: decType,
+		OutcomeA: "fresh-a", OutcomeB: "fresh-b",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text", GroupID: &freshID,
+	})
+	require.NoError(t, err)
+
+	_, err = testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindSelfContradiction, DecisionAID: dA2.ID, DecisionBID: dB2.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: decType, DecisionTypeB: decType,
+		OutcomeA: "stale-a", OutcomeB: "stale-b",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text", GroupID: &staleID,
+	})
+	require.NoError(t, err)
+
+	// InsertScoredConflict bumps the parent group's last_detected_at to now()
+	// as a side effect. Override both groups back to the timestamps we want
+	// the recency filter to see — without this, both groups would appear
+	// "fresh" and the test would prove nothing.
+	_, err = testDB.Pool().Exec(ctx,
+		`UPDATE conflict_groups SET last_detected_at = $1, first_detected_at = $1 WHERE id = $2`,
+		freshAt, freshID)
+	require.NoError(t, err)
+	_, err = testDB.Pool().Exec(ctx,
+		`UPDATE conflict_groups SET last_detected_at = $1, first_detected_at = $1 WHERE id = $2`,
+		staleAt, staleID)
+	require.NoError(t, err)
+
+	// Filter to this test's decision_type so other tests' rows can't pollute
+	// the assertions when the suite is run against a shared DB.
+	dt := decType
+
+	t.Run("no DetectedSince returns both", func(t *testing.T) {
+		groups, err := testDB.ListConflictGroups(ctx, uuid.Nil, storage.ConflictGroupFilters{
+			DecisionType: &dt,
+		}, 50, 0)
+		require.NoError(t, err)
+		assert.Len(t, groups, 2)
+	})
+
+	t.Run("7-day window excludes stale", func(t *testing.T) {
+		since := now.Add(-7 * 24 * time.Hour)
+		groups, err := testDB.ListConflictGroups(ctx, uuid.Nil, storage.ConflictGroupFilters{
+			DecisionType:  &dt,
+			DetectedSince: &since,
+		}, 50, 0)
+		require.NoError(t, err)
+		require.Len(t, groups, 1)
+		assert.Equal(t, freshID, groups[0].ID, "only the fresh group should remain")
+	})
+
+	t.Run("31-day window includes both", func(t *testing.T) {
+		since := now.Add(-31 * 24 * time.Hour)
+		groups, err := testDB.ListConflictGroups(ctx, uuid.Nil, storage.ConflictGroupFilters{
+			DecisionType:  &dt,
+			DetectedSince: &since,
+		}, 50, 0)
+		require.NoError(t, err)
+		assert.Len(t, groups, 2)
+	})
+
+	t.Run("future window excludes both", func(t *testing.T) {
+		since := now.Add(1 * time.Hour)
+		groups, err := testDB.ListConflictGroups(ctx, uuid.Nil, storage.ConflictGroupFilters{
+			DecisionType:  &dt,
+			DetectedSince: &since,
+		}, 50, 0)
+		require.NoError(t, err)
+		assert.Empty(t, groups)
+	})
+
+	t.Run("CountConflictGroups honors DetectedSince", func(t *testing.T) {
+		since := now.Add(-7 * 24 * time.Hour)
+		count, err := testDB.CountConflictGroups(ctx, uuid.Nil, storage.ConflictGroupFilters{
+			DecisionType:  &dt,
+			DetectedSince: &since,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 1, count, "CountConflictGroups must apply the same recency filter")
+	})
+
+	t.Run("Status=open combined with DetectedSince", func(t *testing.T) {
+		// Mirror how buildSessionContext composes the filter — both flags
+		// active together. Both groups have at least one open conflict, so
+		// the Status filter alone admits both; only DetectedSince narrows
+		// to the fresh one. Regression test against future refactors that
+		// might place DetectedSince in a clause where it gets excluded by
+		// the HAVING-driven Status branch.
+		openStatus := "open"
+		since := now.Add(-7 * 24 * time.Hour)
+		groups, err := testDB.ListConflictGroups(ctx, uuid.Nil, storage.ConflictGroupFilters{
+			DecisionType:  &dt,
+			Status:        &openStatus,
+			DetectedSince: &since,
+		}, 50, 0)
+		require.NoError(t, err)
+		require.Len(t, groups, 1)
+		assert.Equal(t, freshID, groups[0].ID)
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Tests: GetAgentWinRates
 // ---------------------------------------------------------------------------

@@ -1027,6 +1027,50 @@ func TestHandleHookPreToolUse_EditAfterCheck(t *testing.T) {
 	assert.True(t, resp.SuppressOutput)
 }
 
+// TestInferProjectFromHook covers the project resolution path used by all
+// three hook handlers. cwd-based resolution is preferred when it works;
+// repo_url is the fallback and is the only working path when the akashi
+// server runs in Docker (the host's cwd path is invisible inside the
+// container, so `git -C <cwd>` always fails there).
+func TestInferProjectFromHook(t *testing.T) {
+	t.Run("cwd resolves on host installs", func(t *testing.T) {
+		dir := makeTestGitRepo(t)
+		// Repo created with origin = github.com/test/test-repo.git
+		// (see makeTestGitRepo above) — basename without .git is "test-repo".
+		assert.Equal(t, "test-repo", inferProjectFromHook(dir, ""))
+	})
+
+	t.Run("repo_url is used when cwd resolution fails", func(t *testing.T) {
+		// /nonexistent has no .git, so cwd-based inference returns "".
+		// repo_url is parsed locally and produces the canonical name.
+		assert.Equal(t, "akashi", inferProjectFromHook("/nonexistent",
+			"git@github.com:ashita-ai/akashi.git"))
+	})
+
+	t.Run("cwd takes precedence when both succeed", func(t *testing.T) {
+		dir := makeTestGitRepo(t)
+		// cwd resolves to "test-repo" but repo_url claims "other".
+		// cwd is server-verified (the server ran git itself), so it wins.
+		assert.Equal(t, "test-repo", inferProjectFromHook(dir,
+			"git@github.com:other-org/other.git"))
+	})
+
+	t.Run("returns empty when neither signal works", func(t *testing.T) {
+		assert.Empty(t, inferProjectFromHook("", ""))
+		assert.Empty(t, inferProjectFromHook("/nonexistent", ""))
+		assert.Empty(t, inferProjectFromHook("", "   "))
+	})
+
+	t.Run("malformed repo_url returns empty without crashing", func(t *testing.T) {
+		// url.Parse rejects inputs with an unparseable scheme. SessionStart
+		// callers feed the result into a project-equality filter, so a
+		// non-empty garbage string would just match no rows — but returning
+		// "" is cleaner and matches repoNameFromURL's documented contract
+		// for malformed inputs.
+		assert.Empty(t, inferProjectFromHook("", "://malformed"))
+	})
+}
+
 // TestHandleHookSessionStart_ValidBody exercises HandleHookSessionStart
 // with a valid JSON body. Since buildSessionContext calls h.db which panics
 // with nil, we just test the invalid JSON path and the response shape.
