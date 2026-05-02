@@ -905,6 +905,11 @@ func conflictGroupWhere(f ConflictGroupFilters, argOffset int) (string, []any) {
 	if f.Project != nil {
 		clause += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM scored_conflicts sc_p WHERE sc_p.group_id = cg.id AND (sc_p.project_a = $%d OR sc_p.project_b = $%d))", argOffset, argOffset)
 		args = append(args, *f.Project)
+		argOffset++
+	}
+	if f.DetectedSince != nil {
+		clause += fmt.Sprintf(" AND cg.last_detected_at >= $%d", argOffset)
+		args = append(args, *f.DetectedSince)
 		argOffset++ //nolint:ineffassign
 	}
 	return clause, args

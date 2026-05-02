@@ -51,6 +51,20 @@ const hookCheckTTL = 10 * time.Minute
 // doesn't leak into tomorrow's session.
 const traceErrorTTL = 1 * time.Hour
 
+// sessionStartConflictWindow bounds how recent a conflict group's
+// last_detected_at must be to surface in the SessionStart additionalContext.
+// Conflicts older than this are still in the database and dashboard
+// (/v1/conflicts), but are filtered out of the per-session nudge so
+// weeks-old unresolved disagreements don't drown out fresh signal.
+//
+// 7 days roughly matches typical sprint/work cadences: a conflict that
+// hasn't been re-detected in a week is unlikely to be relevant to the
+// agent's current task, and rehearsing it on every session-start trains
+// agents to dismiss the conflict surface as noise. Recent decisions are
+// not filtered by this window — when a project is quiet, showing the
+// last few decisions (even if older) is informative context, not noise.
+const sessionStartConflictWindow = 7 * 24 * time.Hour
+
 // traceErrEnt records a single unresolved trace failure.
 type traceErrEnt struct {
 	at  time.Time
@@ -197,9 +211,17 @@ func (s *hookCheckStore) LastTraceError(agentID string) (string, bool) {
 }
 
 // hookSessionStartInput is the JSON body sent by Claude Code / Cursor on SessionStart.
+//
+// RepoURL is an akashi-specific extension injected by akashi-hook.sh after it
+// runs `git -C $CWD remote get-url origin` on the host. It exists because the
+// akashi server may run inside a Docker container, where the host's CWD path
+// is not visible — making in-server git resolution impossible. The hook
+// script, which always runs on the host, is the only place that can reliably
+// resolve the project name from the filesystem.
 type hookSessionStartInput struct {
 	SessionID string `json:"session_id"`
 	CWD       string `json:"cwd"`
+	RepoURL   string `json:"repo_url"`
 	Source    string `json:"source"` // "startup", "resume", etc.
 	Model     string `json:"model"`
 }
@@ -212,6 +234,7 @@ type hookPreToolUseInput struct {
 	ToolInput     map[string]any `json:"tool_input"`
 	HookEventName string         `json:"hook_event_name"`
 	CWD           string         `json:"cwd"`
+	RepoURL       string         `json:"repo_url"`
 }
 
 // hookPostToolUseInput is the JSON body sent on PostToolUse events.
@@ -223,6 +246,7 @@ type hookPostToolUseInput struct {
 	ToolResponse  string         `json:"tool_response"`
 	HookEventName string         `json:"hook_event_name"`
 	CWD           string         `json:"cwd"`
+	RepoURL       string         `json:"repo_url"`
 }
 
 // hookResponse is the JSON output format expected by Claude Code and Cursor hooks.
@@ -254,7 +278,7 @@ func (h *Handlers) HandleHookSessionStart(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	project := inferProjectFromCWD(input.CWD)
+	project := inferProjectFromHook(input.CWD, input.RepoURL)
 	taskLabel := suggestedTaskLabel(input.CWD)
 	recentContext := h.buildSessionContext(r.Context(), project, taskLabel)
 
@@ -301,9 +325,9 @@ func (h *Handlers) HandleHookPreToolUse(w http.ResponseWriter, r *http.Request) 
 
 	// Short-circuit: if the project has no decision history, don't gate edits.
 	// The empty marker is set during SessionStart and cleared on first trace.
-	// This check comes after IsRecent because inferProjectFromCWD spawns a
+	// This check comes after IsRecent because project inference may spawn a
 	// git subprocess, whereas IsRecent is a pure map lookup.
-	if project := inferProjectFromCWD(input.CWD); h.hookChecks.IsProjectEmpty(project) {
+	if project := inferProjectFromHook(input.CWD, input.RepoURL); h.hookChecks.IsProjectEmpty(project) {
 		writeHookJSON(w, hookResponse{Continue: true, SuppressOutput: true})
 		return
 	}
@@ -331,7 +355,7 @@ func (h *Handlers) HandleHookPostToolUse(w http.ResponseWriter, r *http.Request)
 		h.hookChecks.Record(input.AgentID)
 		// If a decision was just traced, the project is no longer empty.
 		if strings.Contains(input.ToolName, "trace") {
-			if project := inferProjectFromCWD(input.CWD); project != "" {
+			if project := inferProjectFromHook(input.CWD, input.RepoURL); project != "" {
 				h.hookChecks.ClearProjectEmpty(project)
 			}
 		}
@@ -411,9 +435,10 @@ func (h *Handlers) autoTraceCommit(input hookPostToolUseInput, commitMsg string)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	project := inferProjectFromCWD(input.CWD)
+	project := inferProjectFromHook(input.CWD, input.RepoURL)
 	if project == "" {
-		h.logger.Warn("auto-trace skipped: could not detect project from git remote", "cwd", input.CWD)
+		h.logger.Warn("auto-trace skipped: could not detect project from cwd or repo_url",
+			"cwd", input.CWD, "repo_url_present", input.RepoURL != "")
 		return
 	}
 
@@ -603,11 +628,16 @@ func (h *Handlers) buildSessionContext(ctx context.Context, project, taskLabel s
 		recent = nil
 	}
 
-	// Query open conflict groups — scoped by project when known.
-	// Use conflict_groups with open_count > 0 (not individual scored_conflicts)
-	// to show the deduplicated count of unresolved disagreements.
+	// Query open conflict groups — scoped by project when known and bounded
+	// by sessionStartConflictWindow so old, long-unresolved disagreements
+	// don't dominate the per-session nudge. The full list is still available
+	// at /v1/conflicts.
 	openStatus := "open"
-	groupFilter := storage.ConflictGroupFilters{Status: &openStatus}
+	since := time.Now().Add(-sessionStartConflictWindow)
+	groupFilter := storage.ConflictGroupFilters{
+		Status:        &openStatus,
+		DetectedSince: &since,
+	}
 	if project != "" {
 		groupFilter.Project = &project
 	}
@@ -617,23 +647,38 @@ func (h *Handlers) buildSessionContext(ctx context.Context, project, taskLabel s
 		conflictGroups = nil
 	}
 
+	// True count of recent open conflict groups, so the header is honest when
+	// the displayed list is truncated to 5. The same filter is applied to
+	// both queries so the header number and the listed items always agree
+	// on what "recent open" means.
+	openCount, err := h.db.CountConflictGroups(ctx, orgID, groupFilter)
+	if err != nil {
+		h.logger.Debug("hook session-start: count conflict groups failed", "error", err)
+		openCount = len(conflictGroups)
+	}
+
 	// Track whether this project has any decision history.
 	// Empty projects get a relaxed edit gate in HandleHookPreToolUse.
 	if project != "" {
-		if len(recent) == 0 && len(conflictGroups) == 0 {
+		if len(recent) == 0 && openCount == 0 {
 			h.hookChecks.MarkProjectEmpty(project)
 		} else {
 			h.hookChecks.ClearProjectEmpty(project)
 		}
 	}
 
-	// Build header — report deduplicated conflict group count, not raw scored_conflicts.
+	// Build header. The conflict label spells out the recency window so the
+	// count is interpretable on its own — agents reading "5 open conflicts"
+	// without context will assume "ever," but post-PR it means "in the last
+	// N days." Older disagreements remain queryable at /v1/conflicts.
+	windowDays := int(sessionStartConflictWindow / (24 * time.Hour))
+	conflictsLabel := fmt.Sprintf("%d open conflicts (last %dd)", openCount, windowDays)
 	if project != "" {
-		parts = append(parts, fmt.Sprintf("[akashi] Project: %s | %d recent decisions | %d open conflicts",
-			project, len(recent), len(conflictGroups)))
+		parts = append(parts, fmt.Sprintf("[akashi] Project: %s | %d recent decisions | %s",
+			project, len(recent), conflictsLabel))
 	} else {
-		parts = append(parts, fmt.Sprintf("[akashi] %d recent decisions | %d open conflicts",
-			len(recent), len(conflictGroups)))
+		parts = append(parts, fmt.Sprintf("[akashi] %d recent decisions | %s",
+			len(recent), conflictsLabel))
 	}
 
 	// Compact decision summaries.
@@ -649,8 +694,14 @@ func (h *Handlers) buildSessionContext(ctx context.Context, project, taskLabel s
 	}
 
 	// Conflict group summary — use the representative conflict for display.
+	// When the count exceeds what we listed, surface "showing N of M" so
+	// the agent knows the dashboard has more.
 	if len(conflictGroups) > 0 {
-		parts = append(parts, "\nOpen conflicts:")
+		header := "\nOpen conflicts:"
+		if openCount > len(conflictGroups) {
+			header = fmt.Sprintf("\nOpen conflicts (showing %d of %d):", len(conflictGroups), openCount)
+		}
+		parts = append(parts, header)
 		for _, g := range conflictGroups {
 			severity := "unknown"
 			explanation := ""
@@ -724,6 +775,26 @@ func inferProjectFromCWD(cwd string) string {
 		return ""
 	}
 	return gitRepoNameFromPath(cwd)
+}
+
+// inferProjectFromHook resolves the project name from the hook payload using
+// two server-verifiable signals, in order of preference:
+//
+//  1. cwd via `git -C <cwd> remote get-url origin` — only works when the
+//     server can reach the same filesystem as the IDE (host installs).
+//  2. repo_url — parsed locally without filesystem access. The hook script
+//     resolves the remote on the host and injects this field, which is the
+//     only reliable signal when akashi runs in Docker.
+//
+// Returns "" if neither signal yields a name. Both paths are considered
+// trustworthy: cwd is verified by the server's own git invocation, and
+// repo_url comes from the hook script (host shell), which is the same
+// trust boundary that already injects agent_id.
+func inferProjectFromHook(cwd, repoURL string) string {
+	if name := inferProjectFromCWD(cwd); name != "" {
+		return name
+	}
+	return repoNameFromURL(repoURL)
 }
 
 // gitRepoNameFromPath runs git to get the origin remote name for a path.

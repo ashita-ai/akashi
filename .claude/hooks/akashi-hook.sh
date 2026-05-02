@@ -37,6 +37,25 @@ if [ -n "$AGENT_ID" ]; then
   INPUT=$(echo "$INPUT" | jq --arg aid "$AGENT_ID" '. + {agent_id: $aid}' 2>/dev/null || echo "$INPUT")
 fi
 
+# Inject repo_url into the hook JSON payload by resolving `git remote get-url
+# origin` on the host. The akashi server may run inside Docker, where the
+# host's cwd path is invisible — making in-server git resolution fail. The
+# hook script always runs on the host, so it's the only place that can
+# reliably extract the repo identity from the filesystem. The server prefers
+# its own cwd-based git invocation when available (e.g., host installs) and
+# falls back to this repo_url string otherwise.
+HOOK_CWD=$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || true)
+if [ -n "$HOOK_CWD" ] && [ -d "$HOOK_CWD" ]; then
+  # `git remote get-url origin` is a local config read, not a network call,
+  # so no timeout is needed. Discard stderr — failures here (no remote, not
+  # a git repo, detached) are legitimate and must not pollute the hook
+  # output, which the IDE parses as JSON.
+  REPO_URL=$(git -C "$HOOK_CWD" remote get-url origin 2>/dev/null || true)
+  if [ -n "$REPO_URL" ]; then
+    INPUT=$(echo "$INPUT" | jq --arg ru "$REPO_URL" '. + {repo_url: $ru}' 2>/dev/null || echo "$INPUT")
+  fi
+fi
+
 # Determine the hook event from the input JSON or the AKASHI_HOOK_EVENT env var.
 # Claude Code sets hook_event_name in the JSON; Cursor uses similar conventions.
 HOOK_EVENT="${AKASHI_HOOK_EVENT:-}"
