@@ -5894,6 +5894,185 @@ func TestListConflictGroups_DefaultLimit(t *testing.T) {
 	assert.Empty(t, groups)
 }
 
+// TestListConflictGroups_DetectedSinceFilter verifies that the DetectedSince
+// filter excludes groups whose last_detected_at is older than the cutoff.
+// This is what powers the SessionStart hook's recency window — without it,
+// weeks-old unresolved disagreements dominate the per-session nudge.
+//
+// The test seeds two groups with explicit last_detected_at values (one fresh,
+// one stale) bypassing the column DEFAULT, since `datetime('now')` cannot
+// produce a past timestamp. It also covers the cross-format comparison
+// concern: the filter wraps both sides in datetime() so the column's stored
+// format (RFC3339Nano vs SQLite default) doesn't break the comparison.
+func TestListConflictGroups_DetectedSinceFilter(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	_, err := db.CreateAgent(ctx, model.Agent{
+		AgentID: "ds-agent-a", OrgID: orgID, Name: "A", Role: model.RoleAgent,
+		Tags: []string{}, Metadata: map[string]any{},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	_, dA, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "ds-agent-a", OrgID: orgID, Metadata: map[string]any{},
+		Decision: model.Decision{
+			DecisionType: "architecture", Outcome: "fresh-a", Confidence: 0.8,
+			Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+
+	_, dB, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "ds-agent-a", OrgID: orgID, Metadata: map[string]any{},
+		Decision: model.Decision{
+			DecisionType: "architecture", Outcome: "fresh-b", Confidence: 0.7,
+			Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+
+	_, dC, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "ds-agent-a", OrgID: orgID, Metadata: map[string]any{},
+		Decision: model.Decision{
+			DecisionType: "architecture", Outcome: "stale-a", Confidence: 0.8,
+			Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+
+	_, dD, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "ds-agent-a", OrgID: orgID, Metadata: map[string]any{},
+		Decision: model.Decision{
+			DecisionType: "architecture", Outcome: "stale-b", Confidence: 0.7,
+			Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+
+	// Two groups with explicit last_detected_at values: one 1 hour old
+	// (within window), one 30 days old (outside the 7-day window the
+	// SessionStart hook applies).
+	freshID := uuid.New()
+	staleID := uuid.New()
+	now := time.Now().UTC()
+	fresh := now.Add(-1 * time.Hour).Format(time.RFC3339Nano)
+	stale := now.Add(-30 * 24 * time.Hour).Format(time.RFC3339Nano)
+
+	rawDB := db.RawDB()
+	_, err = rawDB.ExecContext(ctx,
+		`INSERT INTO conflict_groups (id, org_id, agent_a, agent_b, conflict_kind, decision_type, first_detected_at, last_detected_at)
+		 VALUES (?,?,?,?,?,?,?,?)`,
+		freshID.String(), orgID.String(), "ds-agent-a", "ds-agent-a", "self_contradiction", "architecture", fresh, fresh,
+	)
+	require.NoError(t, err)
+
+	// Use a different conflict_kind to satisfy the
+	// (org_id, agent_a, agent_b, conflict_kind, decision_type) UNIQUE constraint.
+	_, err = rawDB.ExecContext(ctx,
+		`INSERT INTO conflict_groups (id, org_id, agent_a, agent_b, conflict_kind, decision_type, first_detected_at, last_detected_at)
+		 VALUES (?,?,?,?,?,?,?,?)`,
+		staleID.String(), orgID.String(), "ds-agent-a", "ds-agent-a", "cross_agent", "architecture", stale, stale,
+	)
+	require.NoError(t, err)
+
+	insertConflict(t, db, orgID, dA.ID, dB.ID, map[string]string{
+		"kind": "self_contradiction", "agent_a": "ds-agent-a", "agent_b": "ds-agent-a",
+		"group_id": freshID.String(), "decision_type_a": "architecture", "decision_type_b": "architecture",
+	})
+	insertConflict(t, db, orgID, dC.ID, dD.ID, map[string]string{
+		"kind": "cross_agent", "agent_a": "ds-agent-a", "agent_b": "ds-agent-a",
+		"group_id": staleID.String(), "decision_type_a": "architecture", "decision_type_b": "architecture",
+	})
+
+	t.Run("no filter returns both", func(t *testing.T) {
+		groups, err := db.ListConflictGroups(ctx, orgID, storage.ConflictGroupFilters{}, 10, 0)
+		require.NoError(t, err)
+		assert.Len(t, groups, 2)
+	})
+
+	t.Run("7-day window excludes stale", func(t *testing.T) {
+		since := now.Add(-7 * 24 * time.Hour)
+		groups, err := db.ListConflictGroups(ctx, orgID, storage.ConflictGroupFilters{
+			DetectedSince: &since,
+		}, 10, 0)
+		require.NoError(t, err)
+		require.Len(t, groups, 1)
+		assert.Equal(t, freshID, groups[0].ID, "only the fresh group should remain")
+	})
+
+	t.Run("31-day window includes both", func(t *testing.T) {
+		since := now.Add(-31 * 24 * time.Hour)
+		groups, err := db.ListConflictGroups(ctx, orgID, storage.ConflictGroupFilters{
+			DetectedSince: &since,
+		}, 10, 0)
+		require.NoError(t, err)
+		assert.Len(t, groups, 2)
+	})
+
+	t.Run("future window excludes both", func(t *testing.T) {
+		since := now.Add(1 * time.Hour)
+		groups, err := db.ListConflictGroups(ctx, orgID, storage.ConflictGroupFilters{
+			DetectedSince: &since,
+		}, 10, 0)
+		require.NoError(t, err)
+		assert.Empty(t, groups)
+	})
+
+	t.Run("Status=open combined with DetectedSince", func(t *testing.T) {
+		// Mirror how buildSessionContext composes the filter — both flags
+		// active together. Regression test against future refactors that
+		// might thread DetectedSince through a code path that bypasses
+		// the Status-driven HAVING aggregation.
+		openStatus := "open"
+		since := now.Add(-7 * 24 * time.Hour)
+		groups, err := db.ListConflictGroups(ctx, orgID, storage.ConflictGroupFilters{
+			Status:        &openStatus,
+			DetectedSince: &since,
+		}, 10, 0)
+		require.NoError(t, err)
+		require.Len(t, groups, 1)
+		assert.Equal(t, freshID, groups[0].ID)
+	})
+
+	t.Run("CountConflictGroups agrees with ListConflictGroups", func(t *testing.T) {
+		// CountConflictGroups must apply the same filters as ListConflictGroups,
+		// so the SessionStart header (which uses count) and the displayed list
+		// never disagree on what "recent open" means. Cover the same windows
+		// the list test exercises.
+		openStatus := "open"
+
+		n, err := db.CountConflictGroups(ctx, orgID, storage.ConflictGroupFilters{})
+		require.NoError(t, err)
+		assert.Equal(t, 2, n, "no filter")
+
+		since7 := now.Add(-7 * 24 * time.Hour)
+		n, err = db.CountConflictGroups(ctx, orgID, storage.ConflictGroupFilters{
+			DetectedSince: &since7,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 1, n, "7-day window")
+
+		n, err = db.CountConflictGroups(ctx, orgID, storage.ConflictGroupFilters{
+			Status:        &openStatus,
+			DetectedSince: &since7,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 1, n, "Status=open + 7-day window")
+
+		since31 := now.Add(-31 * 24 * time.Hour)
+		n, err = db.CountConflictGroups(ctx, orgID, storage.ConflictGroupFilters{
+			Status:        &openStatus,
+			DetectedSince: &since31,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 2, n, "Status=open + 31-day window")
+	})
+}
+
 // ---------------------------------------------------------------------------
 // QueryDecisions — filter branches
 // ---------------------------------------------------------------------------

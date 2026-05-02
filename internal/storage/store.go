@@ -64,6 +64,7 @@ type Store interface {
 
 	ListConflicts(ctx context.Context, orgID uuid.UUID, filters ConflictFilters, limit, offset int) ([]model.DecisionConflict, error)
 	ListConflictGroups(ctx context.Context, orgID uuid.UUID, filters ConflictGroupFilters, limit, offset int) ([]model.ConflictGroup, error)
+	CountConflictGroups(ctx context.Context, orgID uuid.UUID, filters ConflictGroupFilters) (int, error)
 	GetConflict(ctx context.Context, id, orgID uuid.UUID) (*model.DecisionConflict, error)
 	GetConflictCount(ctx context.Context, decisionID, orgID uuid.UUID) (int, error)
 	GetConflictCountsBatch(ctx context.Context, ids []uuid.UUID, orgID uuid.UUID) (map[uuid.UUID]int, error)
