@@ -641,6 +641,21 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			continue
 		}
 
+		// Temporal re-assessment filter: two review-type decisions on the
+		// same project, recorded sufficiently far apart with no precedent
+		// link, are re-measurements rather than contradictions. Quantitative
+		// metrics in assessments (FP rates, scores, percentages) drift over
+		// time without invalidating earlier snapshots. See issue #705.
+		if isTemporalReassessment(d, sc.cand) {
+			s.metrics.temporalReassessmentFiltered.Add(ctx, 1)
+			s.logger.Debug("conflict scorer: temporal re-assessment suppressed pair",
+				"decision_a", decisionID, "decision_b", sc.cand.ID,
+				"type_a", d.DecisionType, "type_b", sc.cand.DecisionType,
+				"project", derefString(d.Project),
+				"delta", d.ValidFrom.Sub(sc.cand.ValidFrom).Abs())
+			continue
+		}
+
 		// Outcome similarity floor: when outcome embeddings are nearly
 		// identical AND the pair did not qualify for the directToScorer
 		// bypass, suppress as complementary. This catches coordinated
@@ -1417,6 +1432,50 @@ func isSameBranchSelfCorrection(d, cand model.Decision) bool {
 	branchB := nestedContextString(cand.AgentContext, "git_branch")
 
 	return branchA != "" && branchB != "" && branchA == branchB
+}
+
+// temporalReassessmentWindow is the minimum time delta between two
+// review-type decisions on the same project for the pair to be treated as a
+// re-measurement rather than a contradiction. Quantitative observations
+// (FP rates, scores, percentages) are time-bound — a snapshot taken weeks
+// later does not contradict an earlier snapshot just because the numbers
+// moved. 7 days matches the SessionStart "recent" window used elsewhere
+// for conflict-relevance filtering.
+const temporalReassessmentWindow = 7 * 24 * time.Hour
+
+// isTemporalReassessment returns true when two decisions are both
+// review/assessment types on the same project, separated by at least
+// temporalReassessmentWindow, with neither citing the other and not in
+// the same session. This is the re-measurement pattern: the newer
+// assessment updates a prior measurement of the same system and naturally
+// has different numbers without contradicting the earlier conclusions.
+//
+// Pairs caught by this filter would otherwise embed close together (same
+// domain) and produce a CONTRADICTION verdict from the LLM whenever quoted
+// metrics differ — see issue #705. Linked or same-session re-assessments
+// are deliberately excluded so the LLM can still classify intentional
+// supersessions.
+func isTemporalReassessment(d, cand model.Decision) bool {
+	if !reviewTypes[strings.ToLower(d.DecisionType)] {
+		return false
+	}
+	if !reviewTypes[strings.ToLower(cand.DecisionType)] {
+		return false
+	}
+	if derefString(d.Project) != derefString(cand.Project) {
+		return false
+	}
+	if isPrecedentLinked(d, cand) {
+		return false
+	}
+	if d.SessionID != nil && cand.SessionID != nil && *d.SessionID == *cand.SessionID {
+		return false
+	}
+	delta := d.ValidFrom.Sub(cand.ValidFrom)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta >= temporalReassessmentWindow
 }
 
 // isPrecedentLinked returns true if either decision cites the other via
