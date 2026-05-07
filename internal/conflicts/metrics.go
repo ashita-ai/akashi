@@ -25,10 +25,11 @@ type Metrics struct {
 	selfCorrectionFiltered metric.Int64Counter
 	outcomeSimFiltered     metric.Int64Counter
 
-	confidenceFloorFiltered metric.Int64Counter
-	noopClaimGateFiltered   metric.Int64Counter
-	transitiveGroupFiltered metric.Int64Counter
-	fpPatternFiltered       metric.Int64Counter
+	confidenceFloorFiltered      metric.Int64Counter
+	noopClaimGateFiltered        metric.Int64Counter
+	transitiveGroupFiltered      metric.Int64Counter
+	fpPatternFiltered            metric.Int64Counter
+	temporalReassessmentFiltered metric.Int64Counter
 
 	scoringDuration    metric.Float64Histogram
 	llmCallDuration    metric.Float64Histogram
@@ -185,6 +186,14 @@ func (s *Scorer) registerMetrics() {
 	if err != nil {
 		s.logger.Warn("conflicts: failed to create akashi.conflicts.fp_pattern_filtered metric", "error", err)
 		s.metrics.fpPatternFiltered, _ = meter.Int64Counter("akashi.conflicts.fp_pattern_filtered.fallback")
+	}
+
+	s.metrics.temporalReassessmentFiltered, err = meter.Int64Counter("akashi.conflicts.temporal_reassessment_filtered",
+		metric.WithDescription("Candidate pairs filtered as same-project review-type re-measurements separated by ≥ temporalReassessmentWindow (issue #705)"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.temporal_reassessment_filtered metric", "error", err)
+		s.metrics.temporalReassessmentFiltered, _ = meter.Int64Counter("akashi.conflicts.temporal_reassessment_filtered.fallback")
 	}
 
 	// --- Histograms ---
