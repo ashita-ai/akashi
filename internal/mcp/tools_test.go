@@ -770,12 +770,11 @@ func TestHandleTrace_NonAdminCrossTrace(t *testing.T) {
 	assert.Contains(t, parseToolText(t, result), "agents can only record decisions for their own agent_id")
 }
 
-// ---------- Verify all 5 tools are registered ----------
+// ---------- Verify tools are registered ----------
 
 func TestRegisterTools(t *testing.T) {
 	// The server's registerTools is called during New(). Verify the MCPServer
-	// has the 6 expected tools registered: akashi_check, akashi_trace,
-	// akashi_query, akashi_conflicts, akashi_assess, akashi_stats.
+	// has the expected tools registered.
 	// We verify indirectly by ensuring the server is initialized correctly.
 	assert.NotNil(t, testServer.mcpServer, "MCPServer should be initialized")
 	assert.NotNil(t, testServer.MCPServer(), "MCPServer() accessor should work")
@@ -2758,6 +2757,15 @@ func resolveRequest(args map[string]any) mcplib.CallToolRequest {
 	}
 }
 
+func reconcileRequest(args map[string]any) mcplib.CallToolRequest {
+	return mcplib.CallToolRequest{
+		Params: mcplib.CallToolParams{
+			Name:      "akashi_reconcile",
+			Arguments: args,
+		},
+	}
+}
+
 // seedConflictWithDecisions creates two decisions and a conflict, returning
 // the conflict ID and both decision IDs for use in resolve tests.
 func seedConflictWithDecisions(t *testing.T) (conflictID uuid.UUID, decAID, decBID string) {
@@ -2833,6 +2841,73 @@ func TestHandleResolve_WithWinner(t *testing.T) {
 	assert.Equal(t, "open", resp.OldStatus)
 	assert.Equal(t, "resolved", resp.NewStatus)
 	assert.Equal(t, testAdminID, resp.ResolvedBy)
+}
+
+func TestHandleReconcile_Success(t *testing.T) {
+	ctx := adminCtx()
+	conflictID, decAID, decBID := seedConflictWithDecisions(t)
+
+	result, err := testServer.handleReconcile(ctx, reconcileRequest(map[string]any{
+		"conflict_id": conflictID.String(),
+		"outcome":     "synthesized approach C",
+		"reasoning":   "A has the right scope, B has the right sequencing",
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, "reconcile should succeed: %s", parseToolText(t, result))
+
+	var resp struct {
+		ConflictID   string   `json:"conflict_id"`
+		DecisionID   string   `json:"decision_id"`
+		DecisionType string   `json:"decision_type"`
+		Status       string   `json:"status"`
+		ResolvedBy   string   `json:"resolved_by"`
+		Supersedes   []string `json:"supersedes"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(parseToolText(t, result)), &resp))
+	assert.Equal(t, conflictID.String(), resp.ConflictID)
+	assert.Equal(t, "reconciliation", resp.DecisionType)
+	assert.Equal(t, "resolved", resp.Status)
+	assert.Equal(t, testAdminID, resp.ResolvedBy)
+	assert.ElementsMatch(t, []string{decAID, decBID}, resp.Supersedes)
+
+	reconciliationID, err := uuid.Parse(resp.DecisionID)
+	require.NoError(t, err)
+	parsedA, err := uuid.Parse(decAID)
+	require.NoError(t, err)
+	parsedB, err := uuid.Parse(decBID)
+	require.NoError(t, err)
+
+	updated, err := testDB.GetConflict(ctx, conflictID, uuid.Nil)
+	require.NoError(t, err)
+	require.NotNil(t, updated)
+	assert.Equal(t, "resolved", updated.Status)
+	require.NotNil(t, updated.ResolutionDecisionID)
+	assert.Equal(t, reconciliationID, *updated.ResolutionDecisionID)
+	assert.Nil(t, updated.WinningDecisionID, "reconciliation should not declare either side the binary winner")
+
+	reconciliation, err := testDB.GetDecision(ctx, uuid.Nil, reconciliationID, storage.GetDecisionOpts{})
+	require.NoError(t, err)
+	assert.Equal(t, "reconciliation", reconciliation.DecisionType)
+	require.NotNil(t, reconciliation.SupersedesID)
+	assert.Contains(t, []uuid.UUID{parsedA, parsedB}, *reconciliation.SupersedesID)
+
+	decisionA, err := testDB.GetDecision(ctx, uuid.Nil, parsedA, storage.GetDecisionOpts{})
+	require.NoError(t, err)
+	require.NotNil(t, decisionA.ValidTo)
+	decisionB, err := testDB.GetDecision(ctx, uuid.Nil, parsedB, storage.GetDecisionOpts{})
+	require.NoError(t, err)
+	require.NotNil(t, decisionB.ValidTo)
+
+	var edgeCount int
+	require.NoError(t, testDB.Pool().QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM decision_supersedes
+		WHERE org_id = $1
+		  AND superseding_id = $2
+		  AND relationship = 'reconciles'`,
+		uuid.Nil, reconciliationID,
+	).Scan(&edgeCount))
+	assert.Equal(t, 2, edgeCount)
 }
 
 func TestHandleResolve_FalsePositive(t *testing.T) {

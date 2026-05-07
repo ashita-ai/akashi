@@ -836,7 +836,7 @@ export class AkashiClient {
     return this.get<ConflictDetail>(`/v1/conflicts/${encodeURIComponent(conflictId)}`);
   }
 
-  /** Adjudicate a conflict by choosing a winner. */
+  /** Adjudicate a conflict by recording a linked resolution decision. */
   async adjudicateConflict(conflictId: string, req: AdjudicateConflictRequest): Promise<ConflictDetail> {
     return this.post<ConflictDetail>(
       `/v1/conflicts/${encodeURIComponent(conflictId)}/adjudicate`,

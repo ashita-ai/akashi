@@ -92,6 +92,74 @@ CREATE INDEX IF NOT EXISTS idx_decisions_precedent_ref
 CREATE INDEX IF NOT EXISTS idx_decisions_project
     ON decisions(org_id, project) WHERE project IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS decision_supersedes (
+    superseding_id TEXT NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+    superseded_id  TEXT NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+    org_id         TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    relationship   TEXT NOT NULL DEFAULT 'supersedes',
+    is_primary     INTEGER NOT NULL DEFAULT 0,
+    recorded_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (superseding_id, superseded_id),
+    CHECK (superseding_id <> superseded_id),
+    CHECK (relationship IN ('supersedes', 'reconciles'))
+);
+CREATE INDEX IF NOT EXISTS idx_decision_supersedes_superseded
+    ON decision_supersedes(org_id, superseded_id);
+CREATE INDEX IF NOT EXISTS idx_decision_supersedes_superseding
+    ON decision_supersedes(org_id, superseding_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_decision_supersedes_primary
+    ON decision_supersedes(superseding_id)
+    WHERE is_primary = 1;
+INSERT OR IGNORE INTO decision_supersedes (superseding_id, superseded_id, org_id, relationship, is_primary)
+SELECT id, supersedes_id, org_id, 'supersedes', 1
+FROM decisions
+WHERE supersedes_id IS NOT NULL;
+
+CREATE TRIGGER IF NOT EXISTS trg_decisions_sync_supersedes_insert
+AFTER INSERT ON decisions
+WHEN NEW.supersedes_id IS NOT NULL
+BEGIN
+    UPDATE decision_supersedes
+    SET is_primary = 0
+    WHERE superseding_id = NEW.id
+      AND org_id = NEW.org_id
+      AND superseded_id <> NEW.supersedes_id
+      AND is_primary = 1;
+
+    INSERT INTO decision_supersedes (superseding_id, superseded_id, org_id, relationship, is_primary)
+    VALUES (NEW.id, NEW.supersedes_id, NEW.org_id, 'supersedes', 1)
+    ON CONFLICT (superseding_id, superseded_id) DO UPDATE
+    SET is_primary = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_decisions_sync_supersedes_update
+AFTER UPDATE OF supersedes_id ON decisions
+WHEN NEW.supersedes_id IS NOT NULL
+BEGIN
+    UPDATE decision_supersedes
+    SET is_primary = 0
+    WHERE superseding_id = NEW.id
+      AND org_id = NEW.org_id
+      AND superseded_id <> NEW.supersedes_id
+      AND is_primary = 1;
+
+    INSERT INTO decision_supersedes (superseding_id, superseded_id, org_id, relationship, is_primary)
+    VALUES (NEW.id, NEW.supersedes_id, NEW.org_id, 'supersedes', 1)
+    ON CONFLICT (superseding_id, superseded_id) DO UPDATE
+    SET is_primary = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_decisions_sync_supersedes_clear
+AFTER UPDATE OF supersedes_id ON decisions
+WHEN NEW.supersedes_id IS NULL
+BEGIN
+    UPDATE decision_supersedes
+    SET is_primary = 0
+    WHERE superseding_id = NEW.id
+      AND org_id = NEW.org_id
+      AND is_primary = 1;
+END;
+
 -- FTS5 virtual table for full-text search over decisions.
 CREATE VIRTUAL TABLE IF NOT EXISTS decisions_fts USING fts5(
     outcome,

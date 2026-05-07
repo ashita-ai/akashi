@@ -34,6 +34,7 @@ func openTestDB(t *testing.T) *sql.DB {
 			confidence REAL NOT NULL,
 			reasoning TEXT,
 			embedding BLOB,
+			supersedes_id TEXT,
 			valid_from TEXT NOT NULL,
 			valid_to TEXT,
 			project TEXT,
@@ -80,6 +81,15 @@ func openTestDB(t *testing.T) *sql.DB {
 			group_topic TEXT,
 			first_detected_at TEXT NOT NULL DEFAULT (datetime('now')),
 			last_detected_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE TABLE decision_supersedes (
+			superseding_id TEXT NOT NULL,
+			superseded_id TEXT NOT NULL,
+			org_id TEXT NOT NULL,
+			relationship TEXT NOT NULL DEFAULT 'supersedes',
+			is_primary INTEGER NOT NULL DEFAULT 0,
+			recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (superseding_id, superseded_id)
 		)`)
 	require.NoError(t, err)
 	return db
@@ -92,6 +102,38 @@ func insertTestDecision(t *testing.T, db *sql.DB, id, orgID uuid.UUID, agentID, 
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		id.String(), orgID.String(), agentID, decType, outcome, 0.9,
 		time.Now().UTC().Format(time.RFC3339Nano),
+	)
+	require.NoError(t, err)
+}
+
+// insertSupersedingDecision inserts a decision that supersedes another. The
+// caller must explicitly set the superseded decision's valid_to in tests where
+// that side effect matters — this helper does not invalidate the target,
+// because some tests need to verify chain exclusion independently of the
+// valid_to filter (which would otherwise mask the presence or absence of the
+// chain check).
+func insertSupersedingDecision(t *testing.T, db *sql.DB, id, orgID uuid.UUID, agentID, decType, outcome string, supersedesID uuid.UUID) {
+	t.Helper()
+	_, err := db.Exec(
+		`INSERT INTO decisions (id, org_id, agent_id, decision_type, outcome, confidence, supersedes_id, valid_from)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		id.String(), orgID.String(), agentID, decType, outcome, 0.9,
+		supersedesID.String(),
+		time.Now().UTC().Format(time.RFC3339Nano),
+	)
+	require.NoError(t, err)
+}
+
+func insertSupersedesEdge(t *testing.T, db *sql.DB, supersedingID, supersededID, orgID uuid.UUID, relationship string, isPrimary bool) {
+	t.Helper()
+	primary := 0
+	if isPrimary {
+		primary = 1
+	}
+	_, err := db.Exec(
+		`INSERT INTO decision_supersedes (superseding_id, superseded_id, org_id, relationship, is_primary)
+		 VALUES (?, ?, ?, ?, ?)`,
+		supersedingID.String(), supersededID.String(), orgID.String(), relationship, primary,
 	)
 	require.NoError(t, err)
 }
@@ -440,4 +482,159 @@ func TestLiteScorer_ProjectScoping(t *testing.T) {
 	// but with different non-nil projects they should not match.
 	// This depends on the SQL logic — verify the actual behavior.
 	assert.LessOrEqual(t, count, 1, "different-project decisions may or may not conflict depending on SQL scoping")
+}
+
+// TestLiteScorer_RevisionChainExcluded verifies that a decision in the source's
+// supersedes chain is NOT flagged as a conflict, even when its outcome diverges
+// from the source's. This guards the contract independently of the valid_to
+// filter — the test inserts the chain ancestor as still-active so a chain-blind
+// scorer would create a conflict.
+func TestLiteScorer_RevisionChainExcluded(t *testing.T) {
+	db := openTestDB(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	scorer := NewLiteScorer(db, logger)
+	ctx := context.Background()
+	orgID := uuid.New()
+
+	older := uuid.New()
+	newer := uuid.New()
+	insertTestDecision(t, db, older, orgID, "agent-a", "architecture",
+		"Use PostgreSQL for persistent storage with connection pooling and read replicas")
+	insertSupersedingDecision(t, db, newer, orgID, "agent-a", "architecture",
+		"Use MongoDB for persistent storage with sharding and replica sets",
+		older,
+	)
+
+	scorer.ScoreForDecision(ctx, newer, orgID)
+
+	var count int
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM scored_conflicts").Scan(&count))
+	assert.Equal(t, 0, count, "the older decision is in newer's supersedes chain — not a conflict")
+}
+
+// TestLiteScorer_TransitiveChainExcluded verifies multi-hop chain walking.
+// A → B → C: when C is scored, both A and B should be excluded as chain
+// members even though the only direct supersedes pointer on C points at B.
+func TestLiteScorer_TransitiveChainExcluded(t *testing.T) {
+	db := openTestDB(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	scorer := NewLiteScorer(db, logger)
+	ctx := context.Background()
+	orgID := uuid.New()
+
+	a := uuid.New()
+	b := uuid.New()
+	c := uuid.New()
+	insertTestDecision(t, db, a, orgID, "agent-a", "architecture",
+		"Use Redis for caching with 5-minute TTL and LRU eviction")
+	insertSupersedingDecision(t, db, b, orgID, "agent-a", "architecture",
+		"Use Memcached for caching with 10-minute TTL and consistent hashing",
+		a,
+	)
+	insertSupersedingDecision(t, db, c, orgID, "agent-a", "architecture",
+		"Use Hazelcast for caching with 1-minute TTL and partition-aware routing",
+		b,
+	)
+
+	scorer.ScoreForDecision(ctx, c, orgID)
+
+	var count int
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM scored_conflicts").Scan(&count))
+	assert.Equal(t, 0, count, "transitive chain ancestors A and B must both be excluded when scoring C")
+}
+
+// TestLiteScorer_BackwardChainExcluded verifies that walking backward from the
+// source (decisions the source supersedes) is also excluded. This direction
+// matters when the scorer is invoked on an older decision that has been
+// superseded by a newer one — the newer decision must not be flagged as a
+// conflict against the older one.
+func TestLiteScorer_BackwardChainExcluded(t *testing.T) {
+	db := openTestDB(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	scorer := NewLiteScorer(db, logger)
+	ctx := context.Background()
+	orgID := uuid.New()
+
+	older := uuid.New()
+	newer := uuid.New()
+	insertTestDecision(t, db, older, orgID, "agent-a", "architecture",
+		"Use PostgreSQL for persistent storage with connection pooling and read replicas")
+	insertSupersedingDecision(t, db, newer, orgID, "agent-a", "architecture",
+		"Use MongoDB for persistent storage with sharding and replica sets",
+		older,
+	)
+
+	// Score the older decision. The newer (which supersedes it) is reachable
+	// via the forward direction of the chain walk and must be excluded.
+	scorer.ScoreForDecision(ctx, older, orgID)
+
+	var count int
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM scored_conflicts").Scan(&count))
+	assert.Equal(t, 0, count, "the newer decision supersedes older — not a conflict in either direction")
+}
+
+// TestLiteScorer_UnrelatedDecisionStillConflicts verifies that the chain
+// exclusion is targeted: a decision NOT in the chain still produces a conflict
+// when its outcome diverges from the source. Guards against the chain query
+// returning a too-wide result (e.g., walking via NULL joins) that would mask
+// real conflicts.
+func TestLiteScorer_UnrelatedDecisionStillConflicts(t *testing.T) {
+	db := openTestDB(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	scorer := NewLiteScorer(db, logger)
+	ctx := context.Background()
+	orgID := uuid.New()
+
+	chainOlder := uuid.New()
+	chainNewer := uuid.New()
+	unrelated := uuid.New()
+
+	insertTestDecision(t, db, chainOlder, orgID, "agent-a", "architecture",
+		"Use PostgreSQL for persistent storage with connection pooling and read replicas")
+	insertSupersedingDecision(t, db, chainNewer, orgID, "agent-a", "architecture",
+		"Use MongoDB for persistent storage with sharding and replica sets",
+		chainOlder,
+	)
+	// Unrelated decision: same topic, different agent, no supersedes link.
+	insertTestDecision(t, db, unrelated, orgID, "agent-b", "architecture",
+		"Use Cassandra for persistent storage with multi-datacenter replication and tunable consistency")
+
+	scorer.ScoreForDecision(ctx, chainNewer, orgID)
+
+	var count int
+	require.NoError(t, db.QueryRow(
+		`SELECT COUNT(*) FROM scored_conflicts
+		 WHERE (decision_a_id = ? AND decision_b_id = ?)
+		    OR (decision_a_id = ? AND decision_b_id = ?)`,
+		chainNewer.String(), unrelated.String(),
+		unrelated.String(), chainNewer.String(),
+	).Scan(&count))
+	assert.Equal(t, 1, count, "unrelated decision with no chain link must still conflict")
+}
+
+func TestLiteScorer_DecisionSupersedesEdgeExcluded(t *testing.T) {
+	db := openTestDB(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	scorer := NewLiteScorer(db, logger)
+	ctx := context.Background()
+	orgID := uuid.New()
+
+	a := uuid.New()
+	b := uuid.New()
+	c := uuid.New()
+	insertTestDecision(t, db, a, orgID, "agent-a", "architecture",
+		"Use PostgreSQL for persistent storage with connection pooling and read replicas")
+	insertTestDecision(t, db, b, orgID, "agent-b", "architecture",
+		"Use MySQL for persistent storage with read replicas and connection pooling")
+	insertTestDecision(t, db, c, orgID, "agent-c", "architecture",
+		"Use MongoDB for persistent storage with sharding and replica sets")
+
+	insertSupersedesEdge(t, db, c, a, orgID, "reconciles", true)
+	insertSupersedesEdge(t, db, c, b, orgID, "reconciles", false)
+
+	scorer.ScoreForDecision(ctx, c, orgID)
+
+	var count int
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM scored_conflicts").Scan(&count))
+	assert.Equal(t, 0, count, "decision_supersedes join-table targets must be excluded even without direct supersedes_id")
 }

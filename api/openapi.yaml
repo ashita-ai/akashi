@@ -4055,8 +4055,7 @@ components:
           description: Why this adjudication was chosen.
         decision_type:
           type: string
-          default: conflict_resolution
-          description: Decision type for the adjudication trace (defaults to "conflict_resolution").
+          description: Decision type for the adjudication trace. Defaults to "conflict_resolution", or "reconciliation" when multiple supersedes entries are supplied.
         winning_decision_id:
           type: string
           format: uuid
@@ -4064,6 +4063,16 @@ components:
             Optional. The decision judged to be correct. Must be decision_a_id or
             decision_b_id of the conflict being adjudicated. When omitted, the conflict
             is resolved without declaring a winner.
+        supersedes:
+          type: array
+          description: |
+            Optional. Conflict-side decisions retired by the adjudication decision.
+            Each entry must be decision_a_id or decision_b_id. When multiple entries
+            are supplied, the adjudication is a synthesis/reconciliation decision.
+          items:
+            type: string
+            format: uuid
+          uniqueItems: true
 
     # ── API Key schemas ─────────────────────────────────────────────
     APIKey:

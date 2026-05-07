@@ -63,6 +63,8 @@ type AdjudicateConflictInTraceParams struct {
 	ResNote           *string
 	Audit             MutationAuditEntry
 	WinningDecisionID *uuid.UUID // optional; must be decision_a_id or decision_b_id if set
+	SupersedesIDs     []uuid.UUID
+	Relationship      string // "supersedes" or "reconciles"; defaults to "supersedes"
 }
 
 // ---------------------------------------------------------------------------

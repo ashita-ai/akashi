@@ -469,6 +469,32 @@ EXAMPLE: After a user says "go with approach A", call akashi_resolve with
 		),
 		s.handleResolve,
 	)
+
+	// akashi_reconcile — synthesize a new decision that retires both conflict sides.
+	s.mcpServer.AddTool(
+		mcplib.NewTool("akashi_reconcile",
+			mcplib.WithDescription(`Resolve a conflict with a synthesis decision that retires both original decisions.
+
+Use this when neither side should win outright. The tool records a
+decision_type="reconciliation" trace, resolves the conflict, writes supersedes
+edges for both sides, and invalidates both original decisions in one transaction.`),
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithIdempotentHintAnnotation(false),
+			mcplib.WithOpenWorldHintAnnotation(true),
+			mcplib.WithString("conflict_id",
+				mcplib.Description("UUID of the scored conflict to reconcile"),
+				mcplib.Required(),
+			),
+			mcplib.WithString("outcome",
+				mcplib.Description("The synthesized decision that replaces both conflict sides"),
+				mcplib.Required(),
+			),
+			mcplib.WithString("reasoning",
+				mcplib.Description("Optional explanation for the synthesis"),
+			),
+		),
+		s.handleReconcile,
+	)
 }
 
 // resolveProjectFilter returns the project filter to apply to a read operation.
@@ -1911,6 +1937,132 @@ func (s *Server) handleResolve(ctx context.Context, request mcplib.CallToolReque
 
 	// Not a scored_conflict ID — try resolving as a conflict_group ID.
 	return s.resolveGroup(ctx, conflictID, orgID, status, resolvedBy, actorRole, resolutionNote, winningDecisionID, fpLabel)
+}
+
+func (s *Server) handleReconcile(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	orgID := ctxutil.OrgIDFromContext(ctx)
+	claims := ctxutil.ClaimsFromContext(ctx)
+	if claims == nil {
+		return errorResult("authentication required"), nil
+	}
+
+	conflictIDStr := request.GetString("conflict_id", "")
+	if conflictIDStr == "" {
+		return errorResult("conflict_id is required"), nil
+	}
+	conflictID, err := uuid.Parse(conflictIDStr)
+	if err != nil {
+		return errorResult("conflict_id must be a valid UUID"), nil
+	}
+
+	outcome := strings.TrimSpace(request.GetString("outcome", ""))
+	if outcome == "" {
+		return errorResult("outcome is required"), nil
+	}
+	if len(outcome) > model.MaxOutcomeLen {
+		return errorResult(fmt.Sprintf("outcome exceeds maximum length of %d bytes", model.MaxOutcomeLen)), nil
+	}
+	reasoning := strings.TrimSpace(request.GetString("reasoning", ""))
+	if len(reasoning) > model.MaxReasoningLen {
+		return errorResult(fmt.Sprintf("reasoning exceeds maximum length of %d bytes", model.MaxReasoningLen)), nil
+	}
+	var reasoningPtr *string
+	if reasoning != "" {
+		reasoningPtr = &reasoning
+	}
+
+	conflict, err := s.db.GetConflict(ctx, conflictID, orgID)
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to get conflict: %v", err)), nil
+	}
+	if conflict == nil {
+		return errorResult("conflict not found"), nil
+	}
+
+	supersedesIDs := []uuid.UUID{conflict.DecisionAID, conflict.DecisionBID}
+	const decisionType = "reconciliation"
+	resolvedBy := claims.AgentID
+	if resolvedBy == "" {
+		resolvedBy = claims.Subject
+	}
+	if err := model.ValidateAgentID(resolvedBy); err != nil {
+		return errorResult(fmt.Sprintf("invalid agent_id: %v", err)), nil
+	}
+	autoRegAudit := &storage.MutationAuditEntry{
+		OrgID:        orgID,
+		ActorAgentID: claims.AgentID,
+		ActorRole:    string(claims.Role),
+		Endpoint:     "mcp/akashi_reconcile",
+	}
+	if _, err := s.decisionSvc.ResolveOrCreateAgent(ctx, orgID, resolvedBy, claims.Role, autoRegAudit); err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	auditMeta := &ctxutil.AuditMeta{
+		RequestID:    uuid.New().String(),
+		OrgID:        orgID,
+		ActorAgentID: resolvedBy,
+		ActorRole:    string(claims.Role),
+		HTTPMethod:   "MCP",
+		Endpoint:     "akashi_reconcile",
+	}
+	conflictAudit := storage.MutationAuditEntry{
+		RequestID:    auditMeta.RequestID,
+		OrgID:        orgID,
+		ActorAgentID: resolvedBy,
+		ActorRole:    string(claims.Role),
+		HTTPMethod:   "MCP",
+		Endpoint:     "mcp/akashi_reconcile",
+		Operation:    "conflict_reconciled_with_decision",
+		ResourceType: "conflict",
+		ResourceID:   conflictID.String(),
+		Metadata:     map[string]any{"resolved_by": resolvedBy},
+	}
+
+	note := "Resolved by reconciliation trace"
+	result, err := s.decisionSvc.AdjudicateConflictWithTrace(ctx, orgID, decisions.TraceInput{
+		AgentID: resolvedBy,
+		Decision: model.TraceDecision{
+			DecisionType: decisionType,
+			Outcome:      outcome,
+			Confidence:   1.0,
+			Reasoning:    reasoningPtr,
+		},
+		SupersedesIDs: supersedesIDs,
+		APIKeyID:      claims.APIKeyID,
+		AuditMeta:     auditMeta,
+	}, storage.AdjudicateConflictInTraceParams{
+		ConflictID:    conflictID,
+		ResolvedBy:    resolvedBy,
+		ResNote:       &note,
+		Audit:         conflictAudit,
+		SupersedesIDs: supersedesIDs,
+		Relationship:  "reconciles",
+	})
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return errorResult("conflict not found"), nil
+		}
+		if errors.Is(err, storage.ErrSupersededDecisionNotInConflict) {
+			return errorResult("supersedes entries must be one of the two decisions in this conflict"), nil
+		}
+		return errorResult(fmt.Sprintf("failed to reconcile conflict: %v", err)), nil
+	}
+
+	resultData, _ := json.MarshalIndent(map[string]any{
+		"conflict_id":       conflictID,
+		"decision_id":       result.DecisionID,
+		"decision_type":     decisionType,
+		"status":            "resolved",
+		"resolved_by":       resolvedBy,
+		"supersedes":        supersedesIDs,
+		"embedding_skipped": result.EmbeddingSkipped,
+	}, "", "  ")
+	return &mcplib.CallToolResult{
+		Content: []mcplib.Content{
+			mcplib.TextContent{Type: "text", Text: string(resultData)},
+		},
+	}, nil
 }
 
 // resolveSingleConflict attempts to resolve the given ID as a scored_conflict.
