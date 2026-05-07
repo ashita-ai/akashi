@@ -206,6 +206,20 @@ func formatPrompt(input ValidateInput) string {
 			input.TypeA, input.TypeB)
 	}
 
+	// --- Temporal re-measurement hint (#705) ---
+	// Two review-type decisions of the same system, recorded weeks apart,
+	// are re-measurements rather than contradictions. The structural filter
+	// in the scorer already suppresses the strict same-project case before
+	// reaching the LLM; this hint covers the borderline cases that get past
+	// it (missing project metadata, cross-org alias) so the model has the
+	// right interpretive frame.
+	if reviewTypes[strings.ToLower(input.TypeA)] && reviewTypes[strings.ToLower(input.TypeB)] && timeDelta >= temporalReassessmentWindow {
+		fmt.Fprintf(&b, "TEMPORAL RE-MEASUREMENT: Both decisions assess the same kind of subject and were recorded %s apart. "+
+			"Quantitative observations (rates, percentages, scores, counts) are time-bound — different numbers in two snapshots reflect natural drift over time, NOT contradiction. "+
+			"Classify as REFINEMENT (the newer updates the older) or SUPERSESSION (the newer explicitly replaces the older), never CONTRADICTION, unless the later decision EXPLICITLY states the earlier conclusion was wrong.\n",
+			deltaStr)
+	}
+
 	// --- Classification instructions ---
 	b.WriteString(`
 Classify the RELATIONSHIP between these two decisions:
