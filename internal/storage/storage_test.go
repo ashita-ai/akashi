@@ -6520,6 +6520,123 @@ func TestCreateTraceAndAdjudicateConflictTx(t *testing.T) {
 	assert.Equal(t, dA.ID, *conflict.WinningDecisionID)
 }
 
+func TestCreateTraceAndAdjudicateConflictTx_WithSupersedes(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "reconcile-a-" + suffix
+	agentB := "reconcile-b-" + suffix
+	decisionType := "reconcile_type_" + suffix
+
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA,
+		DecisionType: decisionType, Outcome: "use queue based ingestion",
+		Confidence: 0.8, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB,
+		DecisionType: decisionType, Outcome: "use direct synchronous ingestion",
+		Confidence: 0.7, Metadata: map[string]any{},
+	})
+	require.NoError(t, err)
+
+	topicSim := 0.9
+	outcomeDiv := 0.8
+	sig := topicSim * outcomeDiv
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind:      model.ConflictKindCrossAgent,
+		DecisionAID:       dA.ID,
+		DecisionBID:       dB.ID,
+		OrgID:             uuid.Nil,
+		AgentA:            agentA,
+		AgentB:            agentB,
+		DecisionTypeA:     decisionType,
+		DecisionTypeB:     decisionType,
+		OutcomeA:          dA.Outcome,
+		OutcomeB:          dB.Outcome,
+		TopicSimilarity:   &topicSim,
+		OutcomeDivergence: &outcomeDiv,
+		Significance:      &sig,
+		ScoringMethod:     "text",
+	})
+	require.NoError(t, err)
+
+	adjudicatorAgent := "reconciler-" + suffix
+	resNote := "synthesized a durable hybrid"
+	_, decision, err := testDB.CreateTraceAndAdjudicateConflictTx(ctx,
+		storage.CreateTraceParams{
+			AgentID:  adjudicatorAgent,
+			OrgID:    uuid.Nil,
+			Metadata: map[string]any{"purpose": "reconciliation"},
+			Decision: model.Decision{
+				DecisionType: "reconciliation",
+				Outcome:      "use queue based ingestion with synchronous validation at boundaries",
+				Confidence:   0.95,
+			},
+			AuditEntry: &storage.MutationAuditEntry{
+				RequestID:    uuid.New().String(),
+				OrgID:        uuid.Nil,
+				ActorAgentID: adjudicatorAgent,
+				ActorRole:    "admin",
+				HTTPMethod:   "POST",
+				Endpoint:     "/v1/trace",
+				Operation:    "create_trace",
+				ResourceType: "decision",
+			},
+		},
+		storage.AdjudicateConflictInTraceParams{
+			ConflictID:    conflictID,
+			ResolvedBy:    adjudicatorAgent,
+			ResNote:       &resNote,
+			SupersedesIDs: []uuid.UUID{dA.ID, dB.ID},
+			Relationship:  "reconciles",
+			Audit: storage.MutationAuditEntry{
+				RequestID:    uuid.New().String(),
+				OrgID:        uuid.Nil,
+				ActorAgentID: adjudicatorAgent,
+				ActorRole:    "admin",
+				HTTPMethod:   "POST",
+				Endpoint:     "/v1/trace",
+				Operation:    "adjudicate_conflict",
+				ResourceType: "conflict",
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, decision.SupersedesID)
+	assert.Equal(t, dA.ID, *decision.SupersedesID)
+
+	conflict, err := testDB.GetConflict(ctx, conflictID, uuid.Nil)
+	require.NoError(t, err)
+	require.NotNil(t, conflict)
+	assert.Equal(t, "resolved", conflict.Status)
+	assert.Equal(t, decision.ID, *conflict.ResolutionDecisionID)
+
+	var edgeCount, primaryCount int
+	require.NoError(t, testDB.Pool().QueryRow(ctx,
+		`SELECT COUNT(*), COUNT(*) FILTER (WHERE is_primary)
+		 FROM decision_supersedes
+		 WHERE org_id = $1 AND superseding_id = $2 AND relationship = 'reconciles'`,
+		uuid.Nil, decision.ID,
+	).Scan(&edgeCount, &primaryCount))
+	assert.Equal(t, 2, edgeCount)
+	assert.Equal(t, 1, primaryCount)
+
+	var activeCount int
+	require.NoError(t, testDB.Pool().QueryRow(ctx,
+		`SELECT COUNT(*) FROM decisions
+		 WHERE org_id = $1 AND id = ANY($2) AND valid_to IS NULL`,
+		uuid.Nil, []uuid.UUID{dA.ID, dB.ID},
+	).Scan(&activeCount))
+	assert.Equal(t, 0, activeCount)
+}
+
 func TestCreateTraceAndAdjudicateConflictTx_ConflictNotFound(t *testing.T) {
 	ctx := context.Background()
 	suffix := uuid.New().String()[:8]

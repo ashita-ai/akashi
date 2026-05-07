@@ -208,6 +208,9 @@ func (db *DB) ReviseDecision(ctx context.Context, originalID uuid.UUID, revised 
 		if err != nil {
 			return fmt.Errorf("storage: insert revised decision: %w", err)
 		}
+		if err := insertDecisionSupersedesRowsTx(ctx, tx, revised.OrgID, revised.ID, []uuid.UUID{originalID}, &originalID, "supersedes"); err != nil {
+			return err
+		}
 
 		// Queue search index updates: delete the old decision, upsert the new one.
 		if err := queueSearchOutbox(ctx, tx, originalID, revised.OrgID, "delete"); err != nil {
@@ -1361,21 +1364,32 @@ func (db *DB) GetDecisionRevisions(ctx context.Context, orgID, id uuid.UUID) ([]
 func (db *DB) GetRevisionChainIDs(ctx context.Context, id, orgID uuid.UUID) ([]uuid.UUID, error) {
 	query := `
 	WITH RECURSIVE
+	edges AS (
+		SELECT id AS superseding_id, supersedes_id AS superseded_id, org_id
+		FROM decisions
+		WHERE supersedes_id IS NOT NULL AND org_id = $2
+		UNION
+		SELECT superseding_id, superseded_id, org_id
+		FROM decision_supersedes
+		WHERE org_id = $2
+	),
 	forward_chain AS (
 		SELECT id, supersedes_id, 0 AS depth FROM decisions WHERE id = $1 AND org_id = $2
 		UNION ALL
 		SELECT d.id, d.supersedes_id, fc.depth + 1
-		FROM decisions d
-		INNER JOIN forward_chain fc ON d.supersedes_id = fc.id
-		WHERE d.org_id = $2 AND fc.depth < 100
+		FROM edges e
+		INNER JOIN decisions d ON d.id = e.superseding_id AND d.org_id = e.org_id
+		INNER JOIN forward_chain fc ON e.superseded_id = fc.id
+		WHERE e.org_id = $2 AND fc.depth < 100
 	),
 	backward_chain AS (
 		SELECT id, supersedes_id, 0 AS depth FROM decisions WHERE id = $1 AND org_id = $2
 		UNION ALL
 		SELECT d.id, d.supersedes_id, bc.depth + 1
-		FROM decisions d
-		INNER JOIN backward_chain bc ON bc.supersedes_id = d.id
-		WHERE d.org_id = $2 AND bc.depth < 100
+		FROM edges e
+		INNER JOIN decisions d ON d.id = e.superseded_id AND d.org_id = e.org_id
+		INNER JOIN backward_chain bc ON e.superseding_id = bc.id
+		WHERE e.org_id = $2 AND bc.depth < 100
 	)
 	SELECT DISTINCT id FROM (
 		SELECT id FROM forward_chain WHERE id != $1

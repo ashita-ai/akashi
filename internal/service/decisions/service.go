@@ -217,6 +217,7 @@ type TraceInput struct {
 	PrecedentRef    *uuid.UUID
 	PrecedentReason *string
 	SupersedesID    *uuid.UUID     // Decision this one explicitly replaces.
+	SupersedesIDs   []uuid.UUID    // Decisions this one explicitly replaces.
 	SessionID       *uuid.UUID     // MCP session or X-Akashi-Session header.
 	AgentContext    map[string]any // Merged server-extracted + client-supplied context.
 	APIKeyID        *uuid.UUID     // Managed API key that authenticated this request.
@@ -306,6 +307,11 @@ func (s *Service) AdjudicateConflictWithTrace(ctx context.Context, orgID uuid.UU
 // scoring, alternatives, evidence, and audit entry construction. Returns the
 // fully-prepared CreateTraceParams ready for a transactional write.
 func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input TraceInput) (storage.CreateTraceParams, error) {
+	if input.SupersedesID == nil && len(input.SupersedesIDs) > 0 {
+		primary := input.SupersedesIDs[0]
+		input.SupersedesID = &primary
+	}
+
 	// 0. Normalize decision_type to lowercase. This is the canonical
 	// normalization point — all paths (HTTP, MCP, SDK) converge here.
 	input.Decision.DecisionType = strings.ToLower(strings.TrimSpace(input.Decision.DecisionType))
@@ -583,7 +589,7 @@ func (s *Service) postTraceAsync(ctx context.Context, orgID uuid.UUID, input Tra
 
 	// Auto-assess based on observable signals. Runs in a goroutine so it
 	// doesn't block the trace response (DB queries + assessment writes).
-	if s.autoAssessor != nil && (input.SupersedesID != nil || input.PrecedentRef != nil) {
+	if s.autoAssessor != nil && (input.SupersedesID != nil || len(input.SupersedesIDs) > 0 || input.PrecedentRef != nil) {
 		s.asyncWg.Add(1)
 		go func() {
 			defer s.asyncWg.Done()
@@ -597,6 +603,12 @@ func (s *Service) postTraceAsync(ctx context.Context, orgID uuid.UUID, input Tra
 
 			if input.SupersedesID != nil {
 				s.autoAssessor.OnSuperseded(assessCtx, orgID, *input.SupersedesID, decision.ID)
+			}
+			for _, supersededID := range input.SupersedesIDs {
+				if input.SupersedesID != nil && supersededID == *input.SupersedesID {
+					continue
+				}
+				s.autoAssessor.OnSuperseded(assessCtx, orgID, supersededID, decision.ID)
 			}
 			if input.PrecedentRef != nil {
 				citCount, err := s.db.GetPrecedentCitationCount(assessCtx, orgID, *input.PrecedentRef)

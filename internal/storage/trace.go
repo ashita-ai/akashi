@@ -4,6 +4,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -37,7 +38,22 @@ func (db *DB) CreateTraceTx(ctx context.Context, params CreateTraceParams) (mode
 func (db *DB) CreateTraceAndAdjudicateConflictTx(ctx context.Context, traceParams CreateTraceParams, conflictParams AdjudicateConflictInTraceParams) (model.AgentRun, model.Decision, error) {
 	var run model.AgentRun
 	var d model.Decision
+	supersedesIDs := uniqueUUIDs(conflictParams.SupersedesIDs)
+	if len(supersedesIDs) > 0 {
+		if traceParams.Decision.SupersedesID == nil {
+			primary := supersedesIDs[0]
+			traceParams.Decision.SupersedesID = &primary
+		} else if !uuidInSlice(*traceParams.Decision.SupersedesID, supersedesIDs) {
+			return model.AgentRun{}, model.Decision{}, ErrSupersededDecisionNotInConflict
+		}
+	}
 	err := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if len(supersedesIDs) > 0 {
+			if err := validateAdjudicationSupersedes(ctx, tx, traceParams.OrgID, conflictParams.ConflictID, supersedesIDs); err != nil {
+				return err
+			}
+		}
+
 		var txErr error
 		run, d, txErr = db.createTraceInTx(ctx, tx, traceParams)
 		if txErr != nil {
@@ -73,12 +89,155 @@ func (db *DB) CreateTraceAndAdjudicateConflictTx(ctx context.Context, traceParam
 		if err := InsertMutationAuditTx(ctx, tx, conflictParams.Audit); err != nil {
 			return fmt.Errorf("storage: audit in trace+adjudicate tx: %w", err)
 		}
+		if len(supersedesIDs) > 0 {
+			relationship := conflictParams.Relationship
+			if relationship == "" {
+				relationship = "supersedes"
+			}
+			if err := insertDecisionSupersedesRowsTx(ctx, tx, traceParams.OrgID, d.ID, supersedesIDs, traceParams.Decision.SupersedesID, relationship); err != nil {
+				return err
+			}
+			for _, supersededID := range supersedesIDs {
+				if traceParams.Decision.SupersedesID != nil && supersededID == *traceParams.Decision.SupersedesID {
+					continue
+				}
+				if err := invalidateSupersededDecisionInTraceTx(ctx, tx, run.ID, traceParams.OrgID, traceParams.AgentID, supersededID, d.ID, d.ValidFrom); err != nil {
+					return err
+				}
+			}
+		}
 		return nil
 	})
 	if err != nil {
 		return model.AgentRun{}, model.Decision{}, err
 	}
 	return run, d, nil
+}
+
+func uniqueUUIDs(ids []uuid.UUID) []uuid.UUID {
+	seen := make(map[uuid.UUID]struct{}, len(ids))
+	out := make([]uuid.UUID, 0, len(ids))
+	for _, id := range ids {
+		if id == uuid.Nil {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+func uuidInSlice(needle uuid.UUID, haystack []uuid.UUID) bool {
+	for _, id := range haystack {
+		if id == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func validateAdjudicationSupersedes(ctx context.Context, tx pgx.Tx, orgID, conflictID uuid.UUID, supersedesIDs []uuid.UUID) error {
+	var decisionAID, decisionBID uuid.UUID
+	if err := tx.QueryRow(ctx,
+		`SELECT decision_a_id, decision_b_id FROM scored_conflicts WHERE id = $1 AND org_id = $2 FOR UPDATE`,
+		conflictID, orgID,
+	).Scan(&decisionAID, &decisionBID); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("storage: load conflict for adjudication supersedes: %w", err)
+		}
+		return fmt.Errorf("storage: conflict: %w", ErrNotFound)
+	}
+	for _, id := range supersedesIDs {
+		if id != decisionAID && id != decisionBID {
+			return ErrSupersededDecisionNotInConflict
+		}
+	}
+	return nil
+}
+
+func insertDecisionSupersedesRowsTx(ctx context.Context, tx pgx.Tx, orgID, supersedingID uuid.UUID, supersededIDs []uuid.UUID, primaryID *uuid.UUID, relationship string) error {
+	for _, supersededID := range supersededIDs {
+		isPrimary := primaryID != nil && supersededID == *primaryID
+		if isPrimary {
+			if _, err := tx.Exec(ctx,
+				`UPDATE decision_supersedes SET is_primary = FALSE
+				 WHERE superseding_id = $1 AND org_id = $2 AND superseded_id != $3 AND is_primary`,
+				supersedingID, orgID, supersededID,
+			); err != nil {
+				return fmt.Errorf("storage: clear primary supersedes row: %w", err)
+			}
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO decision_supersedes (superseding_id, superseded_id, org_id, relationship, is_primary)
+			 VALUES ($1, $2, $3, $4, $5)
+			 ON CONFLICT (superseding_id, superseded_id) DO UPDATE
+			 SET relationship = EXCLUDED.relationship,
+			     is_primary = EXCLUDED.is_primary`,
+			supersedingID, supersededID, orgID, relationship, isPrimary,
+		); err != nil {
+			return fmt.Errorf("storage: insert decision supersedes row: %w", err)
+		}
+	}
+	return nil
+}
+
+func invalidateSupersededDecisionInTraceTx(ctx context.Context, tx pgx.Tx, runID, orgID uuid.UUID, agentID string, supersededID, newDecisionID uuid.UUID, validTo time.Time) error {
+	if validTo.IsZero() {
+		validTo = time.Now().UTC()
+	}
+	tag, err := tx.Exec(ctx,
+		`UPDATE decisions SET valid_to = $1 WHERE id = $2 AND org_id = $3 AND valid_to IS NULL`,
+		validTo, supersededID, orgID,
+	)
+	if err != nil {
+		return fmt.Errorf("storage: invalidate superseded decision: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("storage: superseded decision %s not found (or already superseded): %w", supersededID, ErrNotFound)
+	}
+	if err := queueSearchOutbox(ctx, tx, supersededID, orgID, "delete"); err != nil {
+		return fmt.Errorf("storage: queue search outbox delete for superseded: %w", err)
+	}
+	if _, err := AutoResolveSupersededConflictsTx(ctx, tx, orgID, supersededID, newDecisionID); err != nil {
+		return fmt.Errorf("storage: auto-resolve superseded conflicts in trace: %w", err)
+	}
+
+	var seqNum int64
+	if err := tx.QueryRow(ctx, `SELECT nextval('event_sequence_num_seq')`).Scan(&seqNum); err != nil {
+		return fmt.Errorf("storage: reserve sequence num for supersession event: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO agent_events (id, run_id, org_id, event_type, sequence_num, occurred_at, agent_id, payload, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		uuid.New(), runID, orgID, string(model.EventDecisionSuperseded), seqNum,
+		validTo, agentID, map[string]any{
+			"superseded_decision_id": supersededID.String(),
+			"new_decision_id":        newDecisionID.String(),
+		}, validTo,
+	); err != nil {
+		return fmt.Errorf("storage: insert supersession event: %w", err)
+	}
+	if err := InsertMutationAuditTx(ctx, tx, MutationAuditEntry{
+		OrgID:        orgID,
+		ActorAgentID: agentID,
+		ActorRole:    "agent",
+		Operation:    "supersede_decision",
+		ResourceType: "decision",
+		ResourceID:   supersededID.String(),
+		BeforeData:   map[string]any{"valid_to": nil},
+		AfterData: map[string]any{
+			"valid_to":        validTo,
+			"superseded_by":   newDecisionID,
+			"new_decision_id": newDecisionID,
+			"superseded_id":   supersededID,
+		},
+	}); err != nil {
+		return fmt.Errorf("storage: audit supersession in trace tx: %w", err)
+	}
+	return nil
 }
 
 // createTraceInTx is the transactional core shared by CreateTraceTx and
@@ -220,6 +379,9 @@ func (db *DB) createTraceInTx(ctx context.Context, tx pgx.Tx, params CreateTrace
 	// 4c. Handle explicit supersession: invalidate the superseded decision and
 	// auto-resolve its open conflicts, matching the ReviseDecision pattern.
 	if d.SupersedesID != nil {
+		if err := insertDecisionSupersedesRowsTx(ctx, tx, params.OrgID, d.ID, []uuid.UUID{*d.SupersedesID}, d.SupersedesID, "supersedes"); err != nil {
+			return model.AgentRun{}, model.Decision{}, err
+		}
 		tag, err := tx.Exec(ctx,
 			`UPDATE decisions SET valid_to = $1 WHERE id = $2 AND org_id = $3 AND valid_to IS NULL`,
 			now, *d.SupersedesID, params.OrgID,

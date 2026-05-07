@@ -16,6 +16,10 @@ var ErrWinningAgentNotInGroup = errors.New("storage: winning agent is not a part
 // does not match either decision_a_id or decision_b_id of the conflict.
 var ErrWinningDecisionNotInConflict = errors.New("storage: winning decision is not a participant in this conflict")
 
+// ErrSupersededDecisionNotInConflict is returned when adjudication tries to
+// supersede a decision that is not one of the target conflict's two sides.
+var ErrSupersededDecisionNotInConflict = errors.New("storage: superseded decision is not a participant in this conflict")
+
 // ErrRevisedDecisions is returned when a resolution requiring a decisions JOIN
 // finds no current (valid_to IS NULL) decisions, typically because the referenced
 // decisions have been superseded by revisions.
