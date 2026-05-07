@@ -185,18 +185,18 @@ type CheckRequest struct {
 
 // TraceRequest is the input for Client.Trace.
 type TraceRequest struct {
-	DecisionType string             `json:"decision_type"`
-	Outcome      string             `json:"outcome"`
-	Confidence   float32            `json:"confidence"`
-	Reasoning    *string            `json:"reasoning,omitempty"`
+	DecisionType    string             `json:"decision_type"`
+	Outcome         string             `json:"outcome"`
+	Confidence      float32            `json:"confidence"`
+	Reasoning       *string            `json:"reasoning,omitempty"`
 	PrecedentRef    *uuid.UUID         `json:"precedent_ref,omitempty"`
 	PrecedentReason *string            `json:"precedent_reason,omitempty"`
 	SupersedesID    *uuid.UUID         `json:"supersedes_id,omitempty"`
 	TraceID         *string            `json:"trace_id,omitempty"` // OTEL trace ID correlation
 	Alternatives    []TraceAlternative `json:"alternatives,omitempty"`
-	Evidence     []TraceEvidence    `json:"evidence,omitempty"`
-	Metadata     map[string]any     `json:"metadata,omitempty"`
-	Context      map[string]any     `json:"context,omitempty"`
+	Evidence        []TraceEvidence    `json:"evidence,omitempty"`
+	Metadata        map[string]any     `json:"metadata,omitempty"`
+	Context         map[string]any     `json:"context,omitempty"`
 
 	// IdempotencyKey is an optional client-provided key for safe retries.
 	// If empty, a random UUID is generated automatically. Sent as the
@@ -255,16 +255,16 @@ type QueryOptions struct {
 // It tells an agent which approach prevailed so they can avoid resurrecting the
 // losing side of an already-resolved disagreement.
 type ConflictResolution struct {
-	ID                uuid.UUID  `json:"id"`
-	DecisionType      string     `json:"decision_type"`
-	WinningDecisionID uuid.UUID  `json:"winning_decision_id"`
-	WinningAgent      string     `json:"winning_agent"`
-	WinningOutcome    string     `json:"winning_outcome"`
-	LosingAgent       string     `json:"losing_agent"`
-	LosingOutcome     string     `json:"losing_outcome"`
-	Explanation       *string    `json:"explanation,omitempty"`
-	ResolutionNote    *string    `json:"resolution_note,omitempty"`
-	ResolvedAt        time.Time  `json:"resolved_at"`
+	ID                uuid.UUID `json:"id"`
+	DecisionType      string    `json:"decision_type"`
+	WinningDecisionID uuid.UUID `json:"winning_decision_id"`
+	WinningAgent      string    `json:"winning_agent"`
+	WinningOutcome    string    `json:"winning_outcome"`
+	LosingAgent       string    `json:"losing_agent"`
+	LosingOutcome     string    `json:"losing_outcome"`
+	Explanation       *string   `json:"explanation,omitempty"`
+	ResolutionNote    *string   `json:"resolution_note,omitempty"`
+	ResolvedAt        time.Time `json:"resolved_at"`
 }
 
 // CheckResponse is the output of Client.Check.
@@ -334,19 +334,19 @@ type AgentRun struct {
 type EventType string
 
 const (
-	EventAgentRunStarted        EventType = "AgentRunStarted"
-	EventAgentRunCompleted      EventType = "AgentRunCompleted"
-	EventAgentRunFailed         EventType = "AgentRunFailed"
-	EventDecisionStarted EventType = "DecisionStarted"
-	EventDecisionMade    EventType = "DecisionMade"
-	EventDecisionRevised        EventType = "DecisionRevised"
-	EventDecisionSuperseded     EventType = "DecisionSuperseded"
-	EventDecisionRetracted      EventType = "DecisionRetracted"
-	EventDecisionErased         EventType = "DecisionErased"
-	EventToolCallStarted        EventType = "ToolCallStarted"
-	EventToolCallCompleted      EventType = "ToolCallCompleted"
-	EventAgentHandoff     EventType = "AgentHandoff"
-	EventConflictDetected EventType = "ConflictDetected"
+	EventAgentRunStarted    EventType = "AgentRunStarted"
+	EventAgentRunCompleted  EventType = "AgentRunCompleted"
+	EventAgentRunFailed     EventType = "AgentRunFailed"
+	EventDecisionStarted    EventType = "DecisionStarted"
+	EventDecisionMade       EventType = "DecisionMade"
+	EventDecisionRevised    EventType = "DecisionRevised"
+	EventDecisionSuperseded EventType = "DecisionSuperseded"
+	EventDecisionRetracted  EventType = "DecisionRetracted"
+	EventDecisionErased     EventType = "DecisionErased"
+	EventToolCallStarted    EventType = "ToolCallStarted"
+	EventToolCallCompleted  EventType = "ToolCallCompleted"
+	EventAgentHandoff       EventType = "AgentHandoff"
+	EventConflictDetected   EventType = "ConflictDetected"
 )
 
 // AgentEvent is an append-only event in the event log.
@@ -578,53 +578,53 @@ type AssessResponse struct {
 // are serialized at the top level alongside recommendation and reopens_resolution.
 type ConflictDetail struct {
 	// All DecisionConflict fields are inlined at the top level.
-	ID                uuid.UUID    `json:"id"`
-	ConflictKind      ConflictKind `json:"conflict_kind"`
-	DecisionAID       uuid.UUID    `json:"decision_a_id"`
-	DecisionBID       uuid.UUID    `json:"decision_b_id"`
-	OrgID             uuid.UUID    `json:"org_id"`
-	AgentA            string       `json:"agent_a"`
-	AgentB            string       `json:"agent_b"`
-	RunA              uuid.UUID    `json:"run_a"`
-	RunB              uuid.UUID    `json:"run_b"`
-	DecisionType      string       `json:"decision_type"`
-	DecisionTypeA     *string      `json:"decision_type_a,omitempty"`
-	DecisionTypeB     *string      `json:"decision_type_b,omitempty"`
-	OutcomeA          string       `json:"outcome_a"`
-	OutcomeB          string       `json:"outcome_b"`
-	ConfidenceA       float32      `json:"confidence_a"`
-	ConfidenceB       float32      `json:"confidence_b"`
-	ReasoningA        *string      `json:"reasoning_a,omitempty"`
-	ReasoningB        *string      `json:"reasoning_b,omitempty"`
-	DecidedAtA        time.Time    `json:"decided_at_a"`
-	DecidedAtB        time.Time    `json:"decided_at_b"`
-	DetectedAt        time.Time    `json:"detected_at"`
-	TopicSimilarity   *float64     `json:"topic_similarity,omitempty"`
-	OutcomeDivergence *float64     `json:"outcome_divergence,omitempty"`
-	Significance      *float64     `json:"significance,omitempty"`
-	ScoringMethod     string       `json:"scoring_method,omitempty"`
-	Explanation       *string      `json:"explanation,omitempty"`
-	Category          *string      `json:"category,omitempty"`
-	Severity          *string      `json:"severity,omitempty"`
-	Status            string       `json:"status"`
-	ResolvedBy        *string      `json:"resolved_by,omitempty"`
-	ResolvedAt        *time.Time   `json:"resolved_at,omitempty"`
-	ResolutionNote    *string      `json:"resolution_note,omitempty"`
-	Relationship      *string      `json:"relationship,omitempty"`
-	ConfidenceWeight  *float64     `json:"confidence_weight,omitempty"`
-	TemporalDecay     *float64     `json:"temporal_decay,omitempty"`
-	ResolutionDecisionID *uuid.UUID `json:"resolution_decision_id,omitempty"`
-	WinningDecisionID    *uuid.UUID `json:"winning_decision_id,omitempty"`
-	GroupID              *uuid.UUID `json:"group_id,omitempty"`
-	ClaimTextA        *string      `json:"claim_text_a,omitempty"`
-	ClaimTextB        *string      `json:"claim_text_b,omitempty"`
-	ReopensResolutionID *uuid.UUID `json:"reopens_resolution_id,omitempty"`
-	ProjectA          *string      `json:"project_a,omitempty"`
-	ProjectB          *string      `json:"project_b,omitempty"`
+	ID                   uuid.UUID    `json:"id"`
+	ConflictKind         ConflictKind `json:"conflict_kind"`
+	DecisionAID          uuid.UUID    `json:"decision_a_id"`
+	DecisionBID          uuid.UUID    `json:"decision_b_id"`
+	OrgID                uuid.UUID    `json:"org_id"`
+	AgentA               string       `json:"agent_a"`
+	AgentB               string       `json:"agent_b"`
+	RunA                 uuid.UUID    `json:"run_a"`
+	RunB                 uuid.UUID    `json:"run_b"`
+	DecisionType         string       `json:"decision_type"`
+	DecisionTypeA        *string      `json:"decision_type_a,omitempty"`
+	DecisionTypeB        *string      `json:"decision_type_b,omitempty"`
+	OutcomeA             string       `json:"outcome_a"`
+	OutcomeB             string       `json:"outcome_b"`
+	ConfidenceA          float32      `json:"confidence_a"`
+	ConfidenceB          float32      `json:"confidence_b"`
+	ReasoningA           *string      `json:"reasoning_a,omitempty"`
+	ReasoningB           *string      `json:"reasoning_b,omitempty"`
+	DecidedAtA           time.Time    `json:"decided_at_a"`
+	DecidedAtB           time.Time    `json:"decided_at_b"`
+	DetectedAt           time.Time    `json:"detected_at"`
+	TopicSimilarity      *float64     `json:"topic_similarity,omitempty"`
+	OutcomeDivergence    *float64     `json:"outcome_divergence,omitempty"`
+	Significance         *float64     `json:"significance,omitempty"`
+	ScoringMethod        string       `json:"scoring_method,omitempty"`
+	Explanation          *string      `json:"explanation,omitempty"`
+	Category             *string      `json:"category,omitempty"`
+	Severity             *string      `json:"severity,omitempty"`
+	Status               string       `json:"status"`
+	ResolvedBy           *string      `json:"resolved_by,omitempty"`
+	ResolvedAt           *time.Time   `json:"resolved_at,omitempty"`
+	ResolutionNote       *string      `json:"resolution_note,omitempty"`
+	Relationship         *string      `json:"relationship,omitempty"`
+	ConfidenceWeight     *float64     `json:"confidence_weight,omitempty"`
+	TemporalDecay        *float64     `json:"temporal_decay,omitempty"`
+	ResolutionDecisionID *uuid.UUID   `json:"resolution_decision_id,omitempty"`
+	WinningDecisionID    *uuid.UUID   `json:"winning_decision_id,omitempty"`
+	GroupID              *uuid.UUID   `json:"group_id,omitempty"`
+	ClaimTextA           *string      `json:"claim_text_a,omitempty"`
+	ClaimTextB           *string      `json:"claim_text_b,omitempty"`
+	ReopensResolutionID  *uuid.UUID   `json:"reopens_resolution_id,omitempty"`
+	ProjectA             *string      `json:"project_a,omitempty"`
+	ProjectB             *string      `json:"project_b,omitempty"`
 
 	// Detail-only fields.
 	Recommendation    *ConflictRecommendation `json:"recommendation,omitempty"`
-	ReopensResolution *ConflictResolution      `json:"reopens_resolution,omitempty"`
+	ReopensResolution *ConflictResolution     `json:"reopens_resolution,omitempty"`
 }
 
 // ConflictRecommendation is the server's suggested resolution for a conflict.
@@ -725,10 +725,11 @@ type EraseDecisionResponse struct {
 
 // AdjudicateConflictRequest is the input for Client.AdjudicateConflict.
 type AdjudicateConflictRequest struct {
-	Outcome           string     `json:"outcome"`
-	Reasoning         string     `json:"reasoning,omitempty"`
-	DecisionType      string     `json:"decision_type,omitempty"`
-	WinningDecisionID *uuid.UUID `json:"winning_decision_id,omitempty"`
+	Outcome           string      `json:"outcome"`
+	Reasoning         string      `json:"reasoning,omitempty"`
+	DecisionType      string      `json:"decision_type,omitempty"`
+	WinningDecisionID *uuid.UUID  `json:"winning_decision_id,omitempty"`
+	Supersedes        []uuid.UUID `json:"supersedes,omitempty"`
 }
 
 // ConflictStatusUpdate is the input for Client.PatchConflict.
@@ -785,12 +786,12 @@ type ConflictGroupOptions struct {
 // ConflictAnalyticsResponse is the output of Client.GetConflictAnalytics.
 // Matches canonical model.ConflictAnalytics.
 type ConflictAnalyticsResponse struct {
-	Period         TimePeriod                  `json:"period"`
-	Summary        ConflictAnalyticsSummary    `json:"summary"`
-	ByAgentPair    []ConflictAgentPairStats    `json:"by_agent_pair"`
-	ByDecisionType []ConflictTypeStats         `json:"by_decision_type"`
-	BySeverity     []ConflictSeverityStats     `json:"by_severity"`
-	Trend          []ConflictTrendPoint        `json:"trend"`
+	Period         TimePeriod               `json:"period"`
+	Summary        ConflictAnalyticsSummary `json:"summary"`
+	ByAgentPair    []ConflictAgentPairStats `json:"by_agent_pair"`
+	ByDecisionType []ConflictTypeStats      `json:"by_decision_type"`
+	BySeverity     []ConflictSeverityStats  `json:"by_severity"`
+	Trend          []ConflictTrendPoint     `json:"trend"`
 }
 
 // TimePeriod defines the start and end of an analytics window.

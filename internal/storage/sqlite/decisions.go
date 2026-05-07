@@ -36,11 +36,27 @@ func (l *LiteDB) CreateTraceTx(ctx context.Context, params storage.CreateTracePa
 
 // CreateTraceAndAdjudicateConflictTx creates a trace and resolves a conflict atomically.
 func (l *LiteDB) CreateTraceAndAdjudicateConflictTx(ctx context.Context, traceParams storage.CreateTraceParams, conflictParams storage.AdjudicateConflictInTraceParams) (model.AgentRun, model.Decision, error) {
+	supersedesIDs := uniqueUUIDs(conflictParams.SupersedesIDs)
+	if len(supersedesIDs) > 0 {
+		if traceParams.Decision.SupersedesID == nil {
+			primary := supersedesIDs[0]
+			traceParams.Decision.SupersedesID = &primary
+		} else if !uuidInSlice(*traceParams.Decision.SupersedesID, supersedesIDs) {
+			return model.AgentRun{}, model.Decision{}, storage.ErrSupersededDecisionNotInConflict
+		}
+	}
+
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.AgentRun{}, model.Decision{}, fmt.Errorf("sqlite: begin tx: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
+
+	if len(supersedesIDs) > 0 {
+		if err := validateAdjudicationSupersedes(ctx, tx, traceParams.OrgID, conflictParams.ConflictID, supersedesIDs); err != nil {
+			return model.AgentRun{}, model.Decision{}, err
+		}
+	}
 
 	run, dec, err := createTraceInTx(ctx, tx, traceParams)
 	if err != nil {
@@ -68,14 +84,152 @@ func (l *LiteDB) CreateTraceAndAdjudicateConflictTx(ctx context.Context, tracePa
 		return model.AgentRun{}, model.Decision{}, fmt.Errorf("sqlite: conflict: %w", storage.ErrNotFound)
 	}
 
+	conflictParams.Audit.ResourceID = conflictParams.ConflictID.String()
+	afterData := map[string]any{
+		"status":                 "resolved",
+		"resolved_by":            conflictParams.ResolvedBy,
+		"resolution_decision_id": dec.ID.String(),
+	}
+	if conflictParams.WinningDecisionID != nil {
+		afterData["winning_decision_id"] = conflictParams.WinningDecisionID.String()
+	}
+	conflictParams.Audit.AfterData = afterData
 	if err := insertAuditTx(ctx, tx, conflictParams.Audit); err != nil {
 		return model.AgentRun{}, model.Decision{}, err
+	}
+
+	if len(supersedesIDs) > 0 {
+		relationship := conflictParams.Relationship
+		if relationship == "" {
+			relationship = "supersedes"
+		}
+		if err := insertDecisionSupersedesRowsTx(ctx, tx, traceParams.OrgID, dec.ID, supersedesIDs, traceParams.Decision.SupersedesID, relationship); err != nil {
+			return model.AgentRun{}, model.Decision{}, err
+		}
+		for _, supersededID := range supersedesIDs {
+			if traceParams.Decision.SupersedesID != nil && supersededID == *traceParams.Decision.SupersedesID {
+				continue
+			}
+			if err := invalidateSupersededDecisionInTraceTx(ctx, tx, traceParams.OrgID, traceParams.AgentID, supersededID, dec.ID, dec.ValidFrom); err != nil {
+				return model.AgentRun{}, model.Decision{}, err
+			}
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return model.AgentRun{}, model.Decision{}, fmt.Errorf("sqlite: commit trace+adjudicate: %w", err)
 	}
 	return run, dec, nil
+}
+
+func uniqueUUIDs(ids []uuid.UUID) []uuid.UUID {
+	seen := make(map[uuid.UUID]struct{}, len(ids))
+	out := make([]uuid.UUID, 0, len(ids))
+	for _, id := range ids {
+		if id == uuid.Nil {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+func uuidInSlice(needle uuid.UUID, haystack []uuid.UUID) bool {
+	for _, id := range haystack {
+		if id == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func validateAdjudicationSupersedes(ctx context.Context, tx *sql.Tx, orgID, conflictID uuid.UUID, supersedesIDs []uuid.UUID) error {
+	var decisionAStr, decisionBStr string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT decision_a_id, decision_b_id FROM scored_conflicts WHERE id = ? AND org_id = ?`,
+		uuidStr(conflictID), uuidStr(orgID),
+	).Scan(&decisionAStr, &decisionBStr); err != nil {
+		return fmt.Errorf("sqlite: conflict: %w", storage.ErrNotFound)
+	}
+	decisionAID, err := uuid.Parse(decisionAStr)
+	if err != nil {
+		return fmt.Errorf("sqlite: parse conflict decision_a_id: %w", err)
+	}
+	decisionBID, err := uuid.Parse(decisionBStr)
+	if err != nil {
+		return fmt.Errorf("sqlite: parse conflict decision_b_id: %w", err)
+	}
+	for _, id := range supersedesIDs {
+		if id != decisionAID && id != decisionBID {
+			return storage.ErrSupersededDecisionNotInConflict
+		}
+	}
+	return nil
+}
+
+func insertDecisionSupersedesRowsTx(ctx context.Context, tx *sql.Tx, orgID, supersedingID uuid.UUID, supersededIDs []uuid.UUID, primaryID *uuid.UUID, relationship string) error {
+	for _, supersededID := range supersededIDs {
+		isPrimary := 0
+		if primaryID != nil && supersededID == *primaryID {
+			isPrimary = 1
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE decision_supersedes SET is_primary = 0
+				 WHERE superseding_id = ? AND org_id = ? AND superseded_id != ? AND is_primary = 1`,
+				uuidStr(supersedingID), uuidStr(orgID), uuidStr(supersededID),
+			); err != nil {
+				return fmt.Errorf("sqlite: clear primary supersedes row: %w", err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO decision_supersedes (superseding_id, superseded_id, org_id, relationship, is_primary)
+			 VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT(superseding_id, superseded_id) DO UPDATE
+			 SET relationship = excluded.relationship,
+			     is_primary = excluded.is_primary`,
+			uuidStr(supersedingID), uuidStr(supersededID), uuidStr(orgID), relationship, isPrimary,
+		); err != nil {
+			return fmt.Errorf("sqlite: insert decision supersedes row: %w", err)
+		}
+	}
+	return nil
+}
+
+func invalidateSupersededDecisionInTraceTx(ctx context.Context, tx *sql.Tx, orgID uuid.UUID, agentID string, supersededID, newDecisionID uuid.UUID, validTo time.Time) error {
+	if validTo.IsZero() {
+		validTo = time.Now().UTC()
+	}
+	res, err := tx.ExecContext(ctx,
+		`UPDATE decisions SET valid_to = ? WHERE id = ? AND org_id = ? AND valid_to IS NULL`,
+		timeStr(validTo), uuidStr(supersededID), uuidStr(orgID),
+	)
+	if err != nil {
+		return fmt.Errorf("sqlite: close superseded decision: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("sqlite: superseded decision %s not found (or already superseded): %w", supersededID, storage.ErrNotFound)
+	}
+	if err := insertAuditTx(ctx, tx, storage.MutationAuditEntry{
+		OrgID:        orgID,
+		ActorAgentID: agentID,
+		ActorRole:    "agent",
+		Operation:    "supersede_decision",
+		ResourceType: "decision",
+		ResourceID:   supersededID.String(),
+		BeforeData:   map[string]any{"valid_to": nil},
+		AfterData: map[string]any{
+			"valid_to":        validTo,
+			"superseded_by":   newDecisionID,
+			"new_decision_id": newDecisionID,
+			"superseded_id":   supersededID,
+		},
+	}); err != nil {
+		return err
+	}
+	return nil
 }
 
 func createTraceInTx(ctx context.Context, tx *sql.Tx, p storage.CreateTraceParams) (model.AgentRun, model.Decision, error) {
@@ -231,6 +385,9 @@ func createTraceInTx(ctx context.Context, tx *sql.Tx, p storage.CreateTraceParam
 
 	// 5. Supersession: if this decision supersedes another, close the old one.
 	if d.SupersedesID != nil {
+		if err := insertDecisionSupersedesRowsTx(ctx, tx, p.OrgID, d.ID, []uuid.UUID{*d.SupersedesID}, d.SupersedesID, "supersedes"); err != nil {
+			return model.AgentRun{}, model.Decision{}, err
+		}
 		_, err = tx.ExecContext(ctx,
 			`UPDATE decisions SET valid_to = ? WHERE id = ? AND org_id = ? AND valid_to IS NULL`,
 			timeStr(d.ValidFrom), uuidStr(*d.SupersedesID), uuidStr(d.OrgID),

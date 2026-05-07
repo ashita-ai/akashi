@@ -498,6 +498,7 @@ export interface AdjudicateConflictRequest {
   reasoning?: string;
   decision_type?: string;
   winning_decision_id?: string;
+  supersedes?: string[];
 }
 
 export interface ConflictStatusUpdate {

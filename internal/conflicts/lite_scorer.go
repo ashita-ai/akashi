@@ -48,6 +48,20 @@ func (s *LiteScorer) ScoreForDecision(ctx context.Context, decisionID, orgID uui
 		return
 	}
 
+	// Build the revision chain set for the source. Any candidate in this chain
+	// is an intentional supersession (or a prior revision of the same line of
+	// thought), not a conflict — exclude it explicitly. Today the trace pipeline
+	// also sets valid_to on direct supersedes targets so loadCandidates would
+	// filter them out anyway, but explicit chain consultation makes the contract
+	// independent of that side effect (matches the full Scorer at scorer.go:414)
+	// and is forward-compatible with multi-target supersedes (decision_supersedes
+	// join table per ADR-016) and any future relationship that does not invalidate.
+	revisionChain, err := queryRevisionChainIDs(ctx, s.db, decisionID, orgID)
+	if err != nil {
+		s.logger.Warn("lite conflict scorer: revision chain query failed", "decision_id", decisionID, "error", err)
+		revisionChain = nil
+	}
+
 	// 2. Load recent same-type decisions from other agents (candidate pool).
 	candidates, err := s.loadCandidates(ctx, orgID, src)
 	if err != nil {
@@ -60,6 +74,10 @@ func (s *LiteScorer) ScoreForDecision(ctx context.Context, decisionID, orgID uui
 
 	// 3. Score each candidate pair.
 	for _, cand := range candidates {
+		if _, inChain := revisionChain[cand.id]; inChain {
+			continue
+		}
+
 		candClaims := SplitClaims(cand.outcome)
 		if len(candClaims) == 0 {
 			continue
@@ -360,4 +378,75 @@ func jaccardSimilarity(a, b map[string]bool) float32 {
 		return 0
 	}
 	return float32(intersection) / float32(union)
+}
+
+// queryRevisionChainIDs returns all decision IDs in the same supersedes chain
+// as the given decision, walking forward (decisions that supersede this one)
+// and backward (decisions this one supersedes), capped at 100 hops in each
+// direction. The result excludes the input ID itself. Mirrors the PostgreSQL
+// helper at internal/storage/decisions.go:GetRevisionChainIDs so that lite mode
+// has the same explicit chain-exclusion contract as full mode.
+func queryRevisionChainIDs(ctx context.Context, db *sql.DB, id, orgID uuid.UUID) (map[uuid.UUID]struct{}, error) {
+	const q = `
+	WITH RECURSIVE
+	edges AS (
+		SELECT id AS superseding_id, supersedes_id AS superseded_id, org_id
+		FROM decisions
+		WHERE supersedes_id IS NOT NULL AND org_id = ?
+		UNION
+		SELECT superseding_id, superseded_id, org_id
+		FROM decision_supersedes
+		WHERE org_id = ?
+	),
+	forward_chain(id, supersedes_id, depth) AS (
+		SELECT id, supersedes_id, 0 FROM decisions WHERE id = ? AND org_id = ?
+		UNION ALL
+		SELECT d.id, d.supersedes_id, fc.depth + 1
+		FROM edges e
+		INNER JOIN decisions d ON d.id = e.superseding_id AND d.org_id = e.org_id
+		INNER JOIN forward_chain fc ON e.superseded_id = fc.id
+		WHERE e.org_id = ? AND fc.depth < 100
+	),
+	backward_chain(id, supersedes_id, depth) AS (
+		SELECT id, supersedes_id, 0 FROM decisions WHERE id = ? AND org_id = ?
+		UNION ALL
+		SELECT d.id, d.supersedes_id, bc.depth + 1
+		FROM edges e
+		INNER JOIN decisions d ON d.id = e.superseded_id AND d.org_id = e.org_id
+		INNER JOIN backward_chain bc ON e.superseding_id = bc.id
+		WHERE e.org_id = ? AND bc.depth < 100
+	)
+	SELECT DISTINCT chain_id FROM (
+		SELECT id AS chain_id FROM forward_chain WHERE id != ?
+		UNION
+		SELECT id AS chain_id FROM backward_chain WHERE id != ?
+	)`
+
+	rows, err := db.QueryContext(ctx, q,
+		orgID.String(),
+		orgID.String(),
+		id.String(), orgID.String(),
+		orgID.String(),
+		id.String(), orgID.String(),
+		orgID.String(),
+		id.String(), id.String(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query revision chain: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	chain := make(map[uuid.UUID]struct{})
+	for rows.Next() {
+		var idStr string
+		if err := rows.Scan(&idStr); err != nil {
+			return nil, fmt.Errorf("scan revision chain id: %w", err)
+		}
+		cid, err := uuid.Parse(idStr)
+		if err != nil {
+			return nil, fmt.Errorf("parse revision chain id %q: %w", idStr, err)
+		}
+		chain[cid] = struct{}{}
+	}
+	return chain, rows.Err()
 }

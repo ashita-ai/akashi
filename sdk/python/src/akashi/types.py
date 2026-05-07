@@ -561,8 +561,9 @@ class ConflictStatusUpdate(BaseModel):
 class AdjudicateConflictRequest(BaseModel):
     outcome: str
     reasoning: str | None = None
-    decision_type: str = "conflict_resolution"
+    decision_type: str | None = None
     winning_decision_id: UUID | None = None
+    supersedes: list[UUID] = Field(default_factory=list)
 
 
 class ResolveConflictGroupRequest(BaseModel):

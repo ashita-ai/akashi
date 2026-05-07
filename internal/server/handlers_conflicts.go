@@ -294,10 +294,11 @@ func (h *Handlers) HandleAdjudicateConflict(w http.ResponseWriter, r *http.Reque
 	}
 
 	var req struct {
-		Outcome           string     `json:"outcome"`
-		Reasoning         *string    `json:"reasoning,omitempty"`
-		DecisionType      string     `json:"decision_type,omitempty"`
-		WinningDecisionID *uuid.UUID `json:"winning_decision_id,omitempty"`
+		Outcome           string      `json:"outcome"`
+		Reasoning         *string     `json:"reasoning,omitempty"`
+		DecisionType      string      `json:"decision_type,omitempty"`
+		WinningDecisionID *uuid.UUID  `json:"winning_decision_id,omitempty"`
+		Supersedes        []uuid.UUID `json:"supersedes,omitempty"`
 	}
 	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
 		handleDecodeError(w, r, err)
@@ -308,7 +309,11 @@ func (h *Handlers) HandleAdjudicateConflict(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if req.DecisionType == "" {
-		req.DecisionType = "conflict_resolution"
+		if len(req.Supersedes) > 1 {
+			req.DecisionType = "reconciliation"
+		} else {
+			req.DecisionType = "conflict_resolution"
+		}
 	}
 
 	// Verify the conflict exists and belongs to this org.
@@ -323,6 +328,13 @@ func (h *Handlers) HandleAdjudicateConflict(w http.ResponseWriter, r *http.Reque
 		if *req.WinningDecisionID != conflict.DecisionAID && *req.WinningDecisionID != conflict.DecisionBID {
 			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
 				"winning_decision_id must be one of the two decisions in this conflict")
+			return
+		}
+	}
+	for _, supersededID := range req.Supersedes {
+		if supersededID != conflict.DecisionAID && supersededID != conflict.DecisionBID {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+				"supersedes entries must be one of the two decisions in this conflict")
 			return
 		}
 	}
@@ -357,18 +369,26 @@ func (h *Handlers) HandleAdjudicateConflict(w http.ResponseWriter, r *http.Reque
 			Confidence:   1.0, // Adjudication decisions are definitive.
 			Reasoning:    req.Reasoning,
 		},
-		APIKeyID:  claims.APIKeyID,
-		AuditMeta: h.buildAuditMeta(r, orgID),
+		SupersedesIDs: req.Supersedes,
+		APIKeyID:      claims.APIKeyID,
+		AuditMeta:     h.buildAuditMeta(r, orgID),
 	}, storage.AdjudicateConflictInTraceParams{
 		ConflictID:        id,
 		ResolvedBy:        resolverAgent,
 		ResNote:           &note,
 		Audit:             conflictAudit,
 		WinningDecisionID: req.WinningDecisionID,
+		SupersedesIDs:     req.Supersedes,
+		Relationship:      "reconciles",
 	})
 	if err != nil {
 		if isNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
+			return
+		}
+		if errors.Is(err, storage.ErrSupersededDecisionNotInConflict) {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+				"supersedes entries must be one of the two decisions in this conflict")
 			return
 		}
 		h.writeInternalError(w, r, "failed to adjudicate conflict", err)
