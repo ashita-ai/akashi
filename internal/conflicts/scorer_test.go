@@ -3154,3 +3154,88 @@ func TestBenchmarkDataset_HasFPCategories(t *testing.T) {
 	assert.Equal(t, 40, labelCounts["related_not_contradicting"], "10 original + 30 FP category pairs")
 	assert.Equal(t, 10, labelCounts["unrelated_false_positive"])
 }
+
+// TestScoreForDecision_SameAgentSameTicketSuggestion verifies that when the
+// same-agent same-ticket refinement filter fires, the scorer (a) does NOT
+// emit a conflict for the pair and (b) writes a 'suggested' row to
+// decision_supersedes that akashi_check can later surface to the agent.
+// See PR-2 of #708 (issue #710).
+func TestScoreForDecision_SameAgentSameTicketSuggestion(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "ssr-suggest-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+
+	// Same topic embedding (high topic similarity). Outcome embeddings differ
+	// enough that the pair would otherwise be flagged a conflict — but the
+	// ticket reference matches via agent_context.task on both sides, so the
+	// filter must catch it before the LLM ever runs.
+	topicEmb := makeEmbedding(0, 1.0)
+	outcomeEmbA := makeEmbedding(1, 1.0)
+	outcomeEmbB := makeEmbedding(2, 1.0)
+
+	taskCtx := func(task, branch string) map[string]any {
+		return map[string]any{"client": map[string]any{"task": task, "git_branch": branch}}
+	}
+
+	earlier, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "implementation",
+		Outcome:      "ARD-958 layer-2 implementation",
+		Confidence:   0.8,
+		Embedding:    &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+		AgentContext: taskCtx("ARD-958 PR-1", "evanvolgas/ard-958-layer-2"),
+		ValidFrom:    time.Now().Add(-2 * time.Hour),
+	})
+	require.NoError(t, err)
+
+	later, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "implementation",
+		Outcome:      "ARD-958 layer-3 follow-up",
+		Confidence:   0.85,
+		Embedding:    &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+		AgentContext: taskCtx("ARD-958 PR-2", "evanvolgas/ard-958-layer-3"),
+		ValidFrom:    time.Now(),
+	})
+	require.NoError(t, err)
+
+	// Use a non-noop validator so the directToScorer bypass doesn't kick in
+	// before our filter — the filter must run regardless.
+	scorer := NewScorer(testDB, logger, 0.1, stubConflictValidator{}, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
+
+	scorer.ScoreForDecision(ctx, later.ID, orgID)
+
+	// Assert: no conflict was inserted for this pair.
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 100, 0)
+	require.NoError(t, err)
+	for _, c := range conflicts {
+		aIs := c.DecisionAID == earlier.ID || c.DecisionBID == earlier.ID
+		bIs := c.DecisionAID == later.ID || c.DecisionBID == later.ID
+		assert.Falsef(t, aIs && bIs,
+			"same-agent same-ticket pair must be suppressed (got conflict %s)", c.ID)
+	}
+
+	// Assert: a suggestion row was written, with later as the superseding side.
+	suggestions, err := testDB.ListSupersedesSuggestionsForDecisions(ctx, orgID, []uuid.UUID{later.ID})
+	require.NoError(t, err)
+	require.Len(t, suggestions, 1, "expected exactly one suggestion for the later decision")
+	assert.Equal(t, later.ID, suggestions[0].SupersedingID)
+	assert.Equal(t, earlier.ID, suggestions[0].SupersededID)
+	assert.Equal(t, "detector:same_agent_same_ticket", suggestions[0].SuggestedBy)
+	require.NotNil(t, suggestions[0].Confidence)
+	assert.InDelta(t, 1.0, *suggestions[0].Confidence, 0.01,
+		"identical topic embeddings should yield confidence ≈ 1.0")
+	assert.Contains(t, suggestions[0].Reason, "ARD-958")
+	assert.Contains(t, suggestions[0].Reason, agentID)
+}

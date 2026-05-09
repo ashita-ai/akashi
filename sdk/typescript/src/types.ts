@@ -347,12 +347,29 @@ export interface ConflictResolution {
   resolved_at: string;
 }
 
+/**
+ * Detector-inferred latent supersedes_id link surfaced by `akashi_check`.
+ * To confirm, re-trace the superseding decision with supersedes_id set to
+ * the suggested superseded_id; the server records the confirmed link and
+ * retires the suggestion atomically. To dismiss, take no action — the
+ * retention loop prunes stale suggestions.
+ */
+export interface SupersedesSuggestion {
+  superseding_id: string;
+  superseded_id: string;
+  suggested_by: string;
+  confidence?: number;
+  reason?: string;
+  recorded_at: string;
+}
+
 export interface CheckResponse {
   has_precedent: boolean;
   decisions: Decision[];
   conflicts?: DecisionConflict[];
   conflicts_unavailable?: boolean;
   prior_resolutions?: ConflictResolution[];
+  supersedes_suggestions?: SupersedesSuggestion[];
 }
 
 export interface QueryResponse {

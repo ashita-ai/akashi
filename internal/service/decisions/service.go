@@ -737,12 +737,31 @@ func (s *Service) Check(ctx context.Context, orgID uuid.UUID, input CheckInput) 
 		return model.CheckResponse{}, searchErr
 	}
 
+	// 4. Fetch detector-inferred supersedes suggestions for the returned
+	// decisions. Sequential after wg.Wait because the input set is the IDs
+	// from lookup #1. Non-fatal: a failure here only loses the suggestion
+	// surface for this call — the precedent lookup itself stands. See #710.
+	var suggestions []model.SupersedesSuggestion
+	if len(decisions) > 0 {
+		ids := make([]uuid.UUID, len(decisions))
+		for i, d := range decisions {
+			ids[i] = d.ID
+		}
+		got, err := s.db.ListSupersedesSuggestionsForDecisions(ctx, orgID, ids)
+		if err != nil {
+			s.logger.Warn("check: list supersedes suggestions", "error", err)
+		} else {
+			suggestions = got
+		}
+	}
+
 	resp := model.CheckResponse{
-		HasPrecedent:         len(decisions) > 0,
-		Decisions:            decisions,
-		Conflicts:            conflicts,
-		ConflictsUnavailable: conflictErr != nil,
-		PriorResolutions:     resolutions,
+		HasPrecedent:          len(decisions) > 0,
+		Decisions:             decisions,
+		Conflicts:             conflicts,
+		ConflictsUnavailable:  conflictErr != nil,
+		PriorResolutions:      resolutions,
+		SupersedesSuggestions: suggestions,
 	}
 
 	return resp, nil

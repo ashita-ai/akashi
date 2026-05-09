@@ -131,6 +131,7 @@ type Config struct {
 	MaxRequestBodyBytes           int64         // Maximum request body size in bytes.
 	ExportPageSize                int           // Page size for streaming NDJSON exports (default 100).
 	RetentionInterval             time.Duration // How often the background retention worker runs (default 24h).
+	SupersedesSuggestionTTL       time.Duration // Lifetime of unconfirmed detector-inferred supersedes suggestions before pruning (default 30 days, 0 disables).
 	ClaimRetryInterval            time.Duration // How often to retry failed claim embeddings (default 2m).
 	PercentileRefreshInterval     time.Duration // How often to refresh signal percentile caches (default 1h).
 	AutoResolveInterval           time.Duration // How often the auto-resolution worker runs (default 1h, 0 disables).
@@ -296,6 +297,7 @@ func Load() (Config, error) {
 	cfg.IdempotencyCompletedTTL, errs = collectDuration(errs, "AKASHI_IDEMPOTENCY_COMPLETED_TTL", 7*24*time.Hour)
 	cfg.IdempotencyAbandonedTTL, errs = collectDuration(errs, "AKASHI_IDEMPOTENCY_ABANDONED_TTL", 24*time.Hour)
 	cfg.RetentionInterval, errs = collectDuration(errs, "AKASHI_RETENTION_INTERVAL", 24*time.Hour)
+	cfg.SupersedesSuggestionTTL, errs = collectDuration(errs, "AKASHI_SUPERSEDES_SUGGESTION_TTL", 30*24*time.Hour)
 	cfg.ClaimRetryInterval, errs = collectDuration(errs, "AKASHI_CLAIM_RETRY_INTERVAL", 2*time.Minute)
 	cfg.PercentileRefreshInterval, errs = collectDuration(errs, "AKASHI_PERCENTILE_REFRESH_INTERVAL", 1*time.Hour)
 	cfg.AutoResolveInterval, errs = collectDuration(errs, "AKASHI_AUTO_RESOLVE_INTERVAL", 1*time.Hour)

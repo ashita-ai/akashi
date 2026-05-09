@@ -1271,10 +1271,15 @@ func (a *App) autoResolveLoop(ctx context.Context) {
 }
 
 // runRetention processes data retention policies for all orgs that have a
-// retention_days set. Each org gets its own deletion_log entry.
+// retention_days set. Each org gets its own deletion_log entry. A global
+// pass also prunes detector-inferred supersedes suggestions older than
+// SupersedesSuggestionTTL — these are operational hints, not user data, and
+// are pruned on a single global TTL regardless of per-org policy.
 func (a *App) runRetention(ctx context.Context) {
 	opCtx, cancel := context.WithTimeout(ctx, a.cfg.RetentionInterval/2)
 	defer cancel()
+
+	a.pruneStaleSupersedesSuggestions(opCtx)
 
 	orgs, err := a.db.GetOrgsWithRetention(opCtx)
 	if err != nil {
@@ -1323,6 +1328,26 @@ func (a *App) runRetention(ctx context.Context) {
 				"cutoff", cutoff,
 			)
 		}
+	}
+}
+
+// pruneStaleSupersedesSuggestions removes detector-inferred supersedes
+// suggestions that an agent never confirmed. Suggestions confirmed by a
+// re-trace are retired by the migration-106 trigger at confirm time; this
+// global TTL pass cleans up the long tail. Failures are warn-logged but do
+// not abort the retention run — the next tick will retry.
+func (a *App) pruneStaleSupersedesSuggestions(ctx context.Context) {
+	if a.cfg.SupersedesSuggestionTTL <= 0 {
+		return
+	}
+	cutoff := time.Now().UTC().Add(-a.cfg.SupersedesSuggestionTTL)
+	n, err := a.db.DeleteOldSupersedesSuggestions(ctx, cutoff)
+	if err != nil {
+		a.logger.Warn("retention: prune supersedes suggestions failed", "error", err, "cutoff", cutoff)
+		return
+	}
+	if n > 0 {
+		a.logger.Info("retention: pruned stale supersedes suggestions", "count", n, "cutoff", cutoff)
 	}
 }
 

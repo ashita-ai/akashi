@@ -4417,6 +4417,52 @@ components:
             True when the conflict list query failed due to a transient error.
             The conflicts array may be empty or incomplete. Callers should
             exercise extra caution before proceeding.
+        supersedes_suggestions:
+          type: array
+          description: >
+            Detector-inferred latent supersedes_id links for the returned
+            decisions. Each entry names a probable superseded predecessor
+            for one of the decisions in this response. To confirm a
+            suggestion, re-trace the superseding decision with supersedes_id
+            set to the suggested superseded_id; the server records the
+            confirmed link and retires the suggestion atomically. To
+            dismiss, take no action — the retention loop prunes stale
+            suggestions.
+          items:
+            $ref: "#/components/schemas/SupersedesSuggestion"
+
+    SupersedesSuggestion:
+      type: object
+      required: [superseding_id, superseded_id, suggested_by, recorded_at]
+      properties:
+        superseding_id:
+          type: string
+          format: uuid
+          description: The newer decision the detector believes supersedes another.
+        superseded_id:
+          type: string
+          format: uuid
+          description: The probable predecessor that the newer decision retires.
+        suggested_by:
+          type: string
+          description: >
+            Detector identifier (e.g. "detector:same_agent_same_ticket").
+            Low-cardinality so callers can distinguish suggestion sources.
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: >
+            Detector pre-suppression similarity score for the pair (typically
+            the topic-embedding cosine similarity at filter time). Optional.
+        reason:
+          type: string
+          description: >
+            Short human-readable explanation, e.g. agent identity and ticket.
+        recorded_at:
+          type: string
+          format: date-time
 
     # ── Health schemas ───────────────────────────────────────────────
     HealthResponse:

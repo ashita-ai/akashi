@@ -12522,3 +12522,250 @@ func TestFindReopenedResolution_ExcludesSameDecisions(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, match, "should exclude conflicts involving the same decisions")
 }
+
+// ---------------------------------------------------------------------------
+// SupersedesSuggestions (issue #710 / PR-2 of #708)
+// ---------------------------------------------------------------------------
+
+func TestInsertSupersedesSuggestion_BasicAndIdempotent_PG(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "supersedes-suggest-" + suffix
+
+	_, a, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID:  agentID,
+		OrgID:    uuid.Nil,
+		Decision: model.Decision{DecisionType: "implementation", Outcome: "ARD-958 layer-2", Confidence: 0.8},
+	})
+	require.NoError(t, err)
+	_, b, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID:  agentID,
+		OrgID:    uuid.Nil,
+		Decision: model.Decision{DecisionType: "implementation", Outcome: "ARD-958 layer-3", Confidence: 0.85},
+	})
+	require.NoError(t, err)
+
+	conf := float32(0.82)
+	ins := storage.SupersedesSuggestionInsert{
+		OrgID:         uuid.Nil,
+		SupersedingID: b.ID,
+		SupersededID:  a.ID,
+		SuggestedBy:   "detector:same_agent_same_ticket",
+		Confidence:    &conf,
+		Reason:        `same agent "` + agentID + `", same ticket "ARD-958"`,
+	}
+	require.NoError(t, testDB.InsertSupersedesSuggestion(ctx, ins))
+	require.NoError(t, testDB.InsertSupersedesSuggestion(ctx, ins), "duplicate insert is a no-op")
+
+	got, err := testDB.ListSupersedesSuggestionsForDecisions(ctx, uuid.Nil, []uuid.UUID{b.ID})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, b.ID, got[0].SupersedingID)
+	assert.Equal(t, a.ID, got[0].SupersededID)
+	assert.Equal(t, "detector:same_agent_same_ticket", got[0].SuggestedBy)
+	require.NotNil(t, got[0].Confidence)
+	assert.InDelta(t, 0.82, *got[0].Confidence, 0.001)
+}
+
+func TestInsertSupersedesSuggestion_RejectedBySuggestionFieldsCheck_PG(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	_, a, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "ssr-reject-" + suffix, OrgID: uuid.Nil,
+		Decision: model.Decision{DecisionType: "x", Outcome: "first", Confidence: 0.5},
+	})
+	require.NoError(t, err)
+	_, b, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: "ssr-reject-" + suffix, OrgID: uuid.Nil,
+		Decision: model.Decision{DecisionType: "x", Outcome: "second", Confidence: 0.5},
+	})
+	require.NoError(t, err)
+
+	// Empty SuggestedBy is caught at the application layer before SQL.
+	err = testDB.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+		OrgID:         uuid.Nil,
+		SupersedingID: b.ID,
+		SupersededID:  a.ID,
+	})
+	require.Error(t, err)
+}
+
+func TestListSupersedesSuggestions_ExcludesConfirmedRows_PG(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "ssr-confirmed-" + suffix
+
+	_, a, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID:  agentID,
+		OrgID:    uuid.Nil,
+		Decision: model.Decision{DecisionType: "x", Outcome: "first", Confidence: 0.7},
+	})
+	require.NoError(t, err)
+
+	supersedesA := a.ID
+	_, b, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: agentID, OrgID: uuid.Nil,
+		Decision: model.Decision{
+			DecisionType: "x", Outcome: "explicit supersession", Confidence: 0.7,
+			SupersedesID: &supersedesA,
+		},
+	})
+	require.NoError(t, err)
+
+	got, err := testDB.ListSupersedesSuggestionsForDecisions(ctx, uuid.Nil, []uuid.UUID{b.ID})
+	require.NoError(t, err)
+	assert.Empty(t, got, "the confirmed 'supersedes' row inserted by the trace path must not appear in the suggestion list")
+}
+
+func TestDeleteOldSupersedesSuggestions_PG(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "ssr-prune-" + suffix
+
+	_, a, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: agentID, OrgID: uuid.Nil,
+		Decision: model.Decision{DecisionType: "x", Outcome: "first", Confidence: 0.5},
+	})
+	require.NoError(t, err)
+	_, b, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: agentID, OrgID: uuid.Nil,
+		Decision: model.Decision{DecisionType: "x", Outcome: "second", Confidence: 0.5},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, testDB.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+		OrgID: uuid.Nil, SupersedingID: b.ID, SupersededID: a.ID,
+		SuggestedBy: "detector:t",
+	}))
+
+	n, err := testDB.DeleteOldSupersedesSuggestions(ctx, time.Now().Add(-time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n)
+
+	n, err = testDB.DeleteOldSupersedesSuggestions(ctx, time.Now().Add(time.Hour))
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, n, int64(1), "at least the row we just inserted should be pruned")
+}
+
+// TestTrigger_RetiresMatchingSuggestionOnConfirm_PG verifies the migration-106
+// extension to sync_decision_supersedes_primary: when an agent re-traces with
+// supersedes_id set, any latent 'suggested' row from the same agent that
+// proposed the same predecessor is deleted atomically with the confirmed-row
+// insert. Without this, akashi_check would keep returning the stale hint
+// alongside the new confirmed link.
+func TestTrigger_RetiresMatchingSuggestionOnConfirm_PG(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentID := "ssr-confirm-" + suffix
+
+	_, earlier, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: agentID, OrgID: uuid.Nil,
+		Decision: model.Decision{DecisionType: "implementation", Outcome: "ARD-958 layer-2", Confidence: 0.8},
+	})
+	require.NoError(t, err)
+	_, latent, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: agentID, OrgID: uuid.Nil,
+		Decision: model.Decision{DecisionType: "implementation", Outcome: "ARD-958 layer-3", Confidence: 0.85},
+	})
+	require.NoError(t, err)
+
+	// Detector inserts a suggestion: latent supersedes earlier (same agent
+	// forgot the link).
+	conf := float32(0.91)
+	require.NoError(t, testDB.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+		OrgID:         uuid.Nil,
+		SupersedingID: latent.ID,
+		SupersededID:  earlier.ID,
+		SuggestedBy:   "detector:same_agent_same_ticket",
+		Confidence:    &conf,
+		Reason:        "test fixture",
+	}))
+
+	got, err := testDB.ListSupersedesSuggestionsForDecisions(ctx, uuid.Nil, []uuid.UUID{latent.ID})
+	require.NoError(t, err)
+	require.Len(t, got, 1, "precondition: suggestion should be visible before confirmation")
+
+	// Agent confirms by re-tracing a new decision with supersedes_id=earlier.
+	supersedesEarlier := earlier.ID
+	_, confirmed, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: agentID, OrgID: uuid.Nil,
+		Decision: model.Decision{
+			DecisionType: "implementation",
+			Outcome:      "ARD-958 explicit supersession",
+			Confidence:   0.9,
+			SupersedesID: &supersedesEarlier,
+		},
+	})
+	require.NoError(t, err)
+
+	// The original 'suggested' row pointing at `latent` must now be gone —
+	// the trigger retired it when the confirmation landed.
+	got, err = testDB.ListSupersedesSuggestionsForDecisions(ctx, uuid.Nil, []uuid.UUID{latent.ID})
+	require.NoError(t, err)
+	assert.Empty(t, got, "trigger must retire latent suggestions when the agent confirms the predecessor link")
+
+	// And a confirmed 'supersedes' row exists for the new decision.
+	row, err := testDB.GetDecision(ctx, uuid.Nil, confirmed.ID, storage.GetDecisionOpts{})
+	require.NoError(t, err)
+	require.NotNil(t, row.SupersedesID)
+	assert.Equal(t, earlier.ID, *row.SupersedesID)
+}
+
+// TestTrigger_RetireSuggestionScopedByAgent_PG verifies that the migration-106
+// retire-on-confirm clause does NOT delete suggestions from other agents that
+// happen to point at the same predecessor — those represent independent
+// detector observations and must survive.
+func TestTrigger_RetireSuggestionScopedByAgent_PG(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+	agentA := "ssr-confirm-A-" + suffix
+	agentB := "ssr-confirm-B-" + suffix
+
+	_, earlier, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: agentA, OrgID: uuid.Nil,
+		Decision: model.Decision{DecisionType: "implementation", Outcome: "shared predecessor", Confidence: 0.8},
+	})
+	require.NoError(t, err)
+
+	_, latentA, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: agentA, OrgID: uuid.Nil,
+		Decision: model.Decision{DecisionType: "implementation", Outcome: "agent A latent successor", Confidence: 0.8},
+	})
+	require.NoError(t, err)
+	_, latentB, err := testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: agentB, OrgID: uuid.Nil,
+		Decision: model.Decision{DecisionType: "implementation", Outcome: "agent B latent successor", Confidence: 0.8},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, testDB.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+		OrgID: uuid.Nil, SupersedingID: latentA.ID, SupersededID: earlier.ID,
+		SuggestedBy: "detector:same_agent_same_ticket",
+	}))
+	require.NoError(t, testDB.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+		OrgID: uuid.Nil, SupersedingID: latentB.ID, SupersededID: earlier.ID,
+		SuggestedBy: "detector:same_agent_same_ticket",
+	}))
+
+	// Agent A confirms — trigger should retire only A's suggestion.
+	supersedesEarlier := earlier.ID
+	_, _, err = testDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID: agentA, OrgID: uuid.Nil,
+		Decision: model.Decision{
+			DecisionType: "implementation",
+			Outcome:      "agent A explicit supersession",
+			Confidence:   0.9,
+			SupersedesID: &supersedesEarlier,
+		},
+	})
+	require.NoError(t, err)
+
+	gotA, err := testDB.ListSupersedesSuggestionsForDecisions(ctx, uuid.Nil, []uuid.UUID{latentA.ID})
+	require.NoError(t, err)
+	assert.Empty(t, gotA, "agent A's suggestion must be retired by their own confirmation")
+
+	gotB, err := testDB.ListSupersedesSuggestionsForDecisions(ctx, uuid.Nil, []uuid.UUID{latentB.ID})
+	require.NoError(t, err)
+	assert.Len(t, gotB, 1, "agent B's suggestion must survive — confirmation by agent A is not their confirmation")
+}
