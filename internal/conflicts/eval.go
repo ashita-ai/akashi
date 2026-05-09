@@ -294,6 +294,37 @@ func DefaultEvalDataset() []EvalPair {
 			},
 			ExpectedRelationship: "refinement",
 		},
+		// LLM defense-in-depth for the same-agent same-ticket pattern caught
+		// upstream by isSameAgentSameTicketRefinement (see issue #709). Filter
+		// suppresses the pair before the validator runs; this fixture covers
+		// the case where ticket extraction misses (e.g. agent omitted refs from
+		// every source) and the LLM must still classify it correctly.
+		{
+			Label: "same_agent_same_ticket_refinement: ARD-958 layer-2 then layer-3 by same agent",
+			Input: ValidateInput{
+				OutcomeA: "ARD-958 S2 implemented on branch evanvolgas/ard-958-stream-wal-concurrent-snapshot — concurrent snapshot worker with WAL replay coordination",
+				OutcomeB: "ARD-958 S3 implemented on branch evanvolgas/ard-958-layer-3-fatal-class — recorder cross-references pgstream.quarantine at markSnapshotCompleted, plumbs ConnectorID + DataLossThreshold",
+				TypeA:    "implementation", TypeB: "implementation",
+				AgentA: "claude-code", AgentB: "claude-code",
+				CreatedA: now, CreatedB: now.Add(3 * h),
+				ProjectA: "ardent-mono", ProjectB: "ardent-mono",
+				BranchA: "evanvolgas/ard-958-stream-wal-concurrent-snapshot",
+				BranchB: "evanvolgas/ard-958-layer-3-fatal-class",
+			},
+			ExpectedRelationship: "refinement",
+		},
+		{
+			Label: "same_agent_same_ticket_refinement: paraphrased follow-up without keyword markers",
+			Input: ValidateInput{
+				OutcomeA: "ARD-957 PR-1 added pre-flight source-side validator; checks pgx pool capacity and replication-slot availability before snapshot start",
+				OutcomeB: "Applied review fixes for ARD-957 PR-1: tightened the pool-size threshold, added per-table validator hook, and fixed the cancellation race in the pre-flight goroutine",
+				TypeA:    "implementation", TypeB: "implementation",
+				AgentA: "claude-code", AgentB: "claude-code",
+				CreatedA: now, CreatedB: now.Add(2 * h),
+				ProjectA: "ardent-mono", ProjectB: "ardent-mono",
+			},
+			ExpectedRelationship: "refinement",
+		},
 
 		// =====================================================================
 		// DIFFERENT SCOPE (false positive pattern)

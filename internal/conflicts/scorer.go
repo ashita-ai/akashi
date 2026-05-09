@@ -641,6 +641,22 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			continue
 		}
 
+		// Same-agent same-ticket refinement filter: when the same agent
+		// traces a refinement of their own prior decision on the same ticket
+		// without setting supersedes_id, treat it as a missed-link refinement
+		// rather than a self-contradiction. Broader than the same-branch
+		// filter above — refinements can span branches (e.g. layer-2 PR
+		// followed by layer-3 PR on the same ticket).
+		// See issue #709; PR-2 (#710) will surface a supersedes_id suggestion.
+		if isSameAgentSameTicketRefinement(d, sc.cand) {
+			s.metrics.supersedesCandidateFiltered.Add(ctx, 1)
+			s.logger.Debug("conflict scorer: same-agent same-ticket refinement suppressed pair",
+				"decision_a", decisionID, "decision_b", sc.cand.ID,
+				"agent_id", d.AgentID,
+				"ticket_ref", extractTicketRef(d))
+			continue
+		}
+
 		// Temporal re-assessment filter: two review-type decisions on the
 		// same project, recorded sufficiently far apart with no precedent
 		// link, are re-measurements rather than contradictions. Quantitative
@@ -1432,6 +1448,46 @@ func isSameBranchSelfCorrection(d, cand model.Decision) bool {
 	branchB := nestedContextString(cand.AgentContext, "git_branch")
 
 	return branchA != "" && branchB != "" && branchA == branchB
+}
+
+// isSameAgentSameTicketRefinement returns true when the same agent traces
+// what looks like a clean refinement of their own prior decision on the same
+// ticket without setting supersedes_id. The newer decision likely intends
+// to supersede the earlier one but the agent forgot to set the link.
+//
+// Sibling of isSameBranchSelfCorrection: that filter requires identical
+// git_branch metadata. This one is broader — refinements can span branches
+// (e.g. layer-2 PR followed by layer-3 PR on the same ticket) so the join key
+// is an extracted ticket reference (see extractTicketRef in ticket_extract.go).
+//
+// Excluded:
+//   - precedent-linked pairs (the agent already linked them — let LLM judge)
+//   - outcomes containing supersession keywords (probable explicit reversal,
+//     not a forgotten link — let LLM judge)
+//   - different agents
+//   - missing or differing ticket references
+//
+// Tracks issue #709 (PR-1 of #708). PR-2 (#710) will surface a supersedes_id
+// suggestion to the agent via akashi_check.
+func isSameAgentSameTicketRefinement(d, cand model.Decision) bool {
+	if d.AgentID != cand.AgentID {
+		return false
+	}
+	if isPrecedentLinked(d, cand) {
+		return false
+	}
+	later := d
+	if cand.ValidFrom.After(d.ValidFrom) {
+		later = cand
+	}
+	if containsSupersessionKeyword(later.Outcome) {
+		return false
+	}
+	refA := extractTicketRef(d)
+	if refA == "" {
+		return false
+	}
+	return refA == extractTicketRef(cand)
 }
 
 // temporalReassessmentWindow is the minimum time delta between two
