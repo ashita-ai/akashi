@@ -267,6 +267,7 @@ Akashi supports per-org data retention policies that automatically delete decisi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AKASHI_RETENTION_INTERVAL` | `24h` | How often the background retention worker runs. Set to `0` to disable. |
+| `AKASHI_SUPERSEDES_SUGGESTION_TTL` | `720h` (30d) | Lifetime of unconfirmed detector-inferred supersedes suggestions before pruning. The retention loop deletes `decision_supersedes` rows with `relationship='suggested'` older than this. Set to `0` to disable pruning. |
 
 ## Claim embedding retry
 
