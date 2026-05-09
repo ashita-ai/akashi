@@ -49,6 +49,7 @@ from akashi.types import (
     SearchResponse,
     SearchResult,
     SubscriptionEvent,
+    SupersedesSuggestion,
     TemporalQueryRequest,
     TimePeriod,
     TimeRange,
@@ -117,6 +118,7 @@ __all__ = [
     "TimePeriod",
     "TimeRange",
     "AssessmentSummary",
+    "SupersedesSuggestion",
     # OTEL helpers
     "trace_id_from_context",
     # Exceptions

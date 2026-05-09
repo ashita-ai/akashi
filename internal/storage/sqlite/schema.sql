@@ -92,16 +92,28 @@ CREATE INDEX IF NOT EXISTS idx_decisions_precedent_ref
 CREATE INDEX IF NOT EXISTS idx_decisions_project
     ON decisions(org_id, project) WHERE project IS NOT NULL;
 
+-- Note: schema evolution in lite-mode is fresh-install only — see ADR-009.
+-- Existing local SQLite databases predating columns suggested_by, suggested_confidence,
+-- suggested_reason will need to be deleted and re-created to pick up the new columns.
 CREATE TABLE IF NOT EXISTS decision_supersedes (
-    superseding_id TEXT NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
-    superseded_id  TEXT NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
-    org_id         TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    relationship   TEXT NOT NULL DEFAULT 'supersedes',
-    is_primary     INTEGER NOT NULL DEFAULT 0,
-    recorded_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    superseding_id        TEXT NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+    superseded_id         TEXT NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+    org_id                TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    relationship          TEXT NOT NULL DEFAULT 'supersedes',
+    is_primary            INTEGER NOT NULL DEFAULT 0,
+    recorded_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    suggested_by          TEXT,
+    suggested_confidence  REAL,
+    suggested_reason      TEXT,
     PRIMARY KEY (superseding_id, superseded_id),
     CHECK (superseding_id <> superseded_id),
-    CHECK (relationship IN ('supersedes', 'reconciles'))
+    CHECK (relationship IN ('supersedes', 'reconciles', 'suggested')),
+    CHECK (
+        (relationship = 'suggested' AND suggested_by IS NOT NULL)
+        OR
+        (relationship <> 'suggested' AND suggested_by IS NULL AND suggested_confidence IS NULL AND suggested_reason IS NULL)
+    ),
+    CHECK (relationship <> 'suggested' OR is_primary = 0)
 );
 CREATE INDEX IF NOT EXISTS idx_decision_supersedes_superseded
     ON decision_supersedes(org_id, superseded_id);
@@ -110,11 +122,22 @@ CREATE INDEX IF NOT EXISTS idx_decision_supersedes_superseding
 CREATE UNIQUE INDEX IF NOT EXISTS idx_decision_supersedes_primary
     ON decision_supersedes(superseding_id)
     WHERE is_primary = 1;
+CREATE INDEX IF NOT EXISTS idx_decision_supersedes_suggested
+    ON decision_supersedes(org_id, superseding_id, recorded_at DESC)
+    WHERE relationship = 'suggested';
+CREATE INDEX IF NOT EXISTS idx_decision_supersedes_suggested_recorded_at
+    ON decision_supersedes(recorded_at)
+    WHERE relationship = 'suggested';
 INSERT OR IGNORE INTO decision_supersedes (superseding_id, superseded_id, org_id, relationship, is_primary)
 SELECT id, supersedes_id, org_id, 'supersedes', 1
 FROM decisions
 WHERE supersedes_id IS NOT NULL;
 
+-- The retire-suggestion DELETE inside these triggers mirrors PG migration 106:
+-- when an agent confirms a supersedes_id link, drop any latent suggestion
+-- from the same agent that proposed the same predecessor. Without this the
+-- 'suggested' row would survive alongside the new confirmed one and keep
+-- showing up in akashi_check responses indefinitely.
 CREATE TRIGGER IF NOT EXISTS trg_decisions_sync_supersedes_insert
 AFTER INSERT ON decisions
 WHEN NEW.supersedes_id IS NOT NULL
@@ -130,6 +153,16 @@ BEGIN
     VALUES (NEW.id, NEW.supersedes_id, NEW.org_id, 'supersedes', 1)
     ON CONFLICT (superseding_id, superseded_id) DO UPDATE
     SET is_primary = 1;
+
+    DELETE FROM decision_supersedes
+    WHERE relationship = 'suggested'
+      AND org_id = NEW.org_id
+      AND superseded_id = NEW.supersedes_id
+      AND superseding_id IN (
+          SELECT id FROM decisions
+          WHERE org_id = NEW.org_id
+            AND agent_id = NEW.agent_id
+      );
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_decisions_sync_supersedes_update
@@ -147,6 +180,16 @@ BEGIN
     VALUES (NEW.id, NEW.supersedes_id, NEW.org_id, 'supersedes', 1)
     ON CONFLICT (superseding_id, superseded_id) DO UPDATE
     SET is_primary = 1;
+
+    DELETE FROM decision_supersedes
+    WHERE relationship = 'suggested'
+      AND org_id = NEW.org_id
+      AND superseded_id = NEW.supersedes_id
+      AND superseding_id IN (
+          SELECT id FROM decisions
+          WHERE org_id = NEW.org_id
+            AND agent_id = NEW.agent_id
+      );
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_decisions_sync_supersedes_clear

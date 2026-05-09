@@ -483,6 +483,21 @@ func (m *mockStore) GetDecisionEmbeddings(_ context.Context, _ []uuid.UUID, _ uu
 	return m.embeddings, m.embeddingsErr
 }
 
+// Supersedes-suggestion helpers default to empty / no-op so the Check path
+// doesn't panic during unit tests that don't exercise the suggestion surface.
+// Tests that care assert the wired behavior in the integration suite.
+func (m *mockStore) ListSupersedesSuggestionsForDecisions(_ context.Context, _ uuid.UUID, _ []uuid.UUID) ([]model.SupersedesSuggestion, error) {
+	return nil, nil
+}
+
+func (m *mockStore) InsertSupersedesSuggestion(_ context.Context, _ storage.SupersedesSuggestionInsert) error {
+	return nil
+}
+
+func (m *mockStore) DeleteOldSupersedesSuggestions(_ context.Context, _ time.Time) (int64, error) {
+	return 0, nil
+}
+
 func (m *mockStore) FindRetriableClaimFailures(_ context.Context, _ int, _ int) ([]storage.ClaimRetryRef, error) {
 	return m.retriableFailures, m.retriableErr
 }

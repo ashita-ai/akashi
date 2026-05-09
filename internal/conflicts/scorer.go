@@ -647,13 +647,16 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		// rather than a self-contradiction. Broader than the same-branch
 		// filter above — refinements can span branches (e.g. layer-2 PR
 		// followed by layer-3 PR on the same ticket).
-		// See issue #709; PR-2 (#710) will surface a supersedes_id suggestion.
+		// See issue #709; the suggestion record (PR-2, #710) is written
+		// below so akashi_check can surface it on the agent's next call.
 		if isSameAgentSameTicketRefinement(d, sc.cand) {
 			s.metrics.supersedesCandidateFiltered.Add(ctx, 1)
+			ticket := extractTicketRef(d)
 			s.logger.Debug("conflict scorer: same-agent same-ticket refinement suppressed pair",
 				"decision_a", decisionID, "decision_b", sc.cand.ID,
 				"agent_id", d.AgentID,
-				"ticket_ref", extractTicketRef(d))
+				"ticket_ref", ticket)
+			s.recordSupersedesSuggestion(ctx, d, sc.cand, sc.topicSim, ticket)
 			continue
 		}
 
@@ -1448,6 +1451,45 @@ func isSameBranchSelfCorrection(d, cand model.Decision) bool {
 	branchB := nestedContextString(cand.AgentContext, "git_branch")
 
 	return branchA != "" && branchB != "" && branchA == branchB
+}
+
+// recordSupersedesSuggestion writes the detector-inferred supersedes link
+// for a suppressed same-agent same-ticket pair so akashi_check can surface
+// it on the agent's next call (PR-2 of #708, see issue #710). Fire-and-forget:
+// suggestion-write failures are logged at warn but never block scoring or
+// fail the pair — the conflict has already been filtered.
+//
+// The "later" decision (by ValidFrom) is treated as the superseding side.
+// This mirrors how a manually set supersedes_id link works: the newer trace
+// retires the older one. Suggestion confidence is the topic similarity at
+// filter time — agents see how strongly the detector believed the pair was
+// the same work. Cosine similarity is mathematically in [-1, 1] but the
+// API contract bounds confidence to [0, 1]; we clamp here so callers and
+// dashboards never see a value that violates the schema.
+func (s *Scorer) recordSupersedesSuggestion(ctx context.Context, d, cand model.Decision, topicSim float64, ticket string) {
+	superseding, superseded := d, cand
+	if cand.ValidFrom.After(d.ValidFrom) {
+		superseding, superseded = cand, d
+	}
+	switch {
+	case topicSim < 0:
+		topicSim = 0
+	case topicSim > 1:
+		topicSim = 1
+	}
+	conf := float32(topicSim)
+	reason := fmt.Sprintf("same agent %q, same ticket %q", d.AgentID, ticket)
+	if err := s.db.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+		OrgID:         d.OrgID,
+		SupersedingID: superseding.ID,
+		SupersededID:  superseded.ID,
+		SuggestedBy:   "detector:same_agent_same_ticket",
+		Confidence:    &conf,
+		Reason:        reason,
+	}); err != nil {
+		s.logger.Warn("conflict scorer: insert supersedes suggestion failed",
+			"superseding_id", superseding.ID, "superseded_id", superseded.ID, "error", err)
+	}
 }
 
 // isSameAgentSameTicketRefinement returns true when the same agent traces

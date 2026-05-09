@@ -83,6 +83,7 @@ export type {
   SearchResult,
   SessionSummary,
   SessionViewResponse,
+  SupersedesSuggestion,
   AutoResolveWinner,
   ReopenedPolicy,
   TimePeriod,

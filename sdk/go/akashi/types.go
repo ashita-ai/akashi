@@ -267,13 +267,28 @@ type ConflictResolution struct {
 	ResolvedAt        time.Time `json:"resolved_at"`
 }
 
+// SupersedesSuggestion is a detector-inferred latent supersedes_id link the
+// server returns alongside Check results. To confirm one, re-trace the
+// superseding decision with SupersedesID set to SupersededID; the server
+// records the confirmed link and retires the suggestion atomically. To
+// dismiss, take no action — the retention loop prunes stale suggestions.
+type SupersedesSuggestion struct {
+	SupersedingID uuid.UUID `json:"superseding_id"`
+	SupersededID  uuid.UUID `json:"superseded_id"`
+	SuggestedBy   string    `json:"suggested_by"`
+	Confidence    *float32  `json:"confidence,omitempty"`
+	Reason        string    `json:"reason,omitempty"`
+	RecordedAt    time.Time `json:"recorded_at"`
+}
+
 // CheckResponse is the output of Client.Check.
 type CheckResponse struct {
-	HasPrecedent         bool                 `json:"has_precedent"`
-	Decisions            []Decision           `json:"decisions"`
-	Conflicts            []DecisionConflict   `json:"conflicts,omitempty"`
-	ConflictsUnavailable bool                 `json:"conflicts_unavailable,omitempty"`
-	PriorResolutions     []ConflictResolution `json:"prior_resolutions,omitempty"`
+	HasPrecedent          bool                   `json:"has_precedent"`
+	Decisions             []Decision             `json:"decisions"`
+	Conflicts             []DecisionConflict     `json:"conflicts,omitempty"`
+	ConflictsUnavailable  bool                   `json:"conflicts_unavailable,omitempty"`
+	PriorResolutions      []ConflictResolution   `json:"prior_resolutions,omitempty"`
+	SupersedesSuggestions []SupersedesSuggestion `json:"supersedes_suggestions,omitempty"`
 }
 
 // TraceResponse is the output of Client.Trace.

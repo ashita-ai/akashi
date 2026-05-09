@@ -162,6 +162,87 @@ func TestCheck_StructuredQuery(t *testing.T) {
 	assert.Equal(t, "security", resp.Decisions[0].DecisionType)
 }
 
+func TestCheck_SurfacesSupersedesSuggestions(t *testing.T) {
+	ctx := context.Background()
+	agentID := "check-suggest-" + uuid.New().String()[:8]
+	createAgent(t, agentID)
+
+	// Two decisions on the same ticket — but no embedding/Qdrant in this
+	// suite, so we won't trigger the scorer's suggestion-write path here.
+	// Instead we exercise the Check service against a suggestion row we
+	// insert directly. The scorer-side write is covered by
+	// TestScoreForDecision_SameAgentSameTicketSuggestion in conflicts_test.
+	earlier, err := testSvc.Trace(ctx, uuid.Nil, decisions.TraceInput{
+		AgentID: agentID,
+		Decision: model.TraceDecision{
+			DecisionType: "implementation",
+			Outcome:      "ARD-958 layer-2 implementation",
+			Confidence:   0.8,
+		},
+	})
+	require.NoError(t, err)
+	later, err := testSvc.Trace(ctx, uuid.Nil, decisions.TraceInput{
+		AgentID: agentID,
+		Decision: model.TraceDecision{
+			DecisionType: "implementation",
+			Outcome:      "ARD-958 layer-3 follow-up",
+			Confidence:   0.85,
+		},
+	})
+	require.NoError(t, err)
+
+	conf := float32(0.91)
+	require.NoError(t, testDB.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+		OrgID:         uuid.Nil,
+		SupersedingID: later.DecisionID,
+		SupersededID:  earlier.DecisionID,
+		SuggestedBy:   "detector:same_agent_same_ticket",
+		Confidence:    &conf,
+		Reason:        `same agent "` + agentID + `", same ticket "ARD-958"`,
+	}))
+
+	resp, err := testSvc.Check(ctx, uuid.Nil, decisions.CheckInput{
+		DecisionType: "implementation",
+		AgentID:      agentID,
+		Limit:        5,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, resp.Decisions, "Check should return the agent's recent decisions")
+	require.Len(t, resp.SupersedesSuggestions, 1,
+		"Check must surface the suggestion for the returned superseding decision")
+	got := resp.SupersedesSuggestions[0]
+	assert.Equal(t, later.DecisionID, got.SupersedingID)
+	assert.Equal(t, earlier.DecisionID, got.SupersededID)
+	assert.Equal(t, "detector:same_agent_same_ticket", got.SuggestedBy)
+	require.NotNil(t, got.Confidence)
+	assert.InDelta(t, 0.91, *got.Confidence, 0.001)
+}
+
+func TestCheck_NoSuggestionsWhenAbsent(t *testing.T) {
+	ctx := context.Background()
+	agentID := "check-no-suggest-" + uuid.New().String()[:8]
+	createAgent(t, agentID)
+
+	_, err := testSvc.Trace(ctx, uuid.Nil, decisions.TraceInput{
+		AgentID: agentID,
+		Decision: model.TraceDecision{
+			DecisionType: "architecture",
+			Outcome:      "isolated decision with no peers",
+			Confidence:   0.9,
+		},
+	})
+	require.NoError(t, err)
+
+	resp, err := testSvc.Check(ctx, uuid.Nil, decisions.CheckInput{
+		DecisionType: "architecture",
+		AgentID:      agentID,
+		Limit:        5,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, resp.SupersedesSuggestions,
+		"absent suggestions must omit the field (slice is nil/empty, not present-but-empty)")
+}
+
 func TestResolveOrCreateAgent_Existing(t *testing.T) {
 	ctx := context.Background()
 	agentID := "existing-" + uuid.New().String()[:8]

@@ -434,3 +434,15 @@ func clampPagination(limit, offset, defaultLimit, maxLimit int) (int, int) {
 	}
 	return limit, offset
 }
+
+// SupersedesSuggestionInsert is the input shape for InsertSupersedesSuggestion.
+// Mirrors model.SupersedesSuggestion but carries OrgID (stored on the row but
+// not surfaced in agent-facing responses).
+type SupersedesSuggestionInsert struct {
+	OrgID         uuid.UUID
+	SupersedingID uuid.UUID
+	SupersededID  uuid.UUID
+	SuggestedBy   string
+	Confidence    *float32
+	Reason        string
+}
