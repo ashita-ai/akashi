@@ -30,6 +30,7 @@ type Metrics struct {
 	transitiveGroupFiltered      metric.Int64Counter
 	fpPatternFiltered            metric.Int64Counter
 	temporalReassessmentFiltered metric.Int64Counter
+	supersedesCandidateFiltered  metric.Int64Counter
 
 	scoringDuration    metric.Float64Histogram
 	llmCallDuration    metric.Float64Histogram
@@ -194,6 +195,14 @@ func (s *Scorer) registerMetrics() {
 	if err != nil {
 		s.logger.Warn("conflicts: failed to create akashi.conflicts.temporal_reassessment_filtered metric", "error", err)
 		s.metrics.temporalReassessmentFiltered, _ = meter.Int64Counter("akashi.conflicts.temporal_reassessment_filtered.fallback")
+	}
+
+	s.metrics.supersedesCandidateFiltered, err = meter.Int64Counter("akashi.conflicts.supersedes_candidate_filtered",
+		metric.WithDescription("Candidate pairs suppressed as same-agent same-ticket refinements that probably warrant a supersedes_id link (issue #709)"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.supersedes_candidate_filtered metric", "error", err)
+		s.metrics.supersedesCandidateFiltered, _ = meter.Int64Counter("akashi.conflicts.supersedes_candidate_filtered.fallback")
 	}
 
 	// --- Histograms ---
