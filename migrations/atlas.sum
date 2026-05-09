@@ -1,4 +1,4 @@
-h1:IznV+I78BZv+38s8ViDhgMU9LPrvW7FlyNfcmD5M9rg=
+h1:8dCmQ5v5inHp7IPu0auq0e2CBpF+64Z4MIQJV0PzIQ4=
 001_initial.sql h1:uhyGXto+QacAaGYb9ZTGjsBs5chlKi8O0eHz9aCQsrY=
 022_full_text_search.sql h1:9iwtA8MgCzAxDV9YkUBn0CLT9ePSmj3GcPoMGg8TXf0=
 023_fix_outbox_index.sql h1:OtMEFBcMRWej02+ghnBXlPr6BVq+LoA62Id9XUWfDNI=
@@ -83,3 +83,5 @@ h1:IznV+I78BZv+38s8ViDhgMU9LPrvW7FlyNfcmD5M9rg=
 102_drop_dead_schema.sql h1:8pKT1tSvKyH936Kd/sd7vSI+CfbUSb0QWA75upeEVrA=
 103_git_branch_index.sql h1:zomzfqVrP4FDLw3p2jLN0cjkDGtKwRirUmetLcfuEZ8=
 104_decision_supersedes.sql h1:U8KFFLRxcTFB6UWEQLI6id+tBfDOwGyNWwZ6bBYf+/Y=
+105_supersedes_suggestions.sql h1:NRLOXI4i7N9UbblP1uN6uS5x3NsBHAomH3g4PjG8Fn8=
+106_supersedes_suggestion_confirm.sql h1:eLUrgPvmBCscAcfcXmS9rhYzcO5CMI7KC/IjT+5Yxe4=

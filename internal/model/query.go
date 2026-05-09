@@ -115,6 +115,30 @@ type ConflictResolution struct {
 	ResolvedAt        time.Time `json:"resolved_at"`
 }
 
+// SupersedesSuggestion is a detector-inferred latent supersedes_id link
+// surfaced to agents through akashi_check. The conflict scorer writes a
+// suggestion when it observes a same-agent same-ticket refinement that would
+// otherwise produce a self-contradiction; the agent confirms by re-tracing
+// with supersedes_id set, which (per migration 106) creates a confirmed
+// 'supersedes' row for the new trace and retires the original suggestion.
+// Stale suggestions that are never confirmed are pruned by the retention
+// loop. See #710.
+type SupersedesSuggestion struct {
+	SupersedingID uuid.UUID `json:"superseding_id"`
+	SupersededID  uuid.UUID `json:"superseded_id"`
+	// SuggestedBy identifies the detector that produced the suggestion
+	// (e.g. "detector:same_agent_same_ticket"). Low-cardinality string so
+	// agents and dashboards can distinguish suggestion sources.
+	SuggestedBy string `json:"suggested_by"`
+	// Confidence is the detector's pre-suppression similarity score for the
+	// pair (typically the topic similarity at filter time). Optional.
+	Confidence *float32 `json:"confidence,omitempty"`
+	// Reason is a short human-readable explanation, e.g.
+	// "same agent \"claude-code\", same ticket \"ARD-958\"".
+	Reason     string    `json:"reason,omitempty"`
+	RecordedAt time.Time `json:"recorded_at"`
+}
+
 // CheckResponse is the response for POST /v1/check.
 type CheckResponse struct {
 	HasPrecedent bool               `json:"has_precedent"`
@@ -130,4 +154,13 @@ type CheckResponse struct {
 	// (losing_outcome / losing_agent). Use winning_decision_id as precedent_ref
 	// in akashi_trace to build on the validated approach.
 	PriorResolutions []ConflictResolution `json:"prior_resolutions,omitempty"`
+	// SupersedesSuggestions are latent supersedes_id links the detector
+	// inferred for the returned decisions. Each entry names a probable
+	// superseded predecessor for one of the decisions in this response. To
+	// confirm a suggestion, re-trace the superseding decision with
+	// supersedes_id set to the suggestion's superseded_id; the trigger
+	// installed by migration 106 creates the confirmed link and retires the
+	// suggestion atomically. To dismiss, take no action — the retention loop
+	// prunes stale suggestions.
+	SupersedesSuggestions []SupersedesSuggestion `json:"supersedes_suggestions,omitempty"`
 }

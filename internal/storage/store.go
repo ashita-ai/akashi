@@ -130,6 +130,24 @@ type Store interface {
 	// when an unknown project name is rejected.
 	DistinctProjects(ctx context.Context, orgID uuid.UUID) ([]string, error)
 
+	// ---- Supersedes Suggestions ----
+
+	// InsertSupersedesSuggestion writes a detector-inferred latent
+	// supersedes_id link as a 'suggested' row in decision_supersedes.
+	// Idempotent: a row already present for (superseding_id, superseded_id) —
+	// confirmed or earlier-suggested — is left intact.
+	InsertSupersedesSuggestion(ctx context.Context, s SupersedesSuggestionInsert) error
+
+	// ListSupersedesSuggestionsForDecisions returns all 'suggested' rows
+	// where superseding_id is in supersedingIDs. Ordered by superseding_id,
+	// recorded_at DESC. Returns nil for an empty input set.
+	ListSupersedesSuggestionsForDecisions(ctx context.Context, orgID uuid.UUID, supersedingIDs []uuid.UUID) ([]model.SupersedesSuggestion, error)
+
+	// DeleteOldSupersedesSuggestions removes 'suggested' rows older than
+	// before. Confirmed rows ('supersedes', 'reconciles') are not touched.
+	// Returns the number of rows deleted.
+	DeleteOldSupersedesSuggestions(ctx context.Context, before time.Time) (int64, error)
+
 	// ---- Decision Type Aliases ----
 
 	// ResolveDecisionTypeAlias returns the canonical decision type for the given

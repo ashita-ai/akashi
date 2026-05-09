@@ -53,6 +53,14 @@ WHAT YOU GET BACK:
   akashi_trace to build explicitly on the validated approach. This is the
   mechanism that prevents agents from resurrecting losing approaches after
   a conflict has been formally resolved.
+- supersedes_suggestions: latent supersedes_id links the detector inferred
+  for the returned decisions — typically same-agent same-ticket refinements
+  where supersedes_id was not set on the newer trace. Each entry names a
+  superseding_id (one of the returned decisions) and a probable
+  superseded_id predecessor. To CONFIRM, re-trace the superseding decision
+  with supersedes_id set to the suggested superseded_id; the server records
+  the confirmed link and retires the suggestion atomically. To DISMISS,
+  take no action — the retention loop prunes stale suggestions.
 - precedent_ref_hint: UUID to copy into akashi_trace's precedent_ref field
 
 decision_type is optional. When omitted the search spans all types —
@@ -652,6 +660,21 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 	for i, r := range resp.PriorResolutions {
 		compactResolutions[i] = compactResolution(r)
 	}
+	compactSuggestions := make([]map[string]any, len(resp.SupersedesSuggestions))
+	for i, sug := range resp.SupersedesSuggestions {
+		entry := map[string]any{
+			"superseding_id": sug.SupersedingID.String(),
+			"superseded_id":  sug.SupersededID.String(),
+			"suggested_by":   sug.SuggestedBy,
+		}
+		if sug.Confidence != nil {
+			entry["confidence"] = *sug.Confidence
+		}
+		if sug.Reason != "" {
+			entry["reason"] = sug.Reason
+		}
+		compactSuggestions[i] = entry
+	}
 
 	summary := generateCheckSummary(resp.Decisions, resp.Conflicts)
 	if resp.ConflictsUnavailable {
@@ -660,15 +683,19 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 	if len(resp.PriorResolutions) > 0 {
 		summary += fmt.Sprintf(" %d prior conflict(s) for this decision type were formally resolved; winning approach(es) listed in prior_resolutions.", len(resp.PriorResolutions))
 	}
+	if len(resp.SupersedesSuggestions) > 0 {
+		summary += fmt.Sprintf(" %d supersedes_id suggestion(s) — re-trace with supersedes_id set to confirm, or ignore to dismiss.", len(resp.SupersedesSuggestions))
+	}
 
 	result := map[string]any{
-		"has_precedent":     resp.HasPrecedent,
-		"summary":           summary,
-		"action_needed":     actionNeeded(resp.Conflicts) || resp.ConflictsUnavailable,
-		"relevant_count":    len(resp.Decisions),
-		"decisions":         compactDecs,
-		"conflicts":         compactConfs,
-		"prior_resolutions": compactResolutions,
+		"has_precedent":          resp.HasPrecedent,
+		"summary":                summary,
+		"action_needed":          actionNeeded(resp.Conflicts) || resp.ConflictsUnavailable,
+		"relevant_count":         len(resp.Decisions),
+		"decisions":              compactDecs,
+		"conflicts":              compactConfs,
+		"prior_resolutions":      compactResolutions,
+		"supersedes_suggestions": compactSuggestions,
 	}
 
 	if resp.ConflictsUnavailable {

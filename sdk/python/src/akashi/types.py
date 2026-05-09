@@ -386,6 +386,23 @@ class ConflictResolution(BaseModel):
     resolved_at: datetime
 
 
+class SupersedesSuggestion(BaseModel):
+    """Detector-inferred latent supersedes_id link surfaced by ``akashi_check``.
+
+    To confirm, re-trace the superseding decision with ``supersedes_id`` set to
+    ``superseded_id``; the server records the confirmed link and retires the
+    suggestion atomically. To dismiss, take no action — the retention loop
+    prunes stale suggestions.
+    """
+
+    superseding_id: UUID
+    superseded_id: UUID
+    suggested_by: str
+    confidence: float | None = None
+    reason: str = ""
+    recorded_at: datetime
+
+
 class CheckResponse(BaseModel):
     """Response from a precedent check."""
 
@@ -394,6 +411,7 @@ class CheckResponse(BaseModel):
     conflicts: list[DecisionConflict] = Field(default_factory=list)
     conflicts_unavailable: bool = False
     prior_resolutions: list[ConflictResolution] = Field(default_factory=list)
+    supersedes_suggestions: list[SupersedesSuggestion] = Field(default_factory=list)
 
 
 class QueryResponse(BaseModel):
