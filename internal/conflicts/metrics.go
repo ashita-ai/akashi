@@ -31,6 +31,9 @@ type Metrics struct {
 	fpPatternFiltered            metric.Int64Counter
 	temporalReassessmentFiltered metric.Int64Counter
 	supersedesCandidateFiltered  metric.Int64Counter
+	prSeriesLayerFiltered        metric.Int64Counter
+	disjointTicketReviewFiltered metric.Int64Counter
+	sameBranchMechanicalFiltered metric.Int64Counter
 
 	scoringDuration    metric.Float64Histogram
 	llmCallDuration    metric.Float64Histogram
@@ -203,6 +206,30 @@ func (s *Scorer) registerMetrics() {
 	if err != nil {
 		s.logger.Warn("conflicts: failed to create akashi.conflicts.supersedes_candidate_filtered metric", "error", err)
 		s.metrics.supersedesCandidateFiltered, _ = meter.Int64Counter("akashi.conflicts.supersedes_candidate_filtered.fallback")
+	}
+
+	s.metrics.prSeriesLayerFiltered, err = meter.Int64Counter("akashi.conflicts.pr_series_layer_filtered",
+		metric.WithDescription("Candidate pairs suppressed as cross-agent same-ticket PR-series layer refinements (S1/S2, layer N, phase N, step N, stage N, PR-N) — issue #717"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.pr_series_layer_filtered metric", "error", err)
+		s.metrics.prSeriesLayerFiltered, _ = meter.Int64Counter("akashi.conflicts.pr_series_layer_filtered.fallback")
+	}
+
+	s.metrics.disjointTicketReviewFiltered, err = meter.Int64Counter("akashi.conflicts.disjoint_ticket_review_filtered",
+		metric.WithDescription("Candidate pairs suppressed as cross-agent review-type decisions on disjoint ticket sets (different tickets in the same product) — issue #717"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.disjoint_ticket_review_filtered metric", "error", err)
+		s.metrics.disjointTicketReviewFiltered, _ = meter.Int64Counter("akashi.conflicts.disjoint_ticket_review_filtered.fallback")
+	}
+
+	s.metrics.sameBranchMechanicalFiltered, err = meter.Int64Counter("akashi.conflicts.same_branch_mechanical_filtered",
+		metric.WithDescription("Candidate pairs suppressed as cross-agent same-branch housekeeping (rebase/renumber/merge resolution) — issue #717"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.same_branch_mechanical_filtered metric", "error", err)
+		s.metrics.sameBranchMechanicalFiltered, _ = meter.Int64Counter("akashi.conflicts.same_branch_mechanical_filtered.fallback")
 	}
 
 	// --- Histograms ---
