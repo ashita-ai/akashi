@@ -833,6 +833,7 @@ func validBaseConfig() Config {
 		RateLimitBurst:             200,
 		WALDir:                     "./data/wal",
 		ExportPageSize:             100,
+		AssessmentPromptLimit:      10,
 	}
 }
 
@@ -1420,5 +1421,16 @@ func TestLoad_AssessmentPromptLimitOverride(t *testing.T) {
 	}
 	if cfg.AssessmentPromptLimit != 25 {
 		t.Fatalf("got %d, want 25", cfg.AssessmentPromptLimit)
+	}
+}
+
+func TestLoad_AssessmentPromptLimitRejectsZero(t *testing.T) {
+	t.Setenv("AKASHI_ASSESSMENT_PROMPT_LIMIT", "0")
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to fail when prompt limit is zero")
+	}
+	if !contains(err.Error(), "AKASHI_ASSESSMENT_PROMPT_LIMIT") {
+		t.Fatalf("error should mention AKASHI_ASSESSMENT_PROMPT_LIMIT, got: %s", err.Error())
 	}
 }

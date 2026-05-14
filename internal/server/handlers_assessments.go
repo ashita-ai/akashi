@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -127,7 +128,7 @@ func (h *Handlers) HandleListPendingAssessments(w http.ResponseWriter, r *http.R
 
 	q := r.URL.Query()
 	requested := q.Get("agent_id")
-	decisionType := q.Get("decision_type")
+	decisionType := strings.ToLower(strings.TrimSpace(q.Get("decision_type")))
 	project := q.Get("project")
 	// Parse limit directly rather than via queryLimit: a missing param must
 	// flow through as 0 so the service applies its configured default. The

@@ -81,6 +81,27 @@ func TestPendingAssessment_Endpoint_AssessedAreHidden(t *testing.T) {
 	}
 }
 
+// TestPendingAssessment_Endpoint_NormalizesDecisionType verifies the HTTP
+// surface matches MCP/trace normalization. Operators and SDKs should not get
+// an empty prompt list just because they send display casing or surrounding
+// whitespace.
+func TestPendingAssessment_Endpoint_NormalizesDecisionType(t *testing.T) {
+	ctx := context.Background()
+	old := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	d := seedPendingDecision(t, ctx, "test-agent", "architecture", old)
+
+	resp, err := authedRequest("GET",
+		testSrv.URL+"/v1/decisions/pending-assessment?decision_type=%20Architecture%20",
+		agentToken, nil)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	body := decodePendingResponse(t, resp.Body)
+	assert.Contains(t, pendingDecisionIDs(body.Decisions), d,
+		"HTTP decision_type filter should normalize case and whitespace")
+}
+
 // TestPendingAssessment_Endpoint_OptedOutType verifies decision_type=code_review
 // (no configured window in the test harness) returns an empty list rather than
 // a 400. An opt-out type is invisible, not an error.

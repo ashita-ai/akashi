@@ -489,10 +489,7 @@ func (c Config) Validate() error {
 	if c.ConflictOutcomeSimFloor < 0 || c.ConflictOutcomeSimFloor > 1 {
 		errs = append(errs, errors.New("config: AKASHI_CONFLICT_OUTCOME_SIM_FLOOR must be between 0.0 and 1.0 (0 disables)"))
 	}
-	// AssessmentPromptLimit: only reject explicitly-set out-of-range values.
-	// 0 is permitted (handlers fall back to the service default) so tests
-	// constructing partial Configs don't have to set every new field.
-	if c.AssessmentPromptLimit < 0 || c.AssessmentPromptLimit > 100 {
+	if c.AssessmentPromptLimit < 1 || c.AssessmentPromptLimit > 100 {
 		errs = append(errs, fmt.Errorf("config: AKASHI_ASSESSMENT_PROMPT_LIMIT must be between 1 and 100 (got %d)", c.AssessmentPromptLimit))
 	}
 	for t, d := range c.AssessmentWindows {
