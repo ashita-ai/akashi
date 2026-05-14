@@ -296,7 +296,7 @@ AKASHI_MIN_COMPLETENESS=0.30
 
 **Response shape.**
 
-In `reject` mode the HTTP API returns `422 Unprocessable Entity` with the `COMPLETENESS_BELOW_THRESHOLD` error code and a `details` object carrying `decision_type`, `completeness_score`, and `required_min`. The MCP `akashi_trace` tool returns the same information in a tool-error message. In `warn` mode the trace is persisted (201) and a string is appended to the response `warnings` array. The gate exposes two OTel counters: `akashi.trace.completeness_gate_rejects` and `akashi.trace.completeness_gate_warns`, both labeled by `decision_type`.
+In `reject` mode the HTTP API returns `422 Unprocessable Entity` with the `COMPLETENESS_BELOW_THRESHOLD` error code and a `details` object carrying `decision_type`, `completeness_score`, and `required_min`. The MCP `akashi_trace` tool returns the same information in a tool-error message. Rejected trace attempts are recorded in `mutation_audit_log` with operation `trace_decision_rejected` before the 422/tool error is returned. In `warn` mode the trace is persisted (201) and a string is appended to the response `warnings` array. The gate exposes two OTel counters: `akashi.trace.completeness_gate_rejects` and `akashi.trace.completeness_gate_warns`, both labeled by `decision_type`.
 
 **Scope.** The gate fires for any caller of the trace pipeline — HTTP `POST /v1/trace`, the MCP `akashi_trace` tool, and the IDE auto-trace hook. The local-lite binary (`cmd/akashi-local`) ignores these variables and always runs with the gate off; it's intended for single-developer use where structural enforcement isn't useful.
 

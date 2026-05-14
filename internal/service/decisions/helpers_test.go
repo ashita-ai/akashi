@@ -457,18 +457,42 @@ type mockStore struct {
 	insertClaimsErr    error
 	markFailedErr      error
 	clearFailureErr    error
+	insertAuditErr     error
 
 	// Tracking calls.
-	markFailedCalls   []uuid.UUID
-	clearFailureCalls []uuid.UUID
-	insertClaimsCalls int
+	markFailedCalls              []uuid.UUID
+	clearFailureCalls            []uuid.UUID
+	insertClaimsCalls            int
+	createDecisionTypeAliasCalls []decisionTypeAliasCall
+	insertAuditCalls             []storage.MutationAuditEntry
+}
+
+type decisionTypeAliasCall struct {
+	OrgID     uuid.UUID
+	Alias     string
+	Canonical string
+	CreatedBy string
 }
 
 func (m *mockStore) ResolveDecisionTypeAlias(_ context.Context, _ uuid.UUID, _ string) (string, error) {
 	return "", nil
 }
 
-func (m *mockStore) CreateDecisionTypeAlias(_ context.Context, _ uuid.UUID, _, _, _ string) error {
+func (m *mockStore) CreateDecisionTypeAlias(_ context.Context, orgID uuid.UUID, alias, canonical, createdBy string) error {
+	m.createDecisionTypeAliasCalls = append(m.createDecisionTypeAliasCalls, decisionTypeAliasCall{
+		OrgID:     orgID,
+		Alias:     alias,
+		Canonical: canonical,
+		CreatedBy: createdBy,
+	})
+	return nil
+}
+
+func (m *mockStore) InsertMutationAudit(_ context.Context, entry storage.MutationAuditEntry) error {
+	if m.insertAuditErr != nil {
+		return m.insertAuditErr
+	}
+	m.insertAuditCalls = append(m.insertAuditCalls, entry)
 	return nil
 }
 
@@ -2296,6 +2320,77 @@ func TestPrepareTrace_CompletenessRejectSkipsEmbedding(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrCompletenessBelowThreshold)
 	assert.Equal(t, int64(0), embedder.calls.Load(), "reject mode should gate before embedding work")
+}
+
+func TestPrepareTrace_CompletenessRejectDoesNotCreateAlias(t *testing.T) {
+	t.Parallel()
+	ms := &traceStore{}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+	svc.SetCompletenessGate(quality.CompletenessGate{
+		Mode:      quality.GateModeReject,
+		Threshold: 0.30,
+	})
+
+	_, err := svc.Trace(context.Background(), uuid.Nil, TraceInput{
+		AgentID: "test-agent",
+		Decision: model.TraceDecision{
+			DecisionType: "code_reveiw", // Levenshtein typo for code_review.
+			Outcome:      "short",
+			Confidence:   0.5,
+		},
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrCompletenessBelowThreshold)
+	assert.Empty(t, ms.createDecisionTypeAliasCalls,
+		"rejected traces must not persist auto-created aliases")
+}
+
+func TestPrepareTrace_CompletenessRejectWritesAudit(t *testing.T) {
+	t.Parallel()
+	ms := &traceStore{}
+	svc := New(ms, fakeEmbedder{dims: 3}, nil, testLogger(), nil)
+	svc.SetCompletenessGate(quality.CompletenessGate{
+		Mode:      quality.GateModeReject,
+		Threshold: 0.30,
+	})
+	orgID := uuid.New()
+	apiKeyID := uuid.New()
+
+	_, err := svc.Trace(context.Background(), orgID, TraceInput{
+		AgentID:  "test-agent",
+		APIKeyID: &apiKeyID,
+		AuditMeta: &ctxutil.AuditMeta{
+			RequestID:    "req-rejected",
+			OrgID:        orgID,
+			ActorAgentID: "caller-agent",
+			ActorRole:    "agent",
+			HTTPMethod:   "MCP",
+			Endpoint:     "akashi_trace",
+		},
+		Decision: model.TraceDecision{
+			DecisionType: "code_review",
+			Outcome:      "short",
+			Confidence:   0.5,
+		},
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrCompletenessBelowThreshold)
+	require.Len(t, ms.insertAuditCalls, 1, "rejected traces need a durable audit row")
+
+	audit := ms.insertAuditCalls[0]
+	assert.Equal(t, "req-rejected", audit.RequestID)
+	assert.Equal(t, orgID, audit.OrgID)
+	assert.Equal(t, "caller-agent", audit.ActorAgentID)
+	assert.Equal(t, "trace_decision_rejected", audit.Operation)
+	assert.Equal(t, "decision_trace", audit.ResourceType)
+	assert.Equal(t, "code_review", audit.Metadata["decision_type"])
+	assert.InDelta(t, 0.30, audit.Metadata["required_min"], 0.0001)
+
+	after, ok := audit.AfterData.(map[string]any)
+	require.True(t, ok, "after_data should capture the rejected trace summary")
+	assert.Equal(t, "rejected", after["status"])
+	assert.Equal(t, "short", after["outcome"])
+	assert.Equal(t, &apiKeyID, after["api_key_id"])
 }
 
 func TestPrepareTrace_EvidenceEmbeddingDimMismatch(t *testing.T) {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ashita-ai/akashi/internal/ctxutil"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/storage"
@@ -482,6 +483,14 @@ func (h *Handlers) autoTraceCommit(input hookPostToolUseInput, commitMsg string)
 			Evidence:     evidence,
 		},
 		AgentContext: agentCtx,
+		AuditMeta: &ctxutil.AuditMeta{
+			RequestID:    uuid.NewString(),
+			OrgID:        orgID,
+			ActorAgentID: agentID,
+			ActorRole:    string(model.RoleAdmin),
+			HTTPMethod:   "HOOK",
+			Endpoint:     "hooks/post-tool-use:auto-trace",
+		},
 	}
 
 	if _, err := h.decisionSvc.Trace(ctx, orgID, traceInput); err != nil {

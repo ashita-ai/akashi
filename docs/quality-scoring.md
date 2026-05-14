@@ -108,7 +108,7 @@ the score above, no new logic — and is disabled by default.
 |------|-----------------------------------|
 | `off` (default) | No effect; pre-#715 behavior preserved |
 | `warn` | Trace is persisted; a string is appended to the response `warnings` array |
-| `reject` | Trace is refused; HTTP `422 Unprocessable Entity` with `COMPLETENESS_BELOW_THRESHOLD` error code and `details` carrying score/threshold/type. The MCP `akashi_trace` tool returns the same information as a tool-error message |
+| `reject` | Trace is refused; HTTP `422 Unprocessable Entity` with `COMPLETENESS_BELOW_THRESHOLD` error code and `details` carrying score/threshold/type. The MCP `akashi_trace` tool returns the same information as a tool-error message. The rejected attempt is recorded in `mutation_audit_log` with operation `trace_decision_rejected` |
 
 Per-type overrides take precedence over the global floor. Configure via
 `AKASHI_MIN_COMPLETENESS`, `AKASHI_MIN_COMPLETENESS_MODE`, and

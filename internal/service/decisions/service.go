@@ -76,6 +76,15 @@ func AsCompletenessRejection(err error) *CompletenessRejection {
 	return nil
 }
 
+type mutationAuditWriter interface {
+	InsertMutationAudit(context.Context, storage.MutationAuditEntry) error
+}
+
+type decisionTypeAliasCandidate struct {
+	Alias     string
+	Canonical string
+}
+
 // ConflictScorer scores semantic conflicts for new decisions.
 type ConflictScorer interface {
 	ScoreForDecision(ctx context.Context, decisionID, orgID uuid.UUID)
@@ -315,7 +324,7 @@ type TraceResult struct {
 // Embeddings and quality scores are computed first, then all database writes
 // happen atomically within a single transaction. Notification is sent after commit.
 func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) (TraceResult, error) {
-	params, warnings, err := s.prepareTrace(ctx, orgID, input)
+	params, warnings, aliasCandidate, err := s.prepareTrace(ctx, orgID, input)
 	if err != nil {
 		return TraceResult{}, err
 	}
@@ -331,6 +340,7 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 		return TraceResult{}, fmt.Errorf("trace: %w", err)
 	}
 
+	s.createDecisionTypeAliasAfterCommit(ctx, orgID, aliasCandidate)
 	s.postTraceAsync(ctx, orgID, input, decision)
 	return TraceResult{
 		RunID:            run.ID,
@@ -347,7 +357,7 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 // an adjudication decision is created but the conflict remains unresolved due to
 // a crash between two separate transactions.
 func (s *Service) AdjudicateConflictWithTrace(ctx context.Context, orgID uuid.UUID, input TraceInput, conflictParams storage.AdjudicateConflictInTraceParams) (TraceResult, error) {
-	params, warnings, err := s.prepareTrace(ctx, orgID, input)
+	params, warnings, aliasCandidate, err := s.prepareTrace(ctx, orgID, input)
 	if err != nil {
 		return TraceResult{}, err
 	}
@@ -363,6 +373,7 @@ func (s *Service) AdjudicateConflictWithTrace(ctx context.Context, orgID uuid.UU
 		return TraceResult{}, fmt.Errorf("trace+adjudicate: %w", err)
 	}
 
+	s.createDecisionTypeAliasAfterCommit(ctx, orgID, aliasCandidate)
 	s.postTraceAsync(ctx, orgID, input, decision)
 	return TraceResult{
 		RunID:            run.ID,
@@ -380,8 +391,9 @@ func (s *Service) AdjudicateConflictWithTrace(ctx context.Context, orgID uuid.UU
 // preparation (currently from the completeness gate in warn mode), and an
 // error if the trace must be refused (currently CompletenessRejection when
 // the gate is in reject mode and the score is below the threshold).
-func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input TraceInput) (storage.CreateTraceParams, []string, error) {
+func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input TraceInput) (storage.CreateTraceParams, []string, *decisionTypeAliasCandidate, error) {
 	var warnings []string
+	var aliasCandidate *decisionTypeAliasCandidate
 	if input.SupersedesID == nil && len(input.SupersedesIDs) > 0 {
 		primary := input.SupersedesIDs[0]
 		input.SupersedesID = &primary
@@ -401,10 +413,12 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 		input.Metadata["original_decision_type"] = input.Decision.DecisionType
 		input.Decision.DecisionType = canonical
 	} else if suggested := quality.SuggestStandardType(input.Decision.DecisionType, s.effectiveStandardTypes(), 2); suggested != "" {
-		// Close Levenshtein match found — auto-create alias for future lookups.
-		if aliasErr := s.db.CreateDecisionTypeAlias(ctx, orgID, input.Decision.DecisionType, suggested, "system:levenshtein-auto"); aliasErr != nil {
-			s.logger.Warn("trace: failed to auto-create decision type alias",
-				"alias", input.Decision.DecisionType, "canonical", suggested, "error", aliasErr)
+		// Close Levenshtein match found. Canonicalize this trace immediately,
+		// but defer durable alias creation until after the trace commits so a
+		// rejected/failed trace cannot leave alias side effects behind.
+		aliasCandidate = &decisionTypeAliasCandidate{
+			Alias:     input.Decision.DecisionType,
+			Canonical: suggested,
 		}
 		if input.Metadata == nil {
 			input.Metadata = make(map[string]any)
@@ -443,11 +457,15 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 				"score", qualityScore,
 				"threshold", gateResult.Threshold,
 			)
-			return storage.CreateTraceParams{}, nil, &CompletenessRejection{
+			rej := &CompletenessRejection{
 				DecisionType: input.Decision.DecisionType,
 				Score:        qualityScore,
 				Threshold:    gateResult.Threshold,
 			}
+			if err := s.recordCompletenessRejectionAudit(ctx, orgID, input, rej); err != nil {
+				return storage.CreateTraceParams{}, nil, nil, fmt.Errorf("trace: audit completeness rejection: %w", err)
+			}
+			return storage.CreateTraceParams{}, nil, nil, rej
 		case quality.GateModeWarn:
 			s.completenessGateWarns.Add(ctx, 1,
 				metric.WithAttributes(attribute.String("decision_type", input.Decision.DecisionType)),
@@ -491,7 +509,7 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 	}()
 	embWg.Wait()
 	if decEmbErr != nil {
-		return storage.CreateTraceParams{}, nil, decEmbErr
+		return storage.CreateTraceParams{}, nil, nil, decEmbErr
 	}
 	if decisionEmb == nil {
 		s.embeddingSkips.Add(ctx, 1)
@@ -568,7 +586,7 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 		// Check for dimension validation errors (hard failure).
 		for _, err := range errs {
 			if err != nil && errors.Is(err, ErrEmbeddingDimMismatch) {
-				return storage.CreateTraceParams{}, nil, err
+				return storage.CreateTraceParams{}, nil, nil, err
 			}
 		}
 
@@ -626,7 +644,74 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 		SessionID:    input.SessionID,
 		AgentContext: input.AgentContext,
 		AuditEntry:   auditEntry,
-	}, warnings, nil
+	}, warnings, aliasCandidate, nil
+}
+
+func (s *Service) createDecisionTypeAliasAfterCommit(ctx context.Context, orgID uuid.UUID, alias *decisionTypeAliasCandidate) {
+	if alias == nil {
+		return
+	}
+	if err := s.db.CreateDecisionTypeAlias(ctx, orgID, alias.Alias, alias.Canonical, "system:levenshtein-auto"); err != nil {
+		s.logger.Warn("trace: failed to auto-create decision type alias",
+			"alias", alias.Alias, "canonical", alias.Canonical, "error", err)
+	}
+}
+
+func (s *Service) recordCompletenessRejectionAudit(ctx context.Context, orgID uuid.UUID, input TraceInput, rej *CompletenessRejection) error {
+	auditor, ok := s.db.(mutationAuditWriter)
+	if !ok {
+		s.logger.Warn("trace: completeness rejection audit unavailable for storage backend",
+			"agent_id", input.AgentID,
+			"decision_type", rej.DecisionType,
+			"score", rej.Score,
+			"threshold", rej.Threshold,
+		)
+		return nil
+	}
+
+	audit := storage.MutationAuditEntry{
+		OrgID:        orgID,
+		ActorAgentID: input.AgentID,
+		ActorRole:    "agent",
+		HTTPMethod:   "service",
+		Endpoint:     "trace",
+		Operation:    "trace_decision_rejected",
+		ResourceType: "decision_trace",
+		Metadata: map[string]any{
+			"agent_id":           input.AgentID,
+			"decision_type":      rej.DecisionType,
+			"completeness_score": rej.Score,
+			"required_min":       rej.Threshold,
+			"reason":             ErrCompletenessBelowThreshold.Error(),
+		},
+		AfterData: map[string]any{
+			"status":             "rejected",
+			"decision_type":      input.Decision.DecisionType,
+			"outcome":            input.Decision.Outcome,
+			"confidence":         input.Decision.Confidence,
+			"reasoning":          input.Decision.Reasoning,
+			"alternatives":       input.Decision.Alternatives,
+			"evidence":           input.Decision.Evidence,
+			"precedent_ref":      input.PrecedentRef,
+			"precedent_reason":   input.PrecedentReason,
+			"supersedes_id":      input.SupersedesID,
+			"session_id":         input.SessionID,
+			"api_key_id":         input.APIKeyID,
+			"agent_context":      input.AgentContext,
+			"metadata":           input.Metadata,
+			"completeness_score": rej.Score,
+			"required_min":       rej.Threshold,
+		},
+	}
+	if input.AuditMeta != nil {
+		audit.RequestID = input.AuditMeta.RequestID
+		audit.OrgID = input.AuditMeta.OrgID
+		audit.ActorAgentID = input.AuditMeta.ActorAgentID
+		audit.ActorRole = input.AuditMeta.ActorRole
+		audit.HTTPMethod = input.AuditMeta.HTTPMethod
+		audit.Endpoint = input.AuditMeta.Endpoint
+	}
+	return auditor.InsertMutationAudit(ctx, audit)
 }
 
 // postTraceAsync handles post-commit work: subscriber notification and

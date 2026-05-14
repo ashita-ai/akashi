@@ -1636,6 +1636,27 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          description: |
+            Adjudication decision was refused by the completeness ingest gate.
+            Returned only when `AKASHI_MIN_COMPLETENESS_MODE=reject` and the
+            adjudication trace's completeness score is strictly below the
+            effective threshold for its `decision_type`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+              example:
+                error:
+                  code: COMPLETENESS_BELOW_THRESHOLD
+                  message: "decision completeness below configured minimum threshold: score=0.15 threshold=0.30 decision_type=\"adjudication\""
+                  details:
+                    decision_type: adjudication
+                    completeness_score: 0.15
+                    required_min: 0.30
+                meta:
+                  request_id: "11223344-5566-7788-99aa-bbccddeeff00"
+                  timestamp: "2026-05-13T10:30:00Z"
 
   /v1/conflict-groups/{id}/resolve:
     patch:
