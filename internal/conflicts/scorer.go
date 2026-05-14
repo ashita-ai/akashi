@@ -1389,7 +1389,6 @@ var mechanicalKeywords = []string{
 	"renumber",
 	"renumbering",
 	"renumbered",
-	"migration",
 	"rebase",
 	"rebasing",
 	"rebased",
@@ -1590,6 +1589,12 @@ func isPrecedentLinked(d, cand model.Decision) bool {
 
 // supersessionKeywords are outcome substrings that indicate the decision
 // reverses or replaces a prior decision rather than refining it.
+//
+// The "walk-back" group (shelved, dropped, pivoting, …) was added after the
+// #717 FP audit observed agents stating their own reversal in plain English
+// — "Shelved the draft; pivoting to a different topic" — without the
+// existing same-agent same-ticket filter recognising the reversal because
+// the keyword list missed the verb.
 var supersessionKeywords = []string{
 	"switched",
 	"superseding",
@@ -1606,6 +1611,30 @@ var supersessionKeywords = []string{
 	"no longer",
 	"abandoned",
 	"abandoning",
+	// Walk-back / pivot vocabulary surfaced by issue #717 FP audit.
+	"shelved",
+	"shelving",
+	"dropped",
+	"dropping",
+	"pivoting",
+	"pivoted",
+	"walked back",
+	"walking back",
+	"rewrote",
+	"rewriting",
+	"rewritten",
+	"scrapped",
+	"scrapping",
+	"discarded",
+	"discarding",
+	"retracted",
+	"retracting",
+	"withdrew",
+	"withdrawing",
+	"tabled",
+	"parked",
+	"deprecated this",
+	"deprecating",
 }
 
 // containsSupersessionKeyword returns true if the outcome text contains any
