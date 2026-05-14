@@ -1600,6 +1600,28 @@ func TestHandleTrace_MissingOrNullConfidence(t *testing.T) {
 	}
 }
 
+func TestHandleTrace_RejectsUnknownDecisionField(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken, map[string]any{
+		"agent_id": "test-agent",
+		"decision": map[string]any{
+			"decision_type": "test_type",
+			"outcome":       "some-outcome",
+			"confidence":    0.5,
+			"unexpected":    "oops",
+		},
+		"context": map[string]any{"project": "test-project"},
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	var errResp model.APIError
+	data, _ := io.ReadAll(resp.Body)
+	_ = json.Unmarshal(data, &errResp)
+	assert.Equal(t, model.ErrCodeInvalidInput, errResp.Error.Code)
+	assert.Contains(t, errResp.Error.Message, "invalid request body")
+}
+
 func TestHandleTrace_InvalidAgentID(t *testing.T) {
 	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken,
 		model.TraceRequest{

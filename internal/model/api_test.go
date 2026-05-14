@@ -539,6 +539,30 @@ func TestTraceDecisionUnmarshalJSON_ConfidencePresent(t *testing.T) {
 	}
 }
 
+func TestTraceDecisionUnmarshalJSON_RejectsUnknownField(t *testing.T) {
+	body := `{"decision_type":"architecture","outcome":"x","confidence":0.85,"unexpected":"oops"}`
+
+	var d model.TraceDecision
+	err := json.Unmarshal([]byte(body), &d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown field")
+}
+
+func TestTraceDecisionUnmarshalJSON_ResetsReceiver(t *testing.T) {
+	var d model.TraceDecision
+	require.NoError(t, json.Unmarshal([]byte(
+		`{"decision_type":"architecture","outcome":"x","confidence":0.85}`,
+	), &d))
+	require.True(t, d.ConfidencePresent())
+	require.InDelta(t, 0.85, d.Confidence, 1e-6)
+
+	require.NoError(t, json.Unmarshal([]byte(
+		`{"decision_type":"architecture","outcome":"x"}`,
+	), &d))
+	assert.False(t, d.ConfidencePresent())
+	assert.Zero(t, d.Confidence)
+}
+
 // TestTraceDecisionUnmarshalJSON_PreservesOtherFields guards against the
 // custom UnmarshalJSON accidentally dropping any sibling field.
 func TestTraceDecisionUnmarshalJSON_PreservesOtherFields(t *testing.T) {

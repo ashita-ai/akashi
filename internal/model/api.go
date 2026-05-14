@@ -1,6 +1,7 @@
 package model
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -297,6 +298,7 @@ func (d TraceDecision) ConfidencePresent() bool {
 // UnmarshalJSON decodes a TraceDecision and records whether the caller
 // supplied a confidence value, distinguishing "omitted" from "explicitly 0".
 func (d *TraceDecision) UnmarshalJSON(data []byte) error {
+	*d = TraceDecision{}
 	type rawDecision struct {
 		DecisionType string             `json:"decision_type"`
 		Outcome      string             `json:"outcome"`
@@ -306,7 +308,9 @@ func (d *TraceDecision) UnmarshalJSON(data []byte) error {
 		Evidence     []TraceEvidence    `json:"evidence,omitempty"`
 	}
 	var raw rawDecision
-	if err := json.Unmarshal(data, &raw); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&raw); err != nil {
 		return err
 	}
 	d.DecisionType = raw.DecisionType
