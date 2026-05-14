@@ -5,6 +5,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -229,4 +230,86 @@ func (db *DB) HasAssessmentFromSource(ctx context.Context, orgID, decisionID uui
 		return false, fmt.Errorf("storage: has assessment from source: %w", err)
 	}
 	return exists, nil
+}
+
+// ListPendingAssessments returns active decisions whose valid_from is older
+// than their per-type assessment window AND have no recorded assessment from
+// any source (manual, supersession, conflict, or citation).
+//
+// Any-source counts as already-assessed: if auto-assessment via supersession,
+// conflict resolution, or citation threshold has already produced a verdict,
+// prompting the agent again would be redundant noise.
+//
+// Rows are ordered by valid_from ASC so the oldest unassessed decisions surface
+// first. Decisions are scoped to the org and to active rows (valid_to IS NULL).
+func (db *DB) ListPendingAssessments(ctx context.Context, orgID uuid.UUID, opts ListPendingAssessmentsOpts) ([]model.PendingAssessment, error) {
+	if len(opts.Windows) == 0 {
+		return nil, nil
+	}
+	if opts.AgentIDs != nil && len(opts.AgentIDs) == 0 {
+		// Caller passed an explicit empty access set — deny all rows without
+		// hitting the DB.
+		return nil, nil
+	}
+	if opts.Limit <= 0 {
+		opts.Limit = 10
+	}
+
+	types := make([]string, len(opts.Windows))
+	cutoffs := make([]time.Time, len(opts.Windows))
+	for i, w := range opts.Windows {
+		types[i] = w.DecisionType
+		cutoffs[i] = w.Cutoff
+	}
+
+	// Argument layout: $1 org_id, $2 type[], $3 cutoff[], then optional
+	// project ($4) and agent set; the index of agent_ids depends on whether
+	// project was added.
+	args := []any{orgID, types, cutoffs}
+	q := `WITH windows(decision_type, cutoff) AS (
+		SELECT * FROM unnest($2::text[], $3::timestamptz[])
+	)
+	SELECT d.id, d.agent_id, d.decision_type, d.outcome, d.confidence,
+	       d.project, d.valid_from
+	FROM decisions d
+	JOIN windows w ON w.decision_type = d.decision_type AND d.valid_from < w.cutoff
+	LEFT JOIN decision_assessments a
+	    ON a.decision_id = d.id AND a.org_id = d.org_id
+	WHERE d.org_id = $1
+	  AND d.valid_to IS NULL
+	  AND a.id IS NULL`
+	if opts.Project != nil {
+		args = append(args, *opts.Project)
+		q += fmt.Sprintf(" AND d.project = $%d", len(args))
+	}
+	if opts.AgentIDs != nil {
+		args = append(args, opts.AgentIDs)
+		q += fmt.Sprintf(" AND d.agent_id = ANY($%d::text[])", len(args))
+	}
+	args = append(args, opts.Limit)
+	q += fmt.Sprintf(" ORDER BY d.valid_from ASC LIMIT $%d", len(args))
+
+	rows, err := db.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("storage: list pending assessments: %w", err)
+	}
+	defer rows.Close()
+
+	now := time.Now().UTC()
+	out := make([]model.PendingAssessment, 0)
+	for rows.Next() {
+		var p model.PendingAssessment
+		if err := rows.Scan(
+			&p.DecisionID, &p.AgentID, &p.DecisionType, &p.Outcome,
+			&p.Confidence, &p.Project, &p.ValidFrom,
+		); err != nil {
+			return nil, fmt.Errorf("storage: list pending assessments: scan: %w", err)
+		}
+		p.AgeHours = now.Sub(p.ValidFrom).Hours()
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: list pending assessments: rows: %w", err)
+	}
+	return out, nil
 }

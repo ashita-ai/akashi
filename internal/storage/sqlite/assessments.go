@@ -3,11 +3,15 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 // CreateAssessment records an outcome assessment for a decision.
@@ -312,6 +316,107 @@ func (l *LiteDB) GetPrecedentCitationCount(ctx context.Context, orgID uuid.UUID,
 		return 0, fmt.Errorf("sqlite: precedent citation count: %w", err)
 	}
 	return count, nil
+}
+
+// ListPendingAssessments returns active decisions whose valid_from is older
+// than their per-type assessment window AND have no recorded assessment from
+// any source. Mirrors the PostgreSQL implementation; see its doc comment for
+// the full design rationale.
+func (l *LiteDB) ListPendingAssessments(ctx context.Context, orgID uuid.UUID, opts storage.ListPendingAssessmentsOpts) ([]model.PendingAssessment, error) {
+	if len(opts.Windows) == 0 {
+		return nil, nil
+	}
+	if opts.AgentIDs != nil && len(opts.AgentIDs) == 0 {
+		return nil, nil
+	}
+	if opts.Limit <= 0 {
+		opts.Limit = 10
+	}
+
+	// Build dynamic VALUES (?, ?), (?, ?), ... for the windows CTE.
+	values := make([]string, len(opts.Windows))
+	args := make([]any, 0, len(opts.Windows)*2+4)
+	for i, w := range opts.Windows {
+		values[i] = "(?, ?)"
+		args = append(args, w.DecisionType, w.Cutoff.UTC().Format(time.RFC3339Nano))
+	}
+	args = append(args, uuidStr(orgID))
+
+	// The interpolated segment is literal "(?, ?)" placeholders only — never
+	// user-controlled text. Every (decision_type, cutoff) value goes through
+	// the parameterized args slice. SQLite has no array binding equivalent
+	// to Postgres' unnest(), so a dynamic VALUES list is the standard pattern.
+	q := `WITH windows(decision_type, cutoff) AS (VALUES ` + //nolint:gosec // G202: only "(?, ?)" placeholders are concatenated; values flow through args
+		strings.Join(values, ", ") + `)
+		SELECT d.id, d.agent_id, d.decision_type, d.outcome, d.confidence,
+		       d.project, d.valid_from
+		FROM decisions d
+		JOIN windows w ON w.decision_type = d.decision_type
+		             AND datetime(d.valid_from) < datetime(w.cutoff)
+		LEFT JOIN decision_assessments a
+		    ON a.decision_id = d.id AND a.org_id = d.org_id
+		WHERE d.org_id = ?
+		  AND d.valid_to IS NULL
+		  AND a.id IS NULL`
+
+	if opts.Project != nil {
+		q += " AND d.project = ?"
+		args = append(args, *opts.Project)
+	}
+	if opts.AgentIDs != nil {
+		// json_each is the standard SQLite pattern for IN (?,?,...) with a
+		// variable-length set — also used by GetAssessmentSummaryBatch and
+		// GetDecisionsByIDs in this package.
+		idsJSON, err := json.Marshal(opts.AgentIDs)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: list pending assessments: marshal agent_ids: %w", err)
+		}
+		q += " AND d.agent_id IN (SELECT value FROM json_each(?))"
+		args = append(args, string(idsJSON))
+	}
+	q += " ORDER BY datetime(d.valid_from) ASC LIMIT ?"
+	args = append(args, opts.Limit)
+
+	rows, err := l.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list pending assessments: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	now := time.Now().UTC()
+	out := make([]model.PendingAssessment, 0)
+	for rows.Next() {
+		var (
+			idStr        string
+			agentID      string
+			decisionType string
+			outcome      string
+			confidence   float32
+			project      sql.NullString
+			validFromStr string
+		)
+		if err := rows.Scan(&idStr, &agentID, &decisionType, &outcome, &confidence, &project, &validFromStr); err != nil {
+			return nil, fmt.Errorf("sqlite: list pending assessments: scan: %w", err)
+		}
+		p := model.PendingAssessment{
+			DecisionID:   parseUUID(idStr),
+			AgentID:      agentID,
+			DecisionType: decisionType,
+			Outcome:      outcome,
+			Confidence:   confidence,
+			ValidFrom:    parseTime(validFromStr),
+		}
+		if project.Valid {
+			s := project.String
+			p.Project = &s
+		}
+		p.AgeHours = now.Sub(p.ValidFrom).Hours()
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list pending assessments: rows: %w", err)
+	}
+	return out, nil
 }
 
 // HasAssessmentFromSource returns true if an assessment from the given source
