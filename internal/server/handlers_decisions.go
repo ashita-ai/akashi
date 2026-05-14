@@ -46,6 +46,14 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "decision.outcome is required")
 		return
 	}
+	if !req.Decision.ConfidencePresent() {
+		// Reject explicitly rather than fall through to a silent default —
+		// see ashita-ai/akashi#713. A missing field was previously stored as
+		// 0.0, indistinguishable from a caller's deliberate 0.0 choice.
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
+			"decision.confidence is required (must be a number between 0 and 1)")
+		return
+	}
 	if req.Decision.Confidence < 0 || req.Decision.Confidence > 1 {
 		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "decision.confidence must be between 0 and 1")
 		return

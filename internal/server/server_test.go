@@ -1550,6 +1550,78 @@ func TestHandleTrace_InvalidConfidence(t *testing.T) {
 	})
 }
 
+// TestHandleTrace_MissingOrNullConfidence guards the fix for ashita-ai/akashi#713.
+// Before this fix, a request that omitted the "confidence" key (or sent null)
+// would unmarshal to 0.0 and be silently accepted, indistinguishable from a
+// caller's explicit 0.0 stance. Both cases must now return 400.
+func TestHandleTrace_MissingOrNullConfidence(t *testing.T) {
+	cases := []struct {
+		name string
+		body map[string]any
+	}{
+		{
+			name: "confidence key omitted",
+			body: map[string]any{
+				"agent_id": "test-agent",
+				"decision": map[string]any{
+					"decision_type": "test_type",
+					"outcome":       "some-outcome",
+				},
+				"context": map[string]any{"project": "test-project"},
+			},
+		},
+		{
+			name: "confidence explicitly null",
+			body: map[string]any{
+				"agent_id": "test-agent",
+				"decision": map[string]any{
+					"decision_type": "test_type",
+					"outcome":       "some-outcome",
+					"confidence":    nil,
+				},
+				"context": map[string]any{"project": "test-project"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken, tc.body)
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+			var errResp model.APIError
+			data, _ := io.ReadAll(resp.Body)
+			_ = json.Unmarshal(data, &errResp)
+			assert.Equal(t, model.ErrCodeInvalidInput, errResp.Error.Code)
+			assert.Contains(t, errResp.Error.Message, "confidence")
+			assert.Contains(t, errResp.Error.Message, "required")
+		})
+	}
+}
+
+func TestHandleTrace_RejectsUnknownDecisionField(t *testing.T) {
+	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", agentToken, map[string]any{
+		"agent_id": "test-agent",
+		"decision": map[string]any{
+			"decision_type": "test_type",
+			"outcome":       "some-outcome",
+			"confidence":    0.5,
+			"unexpected":    "oops",
+		},
+		"context": map[string]any{"project": "test-project"},
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	var errResp model.APIError
+	data, _ := io.ReadAll(resp.Body)
+	_ = json.Unmarshal(data, &errResp)
+	assert.Equal(t, model.ErrCodeInvalidInput, errResp.Error.Code)
+	assert.Contains(t, errResp.Error.Message, "invalid request body")
+}
+
 func TestHandleTrace_InvalidAgentID(t *testing.T) {
 	resp, err := authedRequest("POST", testSrv.URL+"/v1/trace", adminToken,
 		model.TraceRequest{

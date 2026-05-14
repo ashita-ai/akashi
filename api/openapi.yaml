@@ -4246,6 +4246,16 @@ components:
           format: float
           minimum: 0
           maximum: 1
+          description: |
+            Stated confidence in the decision, in [0, 1]. The field is
+            required: requests that omit it or send null are rejected with
+            HTTP 400 (and the MCP equivalent surfaces an error result).
+            Values outside [0, 1] are rejected with the same status.
+
+            The server never substitutes a default for a missing or
+            unparseable value — every stored confidence reflects what the
+            caller actually claimed, so aggregate metrics
+            (`avg_confidence`, calibration buckets) remain trustworthy.
         reasoning:
           type: string
         alternatives:
