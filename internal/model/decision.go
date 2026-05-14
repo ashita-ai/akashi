@@ -379,6 +379,29 @@ type AssessRequest struct {
 	Notes   *string           `json:"notes,omitempty"`
 }
 
+// PendingAssessment is a decision past its outcome-assessment window with no
+// recorded assessment from any source. Returned by GET /v1/decisions/pending-assessment
+// and the akashi_pending_assessments MCP tool to surface decisions that should
+// receive follow-up via akashi_assess. The 2.3% manual assessment rate observed
+// in May 2026 is the gap this list closes.
+type PendingAssessment struct {
+	DecisionID   uuid.UUID `json:"decision_id"`
+	AgentID      string    `json:"agent_id"`
+	DecisionType string    `json:"decision_type"`
+	Outcome      string    `json:"outcome"`
+	Confidence   float32   `json:"confidence"`
+	Project      *string   `json:"project,omitempty"`
+	ValidFrom    time.Time `json:"valid_from"`
+	AgeHours     float64   `json:"age_hours"`
+}
+
+// PendingAssessmentListResponse is the response body for
+// GET /v1/decisions/pending-assessment.
+type PendingAssessmentListResponse struct {
+	Decisions []PendingAssessment `json:"decisions"`
+	Count     int                 `json:"count"`
+}
+
 // DecisionErasure records that a decision's PII was scrubbed per GDPR Art. 17.
 // The original content hash is preserved for forensic verification that the
 // decision existed and was intentionally erased (vs. tampered with).

@@ -19,6 +19,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/ratelimit"
 	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
+	"github.com/ashita-ai/akashi/internal/service/pendingassess"
 	"github.com/ashita-ai/akashi/internal/service/trace"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
@@ -63,6 +64,9 @@ type Handlers struct {
 	// exportPageSize is the batch size used by HandleExportDecisions when
 	// streaming NDJSON via keyset pagination. Validated at config load (1–10000).
 	exportPageSize int
+	// pendingAssessSvc resolves the per-type window list and queries pending
+	// outcome-assessments. Shared with the MCP tool path.
+	pendingAssessSvc *pendingassess.Service
 }
 
 // HandlersDeps holds all dependencies for constructing Handlers.
@@ -88,6 +92,7 @@ type HandlersDeps struct {
 	ConflictValidator           conflicts.Validator
 	HighConfidenceWarnThreshold float32
 	ExportPageSize              int
+	PendingAssessSvc            *pendingassess.Service
 }
 
 // NewHandlers creates a new Handlers with all dependencies.
@@ -115,6 +120,7 @@ func NewHandlers(d HandlersDeps) *Handlers {
 		conflictValidator:           d.ConflictValidator,
 		highConfidenceWarnThreshold: d.HighConfidenceWarnThreshold,
 		exportPageSize:              exportPageSizeOrDefault(d.ExportPageSize),
+		pendingAssessSvc:            d.PendingAssessSvc,
 	}
 }
 

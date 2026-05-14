@@ -29,6 +29,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/server"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
+	"github.com/ashita-ai/akashi/internal/service/pendingassess"
 	"github.com/ashita-ai/akashi/internal/service/trace"
 	"github.com/ashita-ai/akashi/internal/storage"
 	"github.com/ashita-ai/akashi/internal/testutil"
@@ -83,7 +84,12 @@ func TestMain(m *testing.M) {
 	buf.Start(ctx)
 	testBuf = buf
 
+	pendingAssess := pendingassess.New(db, map[string]time.Duration{
+		"architecture": 7 * 24 * time.Hour,
+		"security":     7 * 24 * time.Hour,
+	}, 10)
 	mcpSrv := mcp.New(db, decisionSvc, nil, logger, "test", 0.85, nil)
+	mcpSrv.SetPendingAssessor(pendingAssess)
 	srv := server.New(server.ServerConfig{
 		DB:                  db,
 		JWTMgr:              jwtMgr,
@@ -98,6 +104,7 @@ func TestMain(m *testing.M) {
 		// Explicitly enabled for tests that exercise GDPR delete behavior.
 		EnableDestructiveDelete:     true,
 		HighConfidenceWarnThreshold: 0.85,
+		PendingAssessSvc:            pendingAssess,
 	})
 
 	// Seed admin.
@@ -589,7 +596,7 @@ func TestMCPListTools(t *testing.T) {
 
 	toolsResult, err := c.ListTools(ctx, mcplib.ListToolsRequest{})
 	require.NoError(t, err)
-	assert.Len(t, toolsResult.Tools, 8)
+	assert.Len(t, toolsResult.Tools, 9)
 
 	toolNames := make(map[string]bool)
 	for _, tool := range toolsResult.Tools {
@@ -603,6 +610,7 @@ func TestMCPListTools(t *testing.T) {
 	assert.True(t, toolNames["akashi_reconcile"], "expected akashi_reconcile tool")
 	assert.True(t, toolNames["akashi_stats"], "expected akashi_stats tool")
 	assert.True(t, toolNames["akashi_assess"], "expected akashi_assess tool")
+	assert.True(t, toolNames["akashi_pending_assessments"], "expected akashi_pending_assessments tool")
 }
 
 func TestMCPListResources(t *testing.T) {

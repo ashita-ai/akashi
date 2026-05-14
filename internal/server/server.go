@@ -17,6 +17,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/ratelimit"
 	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
+	"github.com/ashita-ai/akashi/internal/service/pendingassess"
 	"github.com/ashita-ai/akashi/internal/service/trace"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
@@ -104,6 +105,11 @@ type ServerConfig struct {
 	// Page size for GET /v1/export/decisions NDJSON pagination. Zero = use
 	// the handler's default (100). Validated at config load (1–10000).
 	ExportPageSize int
+
+	// Outcome-assessment prompting service. Nil disables the
+	// GET /v1/decisions/pending-assessment route entirely (the route is not
+	// registered when nil — clients receive 404 rather than 500).
+	PendingAssessSvc *pendingassess.Service
 }
 
 // New creates a new HTTP server with all routes configured.
@@ -129,6 +135,7 @@ func New(cfg ServerConfig) *Server {
 		ConflictValidator:           cfg.ConflictValidator,
 		HighConfidenceWarnThreshold: cfg.HighConfidenceWarnThreshold,
 		ExportPageSize:              cfg.ExportPageSize,
+		PendingAssessSvc:            cfg.PendingAssessSvc,
 	})
 
 	mux := http.NewServeMux()
@@ -216,6 +223,14 @@ func New(cfg ServerConfig) *Server {
 	// Decision assessments: explicit outcome feedback (spec 29 / ADR-020 Tier 2).
 	mux.Handle("POST /v1/decisions/{id}/assess", writeRole(http.HandlerFunc(h.HandleAssessDecision)))
 	mux.Handle("GET /v1/decisions/{id}/assessments", readRole(http.HandlerFunc(h.HandleListAssessments)))
+
+	// Pending outcome-assessment list (issue #716). Only registered when a
+	// pending-assessment service is wired in — clients hit 404 otherwise,
+	// which is the correct signal that prompting is not configured for this
+	// deployment.
+	if cfg.PendingAssessSvc != nil {
+		mux.Handle("GET /v1/decisions/pending-assessment", readRole(http.HandlerFunc(h.HandleListPendingAssessments)))
+	}
 
 	// Session view (reader+).
 	mux.Handle("GET /v1/sessions/{session_id}", readRole(http.HandlerFunc(h.HandleSessionView)))

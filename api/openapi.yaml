@@ -1178,6 +1178,69 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /v1/decisions/pending-assessment:
+    get:
+      operationId: listPendingAssessments
+      tags: [Decisions]
+      summary: List decisions past their assessment window
+      description: |
+        Surface decisions that are older than their per-type
+        outcome-assessment window and have no recorded assessment from any
+        source (manual or auto). Use the returned `decision_id` values to
+        follow up via `POST /v1/decisions/{id}/assess`.
+
+        Default scope is the caller's own `agent_id`. Pass `agent_id=*`
+        to expand to all decisions the caller has access to (subject to
+        per-org grant filtering). A decision_type with no configured
+        window returns zero rows by design (opt-out).
+
+        Returns 404 when pending-assessment prompting is not configured
+        on this deployment.
+
+        Requires `reader` role or higher.
+      parameters:
+        - name: agent_id
+          in: query
+          description: |
+            `*` for all accessible agents; specific id to scope; omit to
+            default to the caller's own agent_id.
+          schema:
+            type: string
+        - name: decision_type
+          in: query
+          description: Optional. Narrow to a single decision type.
+          schema:
+            type: string
+        - name: project
+          in: query
+          description: Optional. Restrict to one project.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          description: Pending-assessment list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PendingAssessmentListResponse"
+                  meta:
+                    $ref: "#/components/schemas/ResponseMeta"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /v1/decisions/{id}/assessments:
     get:
       operationId: listDecisionAssessments
@@ -3755,6 +3818,59 @@ components:
         incorrect:
           type: integer
         partially_correct:
+          type: integer
+
+    PendingAssessment:
+      type: object
+      description: |
+        A decision past its outcome-assessment window with no recorded
+        assessment from any source (manual or auto). Returned by
+        `GET /v1/decisions/pending-assessment` to prompt agents to follow
+        up via `akashi_assess`.
+      required:
+        - decision_id
+        - agent_id
+        - decision_type
+        - outcome
+        - confidence
+        - valid_from
+        - age_hours
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+        decision_type:
+          type: string
+        outcome:
+          type: string
+          description: The decision's `outcome` text (not an assessment verdict).
+        confidence:
+          type: number
+          format: float
+        project:
+          type: string
+          nullable: true
+        valid_from:
+          type: string
+          format: date-time
+        age_hours:
+          type: number
+          format: double
+          description: Hours since `valid_from`, computed server-side at query time.
+
+    PendingAssessmentListResponse:
+      type: object
+      required:
+        - decisions
+        - count
+      properties:
+        decisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PendingAssessment"
+        count:
           type: integer
 
     DecisionAssessment:
