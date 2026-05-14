@@ -1235,6 +1235,15 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		if idemOwned {
 			_ = s.db.ClearInProgressIdempotency(ctx, orgID, agentID, "MCP:akashi_trace", idemKey)
 		}
+		// Surface a structured message for completeness-gate rejections (#715)
+		// so the agent can fix the trace and retry rather than guessing at why
+		// the server refused it.
+		if rej := decisions.AsCompletenessRejection(err); rej != nil {
+			return errorResult(fmt.Sprintf(
+				"decision rejected by completeness gate: score %.2f for decision_type=%q is below the configured minimum of %.2f — add reasoning, alternatives with rejection reasons, evidence, or a precedent_ref before retrying",
+				rej.Score, rej.DecisionType, rej.Threshold,
+			)), nil
+		}
 		return errorResult(fmt.Sprintf("failed to record decision: %v", err)), nil
 	}
 
@@ -1290,7 +1299,12 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	if len(missing) > 0 {
 		responseMap["completeness_tips"] = missing
 	}
-	if warnings := model.HighConfidenceWarnings(confidence, len(evidence), s.highConfidenceWarnThreshold); len(warnings) > 0 {
+	warnings := model.HighConfidenceWarnings(confidence, len(evidence), s.highConfidenceWarnThreshold)
+	// Append any warn-mode messages produced by the completeness gate (#715).
+	if len(result.Warnings) > 0 {
+		warnings = append(warnings, result.Warnings...)
+	}
+	if len(warnings) > 0 {
 		responseMap["warnings"] = warnings
 	}
 	if checkHadResults {

@@ -37,6 +37,45 @@ import (
 // ErrEmbeddingDimMismatch is returned when an embedding vector has the wrong number of dimensions.
 var ErrEmbeddingDimMismatch = errors.New("embedding dimension mismatch")
 
+// ErrCompletenessBelowThreshold is returned by Trace when the configured
+// completeness gate is in reject mode and the trace's score falls strictly
+// below the effective threshold for its decision_type. Callers use
+// errors.Is to detect this and AsCompletenessRejection to unpack the
+// score, threshold, and decision_type that triggered the rejection.
+var ErrCompletenessBelowThreshold = errors.New("decision completeness below configured minimum threshold")
+
+// CompletenessRejection carries the structured details of a gate rejection
+// so HTTP and MCP layers can emit useful error messages without re-parsing
+// the wrapped error string. The error wraps ErrCompletenessBelowThreshold so
+// errors.Is keeps working.
+type CompletenessRejection struct {
+	DecisionType string
+	Score        float32
+	Threshold    float32
+}
+
+// Error implements error.
+func (r *CompletenessRejection) Error() string {
+	return fmt.Sprintf(
+		"%s: score=%.2f threshold=%.2f decision_type=%q",
+		ErrCompletenessBelowThreshold.Error(), r.Score, r.Threshold, r.DecisionType,
+	)
+}
+
+// Unwrap lets errors.Is(err, ErrCompletenessBelowThreshold) work.
+func (r *CompletenessRejection) Unwrap() error { return ErrCompletenessBelowThreshold }
+
+// AsCompletenessRejection extracts the structured rejection from an error
+// chain. Returns nil when err is not a completeness rejection. This is the
+// preferred way for HTTP/MCP layers to read the score, threshold, and type.
+func AsCompletenessRejection(err error) *CompletenessRejection {
+	var rej *CompletenessRejection
+	if errors.As(err, &rej) {
+		return rej
+	}
+	return nil
+}
+
 // ConflictScorer scores semantic conflicts for new decisions.
 type ConflictScorer interface {
 	ScoreForDecision(ctx context.Context, decisionID, orgID uuid.UUID)
@@ -56,10 +95,21 @@ type Service struct {
 	claimEmbeddingFailures metric.Int64Counter
 	embeddingSkips         metric.Int64Counter
 
-	percentileCache *search.PercentileCache // nil = use log fallback in ReScore.
-	rescoreMetrics  *search.ReScoreMetrics  // nil = skip signal contribution recording.
-	standardTypes   map[string]bool         // nil = use quality.DefaultStandardDecisionTypes.
-	autoAssessor    AutoAssessor            // nil = skip auto-assessment.
+	// completenessGateRejects counts traces refused by the ingest gate
+	// (issue #715). Labeled with decision_type so operators can see which
+	// types are most often blocked and tune the threshold accordingly.
+	completenessGateRejects metric.Int64Counter
+
+	// completenessGateWarns counts traces that fell below the gate floor
+	// when running in warn mode. Labeled the same way as rejects so the
+	// two counters together describe gate activity.
+	completenessGateWarns metric.Int64Counter
+
+	percentileCache  *search.PercentileCache  // nil = use log fallback in ReScore.
+	rescoreMetrics   *search.ReScoreMetrics   // nil = skip signal contribution recording.
+	standardTypes    map[string]bool          // nil = use quality.DefaultStandardDecisionTypes.
+	autoAssessor     AutoAssessor             // nil = skip auto-assessment.
+	completenessGate quality.CompletenessGate // zero value = gate disabled.
 
 	// asyncWg tracks in-flight post-trace goroutines (claim generation,
 	// conflict scoring) so Shutdown can wait for them before closing the DB.
@@ -88,6 +138,12 @@ type AutoAssessor interface {
 // SetAutoAssessor configures automatic assessment generation from
 // supersession, citation, and conflict resolution signals.
 func (s *Service) SetAutoAssessor(a AutoAssessor) { s.autoAssessor = a }
+
+// SetCompletenessGate configures the ingest gate that refuses or warns on
+// low-completeness traces (issue #715). Pass quality.CompletenessGate{} to
+// disable. Safe to call before Run(); reading the gate is not synchronized
+// because it's expected to be set once at startup, never reconfigured.
+func (s *Service) SetCompletenessGate(g quality.CompletenessGate) { s.completenessGate = g }
 
 // AssessConflictResolution delegates to the auto-assessor to record outcome
 // assessments for conflict winners and losers. No-op when auto-assessor is nil.
@@ -192,19 +248,27 @@ func New(db storage.Store, embedder embedding.Provider, searcher search.Searcher
 	embSkips, _ := meter.Int64Counter("akashi.embedding.skips",
 		metric.WithDescription("Decisions traced without embedding (provider unavailable or errored)"),
 	)
+	gateRejects, _ := meter.Int64Counter("akashi.trace.completeness_gate_rejects",
+		metric.WithDescription("Traces rejected by the completeness ingest gate (#715)"),
+	)
+	gateWarns, _ := meter.Int64Counter("akashi.trace.completeness_gate_warns",
+		metric.WithDescription("Traces accepted with a completeness warning by the ingest gate (#715)"),
+	)
 	shutdownCtx, shutdownStop := context.WithCancel(context.Background())
 	return &Service{
-		db:                     db,
-		embedder:               embedder,
-		searcher:               searcher,
-		conflictScorer:         conflictScorer,
-		logger:                 logger,
-		embeddingDuration:      embDur,
-		searchDuration:         searchDur,
-		claimEmbeddingFailures: claimFail,
-		embeddingSkips:         embSkips,
-		shutdownCtx:            shutdownCtx,
-		shutdownStop:           shutdownStop,
+		db:                      db,
+		embedder:                embedder,
+		searcher:                searcher,
+		conflictScorer:          conflictScorer,
+		logger:                  logger,
+		embeddingDuration:       embDur,
+		searchDuration:          searchDur,
+		claimEmbeddingFailures:  claimFail,
+		embeddingSkips:          embSkips,
+		completenessGateRejects: gateRejects,
+		completenessGateWarns:   gateWarns,
+		shutdownCtx:             shutdownCtx,
+		shutdownStop:            shutdownStop,
 	}
 }
 
@@ -240,13 +304,18 @@ type TraceResult struct {
 	// returned an error. Conflict detection and semantic search may be degraded
 	// for this decision.
 	EmbeddingSkipped bool
+	// Warnings are non-fatal advisories produced during prepareTrace —
+	// currently the completeness gate (#715) in warn mode. Callers append
+	// these to the user-visible response so agents see them alongside
+	// existing warnings (high-confidence-no-evidence, etc).
+	Warnings []string
 }
 
 // Trace records a complete decision with its alternatives and evidence.
 // Embeddings and quality scores are computed first, then all database writes
 // happen atomically within a single transaction. Notification is sent after commit.
 func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) (TraceResult, error) {
-	params, err := s.prepareTrace(ctx, orgID, input)
+	params, warnings, err := s.prepareTrace(ctx, orgID, input)
 	if err != nil {
 		return TraceResult{}, err
 	}
@@ -269,6 +338,7 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 		EventCount:       len(params.Alternatives) + len(params.Evidence) + 1,
 		Decision:         decision,
 		EmbeddingSkipped: decision.Embedding == nil,
+		Warnings:         warnings,
 	}, nil
 }
 
@@ -277,7 +347,7 @@ func (s *Service) Trace(ctx context.Context, orgID uuid.UUID, input TraceInput) 
 // an adjudication decision is created but the conflict remains unresolved due to
 // a crash between two separate transactions.
 func (s *Service) AdjudicateConflictWithTrace(ctx context.Context, orgID uuid.UUID, input TraceInput, conflictParams storage.AdjudicateConflictInTraceParams) (TraceResult, error) {
-	params, err := s.prepareTrace(ctx, orgID, input)
+	params, warnings, err := s.prepareTrace(ctx, orgID, input)
 	if err != nil {
 		return TraceResult{}, err
 	}
@@ -300,13 +370,18 @@ func (s *Service) AdjudicateConflictWithTrace(ctx context.Context, orgID uuid.UU
 		EventCount:       len(params.Alternatives) + len(params.Evidence) + 1,
 		Decision:         decision,
 		EmbeddingSkipped: decision.Embedding == nil,
+		Warnings:         warnings,
 	}, nil
 }
 
 // prepareTrace handles all pre-transaction work: OTEL span, embeddings, quality
 // scoring, alternatives, evidence, and audit entry construction. Returns the
-// fully-prepared CreateTraceParams ready for a transactional write.
-func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input TraceInput) (storage.CreateTraceParams, error) {
+// fully-prepared CreateTraceParams, any non-fatal warnings produced during
+// preparation (currently from the completeness gate in warn mode), and an
+// error if the trace must be refused (currently CompletenessRejection when
+// the gate is in reject mode and the score is below the threshold).
+func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input TraceInput) (storage.CreateTraceParams, []string, error) {
+	var warnings []string
 	if input.SupersedesID == nil && len(input.SupersedesIDs) > 0 {
 		primary := input.SupersedesIDs[0]
 		input.SupersedesID = &primary
@@ -381,7 +456,7 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 	}()
 	embWg.Wait()
 	if decEmbErr != nil {
-		return storage.CreateTraceParams{}, decEmbErr
+		return storage.CreateTraceParams{}, nil, decEmbErr
 	}
 	if decisionEmb == nil {
 		s.embeddingSkips.Add(ctx, 1)
@@ -394,7 +469,39 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 	// 2. Compute quality score.
 	qualityScore := quality.Score(input.Decision, input.PrecedentRef != nil)
 
-	// 2a. Adjust confidence based on evidence, alternatives, and reasoning.
+	// 2a. Completeness ingest gate (#715). Runs against the freshly-computed
+	// score before AdjustConfidence so the gate sees what the agent submitted,
+	// not what we deflated it to. Reject mode short-circuits before any
+	// downstream work (no extra embedding, no DB write). Warn mode lets the
+	// trace through and surfaces a warning via TraceResult.
+	if gateResult := s.completenessGate.Evaluate(qualityScore, input.Decision.DecisionType); gateResult.Below {
+		switch gateResult.Mode {
+		case quality.GateModeReject:
+			s.completenessGateRejects.Add(ctx, 1,
+				metric.WithAttributes(attribute.String("decision_type", input.Decision.DecisionType)),
+			)
+			s.logger.Info("trace: rejected by completeness gate",
+				"agent_id", input.AgentID,
+				"decision_type", input.Decision.DecisionType,
+				"score", qualityScore,
+				"threshold", gateResult.Threshold,
+			)
+			return storage.CreateTraceParams{}, nil, &CompletenessRejection{
+				DecisionType: input.Decision.DecisionType,
+				Score:        qualityScore,
+				Threshold:    gateResult.Threshold,
+			}
+		case quality.GateModeWarn:
+			s.completenessGateWarns.Add(ctx, 1,
+				metric.WithAttributes(attribute.String("decision_type", input.Decision.DecisionType)),
+			)
+			if msg := gateResult.WarningMessage(input.Decision.DecisionType); msg != "" {
+				warnings = append(warnings, msg)
+			}
+		}
+	}
+
+	// 2b. Adjust confidence based on evidence, alternatives, and reasoning.
 	// This deflates self-reported confidence that isn't supported by substance.
 	reasoningLen := 0
 	if input.Decision.Reasoning != nil {
@@ -415,7 +522,7 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 		input.Metadata["confidence_adjustment_reasons"] = confAdj.Reasons
 	}
 
-	// 2b. Bootstrap metadata from agent_context when agent-supplied metadata
+	// 2c. Bootstrap metadata from agent_context when agent-supplied metadata
 	// is empty. This makes tool/model/session queryable via the metadata JSONB
 	// column without requiring agents to populate it explicitly.
 	bootstrapMetadata(&input)
@@ -461,7 +568,7 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 		// Check for dimension validation errors (hard failure).
 		for _, err := range errs {
 			if err != nil && errors.Is(err, ErrEmbeddingDimMismatch) {
-				return storage.CreateTraceParams{}, err
+				return storage.CreateTraceParams{}, nil, err
 			}
 		}
 
@@ -519,7 +626,7 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 		SessionID:    input.SessionID,
 		AgentContext: input.AgentContext,
 		AuditEntry:   auditEntry,
-	}, nil
+	}, warnings, nil
 }
 
 // postTraceAsync handles post-commit work: subscriber notification and

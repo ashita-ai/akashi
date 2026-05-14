@@ -485,7 +485,19 @@ func (h *Handlers) autoTraceCommit(input hookPostToolUseInput, commitMsg string)
 	}
 
 	if _, err := h.decisionSvc.Trace(ctx, orgID, traceInput); err != nil {
-		h.logger.Warn("auto-trace failed", "error", err, "commit", truncateHook(commitMsg, 60))
+		// A completeness-gate rejection (#715) is operator policy working as
+		// intended, not a failure. Log it at info so it shows up but doesn't
+		// look like infra distress in the noisy auto-trace path.
+		if rej := decisions.AsCompletenessRejection(err); rej != nil {
+			h.logger.Info("auto-trace skipped by completeness gate",
+				"score", rej.Score,
+				"threshold", rej.Threshold,
+				"decision_type", rej.DecisionType,
+				"commit", truncateHook(commitMsg, 60),
+			)
+		} else {
+			h.logger.Warn("auto-trace failed", "error", err, "commit", truncateHook(commitMsg, 60))
+		}
 	} else {
 		h.hookChecks.ClearProjectEmpty(project)
 	}

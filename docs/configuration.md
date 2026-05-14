@@ -260,6 +260,46 @@ Hook endpoints (`/hooks/session-start`, `/hooks/pre-tool-use`, `/hooks/post-tool
 |----------|---------|-------------|
 | `AKASHI_HIGH_CONFIDENCE_WARN_THRESHOLD` | `0.85` | Confidence above this with zero evidence items triggers a `warnings` array in the trace response. Set to `1.0` to disable |
 
+## Completeness ingest gate
+
+The completeness ingest gate (issue [#715](https://github.com/ashita-ai/akashi/issues/715)) lets operators refuse or warn on low-completeness traces at ingest time. The gate consumes the same structural completeness score that's already computed for every trace (see [quality-scoring.md](quality-scoring.md)) — no new scoring logic. Disabled by default.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AKASHI_MIN_COMPLETENESS_MODE` | `off` | Gate behavior: `off` (default — never blocks), `warn` (accept and attach a warning to the response), or `reject` (refuse with HTTP 422 / MCP tool error). Aliases: `disabled`/`warning`/`block` |
+| `AKASHI_MIN_COMPLETENESS` | `0.0` | Global minimum completeness score in `[0.0, 1.0]`. Traces below this are gated according to mode. A non-positive value disables the global floor (the gate then only fires for types listed in `_BY_TYPE`) |
+| `AKASHI_MIN_COMPLETENESS_BY_TYPE` | _(empty)_ | JSON object mapping `decision_type` → per-type floor. Overrides the global floor for the named type. Keys are lowercased on load. Example: `{"security":0.60,"architecture":0.55,"code_review":0.45}` |
+
+**Examples.**
+
+Reject any trace that scores below 0.30:
+
+```sh
+AKASHI_MIN_COMPLETENESS_MODE=reject
+AKASHI_MIN_COMPLETENESS=0.30
+```
+
+Enforce a per-type bar for high-stakes decisions only, leaving everything else ungated:
+
+```sh
+AKASHI_MIN_COMPLETENESS_MODE=reject
+AKASHI_MIN_COMPLETENESS=0
+AKASHI_MIN_COMPLETENESS_BY_TYPE={"security":0.60,"architecture":0.55}
+```
+
+Warn-only mode for a soft rollout — agents see what would be blocked without breaking ingest:
+
+```sh
+AKASHI_MIN_COMPLETENESS_MODE=warn
+AKASHI_MIN_COMPLETENESS=0.30
+```
+
+**Response shape.**
+
+In `reject` mode the HTTP API returns `422 Unprocessable Entity` with the `COMPLETENESS_BELOW_THRESHOLD` error code and a `details` object carrying `decision_type`, `completeness_score`, and `required_min`. The MCP `akashi_trace` tool returns the same information in a tool-error message. In `warn` mode the trace is persisted (201) and a string is appended to the response `warnings` array. The gate exposes two OTel counters: `akashi.trace.completeness_gate_rejects` and `akashi.trace.completeness_gate_warns`, both labeled by `decision_type`.
+
+**Scope.** The gate fires for any caller of the trace pipeline — HTTP `POST /v1/trace`, the MCP `akashi_trace` tool, and the IDE auto-trace hook. The local-lite binary (`cmd/akashi-local`) ignores these variables and always runs with the gate off; it's intended for single-developer use where structural enforcement isn't useful.
+
 ## Data retention
 
 Akashi supports per-org data retention policies that automatically delete decisions older than a configured threshold. Policies are set via `PUT /v1/retention` (admin-only). Legal holds (`POST /v1/retention/hold`) exempt matching decisions from both automated and GDPR deletion. All deletion operations are recorded in the `deletion_log` table.

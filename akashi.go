@@ -310,6 +310,23 @@ func New(opts ...Option) (*App, error) {
 	assessor := autoassess.New(db, logger)
 	decisionSvc.SetAutoAssessor(assessor)
 
+	// Completeness ingest gate (#715). Disabled by default; operators opt in
+	// via AKASHI_MIN_COMPLETENESS_MODE=warn|reject. The mode string was
+	// validated at config load, so ParseGateMode cannot return an error here.
+	gateMode, _ := quality.ParseGateMode(cfg.MinCompletenessMode)
+	decisionSvc.SetCompletenessGate(quality.CompletenessGate{
+		Mode:      gateMode,
+		Threshold: cfg.MinCompleteness,
+		ByType:    cfg.MinCompletenessByType,
+	})
+	if gateMode != quality.GateModeOff {
+		logger.Info("completeness ingest gate enabled",
+			"mode", string(gateMode),
+			"threshold", cfg.MinCompleteness,
+			"by_type_count", len(cfg.MinCompletenessByType),
+		)
+	}
+
 	// Embedding backfills (non-fatal).
 	if n, err := decisionSvc.BackfillEmbeddings(context.Background(), 500); err != nil {
 		logger.Warn("embedding backfill failed", "error", err)
