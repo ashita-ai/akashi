@@ -16,11 +16,13 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/authz"
 	"github.com/ashita-ai/akashi/internal/ctxutil"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/projectsuggest"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
+	"github.com/ashita-ai/akashi/internal/service/pendingassess"
 	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/service/tracehealth"
 	"github.com/ashita-ai/akashi/internal/storage"
@@ -505,6 +507,59 @@ edges for both sides, and invalidates both original decisions in one transaction
 			),
 		),
 		s.handleReconcile,
+	)
+
+	// akashi_pending_assessments — surface decisions past their assessment window
+	// that have no recorded assessment from any source (issue #716).
+	s.mcpServer.AddTool(
+		mcplib.NewTool("akashi_pending_assessments",
+			mcplib.WithDescription(`Find prior decisions that are past their outcome-assessment window
+and still have no recorded assessment from any source.
+
+WHEN TO USE: Call at session start (or when picking up a previous thread of
+work) to discover prior decisions you should evaluate via akashi_assess.
+Closing the assessment loop is what makes confidence calibration meaningful
+across agents — without it, "I'm 85% confident" never gets compared to
+ground truth.
+
+WHAT YOU GET BACK: a list of decisions older than the configured per-type
+window (default: 7 days for architecture/security/design/trade_off, 30 days
+for planning). Decisions auto-assessed by supersession, conflict resolution,
+or precedent-citation threshold are NOT returned — any-source assessment
+counts as already-assessed.
+
+DEFAULT SCOPE: decisions YOU traced (caller's agent_id). Pass agent_id="*"
+to see all decisions you have access to.
+
+NEXT STEP: for each returned decision_id, observe whether the choice held
+up in practice, then call akashi_assess with outcome of "correct",
+"partially_correct", or "incorrect" and a short notes field describing
+what you observed.`),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithIdempotentHintAnnotation(true),
+			mcplib.WithOpenWorldHintAnnotation(false),
+			mcplib.WithString("agent_id",
+				mcplib.Description(`Optional. Defaults to the caller's agent_id. Pass "*" to see all decisions the caller can access (subject to per-org grant filtering).`),
+			),
+			mcplib.WithString("decision_type",
+				mcplib.Description("Optional: narrow to a single decision_type (e.g. architecture, security). Returns empty if the type has no configured window."),
+			),
+			mcplib.WithString("project",
+				mcplib.Description(`Optional project filter. Auto-detected from MCP roots/cwd/repo_url if omitted; pass "*" to disable.`),
+			),
+			mcplib.WithString("cwd",
+				mcplib.Description("Absolute path to your current git working directory; used for project auto-detection."),
+			),
+			mcplib.WithString("repo_url",
+				mcplib.Description("Git remote URL; used for project auto-detection when cwd is unavailable."),
+			),
+			mcplib.WithNumber("limit",
+				mcplib.Description("Maximum decisions to return. Defaults to the server's configured prompt limit."),
+				mcplib.Min(1),
+				mcplib.Max(100),
+			),
+		),
+		s.handlePendingAssessments,
 	)
 }
 
@@ -1945,6 +2000,102 @@ func (s *Server) handleAssess(ctx context.Context, request mcplib.CallToolReques
 			mcplib.TextContent{Type: "text", Text: string(resultData)},
 		},
 	}, nil
+}
+
+// handlePendingAssessments implements the akashi_pending_assessments tool
+// (issue #716). Returns decisions past their per-type assessment window that
+// have no recorded assessment from any source, so the agent can follow up
+// via akashi_assess. Default scope is the caller's agent_id; agent_id="*"
+// expands to the full grant set.
+func (s *Server) handlePendingAssessments(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	claims := ctxutil.ClaimsFromContext(ctx)
+	if claims == nil {
+		return errorResult("authentication required"), nil
+	}
+	orgID := ctxutil.OrgIDFromContext(ctx)
+
+	if s.pendingAssessor == nil {
+		// Tool is registered unconditionally so its description appears in
+		// tools/list, but ListPending requires the service to be wired up.
+		empty, _ := json.MarshalIndent(map[string]any{
+			"decisions": []any{},
+			"count":     0,
+			"hint":      "pending-assessment prompting is not configured on this server",
+		}, "", "  ")
+		return &mcplib.CallToolResult{
+			Content: []mcplib.Content{mcplib.TextContent{Type: "text", Text: string(empty)}},
+		}, nil
+	}
+
+	requested := request.GetString("agent_id", "")
+	decisionType := strings.ToLower(strings.TrimSpace(request.GetString("decision_type", "")))
+	limit := request.GetInt("limit", 0) // 0 = use service default
+
+	agentIDs, err := resolveAgentScopeForMCP(ctx, s.db, claims, s.grantCache, requested)
+	if err != nil {
+		return errorResult(fmt.Sprintf("authorization check failed: %v", err)), nil
+	}
+
+	in := pendingassess.ListInput{
+		AgentIDs:     agentIDs,
+		DecisionType: decisionType,
+		Limit:        limit,
+	}
+	if project := s.resolveProjectFilter(ctx, request); project != nil {
+		in.Project = project
+	}
+
+	rows, err := s.pendingAssessor.ListPending(ctx, orgID, in)
+	if err != nil {
+		return errorResult(fmt.Sprintf("pending-assessment lookup failed: %v", err)), nil
+	}
+	if rows == nil {
+		rows = []model.PendingAssessment{}
+	}
+
+	payload := map[string]any{
+		"decisions": rows,
+		"count":     len(rows),
+	}
+	if len(rows) > 0 {
+		payload["hint"] = "For each decision_id above, call akashi_assess with outcome=\"correct\"/\"partially_correct\"/\"incorrect\" and a short notes field describing what you observed."
+	}
+	data, _ := json.MarshalIndent(payload, "", "  ")
+	return &mcplib.CallToolResult{
+		Content: []mcplib.Content{mcplib.TextContent{Type: "text", Text: string(data)}},
+	}, nil
+}
+
+// resolveAgentScopeForMCP mirrors the HTTP handler's agent_id resolution:
+// empty → caller-only, "*" → full grant set (nil for admin), specific id →
+// allow if accessible, deny-all empty slice otherwise.
+func resolveAgentScopeForMCP(ctx context.Context, db storage.Store, claims *auth.Claims, cache *authz.GrantCache, requested string) ([]string, error) {
+	switch requested {
+	case "":
+		return []string{claims.AgentID}, nil
+	case "*":
+		granted, err := authz.LoadGrantedSet(ctx, db, claims, cache)
+		if err != nil {
+			return nil, err
+		}
+		if granted == nil {
+			return nil, nil
+		}
+		ids := make([]string, 0, len(granted))
+		for id := range granted {
+			ids = append(ids, id)
+		}
+		return ids, nil
+	default:
+		granted, err := authz.LoadGrantedSet(ctx, db, claims, cache)
+		if err != nil {
+			return nil, err
+		}
+		if granted == nil || granted[requested] {
+			return []string{requested}, nil
+		}
+		return []string{}, nil
+	}
 }
 
 // cascadeSimilarityThreshold is the minimum cosine similarity for cascade resolution.

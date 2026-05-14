@@ -833,6 +833,7 @@ func validBaseConfig() Config {
 		RateLimitBurst:             200,
 		WALDir:                     "./data/wal",
 		ExportPageSize:             100,
+		AssessmentPromptLimit:      10,
 	}
 }
 
@@ -1357,4 +1358,79 @@ func TestLoad_ExportPageSizeBoundaries(t *testing.T) {
 			t.Fatalf("expected ExportPageSize 10000, got %d", cfg.ExportPageSize)
 		}
 	})
+}
+
+func TestLoad_AssessmentWindowsDefaults(t *testing.T) {
+	// With no env overrides, defaults from defaultAssessmentWindows() apply.
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, want := cfg.AssessmentWindows["architecture"], 7*24*time.Hour; got != want {
+		t.Fatalf("architecture: got %v, want %v", got, want)
+	}
+	if got, want := cfg.AssessmentWindows["security"], 7*24*time.Hour; got != want {
+		t.Fatalf("security: got %v, want %v", got, want)
+	}
+	if got, want := cfg.AssessmentWindows["planning"], 30*24*time.Hour; got != want {
+		t.Fatalf("planning: got %v, want %v", got, want)
+	}
+	// Types not listed in defaults must be absent (i.e. opt-out by default).
+	if _, ok := cfg.AssessmentWindows["code_review"]; ok {
+		t.Fatalf("code_review must not appear in default windows; got entry")
+	}
+	if cfg.AssessmentPromptLimit != 10 {
+		t.Fatalf("AssessmentPromptLimit: got %d, want 10", cfg.AssessmentPromptLimit)
+	}
+}
+
+func TestLoad_AssessmentWindowsEnvOverride(t *testing.T) {
+	// Override a default, opt out a default, and opt in a new type.
+	t.Setenv("AKASHI_ASSESSMENT_WINDOW_ARCHITECTURE", "72h")
+	t.Setenv("AKASHI_ASSESSMENT_WINDOW_SECURITY", "0")
+	t.Setenv("AKASHI_ASSESSMENT_WINDOW_CODE_REVIEW", "48h")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, want := cfg.AssessmentWindows["architecture"], 72*time.Hour; got != want {
+		t.Fatalf("architecture override: got %v, want %v", got, want)
+	}
+	if cfg.AssessmentWindows["security"] != 0 {
+		t.Fatalf("security 0-override: got %v, want 0 (disabled)", cfg.AssessmentWindows["security"])
+	}
+	if got, want := cfg.AssessmentWindows["code_review"], 48*time.Hour; got != want {
+		t.Fatalf("code_review opt-in: got %v, want %v", got, want)
+	}
+}
+
+func TestLoad_AssessmentWindowInvalidDuration(t *testing.T) {
+	t.Setenv("AKASHI_ASSESSMENT_WINDOW_ARCHITECTURE", "not-a-duration")
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to fail on unparseable duration override")
+	}
+}
+
+func TestLoad_AssessmentPromptLimitOverride(t *testing.T) {
+	t.Setenv("AKASHI_ASSESSMENT_PROMPT_LIMIT", "25")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AssessmentPromptLimit != 25 {
+		t.Fatalf("got %d, want 25", cfg.AssessmentPromptLimit)
+	}
+}
+
+func TestLoad_AssessmentPromptLimitRejectsZero(t *testing.T) {
+	t.Setenv("AKASHI_ASSESSMENT_PROMPT_LIMIT", "0")
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to fail when prompt limit is zero")
+	}
+	if !contains(err.Error(), "AKASHI_ASSESSMENT_PROMPT_LIMIT") {
+		t.Fatalf("error should mention AKASHI_ASSESSMENT_PROMPT_LIMIT, got: %s", err.Error())
+	}
 }

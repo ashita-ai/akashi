@@ -14,6 +14,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/authz"
 	"github.com/ashita-ai/akashi/internal/service/autoassess"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
+	"github.com/ashita-ai/akashi/internal/service/pendingassess"
 	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
@@ -68,7 +69,8 @@ type Server struct {
 
 	highConfidenceWarnThreshold float32
 	standardTypes               map[string]bool
-	autoAssessor                *autoassess.Assessor // optional auto-assessor for conflict resolution signals
+	autoAssessor                *autoassess.Assessor   // optional auto-assessor for conflict resolution signals
+	pendingAssessor             *pendingassess.Service // optional outcome-assessment prompt source (issue #716)
 }
 
 // SetCheckNotify registers a callback that fires whenever akashi_check is called.
@@ -90,6 +92,14 @@ func (s *Server) SetTraceCompleteNotify(f func(agentID string, isError bool, err
 // SetAutoAssessor registers the auto-assessor for conflict resolution signals.
 func (s *Server) SetAutoAssessor(a *autoassess.Assessor) {
 	s.autoAssessor = a
+}
+
+// SetPendingAssessor wires the pending-assessment prompt service. When nil,
+// the akashi_pending_assessments tool returns an empty list with a hint
+// indicating the feature is not configured. Call once at startup; not
+// thread-safe with concurrent tool calls.
+func (s *Server) SetPendingAssessor(p *pendingassess.Service) {
+	s.pendingAssessor = p
 }
 
 // New creates and configures a new MCP server with all resources, tools, and prompts.

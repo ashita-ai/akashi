@@ -18,6 +18,31 @@ import (
 	"github.com/ashita-ai/akashi/internal/model"
 )
 
+// PendingAssessmentWindow expresses "decisions of this type whose valid_from
+// is strictly older than Cutoff are eligible for outcome-assessment prompting".
+type PendingAssessmentWindow struct {
+	DecisionType string
+	Cutoff       time.Time
+}
+
+// ListPendingAssessmentsOpts narrows ListPendingAssessments.
+//
+// Windows is required: callers compute (decision_type, now-window) cutoffs from
+// configured per-type windows and pass only the types that opt in (window > 0).
+// An empty Windows slice yields zero rows by definition.
+//
+// AgentIDs scopes results: nil means no agent-level filter (admin caller);
+// otherwise rows are restricted to AgentIDs. An explicit empty slice yields
+// zero rows (the caller has access to no agents).
+//
+// Project, when non-nil, scopes by project (used for cross-project hygiene).
+type ListPendingAssessmentsOpts struct {
+	Windows  []PendingAssessmentWindow
+	AgentIDs []string
+	Project  *string
+	Limit    int
+}
+
 // Store is the storage interface consumed by the MCP tool path.
 //
 // Every method on this interface is already implemented by *DB (PostgreSQL).
@@ -91,6 +116,7 @@ type Store interface {
 	UpdateOutcomeScore(ctx context.Context, orgID, decisionID uuid.UUID, score *float32) error
 	GetPrecedentCitationCount(ctx context.Context, orgID uuid.UUID, decisionID uuid.UUID) (int, error)
 	HasAssessmentFromSource(ctx context.Context, orgID, decisionID uuid.UUID, source string) (bool, error)
+	ListPendingAssessments(ctx context.Context, orgID uuid.UUID, opts ListPendingAssessmentsOpts) ([]model.PendingAssessment, error)
 
 	// ---- Claims ----
 
