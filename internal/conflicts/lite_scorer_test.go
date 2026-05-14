@@ -13,6 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashita-ai/akashi/internal/compact"
+	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/storage"
+	sqlitestorage "github.com/ashita-ai/akashi/internal/storage/sqlite"
 
 	_ "modernc.org/sqlite"
 )
@@ -632,6 +635,61 @@ func TestLiteScorer_ProjectScoping_MixedPoolPicksOnlySameProject(t *testing.T) {
 	wantOther := sameProjectID.String()
 	matched := (got[0] == wantSrc && got[1] == wantOther) || (got[0] == wantOther && got[1] == wantSrc)
 	assert.True(t, matched, "the produced conflict must be between the source and the same-project candidate; got %v", got)
+}
+
+func TestLiteScorer_ProjectScoping_RealSQLiteTraceContext(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	liteDB, err := sqlitestorage.New(ctx, ":memory:", logger)
+	require.NoError(t, err)
+	t.Cleanup(func() { liteDB.Close(ctx) })
+	require.NoError(t, liteDB.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	for _, agentID := range []string{"agent-a", "agent-b"} {
+		_, err := liteDB.CreateAgent(ctx, model.Agent{
+			AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+			Tags: []string{}, Metadata: map[string]any{},
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		})
+		require.NoError(t, err)
+	}
+
+	_, src, err := liteDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID:  "agent-a",
+		OrgID:    orgID,
+		Metadata: map[string]any{},
+		AgentContext: map[string]any{
+			"client": map[string]any{"project": "project-alpha"},
+		},
+		Decision: model.Decision{
+			DecisionType: "architecture", Outcome: pgProjectOutcome,
+			Confidence: 0.9, Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+	_, _, err = liteDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID:  "agent-b",
+		OrgID:    orgID,
+		Metadata: map[string]any{},
+		AgentContext: map[string]any{
+			"client": map[string]any{"project": "project-beta"},
+		},
+		Decision: model.Decision{
+			DecisionType: "architecture", Outcome: mongoProjectOutcome,
+			Confidence: 0.9, Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, src.Project, "sqlite trace storage must persist project from agent_context")
+	assert.Equal(t, "project-alpha", *src.Project)
+
+	scorer := NewLiteScorer(liteDB.RawDB(), logger)
+	scorer.ScoreForDecision(ctx, src.ID, orgID)
+
+	var count int
+	require.NoError(t, liteDB.RawDB().QueryRow("SELECT COUNT(*) FROM scored_conflicts").Scan(&count))
+	assert.Equal(t, 0, count, "real lite traces in different projects must not generate a conflict")
 }
 
 // TestLiteScorer_RevisionChainExcluded verifies that a decision in the source's
