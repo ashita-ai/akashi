@@ -3064,6 +3064,7 @@ components:
             - FORBIDDEN
             - NOT_FOUND
             - CONFLICT
+            - COMPLETENESS_BELOW_THRESHOLD
             - INTERNAL_ERROR
         message:
           type: string

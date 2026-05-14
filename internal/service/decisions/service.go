@@ -423,7 +423,42 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 		span.SetAttributes(attribute.String("akashi.trace_id", *input.TraceID))
 	}
 
-	// 1. Generate decision embedding (full) and outcome embedding concurrently.
+	// 1. Compute quality score.
+	qualityScore := quality.Score(input.Decision, input.PrecedentRef != nil)
+
+	// 1a. Completeness ingest gate (#715). Runs against the freshly-computed
+	// score before any embedding work or AdjustConfidence so reject mode can
+	// refuse low-completeness traces without spending embedding latency/quota,
+	// and so the gate sees what the agent submitted, not what we deflated it to.
+	// Warn mode lets the trace through and surfaces a warning via TraceResult.
+	if gateResult := s.completenessGate.Evaluate(qualityScore, input.Decision.DecisionType); gateResult.Below {
+		switch gateResult.Mode {
+		case quality.GateModeReject:
+			s.completenessGateRejects.Add(ctx, 1,
+				metric.WithAttributes(attribute.String("decision_type", input.Decision.DecisionType)),
+			)
+			s.logger.Info("trace: rejected by completeness gate",
+				"agent_id", input.AgentID,
+				"decision_type", input.Decision.DecisionType,
+				"score", qualityScore,
+				"threshold", gateResult.Threshold,
+			)
+			return storage.CreateTraceParams{}, nil, &CompletenessRejection{
+				DecisionType: input.Decision.DecisionType,
+				Score:        qualityScore,
+				Threshold:    gateResult.Threshold,
+			}
+		case quality.GateModeWarn:
+			s.completenessGateWarns.Add(ctx, 1,
+				metric.WithAttributes(attribute.String("decision_type", input.Decision.DecisionType)),
+			)
+			if msg := gateResult.WarningMessage(input.Decision.DecisionType); msg != "" {
+				warnings = append(warnings, msg)
+			}
+		}
+	}
+
+	// 2. Generate decision embedding (full) and outcome embedding concurrently.
 	embText := input.Decision.DecisionType + ": " + input.Decision.Outcome
 	if input.Decision.Reasoning != nil {
 		embText += " " + *input.Decision.Reasoning
@@ -466,42 +501,7 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 		)
 	}
 
-	// 2. Compute quality score.
-	qualityScore := quality.Score(input.Decision, input.PrecedentRef != nil)
-
-	// 2a. Completeness ingest gate (#715). Runs against the freshly-computed
-	// score before AdjustConfidence so the gate sees what the agent submitted,
-	// not what we deflated it to. Reject mode short-circuits before any
-	// downstream work (no extra embedding, no DB write). Warn mode lets the
-	// trace through and surfaces a warning via TraceResult.
-	if gateResult := s.completenessGate.Evaluate(qualityScore, input.Decision.DecisionType); gateResult.Below {
-		switch gateResult.Mode {
-		case quality.GateModeReject:
-			s.completenessGateRejects.Add(ctx, 1,
-				metric.WithAttributes(attribute.String("decision_type", input.Decision.DecisionType)),
-			)
-			s.logger.Info("trace: rejected by completeness gate",
-				"agent_id", input.AgentID,
-				"decision_type", input.Decision.DecisionType,
-				"score", qualityScore,
-				"threshold", gateResult.Threshold,
-			)
-			return storage.CreateTraceParams{}, nil, &CompletenessRejection{
-				DecisionType: input.Decision.DecisionType,
-				Score:        qualityScore,
-				Threshold:    gateResult.Threshold,
-			}
-		case quality.GateModeWarn:
-			s.completenessGateWarns.Add(ctx, 1,
-				metric.WithAttributes(attribute.String("decision_type", input.Decision.DecisionType)),
-			)
-			if msg := gateResult.WarningMessage(input.Decision.DecisionType); msg != "" {
-				warnings = append(warnings, msg)
-			}
-		}
-	}
-
-	// 2b. Adjust confidence based on evidence, alternatives, and reasoning.
+	// 3. Adjust confidence based on evidence, alternatives, and reasoning.
 	// This deflates self-reported confidence that isn't supported by substance.
 	reasoningLen := 0
 	if input.Decision.Reasoning != nil {
@@ -522,12 +522,12 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 		input.Metadata["confidence_adjustment_reasons"] = confAdj.Reasons
 	}
 
-	// 2c. Bootstrap metadata from agent_context when agent-supplied metadata
+	// 3a. Bootstrap metadata from agent_context when agent-supplied metadata
 	// is empty. This makes tool/model/session queryable via the metadata JSONB
 	// column without requiring agents to populate it explicitly.
 	bootstrapMetadata(&input)
 
-	// 3. Build alternatives.
+	// 4. Build alternatives.
 	alts := make([]model.Alternative, len(input.Decision.Alternatives))
 	for i, a := range input.Decision.Alternatives {
 		alts[i] = model.Alternative{
@@ -536,7 +536,7 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 		}
 	}
 
-	// 4. Build evidence with embeddings (outside tx — may call external API).
+	// 5. Build evidence with embeddings (outside tx — may call external API).
 	// Parallelize embedding calls since each is an independent API request.
 	evs := make([]model.Evidence, len(input.Decision.Evidence))
 	if len(input.Decision.Evidence) > 0 {
@@ -585,7 +585,7 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 		}
 	}
 
-	// 5. Build optional audit entry for atomic insertion.
+	// 6. Build optional audit entry for atomic insertion.
 	var auditEntry *storage.MutationAuditEntry
 	if input.AuditMeta != nil {
 		auditEntry = &storage.MutationAuditEntry{

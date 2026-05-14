@@ -382,6 +382,17 @@ func (h *Handlers) HandleAdjudicateConflict(w http.ResponseWriter, r *http.Reque
 		Relationship:      "reconciles",
 	})
 	if err != nil {
+		if rej := decisions.AsCompletenessRejection(err); rej != nil {
+			writeErrorWithDetails(w, r, http.StatusUnprocessableEntity, model.ErrCodeCompletenessBelowThreshold,
+				rej.Error(),
+				map[string]any{
+					"decision_type":      rej.DecisionType,
+					"completeness_score": rej.Score,
+					"required_min":       rej.Threshold,
+				},
+			)
+			return
+		}
 		if isNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
 			return

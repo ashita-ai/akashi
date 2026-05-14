@@ -2081,6 +2081,12 @@ func (s *Server) handleReconcile(ctx context.Context, request mcplib.CallToolReq
 		Relationship:  "reconciles",
 	})
 	if err != nil {
+		if rej := decisions.AsCompletenessRejection(err); rej != nil {
+			return errorResult(fmt.Sprintf(
+				"decision rejected by completeness gate: score %.2f for decision_type=%q is below the configured minimum of %.2f — add reasoning, alternatives with rejection reasons, evidence, or a precedent_ref before retrying",
+				rej.Score, rej.DecisionType, rej.Threshold,
+			)), nil
+		}
 		if errors.Is(err, storage.ErrNotFound) {
 			return errorResult("conflict not found"), nil
 		}

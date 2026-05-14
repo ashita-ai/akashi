@@ -22,6 +22,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/search"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
+	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/storage"
 )
 
@@ -967,6 +968,31 @@ func (f fakeEmbedder) EmbedBatch(_ context.Context, texts []string) ([]pgvector.
 }
 
 func (f fakeEmbedder) Dimensions() int { return f.dims }
+
+type countingEmbedder struct {
+	dims  int
+	calls atomic.Int64
+}
+
+func (c *countingEmbedder) Embed(_ context.Context, _ string) (pgvector.Vector, error) {
+	c.calls.Add(1)
+	v := make([]float32, c.dims)
+	v[0] = 1.0
+	return pgvector.NewVector(v), nil
+}
+
+func (c *countingEmbedder) EmbedBatch(_ context.Context, texts []string) ([]pgvector.Vector, error) {
+	c.calls.Add(int64(len(texts)))
+	vecs := make([]pgvector.Vector, len(texts))
+	for i := range texts {
+		v := make([]float32, c.dims)
+		v[0] = 1.0
+		vecs[i] = pgvector.NewVector(v)
+	}
+	return vecs, nil
+}
+
+func (c *countingEmbedder) Dimensions() int { return c.dims }
 
 // ---------------------------------------------------------------------------
 // isDuplicateKey (Service method — delegates to db.IsDuplicateKey)
@@ -2249,6 +2275,28 @@ func TestTrace_TxError(t *testing.T) {
 // ---------------------------------------------------------------------------
 // prepareTrace — edge cases
 // ---------------------------------------------------------------------------
+
+func TestPrepareTrace_CompletenessRejectSkipsEmbedding(t *testing.T) {
+	t.Parallel()
+	embedder := &countingEmbedder{dims: 3}
+	svc := New(&traceStore{}, embedder, nil, testLogger(), nil)
+	svc.SetCompletenessGate(quality.CompletenessGate{
+		Mode:      quality.GateModeReject,
+		Threshold: 0.30,
+	})
+
+	_, err := svc.Trace(context.Background(), uuid.Nil, TraceInput{
+		AgentID: "test-agent",
+		Decision: model.TraceDecision{
+			DecisionType: "code_review",
+			Outcome:      "short",
+			Confidence:   0.5,
+		},
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrCompletenessBelowThreshold)
+	assert.Equal(t, int64(0), embedder.calls.Load(), "reject mode should gate before embedding work")
+}
 
 func TestPrepareTrace_EvidenceEmbeddingDimMismatch(t *testing.T) {
 	t.Parallel()
