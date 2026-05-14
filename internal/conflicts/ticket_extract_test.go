@@ -179,8 +179,8 @@ func TestIsSameAgentSameTicketRefinement(t *testing.T) {
 			},
 			cand: model.Decision{
 				ID: idB, AgentID: "claude-code",
-				AgentContext: taskCtx("", "evanvolgas/ard-958-rewrite"),
-				Outcome:      "Rewrote streaming layer", ValidFrom: now.Add(time.Hour),
+				AgentContext: taskCtx("", "evanvolgas/ard-958-followup"),
+				Outcome:      "Streaming layer refined further", ValidFrom: now.Add(time.Hour),
 			},
 			expected: true,
 		},
