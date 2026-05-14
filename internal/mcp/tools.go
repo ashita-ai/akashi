@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -117,11 +119,9 @@ WHEN TO USE: After you make any non-trivial decision — choosing a model,
 selecting an approach, picking a data source, resolving an ambiguity,
 or committing to a course of action.
 
-TWO REQUIRED FIELDS — everything else is optional:
+THREE REQUIRED FIELDS — everything else is optional:
 - decision_type: A short category (see enum for standard types)
 - outcome: What you decided, stated as a fact ("chose gpt-4o for summarization")
-
-OPTIONAL FIELDS (each improves completeness score and future usefulness):
 - confidence: How certain you are (0.0-1.0). Use this calibration guide:
     0.3-0.4 = educated guess, limited information, could easily be wrong
     0.5-0.6 = reasonable choice but real uncertainty remains
@@ -130,6 +130,8 @@ OPTIONAL FIELDS (each improves completeness score and future usefulness):
     0.9+     = near-certain, would be surprised if this is wrong
   Most decisions should land between 0.4 and 0.8. If you find yourself
   always above 0.8, you are probably not being honest about uncertainty.
+
+OPTIONAL FIELDS (each improves completeness score and future usefulness):
 - reasoning: Your chain of thought. Why this choice over alternatives?
   More detail = higher completeness score. Aim for >100 characters.
 - alternatives: JSON array of options you considered and rejected.
@@ -180,9 +182,10 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 				mcplib.Required(),
 			),
 			mcplib.WithNumber("confidence",
-				mcplib.Description("How certain you are (0.0-1.0). Most decisions should be 0.4-0.8. See calibration guide above. Defaults to 0.4 if omitted."),
+				mcplib.Description("How certain you are (0.0-1.0). Required; missing or null values are rejected so stored confidence reflects the caller's actual claim."),
 				mcplib.Min(0),
 				mcplib.Max(1),
+				mcplib.Required(),
 			),
 			mcplib.WithString("reasoning",
 				mcplib.Description("Your chain of thought. Why this choice? What trade-offs did you consider?"),
@@ -732,6 +735,59 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 	}, nil
 }
 
+// parseTraceConfidence extracts the "confidence" argument from an MCP trace
+// request with strict typing: it rejects missing, null, unparseable,
+// wrong-type, NaN/Inf, and out-of-range values rather than silently
+// defaulting them.
+//
+// This replaces request.GetFloat("confidence", 0.4), whose default behaviour
+// collapsed every parse failure — missing key, unparseable string, wrong
+// type — onto the same valid-looking 0.4 value. That made roughly 26 of 40
+// recently sampled traces store synthetic 0.4 confidence, indistinguishable
+// from a caller's explicit 0.4 choice, and corrupted every downstream
+// confidence aggregate (avg_confidence, calibration buckets, the
+// over/under-confident percentages in akashi_stats).
+//
+// See ashita-ai/akashi#713.
+func parseTraceConfidence(request mcplib.CallToolRequest) (float32, error) {
+	raw, ok := request.GetArguments()["confidence"]
+	if !ok || raw == nil {
+		return 0, fmt.Errorf("confidence is required (must be a number between 0 and 1)")
+	}
+	var f float64
+	switch v := raw.(type) {
+	case float64:
+		f = v
+	case float32:
+		f = float64(v)
+	case int:
+		f = float64(v)
+	case int64:
+		f = float64(v)
+	case json.Number:
+		parsed, err := v.Float64()
+		if err != nil {
+			return 0, fmt.Errorf("confidence is not a valid number: %v", v)
+		}
+		f = parsed
+	case string:
+		parsed, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return 0, fmt.Errorf("confidence is not a valid number: %q", v)
+		}
+		f = parsed
+	default:
+		return 0, fmt.Errorf("confidence must be a number, got %T", raw)
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, fmt.Errorf("confidence must be a finite number between 0 and 1")
+	}
+	if f < 0 || f > 1 {
+		return 0, fmt.Errorf("confidence must be between 0 and 1, got %g", f)
+	}
+	return float32(f), nil
+}
+
 func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest) (toolResult *mcplib.CallToolResult, err error) {
 	orgID := ctxutil.OrgIDFromContext(ctx)
 	claims := ctxutil.ClaimsFromContext(ctx)
@@ -762,7 +818,10 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	// idempotency hash matches regardless of casing.
 	decisionType := strings.ToLower(strings.TrimSpace(request.GetString("decision_type", "")))
 	outcome := request.GetString("outcome", "")
-	confidence := float32(request.GetFloat("confidence", 0.4))
+	confidence, confErr := parseTraceConfidence(request)
+	if confErr != nil {
+		return errorResult(confErr.Error()), nil
+	}
 	reasoning := request.GetString("reasoning", "")
 
 	// Default agent_id to the caller's authenticated identity.
