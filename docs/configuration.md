@@ -199,6 +199,8 @@ Existing deployments that set `AKASHI_WAL_DIR` explicitly will continue to work 
 | `AKASHI_SHUTDOWN_LOOP_DRAIN_TIMEOUT` | `10s` | Maximum time to wait for background loops (conflict backfill, retention, integrity audit, etc.) to exit during shutdown. `0` = wait indefinitely |
 | `AKASHI_PERCENTILE_REFRESH_INTERVAL` | `1h` | How often to refresh per-org signal percentile caches used for distribution-aware ReScore normalization. Set to `0` to disable |
 | `AKASHI_AUTO_RESOLVE_INTERVAL` | `1h` | How often the background auto-resolution worker runs to resolve eligible conflicts per org policy. Set to `0` to disable |
+| `AKASHI_ASSESSMENT_PROMPT_LIMIT` | `10` | Maximum decisions returned by `GET /v1/decisions/pending-assessment` and the `akashi_pending_assessments` MCP tool in a single call. Range: 1–100 |
+| `AKASHI_ASSESSMENT_WINDOW_<TYPE>` | _see below_ | Per-decision-type window (`time.Duration`) before an unassessed decision is surfaced for follow-up. `<TYPE>` is uppercased (e.g. `AKASHI_ASSESSMENT_WINDOW_ARCHITECTURE=72h`). The literal value `0` disables prompting for that type. Built-in defaults: `architecture`, `security`, `design`, `trade_off` = 168h (7d); `planning` = 720h (30d); all other types = disabled |
 
 ## Write Idempotency
 

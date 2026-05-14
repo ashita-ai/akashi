@@ -3239,3 +3239,75 @@ func TestScoreForDecision_SameAgentSameTicketSuggestion(t *testing.T) {
 	assert.Contains(t, suggestions[0].Reason, "ARD-958")
 	assert.Contains(t, suggestions[0].Reason, agentID)
 }
+
+func TestScoreForDecision_SameBranchCrossAgentMechanicalReachesValidator(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentA := "same-branch-mech-a-" + suffix
+	agentB := "same-branch-mech-b-" + suffix
+	for _, agentID := range []string{agentA, agentB} {
+		_, err := testDB.CreateAgent(ctx, model.Agent{
+			AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+		})
+		require.NoError(t, err)
+	}
+
+	runA := createRun(t, agentA, orgID)
+	runB := createRun(t, agentB, orgID)
+	project := "same-branch-mechanical-" + suffix
+	branch := "feature/same-branch-mechanical-" + suffix
+	agentCtx := map[string]any{"client": map[string]any{"git_branch": branch}}
+
+	topicEmb := makeEmbedding(930, 1.0)
+	outcomeEmbA := makeEmbedding(931, 1.0)
+	outcomeEmbB := makeEmbedding(932, 1.0)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentA, OrgID: orgID,
+		DecisionType: "bug_fix",
+		Outcome:      "Resolved merge conflicts by keeping migration 101 before 102",
+		Confidence:   0.9,
+		Embedding:    &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+		AgentContext: agentCtx,
+		Project:      &project,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentB, OrgID: orgID,
+		DecisionType: "bug_fix",
+		Outcome:      "Resolved merge conflicts by keeping migration 102 before 101",
+		Confidence:   0.9,
+		Embedding:    &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+		AgentContext: agentCtx,
+		Project:      &project,
+	})
+	require.NoError(t, err)
+
+	validator := &scorerMockValidator{
+		result: ValidationResult{Relationship: "contradiction", Severity: "high", Category: "factual"},
+	}
+	scorer := NewScorer(testDB, logger, 0.1, validator, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
+	scorer.ScoreForDecision(ctx, dB.ID, orgID)
+
+	assert.Greater(t, validator.calls, 0,
+		"same-branch cross-agent mechanical pairs must reach validation, not a hard suppression")
+
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 1000, 0)
+	require.NoError(t, err)
+	var found bool
+	for _, c := range conflicts {
+		aMatch := c.DecisionAID == dA.ID || c.DecisionBID == dA.ID
+		bMatch := c.DecisionAID == dB.ID || c.DecisionBID == dB.ID
+		if aMatch && bMatch {
+			found = true
+			assert.Equal(t, "llm_v2", c.ScoringMethod)
+			break
+		}
+	}
+	assert.True(t, found, "validator-confirmed mechanical disagreement should retain a durable conflict record")
+}

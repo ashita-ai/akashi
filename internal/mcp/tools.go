@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,11 +16,13 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/ashita-ai/akashi/internal/auth"
 	"github.com/ashita-ai/akashi/internal/authz"
 	"github.com/ashita-ai/akashi/internal/ctxutil"
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/projectsuggest"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
+	"github.com/ashita-ai/akashi/internal/service/pendingassess"
 	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/service/tracehealth"
 	"github.com/ashita-ai/akashi/internal/storage"
@@ -117,11 +121,9 @@ WHEN TO USE: After you make any non-trivial decision — choosing a model,
 selecting an approach, picking a data source, resolving an ambiguity,
 or committing to a course of action.
 
-TWO REQUIRED FIELDS — everything else is optional:
+THREE REQUIRED FIELDS — everything else is optional:
 - decision_type: A short category (see enum for standard types)
 - outcome: What you decided, stated as a fact ("chose gpt-4o for summarization")
-
-OPTIONAL FIELDS (each improves completeness score and future usefulness):
 - confidence: How certain you are (0.0-1.0). Use this calibration guide:
     0.3-0.4 = educated guess, limited information, could easily be wrong
     0.5-0.6 = reasonable choice but real uncertainty remains
@@ -130,6 +132,8 @@ OPTIONAL FIELDS (each improves completeness score and future usefulness):
     0.9+     = near-certain, would be surprised if this is wrong
   Most decisions should land between 0.4 and 0.8. If you find yourself
   always above 0.8, you are probably not being honest about uncertainty.
+
+OPTIONAL FIELDS (each improves completeness score and future usefulness):
 - reasoning: Your chain of thought. Why this choice over alternatives?
   More detail = higher completeness score. Aim for >100 characters.
 - alternatives: JSON array of options you considered and rejected.
@@ -180,9 +184,10 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 				mcplib.Required(),
 			),
 			mcplib.WithNumber("confidence",
-				mcplib.Description("How certain you are (0.0-1.0). Most decisions should be 0.4-0.8. See calibration guide above. Defaults to 0.4 if omitted."),
+				mcplib.Description("How certain you are (0.0-1.0). Required; missing or null values are rejected so stored confidence reflects the caller's actual claim."),
 				mcplib.Min(0),
 				mcplib.Max(1),
+				mcplib.Required(),
 			),
 			mcplib.WithString("reasoning",
 				mcplib.Description("Your chain of thought. Why this choice? What trade-offs did you consider?"),
@@ -503,6 +508,59 @@ edges for both sides, and invalidates both original decisions in one transaction
 		),
 		s.handleReconcile,
 	)
+
+	// akashi_pending_assessments — surface decisions past their assessment window
+	// that have no recorded assessment from any source (issue #716).
+	s.mcpServer.AddTool(
+		mcplib.NewTool("akashi_pending_assessments",
+			mcplib.WithDescription(`Find prior decisions that are past their outcome-assessment window
+and still have no recorded assessment from any source.
+
+WHEN TO USE: Call at session start (or when picking up a previous thread of
+work) to discover prior decisions you should evaluate via akashi_assess.
+Closing the assessment loop is what makes confidence calibration meaningful
+across agents — without it, "I'm 85% confident" never gets compared to
+ground truth.
+
+WHAT YOU GET BACK: a list of decisions older than the configured per-type
+window (default: 7 days for architecture/security/design/trade_off, 30 days
+for planning). Decisions auto-assessed by supersession, conflict resolution,
+or precedent-citation threshold are NOT returned — any-source assessment
+counts as already-assessed.
+
+DEFAULT SCOPE: decisions YOU traced (caller's agent_id). Pass agent_id="*"
+to see all decisions you have access to.
+
+NEXT STEP: for each returned decision_id, observe whether the choice held
+up in practice, then call akashi_assess with outcome of "correct",
+"partially_correct", or "incorrect" and a short notes field describing
+what you observed.`),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithIdempotentHintAnnotation(true),
+			mcplib.WithOpenWorldHintAnnotation(false),
+			mcplib.WithString("agent_id",
+				mcplib.Description(`Optional. Defaults to the caller's agent_id. Pass "*" to see all decisions the caller can access (subject to per-org grant filtering).`),
+			),
+			mcplib.WithString("decision_type",
+				mcplib.Description("Optional: narrow to a single decision_type (e.g. architecture, security). Returns empty if the type has no configured window."),
+			),
+			mcplib.WithString("project",
+				mcplib.Description(`Optional project filter. Auto-detected from MCP roots/cwd/repo_url if omitted; pass "*" to disable.`),
+			),
+			mcplib.WithString("cwd",
+				mcplib.Description("Absolute path to your current git working directory; used for project auto-detection."),
+			),
+			mcplib.WithString("repo_url",
+				mcplib.Description("Git remote URL; used for project auto-detection when cwd is unavailable."),
+			),
+			mcplib.WithNumber("limit",
+				mcplib.Description("Maximum decisions to return. Defaults to the server's configured prompt limit."),
+				mcplib.Min(1),
+				mcplib.Max(100),
+			),
+		),
+		s.handlePendingAssessments,
+	)
 }
 
 // resolveProjectFilter returns the project filter to apply to a read operation.
@@ -732,6 +790,59 @@ func (s *Server) handleCheck(ctx context.Context, request mcplib.CallToolRequest
 	}, nil
 }
 
+// parseTraceConfidence extracts the "confidence" argument from an MCP trace
+// request with strict typing: it rejects missing, null, unparseable,
+// wrong-type, NaN/Inf, and out-of-range values rather than silently
+// defaulting them.
+//
+// This replaces request.GetFloat("confidence", 0.4), whose default behaviour
+// collapsed every parse failure — missing key, unparseable string, wrong
+// type — onto the same valid-looking 0.4 value. That made roughly 26 of 40
+// recently sampled traces store synthetic 0.4 confidence, indistinguishable
+// from a caller's explicit 0.4 choice, and corrupted every downstream
+// confidence aggregate (avg_confidence, calibration buckets, the
+// over/under-confident percentages in akashi_stats).
+//
+// See ashita-ai/akashi#713.
+func parseTraceConfidence(request mcplib.CallToolRequest) (float32, error) {
+	raw, ok := request.GetArguments()["confidence"]
+	if !ok || raw == nil {
+		return 0, fmt.Errorf("confidence is required (must be a number between 0 and 1)")
+	}
+	var f float64
+	switch v := raw.(type) {
+	case float64:
+		f = v
+	case float32:
+		f = float64(v)
+	case int:
+		f = float64(v)
+	case int64:
+		f = float64(v)
+	case json.Number:
+		parsed, err := v.Float64()
+		if err != nil {
+			return 0, fmt.Errorf("confidence is not a valid number: %v", v)
+		}
+		f = parsed
+	case string:
+		parsed, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return 0, fmt.Errorf("confidence is not a valid number: %q", v)
+		}
+		f = parsed
+	default:
+		return 0, fmt.Errorf("confidence must be a number, got %T", raw)
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, fmt.Errorf("confidence must be a finite number between 0 and 1")
+	}
+	if f < 0 || f > 1 {
+		return 0, fmt.Errorf("confidence must be between 0 and 1, got %g", f)
+	}
+	return float32(f), nil
+}
+
 func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest) (toolResult *mcplib.CallToolResult, err error) {
 	orgID := ctxutil.OrgIDFromContext(ctx)
 	claims := ctxutil.ClaimsFromContext(ctx)
@@ -762,7 +873,10 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 	// idempotency hash matches regardless of casing.
 	decisionType := strings.ToLower(strings.TrimSpace(request.GetString("decision_type", "")))
 	outcome := request.GetString("outcome", "")
-	confidence := float32(request.GetFloat("confidence", 0.4))
+	confidence, confErr := parseTraceConfidence(request)
+	if confErr != nil {
+		return errorResult(confErr.Error()), nil
+	}
 	reasoning := request.GetString("reasoning", "")
 
 	// Default agent_id to the caller's authenticated identity.
@@ -1900,6 +2014,102 @@ func (s *Server) handleAssess(ctx context.Context, request mcplib.CallToolReques
 			mcplib.TextContent{Type: "text", Text: string(resultData)},
 		},
 	}, nil
+}
+
+// handlePendingAssessments implements the akashi_pending_assessments tool
+// (issue #716). Returns decisions past their per-type assessment window that
+// have no recorded assessment from any source, so the agent can follow up
+// via akashi_assess. Default scope is the caller's agent_id; agent_id="*"
+// expands to the full grant set.
+func (s *Server) handlePendingAssessments(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	claims := ctxutil.ClaimsFromContext(ctx)
+	if claims == nil {
+		return errorResult("authentication required"), nil
+	}
+	orgID := ctxutil.OrgIDFromContext(ctx)
+
+	if s.pendingAssessor == nil {
+		// Tool is registered unconditionally so its description appears in
+		// tools/list, but ListPending requires the service to be wired up.
+		empty, _ := json.MarshalIndent(map[string]any{
+			"decisions": []any{},
+			"count":     0,
+			"hint":      "pending-assessment prompting is not configured on this server",
+		}, "", "  ")
+		return &mcplib.CallToolResult{
+			Content: []mcplib.Content{mcplib.TextContent{Type: "text", Text: string(empty)}},
+		}, nil
+	}
+
+	requested := request.GetString("agent_id", "")
+	decisionType := strings.ToLower(strings.TrimSpace(request.GetString("decision_type", "")))
+	limit := request.GetInt("limit", 0) // 0 = use service default
+
+	agentIDs, err := resolveAgentScopeForMCP(ctx, s.db, claims, s.grantCache, requested)
+	if err != nil {
+		return errorResult(fmt.Sprintf("authorization check failed: %v", err)), nil
+	}
+
+	in := pendingassess.ListInput{
+		AgentIDs:     agentIDs,
+		DecisionType: decisionType,
+		Limit:        limit,
+	}
+	if project := s.resolveProjectFilter(ctx, request); project != nil {
+		in.Project = project
+	}
+
+	rows, err := s.pendingAssessor.ListPending(ctx, orgID, in)
+	if err != nil {
+		return errorResult(fmt.Sprintf("pending-assessment lookup failed: %v", err)), nil
+	}
+	if rows == nil {
+		rows = []model.PendingAssessment{}
+	}
+
+	payload := map[string]any{
+		"decisions": rows,
+		"count":     len(rows),
+	}
+	if len(rows) > 0 {
+		payload["hint"] = "For each decision_id above, call akashi_assess with outcome=\"correct\"/\"partially_correct\"/\"incorrect\" and a short notes field describing what you observed."
+	}
+	data, _ := json.MarshalIndent(payload, "", "  ")
+	return &mcplib.CallToolResult{
+		Content: []mcplib.Content{mcplib.TextContent{Type: "text", Text: string(data)}},
+	}, nil
+}
+
+// resolveAgentScopeForMCP mirrors the HTTP handler's agent_id resolution:
+// empty → caller-only, "*" → full grant set (nil for admin), specific id →
+// allow if accessible, deny-all empty slice otherwise.
+func resolveAgentScopeForMCP(ctx context.Context, db storage.Store, claims *auth.Claims, cache *authz.GrantCache, requested string) ([]string, error) {
+	switch requested {
+	case "":
+		return []string{claims.AgentID}, nil
+	case "*":
+		granted, err := authz.LoadGrantedSet(ctx, db, claims, cache)
+		if err != nil {
+			return nil, err
+		}
+		if granted == nil {
+			return nil, nil
+		}
+		ids := make([]string, 0, len(granted))
+		for id := range granted {
+			ids = append(ids, id)
+		}
+		return ids, nil
+	default:
+		granted, err := authz.LoadGrantedSet(ctx, db, claims, cache)
+		if err != nil {
+			return nil, err
+		}
+		if granted == nil || granted[requested] {
+			return []string{requested}, nil
+		}
+		return []string{}, nil
+	}
 }
 
 // cascadeSimilarityThreshold is the minimum cosine similarity for cascade resolution.

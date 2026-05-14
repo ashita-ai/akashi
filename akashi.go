@@ -54,6 +54,7 @@ import (
 	"github.com/ashita-ai/akashi/internal/service/autoresolve"
 	"github.com/ashita-ai/akashi/internal/service/decisions"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
+	"github.com/ashita-ai/akashi/internal/service/pendingassess"
 	"github.com/ashita-ai/akashi/internal/service/quality"
 	"github.com/ashita-ai/akashi/internal/service/trace"
 	"github.com/ashita-ai/akashi/internal/storage"
@@ -410,9 +411,13 @@ func New(opts ...Option) (*App, error) {
 	// Grant cache.
 	grantCache := authz.NewGrantCache(30 * time.Second)
 
+	// Outcome-assessment prompt service (issue #716).
+	pendingAssess := pendingassess.New(db, cfg.AssessmentWindows, cfg.AssessmentPromptLimit)
+
 	// MCP server.
 	mcpSrv := mcp.New(db, decisionSvc, grantCache, logger, version, cfg.HighConfidenceWarnThreshold, quality.BuildStandardTypes(cfg.StandardDecisionTypes))
 	mcpSrv.SetAutoAssessor(assessor)
+	mcpSrv.SetPendingAssessor(pendingAssess)
 
 	// SSE broker.
 	var broker *server.Broker
@@ -500,6 +505,7 @@ func New(opts ...Option) (*App, error) {
 		ConflictValidator:           conflictValidator,
 		HighConfidenceWarnThreshold: cfg.HighConfidenceWarnThreshold,
 		ExportPageSize:              cfg.ExportPageSize,
+		PendingAssessSvc:            pendingAssess,
 	})
 
 	// Wire akashi_check → IDE hook gate.

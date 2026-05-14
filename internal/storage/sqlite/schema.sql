@@ -297,6 +297,7 @@ CREATE TABLE IF NOT EXISTS conflict_groups (
     agent_b           TEXT NOT NULL,
     conflict_kind     TEXT NOT NULL DEFAULT 'cross_agent',
     decision_type     TEXT NOT NULL DEFAULT '',
+    group_topic       TEXT,
     first_detected_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_detected_at  TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(org_id, agent_a, agent_b, conflict_kind, decision_type)

@@ -184,6 +184,28 @@ type Config struct {
 	// Pair with MinCompleteness=0 to enforce only the named types and
 	// leave everything else ungated.
 	MinCompletenessByType map[string]float32
+
+	// Outcome assessment prompting.
+	//
+	// AssessmentWindows maps decision_type → minimum age before the decision is
+	// surfaced via GET /v1/decisions/pending-assessment (or akashi_pending_assessments).
+	// A zero duration disables prompting for that type — used to suppress noisy
+	// types (code_review, implementation, investigation) where follow-up assessment
+	// adds little value.
+	//
+	// Defaults (May 2026 field assessment, internal strategy doc):
+	//   architecture / security / design / trade_off:  168h  (7 days)
+	//   planning:                                       720h  (30 days)
+	//   everything else:                                  0   (disabled)
+	//
+	// Override per-type via env: AKASHI_ASSESSMENT_WINDOW_<TYPE>=<duration>
+	// (TYPE is uppercased; e.g. AKASHI_ASSESSMENT_WINDOW_ARCHITECTURE=72h).
+	// Setting the value to "0" opts a previously-enabled type out.
+	AssessmentWindows map[string]time.Duration
+
+	// AssessmentPromptLimit bounds the number of pending decisions surfaced
+	// to a single MCP/HTTP call. Default 10; AKASHI_ASSESSMENT_PROMPT_LIMIT.
+	AssessmentPromptLimit int
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -341,6 +363,10 @@ func Load() (Config, error) {
 	cfg.ClaimRetryInterval, errs = collectDuration(errs, "AKASHI_CLAIM_RETRY_INTERVAL", 2*time.Minute)
 	cfg.PercentileRefreshInterval, errs = collectDuration(errs, "AKASHI_PERCENTILE_REFRESH_INTERVAL", 1*time.Hour)
 	cfg.AutoResolveInterval, errs = collectDuration(errs, "AKASHI_AUTO_RESOLVE_INTERVAL", 1*time.Hour)
+
+	// Per-type outcome-assessment windows.
+	cfg.AssessmentWindows, errs = loadAssessmentWindows(errs)
+	cfg.AssessmentPromptLimit, errs = collectInt(errs, "AKASHI_ASSESSMENT_PROMPT_LIMIT", 10)
 
 	if len(errs) > 0 {
 		msgs := make([]string, len(errs))
@@ -511,6 +537,14 @@ func (c Config) Validate() error {
 	if _, modeErr := parseGateModeForValidation(c.MinCompletenessMode); modeErr != nil {
 		errs = append(errs, fmt.Errorf("config: AKASHI_MIN_COMPLETENESS_MODE: %w", modeErr))
 	}
+	if c.AssessmentPromptLimit < 1 || c.AssessmentPromptLimit > 100 {
+		errs = append(errs, fmt.Errorf("config: AKASHI_ASSESSMENT_PROMPT_LIMIT must be between 1 and 100 (got %d)", c.AssessmentPromptLimit))
+	}
+	for t, d := range c.AssessmentWindows {
+		if d < 0 {
+			errs = append(errs, fmt.Errorf("config: AKASHI_ASSESSMENT_WINDOW_%s must be >= 0 (0 disables)", strings.ToUpper(t)))
+		}
+	}
 
 	// WAL fail-safe: refuse to start without WAL unless explicitly disabled.
 	// The envStr helper prevents AKASHI_WAL_DIR="" from clearing the default,
@@ -628,6 +662,59 @@ func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 
 // envStrSlice reads a comma-separated env var into a string slice.
 // Returns fallback if the env var is empty or unset.
+
+// defaultAssessmentWindows returns the built-in per-type windows used when
+// no AKASHI_ASSESSMENT_WINDOW_* override is supplied for a type. Values are
+// drawn from the May 2026 field assessment: assessment loops are only useful
+// for decision types that carry forward constraints worth revisiting.
+//
+// Types not in this map default to 0 (assessment prompting disabled).
+func defaultAssessmentWindows() map[string]time.Duration {
+	return map[string]time.Duration{
+		"architecture": 7 * 24 * time.Hour,
+		"security":     7 * 24 * time.Hour,
+		"design":       7 * 24 * time.Hour,
+		"trade_off":    7 * 24 * time.Hour,
+		"planning":     30 * 24 * time.Hour,
+	}
+}
+
+// loadAssessmentWindows starts from the built-in defaults and applies any
+// AKASHI_ASSESSMENT_WINDOW_<TYPE> overrides found in the environment. An
+// override value of "0" disables a previously-enabled type; a positive
+// duration enables a type that defaulted to disabled.
+func loadAssessmentWindows(errs []error) (map[string]time.Duration, []error) {
+	windows := defaultAssessmentWindows()
+	const prefix = "AKASHI_ASSESSMENT_WINDOW_"
+	for _, kv := range os.Environ() {
+		eq := strings.IndexByte(kv, '=')
+		if eq < 0 {
+			continue
+		}
+		key := kv[:eq]
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		typeName := strings.ToLower(strings.TrimPrefix(key, prefix))
+		if typeName == "" {
+			continue
+		}
+		raw := kv[eq+1:]
+		// "0" is treated as a literal disable signal rather than failing on
+		// time.ParseDuration's strict requirement for a unit suffix.
+		if raw == "0" {
+			windows[typeName] = 0
+			continue
+		}
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s=%q is not a valid duration", key, raw))
+			continue
+		}
+		windows[typeName] = d
+	}
+	return windows, errs
+}
 
 // conflictProfileValues holds the default threshold values for a conflict
 // detection profile. Individual env var overrides always take precedence.

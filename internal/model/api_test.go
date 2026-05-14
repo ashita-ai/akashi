@@ -1,6 +1,7 @@
 package model_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -492,4 +493,97 @@ func TestHighConfidenceWarnings_CustomThreshold(t *testing.T) {
 	warnings := model.HighConfidenceWarnings(0.7, 0, 0.6)
 	require.Len(t, warnings, 1)
 	assert.Contains(t, warnings[0], "0.7")
+}
+
+// ---- TraceDecision JSON wire semantics (ashita-ai/akashi#713) -----------
+
+func TestTraceDecisionUnmarshalJSON_ConfidencePresent(t *testing.T) {
+	cases := []struct {
+		name        string
+		body        string
+		wantPresent bool
+		wantValue   float32
+	}{
+		{
+			name:        "explicit value",
+			body:        `{"decision_type":"architecture","outcome":"x","confidence":0.85}`,
+			wantPresent: true,
+			wantValue:   0.85,
+		},
+		{
+			name:        "explicit zero is still a present, valid claim",
+			body:        `{"decision_type":"architecture","outcome":"x","confidence":0}`,
+			wantPresent: true,
+			wantValue:   0,
+		},
+		{
+			name:        "omitted",
+			body:        `{"decision_type":"architecture","outcome":"x"}`,
+			wantPresent: false,
+			wantValue:   0,
+		},
+		{
+			name:        "explicit null",
+			body:        `{"decision_type":"architecture","outcome":"x","confidence":null}`,
+			wantPresent: false,
+			wantValue:   0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var d model.TraceDecision
+			require.NoError(t, json.Unmarshal([]byte(tc.body), &d))
+			assert.Equal(t, tc.wantPresent, d.ConfidencePresent())
+			assert.InDelta(t, tc.wantValue, d.Confidence, 1e-6)
+		})
+	}
+}
+
+func TestTraceDecisionUnmarshalJSON_RejectsUnknownField(t *testing.T) {
+	body := `{"decision_type":"architecture","outcome":"x","confidence":0.85,"unexpected":"oops"}`
+
+	var d model.TraceDecision
+	err := json.Unmarshal([]byte(body), &d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown field")
+}
+
+func TestTraceDecisionUnmarshalJSON_ResetsReceiver(t *testing.T) {
+	var d model.TraceDecision
+	require.NoError(t, json.Unmarshal([]byte(
+		`{"decision_type":"architecture","outcome":"x","confidence":0.85}`,
+	), &d))
+	require.True(t, d.ConfidencePresent())
+	require.InDelta(t, 0.85, d.Confidence, 1e-6)
+
+	require.NoError(t, json.Unmarshal([]byte(
+		`{"decision_type":"architecture","outcome":"x"}`,
+	), &d))
+	assert.False(t, d.ConfidencePresent())
+	assert.Zero(t, d.Confidence)
+}
+
+// TestTraceDecisionUnmarshalJSON_PreservesOtherFields guards against the
+// custom UnmarshalJSON accidentally dropping any sibling field.
+func TestTraceDecisionUnmarshalJSON_PreservesOtherFields(t *testing.T) {
+	body := `{
+		"decision_type":"security",
+		"outcome":"rotate keys",
+		"confidence":0.6,
+		"reasoning":"credential exposure",
+		"alternatives":[{"label":"do nothing","rejection_reason":"unsafe"}],
+		"evidence":[{"source_type":"document","content":"audit report"}]
+	}`
+	var d model.TraceDecision
+	require.NoError(t, json.Unmarshal([]byte(body), &d))
+	assert.Equal(t, "security", d.DecisionType)
+	assert.Equal(t, "rotate keys", d.Outcome)
+	assert.True(t, d.ConfidencePresent())
+	assert.InDelta(t, 0.6, d.Confidence, 1e-6)
+	require.NotNil(t, d.Reasoning)
+	assert.Equal(t, "credential exposure", *d.Reasoning)
+	require.Len(t, d.Alternatives, 1)
+	assert.Equal(t, "do nothing", d.Alternatives[0].Label)
+	require.Len(t, d.Evidence, 1)
+	assert.Equal(t, "document", d.Evidence[0].SourceType)
 }
