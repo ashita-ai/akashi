@@ -641,22 +641,6 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			continue
 		}
 
-		// Same-branch mechanical housekeeping filter: when two DIFFERENT
-		// agents both operate on the same branch and both outcomes describe
-		// pure mechanical operations (renumber/rebase/merge resolution/
-		// version bump), the pair is a handoff on the same housekeeping
-		// task, not disagreement. Complement to isCrossBranchMechanical
-		// (which requires different branches) and isSameBranchSelfCorrection
-		// (which requires the same agent). See issue #717 FP audit.
-		if isSameBranchMechanicalHousekeeping(d, sc.cand) {
-			s.metrics.sameBranchMechanicalFiltered.Add(ctx, 1)
-			s.logger.Debug("conflict scorer: same-branch mechanical housekeeping suppressed pair",
-				"decision_a", decisionID, "decision_b", sc.cand.ID,
-				"agent_a", d.AgentID, "agent_b", sc.cand.AgentID,
-				"branch", nestedContextString(d.AgentContext, "git_branch"))
-			continue
-		}
-
 		// Same-agent same-ticket refinement filter: when the same agent
 		// traces a refinement of their own prior decision on the same ticket
 		// without setting supersedes_id, treat it as a missed-link refinement
@@ -1589,43 +1573,6 @@ func isTemporalReassessment(d, cand model.Decision) bool {
 		delta = -delta
 	}
 	return delta >= temporalReassessmentWindow
-}
-
-// isSameBranchMechanicalHousekeeping returns true when two decisions are
-// authored by *different* agents on the *same* git branch and both
-// outcomes describe pure mechanical operations (migration renumbering,
-// rebase, merge conflict resolution, version bump).
-//
-// Complement to isCrossBranchMechanical and isSameBranchSelfCorrection:
-//   - isCrossBranchMechanical: different branches + both mechanical
-//     (parallel housekeeping resolved by merge order)
-//   - isSameBranchSelfCorrection: same agent + same branch (iterative
-//     self-correction regardless of outcome content)
-//   - isSameBranchMechanicalHousekeeping (this filter): same branch +
-//     different agents + both mechanical (handoff/help on the same
-//     housekeeping task, e.g. one agent rebases, another renumbers
-//     migrations on the same branch)
-//
-// The #717 audit found ~6 FPs in this exact shape — outcomes like
-// "Merged origin/main into evanvolgas/fix-sse-heartbeat, renumbering
-// migration 097→098" paired across agents on the SAME branch. The
-// existing cross-branch filter required different branches, so these
-// slipped through.
-//
-// Recall risk: low. Two genuinely contradictory architecture decisions on
-// the same branch by different agents are very unlikely to both phrase
-// themselves as pure mechanical operations (the mechanical keyword check
-// is strict: renumber/migration/rebase/merge conflict/version bump).
-func isSameBranchMechanicalHousekeeping(d, cand model.Decision) bool {
-	if d.AgentID == cand.AgentID {
-		return false
-	}
-	branchA := nestedContextString(d.AgentContext, "git_branch")
-	branchB := nestedContextString(cand.AgentContext, "git_branch")
-	if branchA == "" || branchB == "" || branchA != branchB {
-		return false
-	}
-	return isMechanicalOperation(d.Outcome) && isMechanicalOperation(cand.Outcome)
 }
 
 // isPrecedentLinked returns true if either decision cites the other via

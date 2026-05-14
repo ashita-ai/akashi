@@ -31,7 +31,6 @@ type Metrics struct {
 	fpPatternFiltered            metric.Int64Counter
 	temporalReassessmentFiltered metric.Int64Counter
 	supersedesCandidateFiltered  metric.Int64Counter
-	sameBranchMechanicalFiltered metric.Int64Counter
 
 	scoringDuration    metric.Float64Histogram
 	llmCallDuration    metric.Float64Histogram
@@ -204,14 +203,6 @@ func (s *Scorer) registerMetrics() {
 	if err != nil {
 		s.logger.Warn("conflicts: failed to create akashi.conflicts.supersedes_candidate_filtered metric", "error", err)
 		s.metrics.supersedesCandidateFiltered, _ = meter.Int64Counter("akashi.conflicts.supersedes_candidate_filtered.fallback")
-	}
-
-	s.metrics.sameBranchMechanicalFiltered, err = meter.Int64Counter("akashi.conflicts.same_branch_mechanical_filtered",
-		metric.WithDescription("Candidate pairs suppressed as cross-agent same-branch housekeeping (rebase/renumber/merge resolution) — issue #717"),
-	)
-	if err != nil {
-		s.logger.Warn("conflicts: failed to create akashi.conflicts.same_branch_mechanical_filtered metric", "error", err)
-		s.metrics.sameBranchMechanicalFiltered, _ = meter.Int64Counter("akashi.conflicts.same_branch_mechanical_filtered.fallback")
 	}
 
 	// --- Histograms ---
