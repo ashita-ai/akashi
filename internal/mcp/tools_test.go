@@ -843,6 +843,28 @@ func TestRegisterTools(t *testing.T) {
 	assert.NotNil(t, testServer.MCPServer(), "MCPServer() accessor should work")
 }
 
+func TestRegisterTools_TraceConfidenceRequired(t *testing.T) {
+	tools := testServer.MCPServer().ListTools()
+	require.NotNil(t, tools)
+	traceTool, ok := tools["akashi_trace"]
+	require.True(t, ok, "akashi_trace should be registered")
+
+	assert.Contains(t, traceTool.Tool.InputSchema.Required, "decision_type")
+	assert.Contains(t, traceTool.Tool.InputSchema.Required, "outcome")
+	assert.Contains(t, traceTool.Tool.InputSchema.Required, "confidence")
+
+	assert.Contains(t, traceTool.Tool.Description, "THREE REQUIRED FIELDS")
+	assert.NotContains(t, traceTool.Tool.Description, "Defaults to 0.4")
+	assert.NotContains(t, traceTool.Tool.Description, "TWO REQUIRED FIELDS")
+
+	confProp, ok := traceTool.Tool.InputSchema.Properties["confidence"].(map[string]any)
+	require.True(t, ok, "confidence property should be a JSON schema object")
+	desc, ok := confProp["description"].(string)
+	require.True(t, ok, "confidence property should include a description")
+	assert.Contains(t, desc, "Required")
+	assert.NotContains(t, desc, "Defaults to 0.4")
+}
+
 func TestHandleTrace_WithPrecedentRef(t *testing.T) {
 	ctx := adminCtx()
 	agentID := "precedent-ref-agent-" + uuid.New().String()[:8]

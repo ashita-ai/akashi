@@ -119,11 +119,9 @@ WHEN TO USE: After you make any non-trivial decision — choosing a model,
 selecting an approach, picking a data source, resolving an ambiguity,
 or committing to a course of action.
 
-TWO REQUIRED FIELDS — everything else is optional:
+THREE REQUIRED FIELDS — everything else is optional:
 - decision_type: A short category (see enum for standard types)
 - outcome: What you decided, stated as a fact ("chose gpt-4o for summarization")
-
-OPTIONAL FIELDS (each improves completeness score and future usefulness):
 - confidence: How certain you are (0.0-1.0). Use this calibration guide:
     0.3-0.4 = educated guess, limited information, could easily be wrong
     0.5-0.6 = reasonable choice but real uncertainty remains
@@ -132,6 +130,8 @@ OPTIONAL FIELDS (each improves completeness score and future usefulness):
     0.9+     = near-certain, would be surprised if this is wrong
   Most decisions should land between 0.4 and 0.8. If you find yourself
   always above 0.8, you are probably not being honest about uncertainty.
+
+OPTIONAL FIELDS (each improves completeness score and future usefulness):
 - reasoning: Your chain of thought. Why this choice over alternatives?
   More detail = higher completeness score. Aim for >100 characters.
 - alternatives: JSON array of options you considered and rejected.
@@ -182,9 +182,10 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 				mcplib.Required(),
 			),
 			mcplib.WithNumber("confidence",
-				mcplib.Description("How certain you are (0.0-1.0). Most decisions should be 0.4-0.8. See calibration guide above. Defaults to 0.4 if omitted."),
+				mcplib.Description("How certain you are (0.0-1.0). Required; missing or null values are rejected so stored confidence reflects the caller's actual claim."),
 				mcplib.Min(0),
 				mcplib.Max(1),
+				mcplib.Required(),
 			),
 			mcplib.WithString("reasoning",
 				mcplib.Description("Your chain of thought. Why this choice? What trade-offs did you consider?"),
