@@ -13,6 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashita-ai/akashi/internal/compact"
+	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/storage"
+	sqlitestorage "github.com/ashita-ai/akashi/internal/storage/sqlite"
 
 	_ "modernc.org/sqlite"
 )
@@ -69,6 +72,8 @@ func openTestDB(t *testing.T) *sql.DB {
 			resolution_decision_id TEXT,
 			winning_decision_id TEXT,
 			group_id TEXT,
+			project_a TEXT,
+			project_b TEXT,
 			UNIQUE(decision_a_id, decision_b_id)
 		);
 		CREATE TABLE conflict_groups (
@@ -442,46 +447,332 @@ func TestTruncate_LiteScorer(t *testing.T) {
 	assert.Equal(t, "こん...", compact.Truncate("こんにちは", 2))
 }
 
-// TestLiteScorer_ProjectScoping verifies that the scorer scopes candidates
-// by project when the source decision has one.
-func TestLiteScorer_ProjectScoping(t *testing.T) {
+// insertTestDecisionWithProject inserts a decision with an explicit project tag.
+// Passing project == "" inserts a NULL project (matches Postgres' "untagged"
+// semantic via sql.NullString).
+func insertTestDecisionWithProject(t *testing.T, db *sql.DB, id, orgID uuid.UUID, agentID, decType, outcome, project string) {
+	t.Helper()
+	var proj sql.NullString
+	if project != "" {
+		proj = sql.NullString{String: project, Valid: true}
+	}
+	_, err := db.Exec(
+		`INSERT INTO decisions (id, org_id, agent_id, decision_type, outcome, confidence, valid_from, project)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		id.String(), orgID.String(), agentID, decType, outcome, 0.9,
+		time.Now().UTC().Format(time.RFC3339Nano), proj,
+	)
+	require.NoError(t, err)
+}
+
+// Two contradicting architecture outcomes used as a fixed pair across the
+// project-scoping tests below. Pre-fix, this pair scored a conflict in every
+// project combination the scorer encountered; post-fix, it scores a conflict
+// only when both decisions are in the same project (or both untagged).
+const (
+	pgProjectOutcome        = "Use PostgreSQL for the primary database with read replicas and connection pooling for high availability"
+	mongoProjectOutcome     = "Use MongoDB for the primary database with sharding and replica sets for horizontal scalability"
+	cassandraProjectOutcome = "Use Cassandra for the primary database with multi-datacenter replication and tunable consistency"
+)
+
+// TestLiteScorer_ProjectScoping_DifferentProjects verifies the issue #714 fix:
+// a decision in project A must NOT generate a conflict against a contradicting
+// decision in project B. Pre-fix the SQL was `project = ? OR project IS NULL`,
+// which matched same-project rows but the test previously tolerated a 0-or-1
+// outcome because the strict equality contract was not yet enforced.
+func TestLiteScorer_ProjectScoping_DifferentProjects(t *testing.T) {
 	db := openTestDB(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	scorer := NewLiteScorer(db, logger)
 	ctx := context.Background()
 	orgID := uuid.New()
 
-	d1 := uuid.New()
-	d2 := uuid.New()
+	srcID := uuid.New()
+	otherID := uuid.New()
+	insertTestDecisionWithProject(t, db, srcID, orgID, "agent-a", "architecture", pgProjectOutcome, "project-alpha")
+	insertTestDecisionWithProject(t, db, otherID, orgID, "agent-b", "architecture", mongoProjectOutcome, "project-beta")
 
-	// Insert decisions with different projects.
-	_, err := db.Exec(
-		`INSERT INTO decisions (id, org_id, agent_id, decision_type, outcome, confidence, valid_from, project)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		d1.String(), orgID.String(), "agent-a", "architecture",
-		"Use PostgreSQL for the primary database with read replicas and connection pooling for high availability",
-		0.9, time.Now().UTC().Format(time.RFC3339Nano), "project-alpha",
-	)
-	require.NoError(t, err)
-
-	_, err = db.Exec(
-		`INSERT INTO decisions (id, org_id, agent_id, decision_type, outcome, confidence, valid_from, project)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		d2.String(), orgID.String(), "agent-b", "architecture",
-		"Use MongoDB for the primary database with sharding and replica sets for horizontal scalability",
-		0.9, time.Now().UTC().Format(time.RFC3339Nano), "project-beta",
-	)
-	require.NoError(t, err)
-
-	// Score d1 — since d2 is in a different project, should not conflict.
-	scorer.ScoreForDecision(ctx, d1, orgID)
+	scorer.ScoreForDecision(ctx, srcID, orgID)
 
 	var count int
 	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM scored_conflicts").Scan(&count))
-	// They can still conflict because loadCandidates uses `project = ? OR project IS NULL`,
-	// but with different non-nil projects they should not match.
-	// This depends on the SQL logic — verify the actual behavior.
-	assert.LessOrEqual(t, count, 1, "different-project decisions may or may not conflict depending on SQL scoping")
+	assert.Equal(t, 0, count, "decisions in different non-null projects must not generate a conflict")
+}
+
+// TestLiteScorer_ProjectScoping_TaggedSourceUntaggedCandidate verifies that a
+// project-tagged source does NOT pull in an untagged candidate. Pre-fix this
+// was the dominant cross-project leak path: `project = ? OR project IS NULL`
+// matched every untagged row in the org. Post-fix the source's project must
+// match exactly.
+func TestLiteScorer_ProjectScoping_TaggedSourceUntaggedCandidate(t *testing.T) {
+	db := openTestDB(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	scorer := NewLiteScorer(db, logger)
+	ctx := context.Background()
+	orgID := uuid.New()
+
+	srcID := uuid.New()
+	otherID := uuid.New()
+	insertTestDecisionWithProject(t, db, srcID, orgID, "agent-a", "architecture", pgProjectOutcome, "project-alpha")
+	insertTestDecisionWithProject(t, db, otherID, orgID, "agent-b", "architecture", mongoProjectOutcome, "")
+
+	scorer.ScoreForDecision(ctx, srcID, orgID)
+
+	var count int
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM scored_conflicts").Scan(&count))
+	assert.Equal(t, 0, count, "project-tagged source must not match untagged candidates")
+}
+
+// TestLiteScorer_ProjectScoping_UntaggedSourceTaggedCandidate verifies the
+// symmetric case: when the source has no project, the scorer must NOT pull in
+// project-tagged candidates. Pre-fix the source-has-no-project branch applied
+// no project filter at all, so an untagged source compared against every row
+// in the org regardless of project — the most aggressive cross-project leak.
+func TestLiteScorer_ProjectScoping_UntaggedSourceTaggedCandidate(t *testing.T) {
+	db := openTestDB(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	scorer := NewLiteScorer(db, logger)
+	ctx := context.Background()
+	orgID := uuid.New()
+
+	srcID := uuid.New()
+	otherID := uuid.New()
+	insertTestDecisionWithProject(t, db, srcID, orgID, "agent-a", "architecture", pgProjectOutcome, "")
+	insertTestDecisionWithProject(t, db, otherID, orgID, "agent-b", "architecture", mongoProjectOutcome, "project-alpha")
+
+	scorer.ScoreForDecision(ctx, srcID, orgID)
+
+	var count int
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM scored_conflicts").Scan(&count))
+	assert.Equal(t, 0, count, "untagged source must not match project-tagged candidates")
+}
+
+// TestLiteScorer_ProjectScoping_SameProjectStillConflicts is the negative
+// control: tightening the project filter must not suppress real same-project
+// conflicts. Two contradicting decisions in project-alpha must still produce
+// one conflict — this test is what would catch an over-eager filter that
+// accidentally dropped same-project pairs (e.g., an `AND project != ?` typo).
+func TestLiteScorer_ProjectScoping_SameProjectStillConflicts(t *testing.T) {
+	db := openTestDB(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	scorer := NewLiteScorer(db, logger)
+	ctx := context.Background()
+	orgID := uuid.New()
+
+	srcID := uuid.New()
+	otherID := uuid.New()
+	insertTestDecisionWithProject(t, db, srcID, orgID, "agent-a", "architecture", pgProjectOutcome, "project-alpha")
+	insertTestDecisionWithProject(t, db, otherID, orgID, "agent-b", "architecture", mongoProjectOutcome, "project-alpha")
+
+	scorer.ScoreForDecision(ctx, srcID, orgID)
+
+	var count int
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM scored_conflicts").Scan(&count))
+	assert.Equal(t, 1, count, "contradicting decisions in the same project must still produce a conflict")
+
+	var projectA, projectB sql.NullString
+	require.NoError(t, db.QueryRow("SELECT project_a, project_b FROM scored_conflicts").Scan(&projectA, &projectB))
+	require.True(t, projectA.Valid)
+	require.True(t, projectB.Valid)
+	assert.Equal(t, "project-alpha", projectA.String)
+	assert.Equal(t, "project-alpha", projectB.String)
+}
+
+// TestLiteScorer_ProjectScoping_BothUntaggedStillConflicts is the second
+// negative control: two untagged decisions must still be compared against each
+// other. Pre-fix the untagged-source branch applied no project filter, so this
+// case worked by accident; post-fix the filter is explicit (`project IS NULL`)
+// and we need a regression test to lock the behavior.
+func TestLiteScorer_ProjectScoping_BothUntaggedStillConflicts(t *testing.T) {
+	db := openTestDB(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	scorer := NewLiteScorer(db, logger)
+	ctx := context.Background()
+	orgID := uuid.New()
+
+	srcID := uuid.New()
+	otherID := uuid.New()
+	insertTestDecisionWithProject(t, db, srcID, orgID, "agent-a", "architecture", pgProjectOutcome, "")
+	insertTestDecisionWithProject(t, db, otherID, orgID, "agent-b", "architecture", mongoProjectOutcome, "")
+
+	scorer.ScoreForDecision(ctx, srcID, orgID)
+
+	var count int
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM scored_conflicts").Scan(&count))
+	assert.Equal(t, 1, count, "contradicting decisions both untagged must still produce a conflict")
+}
+
+// TestLiteScorer_ProjectScoping_MixedPoolPicksOnlySameProject combines the
+// three negative cases above into one pool to verify that with five candidates
+// spanning project-alpha / project-beta / untagged, scoring a project-alpha
+// source produces exactly one conflict — against the other project-alpha
+// candidate — and ignores the other three.
+func TestLiteScorer_ProjectScoping_MixedPoolPicksOnlySameProject(t *testing.T) {
+	db := openTestDB(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	scorer := NewLiteScorer(db, logger)
+	ctx := context.Background()
+	orgID := uuid.New()
+
+	srcID := uuid.New()
+	sameProjectID := uuid.New()
+	otherProjectID := uuid.New()
+	untaggedID := uuid.New()
+
+	insertTestDecisionWithProject(t, db, srcID, orgID, "agent-a", "architecture", pgProjectOutcome, "project-alpha")
+	insertTestDecisionWithProject(t, db, sameProjectID, orgID, "agent-b", "architecture", mongoProjectOutcome, "project-alpha")
+	insertTestDecisionWithProject(t, db, otherProjectID, orgID, "agent-c", "architecture", cassandraProjectOutcome, "project-beta")
+	insertTestDecisionWithProject(t, db, untaggedID, orgID, "agent-d", "architecture", cassandraProjectOutcome, "")
+
+	scorer.ScoreForDecision(ctx, srcID, orgID)
+
+	rows, err := db.Query("SELECT decision_a_id, decision_b_id FROM scored_conflicts")
+	require.NoError(t, err)
+	defer rows.Close() //nolint:errcheck
+
+	var pairs [][2]string
+	for rows.Next() {
+		var a, b string
+		require.NoError(t, rows.Scan(&a, &b))
+		pairs = append(pairs, [2]string{a, b})
+	}
+	require.NoError(t, rows.Err())
+
+	require.Len(t, pairs, 1, "exactly one same-project conflict must be produced from the mixed pool")
+	got := pairs[0]
+	wantSrc := srcID.String()
+	wantOther := sameProjectID.String()
+	matched := (got[0] == wantSrc && got[1] == wantOther) || (got[0] == wantOther && got[1] == wantSrc)
+	assert.True(t, matched, "the produced conflict must be between the source and the same-project candidate; got %v", got)
+}
+
+func TestLiteScorer_ProjectScoping_RealSQLiteTraceContext(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	liteDB, err := sqlitestorage.New(ctx, ":memory:", logger)
+	require.NoError(t, err)
+	t.Cleanup(func() { liteDB.Close(ctx) })
+	require.NoError(t, liteDB.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	for _, agentID := range []string{"agent-a", "agent-b"} {
+		_, err := liteDB.CreateAgent(ctx, model.Agent{
+			AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+			Tags: []string{}, Metadata: map[string]any{},
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		})
+		require.NoError(t, err)
+	}
+
+	_, src, err := liteDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID:  "agent-a",
+		OrgID:    orgID,
+		Metadata: map[string]any{},
+		AgentContext: map[string]any{
+			"client": map[string]any{"project": "project-alpha"},
+		},
+		Decision: model.Decision{
+			DecisionType: "architecture", Outcome: pgProjectOutcome,
+			Confidence: 0.9, Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+	_, _, err = liteDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID:  "agent-b",
+		OrgID:    orgID,
+		Metadata: map[string]any{},
+		AgentContext: map[string]any{
+			"client": map[string]any{"project": "project-beta"},
+		},
+		Decision: model.Decision{
+			DecisionType: "architecture", Outcome: mongoProjectOutcome,
+			Confidence: 0.9, Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, src.Project, "sqlite trace storage must persist project from agent_context")
+	assert.Equal(t, "project-alpha", *src.Project)
+
+	scorer := NewLiteScorer(liteDB.RawDB(), logger)
+	scorer.ScoreForDecision(ctx, src.ID, orgID)
+
+	var count int
+	require.NoError(t, liteDB.RawDB().QueryRow("SELECT COUNT(*) FROM scored_conflicts").Scan(&count))
+	assert.Equal(t, 0, count, "real lite traces in different projects must not generate a conflict")
+}
+
+func TestLiteScorer_ProjectScoping_ConflictProjectsAreQueryable(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	liteDB, err := sqlitestorage.New(ctx, ":memory:", logger)
+	require.NoError(t, err)
+	t.Cleanup(func() { liteDB.Close(ctx) })
+	require.NoError(t, liteDB.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	for _, agentID := range []string{"agent-a", "agent-b"} {
+		_, err := liteDB.CreateAgent(ctx, model.Agent{
+			AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+			Tags: []string{}, Metadata: map[string]any{},
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		})
+		require.NoError(t, err)
+	}
+
+	project := "project-alpha"
+	_, src, err := liteDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID:  "agent-a",
+		OrgID:    orgID,
+		Metadata: map[string]any{},
+		AgentContext: map[string]any{
+			"client": map[string]any{"project": project},
+		},
+		Decision: model.Decision{
+			DecisionType: "architecture", Outcome: pgProjectOutcome,
+			Confidence: 0.9, Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+	_, _, err = liteDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID:  "agent-b",
+		OrgID:    orgID,
+		Metadata: map[string]any{},
+		AgentContext: map[string]any{
+			"client": map[string]any{"project": project},
+		},
+		Decision: model.Decision{
+			DecisionType: "architecture", Outcome: mongoProjectOutcome,
+			Confidence: 0.9, Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+
+	scorer := NewLiteScorer(liteDB.RawDB(), logger)
+	scorer.ScoreForDecision(ctx, src.ID, orgID)
+
+	var projectA, projectB sql.NullString
+	require.NoError(t, liteDB.RawDB().QueryRow("SELECT project_a, project_b FROM scored_conflicts").Scan(&projectA, &projectB))
+	require.True(t, projectA.Valid)
+	require.True(t, projectB.Valid)
+	assert.Equal(t, project, projectA.String)
+	assert.Equal(t, project, projectB.String)
+
+	conflicts, err := liteDB.ListConflicts(ctx, orgID, storage.ConflictFilters{Project: &project}, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, conflicts, 1, "project-scoped conflict listing must include the lite-scored conflict")
+	require.NotNil(t, conflicts[0].ProjectA)
+	require.NotNil(t, conflicts[0].ProjectB)
+	assert.Equal(t, project, *conflicts[0].ProjectA)
+	assert.Equal(t, project, *conflicts[0].ProjectB)
+
+	groups, err := liteDB.ListConflictGroups(ctx, orgID, storage.ConflictGroupFilters{Project: &project}, 10, 0)
+	require.NoError(t, err)
+	assert.Len(t, groups, 1, "project-scoped group listing must include the lite-scored conflict")
+
+	otherProject := "project-beta"
+	conflicts, err = liteDB.ListConflicts(ctx, orgID, storage.ConflictFilters{Project: &otherProject}, 10, 0)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts, "unrelated project filters must not see the lite-scored conflict")
 }
 
 // TestLiteScorer_RevisionChainExcluded verifies that a decision in the source's

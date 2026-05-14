@@ -232,6 +232,59 @@ func invalidateSupersededDecisionInTraceTx(ctx context.Context, tx *sql.Tx, orgI
 	return nil
 }
 
+func fillAttributionColumnsFromContext(d *model.Decision) {
+	if d.AgentContext == nil {
+		return
+	}
+	if d.Tool == nil {
+		if v := contextString(d.AgentContext, "server", "tool"); v != "" {
+			d.Tool = &v
+		} else if v := contextString(d.AgentContext, "tool"); v != "" {
+			d.Tool = &v
+		}
+	}
+	if d.Model == nil {
+		if v := contextString(d.AgentContext, "client", "model"); v != "" {
+			d.Model = &v
+		} else if v := contextString(d.AgentContext, "server", "model"); v != "" {
+			d.Model = &v
+		} else if v := contextString(d.AgentContext, "model"); v != "" {
+			d.Model = &v
+		}
+	}
+	if d.Project == nil {
+		if v := contextString(d.AgentContext, "client", "project"); v != "" {
+			d.Project = &v
+		} else if v := contextString(d.AgentContext, "server", "project"); v != "" {
+			d.Project = &v
+		} else if v := contextString(d.AgentContext, "project"); v != "" {
+			d.Project = &v
+		} else if v := contextString(d.AgentContext, "server", "repo"); v != "" {
+			d.Project = &v
+		} else if v := contextString(d.AgentContext, "client", "repo"); v != "" {
+			d.Project = &v
+		} else if v := contextString(d.AgentContext, "repo"); v != "" {
+			d.Project = &v
+		}
+	}
+}
+
+func contextString(ctx map[string]any, path ...string) string {
+	var cur any = ctx
+	for _, key := range path {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return ""
+		}
+		cur, ok = m[key]
+		if !ok {
+			return ""
+		}
+	}
+	v, _ := cur.(string)
+	return v
+}
+
 func createTraceInTx(ctx context.Context, tx *sql.Tx, p storage.CreateTraceParams) (model.AgentRun, model.Decision, error) {
 	now := time.Now().UTC()
 	d := p.Decision
@@ -279,6 +332,7 @@ func createTraceInTx(ctx context.Context, tx *sql.Tx, p storage.CreateTraceParam
 	if d.AgentContext == nil {
 		d.AgentContext = map[string]any{}
 	}
+	fillAttributionColumnsFromContext(&d)
 	if d.Metadata == nil {
 		d.Metadata = map[string]any{}
 	}
