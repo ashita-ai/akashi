@@ -37,6 +37,11 @@ func TestIsMechanicalOperation(t *testing.T) {
 			expected: true,
 		},
 		{
+			name:     "migration strategy is not housekeeping",
+			outcome:  "Chose pg_dump migration strategy for ARD-958",
+			expected: false,
+		},
+		{
 			name:     "architecture decision — not mechanical",
 			outcome:  "Chose Redis with 5min TTL for session cache to handle expected QPS",
 			expected: false,

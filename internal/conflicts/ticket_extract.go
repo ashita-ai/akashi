@@ -98,22 +98,3 @@ func matchTicketRef(s string) string {
 	}
 	return strings.ToUpper(m[1]) + "-" + m[2]
 }
-
-// ticketSetsDisjoint returns true when neither a nor b is empty and the two
-// slices share no element. Used by the disjoint-ticket pre-filter to verify
-// that two review-type decisions are operating on different ticket scopes.
-// O(len(a)*len(b)) is fine for the small slices these decisions produce
-// (typically 1-3 entries each).
-func ticketSetsDisjoint(a, b []string) bool {
-	if len(a) == 0 || len(b) == 0 {
-		return false
-	}
-	for _, x := range a {
-		for _, y := range b {
-			if x == y {
-				return false
-			}
-		}
-	}
-	return true
-}

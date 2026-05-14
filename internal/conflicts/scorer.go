@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -677,23 +676,6 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			continue
 		}
 
-		// PR-series layer marker filter: when two CROSS-agent decisions
-		// reference the same ticket and at least one outcome carries a
-		// PR-series layer marker (S1/S2/layer N/phase N/step N/stage N/
-		// PR-N), the pair is a sequential delivery of that ticket — one
-		// agent reviews the S1 PR, another agent ships the S2 PR. Sibling
-		// of isSameAgentSameTicketRefinement that handles the cross-agent
-		// case. See issue #717 FP audit.
-		if isPRSeriesLayerRefinement(d, sc.cand) {
-			s.metrics.prSeriesLayerFiltered.Add(ctx, 1)
-			s.logger.Debug("conflict scorer: PR-series layer refinement suppressed pair",
-				"decision_a", decisionID, "decision_b", sc.cand.ID,
-				"agent_a", d.AgentID, "agent_b", sc.cand.AgentID,
-				"marker_a", extractLayerMarker(d.Outcome),
-				"marker_b", extractLayerMarker(sc.cand.Outcome))
-			continue
-		}
-
 		// Temporal re-assessment filter: two review-type decisions on the
 		// same project, recorded sufficiently far apart with no precedent
 		// link, are re-measurements rather than contradictions. Quantitative
@@ -706,22 +688,6 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				"type_a", d.DecisionType, "type_b", sc.cand.DecisionType,
 				"project", derefString(d.Project),
 				"delta", d.ValidFrom.Sub(sc.cand.ValidFrom).Abs())
-			continue
-		}
-
-		// Disjoint-ticket review filter: two CROSS-agent review-type
-		// decisions whose ticket sets are entirely disjoint cannot be
-		// contradictions — they are reviewing different problems. Gated
-		// on review-types and cross-agent to preserve recall on
-		// deliberate same-agent cross-ticket architectural comparisons.
-		// See issue #717 FP audit (10/71 FPs matched this pattern).
-		if isDisjointTicketReviewPair(d, sc.cand) {
-			s.metrics.disjointTicketReviewFiltered.Add(ctx, 1)
-			s.logger.Debug("conflict scorer: disjoint-ticket review pair suppressed",
-				"decision_a", decisionID, "decision_b", sc.cand.ID,
-				"agent_a", d.AgentID, "agent_b", sc.cand.AgentID,
-				"tickets_a", extractTicketRefs(d),
-				"tickets_b", extractTicketRefs(sc.cand))
 			continue
 		}
 
@@ -1439,7 +1405,6 @@ var mechanicalKeywords = []string{
 	"renumber",
 	"renumbering",
 	"renumbered",
-	"migration",
 	"rebase",
 	"rebasing",
 	"rebased",
@@ -1624,162 +1589,6 @@ func isTemporalReassessment(d, cand model.Decision) bool {
 		delta = -delta
 	}
 	return delta >= temporalReassessmentWindow
-}
-
-// layerMarkerPattern matches PR-series delivery markers like "S1", "S2",
-// "layer 3", "phase 2", "step 4", "stage 1", "PR-2". These appear in outcome
-// text when an agent delivers a single ticket as a sequence of PRs
-// ("Reviewed ARD-958 S1 PR", "ARD-958 S2 implemented on branch...").
-//
-// The pattern is deliberately conservative: it accepts the canonical labels
-// and a single digit (1-9). Multi-digit indices (S10, layer 12) are rare in
-// practice and admitting them risks colliding with version strings or
-// migration numbers. If wider matching becomes necessary, prefer extending
-// the alternation to specific labels rather than relaxing the digit class.
-var layerMarkerPattern = regexp.MustCompile(`(?i)\b(?:S[1-9]|layer[\s_-]*[1-9]|phase[\s_-]*[1-9]|step[\s_-]*[1-9]|stage[\s_-]*[1-9]|PR[\s_-]*[1-9])\b`)
-
-// extractLayerMarker returns the canonical lowercased+space-normalised layer
-// marker found in s, or "" if none is present. "PR-2", "PR 2", and "PR_2"
-// all canonicalise to "pr 2"; "S1" stays "s1". Used by
-// isPRSeriesLayerRefinement to detect when two outcomes are different
-// stages of the same delivery rather than competing positions.
-func extractLayerMarker(s string) string {
-	if s == "" {
-		return ""
-	}
-	m := layerMarkerPattern.FindString(s)
-	if m == "" {
-		return ""
-	}
-	lower := strings.ToLower(m)
-	// Collapse "-" and "_" to spaces so "PR-2" / "PR_2" / "PR 2" all hash to
-	// the same canonical form for cross-outcome comparison.
-	lower = strings.ReplaceAll(lower, "-", " ")
-	lower = strings.ReplaceAll(lower, "_", " ")
-	// Squash any internal whitespace runs to a single space.
-	return strings.Join(strings.Fields(lower), " ")
-}
-
-// isPRSeriesLayerRefinement returns true when two cross-agent decisions
-// reference the same ticket and at least one outcome carries a PR-series
-// layer marker ("S1", "layer 3", "phase 2", "PR-2"). The pair is then a
-// sequential delivery of one ticket — reviewer reviews S1, implementer
-// ships S2 — not a contradiction.
-//
-// Sibling of isSameAgentSameTicketRefinement (#711): that filter handles
-// the same-agent variant. This one handles the cross-agent variant
-// surfaced by the issue #717 FP audit (claude-code reviews ARD-958 S1,
-// reviewer reviews ARD-958 S2; both code_review; topical overlap fools
-// the embedder into flagging contradiction).
-//
-// Excluded:
-//   - same agent (caught upstream by #711)
-//   - precedent-linked pairs (an explicit lineage signal already exists)
-//   - neither outcome has a layer marker (no PR-series evidence)
-//   - both outcomes share the same marker (probable duplicate review of
-//     the same layer, not a chain)
-//   - the later outcome contains an explicit supersession keyword (the
-//     reversal is stated, let the LLM read it)
-//
-// Recall risk: low. Same-ticket cross-agent disagreement WITHOUT layer
-// markers still flows to the LLM. Same-ticket cross-agent disagreement
-// WITH layer markers but where the agent intends to contradict (rather
-// than ship the next stage) would have to phrase the contradiction without
-// any of the supersession verbs — uncommon in practice.
-func isPRSeriesLayerRefinement(d, cand model.Decision) bool {
-	if d.AgentID == cand.AgentID {
-		return false
-	}
-	if isPrecedentLinked(d, cand) {
-		return false
-	}
-	refsA := extractTicketRefs(d)
-	if len(refsA) == 0 {
-		return false
-	}
-	refsB := extractTicketRefs(cand)
-	if !shareAny(refsA, refsB) {
-		return false
-	}
-	markerA := extractLayerMarker(d.Outcome)
-	markerB := extractLayerMarker(cand.Outcome)
-	if markerA == "" && markerB == "" {
-		return false
-	}
-	if markerA != "" && markerB != "" && markerA == markerB {
-		return false
-	}
-	later := d
-	if cand.ValidFrom.After(d.ValidFrom) {
-		later = cand
-	}
-	if containsSupersessionKeyword(later.Outcome) {
-		return false
-	}
-	return true
-}
-
-// shareAny returns true when slices a and b share at least one element.
-// Both slices are expected to be small (typical ticket count per decision
-// is 1-3), so the nested loop is fine.
-func shareAny(a, b []string) bool {
-	for _, x := range a {
-		for _, y := range b {
-			if x == y {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// isDisjointTicketReviewPair returns true when two cross-agent review-type
-// decisions reference *non-overlapping* sets of tickets. Two reviewers
-// looking at different tickets in the same product produce embeddings
-// close enough to trip the scorer ("pgstream slot drain bug" vs "pgstream
-// snapshot validator design") even though they cannot contradict — they
-// are about different problems.
-//
-// The cross-agent gate is the recall safety belt: a single agent
-// deliberately comparing ARD-957 and ARD-958 designs in one decision is
-// authoring exactly the cross-ticket judgement we DO want to preserve;
-// suppressing same-agent disjoint pairs would erase that signal. The
-// observed FPs in the #717 audit were unanimously cross-agent
-// (claude-code | reviewer the dominant pair).
-//
-// Excluded:
-//   - either decision is not a review-type (architecture decisions can
-//     legitimately span multiple tickets; let the LLM read them)
-//   - same agent (deliberate cross-ticket comparison, keep recall)
-//   - precedent-linked pairs (lineage already declared)
-//   - either side has no extractable ticket (no join key — the existing
-//     ticket-blind filters above already handled the no-ticket case)
-//   - any shared ticket between the two decisions (handled by other
-//     same-ticket filters; not this filter's job)
-//
-// Recall risk: medium. Genuine cross-agent cross-ticket architectural
-// contradictions exist (agent A on ARD-957 picked design X for the
-// subsystem; agent B on ARD-958 picked incompatible design Y for the
-// same subsystem). The cross-encoder pass downstream provides a soft
-// second gate. We accept this trade because the observed FP rate of this
-// pattern (10/71 ≈ 14%) is the dominant remaining noise source and the
-// suppressed pairs are debug-logged for retrospective audit.
-func isDisjointTicketReviewPair(d, cand model.Decision) bool {
-	if !reviewTypes[strings.ToLower(d.DecisionType)] {
-		return false
-	}
-	if !reviewTypes[strings.ToLower(cand.DecisionType)] {
-		return false
-	}
-	if d.AgentID == cand.AgentID {
-		return false
-	}
-	if isPrecedentLinked(d, cand) {
-		return false
-	}
-	refsA := extractTicketRefs(d)
-	refsB := extractTicketRefs(cand)
-	return ticketSetsDisjoint(refsA, refsB)
 }
 
 // isSameBranchMechanicalHousekeeping returns true when two decisions are
