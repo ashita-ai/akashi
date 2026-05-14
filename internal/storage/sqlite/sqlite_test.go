@@ -5649,6 +5649,91 @@ func TestCreateTraceTx_WithToolModelProject(t *testing.T) {
 	_ = dec
 }
 
+func TestCreateTraceTx_DerivesAttributionColumnsFromAgentContext(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	_, err := db.CreateAgent(ctx, model.Agent{
+		AgentID: "context-attribution-agent", OrgID: orgID, Name: "CA", Role: model.RoleAgent,
+		Tags: []string{}, Metadata: map[string]any{},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	_, dec, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID:  "context-attribution-agent",
+		OrgID:    orgID,
+		Metadata: map[string]any{},
+		AgentContext: map[string]any{
+			"server": map[string]any{
+				"tool":    "akashi_trace",
+				"model":   "server-model",
+				"project": "server-project",
+			},
+			"client": map[string]any{
+				"model":   "client-model",
+				"project": "client-project",
+			},
+		},
+		Decision: model.Decision{
+			DecisionType: "implementation", Outcome: "derive attribution columns from context",
+			Confidence: 0.9, Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, dec.Tool)
+	require.NotNil(t, dec.Model)
+	require.NotNil(t, dec.Project)
+	assert.Equal(t, "akashi_trace", *dec.Tool)
+	assert.Equal(t, "client-model", *dec.Model)
+	assert.Equal(t, "client-project", *dec.Project)
+
+	decisions, _, err := db.QueryDecisions(ctx, orgID, model.QueryRequest{
+		Limit:   1,
+		Filters: model.QueryFilters{AgentIDs: []string{"context-attribution-agent"}},
+	})
+	require.NoError(t, err)
+	require.Len(t, decisions, 1)
+	require.NotNil(t, decisions[0].Tool)
+	require.NotNil(t, decisions[0].Model)
+	require.NotNil(t, decisions[0].Project)
+	assert.Equal(t, "akashi_trace", *decisions[0].Tool)
+	assert.Equal(t, "client-model", *decisions[0].Model)
+	assert.Equal(t, "client-project", *decisions[0].Project)
+}
+
+func TestCreateTraceTx_DerivesProjectFromLegacyRepoContext(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	_, err := db.CreateAgent(ctx, model.Agent{
+		AgentID: "legacy-repo-agent", OrgID: orgID, Name: "LR", Role: model.RoleAgent,
+		Tags: []string{}, Metadata: map[string]any{},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+
+	_, dec, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID:  "legacy-repo-agent",
+		OrgID:    orgID,
+		Metadata: map[string]any{},
+		AgentContext: map[string]any{
+			"client": map[string]any{"repo": "legacy-repo"},
+		},
+		Decision: model.Decision{
+			DecisionType: "implementation", Outcome: "derive project from legacy repo context",
+			Confidence: 0.9, Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, dec.Project)
+	assert.Equal(t, "legacy-repo", *dec.Project)
+}
+
 // ---------------------------------------------------------------------------
 // SearchDecisionsByText with all filter types
 // ---------------------------------------------------------------------------

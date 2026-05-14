@@ -174,10 +174,19 @@ func (s *LiteScorer) loadCandidates(ctx context.Context, orgID uuid.UUID, src li
 	        AND valid_to IS NULL`
 	args := []any{orgID.String(), src.decisionType, src.id.String()}
 
-	// Scope to same project if the source has one.
+	// Strict project scoping: a decision in project A is only scored against
+	// other decisions in project A; a decision with no project is only scored
+	// against other untagged decisions. This mirrors the cloud pre-filter in
+	// internal/search/local.go:163-181 (and the qdrant/PgCandidateFinder paths)
+	// shipped in #372, closing the cross-project FP gap (issue #714) for the
+	// SQLite/MCP-stdio path. Lite mode has no project_links table, so there is
+	// no opt-in for cross-project comparison here — the cloud Scorer handles
+	// that case via storage.LinkedProjects.
 	if src.project != nil {
-		q += ` AND (project = ? OR project IS NULL)`
+		q += ` AND project = ?`
 		args = append(args, *src.project)
+	} else {
+		q += ` AND project IS NULL`
 	}
 
 	q += ` ORDER BY valid_from DESC LIMIT 50`
@@ -218,6 +227,13 @@ func (s *LiteScorer) conflictExists(ctx context.Context, a, b uuid.UUID) (bool, 
 	return count > 0, err
 }
 
+func nullableProject(project *string) sql.NullString {
+	if project == nil || *project == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: *project, Valid: true}
+}
+
 func (s *LiteScorer) insertConflict(ctx context.Context, orgID uuid.UUID, conflictKind string, a, b liteDecision, topicSim, outcomeDivergence, significance float32, severity, explanation string) error {
 	conflictID := uuid.New()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -234,8 +250,9 @@ func (s *LiteScorer) insertConflict(ctx context.Context, orgID uuid.UUID, confli
 			agent_a, agent_b, decision_type_a, decision_type_b,
 			outcome_a, outcome_b,
 			topic_similarity, outcome_divergence, significance, scoring_method,
-			explanation, detected_at, severity, status, group_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			explanation, detected_at, severity, status, group_id,
+			project_a, project_b
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		conflictID.String(), conflictKind,
 		a.id.String(), b.id.String(), orgID.String(),
 		a.agentID, b.agentID,
@@ -243,7 +260,7 @@ func (s *LiteScorer) insertConflict(ctx context.Context, orgID uuid.UUID, confli
 		compact.Truncate(a.outcome, 500), compact.Truncate(b.outcome, 500),
 		topicSim, outcomeDivergence, significance,
 		"text_claims", explanation, now, severity, "open",
-		groupID.String(),
+		groupID.String(), nullableProject(a.project), nullableProject(b.project),
 	)
 	return err
 }
