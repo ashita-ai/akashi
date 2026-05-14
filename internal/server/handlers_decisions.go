@@ -168,6 +168,20 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		h.clearIdempotentWrite(r, orgID, idem)
+		if rej := decisions.AsCompletenessRejection(err); rej != nil {
+			// 422 Unprocessable Entity: the request was syntactically valid
+			// but failed the structural-quality gate configured by the operator.
+			// Details carry the score/threshold/type so the agent can self-correct.
+			writeErrorWithDetails(w, r, http.StatusUnprocessableEntity, model.ErrCodeCompletenessBelowThreshold,
+				rej.Error(),
+				map[string]any{
+					"decision_type":      rej.DecisionType,
+					"completeness_score": rej.Score,
+					"required_min":       rej.Threshold,
+				},
+			)
+			return
+		}
 		if req.SupersedesID != nil && (errors.Is(err, storage.ErrNotFound) || isForeignKeyViolation(err)) {
 			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput,
 				"superseded decision not found or already superseded")
@@ -202,6 +216,12 @@ func (h *Handlers) HandleTrace(w http.ResponseWriter, r *http.Request) {
 	}
 	if warnings := model.HighConfidenceWarnings(req.Decision.Confidence, len(req.Decision.Evidence), h.highConfidenceWarnThreshold); len(warnings) > 0 {
 		resp.Warnings = warnings
+	}
+	// Append any service-produced warnings (currently the completeness gate
+	// in warn mode, #715). Done after the high-confidence pass so the order
+	// is stable: confidence warnings first, completeness warnings second.
+	if len(result.Warnings) > 0 {
+		resp.Warnings = append(resp.Warnings, result.Warnings...)
 	}
 	reasoningLen := 0
 	if req.Decision.Reasoning != nil {
