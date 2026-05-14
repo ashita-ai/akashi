@@ -174,10 +174,19 @@ func (s *LiteScorer) loadCandidates(ctx context.Context, orgID uuid.UUID, src li
 	        AND valid_to IS NULL`
 	args := []any{orgID.String(), src.decisionType, src.id.String()}
 
-	// Scope to same project if the source has one.
+	// Strict project scoping: a decision in project A is only scored against
+	// other decisions in project A; a decision with no project is only scored
+	// against other untagged decisions. This mirrors the cloud pre-filter in
+	// internal/search/local.go:163-181 (and the qdrant/PgCandidateFinder paths)
+	// shipped in #372, closing the cross-project FP gap (issue #714) for the
+	// SQLite/MCP-stdio path. Lite mode has no project_links table, so there is
+	// no opt-in for cross-project comparison here — the cloud Scorer handles
+	// that case via storage.LinkedProjects.
 	if src.project != nil {
-		q += ` AND (project = ? OR project IS NULL)`
+		q += ` AND project = ?`
 		args = append(args, *src.project)
+	} else {
+		q += ` AND project IS NULL`
 	}
 
 	q += ` ORDER BY valid_from DESC LIMIT 50`
