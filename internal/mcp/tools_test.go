@@ -233,6 +233,69 @@ func TestHandleTrace_InvalidAgentID(t *testing.T) {
 	assert.Contains(t, parseToolText(t, result), "invalid agent_id")
 }
 
+// TestHandleTrace_InvalidConfidence guards the ashita-ai/akashi#713 fix at the
+// MCP boundary. Each case is a value the old GetFloat path would have
+// collapsed onto a silent 0.4 default; all must now be rejected with a
+// descriptive error and no row written.
+func TestHandleTrace_InvalidConfidence(t *testing.T) {
+	ctx := adminCtx()
+
+	base := func() map[string]any {
+		return map[string]any{
+			"agent_id":      "trace-bad-conf",
+			"decision_type": "architecture",
+			"outcome":       "x",
+		}
+	}
+
+	cases := []struct {
+		name    string
+		mutate  func(map[string]any)
+		wantSub string
+	}{
+		{
+			name:    "confidence omitted",
+			mutate:  func(args map[string]any) {},
+			wantSub: "confidence is required",
+		},
+		{
+			name:    "confidence null",
+			mutate:  func(args map[string]any) { args["confidence"] = nil },
+			wantSub: "confidence is required",
+		},
+		{
+			name:    "unparseable string",
+			mutate:  func(args map[string]any) { args["confidence"] = "high" },
+			wantSub: "not a valid number",
+		},
+		{
+			name:    "boolean",
+			mutate:  func(args map[string]any) { args["confidence"] = true },
+			wantSub: "must be a number",
+		},
+		{
+			name:    "negative",
+			mutate:  func(args map[string]any) { args["confidence"] = -0.1 },
+			wantSub: "between 0 and 1",
+		},
+		{
+			name:    "above one",
+			mutate:  func(args map[string]any) { args["confidence"] = 1.5 },
+			wantSub: "between 0 and 1",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := base()
+			tc.mutate(args)
+			result, err := testServer.handleTrace(ctx, traceRequest(args))
+			require.NoError(t, err, "handler returns tool error, not go error")
+			require.True(t, result.IsError, "expected tool error for %s", tc.name)
+			assert.Contains(t, parseToolText(t, result), tc.wantSub)
+		})
+	}
+}
+
 func TestHandleTrace_DefaultsAgentIDFromClaims(t *testing.T) {
 	ctx := adminCtx()
 

@@ -268,6 +268,15 @@ type TraceRequest struct {
 }
 
 // TraceDecision is the decision portion of a trace convenience request.
+//
+// confidencePresent tracks whether the "confidence" key was present in the
+// JSON payload. HandleTrace gates on it to reject inputs that omit the field,
+// which would otherwise unmarshal to 0.0 and be indistinguishable from a
+// caller's explicit 0.0 choice. Internal callers that construct TraceDecision
+// programmatically are unaffected — they set Confidence directly, and the
+// flag stays false because no boundary check runs in that path.
+//
+// See ashita-ai/akashi#713.
 type TraceDecision struct {
 	DecisionType string             `json:"decision_type"`
 	Outcome      string             `json:"outcome"`
@@ -275,6 +284,41 @@ type TraceDecision struct {
 	Reasoning    *string            `json:"reasoning,omitempty"`
 	Alternatives []TraceAlternative `json:"alternatives,omitempty"`
 	Evidence     []TraceEvidence    `json:"evidence,omitempty"`
+
+	confidencePresent bool
+}
+
+// ConfidencePresent reports whether the "confidence" JSON key was present
+// in the request body that produced this TraceDecision.
+func (d TraceDecision) ConfidencePresent() bool {
+	return d.confidencePresent
+}
+
+// UnmarshalJSON decodes a TraceDecision and records whether the caller
+// supplied a confidence value, distinguishing "omitted" from "explicitly 0".
+func (d *TraceDecision) UnmarshalJSON(data []byte) error {
+	type rawDecision struct {
+		DecisionType string             `json:"decision_type"`
+		Outcome      string             `json:"outcome"`
+		Confidence   *float32           `json:"confidence"`
+		Reasoning    *string            `json:"reasoning,omitempty"`
+		Alternatives []TraceAlternative `json:"alternatives,omitempty"`
+		Evidence     []TraceEvidence    `json:"evidence,omitempty"`
+	}
+	var raw rawDecision
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	d.DecisionType = raw.DecisionType
+	d.Outcome = raw.Outcome
+	d.Reasoning = raw.Reasoning
+	d.Alternatives = raw.Alternatives
+	d.Evidence = raw.Evidence
+	if raw.Confidence != nil {
+		d.Confidence = *raw.Confidence
+		d.confidencePresent = true
+	}
+	return nil
 }
 
 // TraceAlternative is an alternative in a trace convenience request.
