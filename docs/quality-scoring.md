@@ -97,6 +97,28 @@ All weights are currently uncalibrated — chosen by hand without empirical basi
 iteration will fit weights against assessed decision data. See the factor table as a
 guide to what Akashi values in a decision trace, not as a precise quality metric.
 
+## Ingest gate (#715)
+
+The completeness score also feeds an optional ingest gate. When enabled, the
+gate refuses or warns on traces whose score falls below a configured
+threshold for their decision type. The gate is purely structural — it consumes
+the score above, no new logic — and is disabled by default.
+
+| Mode | Behavior on score below threshold |
+|------|-----------------------------------|
+| `off` (default) | No effect; pre-#715 behavior preserved |
+| `warn` | Trace is persisted; a string is appended to the response `warnings` array |
+| `reject` | Trace is refused; HTTP `422 Unprocessable Entity` with `COMPLETENESS_BELOW_THRESHOLD` error code and `details` carrying score/threshold/type. The MCP `akashi_trace` tool returns the same information as a tool-error message. The rejected attempt is recorded in `mutation_audit_log` with operation `trace_decision_rejected` |
+
+Per-type overrides take precedence over the global floor. Configure via
+`AKASHI_MIN_COMPLETENESS`, `AKASHI_MIN_COMPLETENESS_MODE`, and
+`AKASHI_MIN_COMPLETENESS_BY_TYPE` — see [configuration.md](configuration.md#completeness-ingest-gate).
+
+Gate activity is observable via two OTel counters labeled by `decision_type`:
+
+- `akashi.trace.completeness_gate_rejects`
+- `akashi.trace.completeness_gate_warns`
+
 ## Outcome score
 
 The outcome score (0.0–1.0, or `null`) measures how correct a decision turned out to be

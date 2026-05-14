@@ -567,10 +567,18 @@ func writeJSON(w http.ResponseWriter, r *http.Request, status int, data any) {
 
 // writeError writes a JSON error response with the standard envelope.
 func writeError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
+	writeErrorWithDetails(w, r, status, code, message, nil)
+}
+
+// writeErrorWithDetails writes a JSON error response with structured details
+// attached under the `details` field. Used when the caller needs to surface
+// actionable fields (e.g. completeness score and threshold for the #715 gate)
+// alongside the human-readable message.
+func writeErrorWithDetails(w http.ResponseWriter, r *http.Request, status int, code, message string, details any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(model.APIError{
-		Error: model.ErrorDetail{Code: code, Message: message},
+		Error: model.ErrorDetail{Code: code, Message: message, Details: details},
 		Meta: model.ResponseMeta{
 			RequestID: RequestIDFromContext(r.Context()),
 			Timestamp: time.Now().UTC(),

@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -160,6 +161,30 @@ type Config struct {
 	//   "architecture,security,data_pipeline,access_control"
 	StandardDecisionTypes []string
 
+	// Completeness ingest gate (issue #715).
+	// MinCompleteness is the global floor in [0.0, 1.0]. A trace whose
+	// completeness score (from quality.Score) is strictly below the
+	// effective floor for its decision_type is gated according to
+	// MinCompletenessMode. The gate is structural — it consumes the
+	// existing score that already weighs reasoning, alternatives, evidence,
+	// outcome, and precedent_ref. There is no new scoring logic.
+	//
+	// Default is 0.0 with mode "off" — pre-#715 behavior preserved.
+	MinCompleteness float32
+
+	// MinCompletenessMode selects the gate behavior: "off" (default),
+	// "warn" (accept and attach a warning to the response), or "reject"
+	// (refuse with HTTP 422 / MCP tool error). See quality.GateMode.
+	MinCompletenessMode string
+
+	// MinCompletenessByType is a JSON object mapping decision_type to a
+	// per-type floor that overrides MinCompleteness for that type. Keys
+	// are lowercased on load. Example:
+	//   {"security":0.60,"architecture":0.55,"code_review":0.45}
+	// Pair with MinCompleteness=0 to enforce only the named types and
+	// leave everything else ungated.
+	MinCompletenessByType map[string]float32
+
 	// Outcome assessment prompting.
 	//
 	// AssessmentWindows maps decision_type → minimum age before the decision is
@@ -214,6 +239,7 @@ func Load() (Config, error) {
 		HooksAPIKey:              Secret(envStr("AKASHI_HOOKS_API_KEY", "")),
 		CompletenessProfilesJSON: envStr("AKASHI_COMPLETENESS_PROFILES", ""),
 		StandardDecisionTypes:    envStrSlice("AKASHI_STANDARD_DECISION_TYPES", nil),
+		MinCompletenessMode:      envStr("AKASHI_MIN_COMPLETENESS_MODE", "off"),
 	}
 
 	// Integer fields.
@@ -282,6 +308,20 @@ func Load() (Config, error) {
 	var highConfThreshF64 float64
 	highConfThreshF64, errs = collectFloat64(errs, "AKASHI_HIGH_CONFIDENCE_WARN_THRESHOLD", 0.85)
 	cfg.HighConfidenceWarnThreshold = float32(highConfThreshF64)
+
+	var minCompletenessF64 float64
+	minCompletenessF64, errs = collectFloat64(errs, "AKASHI_MIN_COMPLETENESS", 0.0)
+	cfg.MinCompleteness = float32(minCompletenessF64)
+
+	byTypeJSON := envStr("AKASHI_MIN_COMPLETENESS_BY_TYPE", "")
+	if byTypeJSON != "" {
+		parsed, err := parseMinCompletenessByType(byTypeJSON)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("config: AKASHI_MIN_COMPLETENESS_BY_TYPE: %w", err))
+		} else {
+			cfg.MinCompletenessByType = parsed
+		}
+	}
 
 	// Boolean fields.
 	cfg.RateLimitEnabled, errs = collectBool(errs, "AKASHI_RATE_LIMIT_ENABLED", true)
@@ -488,6 +528,14 @@ func (c Config) Validate() error {
 	}
 	if c.ConflictOutcomeSimFloor < 0 || c.ConflictOutcomeSimFloor > 1 {
 		errs = append(errs, errors.New("config: AKASHI_CONFLICT_OUTCOME_SIM_FLOOR must be between 0.0 and 1.0 (0 disables)"))
+	}
+	if c.MinCompleteness < 0 || c.MinCompleteness > 1 {
+		errs = append(errs, errors.New("config: AKASHI_MIN_COMPLETENESS must be between 0.0 and 1.0"))
+	}
+	// Validate mode by parsing through the canonical parser so the set of
+	// accepted spellings stays in lockstep with quality.ParseGateMode.
+	if _, modeErr := parseGateModeForValidation(c.MinCompletenessMode); modeErr != nil {
+		errs = append(errs, fmt.Errorf("config: AKASHI_MIN_COMPLETENESS_MODE: %w", modeErr))
 	}
 	if c.AssessmentPromptLimit < 1 || c.AssessmentPromptLimit > 100 {
 		errs = append(errs, fmt.Errorf("config: AKASHI_ASSESSMENT_PROMPT_LIMIT must be between 1 and 100 (got %d)", c.AssessmentPromptLimit))
@@ -806,6 +854,51 @@ func conflictProfileDefaults(profile string, embeddingModel string) conflictProf
 		outcomeSimFloor:       adj.outcomeSimFloor,
 		crossEncoderThreshold: adj.crossEncoderThreshold,
 	}
+}
+
+// parseGateModeForValidation validates AKASHI_MIN_COMPLETENESS_MODE without
+// importing the quality package (which would risk an import cycle and break
+// the convention that config has no internal/* dependencies). The accepted
+// strings must stay in lockstep with quality.ParseGateMode.
+func parseGateModeForValidation(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "off", "disabled":
+		return "off", nil
+	case "warn", "warning":
+		return "warn", nil
+	case "reject", "block":
+		return "reject", nil
+	default:
+		return "", fmt.Errorf("%q is not a valid mode (want off|warn|reject)", s)
+	}
+}
+
+// parseMinCompletenessByType parses the AKASHI_MIN_COMPLETENESS_BY_TYPE JSON
+// at load time. The parsing logic mirrors quality.ParseGateByType but lives
+// here so config remains free of internal/service dependencies. Keys are
+// lowercased and trimmed to match the canonical decision_type form used by
+// the trace pipeline.
+func parseMinCompletenessByType(raw string) (map[string]float32, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var parsed map[string]float64
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	out := make(map[string]float32, len(parsed))
+	for k, v := range parsed {
+		key := strings.ToLower(strings.TrimSpace(k))
+		if key == "" {
+			return nil, errors.New("empty decision_type key")
+		}
+		if v < 0 || v > 1 {
+			return nil, fmt.Errorf("%q=%.4f out of range [0.0, 1.0]", k, v)
+		}
+		out[key] = float32(v)
+	}
+	return out, nil
 }
 
 func envStrSlice(key string, fallback []string) []string {
