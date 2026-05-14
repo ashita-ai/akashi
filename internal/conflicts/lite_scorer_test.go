@@ -72,6 +72,8 @@ func openTestDB(t *testing.T) *sql.DB {
 			resolution_decision_id TEXT,
 			winning_decision_id TEXT,
 			group_id TEXT,
+			project_a TEXT,
+			project_b TEXT,
 			UNIQUE(decision_a_id, decision_b_id)
 		);
 		CREATE TABLE conflict_groups (
@@ -567,6 +569,13 @@ func TestLiteScorer_ProjectScoping_SameProjectStillConflicts(t *testing.T) {
 	var count int
 	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM scored_conflicts").Scan(&count))
 	assert.Equal(t, 1, count, "contradicting decisions in the same project must still produce a conflict")
+
+	var projectA, projectB sql.NullString
+	require.NoError(t, db.QueryRow("SELECT project_a, project_b FROM scored_conflicts").Scan(&projectA, &projectB))
+	require.True(t, projectA.Valid)
+	require.True(t, projectB.Valid)
+	assert.Equal(t, "project-alpha", projectA.String)
+	assert.Equal(t, "project-alpha", projectB.String)
 }
 
 // TestLiteScorer_ProjectScoping_BothUntaggedStillConflicts is the second
@@ -690,6 +699,80 @@ func TestLiteScorer_ProjectScoping_RealSQLiteTraceContext(t *testing.T) {
 	var count int
 	require.NoError(t, liteDB.RawDB().QueryRow("SELECT COUNT(*) FROM scored_conflicts").Scan(&count))
 	assert.Equal(t, 0, count, "real lite traces in different projects must not generate a conflict")
+}
+
+func TestLiteScorer_ProjectScoping_ConflictProjectsAreQueryable(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	liteDB, err := sqlitestorage.New(ctx, ":memory:", logger)
+	require.NoError(t, err)
+	t.Cleanup(func() { liteDB.Close(ctx) })
+	require.NoError(t, liteDB.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	for _, agentID := range []string{"agent-a", "agent-b"} {
+		_, err := liteDB.CreateAgent(ctx, model.Agent{
+			AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+			Tags: []string{}, Metadata: map[string]any{},
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		})
+		require.NoError(t, err)
+	}
+
+	project := "project-alpha"
+	_, src, err := liteDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID:  "agent-a",
+		OrgID:    orgID,
+		Metadata: map[string]any{},
+		AgentContext: map[string]any{
+			"client": map[string]any{"project": project},
+		},
+		Decision: model.Decision{
+			DecisionType: "architecture", Outcome: pgProjectOutcome,
+			Confidence: 0.9, Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+	_, _, err = liteDB.CreateTraceTx(ctx, storage.CreateTraceParams{
+		AgentID:  "agent-b",
+		OrgID:    orgID,
+		Metadata: map[string]any{},
+		AgentContext: map[string]any{
+			"client": map[string]any{"project": project},
+		},
+		Decision: model.Decision{
+			DecisionType: "architecture", Outcome: mongoProjectOutcome,
+			Confidence: 0.9, Metadata: map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+
+	scorer := NewLiteScorer(liteDB.RawDB(), logger)
+	scorer.ScoreForDecision(ctx, src.ID, orgID)
+
+	var projectA, projectB sql.NullString
+	require.NoError(t, liteDB.RawDB().QueryRow("SELECT project_a, project_b FROM scored_conflicts").Scan(&projectA, &projectB))
+	require.True(t, projectA.Valid)
+	require.True(t, projectB.Valid)
+	assert.Equal(t, project, projectA.String)
+	assert.Equal(t, project, projectB.String)
+
+	conflicts, err := liteDB.ListConflicts(ctx, orgID, storage.ConflictFilters{Project: &project}, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, conflicts, 1, "project-scoped conflict listing must include the lite-scored conflict")
+	require.NotNil(t, conflicts[0].ProjectA)
+	require.NotNil(t, conflicts[0].ProjectB)
+	assert.Equal(t, project, *conflicts[0].ProjectA)
+	assert.Equal(t, project, *conflicts[0].ProjectB)
+
+	groups, err := liteDB.ListConflictGroups(ctx, orgID, storage.ConflictGroupFilters{Project: &project}, 10, 0)
+	require.NoError(t, err)
+	assert.Len(t, groups, 1, "project-scoped group listing must include the lite-scored conflict")
+
+	otherProject := "project-beta"
+	conflicts, err = liteDB.ListConflicts(ctx, orgID, storage.ConflictFilters{Project: &otherProject}, 10, 0)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts, "unrelated project filters must not see the lite-scored conflict")
 }
 
 // TestLiteScorer_RevisionChainExcluded verifies that a decision in the source's

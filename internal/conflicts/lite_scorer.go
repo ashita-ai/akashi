@@ -227,6 +227,13 @@ func (s *LiteScorer) conflictExists(ctx context.Context, a, b uuid.UUID) (bool, 
 	return count > 0, err
 }
 
+func nullableProject(project *string) sql.NullString {
+	if project == nil || *project == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: *project, Valid: true}
+}
+
 func (s *LiteScorer) insertConflict(ctx context.Context, orgID uuid.UUID, conflictKind string, a, b liteDecision, topicSim, outcomeDivergence, significance float32, severity, explanation string) error {
 	conflictID := uuid.New()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -243,8 +250,9 @@ func (s *LiteScorer) insertConflict(ctx context.Context, orgID uuid.UUID, confli
 			agent_a, agent_b, decision_type_a, decision_type_b,
 			outcome_a, outcome_b,
 			topic_similarity, outcome_divergence, significance, scoring_method,
-			explanation, detected_at, severity, status, group_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			explanation, detected_at, severity, status, group_id,
+			project_a, project_b
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		conflictID.String(), conflictKind,
 		a.id.String(), b.id.String(), orgID.String(),
 		a.agentID, b.agentID,
@@ -252,7 +260,7 @@ func (s *LiteScorer) insertConflict(ctx context.Context, orgID uuid.UUID, confli
 		compact.Truncate(a.outcome, 500), compact.Truncate(b.outcome, 500),
 		topicSim, outcomeDivergence, significance,
 		"text_claims", explanation, now, severity, "open",
-		groupID.String(),
+		groupID.String(), nullableProject(a.project), nullableProject(b.project),
 	)
 	return err
 }
