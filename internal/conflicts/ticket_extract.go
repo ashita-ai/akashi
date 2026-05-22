@@ -24,9 +24,10 @@ var ticketRefPattern = regexp.MustCompile(`(?i)\b([A-Z]{3,10})-(\d+)\b`)
 // appear in the same source, returns the first match — agents conventionally
 // place the primary ticket first.
 //
-// Used by isSameAgentSameTicketRefinement to suppress false-positive
-// contradictions when the same agent refines their own prior decision on the
-// same ticket without setting supersedes_id.
+// Used by isSameAgentSameTicketRefinement and isCrossAgentPrecedentRefinement
+// to suppress false-positive contradictions when an agent refines a prior
+// decision on the same ticket — either implicitly (same-agent, no
+// supersedes_id link) or explicitly (cross-agent, precedent_ref set).
 func extractTicketRef(d model.Decision) string {
 	refs := extractTicketRefs(d)
 	if len(refs) == 0 {

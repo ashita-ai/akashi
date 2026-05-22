@@ -31,6 +31,7 @@ type Metrics struct {
 	fpPatternFiltered            metric.Int64Counter
 	temporalReassessmentFiltered metric.Int64Counter
 	supersedesCandidateFiltered  metric.Int64Counter
+	crossAgentPrecedentFiltered  metric.Int64Counter
 
 	scoringDuration    metric.Float64Histogram
 	llmCallDuration    metric.Float64Histogram
@@ -203,6 +204,14 @@ func (s *Scorer) registerMetrics() {
 	if err != nil {
 		s.logger.Warn("conflicts: failed to create akashi.conflicts.supersedes_candidate_filtered metric", "error", err)
 		s.metrics.supersedesCandidateFiltered, _ = meter.Int64Counter("akashi.conflicts.supersedes_candidate_filtered.fallback")
+	}
+
+	s.metrics.crossAgentPrecedentFiltered, err = meter.Int64Counter("akashi.conflicts.cross_agent_precedent_filtered",
+		metric.WithDescription("Candidate pairs suppressed as cross-agent precedent-linked refinements on the same ticket (sibling of supersedes_candidate_filtered for cross-agent work)"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.cross_agent_precedent_filtered metric", "error", err)
+		s.metrics.crossAgentPrecedentFiltered, _ = meter.Int64Counter("akashi.conflicts.cross_agent_precedent_filtered.fallback")
 	}
 
 	// --- Histograms ---
