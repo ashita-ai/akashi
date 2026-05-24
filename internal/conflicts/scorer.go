@@ -660,6 +660,24 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			continue
 		}
 
+		// Cross-agent precedent-linked refinement filter: when two different
+		// agents trace decisions on the same ticket and one explicitly cites
+		// the other via precedent_ref, the cite IS the declaration that the
+		// later decision builds on the earlier — even when the LLM validator
+		// (which already sees PrecedentLinked, see validator.go) classifies
+		// them as contradiction because the outcomes mention competing
+		// implementation details. The agent's explicit cite is a stronger
+		// signal than the LLM's inference. Bails on supersession keywords so
+		// declared reversals still reach the validator.
+		if isCrossAgentPrecedentRefinement(d, sc.cand) {
+			s.metrics.crossAgentPrecedentFiltered.Add(ctx, 1)
+			s.logger.Debug("conflict scorer: cross-agent precedent refinement suppressed pair",
+				"decision_a", decisionID, "decision_b", sc.cand.ID,
+				"agent_a", d.AgentID, "agent_b", sc.cand.AgentID,
+				"ticket_ref", extractTicketRef(d))
+			continue
+		}
+
 		// Temporal re-assessment filter: two review-type decisions on the
 		// same project, recorded sufficiently far apart with no precedent
 		// link, are re-measurements rather than contradictions. Quantitative
@@ -1515,6 +1533,58 @@ func isSameAgentSameTicketRefinement(d, cand model.Decision) bool {
 		return false
 	}
 	if isPrecedentLinked(d, cand) {
+		return false
+	}
+	later := d
+	if cand.ValidFrom.After(d.ValidFrom) {
+		later = cand
+	}
+	if containsSupersessionKeyword(later.Outcome) {
+		return false
+	}
+	refA := extractTicketRef(d)
+	if refA == "" {
+		return false
+	}
+	return refA == extractTicketRef(cand)
+}
+
+// isCrossAgentPrecedentRefinement returns true when two different agents
+// trace decisions on the same ticket, one explicitly cites the other via
+// precedent_ref, and the later outcome contains no supersession keywords.
+//
+// Cross-agent analogue of isSameAgentSameTicketRefinement: the same-agent
+// filter targets forgotten-supersedes within one agent's work; this filter
+// targets the case where agent B explicitly declares "I am building on A"
+// (by setting precedent_ref to A on the same ticket) yet the LLM validator
+// still classifies the pair as contradiction because the two outcomes
+// mention competing implementation details.
+//
+// Conservative by construction. Required signals:
+//   - different agents
+//   - precedent_ref explicit between the two decisions (either direction)
+//   - identical extracted ticket reference on both sides
+//   - same project (defense against pathological cross-project precedent_refs)
+//   - later outcome free of supersession keywords (so declared reversals
+//     and partial supersessions still reach the validator)
+//
+// Does NOT catch (deliberately):
+//   - same-ticket cross-agent pairs without precedent_ref — those may be
+//     genuine disagreements (e.g. ARD-1168 broad vs narrow shared-env
+//     fallback, which resolved with codex winning)
+//   - pairs sharing only a common-ancestor precedent_ref but not citing
+//     each other — shared ancestry is too weak a signal to suppress, in
+//     line with the 8f5124c8 reversal of bare same-branch suppression
+//
+// See sibling isSameAgentSameTicketRefinement for the same-agent variant.
+func isCrossAgentPrecedentRefinement(d, cand model.Decision) bool {
+	if d.AgentID == cand.AgentID {
+		return false
+	}
+	if !isPrecedentLinked(d, cand) {
+		return false
+	}
+	if derefString(d.Project) != derefString(cand.Project) {
 		return false
 	}
 	later := d
