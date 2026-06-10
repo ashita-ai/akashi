@@ -3240,6 +3240,86 @@ func TestScoreForDecision_SameAgentSameTicketSuggestion(t *testing.T) {
 	assert.Contains(t, suggestions[0].Reason, agentID)
 }
 
+func TestScoreForDecision_ConfirmedConflictPersistsTicketContext(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentA := "ticket-context-a-" + suffix
+	agentB := "ticket-context-b-" + suffix
+	for _, agentID := range []string{agentA, agentB} {
+		_, err := testDB.CreateAgent(ctx, model.Agent{
+			AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+		})
+		require.NoError(t, err)
+	}
+
+	runA := createRun(t, agentA, orgID)
+	runB := createRun(t, agentB, orgID)
+	project := "ticket-context-project-" + suffix
+	topicEmb := makeEmbedding(940, 1.0)
+	outcomeEmbA := makeEmbedding(941, 1.0)
+	outcomeEmbB := makeEmbedding(942, 1.0)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID:        runA.ID,
+		AgentID:      agentA,
+		OrgID:        orgID,
+		DecisionType: "architecture",
+		Outcome:      "ARD-1429 keeps pgstream snapshot/WAL parity at schema-level only",
+		Confidence:   0.9,
+		Embedding:    &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+		Project: &project,
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID:        runB.ID,
+		AgentID:      agentB,
+		OrgID:        orgID,
+		DecisionType: "architecture",
+		Outcome:      "ARD-1430 moves pgstream snapshot/WAL parity to table-level patterns",
+		Confidence:   0.9,
+		Embedding:    &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+		Project: &project,
+	})
+	require.NoError(t, err)
+
+	validator := &scorerMockValidator{
+		result: ValidationResult{
+			Relationship: "contradiction",
+			Category:     "strategic",
+			Severity:     "high",
+			Explanation:  "The two agents chose incompatible parity scopes for the same mechanism.",
+		},
+	}
+	scorer := NewScorer(testDB, logger, 0.1, validator, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
+	scorer.ScoreForDecision(ctx, dB.ID, orgID)
+
+	assert.Greater(t, validator.calls, 0, "disjoint-ticket same-question pairs must reach validation")
+
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 1000, 0)
+	require.NoError(t, err)
+	var found bool
+	for _, c := range conflicts {
+		aMatch := c.DecisionAID == dA.ID || c.DecisionBID == dA.ID
+		bMatch := c.DecisionAID == dB.ID || c.DecisionBID == dB.ID
+		if aMatch && bMatch {
+			found = true
+			require.NotNil(t, c.Explanation)
+			assert.Contains(t, *c.Explanation, "The two agents chose incompatible parity scopes")
+			assert.Contains(t, *c.Explanation, "Ticket context")
+			assert.Contains(t, *c.Explanation, "ARD-1429")
+			assert.Contains(t, *c.Explanation, "ARD-1430")
+			assert.Contains(t, *c.Explanation, "Non-overlapping ticket references")
+			break
+		}
+	}
+	assert.True(t, found, "validator-confirmed conflict should retain a durable conflict record")
+}
+
 func TestScoreForDecision_SameBranchCrossAgentMechanicalReachesValidator(t *testing.T) {
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))

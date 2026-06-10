@@ -589,6 +589,75 @@ func TestFormatPrompt_NullRepoSameAgent(t *testing.T) {
 	assert.NotContains(t, prompt, "DIFFERENT PROJECTS")
 }
 
+func TestFormatPrompt_DifferentTicketRefs(t *testing.T) {
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA:    "Ported ARD-1429 Terraform/runbook changes onto a clean branch",
+		OutcomeB:    "Cleaned ARD-1117 PR branch history by cherry-picking rollout commits",
+		TypeA:       "trade_off",
+		TypeB:       "trade_off",
+		AgentA:      "codex-mcp-client",
+		AgentB:      "codex-coder",
+		CreatedA:    now,
+		CreatedB:    now.Add(time.Hour),
+		TicketRefsA: []string{"ARD-1429"},
+		TicketRefsB: []string{"ARD-1117"},
+	})
+
+	assert.Contains(t, prompt, "DIFFERENT TICKETS")
+	assert.Contains(t, prompt, "ARD-1429")
+	assert.Contains(t, prompt, "ARD-1117")
+	assert.Contains(t, prompt, "separate work items")
+	assert.Contains(t, prompt, "same specific design question")
+}
+
+func TestFormatPrompt_DifferentTicketRefsSameDesignQuestionCanStillConflict(t *testing.T) {
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA:        "ARD-1429 requires pgstream snapshot/WAL parity to stay schema-level only",
+		OutcomeB:        "ARD-1430 requires pgstream snapshot/WAL parity to move to table-level patterns",
+		TypeA:           "architecture",
+		TypeB:           "architecture",
+		AgentA:          "planner-a",
+		AgentB:          "planner-b",
+		CreatedA:        now,
+		CreatedB:        now.Add(time.Hour),
+		TicketRefsA:     []string{"ARD-1429"},
+		TicketRefsB:     []string{"ARD-1430"},
+		TopicSimilarity: 0.82,
+	})
+
+	assert.Contains(t, prompt, "DIFFERENT TICKETS")
+	assert.Contains(t, prompt, "same specific design question")
+	assert.Contains(t, prompt, "Two agents recommending DIFFERENT approaches to the SAME design question ARE contradictions")
+	assert.Contains(t, prompt, "OPPOSITE STANCES")
+}
+
+func TestFormatPrompt_SharedTicketRefs(t *testing.T) {
+	now := time.Now()
+	prompt := formatPrompt(ValidateInput{
+		OutcomeA:    "ARD-958 uses Redis for session cache",
+		OutcomeB:    "ARD-958 uses Memcached for session cache",
+		TypeA:       "architecture",
+		TypeB:       "architecture",
+		AgentA:      "planner-a",
+		AgentB:      "planner-b",
+		CreatedA:    now,
+		CreatedB:    now.Add(time.Hour),
+		TicketRefsA: []string{"ARD-958"},
+		TicketRefsB: []string{"ARD-958", "ARD-960"},
+	})
+
+	assert.Contains(t, prompt, "Shared ticket context")
+	assert.NotContains(t, prompt, "DIFFERENT TICKETS")
+}
+
+func TestTicketRefsOverlap(t *testing.T) {
+	assert.True(t, ticketRefsOverlap([]string{"ARD-958"}, []string{"ARD-960", "ARD-958"}))
+	assert.False(t, ticketRefsOverlap([]string{"ARD-958"}, []string{"ARD-960"}))
+	assert.False(t, ticketRefsOverlap(nil, []string{"ARD-960"}))
+}
+
 func TestIsWorkflowPair(t *testing.T) {
 	// Positive cases: review/analysis types followed by fix/implementation types.
 	assert.True(t, isWorkflowPair("code_review", "bug_fix"))
