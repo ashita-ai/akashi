@@ -719,6 +719,8 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		examined++
 
 		cand := sc.cand
+		ticketRefsA := extractTicketRefs(d)
+		ticketRefsB := extractTicketRefs(cand)
 
 		// Cross-encoder reranking: pre-filter before expensive LLM validation.
 		// Only applies to the built-in LLM path — skipped when using the
@@ -818,6 +820,8 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				FullOutcomeB:      cand.Outcome,
 				BranchA:           nestedContextString(d.AgentContext, "git_branch"),
 				BranchB:           nestedContextString(cand.AgentContext, "git_branch"),
+				TicketRefsA:       ticketRefsA,
+				TicketRefsB:       ticketRefsB,
 				TopicSimilarity:   sc.topicSim,
 				PrecedentLinked:   isPrecedentLinked(d, cand),
 				OutcomeSimilarity: sc.outcomeSim,
@@ -942,6 +946,14 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		branchB := nestedContextString(cand.AgentContext, "git_branch")
 		if branchA != "" && branchB != "" && branchA != branchB {
 			note := fmt.Sprintf(" [Branch context: Decision A on %q, Decision B on %q — consider whether this represents parallel work.]", branchA, branchB)
+			if c.Explanation != nil {
+				annotated := *c.Explanation + note
+				c.Explanation = &annotated
+			} else {
+				c.Explanation = &note
+			}
+		}
+		if note := ticketContextNote(ticketRefsA, ticketRefsB); note != "" {
 			if c.Explanation != nil {
 				annotated := *c.Explanation + note
 				c.Explanation = &annotated
@@ -1754,6 +1766,18 @@ var refinementKeywords = []string{
 	"resolved",
 	"completed",
 	"addressed",
+}
+
+func ticketContextNote(a, b []string) string {
+	if len(a) == 0 || len(b) == 0 {
+		return ""
+	}
+	refsA := strings.Join(a, ", ")
+	refsB := strings.Join(b, ", ")
+	if ticketRefsOverlap(a, b) {
+		return fmt.Sprintf(" [Ticket context: Decision A references %s; Decision B references %s. Shared ticket references were available during validation.]", refsA, refsB)
+	}
+	return fmt.Sprintf(" [Ticket context: Decision A references %s; Decision B references %s. Non-overlapping ticket references were available during validation; the conflict was retained because validation found the same design question or an explicit supersession/rejection.]", refsA, refsB)
 }
 
 func derefString(s *string) string {
