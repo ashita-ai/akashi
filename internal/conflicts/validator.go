@@ -37,6 +37,8 @@ type ValidateInput struct {
 	FullOutcomeB      string
 	BranchA           string // git branch from agent_context
 	BranchB           string
+	TicketRefsA       []string
+	TicketRefsB       []string
 	TopicSimilarity   float64 // decision-level embedding similarity (0–1); 0 means unavailable
 	PrecedentLinked   bool    // true when one decision cites the other via precedent_ref
 	OutcomeSimilarity float64 // outcome embedding similarity (0–1); 0 means unavailable
@@ -157,6 +159,22 @@ func formatPrompt(input ValidateInput) string {
 		fmt.Fprintf(&b, "Task (%s): %s\n", input.AgentB, compact.Truncate(input.TaskB, 100))
 	}
 
+	// --- Ticket context (#717 follow-up: disjoint-ticket false positives) ---
+	if len(input.TicketRefsA) > 0 && len(input.TicketRefsB) > 0 {
+		refsA := strings.Join(input.TicketRefsA, ", ")
+		refsB := strings.Join(input.TicketRefsB, ", ")
+		if ticketRefsOverlap(input.TicketRefsA, input.TicketRefsB) {
+			fmt.Fprintf(&b, "Shared ticket context: %s vs %s. Shared ticket references are evidence these decisions may address the same work item.\n",
+				refsA, refsB)
+		} else {
+			fmt.Fprintf(&b, "DIFFERENT TICKETS: %q's decision references %s; %q's decision references %s. "+
+				"Non-overlapping ticket references usually mean separate work items, even inside the same repository or component. "+
+				"Classify as UNRELATED or COMPLEMENTARY unless both decisions explicitly address the same specific design question, "+
+				"or one decision explicitly says it supersedes/rejects the other.\n",
+				input.AgentA, refsA, input.AgentB, refsB)
+		}
+	}
+
 	// --- Session context (#170: temporal refinement) ---
 	if input.SessionIDA != "" && input.SessionIDB != "" && input.SessionIDA == input.SessionIDB {
 		b.WriteString("SAME SESSION: Both decisions were recorded in the same work session. Sequential decisions are typically REFINEMENT or COMPLEMENTARY, not contradictions.\n")
@@ -258,6 +276,22 @@ SEVERITY: critical, high, medium, or low
 EXPLANATION: one sentence using agent names (not "Decision A" or "Decision B")`)
 
 	return b.String()
+}
+
+func ticketRefsOverlap(a, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(a))
+	for _, ref := range a {
+		seen[ref] = struct{}{}
+	}
+	for _, ref := range b {
+		if _, ok := seen[ref]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // workflowPairs maps decision type pairs that represent sequential workflows
