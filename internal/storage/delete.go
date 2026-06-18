@@ -11,10 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ErrAgentNotFound is returned when an agent doesn't exist.
-// It wraps ErrNotFound so callers can use errors.Is(err, ErrNotFound) generically.
-var ErrAgentNotFound = fmt.Errorf("storage: agent: %w", ErrNotFound)
-
 // DeleteAgentResult contains the count of rows deleted per table.
 type DeleteAgentResult struct {
 	Evidence            int64 `json:"evidence"`

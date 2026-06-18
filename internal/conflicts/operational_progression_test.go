@@ -187,7 +187,7 @@ func TestIsOperationalStateProgression(t *testing.T) {
 			name: "supersession keyword in later outcome → NOT suppressed (declared reversal)",
 			d: model.Decision{
 				ID: idA, Project: &mono, DecisionType: "operations",
-				Outcome: "reverted last week's rollout because it caused target-side dataloss", ValidFrom: now,
+				Outcome: "reverted last week's rollout in favor of the prior topology", ValidFrom: now,
 			},
 			cand: model.Decision{
 				ID: idB, Project: &mono, DecisionType: "deployment",
@@ -204,6 +204,51 @@ func TestIsOperationalStateProgression(t *testing.T) {
 			cand: model.Decision{
 				ID: idB, Project: &mono, DecisionType: "deployment",
 				Outcome: "replaced the hosted writer with the BYOC writer", ValidFrom: now.Add(-beyond),
+			},
+			expected: false,
+		},
+		{
+			// SalesPatriot FN anchor: e81b6b22 (pause, DATALOSS) vs 3cf6a4c3
+			// (scale up, "resume loses no data") on connector_c3fed173, 10.9d
+			// apart, no supersession vocab. The data-safety guard must keep this
+			// same-writer pair out of the suppress path — it is the disagreement
+			// a human must see, not a sequential step.
+			name: "data-loss keyword in later outcome → NOT suppressed (data-safety guard)",
+			d: model.Decision{
+				ID: idA, Project: &mono, DecisionType: "operations",
+				Outcome:   "paused SalesPatriot kafka2pg after rollout validation found active target-side DATALOSS quarantine growth",
+				ValidFrom: now,
+			},
+			cand: model.Decision{
+				ID: idB, Project: &mono, DecisionType: "operational",
+				Outcome:   "scaled kafka2pg to 1; replay-upsert means resume loses nothing",
+				ValidFrom: now.Add(-beyond),
+			},
+			expected: false,
+		},
+		{
+			name: "quarantine keyword in earlier outcome → NOT suppressed (both-sides data-safety guard)",
+			d: model.Decision{
+				ID: idA, Project: &mono, DecisionType: "operations",
+				Outcome: "scaled kafka2pg to 1 to resume the drain", ValidFrom: now,
+			},
+			cand: model.Decision{
+				ID: idB, Project: &mono, DecisionType: "deployment",
+				Outcome:   "verified the connector online; one quarantine row noted but non-blocking",
+				ValidFrom: now.Add(-beyond),
+			},
+			expected: false,
+		},
+		{
+			name: "corruption keyword → NOT suppressed (data-safety guard)",
+			d: model.Decision{
+				ID: idA, Project: &mono, DecisionType: "operations",
+				Outcome:   "halted the writer after detecting target-side corruption on apply",
+				ValidFrom: now,
+			},
+			cand: model.Decision{
+				ID: idB, Project: &mono, DecisionType: "operations",
+				Outcome: "promoted the validated digest to the customer account", ValidFrom: now.Add(-beyond),
 			},
 			expected: false,
 		},

@@ -44,34 +44,6 @@ func agentContextString(ctx map[string]any, key string) string {
 	return s
 }
 
-// nestedContextString extracts a string value from the agent_context JSONB map,
-// checking namespaced locations in priority order: client.<key>, server.<key>,
-// then flat <key>. This mirrors the SQL COALESCE used by generated attribution
-// columns (migration 048) and handles both namespaced (MCP/HTTP handler) and
-// legacy flat agent_context layouts.
-func nestedContextString(ctx map[string]any, key string) string {
-	if ctx == nil {
-		return ""
-	}
-	// Check client namespace first (self-reported values like commit_sha, pr_number).
-	if client, ok := ctx["client"].(map[string]any); ok {
-		if s, ok := client[key].(string); ok && s != "" {
-			return s
-		}
-	}
-	// Check server namespace (server-extracted values).
-	if server, ok := ctx["server"].(map[string]any); ok {
-		if s, ok := server[key].(string); ok && s != "" {
-			return s
-		}
-	}
-	// Fall back to flat key (legacy layout).
-	if s, ok := ctx[key].(string); ok {
-		return s
-	}
-	return ""
-}
-
 // uuidString returns the string representation of a UUID pointer, or "" if nil.
 func uuidString(id *uuid.UUID) string {
 	if id == nil {
@@ -1632,14 +1604,8 @@ func isCrossAgentPrecedentRefinement(d, cand model.Decision) bool {
 	return refA == extractTicketRef(cand)
 }
 
-// temporalReassessmentWindow is the minimum time delta between two
-// review-type decisions on the same project for the pair to be treated as a
-// re-measurement rather than a contradiction. Quantitative observations
-// (FP rates, scores, percentages) are time-bound — a snapshot taken weeks
-// later does not contradict an earlier snapshot just because the numbers
-// moved. 7 days matches the SessionStart "recent" window used elsewhere
-// for conflict-relevance filtering.
-const temporalReassessmentWindow = 7 * 24 * time.Hour
+// temporalReassessmentWindow is defined in shared.go — it is referenced by the
+// lite-compiled validator.go and so must live in an untagged file.
 
 // isTemporalReassessment returns true when two decisions are both
 // review/assessment types on the same project, separated by at least
@@ -1677,14 +1643,23 @@ func isTemporalReassessment(d, cand model.Decision) bool {
 }
 
 // operationalProgressionWindow is the minimum time delta between two
-// operational decisions on the same project for the pair to be treated as
-// sequential state progression rather than a contradiction. Genuine
-// operational disagreements — two agents issuing competing directives on the
-// same resource during one incident — happen within hours, not days; a gap
-// this large means the infrastructure state has moved on and the earlier
-// action no longer describes the system the later one is changing. Matches
-// temporalReassessmentWindow: the same "state moved on" rationale applied to
-// operational state instead of measured metrics.
+// operational decisions on the same project below which the pair is never
+// treated as sequential progression — near-simultaneous competing directives
+// are the genuine operational-clash shape and must stay detectable. Beyond the
+// window, a large gap is a *weak* signal that the system state has moved on and
+// the earlier action no longer describes what the later one is changing.
+//
+// The signal is only weak, and deliberately not relied on alone: a single
+// resource can stay in one incident longer than the window (the live SalesPatriot
+// connector_c3fed173 incident ran 2026-05-26 → 06-18), in which case directives
+// spanning >7 days are still about the same live system, not unrelated steps.
+// Time-apart cannot distinguish that case from genuine progression, so
+// isOperationalStateProgression layers other guards on top: the data-loss guard
+// exempts high-stakes pairs outright regardless of gap, and the
+// precedent/session/supersession guards exempt declared lineage. Matches
+// temporalReassessmentWindow (7 days = the SessionStart "recent" window): the
+// same "state moved on" rationale applied to operational state instead of
+// measured metrics.
 const operationalProgressionWindow = 7 * 24 * time.Hour
 
 // isOperationalStateProgression returns true when two decisions are both
@@ -1720,8 +1695,24 @@ const operationalProgressionWindow = 7 * 24 * time.Hour
 //     explicitly reverts/abandons a prior approach is a declared reversal and
 //     reaches the LLM (checked on both sides: the safe, under-suppressing
 //     direction)
+//   - neither outcome reports a data-loss / corruption / quarantine event — a
+//     data-safety event is categorically high-stakes and must reach the
+//     validator regardless of the time gap (checked on both sides). This is
+//     the guard that keeps same-resource incident disagreements like the live
+//     SalesPatriot DATALOSS pause from being silently dropped pre-LLM. See
+//     dataLossKeywords.
 //   - not precedent-linked and not the same session — explicit links and
 //     intra-session pairs are left to the LLM, mirroring isTemporalReassessment
+//
+// Known limitation: suppression keys on (type, project, gap, keywords) with no
+// resource-identity signal, so two operational decisions on DIFFERENT resources
+// that merely share vocabulary are suppressed (the intended FP class), while a
+// same-resource contradiction that mentions no data-safety event can still be
+// suppressed once it is past the window. The data-loss guard closes the
+// high-stakes slice of that gap — the only slice with verified instances in the
+// trail. Fully gating on target resource needs a structured resource field
+// (connectors/customers are named only in free-text outcomes today) and is
+// deferred rather than parsed fragilely from text.
 //
 // Scope: lives only in the cloud scorer (this file is !lite). The lite scorer
 // has none of the structural suppression family; porting it is out of scope.
@@ -1743,6 +1734,15 @@ func isOperationalStateProgression(d, cand model.Decision) bool {
 		return false
 	}
 	if containsSupersessionKeyword(d.Outcome) || containsSupersessionKeyword(cand.Outcome) {
+		return false
+	}
+	// Data-safety guard: never auto-suppress a pair where either side reports a
+	// data-loss / corruption / quarantine event. Such a decision is not a routine
+	// sequential step, and a same-system pair that includes one is precisely the
+	// disagreement that must reach the validator and the conflict queue rather
+	// than be dropped pre-LLM with only a Debug log. Both sides checked
+	// (under-suppressing direction), mirroring the supersession guard above.
+	if containsDataLossKeyword(d.Outcome) || containsDataLossKeyword(cand.Outcome) {
 		return false
 	}
 	delta := d.ValidFrom.Sub(cand.ValidFrom)
@@ -1826,15 +1826,45 @@ func containsSupersessionKeyword(outcome string) bool {
 	return false
 }
 
-// reviewTypes are decision types that represent analysis/review/investigation work.
-var reviewTypes = map[string]bool{
-	"code_review":   true,
-	"assessment":    true,
-	"investigation": true,
-	"review":        true,
-	"analysis":      true,
-	"audit":         true,
+// dataLossKeywords are outcome substrings that mark an operational decision as
+// describing a data-safety event (loss, corruption, or quarantined/skipped
+// writes) rather than a routine state change. isOperationalStateProgression
+// refuses to suppress any pair where either side carries one: a data-safety
+// event is categorically high-stakes, and silently dropping a same-system pair
+// that reports one — before the LLM validator or a human ever sees it — would
+// trade the system's core guarantee (a complete paper trail of disagreements)
+// for noise reduction. Surfaced by the 2026-06 SalesPatriot connector_c3fed173
+// incident, where "paused … active target-side DATALOSS quarantine growth" sat
+// >7 days from "scaled … resume loses no data" on the same writer.
+//
+// Deliberately broad and matched on both sides (the under-suppressing
+// direction): even a reassuring "verified no data loss" disables suppression
+// for the pair, which is correct — if data safety is in question at all, the
+// pair belongs in front of the validator.
+var dataLossKeywords = []string{
+	"dataloss",
+	"data loss",
+	"data-loss",
+	"lost data",
+	"data was lost",
+	"quarantine", // pgstream parks unappliable rows in a quarantine table
+	"corrupt",    // corrupted / corruption
 }
+
+// containsDataLossKeyword returns true if the outcome text references a
+// data-safety event (loss, corruption, or quarantined writes).
+func containsDataLossKeyword(outcome string) bool {
+	lower := strings.ToLower(outcome)
+	for _, kw := range dataLossKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// reviewTypes is defined in shared.go — it is referenced by the lite-compiled
+// validator.go and so must live in an untagged file.
 
 // implementationTypes are decision types that represent fix/implementation work.
 var implementationTypes = map[string]bool{

@@ -45,6 +45,13 @@ jobs:
       - name: Build
         run: go build -ldflags "-X main.version=ci-${GITHUB_SHA::8}" -o bin/akashi ./cmd/akashi
 
+      # Guards the zero-infra SQLite MCP binary (ADR-009), which is built with
+      # -tags lite and so excludes every !lite file. Without this step the lite
+      # build rots silently when shared code starts referencing a cloud-only
+      # symbol (it did, undetected, until the conflicts/storage relocation).
+      - name: Build lite (akashi-local)
+        run: go build -tags lite -o /dev/null ./cmd/akashi-local
+
       - name: Lint
         uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
         with:
