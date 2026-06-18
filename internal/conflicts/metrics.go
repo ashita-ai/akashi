@@ -25,13 +25,14 @@ type Metrics struct {
 	selfCorrectionFiltered metric.Int64Counter
 	outcomeSimFiltered     metric.Int64Counter
 
-	confidenceFloorFiltered      metric.Int64Counter
-	noopClaimGateFiltered        metric.Int64Counter
-	transitiveGroupFiltered      metric.Int64Counter
-	fpPatternFiltered            metric.Int64Counter
-	temporalReassessmentFiltered metric.Int64Counter
-	supersedesCandidateFiltered  metric.Int64Counter
-	crossAgentPrecedentFiltered  metric.Int64Counter
+	confidenceFloorFiltered        metric.Int64Counter
+	noopClaimGateFiltered          metric.Int64Counter
+	transitiveGroupFiltered        metric.Int64Counter
+	fpPatternFiltered              metric.Int64Counter
+	temporalReassessmentFiltered   metric.Int64Counter
+	supersedesCandidateFiltered    metric.Int64Counter
+	crossAgentPrecedentFiltered    metric.Int64Counter
+	operationalProgressionFiltered metric.Int64Counter
 
 	scoringDuration    metric.Float64Histogram
 	llmCallDuration    metric.Float64Histogram
@@ -212,6 +213,14 @@ func (s *Scorer) registerMetrics() {
 	if err != nil {
 		s.logger.Warn("conflicts: failed to create akashi.conflicts.cross_agent_precedent_filtered metric", "error", err)
 		s.metrics.crossAgentPrecedentFiltered, _ = meter.Int64Counter("akashi.conflicts.cross_agent_precedent_filtered.fallback")
+	}
+
+	s.metrics.operationalProgressionFiltered, err = meter.Int64Counter("akashi.conflicts.operational_progression_filtered",
+		metric.WithDescription("Candidate pairs suppressed as same-project operational state progression separated by ≥ operationalProgressionWindow (operational sibling of temporal_reassessment_filtered)"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.operational_progression_filtered metric", "error", err)
+		s.metrics.operationalProgressionFiltered, _ = meter.Int64Counter("akashi.conflicts.operational_progression_filtered.fallback")
 	}
 
 	// --- Histograms ---
