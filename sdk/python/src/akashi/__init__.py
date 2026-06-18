@@ -28,6 +28,7 @@ from akashi.types import (
     ConflictEvalResponse,
     ConflictFate,
     ConflictLabelRecord,
+    ConflictResolutionNoteUpdate,
     ConflictResolution,
     ConflictResolutionPolicy,
     CreateAgentRequest,
@@ -94,6 +95,7 @@ __all__ = [
     "AssessRequest",
     "ValidatePairRequest",
     "UpsertConflictLabelRequest",
+    "ConflictResolutionNoteUpdate",
     # Types — responses
     "TraceResponse",
     "CheckResponse",

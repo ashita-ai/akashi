@@ -525,6 +525,10 @@ export interface ConflictStatusUpdate {
   false_positive_label?: string;
 }
 
+export interface ConflictResolutionNoteUpdate {
+  resolution_note: string;
+}
+
 export interface ResolveConflictGroupRequest {
   status: string;
   resolution_note?: string;

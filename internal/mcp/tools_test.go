@@ -2926,6 +2926,10 @@ func TestHandleResolve_WithWinner(t *testing.T) {
 	assert.Equal(t, "open", resp.OldStatus)
 	assert.Equal(t, "resolved", resp.NewStatus)
 	assert.Equal(t, testAdminID, resp.ResolvedBy)
+
+	label, labelErr := testDB.GetConflictLabel(ctx, conflictID, uuid.Nil)
+	require.NoError(t, labelErr)
+	assert.Equal(t, "genuine", label.Label)
 }
 
 func TestHandleReconcile_Success(t *testing.T) {
@@ -3811,6 +3815,12 @@ func TestHandleResolve_GroupID_ResolvedWithWinner(t *testing.T) {
 	require.NotNil(t, c2After.WinningDecisionID, "conflict 2 should have a winner")
 	assert.True(t, agentADecisions[*c2After.WinningDecisionID],
 		"conflict 2 winner %s should be one of agentA's decisions", c2After.WinningDecisionID)
+
+	for _, cid := range []uuid.UUID{conflictID1, conflictID2} {
+		label, labelErr := testDB.GetConflictLabel(ctx, cid, uuid.Nil)
+		require.NoError(t, labelErr)
+		assert.Equal(t, "genuine", label.Label)
+	}
 }
 
 func TestHandleResolve_GroupID_NotFound(t *testing.T) {

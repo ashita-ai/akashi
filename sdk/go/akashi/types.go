@@ -755,6 +755,11 @@ type ConflictStatusUpdate struct {
 	FalsePositiveLabel string     `json:"false_positive_label,omitempty"`
 }
 
+// ConflictResolutionNoteUpdate is the input for Client.AmendConflictResolutionNote.
+type ConflictResolutionNoteUpdate struct {
+	ResolutionNote string `json:"resolution_note"`
+}
+
 // ResolveConflictGroupRequest is the input for Client.ResolveConflictGroup.
 type ResolveConflictGroupRequest struct {
 	Status             string `json:"status"` // "resolved" or "false_positive"

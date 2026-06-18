@@ -665,6 +665,10 @@ Every detected conflict (in `scored_conflicts`) can be labeled with one of three
 | `related_not_contradicting` | Same topic but not actually contradictory (e.g. paraphrases) | False positive |
 | `unrelated_false_positive` | Different topics entirely — should not have been flagged | False positive |
 
+Resolution endpoints also create labels automatically: resolving with a declared
+winner labels the conflict `genuine`, while marking a conflict `false_positive`
+labels it with `false_positive_label` (default `unrelated_false_positive`).
+
 ### Labeling Conflicts via API
 
 All label endpoints require admin authentication.
@@ -702,6 +706,35 @@ curl -s http://localhost:8081/v1/admin/conflict-labels \
 curl -X DELETE http://localhost:8081/v1/admin/conflicts/{id}/label \
   -H "Authorization: Bearer $TOKEN"
 ```
+
+### Amending Resolution Notes
+
+If a terminal conflict has a mis-keyed resolution note, amend the note through
+the admin route instead of reopening the conflict:
+
+```sh
+curl -X PATCH http://localhost:8081/v1/admin/conflicts/{id}/resolution-note \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"resolution_note": "corrected rationale for this conflict"}'
+```
+
+Open conflicts return `400`; resolve or mark them false-positive first.
+
+### Reducing False Positives
+
+For a noisy deployment, switch to the high-precision profile and force one
+rescore:
+
+```sh
+export AKASHI_CONFLICT_PROFILE=high_precision
+export AKASHI_FORCE_CONFLICT_RESCORE=true
+```
+
+Restart once with both variables set, wait for rescore to complete, then remove
+`AKASHI_FORCE_CONFLICT_RESCORE` so future restarts do not clear and rebuild the
+conflict table again. Keep `AKASHI_CONFLICT_PROFILE=high_precision` if the
+deployment favors reviewer time over marginal recall.
 
 ### Running Scorer Eval (Precision from Labels)
 
