@@ -693,6 +693,25 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			continue
 		}
 
+		// Operational state-progression filter: two operational-execution
+		// decisions on the same project, recorded far apart with no reversal
+		// vocabulary and no precedent link, are sequential steps in an incident
+		// timeline rather than a contradiction. Operational sibling of the
+		// temporal re-assessment filter above — operational state mutates over
+		// time the way measured metrics drift over time, so an action recorded
+		// long ago does not contradict a later one on the same system. This is
+		// the dominant live FP class (2026-06 cross-ticket pgstream/CDC
+		// over-clustering audit). See isOperationalStateProgression.
+		if isOperationalStateProgression(d, sc.cand) {
+			s.metrics.operationalProgressionFiltered.Add(ctx, 1)
+			s.logger.Debug("conflict scorer: operational state-progression suppressed pair",
+				"decision_a", decisionID, "decision_b", sc.cand.ID,
+				"type_a", d.DecisionType, "type_b", sc.cand.DecisionType,
+				"project", derefString(d.Project),
+				"delta", d.ValidFrom.Sub(sc.cand.ValidFrom).Abs())
+			continue
+		}
+
 		// Outcome similarity floor: when outcome embeddings are nearly
 		// identical AND the pair did not qualify for the directToScorer
 		// bypass, suppress as complementary. This catches coordinated
@@ -1657,6 +1676,82 @@ func isTemporalReassessment(d, cand model.Decision) bool {
 	return delta >= temporalReassessmentWindow
 }
 
+// operationalProgressionWindow is the minimum time delta between two
+// operational decisions on the same project for the pair to be treated as
+// sequential state progression rather than a contradiction. Genuine
+// operational disagreements — two agents issuing competing directives on the
+// same resource during one incident — happen within hours, not days; a gap
+// this large means the infrastructure state has moved on and the earlier
+// action no longer describes the system the later one is changing. Matches
+// temporalReassessmentWindow: the same "state moved on" rationale applied to
+// operational state instead of measured metrics.
+const operationalProgressionWindow = 7 * 24 * time.Hour
+
+// isOperationalStateProgression returns true when two decisions are both
+// operational-execution types on the same project, separated by at least
+// operationalProgressionWindow, with neither framed as a reversal of a prior
+// approach and no explicit precedent link between them.
+//
+// Motivation: the dominant live false-positive class (2026-06 open-conflict
+// audit) was cross-ticket operational steps on one hot subsystem
+// (pgstream / Debezium / SalesPatriot CDC) clustered by shared vocabulary —
+// e.g. "rolled kafka2pg back to its pre-rollout digest" eight days after
+// "verified the connector ONLINE". Embeddings place them close (topic_sim
+// 0.70-0.85) and the LLM validator returns CONTRADICTION, but a rollback or
+// pause executed a week after a prior deploy is the next step in an incident
+// timeline, not a disagreement with it.
+//
+// Operational sibling of isTemporalReassessment: that filter covers
+// review-type re-measurements whose numbers drift over time; this one covers
+// operational state that mutates over time. Both rest on the same principle —
+// an action taken long ago does not contradict a later one just because they
+// touch the same system.
+//
+// Deliberately narrow, to keep genuine conflicts detectable:
+//   - both decisions must be operationalTypes. architecture / trade_off /
+//     design forks (e.g. the real Debezium-vs-pgstream disagreement) are
+//     never eligible, so they still reach the validator. This is why
+//     trade_off and bug_fix are excluded even though some operational FPs
+//     carry those types — widening would risk suppressing real design forks.
+//   - same non-empty project (untagged-vs-untagged pairs are not suppressed)
+//   - >= operationalProgressionWindow apart, so near-simultaneous competing
+//     directives (the genuine operational-clash shape) stay detectable
+//   - neither outcome contains a supersession keyword — an action that
+//     explicitly reverts/abandons a prior approach is a declared reversal and
+//     reaches the LLM (checked on both sides: the safe, under-suppressing
+//     direction)
+//   - not precedent-linked and not the same session — explicit links and
+//     intra-session pairs are left to the LLM, mirroring isTemporalReassessment
+//
+// Scope: lives only in the cloud scorer (this file is !lite). The lite scorer
+// has none of the structural suppression family; porting it is out of scope.
+func isOperationalStateProgression(d, cand model.Decision) bool {
+	if !operationalTypes[strings.ToLower(d.DecisionType)] {
+		return false
+	}
+	if !operationalTypes[strings.ToLower(cand.DecisionType)] {
+		return false
+	}
+	projA, projB := derefString(d.Project), derefString(cand.Project)
+	if projA != projB || (projA == "" && projB == "") {
+		return false
+	}
+	if isPrecedentLinked(d, cand) {
+		return false
+	}
+	if d.SessionID != nil && cand.SessionID != nil && *d.SessionID == *cand.SessionID {
+		return false
+	}
+	if containsSupersessionKeyword(d.Outcome) || containsSupersessionKeyword(cand.Outcome) {
+		return false
+	}
+	delta := d.ValidFrom.Sub(cand.ValidFrom)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta >= operationalProgressionWindow
+}
+
 // isPrecedentLinked returns true if either decision cites the other via
 // precedent_ref, meaning there is an explicit lineage link between them.
 func isPrecedentLinked(d, cand model.Decision) bool {
@@ -1748,6 +1843,18 @@ var implementationTypes = map[string]bool{
 	"fix":            true,
 	"implementation": true,
 	"refactor":       true,
+}
+
+// operationalTypes are decision types that represent execution actions against
+// running infrastructure (deploys, rollbacks, scaling, restarts, image
+// promotions) rather than design or evaluation decisions. These produce
+// time-bound state mutations, which is what isOperationalStateProgression keys
+// on. Deliberately excludes architecture/trade_off/design — those carry
+// genuine direction-setting forks that must remain detectable.
+var operationalTypes = map[string]bool{
+	"operations":  true,
+	"operational": true,
+	"deployment":  true,
 }
 
 // isDirectionalWorkflowPair returns true if earlierType is a review/assessment
