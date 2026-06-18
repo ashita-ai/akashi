@@ -165,14 +165,14 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 
 	resolvedBy := claims.ActorID()
 
-	fpLabel := storage.ComputeFPLabel(req.Status, req.FalsePositiveLabel)
+	resolutionLabel := storage.ComputeResolutionLabel(req.Status, req.WinningDecisionID, req.FalsePositiveLabel)
 
 	audit := h.buildAuditEntry(r, orgID,
 		"conflict_status_changed", "conflict", id.String(),
 		nil, nil,
 		map[string]any{"new_status": req.Status, "resolved_by": resolvedBy},
 	)
-	if _, err := h.db.UpdateConflictStatusWithAudit(r.Context(), id, orgID, req.Status, resolvedBy, req.ResolutionNote, req.WinningDecisionID, fpLabel, audit); err != nil {
+	if _, err := h.db.UpdateConflictStatusWithAudit(r.Context(), id, orgID, req.Status, resolvedBy, req.ResolutionNote, req.WinningDecisionID, resolutionLabel, audit); err != nil {
 		if isNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
 			return
@@ -204,6 +204,58 @@ func (h *Handlers) HandlePatchConflict(w http.ResponseWriter, r *http.Request) {
 		h.executeCascadeResolution(r, orgID, *conflict, *req.WinningDecisionID)
 	}
 
+	writeJSON(w, r, http.StatusOK, conflict)
+}
+
+type conflictResolutionNoteUpdate struct {
+	ResolutionNote *string `json:"resolution_note"`
+}
+
+// HandleAmendConflictResolutionNote handles PATCH /v1/admin/conflicts/{id}/resolution-note.
+func (h *Handlers) HandleAmendConflictResolutionNote(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
+
+	id, err := parsePathUUID(r, "id")
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "invalid conflict id")
+		return
+	}
+
+	var req conflictResolutionNoteUpdate
+	if err := decodeJSON(w, r, &req, h.maxRequestBodyBytes); err != nil {
+		handleDecodeError(w, r, err)
+		return
+	}
+	if req.ResolutionNote == nil {
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "resolution_note is required")
+		return
+	}
+
+	amendedBy := claims.ActorID()
+	audit := h.buildAuditEntry(r, orgID,
+		"conflict_resolution_note_amended", "conflict", id.String(),
+		nil, nil,
+		map[string]any{"amended_by": amendedBy},
+	)
+	if err := h.db.UpdateConflictResolutionNoteWithAudit(r.Context(), id, orgID, req.ResolutionNote, amendedBy, audit); err != nil {
+		if isNotFoundError(err) {
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict not found")
+			return
+		}
+		if errors.Is(err, storage.ErrConflictOpen) {
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeInvalidInput, "resolution_note can only be amended after a conflict is resolved")
+			return
+		}
+		h.writeInternalError(w, r, "failed to amend conflict resolution note", err)
+		return
+	}
+
+	conflict, err := h.db.GetConflict(r.Context(), id, orgID)
+	if err != nil || conflict == nil {
+		h.writeInternalError(w, r, "failed to fetch updated conflict", err)
+		return
+	}
 	writeJSON(w, r, http.StatusOK, conflict)
 }
 
@@ -245,9 +297,9 @@ func (h *Handlers) HandleResolveConflictGroup(w http.ResponseWriter, r *http.Req
 		map[string]any{"new_status": req.Status, "resolved_by": resolvedBy},
 	)
 
-	fpLabel := storage.ComputeFPLabel(req.Status, req.FalsePositiveLabel)
+	resolutionLabel := storage.ComputeGroupResolutionLabel(req.Status, req.WinningAgent, req.FalsePositiveLabel)
 
-	affected, err := h.db.ResolveConflictGroup(r.Context(), groupID, orgID, req.Status, resolvedBy, req.ResolutionNote, req.WinningAgent, fpLabel, audit)
+	affected, err := h.db.ResolveConflictGroup(r.Context(), groupID, orgID, req.Status, resolvedBy, req.ResolutionNote, req.WinningAgent, resolutionLabel, audit)
 	if err != nil {
 		if isNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "conflict group not found")

@@ -1637,6 +1637,10 @@ paths:
       description: |
         Transition a conflict to a new lifecycle state (resolved,
         false_positive). Resolution requires `agent` role or higher.
+        When `winning_decision_id` is provided with status `resolved`, the
+        conflict is automatically labeled `genuine` for scorer evaluation.
+        When status is `false_positive`, the conflict is automatically labeled
+        using `false_positive_label`.
       parameters:
         - name: id
           in: path
@@ -1729,7 +1733,10 @@ paths:
       description: |
         Resolves all open conflicts in a conflict group at once.
         When `winning_agent` is provided with status "resolved", each conflict's
-        `winning_decision_id` is set to the decision from that agent.
+        `winning_decision_id` is set to the decision from that agent and each
+        updated conflict is automatically labeled `genuine` for scorer
+        evaluation. False-positive group resolutions are automatically labeled
+        using `false_positive_label`.
         Requires `agent` role or higher.
       parameters:
         - name: id
@@ -1890,6 +1897,42 @@ paths:
       responses:
         "204":
           description: Label deleted.
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/admin/conflicts/{id}/resolution-note:
+    patch:
+      operationId: amendConflictResolutionNote
+      tags: [Admin]
+      summary: Amend a resolved conflict's resolution note
+      description: |
+        Updates the resolution note for a terminal conflict (`resolved` or
+        `false_positive`) and records the amendment in the mutation audit log.
+        Open conflicts cannot have resolution notes amended through this route.
+        Requires `admin` role or higher.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The scored conflict ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConflictResolutionNoteUpdate"
+      responses:
+        "200":
+          description: Updated conflict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIResponse_DecisionConflict"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -4171,6 +4214,16 @@ components:
             Optional. The decision judged to be correct. Must be decision_a_id or
             decision_b_id of the conflict. Only valid when status is "resolved".
             When omitted, the conflict is resolved without declaring a winner.
+            When present, the conflict is automatically labeled `genuine` for
+            scorer evaluation.
+
+    ConflictResolutionNoteUpdate:
+      type: object
+      required: [resolution_note]
+      properties:
+        resolution_note:
+          type: string
+          description: Corrected explanation of how/why the conflict was resolved.
 
     ConflictGroupResolveRequest:
       type: object
@@ -4189,6 +4242,14 @@ components:
             Optional. Resolve all conflicts in favor of decisions from this agent.
             Only valid when status is "resolved". Each conflict's winning_decision_id
             is set to the decision from this agent (decision_a or decision_b).
+            When present, updated conflicts are automatically labeled `genuine`
+            for scorer evaluation.
+        false_positive_label:
+          type: string
+          enum: [unrelated_false_positive, related_not_contradicting]
+          description: |
+            Label for false positive ground truth. Defaults to unrelated_false_positive
+            when status is false_positive.
 
     ConflictGroupResolveResult:
       type: object

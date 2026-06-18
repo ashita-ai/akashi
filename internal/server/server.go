@@ -266,6 +266,7 @@ func New(cfg ServerConfig) *Server {
 	mux.Handle("PUT /v1/admin/conflicts/{id}/label", adminOnly(http.HandlerFunc(h.HandleUpsertConflictLabel)))
 	mux.Handle("GET /v1/admin/conflicts/{id}/label", adminOnly(http.HandlerFunc(h.HandleGetConflictLabel)))
 	mux.Handle("DELETE /v1/admin/conflicts/{id}/label", adminOnly(http.HandlerFunc(h.HandleDeleteConflictLabel)))
+	mux.Handle("PATCH /v1/admin/conflicts/{id}/resolution-note", adminOnly(http.HandlerFunc(h.HandleAmendConflictResolutionNote)))
 	mux.Handle("GET /v1/admin/conflict-labels", adminOnly(http.HandlerFunc(h.HandleListConflictLabels)))
 	mux.Handle("POST /v1/admin/scorer-eval", adminOnly(http.HandlerFunc(h.HandleScorerEval)))
 

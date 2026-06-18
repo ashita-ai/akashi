@@ -3259,6 +3259,10 @@ func TestHandlePatchConflict_WinningDecisionID(t *testing.T) {
 		assert.Equal(t, "resolved", result.Status)
 		require.NotNil(t, result.WinningDecisionID)
 		assert.Equal(t, decisionAID, *result.WinningDecisionID)
+
+		label, labelErr := testDB.GetConflictLabel(context.Background(), conflictID, uuid.Nil)
+		require.NoError(t, labelErr)
+		assert.Equal(t, "genuine", label.Label)
 	})
 
 	t.Run("resolved without winning_decision_id leaves winner nil", func(t *testing.T) {
@@ -3286,6 +3290,44 @@ func TestHandlePatchConflict_WinningDecisionID(t *testing.T) {
 	// Silence unused variable warning: decisionBID is set by seedConflict
 	// and exists to make conflict-side validation meaningful.
 	_ = decisionBID
+}
+
+func TestHandleAmendConflictResolutionNote(t *testing.T) {
+	decisionAID, _, conflictID := seedConflict(t)
+
+	note := "initial note"
+	resp, err := authedRequest("PATCH", testSrv.URL+"/v1/conflicts/"+conflictID.String(), adminToken,
+		model.ConflictStatusUpdate{Status: "resolved", ResolutionNote: &note, WinningDecisionID: &decisionAID})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	amended := "corrected resolution note"
+	resp, err = authedRequest("PATCH", testSrv.URL+"/v1/admin/conflicts/"+conflictID.String()+"/resolution-note", adminToken,
+		map[string]any{"resolution_note": amended})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var envelope struct {
+		Data struct {
+			ResolutionNote *string `json:"resolution_note"`
+		} `json:"data"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(body, &envelope))
+	require.NotNil(t, envelope.Data.ResolutionNote)
+	assert.Equal(t, amended, *envelope.Data.ResolutionNote)
+}
+
+func TestHandleAmendConflictResolutionNote_OpenConflict(t *testing.T) {
+	_, _, conflictID := seedConflict(t)
+
+	resp, err := authedRequest("PATCH", testSrv.URL+"/v1/admin/conflicts/"+conflictID.String()+"/resolution-note", adminToken,
+		map[string]any{"resolution_note": "too early"})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
 // ---- HandlePatchDecision --------------------------------------------------
@@ -3658,6 +3700,9 @@ func TestHandleResolveConflictGroup(t *testing.T) {
 			require.NotNil(t, conflict)
 			assert.Equal(t, "resolved", conflict.Status)
 			require.NotNil(t, conflict.WinningDecisionID, "winning_decision_id should be set")
+			label, labelErr := testDB.GetConflictLabel(context.Background(), cid, uuid.Nil)
+			require.NoError(t, labelErr)
+			assert.Equal(t, "genuine", label.Label)
 		}
 	})
 

@@ -38,6 +38,7 @@ export type {
   ConflictGroup,
   ConflictKind,
   ConflictRecommendation,
+  ConflictResolutionNoteUpdate,
   ConflictResolution,
   ConflictResolutionPolicy,
   ConflictSeverityStats,

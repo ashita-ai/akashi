@@ -88,6 +88,13 @@ func (s *Service) processOrg(ctx context.Context, org storage.OrgAutoResolveConf
 			},
 		}
 
+		// Auto-resolution is a policy/timeout decision, not a deliberate
+		// adjudication, so it must not write a ground-truth label (nil). These
+		// conflicts had their review window expire without human review and may
+		// include false positives; labeling them "genuine" would let the
+		// system's own resolutions inflate the scorer precision metric. The
+		// auto-resolution remains fully recorded in scored_conflicts and the
+		// mutation audit log.
 		_, err := s.db.UpdateConflictStatusWithAudit(ctx, c.ID, org.OrgID,
 			"resolved", "system:auto_resolve", &note, winner, nil, audit)
 		if err != nil {

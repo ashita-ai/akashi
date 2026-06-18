@@ -541,6 +541,7 @@ func TestNewBroker(t *testing.T) {
 
 	if broker == nil {
 		t.Fatal("NewBroker returned nil")
+		return
 	}
 	if broker.logger != logger {
 		t.Error("NewBroker did not set logger")

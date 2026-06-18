@@ -421,9 +421,9 @@ func (l *LiteDB) GetConflict(ctx context.Context, id, orgID uuid.UUID) (*model.D
 }
 
 // UpdateConflictStatusWithAudit transitions a conflict to a new lifecycle state.
-// When fpLabel is non-nil and status is "false_positive", a ground-truth label
-// is inserted atomically within the same transaction.
-func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, fpLabel *string, audit storage.MutationAuditEntry) (string, error) {
+// When resolutionLabel is non-nil and the transition implies ground truth, a
+// label is inserted atomically within the same transaction.
+func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, resolutionLabel *string, audit storage.MutationAuditEntry) (string, error) {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", fmt.Errorf("sqlite: begin conflict status tx: %w", err)
@@ -471,8 +471,8 @@ func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uu
 		return "", fmt.Errorf("sqlite: update conflict status: %w", err)
 	}
 
-	// Atomically label the conflict as a false positive for ground-truth training.
-	if fpLabel != nil && status == "false_positive" {
+	// Atomically label the conflict for ground-truth training.
+	if resolutionLabel != nil && (status == "false_positive" || (status == "resolved" && winningDecisionID != nil)) {
 		_, err = tx.ExecContext(ctx,
 			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
 			 VALUES (?, ?, ?, ?, datetime('now'))
@@ -481,10 +481,10 @@ func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uu
 			   labeled_by = excluded.labeled_by,
 			   labeled_at = excluded.labeled_at
 			 WHERE conflict_labels.org_id = excluded.org_id`,
-			uuidStr(id), uuidStr(orgID), *fpLabel, resolvedBy,
+			uuidStr(id), uuidStr(orgID), *resolutionLabel, resolvedBy,
 		)
 		if err != nil {
-			return "", fmt.Errorf("sqlite: label false positive in conflict status tx: %w", err)
+			return "", fmt.Errorf("sqlite: label conflict in conflict status tx: %w", err)
 		}
 	}
 
@@ -493,8 +493,8 @@ func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uu
 	if winningDecisionID != nil && status == "resolved" {
 		afterData["winning_decision_id"] = winningDecisionID.String()
 	}
-	if fpLabel != nil {
-		afterData["fp_label"] = *fpLabel
+	if resolutionLabel != nil {
+		afterData["resolution_label"] = *resolutionLabel
 	}
 	audit.AfterData = afterData
 	if err := insertAuditTx(ctx, tx, audit); err != nil {
@@ -507,11 +507,71 @@ func (l *LiteDB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uu
 	return oldStatus, nil
 }
 
+// UpdateConflictResolutionNoteWithAudit amends the resolution note for a
+// terminal conflict and records the change in the mutation audit log.
+func (l *LiteDB) UpdateConflictResolutionNoteWithAudit(ctx context.Context, id, orgID uuid.UUID, resolutionNote *string, amendedBy string, audit storage.MutationAuditEntry) error {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: begin resolution note tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var oldStatus string
+	var oldNote sql.NullString
+	err = tx.QueryRowContext(ctx,
+		`SELECT status, resolution_note FROM scored_conflicts WHERE id = ? AND org_id = ?`,
+		uuidStr(id), uuidStr(orgID),
+	).Scan(&oldStatus, &oldNote)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("sqlite: conflict: %w", storage.ErrNotFound)
+		}
+		return fmt.Errorf("sqlite: get conflict resolution note: %w", err)
+	}
+	if oldStatus == "open" {
+		return storage.ErrConflictOpen
+	}
+
+	var noteVal any
+	if resolutionNote != nil {
+		noteVal = *resolutionNote
+	}
+	result, err := tx.ExecContext(ctx,
+		`UPDATE scored_conflicts SET resolution_note = ? WHERE id = ? AND org_id = ?`,
+		noteVal, uuidStr(id), uuidStr(orgID),
+	)
+	if err != nil {
+		return fmt.Errorf("sqlite: update conflict resolution note: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return fmt.Errorf("sqlite: conflict: %w", storage.ErrNotFound)
+	}
+
+	var oldNotePtr *string
+	if oldNote.Valid {
+		oldNotePtr = &oldNote.String
+	}
+	audit.BeforeData = map[string]any{"status": oldStatus, "resolution_note": oldNotePtr}
+	audit.AfterData = map[string]any{
+		"status":          oldStatus,
+		"resolution_note": resolutionNote,
+		"amended_by":      amendedBy,
+	}
+	if err := insertAuditTx(ctx, tx, audit); err != nil {
+		return fmt.Errorf("sqlite: audit conflict resolution note amendment: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: commit resolution note tx: %w", err)
+	}
+	return nil
+}
+
 // ResolveConflictGroup atomically resolves all open conflicts in a group.
-// Validates winningAgent against the group's agent pair. When fpLabel is
-// non-nil (status must be "false_positive"), ground truth labels are inserted
-// atomically within the same transaction.
-func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningAgent *string, fpLabel *string, audit storage.MutationAuditEntry) (int, error) {
+// Validates winningAgent against the group's agent pair. When resolutionLabel
+// is non-nil, ground truth labels are inserted atomically within the same
+// transaction.
+func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningAgent *string, resolutionLabel *string, audit storage.MutationAuditEntry) (int, error) {
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("sqlite: begin resolve group tx: %w", err)
@@ -610,28 +670,28 @@ func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.U
 
 	affected, _ := result.RowsAffected()
 
-	// Atomically label all just-resolved conflicts as false positives for
-	// ground truth training. The WHERE clause uses resolved_at = datetime('now')
-	// (which returns a constant within a transaction) to precisely target
-	// only rows updated in THIS transaction, avoiding a resolved_by
-	// collision when the same actor resolves the same group twice.
-	if fpLabel != nil && status == "false_positive" && affected > 0 {
+	// Atomically label all just-resolved conflicts for ground truth training.
+	// The WHERE clause uses resolved_at = datetime('now') (which returns a
+	// constant within a transaction) to precisely target only rows updated in
+	// THIS transaction, avoiding a resolved_by collision when the same actor
+	// resolves the same group twice.
+	if resolutionLabel != nil && (status == "false_positive" || (status == "resolved" && winningAgent != nil)) && affected > 0 {
 		_, err = tx.ExecContext(ctx,
 			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
 			 SELECT sc.id, sc.org_id, ?, ?, datetime('now')
 			 FROM scored_conflicts sc
 			 WHERE sc.group_id = ? AND sc.org_id = ?
-			   AND sc.status = 'false_positive'
+			   AND sc.status = ?
 			   AND sc.resolved_at = datetime('now')
 			 ON CONFLICT (scored_conflict_id) DO UPDATE SET
 			   label = excluded.label,
 			   labeled_by = excluded.labeled_by,
 			   labeled_at = excluded.labeled_at
 			 WHERE conflict_labels.org_id = excluded.org_id`,
-			*fpLabel, resolvedBy, uuidStr(groupID), uuidStr(orgID),
+			*resolutionLabel, resolvedBy, uuidStr(groupID), uuidStr(orgID), status,
 		)
 		if err != nil {
-			return 0, fmt.Errorf("sqlite: label false positives in resolve group tx: %w", err)
+			return 0, fmt.Errorf("sqlite: label conflicts in resolve group tx: %w", err)
 		}
 	}
 
@@ -640,8 +700,8 @@ func (l *LiteDB) ResolveConflictGroup(ctx context.Context, groupID, orgID uuid.U
 	if winningAgent != nil {
 		afterData["winning_agent"] = *winningAgent
 	}
-	if fpLabel != nil {
-		afterData["fp_label"] = *fpLabel
+	if resolutionLabel != nil {
+		afterData["resolution_label"] = *resolutionLabel
 	}
 	audit.AfterData = afterData
 	if err := insertAuditTx(ctx, tx, audit); err != nil {
