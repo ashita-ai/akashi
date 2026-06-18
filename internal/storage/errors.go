@@ -1,9 +1,21 @@
 package storage
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // ErrNotFound is returned when a requested entity does not exist.
 var ErrNotFound = errors.New("storage: not found")
+
+// ErrAgentNotFound is returned when an agent doesn't exist. It wraps ErrNotFound
+// so callers can use errors.Is(err, ErrNotFound) generically.
+//
+// Defined here (a shared, untagged file) rather than in the !lite delete.go
+// because the shared decisions service (internal/service/decisions, compiled
+// into the lite binary) references it; a definition in a !lite file would leave
+// the lite build undefined.
+var ErrAgentNotFound = fmt.Errorf("storage: agent: %w", ErrNotFound)
 
 // ErrAlreadyErased is returned when attempting to erase an already-erased decision.
 var ErrAlreadyErased = errors.New("storage: already erased")
