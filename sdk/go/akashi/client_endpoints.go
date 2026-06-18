@@ -198,6 +198,15 @@ func (c *Client) PatchConflict(ctx context.Context, conflictID uuid.UUID, req Co
 	return &resp, nil
 }
 
+// AmendConflictResolutionNote updates the resolution note for a terminal conflict.
+func (c *Client) AmendConflictResolutionNote(ctx context.Context, conflictID uuid.UUID, req ConflictResolutionNoteUpdate) (*DecisionConflict, error) {
+	var resp DecisionConflict
+	if err := c.patch(ctx, "/v1/admin/conflicts/"+conflictID.String()+"/resolution-note", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // ListConflictGroups retrieves groups of related conflicts.
 func (c *Client) ListConflictGroups(ctx context.Context, opts *ConflictGroupOptions) (*ConflictGroupsResponse, error) {
 	params := url.Values{}

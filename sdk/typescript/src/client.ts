@@ -26,6 +26,7 @@ import type {
   ConflictEvalResponse,
   ConflictGroup,
   ConflictLabelRecord,
+  ConflictResolutionNoteUpdate,
   ConflictStatusUpdate,
   CreateAgentRequest,
   CreateGrantRequest,
@@ -848,6 +849,14 @@ export class AkashiClient {
   async patchConflict(conflictId: string, req: ConflictStatusUpdate): Promise<DecisionConflict> {
     return this.patch<DecisionConflict>(
       `/v1/conflicts/${encodeURIComponent(conflictId)}`,
+      req,
+    );
+  }
+
+  /** Amend the resolution note for a terminal conflict. */
+  async amendConflictResolutionNote(conflictId: string, req: ConflictResolutionNoteUpdate): Promise<DecisionConflict> {
+    return this.patch<DecisionConflict>(
+      `/v1/admin/conflicts/${encodeURIComponent(conflictId)}/resolution-note`,
       req,
     );
   }

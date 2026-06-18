@@ -2170,15 +2170,15 @@ func (s *Server) handleResolve(ctx context.Context, request mcplib.CallToolReque
 
 	actorRole := string(claims.Role)
 
-	// Compute false_positive label once — passed to both resolution paths.
+	// Compute the ground-truth label once — passed to both resolution paths.
 	rawFPLabel := request.GetString("false_positive_label", "")
-	fpLabel := storage.ComputeFPLabel(status, &rawFPLabel)
+	resolutionLabel := storage.ComputeResolutionLabel(status, winningDecisionID, &rawFPLabel)
 
 	// Attempt single-conflict resolution first. UpdateConflictStatusWithAudit
 	// uses SELECT ... FOR UPDATE inside its transaction, so there is no
 	// read-then-write race. If the ID doesn't match a scored_conflict, fall
 	// back to group resolution.
-	singleResult, singleErr := s.resolveSingleConflict(ctx, conflictID, orgID, status, resolvedBy, actorRole, resolutionNote, winningDecisionID, fpLabel)
+	singleResult, singleErr := s.resolveSingleConflict(ctx, conflictID, orgID, status, resolvedBy, actorRole, resolutionNote, winningDecisionID, resolutionLabel)
 	if singleErr != nil {
 		return nil, singleErr
 	}
@@ -2187,7 +2187,7 @@ func (s *Server) handleResolve(ctx context.Context, request mcplib.CallToolReque
 	}
 
 	// Not a scored_conflict ID — try resolving as a conflict_group ID.
-	return s.resolveGroup(ctx, conflictID, orgID, status, resolvedBy, actorRole, resolutionNote, winningDecisionID, fpLabel)
+	return s.resolveGroup(ctx, conflictID, orgID, status, resolvedBy, actorRole, resolutionNote, winningDecisionID, resolutionLabel)
 }
 
 func (s *Server) handleReconcile(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
@@ -2332,7 +2332,7 @@ func (s *Server) resolveSingleConflict(
 	status, resolvedBy, actorRole string,
 	resolutionNote *string,
 	winningDecisionID *uuid.UUID,
-	fpLabel *string,
+	resolutionLabel *string,
 ) (*mcplib.CallToolResult, error) {
 	audit := storage.MutationAuditEntry{
 		OrgID:        orgID,
@@ -2345,7 +2345,7 @@ func (s *Server) resolveSingleConflict(
 		Metadata:     map[string]any{"new_status": status, "resolved_by": resolvedBy},
 	}
 
-	oldStatus, err := s.db.UpdateConflictStatusWithAudit(ctx, conflictID, orgID, status, resolvedBy, resolutionNote, winningDecisionID, fpLabel, audit)
+	oldStatus, err := s.db.UpdateConflictStatusWithAudit(ctx, conflictID, orgID, status, resolvedBy, resolutionNote, winningDecisionID, resolutionLabel, audit)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			// Not a scored_conflict — return nil to signal fallback to group path.
@@ -2427,7 +2427,7 @@ func (s *Server) resolveGroup(
 	status, resolvedBy, actorRole string,
 	resolutionNote *string,
 	winningDecisionID *uuid.UUID,
-	fpLabel *string,
+	resolutionLabel *string,
 ) (*mcplib.CallToolResult, error) {
 	// Convert winning_decision_id → winning agent. The storage method resolves
 	// per-conflict winners atomically via SQL CASE on agent_a/agent_b, which is
@@ -2443,6 +2443,7 @@ func (s *Server) resolveGroup(
 			return errorResult("winning_decision_id not found"), nil
 		}
 		winningAgent = &dec.AgentID
+		resolutionLabel = storage.ComputeGroupResolutionLabel(status, winningAgent, nil)
 	}
 
 	audit := storage.MutationAuditEntry{
@@ -2456,7 +2457,7 @@ func (s *Server) resolveGroup(
 		Metadata:     map[string]any{"new_status": status, "resolved_by": resolvedBy},
 	}
 
-	affected, err := s.db.ResolveConflictGroup(ctx, groupID, orgID, status, resolvedBy, resolutionNote, winningAgent, fpLabel, audit)
+	affected, err := s.db.ResolveConflictGroup(ctx, groupID, orgID, status, resolvedBy, resolutionNote, winningAgent, resolutionLabel, audit)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			return errorResult("conflict not found (no scored_conflict or conflict_group matches this ID)"), nil

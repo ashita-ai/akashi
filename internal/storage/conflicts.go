@@ -406,9 +406,10 @@ func (db *DB) GetConflict(ctx context.Context, id, orgID uuid.UUID) (*model.Deci
 // UpdateConflictStatusWithAudit transitions a conflict to a new lifecycle
 // state and inserts a mutation audit entry, atomically in a single transaction.
 // winningDecisionID is optional; when provided it is written only for "resolved" transitions.
-// fpLabel is optional; when non-nil and status is "false_positive", a ground-truth
-// label is inserted atomically within the same transaction.
-func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, fpLabel *string, audit MutationAuditEntry) (oldStatus string, err error) {
+// resolutionLabel is optional; when non-nil and the transition implies ground
+// truth (false_positive, or resolved with a declared winner), a label is
+// inserted atomically within the same transaction.
+func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.UUID, status, resolvedBy string, resolutionNote *string, winningDecisionID *uuid.UUID, resolutionLabel *string, audit MutationAuditEntry) (oldStatus string, err error) {
 	txErr := db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		// Read old status and decision pair for audit before_data and winner validation.
 		var decisionAID, decisionBID uuid.UUID
@@ -453,10 +454,10 @@ func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.
 			return fmt.Errorf("storage: conflict: %w", ErrNotFound)
 		}
 
-		// Atomically label the conflict as a false positive for ground-truth
-		// training. Inserted in the same tx so a crash between status update
-		// and label insert can never leave an unlabeled false_positive.
-		if fpLabel != nil && status == "false_positive" {
+		// Atomically label the conflict for ground-truth training. Inserted in
+		// the same tx so a crash between status update and label insert can
+		// never leave an unlabeled terminal resolution.
+		if resolutionLabel != nil && (status == "false_positive" || (status == "resolved" && winningDecisionID != nil)) {
 			_, err = tx.Exec(ctx,
 				`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
 				 VALUES ($1, $2, $3, $4, now())
@@ -465,9 +466,9 @@ func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.
 				   labeled_by = excluded.labeled_by,
 				   labeled_at = excluded.labeled_at
 				 WHERE conflict_labels.org_id = excluded.org_id`,
-				id, orgID, *fpLabel, resolvedBy)
+				id, orgID, *resolutionLabel, resolvedBy)
 			if err != nil {
-				return fmt.Errorf("storage: label false positive in conflict status tx: %w", err)
+				return fmt.Errorf("storage: label conflict in status tx: %w", err)
 			}
 		}
 
@@ -476,8 +477,8 @@ func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.
 		if winningDecisionID != nil && status == "resolved" {
 			afterData["winning_decision_id"] = winningDecisionID.String()
 		}
-		if fpLabel != nil {
-			afterData["fp_label"] = *fpLabel
+		if resolutionLabel != nil {
+			afterData["resolution_label"] = *resolutionLabel
 		}
 		audit.AfterData = afterData
 		if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
@@ -489,6 +490,49 @@ func (db *DB) UpdateConflictStatusWithAudit(ctx context.Context, id, orgID uuid.
 		return "", txErr
 	}
 	return oldStatus, nil
+}
+
+// UpdateConflictResolutionNoteWithAudit amends the resolution note for a
+// terminal conflict and records the change in the mutation audit log.
+func (db *DB) UpdateConflictResolutionNoteWithAudit(ctx context.Context, id, orgID uuid.UUID, resolutionNote *string, amendedBy string, audit MutationAuditEntry) error {
+	return db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var oldStatus string
+		var oldNote *string
+		if err := tx.QueryRow(ctx,
+			`SELECT status, resolution_note FROM scored_conflicts WHERE id = $1 AND org_id = $2 FOR UPDATE`,
+			id, orgID).Scan(&oldStatus, &oldNote); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("storage: conflict: %w", ErrNotFound)
+			}
+			return fmt.Errorf("storage: get conflict resolution note: %w", err)
+		}
+		if oldStatus == "open" {
+			return ErrConflictOpen
+		}
+
+		tag, err := tx.Exec(ctx,
+			`UPDATE scored_conflicts
+			 SET resolution_note = $1
+			 WHERE id = $2 AND org_id = $3`,
+			resolutionNote, id, orgID)
+		if err != nil {
+			return fmt.Errorf("storage: update conflict resolution note: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("storage: conflict: %w", ErrNotFound)
+		}
+
+		audit.BeforeData = map[string]any{"status": oldStatus, "resolution_note": oldNote}
+		audit.AfterData = map[string]any{
+			"status":          oldStatus,
+			"resolution_note": resolutionNote,
+			"amended_by":      amendedBy,
+		}
+		if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {
+			return fmt.Errorf("storage: audit conflict resolution note amendment: %w", err)
+		}
+		return nil
+	})
 }
 
 // InsertScoredConflict inserts a semantic conflict into scored_conflicts.
@@ -1269,16 +1313,16 @@ func (db *DB) ListConflictGroups(ctx context.Context, orgID uuid.UUID, f Conflic
 // decision_b_id when agent_b matches). Returns ErrWinningAgentNotInGroup if
 // winningAgent does not match agent_a or agent_b in the group.
 //
-// When fpLabel is non-nil (status must be "false_positive"), ground truth
-// labels are inserted atomically within the same transaction — preventing
-// partial-label states on crash. Returns the number of conflicts updated.
+// When resolutionLabel is non-nil, ground truth labels are inserted atomically
+// within the same transaction — preventing partial-label states on crash.
+// Returns the number of conflicts updated.
 func (db *DB) ResolveConflictGroup(
 	ctx context.Context,
 	groupID, orgID uuid.UUID,
 	status, resolvedBy string,
 	resolutionNote *string,
 	winningAgent *string,
-	fpLabel *string,
+	resolutionLabel *string,
 	audit MutationAuditEntry,
 ) (int, error) {
 	tx, err := db.pool.Begin(ctx)
@@ -1401,7 +1445,7 @@ func (db *DB) ResolveConflictGroup(
 	// Atomically label the exact rows we just updated. Using the RETURNING IDs
 	// eliminates the fragile pattern of re-querying by status + resolved_by
 	// (which could accidentally match rows from concurrent transactions).
-	if fpLabel != nil && status == "false_positive" && affected > 0 {
+	if resolutionLabel != nil && (status == "false_positive" || (status == "resolved" && winningAgent != nil)) && affected > 0 {
 		_, err = tx.Exec(ctx,
 			`INSERT INTO conflict_labels (scored_conflict_id, org_id, label, labeled_by, labeled_at)
 			 SELECT unnest($1::uuid[]), $2, $3, $4, now()
@@ -1410,9 +1454,9 @@ func (db *DB) ResolveConflictGroup(
 			   labeled_by = excluded.labeled_by,
 			   labeled_at = excluded.labeled_at
 			 WHERE conflict_labels.org_id = excluded.org_id`,
-			updatedIDs, orgID, *fpLabel, resolvedBy)
+			updatedIDs, orgID, *resolutionLabel, resolvedBy)
 		if err != nil {
-			return 0, fmt.Errorf("storage: label false positives in resolve group tx: %w", err)
+			return 0, fmt.Errorf("storage: label conflicts in resolve group tx: %w", err)
 		}
 	}
 
@@ -1421,8 +1465,8 @@ func (db *DB) ResolveConflictGroup(
 	if winningAgent != nil {
 		afterData["winning_agent"] = *winningAgent
 	}
-	if fpLabel != nil {
-		afterData["fp_label"] = *fpLabel
+	if resolutionLabel != nil {
+		afterData["resolution_label"] = *resolutionLabel
 	}
 	audit.AfterData = afterData
 	if err := InsertMutationAuditTx(ctx, tx, audit); err != nil {

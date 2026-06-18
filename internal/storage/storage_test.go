@@ -4112,11 +4112,15 @@ func TestUpdateConflictStatusWithAudit(t *testing.T) {
 	require.NotNil(t, got.ResolvedBy)
 	assert.Equal(t, "admin-agent", *got.ResolvedBy)
 	assert.Nil(t, got.WinningDecisionID, "false_positive should not set winner")
+	fpGot, err := testDB.GetConflictLabel(ctx, conflictID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, "unrelated_false_positive", fpGot.Label)
 
 	// Transition to resolved with a winner (overriding false_positive).
+	genuineLabel := "genuine"
 	resNote := "Right approach is better."
 	oldStatus2, err := testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
-		"resolved", "admin-agent", &resNote, &dB.ID, nil,
+		"resolved", "admin-agent", &resNote, &dB.ID, &genuineLabel,
 		storage.MutationAuditEntry{
 			RequestID: "resolve-" + suffix, OrgID: uuid.Nil,
 			ActorAgentID: "admin-agent", ActorRole: "admin",
@@ -4132,6 +4136,74 @@ func TestUpdateConflictStatusWithAudit(t *testing.T) {
 	assert.Equal(t, "admin-agent", *got2.ResolvedBy)
 	require.NotNil(t, got2.WinningDecisionID)
 	assert.Equal(t, dB.ID, *got2.WinningDecisionID)
+	genuineGot, err := testDB.GetConflictLabel(ctx, conflictID, uuid.Nil)
+	require.NoError(t, err)
+	assert.Equal(t, "genuine", genuineGot.Label)
+}
+
+func TestUpdateConflictResolutionNoteWithAudit(t *testing.T) {
+	ctx := context.Background()
+	suffix := uuid.New().String()[:8]
+
+	agentA := "note-a-" + suffix
+	agentB := "note-b-" + suffix
+	runA, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentA})
+	require.NoError(t, err)
+	runB, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentB})
+	require.NoError(t, err)
+	dA, err := testDB.CreateDecision(ctx, model.Decision{RunID: runA.ID, AgentID: agentA, DecisionType: "note_test", Outcome: "left", Confidence: 0.8})
+	require.NoError(t, err)
+	dB, err := testDB.CreateDecision(ctx, model.Decision{RunID: runB.ID, AgentID: agentB, DecisionType: "note_test", Outcome: "right", Confidence: 0.8})
+	require.NoError(t, err)
+
+	topicSim := 0.8
+	outcomeDiv := 0.7
+	sig := topicSim * outcomeDiv
+	conflictID, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind: model.ConflictKindCrossAgent, DecisionAID: dA.ID, DecisionBID: dB.ID,
+		OrgID: uuid.Nil, AgentA: agentA, AgentB: agentB,
+		DecisionTypeA: "note_test", DecisionTypeB: "note_test",
+		OutcomeA: "left", OutcomeB: "right",
+		TopicSimilarity: &topicSim, OutcomeDivergence: &outcomeDiv,
+		Significance: &sig, ScoringMethod: "text",
+	})
+	require.NoError(t, err)
+
+	amended := "cannot amend while open"
+	err = testDB.UpdateConflictResolutionNoteWithAudit(ctx, conflictID, uuid.Nil, &amended, "admin-agent",
+		storage.MutationAuditEntry{
+			RequestID: uuid.New().String(), OrgID: uuid.Nil,
+			ActorAgentID: "admin-agent", ActorRole: "admin",
+			Operation: "amend_resolution_note", ResourceType: "conflict",
+			ResourceID: conflictID.String(),
+		})
+	require.ErrorIs(t, err, storage.ErrConflictOpen)
+
+	original := "wrong note"
+	_, err = testDB.UpdateConflictStatusWithAudit(ctx, conflictID, uuid.Nil,
+		"resolved", "admin-agent", &original, &dA.ID, storage.ComputeResolutionLabel("resolved", &dA.ID, nil),
+		storage.MutationAuditEntry{
+			RequestID: uuid.New().String(), OrgID: uuid.Nil,
+			ActorAgentID: "admin-agent", ActorRole: "admin",
+			Operation: "resolve_conflict", ResourceType: "conflict",
+			ResourceID: conflictID.String(),
+		})
+	require.NoError(t, err)
+
+	amended = "corrected note"
+	err = testDB.UpdateConflictResolutionNoteWithAudit(ctx, conflictID, uuid.Nil, &amended, "admin-agent",
+		storage.MutationAuditEntry{
+			RequestID: uuid.New().String(), OrgID: uuid.Nil,
+			ActorAgentID: "admin-agent", ActorRole: "admin",
+			Operation: "amend_resolution_note", ResourceType: "conflict",
+			ResourceID: conflictID.String(),
+		})
+	require.NoError(t, err)
+
+	got, err := testDB.GetConflict(ctx, conflictID, uuid.Nil)
+	require.NoError(t, err)
+	require.NotNil(t, got.ResolutionNote)
+	assert.Equal(t, "corrected note", *got.ResolutionNote)
 }
 
 // ---------------------------------------------------------------------------
@@ -6029,9 +6101,10 @@ func TestResolveConflictGroup_WithWinner(t *testing.T) {
 	require.NotNil(t, conflict.GroupID, "conflict should have a group_id")
 
 	resNote := "agent B had higher confidence"
+	genuineLabel := "genuine"
 	affected, err := testDB.ResolveConflictGroup(ctx,
 		*conflict.GroupID, uuid.Nil,
-		"resolved", "test-admin", &resNote, &agentB, nil,
+		"resolved", "test-admin", &resNote, &agentB, &genuineLabel,
 		storage.MutationAuditEntry{
 			RequestID:    uuid.New().String(),
 			OrgID:        uuid.Nil,
@@ -6057,6 +6130,9 @@ func TestResolveConflictGroup_WithWinner(t *testing.T) {
 		if c.ID == conflictID {
 			found = true
 			assert.Equal(t, "resolved", c.Status)
+			label, labelErr := testDB.GetConflictLabel(ctx, conflictID, uuid.Nil)
+			require.NoError(t, labelErr)
+			assert.Equal(t, "genuine", label.Label)
 			break
 		}
 	}

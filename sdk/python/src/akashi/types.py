@@ -576,6 +576,10 @@ class ConflictStatusUpdate(BaseModel):
     false_positive_label: str | None = None
 
 
+class ConflictResolutionNoteUpdate(BaseModel):
+    resolution_note: str
+
+
 class AdjudicateConflictRequest(BaseModel):
     outcome: str
     reasoning: str | None = None

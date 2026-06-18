@@ -51,6 +51,7 @@ from akashi.types import (
     ConflictEvalResponse,
     ConflictGroup,
     ConflictLabelRecord,
+    ConflictResolutionNoteUpdate,
     ConflictStatusUpdate,
     CreateAgentRequest,
     CreateGrantRequest,
@@ -800,6 +801,18 @@ class AkashiClient:
         """Update a conflict's status (resolve or mark false positive)."""
         data = await self._patch(
             f"/v1/conflicts/{conflict_id}",
+            req.model_dump(exclude_none=True),
+        )
+        return DecisionConflict.model_validate(data)
+
+    async def amend_conflict_resolution_note(
+        self,
+        conflict_id: UUID,
+        req: ConflictResolutionNoteUpdate,
+    ) -> DecisionConflict:
+        """Amend the resolution note for a terminal conflict."""
+        data = await self._patch(
+            f"/v1/admin/conflicts/{conflict_id}/resolution-note",
             req.model_dump(exclude_none=True),
         )
         return DecisionConflict.model_validate(data)
@@ -1797,6 +1810,18 @@ class AkashiSyncClient:
         """Update a conflict's status (resolve or mark false positive)."""
         data = self._patch(
             f"/v1/conflicts/{conflict_id}",
+            req.model_dump(exclude_none=True),
+        )
+        return DecisionConflict.model_validate(data)
+
+    def amend_conflict_resolution_note(
+        self,
+        conflict_id: UUID,
+        req: ConflictResolutionNoteUpdate,
+    ) -> DecisionConflict:
+        """Amend the resolution note for a terminal conflict."""
+        data = self._patch(
+            f"/v1/admin/conflicts/{conflict_id}/resolution-note",
             req.model_dump(exclude_none=True),
         )
         return DecisionConflict.model_validate(data)
