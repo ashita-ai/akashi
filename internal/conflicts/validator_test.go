@@ -1160,17 +1160,29 @@ func TestScoreForDecision_LLMSupersession(t *testing.T) {
 	}
 
 	// The later decision (dB) is recorded as the superseding side via an
-	// LLM-supersession suggestion targeting the earlier decision (dA).
+	// LLM-supersession suggestion targeting the earlier decision (dA). This
+	// integration suite shares org uuid.Nil across many tests, and the candidate
+	// finder returns every embedding-neighbour in the org — so dB can legitimately
+	// accrue supersedes suggestions against unrelated decisions from sibling tests
+	// (decision_supersedes explicitly allows multiple suggested predecessors per
+	// superseding decision). Scope the assertion to the dA→dB pair rather than a
+	// global count, mirroring the conflict-check above.
 	suggestions, err := testDB.ListSupersedesSuggestionsForDecisions(ctx, orgID, []uuid.UUID{dB.ID})
 	require.NoError(t, err)
-	require.Len(t, suggestions, 1, "supersession should produce exactly one supersedes suggestion")
-	assert.Equal(t, dB.ID, suggestions[0].SupersedingID)
-	assert.Equal(t, dA.ID, suggestions[0].SupersededID)
-	assert.Equal(t, "detector:llm_supersession", suggestions[0].SuggestedBy)
-	require.NotNil(t, suggestions[0].Confidence)
-	assert.InDelta(t, 1.0, *suggestions[0].Confidence, 0.01,
+	var found *model.SupersedesSuggestion
+	for i := range suggestions {
+		if suggestions[i].SupersededID == dA.ID {
+			found = &suggestions[i]
+			break
+		}
+	}
+	require.NotNil(t, found, "supersession should produce a supersedes suggestion for the dA→dB pair")
+	assert.Equal(t, dB.ID, found.SupersedingID)
+	assert.Equal(t, "detector:llm_supersession", found.SuggestedBy)
+	require.NotNil(t, found.Confidence)
+	assert.InDelta(t, 1.0, *found.Confidence, 0.01,
 		"identical topic embeddings should yield confidence ≈ 1.0")
-	assert.Contains(t, suggestions[0].Reason, agentID)
+	assert.Contains(t, found.Reason, agentID)
 }
 
 func TestScoreForDecision_LLMError(t *testing.T) {
