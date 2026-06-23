@@ -684,6 +684,27 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			continue
 		}
 
+		// Disjoint work-item filter: two work-item-scoped decisions (reviews,
+		// plans) on the same project that reference entirely different work
+		// items — different PRs or different tickets — examine different
+		// code/scope and cannot contradict each other. This is the structural,
+		// PR-aware escalation of the disjoint-ticket validator prompt hint
+		// (eef7eb2c), which the LLM ignored on dense shared-subsystem
+		// vocabulary; it is the dominant 2026-06-23 false-positive class (9 of
+		// 19 open) and the mechanism behind the single-review fan-out (a review
+		// of "PR #1539" matched against nine other-PR/-ticket decisions).
+		// Direction-setting types are excluded so genuine design forks stay
+		// detectable. See isDisjointWorkItem.
+		if isDisjointWorkItem(d, sc.cand) {
+			s.metrics.disjointWorkItemFiltered.Add(ctx, 1)
+			s.logger.Debug("conflict scorer: disjoint work-item filter suppressed pair",
+				"decision_a", decisionID, "decision_b", sc.cand.ID,
+				"type_a", d.DecisionType, "type_b", sc.cand.DecisionType,
+				"project", derefString(d.Project),
+				"refs_a", extractWorkItemRefs(d), "refs_b", extractWorkItemRefs(sc.cand))
+			continue
+		}
+
 		// Outcome similarity floor: when outcome embeddings are nearly
 		// identical AND the pair did not qualify for the directToScorer
 		// bypass, suppress as complementary. This catches coordinated
@@ -835,6 +856,30 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				attribute.String("result", "success"),
 				attribute.String("validator", s.validatorLabel),
 			))
+			// Supersession is a lifecycle event, not a standing disagreement:
+			// the validator judged that one decision explicitly REPLACES the
+			// other (vs CONTRADICTION, where both positions are live and
+			// incompatible). Record it as a supersedes suggestion — which drives
+			// the supersedes_id link on the agent's next akashi_check (#710) and
+			// retires the stale side — instead of opening a conflict a human must
+			// triage. Without this, every "closed PR #1543 as obsolete once the
+			// work merged via #1545" trace opened a conflict against the earlier
+			// plan that proposed #1543: a dominant false-positive class in the
+			// 2026-06-23 open-conflict audit, and the mechanism behind the
+			// never_superseded=3045/3045 trace-health signal (supersessions were
+			// landing in the conflict queue instead of as supersedes links). The
+			// validator still RETURNS "supersession" so the IsConflict-based
+			// precision/recall eval is unchanged; only the scorer's handling of
+			// that verdict changes. Placed before IsConflict() (which counts
+			// supersession as actionable) so supersession never reaches insertion.
+			if result.Relationship == "supersession" {
+				s.metrics.supersessionSuppressed.Add(ctx, 1)
+				s.logger.Debug("conflict scorer: supersession recorded as supersedes suggestion, not opened as conflict",
+					"decision_a", decisionID, "decision_b", cand.ID,
+					"explanation", result.Explanation)
+				s.recordSupersedesSuggestionFromValidator(ctx, d, cand, sc.topicSim)
+				continue
+			}
 			if !result.IsConflict() {
 				s.logger.Debug("conflict scorer: LLM classified as non-conflict",
 					"decision_a", decisionID, "decision_b", cand.ID,
@@ -1475,18 +1520,50 @@ func isSameBranchSelfCorrection(d, cand model.Decision) bool {
 
 // recordSupersedesSuggestion writes the detector-inferred supersedes link
 // for a suppressed same-agent same-ticket pair so akashi_check can surface
-// it on the agent's next call (PR-2 of #708, see issue #710). Fire-and-forget:
-// suggestion-write failures are logged at warn but never block scoring or
-// fail the pair — the conflict has already been filtered.
-//
-// The "later" decision (by ValidFrom) is treated as the superseding side.
-// This mirrors how a manually set supersedes_id link works: the newer trace
-// retires the older one. Suggestion confidence is the topic similarity at
-// filter time — agents see how strongly the detector believed the pair was
-// the same work. Cosine similarity is mathematically in [-1, 1] but the
-// API contract bounds confidence to [0, 1]; we clamp here so callers and
-// dashboards never see a value that violates the schema.
+// it on the agent's next call (PR-2 of #708, see issue #710). The later
+// decision (by ValidFrom) is the superseding side, mirroring how a manually
+// set supersedes_id link works; suggestion confidence is the topic similarity
+// at filter time, so agents see how strongly the detector believed the pair was
+// the same work. Ordering, confidence clamping, and the fire-and-forget write
+// contract all live in insertSupersedesSuggestion.
 func (s *Scorer) recordSupersedesSuggestion(ctx context.Context, d, cand model.Decision, topicSim float64, ticket string) {
+	s.insertSupersedesSuggestion(ctx, d, cand, topicSim,
+		"detector:same_agent_same_ticket",
+		fmt.Sprintf("same agent %q, same ticket %q", d.AgentID, ticket))
+}
+
+// recordSupersedesSuggestionFromValidator records the supersedes link the LLM
+// validator inferred when it classified a pair as a supersession. A supersession
+// is a lifecycle event — one decision explicitly replaces another — not a
+// standing disagreement between live positions, so it is surfaced as a supersedes
+// suggestion (which drives the supersedes_id link on the agent's next
+// akashi_check, issue #710) instead of being opened as a conflict a human must
+// triage. This is the post-LLM sibling of the pre-LLM same-agent/cross-agent
+// refinement suppressors, which already redirect their pairs the same way. See
+// the supersession interception in scoreForDecision.
+//
+// Mirrors a manual supersedes_id link: the later decision (by ValidFrom) retires
+// the earlier one, regardless of whether the same or a different agent authored
+// it — a later decision that explicitly replaces an earlier one supersedes it in
+// both cases.
+func (s *Scorer) recordSupersedesSuggestionFromValidator(ctx context.Context, d, cand model.Decision, topicSim float64) {
+	superseding := d
+	if cand.ValidFrom.After(d.ValidFrom) {
+		superseding = cand
+	}
+	s.insertSupersedesSuggestion(ctx, d, cand, topicSim,
+		"detector:llm_supersession",
+		fmt.Sprintf("LLM validator classified %q's later decision as a supersession", superseding.AgentID))
+}
+
+// insertSupersedesSuggestion is the shared core behind the supersedes-suggestion
+// callers. It orders the pair by ValidFrom (later = superseding), clamps topicSim
+// into the [0,1] confidence contract (cosine similarity is mathematically in
+// [-1,1] but the API bounds confidence to [0,1]), and writes the suggestion
+// fire-and-forget: a write failure is logged at warn and never blocks scoring,
+// because the conflict has already been filtered or redirected away from the
+// open queue by the time this runs.
+func (s *Scorer) insertSupersedesSuggestion(ctx context.Context, d, cand model.Decision, topicSim float64, suggestedBy, reason string) {
 	superseding, superseded := d, cand
 	if cand.ValidFrom.After(d.ValidFrom) {
 		superseding, superseded = cand, d
@@ -1498,17 +1575,17 @@ func (s *Scorer) recordSupersedesSuggestion(ctx context.Context, d, cand model.D
 		topicSim = 1
 	}
 	conf := float32(topicSim)
-	reason := fmt.Sprintf("same agent %q, same ticket %q", d.AgentID, ticket)
 	if err := s.db.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
 		OrgID:         d.OrgID,
 		SupersedingID: superseding.ID,
 		SupersededID:  superseded.ID,
-		SuggestedBy:   "detector:same_agent_same_ticket",
+		SuggestedBy:   suggestedBy,
 		Confidence:    &conf,
 		Reason:        reason,
 	}); err != nil {
 		s.logger.Warn("conflict scorer: insert supersedes suggestion failed",
-			"superseding_id", superseding.ID, "superseded_id", superseded.ID, "error", err)
+			"superseding_id", superseding.ID, "superseded_id", superseded.ID,
+			"suggested_by", suggestedBy, "error", err)
 	}
 }
 
@@ -1752,6 +1829,95 @@ func isOperationalStateProgression(d, cand model.Decision) bool {
 	return delta >= operationalProgressionWindow
 }
 
+// isDisjointWorkItem returns true when two work-item-scoped decisions (reviews,
+// plans) on the same project reference entirely different work items — different
+// PRs or different tickets — and therefore cannot be contradicting each other.
+// A review of PR #1539 and a review of PR #1543 examine different code; a plan
+// for ARD-1606 and a plan for ARD-1662 scope different tickets. They routinely
+// share dense subsystem vocabulary (cutover, pgstream, freeze, replica-identity,
+// shadow-apply) that places them close in embedding space, and the LLM validator
+// then manufactures a CONTRADICTION between them.
+//
+// This is the hard-rule escalation of the disjoint-ticket signal that
+// eef7eb2c shipped as a *validator prompt hint* ("DIFFERENT TICKETS ... classify
+// as UNRELATED or COMPLEMENTARY unless ..."). The live 2026-06-23 open-conflict
+// audit showed the hint is ignored once shared vocabulary is dense enough: 9 of
+// 19 open false positives were disjoint-work-item review/planning pairs the
+// prompt failed to deflect. Promoting it to a structural pre-LLM suppressor is
+// the membership-parity follow-through, and — unlike the ticket-only hint — this
+// one is PR-aware via extractWorkItemRefs, which is what closes the dominant
+// fan-out hole: the hub decision in that audit (a review of "PR #1539") carries
+// NO ARD-style ticket ref at all, so a ticket-only rule could never have matched
+// the nine pairs it spawned.
+//
+// Deliberately narrow, to keep genuine conflicts detectable:
+//   - both decisions must be workItemScopedTypes. architecture / trade_off /
+//     design forks are never eligible — a cross-cutting design disagreement
+//     (e.g. the real Debezium-vs-pgstream fork) can legitimately span work
+//     items and must reach the validator. Same exclusion rationale as
+//     isOperationalStateProgression.
+//   - same non-empty project (PR/ticket numbers are repo-scoped; an untagged
+//     pair, or a cross-repo pair sharing a PR number, is never suppressed —
+//     mirrors isCoordinatedChange's same-project requirement for pr_number)
+//   - both decisions must expose at least one extractable work-item ref, and
+//     the two ref sets must be fully disjoint. Any shared PR/ticket (including
+//     one outcome naming the other's work item, e.g. "closed #1543 in favor of
+//     #1545") makes the sets overlap and the pair reaches the validator.
+//   - not precedent-linked — an explicit lineage cite is left to the LLM
+//   - neither outcome reports a data-loss / corruption / quarantine event — a
+//     data-safety finding is categorically high-stakes and must never be dropped
+//     pre-LLM (both sides). This is NOT a redundant copy of the operational
+//     filter's guard: cross-ticket data-safety contradictions are a real,
+//     resolved class in this trail (e.g. two investigations root-causing the
+//     same DATALOSS incident to different causes under different tickets), and
+//     disjoint work items do not make that pair safe to drop. Same guard, same
+//     reasoning as isOperationalStateProgression; see dataLossKeywords.
+//
+// Deliberately NOT guarded on supersession keywords, unlike the operational and
+// refinement siblings. Those siblings have no work-item identity signal, so a
+// "replaced X" / "superseded by Y" phrase is their only cue that a pair might be
+// a declared reversal that should reach the validator. This filter HAS that
+// signal: a genuine cross-work-item supersession names the other work item, so
+// the ref sets overlap and the pair already reaches the validator (then the
+// post-LLM supersession→suggestion path). Adding a keyword guard here would only
+// re-admit the false positives this filter exists to kill — review prose is full
+// of code-diff verbs ("replaced the boolean", "dropped the dead reader") that
+// describe a diff, not a decision reversal. A vague reversal that names no work
+// item is the sole edge this forgoes; it stays suppressed, which is correct (an
+// unnamed antecedent cannot be linked anyway). The difference from the siblings
+// is intentional, not drift.
+//
+// Failure mode is under-suppression: a missed PR/ticket extraction leaves the
+// ref sets looking smaller (or one side empty), which disables the filter and
+// sends the pair to the validator — never a wrongful suppression.
+//
+// Scope: lives only in the cloud scorer (this file is !lite), alongside the rest
+// of the structural suppression family.
+func isDisjointWorkItem(d, cand model.Decision) bool {
+	if !workItemScopedTypes[strings.ToLower(d.DecisionType)] {
+		return false
+	}
+	if !workItemScopedTypes[strings.ToLower(cand.DecisionType)] {
+		return false
+	}
+	projA, projB := derefString(d.Project), derefString(cand.Project)
+	if projA != projB || (projA == "" && projB == "") {
+		return false
+	}
+	if isPrecedentLinked(d, cand) {
+		return false
+	}
+	if containsDataLossKeyword(d.Outcome) || containsDataLossKeyword(cand.Outcome) {
+		return false
+	}
+	refsA := extractWorkItemRefs(d)
+	refsB := extractWorkItemRefs(cand)
+	if len(refsA) == 0 || len(refsB) == 0 {
+		return false
+	}
+	return !ticketRefsOverlap(refsA, refsB)
+}
+
 // isPrecedentLinked returns true if either decision cites the other via
 // precedent_ref, meaning there is an explicit lineage link between them.
 func isPrecedentLinked(d, cand model.Decision) bool {
@@ -1885,6 +2051,23 @@ var operationalTypes = map[string]bool{
 	"operations":  true,
 	"operational": true,
 	"deployment":  true,
+}
+
+// workItemScopedTypes are decision types whose conflict scope is a single work
+// item — a PR under review, a ticket being planned or investigated. Two such
+// decisions about DIFFERENT work items examine different code/scope and cannot
+// contradict each other, which is what isDisjointWorkItem keys on. Deliberately
+// excludes the direction-setting types (architecture / trade_off / design):
+// a cross-cutting design fork can legitimately span work items and must remain
+// detectable, the same reason operationalTypes excludes them.
+var workItemScopedTypes = map[string]bool{
+	"code_review":   true,
+	"review":        true,
+	"assessment":    true,
+	"investigation": true,
+	"analysis":      true,
+	"audit":         true,
+	"planning":      true,
 }
 
 // isDirectionalWorkflowPair returns true if earlierType is a review/assessment
