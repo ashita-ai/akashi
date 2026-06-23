@@ -33,6 +33,8 @@ type Metrics struct {
 	supersedesCandidateFiltered    metric.Int64Counter
 	crossAgentPrecedentFiltered    metric.Int64Counter
 	operationalProgressionFiltered metric.Int64Counter
+	disjointWorkItemFiltered       metric.Int64Counter
+	supersessionSuppressed         metric.Int64Counter
 
 	scoringDuration    metric.Float64Histogram
 	llmCallDuration    metric.Float64Histogram
@@ -221,6 +223,22 @@ func (s *Scorer) registerMetrics() {
 	if err != nil {
 		s.logger.Warn("conflicts: failed to create akashi.conflicts.operational_progression_filtered metric", "error", err)
 		s.metrics.operationalProgressionFiltered, _ = meter.Int64Counter("akashi.conflicts.operational_progression_filtered.fallback")
+	}
+
+	s.metrics.disjointWorkItemFiltered, err = meter.Int64Counter("akashi.conflicts.disjoint_work_item_filtered",
+		metric.WithDescription("Candidate pairs suppressed as review/planning decisions about disjoint work items (different PR/ticket) — the hard-rule escalation of the disjoint-ticket validator prompt hint, extended to PR references"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.disjoint_work_item_filtered metric", "error", err)
+		s.metrics.disjointWorkItemFiltered, _ = meter.Int64Counter("akashi.conflicts.disjoint_work_item_filtered.fallback")
+	}
+
+	s.metrics.supersessionSuppressed, err = meter.Int64Counter("akashi.conflicts.supersession_suppressed",
+		metric.WithDescription("Candidate pairs the LLM classified as supersession, recorded as a supersedes suggestion instead of an open conflict (supersession is a lifecycle event, not a standing disagreement)"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.supersession_suppressed metric", "error", err)
+		s.metrics.supersessionSuppressed, _ = meter.Int64Counter("akashi.conflicts.supersession_suppressed.fallback")
 	}
 
 	// --- Histograms ---
