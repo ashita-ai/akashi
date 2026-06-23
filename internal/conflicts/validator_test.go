@@ -1120,6 +1120,7 @@ func TestScoreForDecision_LLMSupersession(t *testing.T) {
 		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
 		DecisionType: "architecture", Outcome: "use REST v1 API",
 		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+		ValidFrom: time.Now().Add(-2 * time.Hour),
 	})
 	require.NoError(t, err)
 
@@ -1127,6 +1128,7 @@ func TestScoreForDecision_LLMSupersession(t *testing.T) {
 		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
 		DecisionType: "architecture", Outcome: "replaced REST v1 with gRPC",
 		Confidence: 0.9, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+		ValidFrom: time.Now(),
 	})
 	require.NoError(t, err)
 
@@ -1140,23 +1142,35 @@ func TestScoreForDecision_LLMSupersession(t *testing.T) {
 	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
 	scorer.ScoreForDecision(ctx, dB.ID, orgID)
 
+	// A supersession is a lifecycle event, not a standing disagreement: the
+	// later decision explicitly replaces the earlier one. It must NOT be opened
+	// as a conflict for human triage — that was the dominant false-positive
+	// class in the 2026-06-23 open-conflict audit ("closed PR #X as obsolete"
+	// landing in the queue against the plan that proposed #X) and the reason
+	// supersession links were never recorded (never_superseded=3045/3045).
+	// Instead the scorer records a supersedes suggestion so akashi_check can
+	// drive the supersedes_id link on the agent's next call (#710).
 	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 1000, 0)
 	require.NoError(t, err)
-
-	var found bool
 	for _, c := range conflicts {
 		aMatch := c.DecisionAID == dA.ID || c.DecisionBID == dA.ID
 		bMatch := c.DecisionAID == dB.ID || c.DecisionBID == dB.ID
-		if aMatch && bMatch {
-			found = true
-			assert.Equal(t, "llm_v2", c.ScoringMethod)
-			require.NotNil(t, c.Relationship)
-			assert.Equal(t, "supersession", *c.Relationship,
-				"supersession should be stored as a conflict")
-			break
-		}
+		assert.Falsef(t, aMatch && bMatch,
+			"supersession must NOT be opened as a conflict (got conflict %s)", c.ID)
 	}
-	assert.True(t, found, "supersession should produce a conflict between dA and dB")
+
+	// The later decision (dB) is recorded as the superseding side via an
+	// LLM-supersession suggestion targeting the earlier decision (dA).
+	suggestions, err := testDB.ListSupersedesSuggestionsForDecisions(ctx, orgID, []uuid.UUID{dB.ID})
+	require.NoError(t, err)
+	require.Len(t, suggestions, 1, "supersession should produce exactly one supersedes suggestion")
+	assert.Equal(t, dB.ID, suggestions[0].SupersedingID)
+	assert.Equal(t, dA.ID, suggestions[0].SupersededID)
+	assert.Equal(t, "detector:llm_supersession", suggestions[0].SuggestedBy)
+	require.NotNil(t, suggestions[0].Confidence)
+	assert.InDelta(t, 1.0, *suggestions[0].Confidence, 0.01,
+		"identical topic embeddings should yield confidence ≈ 1.0")
+	assert.Contains(t, suggestions[0].Reason, agentID)
 }
 
 func TestScoreForDecision_LLMError(t *testing.T) {

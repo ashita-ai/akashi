@@ -99,3 +99,73 @@ func matchTicketRef(s string) string {
 	}
 	return strings.ToUpper(m[1]) + "-" + m[2]
 }
+
+// prRefPattern matches pull-request / issue references embedded in free text,
+// e.g. "#1539", "PR #1539", "(#1543)". The leading "#" is required so the
+// pattern does not swallow unrelated numbers that saturate decision outcomes
+// (migration timestamps "20260623000001", counts like "573 unit tests", LSNs).
+// The 2-digit floor skips single-digit enumerations ("(1)", "finding #3") and
+// the trailing \b prevents partial matches inside alphanumeric runs (hex
+// colors "#1a2b", ids). Numbers are canonicalized to "PR-<n>" so PR refs share
+// the disjoint-set namespace with ticket refs ("ARD-958") without colliding.
+var prRefPattern = regexp.MustCompile(`#(\d{2,7})\b`)
+
+// prNumberDigits extracts the numeric run from the structured
+// agent_context.pr_number field, which agents may send as "1539", "#1539", or
+// "PR-1539" — none of which the "#"-anchored prRefPattern reliably matches.
+// The structured field is already known to be a PR/issue identifier, so a bare
+// digit run is a safe signal there (unlike free text).
+var prNumberDigits = regexp.MustCompile(`\d{2,7}`)
+
+// canonicalPRRef normalizes a structured pr_number value to the canonical
+// "PR-<digits>" form, or "" when it carries no digit run of the expected length.
+func canonicalPRRef(s string) string {
+	digits := prNumberDigits.FindString(s)
+	if digits == "" {
+		return ""
+	}
+	return "PR-" + digits
+}
+
+// extractWorkItemRefs returns every work-item identifier visible in a decision:
+// ticket references (canonical "ARD-958") AND pull-request / issue references
+// (canonical "PR-1539"). PR refs are sourced first from the structured
+// agent_context.pr_number (most reliable), then parsed from the task and outcome
+// free text as a fallback — the live trail carries them almost entirely in
+// outcome prose ("recommended not merging PR #1539 ...").
+//
+// Used only by isDisjointWorkItem (cloud scorer), which treats two
+// work-item-scoped decisions about entirely different work items as
+// non-contradictory. Deliberately separate from extractTicketRefs so the
+// ticket-only refinement filters — which join on an *identical* ticket key —
+// are unaffected by PR-number parsing. A missed reference only costs a
+// suppression (the safe, under-suppressing direction), never a false one.
+//
+// Returns nil when nothing is extractable from any source.
+func extractWorkItemRefs(d model.Decision) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(s string) {
+		if s == "" {
+			return
+		}
+		if _, dup := seen[s]; dup {
+			return
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	for _, t := range extractTicketRefs(d) {
+		add(t)
+	}
+	add(canonicalPRRef(nestedContextString(d.AgentContext, "pr_number")))
+	for _, src := range []string{
+		nestedContextString(d.AgentContext, "task"),
+		d.Outcome,
+	} {
+		for _, m := range prRefPattern.FindAllStringSubmatch(src, -1) {
+			add("PR-" + m[1])
+		}
+	}
+	return out
+}
