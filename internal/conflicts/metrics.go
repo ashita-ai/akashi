@@ -34,6 +34,7 @@ type Metrics struct {
 	crossAgentPrecedentFiltered    metric.Int64Counter
 	operationalProgressionFiltered metric.Int64Counter
 	disjointWorkItemFiltered       metric.Int64Counter
+	disjointResourceFiltered       metric.Int64Counter
 	supersessionSuppressed         metric.Int64Counter
 
 	scoringDuration    metric.Float64Histogram
@@ -231,6 +232,14 @@ func (s *Scorer) registerMetrics() {
 	if err != nil {
 		s.logger.Warn("conflicts: failed to create akashi.conflicts.disjoint_work_item_filtered metric", "error", err)
 		s.metrics.disjointWorkItemFiltered, _ = meter.Int64Counter("akashi.conflicts.disjoint_work_item_filtered.fallback")
+	}
+
+	s.metrics.disjointResourceFiltered, err = meter.Int64Counter("akashi.conflicts.disjoint_resource_filtered",
+		metric.WithDescription("Candidate pairs suppressed as operational/investigation decisions about disjoint infrastructure resources (different connector_/org_ identifiers) — the resource-identity sibling of disjoint_work_item_filtered for live incident-recovery traces"),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.disjoint_resource_filtered metric", "error", err)
+		s.metrics.disjointResourceFiltered, _ = meter.Int64Counter("akashi.conflicts.disjoint_resource_filtered.fallback")
 	}
 
 	s.metrics.supersessionSuppressed, err = meter.Int64Counter("akashi.conflicts.supersession_suppressed",

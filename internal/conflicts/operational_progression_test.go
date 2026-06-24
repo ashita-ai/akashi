@@ -252,6 +252,24 @@ func TestIsOperationalStateProgression(t *testing.T) {
 			},
 			expected: false,
 		},
+		{
+			// Data-safety guard parity: the data-loss signal sits in the task, with
+			// a clean outcome and a window-passing gap that would otherwise suppress.
+			// The guard scans task+outcome on both sides, so the pair still reaches
+			// the validator. (taskCtx is shared from disjoint_resource_test.go.)
+			name: "data-loss keyword only in task → NOT suppressed (guard scans task)",
+			d: model.Decision{
+				ID: idA, Project: &mono, DecisionType: "operations",
+				Outcome:      "scaled kafka2pg to 1 to resume the drain",
+				AgentContext: taskCtx("investigate possible DATALOSS before scaling the writer"),
+				ValidFrom:    now,
+			},
+			cand: model.Decision{
+				ID: idB, Project: &mono, DecisionType: "operational",
+				Outcome: "promoted the validated digest to the customer account", ValidFrom: now.Add(-beyond),
+			},
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {
