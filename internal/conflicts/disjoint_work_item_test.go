@@ -255,6 +255,24 @@ func TestIsDisjointWorkItem(t *testing.T) {
 			expected: false,
 		},
 		{
+			// Data-safety guard parity: the work-item ref (PR #1539) and the
+			// DATALOSS keyword both live in the task field. extractWorkItemRefs
+			// mines the task, so the guard must too — otherwise this disjoint pair
+			// (PR #1539 vs PR #1543) is suppressed despite a data-safety signal.
+			// (taskCtx is shared from disjoint_resource_test.go.)
+			name: "data-loss keyword only in task → NOT suppressed (guard scans task)",
+			d: model.Decision{
+				ID: idA, Project: &mono, DecisionType: "code_review",
+				Outcome:      "Review complete; recommendations posted inline",
+				AgentContext: taskCtx("DATALOSS audit of PR #1539 evidence wiring"),
+			},
+			cand: model.Decision{
+				ID: idB, Project: &mono, DecisionType: "code_review",
+				Outcome: "Recommended not merging PR #1543 until evidence is fresh",
+			},
+			expected: false,
+		},
+		{
 			name: "one side has no extractable work item → NOT suppressed",
 			d: model.Decision{
 				ID: idA, Project: &mono, DecisionType: "code_review",

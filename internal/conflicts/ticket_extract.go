@@ -169,3 +169,50 @@ func extractWorkItemRefs(d model.Decision) []string {
 	}
 	return out
 }
+
+// resourceRefPattern matches the structured infrastructure-resource identifiers
+// that dominate live incident-recovery traces — "connector_57a42328",
+// "org_54b2e846". These are regular tokens (a fixed prefix + a hex run), not
+// the free-text customer names ("Trellis", "Akkari") that an earlier note in
+// isOperationalStateProgression deemed too fragile to parse: the prefix anchors
+// the match and the 6+ hex-char floor rejects method names ("connector_reset" —
+// "reset" is not a hex run) and short fields ("org_id"). Hex is canonicalized to
+// lowercase so the two casings collide in the disjoint-set namespace.
+var resourceRefPattern = regexp.MustCompile(`(?i)\b(connector|org)_([0-9a-f]{6,})\b`)
+
+// extractResourceRefs returns every infrastructure-resource identifier visible
+// in a decision: connector references (canonical "CONNECTOR-57a42328") and org
+// references (canonical "ORG-54b2e846"), parsed from the task and outcome free
+// text where live operational traces name them.
+//
+// Used only by isDisjointResource (cloud scorer), which treats two
+// operational/investigation decisions about entirely different resources as
+// non-contradictory. Kept separate from extractWorkItemRefs because the two
+// signals key different filters and must not cross-contaminate: a PR number and
+// a connector id are different identity namespaces. A missed reference only
+// costs a suppression (the safe, under-suppressing direction), never a false
+// one. Customer names are deliberately NOT parsed — an unbounded, drifting
+// free-text vocabulary is exactly the fragile signal to avoid.
+//
+// Returns nil when nothing is extractable from any source.
+func extractResourceRefs(d model.Decision) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(prefix, hex string) {
+		ref := strings.ToUpper(prefix) + "-" + strings.ToLower(hex)
+		if _, dup := seen[ref]; dup {
+			return
+		}
+		seen[ref] = struct{}{}
+		out = append(out, ref)
+	}
+	for _, src := range []string{
+		nestedContextString(d.AgentContext, "task"),
+		d.Outcome,
+	} {
+		for _, m := range resourceRefPattern.FindAllStringSubmatch(src, -1) {
+			add(m[1], m[2])
+		}
+	}
+	return out
+}
