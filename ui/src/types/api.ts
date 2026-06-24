@@ -374,8 +374,13 @@ export interface TraceHealthEvidence {
 }
 
 export interface TraceHealthConflicts {
-  total: number;
-  open: number;
+  // Group-level counts are the deduplicated signal (one row per disagreement
+  // topology); individual counts reflect raw scored_conflicts rows. Field
+  // names must match internal/service/tracehealth ConflictMetrics json tags.
+  total_groups: number;
+  open_groups: number;
+  total_individual: number;
+  open_individual: number;
   resolved: number;
   false_positive: number;
   resolved_pct: number;

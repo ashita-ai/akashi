@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders } from "@/test/test-utils";
 import Dashboard from "./Dashboard";
 
@@ -81,6 +81,34 @@ describe("Dashboard", () => {
         limit: 10,
         offset: 0,
       },
+      // The Decisions card reads decisionsTrend.total, which comes from the
+      // POST /v1/query endpoint (queryDecisions) — not /v1/decisions/recent.
+      "/v1/query": {
+        data: [
+          {
+            id: "d1",
+            run_id: "r1",
+            agent_id: "coder",
+            org_id: "org1",
+            decision_type: "architecture",
+            outcome: "Use PostgreSQL",
+            confidence: 0.9,
+            reasoning: null,
+            completeness_score: 0.8,
+            outcome_score: null,
+            precedent_ref: null,
+            valid_from: "2025-06-01T00:00:00Z",
+            valid_to: null,
+            transaction_time: "2025-06-01T00:00:00Z",
+            created_at: "2025-06-01T00:00:00Z",
+            metadata: null,
+          },
+        ],
+        total: 42,
+        has_more: true,
+        limit: 500,
+        offset: 0,
+      },
       "/v1/agents": {
         data: { agents: [{ agent_id: "coder", name: "Coder" }] },
         meta: { request_id: "r1", timestamp: "now" },
@@ -116,6 +144,68 @@ describe("Dashboard", () => {
 
     await waitFor(() => {
       expect(screen.getByText("42")).toBeInTheDocument();
+    });
+  });
+
+  it("shows the open-conflicts count from trace-health open_groups", async () => {
+    // Regression: the Go API serializes open_groups/open_individual, not
+    // open. The card previously read conflicts.open, which is always
+    // undefined on the wire, so it silently rendered 0 regardless of state.
+    mockFetchResponses({
+      "/v1/decisions/recent": {
+        data: [],
+        total: 0,
+        has_more: false,
+        limit: 10,
+        offset: 0,
+      },
+      "/v1/agents": {
+        data: { agents: [] },
+        meta: { request_id: "r1", timestamp: "now" },
+      },
+      "/v1/trace-health": {
+        data: {
+          status: "needs_attention",
+          completeness: {
+            total_decisions: 42,
+            avg_completeness: 0.85,
+            below_half: 0,
+            below_third: 0,
+            with_reasoning: 40,
+            reasoning_pct: 95,
+            with_alternatives: 30,
+            alternatives_pct: 71,
+          },
+          evidence: {
+            total_decisions: 42,
+            total_records: 10,
+            avg_per_decision: 0.24,
+            with_evidence: 10,
+            without_evidence: 32,
+            coverage_pct: 24,
+          },
+          conflicts: {
+            total_groups: 50,
+            open_groups: 7,
+            total_individual: 80,
+            open_individual: 13,
+            resolved: 30,
+            false_positive: 13,
+            resolved_pct: 60,
+          },
+          gaps: [],
+        },
+        meta: { request_id: "r1", timestamp: "now" },
+      },
+    });
+
+    renderWithProviders(<Dashboard />);
+
+    const card = (await screen.findByText("Open Conflicts")).closest(
+      "div.gradient-border",
+    ) as HTMLElement;
+    await waitFor(() => {
+      expect(within(card).getByText("7")).toBeInTheDocument();
     });
   });
 

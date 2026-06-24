@@ -560,7 +560,7 @@ export default function Dashboard() {
                 <Skeleton className="h-8 w-12" />
               ) : (
                 <div className="text-3xl font-semibold tabular-nums tracking-tight">
-                  {traceHealth.data?.conflicts?.open ?? 0}
+                  {traceHealth.data?.conflicts?.open_groups ?? 0}
                 </div>
               )}
               <p className="text-[11px] text-muted-foreground mt-1">need attention</p>
