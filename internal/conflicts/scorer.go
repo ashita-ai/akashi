@@ -1793,12 +1793,12 @@ const operationalProgressionWindow = 7 * 24 * time.Hour
 //     explicitly reverts/abandons a prior approach is a declared reversal and
 //     reaches the LLM (checked on both sides: the safe, under-suppressing
 //     direction)
-//   - neither outcome reports a data-loss / corruption / quarantine event — a
-//     data-safety event is categorically high-stakes and must reach the
-//     validator regardless of the time gap (checked on both sides). This is
-//     the guard that keeps same-resource incident disagreements like the live
-//     SalesPatriot DATALOSS pause from being silently dropped pre-LLM. See
-//     dataLossKeywords.
+//   - neither side's task or outcome reports a data-loss / corruption /
+//     quarantine event — a data-safety event is categorically high-stakes and
+//     must reach the validator regardless of the time gap (checked on both
+//     sides, both text fields). This is the guard that keeps same-resource
+//     incident disagreements like the live SalesPatriot DATALOSS pause from
+//     being silently dropped pre-LLM. See decisionContainsDataLossKeyword.
 //   - not precedent-linked and not the same session — explicit links and
 //     intra-session pairs are left to the LLM, mirroring isTemporalReassessment
 //
@@ -1839,9 +1839,14 @@ func isOperationalStateProgression(d, cand model.Decision) bool {
 	// data-loss / corruption / quarantine event. Such a decision is not a routine
 	// sequential step, and a same-system pair that includes one is precisely the
 	// disagreement that must reach the validator and the conflict queue rather
-	// than be dropped pre-LLM with only a Debug log. Both sides checked
-	// (under-suppressing direction), mirroring the supersession guard above.
-	if containsDataLossKeyword(d.Outcome) || containsDataLossKeyword(cand.Outcome) {
+	// than be dropped pre-LLM with only a Debug log. Both sides checked, across
+	// task and outcome (under-suppressing direction), mirroring the supersession
+	// guard above. (The supersession guard stays outcome-only on purpose: a
+	// reversal verb in a task title — "migrate connector from kafka to pg" — is
+	// routine phrasing, and scanning the task for it would re-admit the very FPs
+	// this filter kills. The data-safety guard has no such cost: firing it only
+	// ever routes a pair to the validator, never suppresses one.)
+	if decisionContainsDataLossKeyword(d) || decisionContainsDataLossKeyword(cand) {
 		return false
 	}
 	delta := d.ValidFrom.Sub(cand.ValidFrom)
@@ -1886,14 +1891,18 @@ func isOperationalStateProgression(d, cand model.Decision) bool {
 //     one outcome naming the other's work item, e.g. "closed #1543 in favor of
 //     #1545") makes the sets overlap and the pair reaches the validator.
 //   - not precedent-linked — an explicit lineage cite is left to the LLM
-//   - neither outcome reports a data-loss / corruption / quarantine event — a
-//     data-safety finding is categorically high-stakes and must never be dropped
-//     pre-LLM (both sides). This is NOT a redundant copy of the operational
+//   - neither side's task or outcome reports a data-loss / corruption /
+//     quarantine event — a data-safety finding is categorically high-stakes and
+//     must never be dropped pre-LLM (both sides, both text fields — the same
+//     task+outcome extractWorkItemRefs mines for the work-item refs that make
+//     the pair eligible, so a keyword cannot hide in a field the ref scan reads
+//     but the guard does not). This is NOT a redundant copy of the operational
 //     filter's guard: cross-ticket data-safety contradictions are a real,
 //     resolved class in this trail (e.g. two investigations root-causing the
 //     same DATALOSS incident to different causes under different tickets), and
 //     disjoint work items do not make that pair safe to drop. Same guard, same
-//     reasoning as isOperationalStateProgression; see dataLossKeywords.
+//     reasoning as isOperationalStateProgression; see
+//     decisionContainsDataLossKeyword.
 //
 // Deliberately NOT guarded on supersession keywords, unlike the operational and
 // refinement siblings. Those siblings have no work-item identity signal, so a
@@ -1929,7 +1938,7 @@ func isDisjointWorkItem(d, cand model.Decision) bool {
 	if isPrecedentLinked(d, cand) {
 		return false
 	}
-	if containsDataLossKeyword(d.Outcome) || containsDataLossKeyword(cand.Outcome) {
+	if decisionContainsDataLossKeyword(d) || decisionContainsDataLossKeyword(cand) {
 		return false
 	}
 	refsA := extractWorkItemRefs(d)
@@ -1971,21 +1980,31 @@ func isDisjointWorkItem(d, cand model.Decision) bool {
 //   - same non-empty project (operational traces are all project "mono"; an
 //     untagged pair is never suppressed), mirroring the sibling filters.
 //   - both must expose at least one extractable resource ref, and the two ref
-//     sets must be fully disjoint. Any shared connector/org makes the sets
-//     overlap and the pair reaches the validator — which is correct, because a
-//     same-connector pair is exactly where a genuine operational clash lives.
+//     sets must be provably disjoint by namespace (see
+//     resourceRefsProvablyDisjoint). Disjointness is only judged WITHIN a
+//     namespace: a different connector vs connector, or org vs org, is disjoint;
+//     a connector vs an org is NOT comparable — the connector may be owned by
+//     that org, and the scorer holds no connector→org mapping — so that pair
+//     reaches the validator. Any shared connector/org, or any namespace present
+//     on only one side, also sends the pair to the validator — a shared
+//     resource is exactly where a genuine operational clash lives.
 //   - not precedent-linked — an explicit lineage cite is left to the LLM.
-//   - neither outcome reports a data-loss / corruption / quarantine event. This
-//     is the non-negotiable guard: a data-safety finding is categorically
-//     high-stakes and must never be dropped pre-LLM, even across different
-//     resources (both sides checked). Same guard, same reasoning as
-//     isDisjointWorkItem and isOperationalStateProgression; see dataLossKeywords.
+//   - neither side's task or outcome reports a data-loss / corruption /
+//     quarantine event. This is the non-negotiable guard: a data-safety finding
+//     is categorically high-stakes and must never be dropped pre-LLM, even
+//     across different resources (both sides, and both the agent_context.task
+//     and the outcome — exactly the text extractResourceRefs mines, so a keyword
+//     can never hide in a field the ref scan reads but the guard does not). Same
+//     guard, same reasoning as isDisjointWorkItem and
+//     isOperationalStateProgression; see decisionContainsDataLossKeyword.
 //
 // Failure mode is under-suppression: a decision that names its resource only by
-// customer name ("Trellis") and not by connector_/org_ token yields no ref, which
-// disables the filter and sends the pair to the validator — never a wrongful
-// suppression of a same-resource pair, since the only way two ref sets become
-// disjoint is if both sides name resources and they genuinely differ.
+// customer name ("Trellis") and not by a connector_/org_ token yields no ref,
+// which disables the filter and sends the pair to the validator. So does a
+// cross-namespace pair (a connector on one side, an org on the other) and any
+// pair sharing a resource — never a wrongful suppression, because disjointness
+// is only ever declared between same-namespace identifiers that genuinely
+// differ.
 //
 // Scope: lives only in the cloud scorer (this file is !lite), alongside the rest
 // of the structural suppression family.
@@ -2003,7 +2022,7 @@ func isDisjointResource(d, cand model.Decision) bool {
 	if isPrecedentLinked(d, cand) {
 		return false
 	}
-	if containsDataLossKeyword(d.Outcome) || containsDataLossKeyword(cand.Outcome) {
+	if decisionContainsDataLossKeyword(d) || decisionContainsDataLossKeyword(cand) {
 		return false
 	}
 	refsA := extractResourceRefs(d)
@@ -2011,7 +2030,83 @@ func isDisjointResource(d, cand model.Decision) bool {
 	if len(refsA) == 0 || len(refsB) == 0 {
 		return false
 	}
-	return !ticketRefsOverlap(refsA, refsB)
+	return resourceRefsProvablyDisjoint(refsA, refsB)
+}
+
+// resourceRefsProvablyDisjoint reports whether two non-empty canonical
+// resource-reference sets ("CONNECTOR-<hex>", "ORG-<hex>") describe provably
+// different infrastructure — so a pair naming only these resources cannot be
+// acting on the same data plane and is safe to suppress pre-LLM.
+//
+// Disjointness is only provable WITHIN a namespace. CONNECTOR-* names a single
+// pipeline; ORG-* names a whole tenant, which owns many connectors. Two
+// different connector ids are different pipelines, and two different org ids are
+// different tenants — both provably disjoint. But a connector id and an org id
+// are NOT comparable: the connector may be owned by that very org, and the
+// scorer holds no connector→org mapping to rule it out. The original check
+// flattened both namespaces into one set and ran a plain overlap test, so a
+// decision naming only connector_57a42328 and one naming only its owning
+// org_54b2e846 looked "disjoint" (no string in common) and were suppressed —
+// even though they may describe the same incident on the same data plane. That
+// is a wrongful pre-LLM suppression, the one failure mode this family exists to
+// avoid.
+//
+// The fix types the refs by namespace and declares disjointness only when the
+// comparison is apples-to-apples in every namespace:
+//   - both sides must populate exactly the same set of namespaces. A
+//     connector-only side and an org-only side — or a connector-only side and a
+//     connector+org side — are not comparable, because there is a ref on one
+//     side whose ownership relative to the other side is unknown, so the pair
+//     reaches the validator.
+//   - within every populated namespace the two id sets must be fully disjoint.
+//     Any shared connector or shared org makes the pair overlap and reach the
+//     validator.
+//
+// This is strictly more conservative than the flattened check: it can only send
+// MORE pairs to the validator, never fewer (the safe, under-suppressing
+// direction the whole family is tuned to). The dominant live FP class —
+// connector-vs-connector, both sides naming only connectors — is unaffected:
+// same namespace set {CONNECTOR}, disjoint ids, still suppressed.
+func resourceRefsProvablyDisjoint(refsA, refsB []string) bool {
+	byNsA := groupResourceRefsByNamespace(refsA)
+	byNsB := groupResourceRefsByNamespace(refsB)
+	if len(byNsA) != len(byNsB) {
+		return false // different namespaces populated → not comparable
+	}
+	for ns, idsA := range byNsA {
+		idsB, ok := byNsB[ns]
+		if !ok {
+			return false // a namespace present on one side only → not comparable
+		}
+		for id := range idsA {
+			if _, shared := idsB[id]; shared {
+				return false // a shared resource in this namespace → overlap
+			}
+		}
+	}
+	return true
+}
+
+// groupResourceRefsByNamespace partitions canonical resource refs into id sets
+// keyed by their namespace prefix ("CONNECTOR", "ORG"). extractResourceRefs
+// produces every ref as "<PREFIX>-<hex>" with exactly one hyphen, so the split
+// is unambiguous; a malformed ref carrying no hyphen is skipped rather than
+// mis-bucketed.
+func groupResourceRefsByNamespace(refs []string) map[string]map[string]struct{} {
+	byNs := make(map[string]map[string]struct{}, 2)
+	for _, ref := range refs {
+		ns, id, ok := strings.Cut(ref, "-")
+		if !ok {
+			continue
+		}
+		ids, exists := byNs[ns]
+		if !exists {
+			ids = make(map[string]struct{}, 1)
+			byNs[ns] = ids
+		}
+		ids[id] = struct{}{}
+	}
+	return byNs
 }
 
 // isPrecedentLinked returns true if either decision cites the other via
@@ -2113,16 +2208,41 @@ var dataLossKeywords = []string{
 	"corrupt",    // corrupted / corruption
 }
 
-// containsDataLossKeyword returns true if the outcome text references a
+// containsDataLossKeyword returns true if the given text references a
 // data-safety event (loss, corruption, or quarantined writes).
-func containsDataLossKeyword(outcome string) bool {
-	lower := strings.ToLower(outcome)
+func containsDataLossKeyword(text string) bool {
+	lower := strings.ToLower(text)
 	for _, kw := range dataLossKeywords {
 		if strings.Contains(lower, kw) {
 			return true
 		}
 	}
 	return false
+}
+
+// decisionContainsDataLossKeyword reports whether a decision references a
+// data-safety event in any free-text field that a pre-LLM suppressor reads to
+// judge eligibility — the agent-supplied agent_context.task and the outcome.
+//
+// The pre-LLM suppressors mine BOTH fields for their identity signal:
+// extractResourceRefs and extractWorkItemRefs both scan task and outcome, so a
+// pair can become eligible for suppression on the strength of a ref that appears
+// only in the task. The data-safety guard must therefore scan exactly those same
+// sources — otherwise a "DATALOSS recovery connector_x" task whose outcome omits
+// the word is silently dropped pre-LLM while its connector ref still drives the
+// disjoint-resource match. Guarding only the outcome (the original behavior) left
+// that hole. This is the membership-parity fix for the guard: every suppressor
+// that mines the task for identity now guards the task for data safety, so the
+// guard and the eligibility signal never read different text.
+//
+// isOperationalStateProgression shares this guard too, though it keys on a time
+// gap rather than task-extracted refs: a data-safety event anywhere in a
+// decision's salient text is categorically high-stakes and must reach the
+// validator, and a single uniform guard is one fewer place for the data-loss
+// check to drift between the sibling filters.
+func decisionContainsDataLossKeyword(d model.Decision) bool {
+	return containsDataLossKeyword(nestedContextString(d.AgentContext, "task")) ||
+		containsDataLossKeyword(d.Outcome)
 }
 
 // reviewTypes is defined in shared.go — it is referenced by the lite-compiled

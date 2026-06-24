@@ -235,6 +235,81 @@ func TestIsDisjointResource(t *testing.T) {
 			},
 			expected: false,
 		},
+		{
+			// Cross-namespace: one side names only a connector, the other only an
+			// org. The connector may be owned by that org, so the sets are NOT
+			// comparable and the pair must reach the validator. The pre-fix
+			// flattened-overlap check wrongly suppressed this (no string in common).
+			name: "connector-only vs owning-org-only → NOT suppressed (cross-namespace not comparable)",
+			d: model.Decision{
+				ID: idA, Project: &mono, DecisionType: "investigation",
+				Outcome: "Diagnosed connector_57a42328 source slot invalidation (wal_status=lost)",
+			},
+			cand: model.Decision{
+				ID: idB, Project: &mono, DecisionType: "operational_recovery",
+				Outcome: "Cleared the orphaned pgstream slot for org_54b2e846 via a service-role update",
+			},
+			expected: false,
+		},
+		{
+			// Asymmetric namespaces: connector-only vs connector+org. Even though
+			// the connectors differ, the org named only on one side could own the
+			// other side's connector, so the pair is not comparable → validator.
+			name: "connector-only vs connector+org → NOT suppressed (asymmetric namespaces)",
+			d: model.Decision{
+				ID: idA, Project: &mono, DecisionType: "investigation",
+				Outcome: "Diagnosed connector_57a42328 restart_storm",
+			},
+			cand: model.Decision{
+				ID: idB, Project: &mono, DecisionType: "deployment",
+				Outcome: "Recovered connector_9b38b47d (org_896c32e7) kafka2pg ONLINE",
+			},
+			expected: false,
+		},
+		{
+			// Both sides populate the SAME namespace set {CONNECTOR, ORG} and differ
+			// in every namespace → provably disjoint, still suppressed.
+			name: "connector+org vs connector+org, disjoint in both namespaces → suppressed",
+			d: model.Decision{
+				ID: idA, Project: &mono, DecisionType: "investigation",
+				Outcome: "Diagnosed connector_57a42328 (org_54b2e846) restart_storm as unrecoverable",
+			},
+			cand: model.Decision{
+				ID: idB, Project: &mono, DecisionType: "deployment",
+				Outcome: "Recovered connector_9b38b47d (org_896c32e7) kafka2pg ONLINE, lag 0",
+			},
+			expected: true,
+		},
+		{
+			// Same org, different connectors: the shared org overlaps, so the pair
+			// reaches the validator — a shared resource is where a real clash lives.
+			name: "different connectors but same org → NOT suppressed (shared org overlaps)",
+			d: model.Decision{
+				ID: idA, Project: &mono, DecisionType: "investigation",
+				Outcome: "Diagnosed connector_57a42328 (org_54b2e846) restart_storm",
+			},
+			cand: model.Decision{
+				ID: idB, Project: &mono, DecisionType: "deployment",
+				Outcome: "Recovered connector_9b38b47d (org_54b2e846) kafka2pg ONLINE",
+			},
+			expected: false,
+		},
+		{
+			// Data-safety guard parity: the data-loss keyword appears only in the
+			// task field, with a clean outcome. extractResourceRefs reads the task,
+			// so the guard must too — the pre-fix outcome-only guard let this through.
+			name: "data-loss keyword only in task → NOT suppressed (guard scans task)",
+			d: model.Decision{
+				ID: idA, Project: &mono, DecisionType: "investigation",
+				Outcome:      "Recovered connector_57a42328 kafka2pg restart_storm ONLINE",
+				AgentContext: taskCtx("DATALOSS check: connector_57a42328 may have skipped offsets on resume"),
+			},
+			cand: model.Decision{
+				ID: idB, Project: &mono, DecisionType: "deployment",
+				Outcome: "Recovered connector_9b38b47d kafka2pg restart_storm ONLINE",
+			},
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {
