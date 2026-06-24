@@ -705,6 +705,27 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			continue
 		}
 
+		// Disjoint resource filter: two operational/investigation decisions on
+		// the same project that reference entirely different infrastructure
+		// resources — different connector_/org_ identifiers — act on different
+		// data planes and cannot contradict. This is the resource-identity
+		// sibling of the disjoint work-item filter above: live incident-recovery
+		// traces carry no PR/ticket ref, so that filter never sees them; they
+		// name a connector_/org_ token instead. Dominant live FP class
+		// (2026-06-24 cross-connector restart-storm over-clustering). Direction-
+		// setting types are excluded and the data-loss guard is preserved so
+		// genuine forks and data-safety pairs still reach the validator. See
+		// isDisjointResource.
+		if isDisjointResource(d, sc.cand) {
+			s.metrics.disjointResourceFiltered.Add(ctx, 1)
+			s.logger.Debug("conflict scorer: disjoint resource filter suppressed pair",
+				"decision_a", decisionID, "decision_b", sc.cand.ID,
+				"type_a", d.DecisionType, "type_b", sc.cand.DecisionType,
+				"project", derefString(d.Project),
+				"refs_a", extractResourceRefs(d), "refs_b", extractResourceRefs(sc.cand))
+			continue
+		}
+
 		// Outcome similarity floor: when outcome embeddings are nearly
 		// identical AND the pair did not qualify for the directToScorer
 		// bypass, suppress as complementary. This catches coordinated
@@ -1782,14 +1803,15 @@ const operationalProgressionWindow = 7 * 24 * time.Hour
 //     intra-session pairs are left to the LLM, mirroring isTemporalReassessment
 //
 // Known limitation: suppression keys on (type, project, gap, keywords) with no
-// resource-identity signal, so two operational decisions on DIFFERENT resources
-// that merely share vocabulary are suppressed (the intended FP class), while a
-// same-resource contradiction that mentions no data-safety event can still be
-// suppressed once it is past the window. The data-loss guard closes the
-// high-stakes slice of that gap — the only slice with verified instances in the
-// trail. Fully gating on target resource needs a structured resource field
-// (connectors/customers are named only in free-text outcomes today) and is
-// deferred rather than parsed fragilely from text.
+// resource-identity signal, so a same-resource contradiction that mentions no
+// data-safety event can still be suppressed once it is past the window. The
+// data-loss guard closes the high-stakes slice of that gap — the only slice
+// with verified instances in the trail. The complementary different-resource
+// slice (and operational pairs inside the same incident window, which this
+// filter's gap requirement skips) is now handled pre-LLM by isDisjointResource,
+// which keys on the structured connector_/org_ tokens this filter declined to
+// parse — those tokens are regular identifiers, not the fragile free-text
+// customer names that motivated the original deferral.
 //
 // Scope: lives only in the cloud scorer (this file is !lite). The lite scorer
 // has none of the structural suppression family; porting it is out of scope.
@@ -1912,6 +1934,80 @@ func isDisjointWorkItem(d, cand model.Decision) bool {
 	}
 	refsA := extractWorkItemRefs(d)
 	refsB := extractWorkItemRefs(cand)
+	if len(refsA) == 0 || len(refsB) == 0 {
+		return false
+	}
+	return !ticketRefsOverlap(refsA, refsB)
+}
+
+// isDisjointResource returns true when two operational / investigation decisions
+// on the same project act on entirely different infrastructure resources —
+// different connector_/org_ identifiers — and therefore cannot contradict each
+// other. A diagnosis of connector_57a42328 and a recovery of connector_9b38b47d
+// touch different data planes; they routinely share dense incident vocabulary
+// (restart_storm, kafka2pg, replication slot, wal_status, snapshot) that places
+// them close in embedding space, and the validator then manufactures a
+// CONTRADICTION between two unrelated incidents.
+//
+// This is the resource-identity sibling of isDisjointWorkItem. That filter keys
+// on PR/ticket refs, which live operational traces do not carry — they name a
+// connector_/org_ token instead — so it could never see this class. Together
+// they are the membership-parity pair: work-item identity for code reviews and
+// plans, resource identity for incident recovery. It is the dominant live FP
+// class (2026-06-24 cross-connector restart-storm over-clustering) and the
+// reason operational conflicts pile up despite the work-item filter.
+//
+// It also fills the resource-identity gap that isOperationalStateProgression
+// documents as deferred: that filter suppresses same-project operational pairs
+// only once they are >= operationalProgressionWindow apart, so different-resource
+// pairs inside the same incident window (hours apart) slip past it. This filter
+// has no time requirement — different resources cannot contradict regardless of
+// when the two decisions were traced.
+//
+// Deliberately narrow, with the same discipline as isDisjointWorkItem:
+//   - both decisions must be resourceScopedTypes. architecture / trade_off /
+//     design forks are never eligible — a cross-cutting design disagreement can
+//     legitimately span resources and must reach the validator.
+//   - same non-empty project (operational traces are all project "mono"; an
+//     untagged pair is never suppressed), mirroring the sibling filters.
+//   - both must expose at least one extractable resource ref, and the two ref
+//     sets must be fully disjoint. Any shared connector/org makes the sets
+//     overlap and the pair reaches the validator — which is correct, because a
+//     same-connector pair is exactly where a genuine operational clash lives.
+//   - not precedent-linked — an explicit lineage cite is left to the LLM.
+//   - neither outcome reports a data-loss / corruption / quarantine event. This
+//     is the non-negotiable guard: a data-safety finding is categorically
+//     high-stakes and must never be dropped pre-LLM, even across different
+//     resources (both sides checked). Same guard, same reasoning as
+//     isDisjointWorkItem and isOperationalStateProgression; see dataLossKeywords.
+//
+// Failure mode is under-suppression: a decision that names its resource only by
+// customer name ("Trellis") and not by connector_/org_ token yields no ref, which
+// disables the filter and sends the pair to the validator — never a wrongful
+// suppression of a same-resource pair, since the only way two ref sets become
+// disjoint is if both sides name resources and they genuinely differ.
+//
+// Scope: lives only in the cloud scorer (this file is !lite), alongside the rest
+// of the structural suppression family.
+func isDisjointResource(d, cand model.Decision) bool {
+	if !resourceScopedTypes[strings.ToLower(d.DecisionType)] {
+		return false
+	}
+	if !resourceScopedTypes[strings.ToLower(cand.DecisionType)] {
+		return false
+	}
+	projA, projB := derefString(d.Project), derefString(cand.Project)
+	if projA != projB || (projA == "" && projB == "") {
+		return false
+	}
+	if isPrecedentLinked(d, cand) {
+		return false
+	}
+	if containsDataLossKeyword(d.Outcome) || containsDataLossKeyword(cand.Outcome) {
+		return false
+	}
+	refsA := extractResourceRefs(d)
+	refsB := extractResourceRefs(cand)
 	if len(refsA) == 0 || len(refsB) == 0 {
 		return false
 	}
@@ -2068,6 +2164,25 @@ var workItemScopedTypes = map[string]bool{
 	"analysis":      true,
 	"audit":         true,
 	"planning":      true,
+}
+
+// resourceScopedTypes are decision types whose conflict scope is a single
+// infrastructure resource — a connector being recovered, an org/customer
+// incident being investigated or deployed against. Two such decisions about
+// DIFFERENT resources act on different data planes and cannot contradict, which
+// is what isDisjointResource keys on (via extractResourceRefs). investigation
+// is deliberately a member of BOTH this set and workItemScopedTypes: an
+// investigation can be disjoint by ticket OR by connector, and either filter may
+// suppress it. Direction-setting types (architecture / trade_off / design) are
+// excluded for the same reason as the sibling type sets — a cross-cutting design
+// fork can legitimately span resources and must remain detectable.
+var resourceScopedTypes = map[string]bool{
+	"investigation":        true,
+	"deployment":           true,
+	"operational_recovery": true,
+	"operations":           true,
+	"operational":          true,
+	"incident":             true,
 }
 
 // isDirectionalWorkflowPair returns true if earlierType is a review/assessment
