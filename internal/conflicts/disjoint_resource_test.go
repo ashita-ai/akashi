@@ -145,9 +145,12 @@ func TestIsDisjointResource(t *testing.T) {
 			expected: false,
 		},
 		{
-			// Data-safety guard: even across different connectors, a data-loss
-			// finding must reach the validator and the conflict queue.
-			name: "data-loss vocabulary on one side → NOT suppressed (data-safety guard)",
+			// The data-safety guard was removed from this filter (2026-07-23):
+			// provably-disjoint connectors are different data planes = different
+			// incidents, so a silent-data-loss finding on connector_e1761afd cannot
+			// be the same incident as, or contradict, a recovery of connector_9b38b47d.
+			// Same-writer data-safety protection lives in isOperationalStateProgression.
+			name: "data-loss vocabulary on one side, disjoint connectors → suppressed (different incidents)",
 			d: model.Decision{
 				ID: idA, Project: &mono, DecisionType: "investigation",
 				Outcome: "connector_e1761afd: scaling kafka2pg would skip offsets = silent permanent data loss; must re-snapshot",
@@ -156,7 +159,7 @@ func TestIsDisjointResource(t *testing.T) {
 				ID: idB, Project: &mono, DecisionType: "deployment",
 				Outcome: "Recovered connector_9b38b47d kafka2pg restart_storm ONLINE",
 			},
-			expected: false,
+			expected: true,
 		},
 		{
 			// architecture is direction-setting — a cross-cutting design fork can
@@ -295,10 +298,12 @@ func TestIsDisjointResource(t *testing.T) {
 			expected: false,
 		},
 		{
-			// Data-safety guard parity: the data-loss keyword appears only in the
-			// task field, with a clean outcome. extractResourceRefs reads the task,
-			// so the guard must too — the pre-fix outcome-only guard let this through.
-			name: "data-loss keyword only in task → NOT suppressed (guard scans task)",
+			// The data-safety guard is gone from this filter (2026-07-23), so a
+			// data-loss keyword — even one confined to the task field — no longer
+			// blocks suppression of provably-disjoint connectors. Task-field
+			// data-safety protection now lives solely in isOperationalStateProgression
+			// (see its "guard scans task" case).
+			name: "data-loss keyword only in task, disjoint connectors → suppressed",
 			d: model.Decision{
 				ID: idA, Project: &mono, DecisionType: "investigation",
 				Outcome:      "Recovered connector_57a42328 kafka2pg restart_storm ONLINE",
@@ -308,7 +313,7 @@ func TestIsDisjointResource(t *testing.T) {
 				ID: idB, Project: &mono, DecisionType: "deployment",
 				Outcome: "Recovered connector_9b38b47d kafka2pg restart_storm ONLINE",
 			},
-			expected: false,
+			expected: true,
 		},
 	}
 
