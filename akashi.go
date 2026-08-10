@@ -1544,8 +1544,9 @@ func newConflictValidator(cfg config.Config, logger *slog.Logger) conflicts.Vali
 		return conflicts.NewOllamaValidator(cfg.OllamaURL, cfg.ConflictLLMModel, cfg.ConflictLLMThreads)
 	}
 	if cfg.OpenAIAPIKey != "" {
-		logger.Info("conflict validator: openai", "model", cfg.ConflictOpenAIModel)
-		return conflicts.NewOpenAIValidator(cfg.OpenAIAPIKey.Value(), cfg.ConflictOpenAIModel)
+		logger.Info("conflict validator: openai", "model", cfg.ConflictOpenAIModel, "timeout", cfg.ConflictLLMTimeout)
+		return conflicts.NewOpenAIValidator(cfg.OpenAIAPIKey.Value(), cfg.ConflictOpenAIModel,
+			conflicts.WithRequestTimeout(cfg.ConflictLLMTimeout))
 	}
 	logger.Info("conflict validator: noop (no LLM configured, embedding-only conflicts)")
 	return conflicts.NoopValidator{}

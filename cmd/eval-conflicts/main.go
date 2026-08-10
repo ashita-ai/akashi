@@ -58,6 +58,7 @@ func run() int {
 	goldLimit := flag.Int("gold-limit", 200, "gold mode: max labeled pairs to evaluate (0 = all)")
 	goldConc := flag.Int("gold-conc", 8, "gold mode: concurrent validator calls")
 	goldModel := flag.String("gold-model", "gpt-4o-mini", "gold mode: OpenAI model to evaluate")
+	goldTimeout := flag.Duration("gold-timeout", 15*time.Second, "gold mode: per-call deadline (raise for reasoning models)")
 	save := flag.Bool("save", false, "save results to ./eval-results/{timestamp}.json")
 	flag.Parse()
 
@@ -68,7 +69,7 @@ func run() int {
 
 	// Gold mode talks to the database directly, not the server.
 	if *mode == "gold" {
-		return runGoldMode(*goldLimit, *goldConc, *goldModel, *save)
+		return runGoldMode(*goldLimit, *goldConc, *goldModel, *goldTimeout, *save)
 	}
 
 	baseURL := os.Getenv("AKASHI_URL")
@@ -426,7 +427,7 @@ func callScorerEval(baseURL, token string) (scorerEvalResult, error) {
 // cannot falsify that prompt.
 //
 // Requires AKASHI_DB_DSN (direct database access) and OPENAI_API_KEY.
-func runGoldMode(limit, conc int, model string, save bool) int {
+func runGoldMode(limit, conc int, model string, timeout time.Duration, save bool) int {
 	dsn := os.Getenv("AKASHI_DB_DSN")
 	if dsn == "" {
 		fmt.Fprintln(os.Stderr, "gold mode requires AKASHI_DB_DSN")
@@ -463,7 +464,7 @@ func runGoldMode(limit, conc int, model string, save bool) int {
 	pairs = stratifyGold(pairs, limit)
 	fmt.Println("sampled \u2192", conflicts.GoldSummary(pairs))
 
-	v := conflicts.NewOpenAIValidator(apiKey, model)
+	v := conflicts.NewOpenAIValidator(apiKey, model, conflicts.WithRequestTimeout(timeout))
 	results := make([]conflicts.EvalResult, len(pairs))
 	sem := make(chan struct{}, conc)
 	var wg sync.WaitGroup

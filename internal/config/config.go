@@ -82,24 +82,25 @@ type Config struct {
 	TrustProxy       bool    // When true, use X-Forwarded-For for rate limit keys (default: false).
 
 	// Conflict LLM validation.
-	ConflictLLMModel              string  // Text generation model for conflict validation (e.g. "qwen3.5:9b" for Ollama).
-	ConflictOpenAIModel           string  // OpenAI model for conflict validation (default: "gpt-4o-mini"). Judge capability dominates precision: on the blind gold set, gpt-4o projects to 27% queue precision vs 8% for gpt-4o-mini.
-	ConflictLLMThreads            int     // CPU threads Ollama may use per inference call (default: floor(NumCPU/3), min 1). 0 = let Ollama decide.
-	ConflictCandidateLimit        int     // Max candidates retrieved from Qdrant per decision for conflict scoring (default: 20).
-	ConflictBackfillWorkers       int     // Parallel workers for conflict scoring backfill (default: 4).
-	ConflictDecayLambda           float64 // Temporal decay rate for conflict significance (default: 0.01, 0 disables).
-	ConflictClaimTopicSimFloor    float64 // Min cosine similarity for two claims to be "about the same thing" (default: 0.60).
-	ConflictClaimDivFloor         float64 // Min outcome divergence for claims to count as disagreeing (default: 0.15).
-	ConflictDecisionTopicSimFloor float64 // Min decision-level topic similarity to activate claim-level scoring (default: 0.70).
-	ConflictEarlyExitFloor        float64 // Min pre-LLM significance for early exit pruning (default: 0.25, 0 disables).
-	ConflictOutcomeSimFloor       float64 // Min outcome cosine similarity to suppress as agreeing (default: 0.85, 0 disables).
-	CrossEncoderURL               string  // URL of the cross-encoder reranking service (empty = disabled).
-	CrossEncoderThreshold         float64 // Min cross-encoder score to proceed to LLM validation (default: 0.50).
-	NLIURL                        string  // URL of NLI sidecar for stance-aware pre-filtering (empty = disabled). Takes precedence over CrossEncoderURL.
-	ClaimExtractionLLM            bool    // Use the conflict LLM model for structured claim extraction (default: false).
-	ForceConflictRescore          bool    // When true (and LLM validator configured), clear all conflicts and re-score at startup.
-	ConflictProfile               string  // Named profile: "balanced" (default), "high_precision", "high_recall". Individual env vars override.
-	EmbeddingModelProfile         string  // Embedding model name for threshold profile selection (auto-detected from provider config).
+	ConflictLLMModel              string        // Text generation model for conflict validation (e.g. "qwen3.5:9b" for Ollama).
+	ConflictOpenAIModel           string        // OpenAI model for conflict validation (default: "gpt-4o-mini"). Judge capability dominates precision: on the blind gold set, gpt-4o projects to 27% queue precision vs 8% for gpt-4o-mini.
+	ConflictLLMTimeout            time.Duration // Per-call deadline for one conflict-validation request (default: 15s). Reasoning models exceed this; a timeout is fail-safe (candidate skipped), so too low a value silently drops detections.
+	ConflictLLMThreads            int           // CPU threads Ollama may use per inference call (default: floor(NumCPU/3), min 1). 0 = let Ollama decide.
+	ConflictCandidateLimit        int           // Max candidates retrieved from Qdrant per decision for conflict scoring (default: 20).
+	ConflictBackfillWorkers       int           // Parallel workers for conflict scoring backfill (default: 4).
+	ConflictDecayLambda           float64       // Temporal decay rate for conflict significance (default: 0.01, 0 disables).
+	ConflictClaimTopicSimFloor    float64       // Min cosine similarity for two claims to be "about the same thing" (default: 0.60).
+	ConflictClaimDivFloor         float64       // Min outcome divergence for claims to count as disagreeing (default: 0.15).
+	ConflictDecisionTopicSimFloor float64       // Min decision-level topic similarity to activate claim-level scoring (default: 0.70).
+	ConflictEarlyExitFloor        float64       // Min pre-LLM significance for early exit pruning (default: 0.25, 0 disables).
+	ConflictOutcomeSimFloor       float64       // Min outcome cosine similarity to suppress as agreeing (default: 0.85, 0 disables).
+	CrossEncoderURL               string        // URL of the cross-encoder reranking service (empty = disabled).
+	CrossEncoderThreshold         float64       // Min cross-encoder score to proceed to LLM validation (default: 0.50).
+	NLIURL                        string        // URL of NLI sidecar for stance-aware pre-filtering (empty = disabled). Takes precedence over CrossEncoderURL.
+	ClaimExtractionLLM            bool          // Use the conflict LLM model for structured claim extraction (default: false).
+	ForceConflictRescore          bool          // When true (and LLM validator configured), clear all conflicts and re-score at startup.
+	ConflictProfile               string        // Named profile: "balanced" (default), "high_precision", "high_recall". Individual env vars override.
+	EmbeddingModelProfile         string        // Embedding model name for threshold profile selection (auto-detected from provider config).
 
 	// Event WAL (write-ahead log) for crash-durable event buffering.
 	WALDir            string        // Directory for WAL files. Default: "./data/wal". Set AKASHI_WAL_DISABLE=true to disable.
@@ -345,6 +346,7 @@ func Load() (Config, error) {
 	cfg.JWTExpiration, errs = collectDuration(errs, "AKASHI_JWT_EXPIRATION", 24*time.Hour)
 	cfg.OutboxPollInterval, errs = collectDuration(errs, "AKASHI_OUTBOX_POLL_INTERVAL", 1*time.Second)
 	cfg.ConflictRefreshInterval, errs = collectDuration(errs, "AKASHI_CONFLICT_REFRESH_INTERVAL", 30*time.Second)
+	cfg.ConflictLLMTimeout, errs = collectDuration(errs, "AKASHI_CONFLICT_LLM_TIMEOUT", 15*time.Second)
 	cfg.IntegrityProofInterval, errs = collectDuration(errs, "AKASHI_INTEGRITY_PROOF_INTERVAL", 5*time.Minute)
 	cfg.IntegrityAuditInterval, errs = collectDuration(errs, "AKASHI_INTEGRITY_AUDIT_INTERVAL", 15*time.Minute)
 	cfg.IntegrityAuditTimeout, errs = collectDuration(errs, "AKASHI_INTEGRITY_AUDIT_TIMEOUT", 5*time.Minute)

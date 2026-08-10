@@ -647,25 +647,52 @@ func (v *OllamaValidator) Validate(ctx context.Context, input ValidateInput) (Va
 }
 
 // OpenAIValidator validates conflict candidates using the OpenAI chat API.
-// Uses gpt-4o-mini for cost efficiency. Reuses the existing OPENAI_API_KEY.
+// Defaults to gpt-4o-mini for cost efficiency. Reuses the existing OPENAI_API_KEY.
 type OpenAIValidator struct {
 	apiKey     string
 	model      string
+	timeout    time.Duration
 	httpClient *http.Client
 }
 
+// OpenAIOption customizes an OpenAIValidator.
+type OpenAIOption func(*OpenAIValidator)
+
+// WithRequestTimeout overrides the per-call deadline.
+//
+// The default suits chat-completion models, which answer in a few seconds.
+// Reasoning models spend far longer before emitting a first token: a gold-set
+// run against gpt-5 at the default deadline failed 159 of 200 calls with
+// context deadline exceeded, and — because the scorer treats a validation
+// error as fail-safe and skips the candidate — that presents as a quiet drop
+// in detections rather than as an error anyone notices. Any deployment
+// pointing AKASHI_CONFLICT_OPENAI_MODEL at a reasoning model must raise this.
+func WithRequestTimeout(d time.Duration) OpenAIOption {
+	return func(v *OpenAIValidator) {
+		if d > 0 {
+			v.timeout = d
+			v.httpClient.Timeout = d + 5*time.Second
+		}
+	}
+}
+
 // NewOpenAIValidator creates a validator that calls the OpenAI chat completions API.
-func NewOpenAIValidator(apiKey, model string) *OpenAIValidator {
+func NewOpenAIValidator(apiKey, model string, opts ...OpenAIOption) *OpenAIValidator {
 	if model == "" {
 		model = "gpt-4o-mini"
 	}
-	return &OpenAIValidator{
-		apiKey: apiKey,
-		model:  model,
+	v := &OpenAIValidator{
+		apiKey:  apiKey,
+		model:   model,
+		timeout: perCallTimeout,
 		httpClient: &http.Client{
 			Timeout: perCallTimeout + 5*time.Second,
 		},
 	}
+	for _, opt := range opts {
+		opt(v)
+	}
+	return v
 }
 
 type openAIChatRequest struct {
@@ -687,7 +714,7 @@ type openAIChatResponse struct {
 }
 
 func (v *OpenAIValidator) Validate(ctx context.Context, input ValidateInput) (ValidationResult, error) {
-	callCtx, cancel := context.WithTimeout(ctx, perCallTimeout)
+	callCtx, cancel := context.WithTimeout(ctx, v.timeout)
 	defer cancel()
 
 	prompt := formatPrompt(input)
