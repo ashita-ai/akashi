@@ -4153,6 +4153,15 @@ components:
             significance during claim-level scoring. Present only when scoring_method
             originated from claim-level analysis. NULL when the winning scoring
             method was not "claim".
+        disputed_question:
+          type: string
+          description: |
+            The single question both decisions answer differently, as named by the
+            validator. The judge must state this question in order to return a
+            "contradiction" relationship — a verdict that cannot name one is
+            downgraded — so a present value means a dispute was actually identified
+            rather than a pair merely scoring highly. NULL for every other
+            relationship.
 
     ConflictDetail:
       description: |

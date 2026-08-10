@@ -232,6 +232,13 @@ type DecisionConflict struct {
 	ClaimTextA *string `json:"claim_text_a,omitempty"`
 	ClaimTextB *string `json:"claim_text_b,omitempty"`
 
+	// DisputedQuestion (migration 108): the single question both decisions
+	// answer differently, as named by the validator. The prompt requires it for
+	// a contradiction verdict and the parser downgrades verdicts that cannot
+	// supply one, so a non-nil value means a dispute was actually identified
+	// rather than a pair merely scoring highly. Nil for every other relationship.
+	DisputedQuestion *string `json:"disputed_question,omitempty"`
+
 	// ReopensResolutionID (migration 067): links to the prior resolved conflict
 	// whose winning side this new conflict contradicts. When set, the conflict
 	// was auto-escalated to critical severity.

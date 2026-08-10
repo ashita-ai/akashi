@@ -140,6 +140,11 @@ class DecisionConflict(BaseModel):
     group_id: UUID | None = None
     claim_text_a: str | None = None
     claim_text_b: str | None = None
+    # The single question both decisions answer differently, as named by the
+    # validator. Set only for contradictions: the judge must name the disputed
+    # question to return that verdict, so its presence means a dispute was
+    # identified rather than a pair merely scoring highly.
+    disputed_question: str | None = None
     reopens_resolution_id: UUID | None = None
     project_a: str | None = None
     project_b: str | None = None
