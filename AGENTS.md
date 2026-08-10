@@ -74,11 +74,11 @@ internal/
   ratelimit/         Pluggable token bucket rate limiter.
   telemetry/         OpenTelemetry setup (traces + metrics).
   testutil/          Shared test helpers (testcontainers, test DB, test logger).
-migrations/          SQL files (001, 022..099). Atlas-managed checksums.
-adrs/                Technical architecture decision records (ADR-001 through ADR-015).
+migrations/          SQL files (001, 022..108). Atlas-managed checksums.
+adrs/                Technical architecture decision records (ADR-001 through ADR-017).
 sdk/                 Go, Python, TypeScript client SDKs.
 ui/                  React 19 SPA (audit dashboard). Embedded via go:embed when built with -tags ui.
-docs/                Configuration reference.
+docs/                Configuration reference; conflict-detection operator guide.
 ```
 
 ## Architecture patterns
