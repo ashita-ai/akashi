@@ -66,9 +66,17 @@ type CostMetrics struct {
 	// running; at or above 1.0 a fixed answer is cheaper.
 	NormalizedExpectedCost float64 `json:"normalized_expected_cost"`
 
-	// BreakEvenCostRatio is the miss:false-alarm ratio at which the detector
-	// stops losing to the trivial system. NaN when no ratio makes it worthwhile.
+	// BreakEvenCostRatio is the lowest miss:false-alarm ratio at which the
+	// detector stops losing to flagging nothing. NaN when no ratio works.
 	BreakEvenCostRatio float64 `json:"break_even_cost_ratio"`
+
+	// UpperCostRatio is the ratio above which flagging EVERYTHING becomes
+	// cheaper than running the detector. A detector is only worth running for
+	// ratios strictly between BreakEvenCostRatio and this. The upper bound is
+	// easy to forget because it is counter-intuitive: once a miss is
+	// catastrophic enough, a review queue that filters anything at all costs
+	// more than reviewing everything. NaN when no ratio works.
+	UpperCostRatio float64 `json:"upper_cost_ratio"`
 }
 
 // ComputeCostMetrics derives cost-relative metrics from a confusion matrix.
@@ -83,6 +91,7 @@ func ComputeCostMetrics(tp, fp, tn, fn int, model CostModel) CostMetrics {
 		MissCostRatio:          model.MissCostRatio,
 		NormalizedExpectedCost: math.NaN(),
 		BreakEvenCostRatio:     math.NaN(),
+		UpperCostRatio:         math.NaN(),
 	}
 	if tp+fn > 0 {
 		m.Sensitivity = float64(tp) / float64(tp+fn)
@@ -97,7 +106,7 @@ func ComputeCostMetrics(tp, fp, tn, fn int, model CostModel) CostMetrics {
 		return m
 	}
 	m.NormalizedExpectedCost = normalizedExpectedCost(m.Sensitivity, m.FalsePosRate, model)
-	m.BreakEvenCostRatio = breakEvenCostRatio(m.Sensitivity, m.FalsePosRate, model.Prevalence)
+	m.BreakEvenCostRatio, m.UpperCostRatio = worthwhileCostRatios(m.Sensitivity, m.FalsePosRate, model.Prevalence)
 	return m
 }
 
@@ -115,25 +124,40 @@ func normalizedExpectedCost(sens, fpr float64, model CostModel) float64 {
 	return detector / trivial
 }
 
-// breakEvenCostRatio solves normalizedExpectedCost(r) = 1 for r.
+// worthwhileCostRatios returns the open interval of miss:false-alarm ratios for
+// which the detector beats BOTH trivial systems.
 //
-// Against the flag-nothing baseline the condition is linear in r:
+// There are two baselines, and a detector must beat whichever is cheaper.
+// Against flag-nothing (cost pi*r):
 //
-//	pi*(1-sens)*r + (1-pi)*fpr < pi*r      =>      r > (1-pi)*fpr / (pi*sens)
+//	pi*(1-sens)*r + (1-pi)*fpr < pi*r   =>   r > (1-pi)*fpr / (pi*sens)
 //
-// which is exactly the decision-curve identity: the detector pays off once the
-// odds of the cost ratio exceed (1-precision)/precision. Returns NaN when the
-// detector never beats the trivial system, which happens when it has no
-// sensitivity at all.
-func breakEvenCostRatio(sens, fpr, pi float64) float64 {
-	if sens <= 0 {
-		return math.NaN()
+// which is the decision-curve identity — the detector pays off once the cost
+// odds exceed (1-precision)/precision. Against flag-everything (cost 1-pi):
+//
+//	pi*(1-sens)*r + (1-pi)*fpr < 1-pi   =>   r < (1-pi)*(1-fpr) / (pi*(1-sens))
+//
+// The upper bound is the one that gets forgotten, and it is real: once a miss
+// is catastrophic enough relative to a false alarm, any filtering at all costs
+// more than reviewing every pair. Reporting only the lower bound tells an
+// operator with an extreme cost ratio to run a detector they should not.
+//
+// The interval is non-empty exactly when fpr < sens, i.e. when the detector is
+// better than chance. Both bounds are NaN otherwise.
+func worthwhileCostRatios(sens, fpr, pi float64) (low, high float64) {
+	if sens <= fpr {
+		// At or below chance no cost ratio makes the detector worth running.
+		return math.NaN(), math.NaN()
+	}
+	high = ((1 - pi) * (1 - fpr)) / (pi * (1 - sens))
+	if sens >= 1 {
+		high = math.Inf(1) // never misses, so flag-everything never wins
 	}
 	if fpr <= 0 {
-		// A detector with no false alarms beats flag-nothing at any positive cost.
-		return 0
+		// No false alarms: beats flag-nothing at any positive cost ratio.
+		return 0, high
 	}
-	return ((1 - pi) * fpr) / (pi * sens)
+	return ((1 - pi) * fpr) / (pi * sens), high
 }
 
 // FormatCostMetrics renders a short cost report, including a sweep over
@@ -147,10 +171,17 @@ func FormatCostMetrics(m CostMetrics, sweep []float64) string {
 	fmt.Fprintf(&b, "(sensitivity, specificity and FPR are prevalence-invariant; precision is not)\n")
 
 	if math.IsNaN(m.BreakEvenCostRatio) {
-		fmt.Fprintf(&b, "break-even: never — the detector has no sensitivity\n")
+		fmt.Fprintf(&b, "worthwhile at no cost ratio — sensitivity does not exceed the false-positive rate\n")
 		return b.String()
 	}
-	fmt.Fprintf(&b, "break-even miss:false-alarm cost ratio: %.2f:1\n", m.BreakEvenCostRatio)
+	if math.IsInf(m.UpperCostRatio, 1) {
+		fmt.Fprintf(&b, "worth running for cost ratios above %.2f:1\n", m.BreakEvenCostRatio)
+	} else {
+		fmt.Fprintf(&b, "worth running for cost ratios between %.2f:1 and %.2f:1\n",
+			m.BreakEvenCostRatio, m.UpperCostRatio)
+		fmt.Fprintf(&b, "(above %.2f:1 a miss is costly enough that reviewing every pair is cheaper)\n",
+			m.UpperCostRatio)
+	}
 
 	for _, r := range sweep {
 		nec := normalizedExpectedCost(m.Sensitivity, m.FalsePosRate, CostModel{Prevalence: m.Prevalence, MissCostRatio: r})

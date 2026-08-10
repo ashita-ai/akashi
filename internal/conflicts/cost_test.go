@@ -1,4 +1,4 @@
-//go:build !lite && integration
+//go:build !lite
 
 package conflicts
 
@@ -52,6 +52,10 @@ func TestComputeCostMetrics_BreakEvenMatchesDecisionCurveIdentity(t *testing.T) 
 	m := ComputeCostMetrics(tp, fp, tn, fn, CostModel{Prevalence: corpusPrevalence, MissCostRatio: 1})
 
 	assert.InDelta(t, 1.39, m.BreakEvenCostRatio, 0.05)
+	// The detector also stops being worth running once a miss is catastrophic
+	// enough that reviewing every pair is cheaper. Reporting only the lower
+	// bound would tell an operator with an extreme ratio to run it anyway.
+	assert.InDelta(t, 56.86, m.UpperCostRatio, 0.5)
 
 	// Decision curve analysis says net benefit is positive exactly when
 	// precision exceeds the threshold probability, i.e. the break-even odds are
@@ -60,6 +64,19 @@ func TestComputeCostMetrics_BreakEvenMatchesDecisionCurveIdentity(t *testing.T) 
 	precision := float64(tp) / float64(tp+fp)
 	assert.InDelta(t, (1-precision)/precision, m.BreakEvenCostRatio, 0.02,
 		"cost model and decision curve analysis must give the same break-even")
+}
+
+// Above the upper bound, flagging everything is cheaper than the detector.
+func TestComputeCostMetrics_UpperBoundIsReal(t *testing.T) {
+	tp, fp, tn, fn := countsFor(corpusPrevalence, corpusSens, corpusFPR, 1_000_000)
+	m := ComputeCostMetrics(tp, fp, tn, fn, CostModel{Prevalence: corpusPrevalence, MissCostRatio: 1})
+	require.False(t, math.IsNaN(m.UpperCostRatio))
+
+	inside := ComputeCostMetrics(tp, fp, tn, fn, CostModel{Prevalence: corpusPrevalence, MissCostRatio: m.UpperCostRatio * 0.9})
+	outside := ComputeCostMetrics(tp, fp, tn, fn, CostModel{Prevalence: corpusPrevalence, MissCostRatio: m.UpperCostRatio * 1.1})
+	assert.Less(t, inside.NormalizedExpectedCost, 1.0, "inside the interval the detector must win")
+	assert.Greater(t, outside.NormalizedExpectedCost, 1.0,
+		"past the upper bound reviewing everything is cheaper than filtering")
 }
 
 // Crossing the break-even ratio must flip the verdict, in both directions.
@@ -86,6 +103,16 @@ func TestComputeCostMetrics_Boundaries(t *testing.T) {
 	blind := ComputeCostMetrics(0, 100, 900, 100, CostModel{Prevalence: 0.1, MissCostRatio: 1})
 	assert.True(t, math.IsNaN(blind.BreakEvenCostRatio), "a detector that finds nothing never pays off")
 
+	// Below chance: sensitivity 20% against a 40% false-positive rate. The
+	// naive lower-bound formula still yields a finite, confident-looking
+	// number here, so the guard has to be sens > fpr rather than sens > 0.
+	worseThanChance := ComputeCostMetrics(20, 360, 540, 80, CostModel{Prevalence: 0.1, MissCostRatio: 1})
+	require.InDelta(t, 0.20, worseThanChance.Sensitivity, 0.01)
+	require.InDelta(t, 0.40, worseThanChance.FalsePosRate, 0.01)
+	assert.True(t, math.IsNaN(worseThanChance.BreakEvenCostRatio),
+		"a below-chance detector must report no worthwhile ratio, not a finite one")
+	assert.True(t, math.IsNaN(worseThanChance.UpperCostRatio))
+
 	// An unusable cost model must not produce a confident-looking number.
 	bad := ComputeCostMetrics(10, 10, 10, 10, CostModel{Prevalence: 0, MissCostRatio: 1})
 	assert.True(t, math.IsNaN(bad.NormalizedExpectedCost))
@@ -111,7 +138,7 @@ func TestFormatCostMetrics(t *testing.T) {
 	m := ComputeCostMetrics(tp, fp, tn, fn, CostModel{Prevalence: corpusPrevalence, MissCostRatio: 1})
 	out := FormatCostMetrics(m, []float64{1, 3, 10})
 
-	assert.Contains(t, out, "break-even")
+	assert.Contains(t, out, "worth running for cost ratios")
 	assert.Contains(t, out, "prevalence-invariant")
 	assert.Contains(t, out, "worse than the best trivial system")
 	assert.Contains(t, out, "worth running")
