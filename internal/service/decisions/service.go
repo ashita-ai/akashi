@@ -554,6 +554,19 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 		}
 	}
 
+	// 4b. Canonicalize bindings. Rejecting a malformed binding here rather than
+	// at insert keeps the failure attributable to the caller's trace, and a
+	// binding with no canonical key would be stored blank and silently never
+	// join with anything.
+	rawBinds := make([]model.Binding, len(input.Decision.Bindings))
+	for i, b := range input.Decision.Bindings {
+		rawBinds[i] = model.Binding{Parameter: b.Parameter, Value: b.Value}
+	}
+	binds, err := model.CanonicalizeBindings(rawBinds)
+	if err != nil {
+		return storage.CreateTraceParams{}, nil, nil, fmt.Errorf("trace: %w", err)
+	}
+
 	// 5. Build evidence with embeddings (outside tx — may call external API).
 	// Parallelize embedding calls since each is an independent API request.
 	evs := make([]model.Evidence, len(input.Decision.Evidence))
@@ -640,6 +653,7 @@ func (s *Service) prepareTrace(ctx context.Context, orgID uuid.UUID, input Trace
 			APIKeyID:          input.APIKeyID,
 		},
 		Alternatives: alts,
+		Bindings:     binds,
 		Evidence:     evs,
 		SessionID:    input.SessionID,
 		AgentContext: input.AgentContext,
