@@ -123,3 +123,37 @@ func TestGoldSummary(t *testing.T) {
 	assert.Contains(t, s, "complementary=2")
 	assert.Contains(t, s, "50.0%")
 }
+
+// A legacy VERDICT line appearing BEFORE an explicit RELATIONSHIP line must not
+// buy an exemption from the question contract. Before this was fixed, line
+// order alone decided whether the contract applied.
+func TestParseValidatorResponse_VerdictBeforeRelationshipStillBoundByContract(t *testing.T) {
+	result, err := ParseValidatorResponse("VERDICT: yes\nRELATIONSHIP: contradiction\nEXPLANATION: ordering matters")
+	require.NoError(t, err)
+	assert.Equal(t, "complementary", result.Relationship,
+		"an explicit RELATIONSHIP line means the model saw the current prompt and owes a question")
+}
+
+// Markdown-wrapped placeholders must still fail the contract; the key parses
+// fine, so a survivor would satisfy the contract with no question at all.
+func TestParseValidatorResponse_MarkdownWrappedPlaceholderRejected(t *testing.T) {
+	for _, q := range []string{"**n/a**", "*none*", "__N/A__", "**[n/a]**"} {
+		t.Run(q, func(t *testing.T) {
+			result, err := ParseValidatorResponse(
+				"RELATIONSHIP: contradiction\nQUESTION: " + q + "\nEXPLANATION: x")
+			require.NoError(t, err)
+			assert.Equal(t, "complementary", result.Relationship,
+				"markdown-wrapped placeholder %q must not satisfy the contract", q)
+		})
+	}
+}
+
+// A genuine question wrapped in markdown must survive — the trimming must not
+// be so aggressive that it eats real content.
+func TestParseValidatorResponse_MarkdownWrappedQuestionSurvives(t *testing.T) {
+	result, err := ParseValidatorResponse(
+		"RELATIONSHIP: contradiction\nQUESTION: **whether to run CreateFieldIndex at startup**\nEXPLANATION: x")
+	require.NoError(t, err)
+	assert.Equal(t, "contradiction", result.Relationship)
+	assert.Equal(t, "whether to run CreateFieldIndex at startup", result.SharedQuestion)
+}

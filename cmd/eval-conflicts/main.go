@@ -463,10 +463,21 @@ func runGoldMode(limit, conc int, model string, timeout time.Duration, classes s
 		return 1
 	}
 	fmt.Println(conflicts.GoldSummary(pairs))
+
+	// Corpus class counts come from the labels just loaded, never from a
+	// constant. The projection below divides by these, so a frozen snapshot
+	// would silently misreport precision the moment the label set changed —
+	// and the label set is expected to grow.
+	corpusSizes := map[string]float64{}
+	for _, p := range pairs {
+		corpusSizes[p.ExpectedRelationship]++
+	}
+
 	if classes != "" {
-		want := map[string]bool{}
-		for _, c := range strings.Split(classes, ",") {
-			want[strings.TrimSpace(c)] = true
+		want, err := parseGoldClasses(classes)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
 		}
 		filtered := pairs[:0:0]
 		for _, p := range pairs {
@@ -474,7 +485,14 @@ func runGoldMode(limit, conc int, model string, timeout time.Duration, classes s
 				filtered = append(filtered, p)
 			}
 		}
-		pairs = spread(filtered, limit)
+		if len(filtered) == 0 {
+			fmt.Fprintf(os.Stderr, "no gold pairs matched --gold-classes=%q\n", classes)
+			return 1
+		}
+		if limit > 0 {
+			filtered = spread(filtered, limit)
+		}
+		pairs = filtered
 	} else {
 		pairs = stratifyGold(pairs, limit)
 	}
@@ -506,7 +524,7 @@ func runGoldMode(limit, conc int, model string, timeout time.Duration, classes s
 	}
 	wg.Wait()
 
-	reportGold(results, model)
+	reportGold(results, model, corpusSizes)
 	if save {
 		if err := saveResults("gold", results); err != nil {
 			fmt.Fprintln(os.Stderr, "save:", err)
@@ -553,13 +571,46 @@ func spread(ps []conflicts.EvalPair, n int) []conflicts.EvalPair {
 	return out
 }
 
-// goldCorpusSizes are the true class counts of the labeled corpus, used to
-// project sample results back onto the queue a user would actually see.
-var goldCorpusSizes = map[string]float64{
-	"contradiction": 93, "supersession": 627, "complementary": 2017, "unrelated": 35,
+// parseGoldClasses maps the --gold-classes argument onto the internal
+// relationship vocabulary.
+//
+// An operator reads class names out of conflict_gold_labels, where they are
+// gold labels ("related_not_contradicting"), but EvalPair carries the mapped
+// validator vocabulary ("complementary"). Accepting only the mapped form makes
+// the obvious invocation match zero pairs, and the run then measures nothing
+// while looking like it worked. Both spellings are accepted, and an
+// unrecognised one is an error rather than an empty filter.
+func parseGoldClasses(arg string) (map[string]bool, error) {
+	// Only the "related" class differs between the two vocabularies; the rest
+	// are spelled identically, which is exactly why the mismatch is easy to
+	// miss and worth handling explicitly.
+	alias := map[string]string{
+		conflicts.GoldRelated: "complementary",
+		"contradiction":       "contradiction",
+		"supersession":        "supersession",
+		"complementary":       "complementary",
+		"refinement":          "complementary",
+		"unrelated":           "unrelated",
+	}
+	want := map[string]bool{}
+	for _, raw := range strings.Split(arg, ",") {
+		c := strings.TrimSpace(raw)
+		if c == "" {
+			continue
+		}
+		mapped, ok := alias[c]
+		if !ok {
+			return nil, fmt.Errorf("unknown --gold-classes value %q (want one of: contradiction, supersession, related_not_contradicting, unrelated)", c)
+		}
+		want[mapped] = true
+	}
+	if len(want) == 0 {
+		return nil, fmt.Errorf("--gold-classes was empty")
+	}
+	return want, nil
 }
 
-func reportGold(results []conflicts.EvalResult, model string) {
+func reportGold(results []conflicts.EvalResult, model string, corpusSizes map[string]float64) {
 	m := conflicts.ComputeMetrics(results)
 	fmt.Printf("\n=== gold-set eval (model=%s, n=%d, errors=%d) ===\n", model, m.TotalPairs, m.Errors)
 	fmt.Printf("relationship accuracy  : %.1f%%\n", m.RelationshipAcc*100)
@@ -588,21 +639,51 @@ func reportGold(results []conflicts.EvalResult, model string) {
 		if total == 0 {
 			continue
 		}
-		n := goldCorpusSizes[expected] * float64(acts["contradiction"]) / float64(total)
+		n := corpusSizes[expected] * float64(acts["contradiction"]) / float64(total)
 		flagged += n
 		if expected == "contradiction" {
 			tp = n
 		}
 	}
 	if flagged > 0 {
-		base := goldCorpusSizes["contradiction"]
+		base := corpusSizes["contradiction"]
 		var totalCorpus float64
-		for _, n := range goldCorpusSizes {
+		for _, n := range corpusSizes {
 			totalCorpus += n
 		}
-		baseRate := base / totalCorpus
-		fmt.Printf("corpus-projected queue : %.0f pairs, precision %.1f%% (base rate %.1f%%, lift %.1fx)\n",
-			flagged, tp/flagged*100, baseRate*100, (tp/flagged)/baseRate)
+		// The guard is on the SAMPLE, not the corpus: a --gold-classes run that
+		// evaluated no contradiction-class pairs has no true positives to be
+		// precise about, however many the corpus holds.
+		_, sampledContradictions := conf["contradiction"]
+		if base == 0 || !sampledContradictions {
+			// Measuring one negative class in isolation (the point of
+			// --gold-classes) leaves nothing to be precise about. Report the
+			// false-positive rate, which is what such a run actually measures,
+			// instead of printing "precision 0.0%" as if the judge failed.
+			var evaluated float64
+			for expected, acts := range conf {
+				if expected == "contradiction" {
+					continue
+				}
+				for _, n := range acts {
+					evaluated += float64(n)
+				}
+			}
+			var falseFlags float64
+			for expected, acts := range conf {
+				if expected != "contradiction" {
+					falseFlags += float64(acts["contradiction"])
+				}
+			}
+			if evaluated > 0 {
+				fmt.Printf("no contradiction-class pairs evaluated — this run measures the false-positive rate: %.2f%% (%.0f of %.0f)\n",
+					falseFlags/evaluated*100, falseFlags, evaluated)
+			}
+		} else {
+			baseRate := base / totalCorpus
+			fmt.Printf("corpus-projected queue : %.0f pairs, precision %.1f%% (base rate %.1f%%, lift %.1fx)\n",
+				flagged, tp/flagged*100, baseRate*100, (tp/flagged)/baseRate)
+		}
 	}
 
 	fmt.Println("\ngold (row) \u2192 validator (col):")

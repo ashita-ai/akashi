@@ -1260,10 +1260,19 @@ func (s *Scorer) ClearUnvalidatedConflicts(ctx context.Context) (int, error) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Gold-labelled pairs are excluded from every bulk clear. They are the
+	// only ground truth the detector is measured against, nothing in this repo
+	// can regenerate them, and a cascade delete would take them silently — the
+	// mutation-audit row counts scored_conflicts, not labels, so a partial loss
+	// leaves no trace and simply skews the next corpus-projected precision.
 	tag, err := tx.Exec(ctx,
 		`DELETE FROM scored_conflicts
 		 WHERE scoring_method NOT IN ('llm_v2')
-		   AND status = 'open'`)
+		   AND status = 'open'
+		   AND NOT EXISTS (
+		       SELECT 1 FROM conflict_gold_labels g
+		       WHERE g.scored_conflict_id = scored_conflicts.id
+		   )`)
 	if err != nil {
 		return 0, fmt.Errorf("conflicts: clear unvalidated: %w", err)
 	}
@@ -1327,8 +1336,16 @@ func (s *Scorer) ClearAllConflicts(ctx context.Context) (int, error) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Same exclusion as ClearUnvalidatedConflicts: a rescore must never cost us
+	// the labelled corpus. Both clear paths are siblings; guarding one is how
+	// the other silently becomes the data-loss path.
 	tag, err := tx.Exec(ctx,
-		`DELETE FROM scored_conflicts WHERE status = 'open'`)
+		`DELETE FROM scored_conflicts
+		 WHERE status = 'open'
+		   AND NOT EXISTS (
+		       SELECT 1 FROM conflict_gold_labels g
+		       WHERE g.scored_conflict_id = scored_conflicts.id
+		   )`)
 	if err != nil {
 		return 0, fmt.Errorf("conflicts: clear all: %w", err)
 	}

@@ -14,6 +14,14 @@
 -- live incompatible positions); conflating them was the detector's dominant
 -- error, at 22.6% of the corpus.
 
+-- ON DELETE CASCADE is correct for a genuine deletion: a label describing a
+-- pair that no longer exists is meaningless. It is NOT safe for the bulk clears
+-- that run at startup after a prompt change, which would take the labelled
+-- corpus with them and leave no trace, since the mutation-audit row counts
+-- scored_conflicts rather than labels. Those two paths therefore exclude
+-- labelled rows explicitly -- see ClearUnvalidatedConflicts and
+-- ClearAllConflicts in internal/conflicts/scorer.go. If a third bulk-delete
+-- path is ever added, it needs the same exclusion.
 CREATE TABLE IF NOT EXISTS conflict_gold_labels (
     scored_conflict_id UUID PRIMARY KEY REFERENCES scored_conflicts(id) ON DELETE CASCADE,
     org_id             UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,

@@ -380,6 +380,11 @@ func ParseValidatorResponse(response string) (ValidationResult, error) {
 		case strings.HasPrefix(lower, "relationship:"):
 			// Trim markdown markers that can appear between ":" and the value.
 			relationship = strings.ToLower(strings.Trim(strings.TrimSpace(trimmed[len("relationship:"):]), "*_ "))
+			// An explicit RELATIONSHIP means the model saw the current prompt
+			// and owes a disputed question. Clearing the flag here keeps that
+			// true regardless of whether a legacy VERDICT line came first —
+			// otherwise line ordering alone decides whether the contract applies.
+			legacyVerdict = false
 		case strings.HasPrefix(lower, "verdict:"):
 			// Backward compatibility: map old-style yes/no to relationship.
 			verdict := strings.ToLower(strings.Trim(strings.TrimSpace(trimmed[len("verdict:"):]), "*_ "))
@@ -477,7 +482,13 @@ var placeholderQuestions = map[string]bool{
 // normalizeSharedQuestion trims a QUESTION value and collapses placeholders to
 // the empty string so the contradiction contract treats them as unanswered.
 func normalizeSharedQuestion(q string) string {
-	q = strings.TrimSpace(strings.Trim(strings.TrimSpace(q), "[]\"'"))
+	// Models wrap values in markdown and brackets, and a bold-wrapped
+	// placeholder ("**n/a**") must still be recognised as a placeholder — the
+	// key parses fine, so a survivor here would satisfy the contradiction
+	// contract with no question at all.
+	q = strings.Trim(strings.TrimSpace(q), "*_ ")
+	q = strings.Trim(strings.TrimSpace(q), "[]\"'")
+	q = strings.TrimSpace(strings.Trim(q, "*_ "))
 	if placeholderQuestions[strings.ToLower(strings.TrimRight(q, ".!"))] {
 		return ""
 	}
