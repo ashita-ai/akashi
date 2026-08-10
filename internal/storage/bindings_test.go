@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ashita-ai/akashi/internal/model"
+	"github.com/ashita-ai/akashi/internal/storage"
 )
 
 // A binding conflict has no false-positive rate to estimate — it is a join, and
@@ -196,4 +197,50 @@ func TestCreateBindingsBatch_RefusesUncanonicalizedBinding(t *testing.T) {
 	}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "canonical key")
+}
+
+// A binding conflict is the one case where the disputed question is exact
+// rather than a model's best statement of what the disagreement is about: the
+// parameter itself is the question. Verifying it round-trips here keeps the
+// binding path and the judge path reporting the same field.
+func TestBindingConflict_CarriesDisputedQuestion(t *testing.T) {
+	ctx := context.Background()
+	proj := "binding-dq-" + uuid.New().String()[:8]
+	param := "cache.ttl." + uuid.New().String()[:8]
+
+	first := bindingDecision(t, ctx, "planner", "cache five minutes", &proj, []model.Binding{bind(param, "5m")})
+	second := bindingDecision(t, ctx, "reviewer", "cache ten minutes", &proj, []model.Binding{bind(param, "10m")})
+
+	question := "the value of " + param
+	relationship := "contradiction"
+	id, err := testDB.InsertScoredConflict(ctx, model.DecisionConflict{
+		ConflictKind:     model.ConflictKindCrossAgent,
+		DecisionAID:      second.ID,
+		DecisionBID:      first.ID,
+		OrgID:            uuid.Nil,
+		AgentA:           "reviewer",
+		AgentB:           "planner",
+		DecisionTypeA:    "architecture",
+		DecisionTypeB:    "architecture",
+		OutcomeA:         second.Outcome,
+		OutcomeB:         first.Outcome,
+		ScoringMethod:    "binding_v1",
+		Relationship:     &relationship,
+		Status:           "open",
+		DisputedQuestion: &question,
+	})
+	require.NoError(t, err)
+
+	conflicts, err := testDB.ListConflicts(ctx, uuid.Nil, storage.ConflictFilters{}, 200, 0)
+	require.NoError(t, err)
+	for _, c := range conflicts {
+		if c.ID == id {
+			require.NotNil(t, c.DisputedQuestion)
+			assert.Equal(t, question, *c.DisputedQuestion)
+			assert.Equal(t, "binding_v1", c.ScoringMethod,
+				"binding conflicts must stay distinguishable from judge verdicts")
+			return
+		}
+	}
+	t.Fatal("binding conflict not found")
 }

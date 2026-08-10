@@ -59,6 +59,10 @@ func (s *Scorer) scoreBindings(ctx context.Context, d model.Decision, orgID uuid
 		if !ok {
 			continue
 		}
+		// For a binding conflict the disputed question is not inferred — it is
+		// the parameter itself. This is the one case where the field is exact
+		// rather than a model's best statement of what the disagreement is about.
+		question := fmt.Sprintf("the value of %s", mine.Parameter)
 		explanation := fmt.Sprintf(
 			"%s set %s to %q; %s set the same parameter to %q. Both decisions are current, so a reader has no way to know which value holds.",
 			d.AgentID, mine.Parameter, mine.Value, c.OtherAgentID, c.OtherValue)
@@ -83,12 +87,13 @@ func (s *Scorer) scoreBindings(ctx context.Context, d model.Decision, orgID uuid
 			// A declared collision is certain, so the scores that express
 			// uncertainty about a text pair are deliberately left unset rather
 			// than filled with a fabricated 1.0.
-			Relationship: ptr("contradiction"),
-			Explanation:  &explanation,
-			Category:     ptr("factual"),
-			Status:       "open",
-			ProjectA:     d.Project,
-			ProjectB:     c.OtherProject,
+			Relationship:     ptr("contradiction"),
+			Explanation:      &explanation,
+			Category:         ptr("factual"),
+			Status:           "open",
+			DisputedQuestion: &question,
+			ProjectA:         d.Project,
+			ProjectB:         c.OtherProject,
 		}
 
 		if _, err := s.db.InsertScoredConflict(ctx, conflict); err != nil {
