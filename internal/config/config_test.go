@@ -728,6 +728,16 @@ func TestValidate_ZeroIntervals(t *testing.T) {
 			errStr: "AKASHI_CONFLICT_REFRESH_INTERVAL",
 		},
 		{
+			name:   "zero conflict backfill interval",
+			setter: func(c *Config) { c.ConflictBackfillInterval = 0 },
+			errStr: "AKASHI_CONFLICT_BACKFILL_INTERVAL",
+		},
+		{
+			name:   "zero conflict backfill batch size",
+			setter: func(c *Config) { c.ConflictBackfillBatchSize = 0 },
+			errStr: "AKASHI_CONFLICT_BACKFILL_BATCH_SIZE",
+		},
+		{
 			name:   "zero integrity proof interval",
 			setter: func(c *Config) { c.IntegrityProofInterval = 0 },
 			errStr: "AKASHI_INTEGRITY_PROOF_INTERVAL",
@@ -820,6 +830,8 @@ func validBaseConfig() Config {
 		ShutdownLoopDrainTimeout:   10 * time.Second,
 		OutboxPollInterval:         1 * time.Second,
 		ConflictRefreshInterval:    30 * time.Second,
+		ConflictBackfillInterval:   5 * time.Minute,
+		ConflictBackfillBatchSize:  500,
 		IntegrityProofInterval:     5 * time.Minute,
 		IntegrityAuditInterval:     15 * time.Minute,
 		IntegrityAuditTimeout:      5 * time.Minute,
