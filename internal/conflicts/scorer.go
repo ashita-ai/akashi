@@ -1989,14 +1989,26 @@ func isDisjointWorkItem(d, cand model.Decision) bool {
 //     on only one side, also sends the pair to the validator — a shared
 //     resource is exactly where a genuine operational clash lives.
 //   - not precedent-linked — an explicit lineage cite is left to the LLM.
-//   - neither side's task or outcome reports a data-loss / corruption /
-//     quarantine event. This is the non-negotiable guard: a data-safety finding
-//     is categorically high-stakes and must never be dropped pre-LLM, even
-//     across different resources (both sides, and both the agent_context.task
-//     and the outcome — exactly the text extractResourceRefs mines, so a keyword
-//     can never hide in a field the ref scan reads but the guard does not). Same
-//     guard, same reasoning as isDisjointWorkItem and
-//     isOperationalStateProgression; see decisionContainsDataLossKeyword.
+//
+// No data-safety guard here (removed 2026-07-23). The guard is load-bearing and
+// deliberately chosen in the TEMPORAL sibling isOperationalStateProgression
+// (decision efc42730): two decisions on the SAME writer a week apart can be one
+// incident disagreeing with itself — verified against the Acme
+// connector_redacted01 DATALOSS pause. That rationale cannot hold here, because a
+// connector_/org_ id is the PHYSICAL identity of a data plane: connector_57a42328
+// and connector_f924df29 are different incidents by construction, so a DATALOSS
+// finding on one can neither be the same incident as, nor contradict, a finding
+// on the other. The guard was copied here for "membership parity" with the
+// temporal filter, but it only ever governed provably-disjoint pairs (this
+// function returns true solely when resourceRefsProvablyDisjoint) and, measured
+// against the live corpus, was a false-positive driver: "quarantine"/"corrupt"
+// are ordinary pgstream design vocabulary, so the guard re-admitted the exact
+// connector-disjoint over-clustering this filter exists to kill. Same-writer
+// data-safety disagreements stay protected where the verified evidence put them,
+// in isOperationalStateProgression. (isDisjointWorkItem keeps its guard on
+// purpose: a ticket is an administrative label, not a physical identity, so two
+// disjoint tickets CAN describe one incident — a deliberate, documented
+// difference, not drift.)
 //
 // Failure mode is under-suppression: a decision that names its resource only by
 // customer name ("Trellis") and not by a connector_/org_ token yields no ref,
@@ -2020,9 +2032,6 @@ func isDisjointResource(d, cand model.Decision) bool {
 		return false
 	}
 	if isPrecedentLinked(d, cand) {
-		return false
-	}
-	if decisionContainsDataLossKeyword(d) || decisionContainsDataLossKeyword(cand) {
 		return false
 	}
 	refsA := extractResourceRefs(d)
