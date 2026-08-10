@@ -15,7 +15,7 @@ then classifies it.
 We had no measurement of whether this worked. To get one, we blind-labelled the production corpus.
 
 The corpus is 4,389 decisions (4,127 with a project set) across 44 projects and 70 agents, spanning
-2026-02-14 to 2026-08-10. Of the 2,781 scored conflict pairs, 2,772 now carry a blind four-way gold label
+2026-02-14 to 2026-08-10. Of the 2,781 scored conflict pairs (2,802 rows including pairs whose decisions were later purged), 2,772 now carry a blind four-way gold label
 in `conflict_gold_labels` (migration 107), produced by methods `blind_llm_stratified_v1` (212 pairs) and
 `blind_llm_fullcorpus_v1` (2,560 pairs).
 
@@ -59,7 +59,7 @@ moves it from 46% to 63%. Effort spent on recall is worth a fraction of effort s
 rate against `related_not_contradicting`.
 
 **Second, class-averaged metrics actively mislead here.** gpt-5-mini had the best sample F1 of any judge
-we measured (0.704) and the worst product outcome (17.3% corpus-projected precision), because F1 cannot
+we measured (0.704) while ranking third of four on corpus-projected precision (17.3%), because F1 cannot
 see a 4x difference in majority-class FPR when non-contradictions are 96.65% of the data. Mutual
 information is worse still: it is invariant to label inversion, so a detector that outputs the exact
 negation of the truth scores identically. Any metric that averages over classes, or that is symmetric
@@ -74,7 +74,7 @@ It is worth being clear about why systems that appear to have solved conflict de
 ours. Kubernetes server-side apply can raise a conflict cheaply and exactly because identity is a JSON
 field path — two writers touching the same path is a decidable syntactic fact
 (<https://kubernetes.io/docs/reference/using-api/server-side-apply/>). Open Policy Agent's notion of
-conflict is a runtime per-input error ("complete rules must not produce multiple outputs") and it performs
+conflict is a runtime per-input error ( its runtime conflict error) and it performs
 no cross-policy semantic conflict detection at all
 (<https://www.openpolicyagent.org/docs/policy-language>). Both get their precision from structure that
 exists before the check runs. Akashi's decisions are prose, and as the rejected alternatives below record,
@@ -107,7 +107,7 @@ about is not permitted to claim they disagree.
 
 gpt-5 at 41.5% precision / 50.5% recall is the default single-judge point. Its majority-class
 false-positive rate, measured on a 300-pair sample, is 2.00% (6/300, 95% CI 0.74%–4.30%); weighted FPR
-across all non-contradiction classes is 2.44%, specificity 99.07%.
+across all non-contradiction classes is 2.44%, specificity 97.56%.
 
 Deployments that need higher precision run the two-stage cascade: gpt-5-mini screens, gpt-5 confirms.
 Measured on identical pairs this yields a queue of 49 at 74.2% precision and 38.7% recall. The screen is
@@ -129,14 +129,17 @@ fingerprint: 97% are cross-agent, with a median gap of 6.2 hours versus 118 hour
 But "cross-agent" alone is worth only 1.01x lift, because 96% of scored pairs are already cross-agent —
 the time window does all the work.
 
-| Prefilter | Base rate | Pairs kept |
-|---|---|---|
-| all scored pairs | 3.35% | 100% |
-| cross-agent and gap < 72h | 6.38% | 74% |
-| cross-agent and gap < 24h | 7.99% | 62% |
+| Prefilter | Candidate pairs | Base rate | Contradictions kept |
+|---|---|---|---|
+| all scored pairs | 2,772 (100%) | 3.35% | 93 (100%) |
+| cross-agent and gap < 72h | 1,081 (39%) | 6.38% | 69 (74%) |
+| cross-agent and gap < 24h | 726 (26%) | 7.99% | 58 (62%) |
 
-Nearly doubling the base rate while keeping 74% of pairs is the cheapest available precision gain, and it
-composes with the judge rather than competing with it.
+The two columns must be read together: the base rate rises because the filter discards far more
+non-contradictions than contradictions, not because it keeps most pairs. Nearly doubling the base rate at
+the cost of a quarter of the contradictions is the cheapest available precision gain, and it composes with
+the judge rather than competing with it — the judge's own precision is bounded by the base rate of what
+reaches it.
 
 **6. Conflicts are advisory. They never block.** Nothing in Akashi refuses a write, fails a build, or
 gates a merge because of a detected conflict. At 41.5% precision, a blocking gate would be wrong more
@@ -154,7 +157,7 @@ only if precision exceeds the threshold probability, and (1 − 0.415) / 0.415 =
 
 The practical rule for operators: if a missed contradiction does not cost you at least 1.4 times what a
 false alarm costs, do not run the single-judge point. Run the cascade at 74.2% precision, or turn the
-feature off. At the same operating point MCC is 0.439, lift over base rate is 12.5x, and LR+ is 20.7 —
+feature off. At the same operating point MCC is 0.439, lift over base rate is 12.4x, and LR+ is 20.7 —
 the detector carries real information; the question is only whether your cost ratio makes acting on it
 worthwhile.
 

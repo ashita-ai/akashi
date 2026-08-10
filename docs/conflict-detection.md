@@ -1,5 +1,8 @@
 # Conflict Detection: Operator and Contributor Reference
 
+> **Requires PR #740.** `conflict_gold_labels` (migration 107), `--mode=gold`,
+> `AKASHI_CONFLICT_OPENAI_MODEL` and `AKASHI_CONFLICT_LLM_TIMEOUT` do not exist before it.
+
 This document is about **tuning and evaluating** conflict detection quality. For the
 mechanism reference — significance formula, claim extraction, metrics, admin endpoints —
 see [conflicts.md](conflicts.md).
@@ -154,7 +157,7 @@ screen is cheap insurance rather than a recall cliff.
 
 `gpt-5`'s majority-class false-positive rate, measured on 300 pairs, is **2.00%** (6/300,
 95% CI 0.74%–4.30%). Weighted FPR across all non-contradiction classes is 2.44%;
-specificity 99.07%. An earlier 47-pair sample suggested 0% FPR and 65.2% precision — that
+specificity 97.56%. An earlier 47-pair sample suggested 0% FPR and 65.2% precision — that
 was small-sample noise and was corrected by the 300-pair run. **Quote 41.5%.**
 
 ### Do not rank judges by F1
@@ -177,7 +180,7 @@ validation error is fail-safe: the candidate is skipped, not flagged. So a timeo
 too low does not error, does not alert, and does not appear in the conflict queue — it
 presents as a **silent drop in detections**, which looks exactly like "the new model is
 more precise". If you change the judge model and detections fall, check
-`akashi.conflicts.llm_calls{result=error}` before you conclude anything about quality.
+`akashi.conflicts.llm_calls{result="timeout"}` before you conclude anything about quality.
 
 Related knobs: `AKASHI_CONFLICT_LLM_MODEL` (Ollama text model), `AKASHI_CONFLICT_LLM_THREADS`
 (default `floor(NumCPU/3)`), `AKASHI_CONFLICT_PROFILE` (`balanced` | `high_precision` |
@@ -264,7 +267,7 @@ The **corpus-projected** number re-weights each class's flag rate by its true co
 (`goldCorpusSizes` in `cmd/eval-conflicts/main.go:558`: contradiction 93, supersession 627,
 complementary 2,017, unrelated 35), then recomputes precision on the reweighted totals.
 That is the queue an operator would actually see. **Report this one** — for `gpt-5` it
-reads 113 pairs at 41.5% precision, lift 12.5×.
+reads 113 pairs at 41.5% precision, lift 12.4×.
 
 To measure the number that actually bounds precision — the false-positive rate on the
 majority class — run the judge against non-contradictions only:
@@ -334,7 +337,7 @@ The decision procedure:
 3. If it is well above 1.4:1, the single-judge configuration is defensible and you keep
    the higher recall.
 
-Supporting figures at the 41.5% point: MCC 0.439, lift 12.5×, LR+ 20.7.
+Supporting figures at the 41.5% point: MCC 0.439, lift 12.4×, LR+ 20.7.
 
 **Metrics to distrust.** Mutual information is unsuitable as a headline number: it is
 invariant to label inversion, so a detector that outputs the exact negation of the truth
@@ -434,4 +437,4 @@ below it.
 3. Read the **corpus-projected** line, never the stratified-sample line.
 4. Recompute break-even as `(1 − precision) / precision` and compare against your cost ratio.
 5. Confirm the run was not silently truncated by timeouts: the `errors=` field in the eval
-   header and `akashi.conflicts.llm_calls{result=error}` in production must both be near zero.
+   header and `akashi.conflicts.llm_calls{result="timeout"}` in production must both be near zero.
