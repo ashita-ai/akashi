@@ -50,6 +50,12 @@ type ValidationResult struct {
 	Explanation  string
 	Category     string // factual, assessment, strategic, temporal
 	Severity     string // critical, high, medium, low
+
+	// SharedQuestion is the single question the two decisions answer
+	// differently. The prompt requires it for a CONTRADICTION verdict; a
+	// verdict that cannot name one is downgraded to complementary by
+	// ParseValidatorResponse. Empty for every other relationship.
+	SharedQuestion string
 }
 
 // IsConflict returns true if the relationship represents an actionable conflict.
@@ -239,38 +245,48 @@ func formatPrompt(input ValidateInput) string {
 	}
 
 	// --- Classification instructions ---
+	//
+	// This section is deliberately short. Its predecessor accumulated ~10 rounds
+	// of "IMPORTANT for <failure class>" hedges, each added after an audit found
+	// a new false-positive shape, and the model learned to ignore all of them:
+	// full-corpus gold labelling (2026-08-10, 2,772 pairs) measured the judge
+	// emitting CONTRADICTION for 97.8% of pairs, including 596 of the 627 true
+	// supersessions. Enumerating what is *not* a contradiction does not work;
+	// giving one decisive test and forcing the model to name the disputed
+	// question does. The dispute-vs-timeline framing below scored Cohen's
+	// kappa 0.766 against an independent rater on the same corpus.
 	b.WriteString(`
 Classify the RELATIONSHIP between these two decisions:
 
-- CONTRADICTION: Incompatible positions on the same specific question. Cannot both be true simultaneously. Implementing one would require rejecting the other.
-- SUPERSESSION: One decision explicitly replaces or reverses the other.
-- COMPLEMENTARY: Different findings about different aspects. Both can be true simultaneously.
-- REFINEMENT: One decision deepens or builds on the other without contradicting it.
-- UNRELATED: Different topics despite surface similarity.
+- CONTRADICTION: Both decisions are LIVE and take incompatible positions on the same specific question. Someone must choose between them.
+- SUPERSESSION: One work stream evolving through time — the later decision revises, replaces, reverts, or corrects the earlier one as normal progress. Sequential states of ONE effort.
+- COMPLEMENTARY: Same topic or system, compatible positions — different subsystems, phases, incidents, tickets, or aspects. Both hold simultaneously.
+- REFINEMENT: The later decision deepens or implements the earlier one without changing its position.
+- UNRELATED: Shared vocabulary only; different subject matter.
 
-IMPORTANT for architecture and planning decisions:
-- Two agents recommending DIFFERENT approaches to the SAME design question ARE contradictions. Example: "use nested structure X" vs "use flat structure Y for the same purpose" = CONTRADICTION.
-- Ask: can both be implemented simultaneously? If yes → COMPLEMENTARY or REFINEMENT. If no → CONTRADICTION.
-- An agent reversing its own prior choice is SUPERSESSION. A different agent disagreeing is CONTRADICTION.
+APPLY THESE TESTS IN ORDER. Stop at the first one that fits.
 
-IMPORTANT for assessments and code reviews:
-- A review that reports finding bugs does NOT contradict those bug reports — it discovered them.
-- A summary assessment ("security is strong") and a detailed review ("found vulnerability X") are NOT contradictions. Detailed reviews always find issues that summaries don't mention.
-- Two reviews finding different issues in the same codebase are complementary, not contradictory.
-- Two reviews of DIFFERENT codebases or products are UNRELATED — they cannot contradict each other.
-- For assessments to contradict, they must make OPPOSITE claims about the SAME specific finding in the SAME system.
-- A review at one scope (e.g. a single PR) finding "no issues" does NOT contradict a broader review (e.g. full codebase) finding issues. They examined different code.
+1. SAME QUESTION? Name the single specific question both decisions answer. If they address different
+   work items, subsystems, incidents, tickets, or scopes, there is no shared question →
+   COMPLEMENTARY (related work) or UNRELATED (different subject matter). Stop here.
 
-IMPORTANT for sequential workflow (identify → fix):
-- When one decision identifies a problem and a later decision implements a fix or improvement for that problem, classify as REFINEMENT — the fix builds on the finding.
-- "X is naive/broken/missing" followed by "implemented improvements to X" is REFINEMENT, not CONTRADICTION. The second decision addresses the first.
-- A code review finding issues followed by a bug fix resolving those issues is REFINEMENT or COMPLEMENTARY — never CONTRADICTION.
+2. DID THE LATER DECISION EXPLICITLY RETIRE THE EARLIER ONE? Supersession requires stated evidence of
+   replacement — the later decision reverts, replaces, withdraws, or corrects the earlier position, or
+   refers to it as done, obsolete, or changed. Being recorded later is NOT evidence of replacement:
+   every pair you see has a time order, so ordering alone means nothing. Without explicit replacement
+   language, this is not SUPERSESSION.
 
-IMPORTANT for agreement detection:
-- If both decisions recommend the SAME approach, technology, or tool — even with different framing or emphasis — they AGREE. Classify as COMPLEMENTARY.
-- "Use X for purpose A" and "Use X for purpose B" is COMPLEMENTARY (both chose X), not CONTRADICTION.
+3. ARE BOTH POSITIONS STILL LIVE AND INCOMPATIBLE? If the two decisions answer the same question
+   differently and neither has retired the other, someone must still choose between them →
+   CONTRADICTION. Two agents landing opposite answers to one question is the case this system exists
+   to catch; do not soften it to REFINEMENT because the decisions are polite or sequential.
+
+CONTRADICTION REQUIRES A NAMED QUESTION:
+State on the QUESTION line the single question the two decisions answer differently, in one clause
+("whether to run CreateFieldIndex at startup"). If you cannot name it, the answer is not CONTRADICTION.
 
 RELATIONSHIP: one of [contradiction, supersession, complementary, refinement, unrelated]
+QUESTION: the single disputed question (required for contradiction; otherwise "n/a")
 CATEGORY: factual, assessment, strategic, or temporal
 SEVERITY: critical, high, medium, or low
 EXPLANATION: one sentence using agent names (not "Decision A" or "Decision B")`)
@@ -348,7 +364,12 @@ func formatDuration(d time.Duration) string {
 func ParseValidatorResponse(response string) (ValidationResult, error) {
 	lines := strings.Split(strings.TrimSpace(response), "\n")
 
-	var relationship, explanation, category, severity string
+	var relationship, explanation, category, severity, question string
+	// legacyVerdict marks a response that carried only the pre-taxonomy
+	// "VERDICT: yes/no" form. Those responses come from a prompt that never
+	// asked for a disputed question, so the contradiction contract below must
+	// not be applied to them — it would silently downgrade every legacy result.
+	var legacyVerdict bool
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		// Strip leading markdown bold/italic markers that some LLMs add.
@@ -366,6 +387,7 @@ func ParseValidatorResponse(response string) (ValidationResult, error) {
 				switch verdict {
 				case "yes":
 					relationship = "contradiction"
+					legacyVerdict = true
 				case "no":
 					relationship = "unrelated"
 				}
@@ -373,6 +395,8 @@ func ParseValidatorResponse(response string) (ValidationResult, error) {
 		case strings.HasPrefix(lower, "explanation:"):
 			// TrimLeft only — preserve any intentional * inside the explanation text.
 			explanation = strings.TrimLeft(strings.TrimSpace(trimmed[len("explanation:"):]), "*_ ")
+		case strings.HasPrefix(lower, "question:"):
+			question = strings.TrimLeft(strings.TrimSpace(trimmed[len("question:"):]), "*_ ")
 		case strings.HasPrefix(lower, "category:"):
 			category = strings.ToLower(strings.Trim(strings.TrimSpace(trimmed[len("category:"):]), "*_ "))
 		case strings.HasPrefix(lower, "severity:"):
@@ -412,12 +436,52 @@ func ParseValidatorResponse(response string) (ValidationResult, error) {
 		severity = ""
 	}
 
+	question = normalizeSharedQuestion(question)
+
+	// Parser-enforced contradiction contract. The prompt requires a
+	// CONTRADICTION verdict to name the single question the two decisions
+	// answer differently; a model that cannot name one has not identified a
+	// dispute, only topical overlap. Downgrading here (rather than hinting
+	// harder in the prompt) is deliberate: prompt hints for this failure class
+	// were measured to be ignored — see the note on the classification block.
+	//
+	// Downgrade target is complementary, not unrelated: these pairs cleared
+	// embedding similarity, so they are topically related by construction.
+	if relationship == "contradiction" && question == "" && !legacyVerdict {
+		relationship = "complementary"
+		if explanation != "" {
+			explanation += " "
+		}
+		explanation += "(downgraded: validator named no disputed question)"
+	}
+	if relationship != "contradiction" {
+		question = ""
+	}
+
 	return ValidationResult{
-		Relationship: relationship,
-		Explanation:  explanation,
-		Category:     category,
-		Severity:     severity,
+		Relationship:   relationship,
+		Explanation:    explanation,
+		Category:       category,
+		Severity:       severity,
+		SharedQuestion: question,
 	}, nil
+}
+
+// placeholderQuestions are the values models emit to mean "no question here".
+// They must not satisfy the contradiction contract.
+var placeholderQuestions = map[string]bool{
+	"n/a": true, "na": true, "none": true, "null": true, "nil": true,
+	"not applicable": true, "-": true, "": true,
+}
+
+// normalizeSharedQuestion trims a QUESTION value and collapses placeholders to
+// the empty string so the contradiction contract treats them as unanswered.
+func normalizeSharedQuestion(q string) string {
+	q = strings.TrimSpace(strings.Trim(strings.TrimSpace(q), "[]\"'"))
+	if placeholderQuestions[strings.ToLower(strings.TrimRight(q, ".!"))] {
+		return ""
+	}
+	return q
 }
 
 // NoopValidator marks candidates as unvalidated when no LLM is configured.

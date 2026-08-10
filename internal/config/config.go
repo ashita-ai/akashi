@@ -83,6 +83,7 @@ type Config struct {
 
 	// Conflict LLM validation.
 	ConflictLLMModel              string  // Text generation model for conflict validation (e.g. "qwen3.5:9b" for Ollama).
+	ConflictOpenAIModel           string  // OpenAI model for conflict validation (default: "gpt-4o-mini"). Judge capability dominates precision: on the blind gold set, gpt-4o projects to 27% queue precision vs 8% for gpt-4o-mini.
 	ConflictLLMThreads            int     // CPU threads Ollama may use per inference call (default: floor(NumCPU/3), min 1). 0 = let Ollama decide.
 	ConflictCandidateLimit        int     // Max candidates retrieved from Qdrant per decision for conflict scoring (default: 20).
 	ConflictBackfillWorkers       int     // Parallel workers for conflict scoring backfill (default: 4).
@@ -230,6 +231,7 @@ func Load() (Config, error) {
 		QdrantAPIKey:             Secret(envStr("QDRANT_API_KEY", "")),
 		QdrantCollection:         envStr("QDRANT_COLLECTION", "akashi_decisions"),
 		ConflictLLMModel:         envStr("AKASHI_CONFLICT_LLM_MODEL", ""),
+		ConflictOpenAIModel:      envStr("AKASHI_CONFLICT_OPENAI_MODEL", "gpt-4o-mini"),
 		CrossEncoderURL:          envStr("AKASHI_CONFLICT_CROSS_ENCODER_URL", ""),
 		NLIURL:                   envStr("AKASHI_CONFLICT_NLI_URL", ""),
 		WALDir:                   envStr("AKASHI_WAL_DIR", "./data/wal"),
