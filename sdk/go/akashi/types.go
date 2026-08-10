@@ -163,6 +163,13 @@ type DecisionConflict struct {
 	ClaimTextA *string `json:"claim_text_a,omitempty"`
 	ClaimTextB *string `json:"claim_text_b,omitempty"`
 
+	// DisputedQuestion is the single question both decisions answer
+	// differently, as named by the validator. Non-nil only for contradictions:
+	// the judge must name the disputed question to return that verdict, so its
+	// presence means a dispute was identified rather than a pair merely
+	// scoring highly.
+	DisputedQuestion *string `json:"disputed_question,omitempty"`
+
 	// Links to prior resolved conflict this one contradicts.
 	ReopensResolutionID *uuid.UUID `json:"reopens_resolution_id,omitempty"`
 
@@ -633,6 +640,7 @@ type ConflictDetail struct {
 	GroupID              *uuid.UUID   `json:"group_id,omitempty"`
 	ClaimTextA           *string      `json:"claim_text_a,omitempty"`
 	ClaimTextB           *string      `json:"claim_text_b,omitempty"`
+	DisputedQuestion     *string      `json:"disputed_question,omitempty"`
 	ReopensResolutionID  *uuid.UUID   `json:"reopens_resolution_id,omitempty"`
 	ProjectA             *string      `json:"project_a,omitempty"`
 	ProjectB             *string      `json:"project_b,omitempty"`

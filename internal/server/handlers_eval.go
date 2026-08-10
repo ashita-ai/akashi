@@ -127,7 +127,7 @@ func (h *Handlers) HandleConflictEval(w http.ResponseWriter, r *http.Request) {
 		actualIsConflict := result.IsConflict()
 
 		er.ActualRelationship = result.Relationship
-		er.Correct = result.Relationship == pair.ExpectedRelationship
+		er.Correct = conflicts.RelationshipEquivalent(pair.ExpectedRelationship, result.Relationship)
 		er.ConflictExpected = expectedIsConflict
 		er.ConflictActual = actualIsConflict
 		er.Explanation = result.Explanation

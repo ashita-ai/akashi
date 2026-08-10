@@ -28,7 +28,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestParseValidatorResponse_Contradiction(t *testing.T) {
-	result, err := ParseValidatorResponse("RELATIONSHIP: contradiction\nCATEGORY: assessment\nSEVERITY: high\nEXPLANATION: Both decisions address caching strategy but reach incompatible conclusions.")
+	result, err := ParseValidatorResponse("RELATIONSHIP: contradiction\nQUESTION: whether to use Redis or Memcached for the cache\nCATEGORY: assessment\nSEVERITY: high\nEXPLANATION: Both decisions address caching strategy but reach incompatible conclusions.")
 	require.NoError(t, err)
 	assert.Equal(t, "contradiction", result.Relationship)
 	assert.True(t, result.IsConflict())
@@ -71,7 +71,7 @@ func TestParseValidatorResponse_Unrelated(t *testing.T) {
 }
 
 func TestParseValidatorResponse_CaseInsensitive(t *testing.T) {
-	result, err := ParseValidatorResponse("relationship: Contradiction\ncategory: Strategic\nseverity: Medium\nexplanation: contradictory")
+	result, err := ParseValidatorResponse("relationship: Contradiction\nquestion: whether to use Redis or Memcached for the cache\ncategory: Strategic\nseverity: Medium\nexplanation: contradictory")
 	require.NoError(t, err)
 	assert.Equal(t, "contradiction", result.Relationship)
 	assert.True(t, result.IsConflict())
@@ -87,7 +87,7 @@ func TestParseValidatorResponse_CaseInsensitive(t *testing.T) {
 }
 
 func TestParseValidatorResponse_ExtraWhitespace(t *testing.T) {
-	result, err := ParseValidatorResponse("  RELATIONSHIP:   contradiction  \n  CATEGORY:   factual  \n  SEVERITY:   high  \n  EXPLANATION:   They conflict.  \n")
+	result, err := ParseValidatorResponse("  RELATIONSHIP:   contradiction  \n  QUESTION:   whether to use Redis or Memcached  \n  CATEGORY:   factual  \n  SEVERITY:   high  \n  EXPLANATION:   They conflict.  \n")
 	require.NoError(t, err)
 	assert.Equal(t, "contradiction", result.Relationship)
 	assert.True(t, result.IsConflict())
@@ -109,13 +109,13 @@ func TestParseValidatorResponse_UnrecognizedRelationship(t *testing.T) {
 }
 
 func TestParseValidatorResponse_BracketsStripped(t *testing.T) {
-	result, err := ParseValidatorResponse("RELATIONSHIP: [contradiction]\nEXPLANATION: test")
+	result, err := ParseValidatorResponse("RELATIONSHIP: [contradiction]\nQUESTION: whether to use Redis or Memcached for the cache\nEXPLANATION: test")
 	require.NoError(t, err)
 	assert.Equal(t, "contradiction", result.Relationship)
 }
 
 func TestParseValidatorResponse_NoExplanation(t *testing.T) {
-	result, err := ParseValidatorResponse("RELATIONSHIP: contradiction")
+	result, err := ParseValidatorResponse("RELATIONSHIP: contradiction\nQUESTION: whether to use Redis or Memcached for the cache")
 	require.NoError(t, err)
 	assert.Equal(t, "contradiction", result.Relationship)
 	assert.Empty(t, result.Explanation)
@@ -144,7 +144,7 @@ Hope this helps!
 
 func TestParseValidatorResponse_InvalidCategory(t *testing.T) {
 	// Invalid category values should be silently ignored (empty string).
-	result, err := ParseValidatorResponse("RELATIONSHIP: contradiction\nCATEGORY: philosophical\nSEVERITY: high\nEXPLANATION: conflict")
+	result, err := ParseValidatorResponse("RELATIONSHIP: contradiction\nQUESTION: whether to use Redis or Memcached for the cache\nCATEGORY: philosophical\nSEVERITY: high\nEXPLANATION: conflict")
 	require.NoError(t, err)
 	assert.Equal(t, "contradiction", result.Relationship)
 	assert.Empty(t, result.Category, "invalid category should be ignored")
@@ -153,7 +153,7 @@ func TestParseValidatorResponse_InvalidCategory(t *testing.T) {
 
 func TestParseValidatorResponse_InvalidSeverity(t *testing.T) {
 	// Invalid severity values should be silently ignored.
-	result, err := ParseValidatorResponse("RELATIONSHIP: contradiction\nCATEGORY: factual\nSEVERITY: extreme\nEXPLANATION: conflict")
+	result, err := ParseValidatorResponse("RELATIONSHIP: contradiction\nQUESTION: whether to use Redis or Memcached for the cache\nCATEGORY: factual\nSEVERITY: extreme\nEXPLANATION: conflict")
 	require.NoError(t, err)
 	assert.Equal(t, "contradiction", result.Relationship)
 	assert.Equal(t, "factual", result.Category)
@@ -161,7 +161,7 @@ func TestParseValidatorResponse_InvalidSeverity(t *testing.T) {
 }
 
 func TestParseValidatorResponse_MissingCategoryAndSeverity(t *testing.T) {
-	result, err := ParseValidatorResponse("RELATIONSHIP: contradiction\nEXPLANATION: they conflict")
+	result, err := ParseValidatorResponse("RELATIONSHIP: contradiction\nQUESTION: whether to use Redis or Memcached for the cache\nEXPLANATION: they conflict")
 	require.NoError(t, err)
 	assert.Equal(t, "contradiction", result.Relationship)
 	assert.Equal(t, "they conflict", result.Explanation)
@@ -171,7 +171,7 @@ func TestParseValidatorResponse_MissingCategoryAndSeverity(t *testing.T) {
 
 func TestParseValidatorResponse_AllCategories(t *testing.T) {
 	for _, cat := range []string{"factual", "assessment", "strategic", "temporal"} {
-		result, err := ParseValidatorResponse(fmt.Sprintf("RELATIONSHIP: contradiction\nCATEGORY: %s\nSEVERITY: low\nEXPLANATION: test", cat))
+		result, err := ParseValidatorResponse(fmt.Sprintf("RELATIONSHIP: contradiction\nQUESTION: whether to use Redis or Memcached for the cache\nCATEGORY: %s\nSEVERITY: low\nEXPLANATION: test", cat))
 		require.NoError(t, err, "category=%s", cat)
 		assert.Equal(t, cat, result.Category, "category=%s", cat)
 	}
@@ -179,7 +179,7 @@ func TestParseValidatorResponse_AllCategories(t *testing.T) {
 
 func TestParseValidatorResponse_AllSeverities(t *testing.T) {
 	for _, sev := range []string{"critical", "high", "medium", "low"} {
-		result, err := ParseValidatorResponse(fmt.Sprintf("RELATIONSHIP: contradiction\nCATEGORY: factual\nSEVERITY: %s\nEXPLANATION: test", sev))
+		result, err := ParseValidatorResponse(fmt.Sprintf("RELATIONSHIP: contradiction\nQUESTION: whether to use Redis or Memcached for the cache\nCATEGORY: factual\nSEVERITY: %s\nEXPLANATION: test", sev))
 		require.NoError(t, err, "severity=%s", sev)
 		assert.Equal(t, sev, result.Severity, "severity=%s", sev)
 	}
@@ -187,7 +187,7 @@ func TestParseValidatorResponse_AllSeverities(t *testing.T) {
 
 func TestParseValidatorResponse_AllRelationships(t *testing.T) {
 	for _, rel := range []string{"contradiction", "supersession", "complementary", "refinement", "unrelated"} {
-		result, err := ParseValidatorResponse(fmt.Sprintf("RELATIONSHIP: %s\nCATEGORY: factual\nSEVERITY: low\nEXPLANATION: test", rel))
+		result, err := ParseValidatorResponse(fmt.Sprintf("RELATIONSHIP: %s\nQUESTION: whether to use Redis or Memcached for the cache\nCATEGORY: factual\nSEVERITY: low\nEXPLANATION: test", rel))
 		require.NoError(t, err, "relationship=%s", rel)
 		assert.Equal(t, rel, result.Relationship, "relationship=%s", rel)
 	}
@@ -222,7 +222,7 @@ func TestParseValidatorResponse_RelationshipTakesPrecedence(t *testing.T) {
 func TestParseValidatorResponse_MarkdownBold(t *testing.T) {
 	// GPT-4o-mini sometimes returns structured output with markdown bold markers.
 	// ParseValidatorResponse must handle this without failing.
-	response := "**RELATIONSHIP:** CONTRADICTION\n**CATEGORY:** strategic\n**SEVERITY:** high\n**EXPLANATION:** The decisions present incompatible architectural approaches."
+	response := "**RELATIONSHIP:** CONTRADICTION\n**QUESTION:** whether to use Redis or Memcached for the cache\n**CATEGORY:** strategic\n**SEVERITY:** high\n**EXPLANATION:** The decisions present incompatible architectural approaches."
 	result, err := ParseValidatorResponse(response)
 	require.NoError(t, err)
 	assert.Equal(t, "contradiction", result.Relationship)
@@ -250,7 +250,7 @@ func TestParseValidatorResponse_TruncatedRelationships(t *testing.T) {
 	}{
 		{"RELATIONSHIP: refine\nEXPLANATION: x", "refinement"},
 		{"RELATIONSHIP: supersede\nEXPLANATION: x", "supersession"},
-		{"RELATIONSHIP: contradict\nEXPLANATION: x", "contradiction"},
+		{"RELATIONSHIP: contradict\nQUESTION: whether to use Redis or Memcached for the cache\nEXPLANATION: x", "contradiction"},
 		{"RELATIONSHIP: complement\nEXPLANATION: x", "complementary"},
 	}
 	for _, tc := range cases {
@@ -629,7 +629,11 @@ func TestFormatPrompt_DifferentTicketRefsSameDesignQuestionCanStillConflict(t *t
 
 	assert.Contains(t, prompt, "DIFFERENT TICKETS")
 	assert.Contains(t, prompt, "same specific design question")
-	assert.Contains(t, prompt, "Two agents recommending DIFFERENT approaches to the SAME design question ARE contradictions")
+	// The prompt no longer enumerates "different approaches to the same question
+	// ARE contradictions" — that hint class was measured to be ignored. The
+	// named-question contract is what now keeps a same-question dispute
+	// reachable across disjoint tickets.
+	assert.Contains(t, prompt, "CONTRADICTION REQUIRES A NAMED QUESTION")
 	assert.Contains(t, prompt, "OPPOSITE STANCES")
 }
 
@@ -789,7 +793,7 @@ func TestOllamaValidator_Contradiction(t *testing.T) {
 			Message: struct {
 				Content string `json:"content"`
 			}{
-				Content: "RELATIONSHIP: contradiction\nCATEGORY: strategic\nSEVERITY: high\nEXPLANATION: Both decisions address caching strategy but chose incompatible technologies.",
+				Content: "RELATIONSHIP: contradiction\nQUESTION: whether to use Redis or Memcached for the cache\nCATEGORY: strategic\nSEVERITY: high\nEXPLANATION: Both decisions address caching strategy but chose incompatible technologies.",
 			},
 		})
 	}))
@@ -936,7 +940,7 @@ func TestOpenAIValidator_Confirms(t *testing.T) {
 				{Message: struct {
 					Content string `json:"content"`
 				}{
-					Content: "RELATIONSHIP: contradiction\nCATEGORY: factual\nSEVERITY: critical\nEXPLANATION: Both decisions address API protocol choice but reach incompatible conclusions.",
+					Content: "RELATIONSHIP: contradiction\nQUESTION: whether to use Redis or Memcached for the cache\nCATEGORY: factual\nSEVERITY: critical\nEXPLANATION: Both decisions address API protocol choice but reach incompatible conclusions.",
 				}},
 			},
 		})
@@ -1516,7 +1520,7 @@ func TestOllamaValidator_Validate_Success(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(ollamaChatResponse{
 			Message: struct {
 				Content string `json:"content"`
-			}{Content: "RELATIONSHIP: contradiction\nCATEGORY: strategic\nSEVERITY: high\nEXPLANATION: Direct conflict."},
+			}{Content: "RELATIONSHIP: contradiction\nQUESTION: whether to use Redis or Memcached for the cache\nCATEGORY: strategic\nSEVERITY: high\nEXPLANATION: Direct conflict."},
 		})
 	}))
 	defer srv.Close()
@@ -1694,7 +1698,7 @@ func TestOpenAIValidator_Validate_Success(t *testing.T) {
 			}{
 				{Message: struct {
 					Content string `json:"content"`
-				}{Content: "RELATIONSHIP: contradiction\nCATEGORY: factual\nSEVERITY: critical\nEXPLANATION: Incompatible database choices."}},
+				}{Content: "RELATIONSHIP: contradiction\nQUESTION: whether to use Redis or Memcached for the cache\nCATEGORY: factual\nSEVERITY: critical\nEXPLANATION: Incompatible database choices."}},
 			},
 		})
 	}))

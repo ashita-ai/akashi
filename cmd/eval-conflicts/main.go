@@ -1,9 +1,12 @@
 // eval-conflicts runs conflict detection evaluation against a running akashi instance.
 //
-// Two modes:
+// Modes:
 //
 //	--mode=validator  (default) Runs the hardcoded eval dataset through the LLM validator.
 //	--mode=scorer     Computes scorer precision from ground truth labels.
+//	--mode=benchmark  Runs the local scoring benchmark; no server or auth needed.
+//	--mode=gold       Runs blind gold labels through the LLM validator. Talks to the
+//	                  database directly (AKASHI_DB_DSN + OPENAI_API_KEY), not the server.
 //
 // Usage:
 //
@@ -16,6 +19,9 @@
 //	AKASHI_URL       Base URL of the akashi server (default: http://localhost:8081)
 //	AKASHI_AGENT_ID  Agent ID for authentication (required)
 //	AKASHI_API_KEY   API key for admin authentication (required)
+//	AKASHI_DB_DSN    Postgres DSN (gold mode only)
+//	AKASHI_ORG_ID    Org whose gold labels to evaluate (gold mode, default: all-zero UUID)
+//	OPENAI_API_KEY   OpenAI key for the judge under test (gold mode only)
 //
 // Use --save to persist results as JSON files in ./eval-results/.
 package main
@@ -32,8 +38,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ashita-ai/akashi/internal/conflicts"
 	"github.com/ashita-ai/akashi/internal/service/embedding"
@@ -44,13 +55,23 @@ func main() {
 }
 
 func run() int {
-	mode := flag.String("mode", "validator", "evaluation mode: validator, scorer, or benchmark")
+	mode := flag.String("mode", "validator", "evaluation mode: validator, scorer, benchmark, or gold")
+	goldLimit := flag.Int("gold-limit", 200, "gold mode: max labeled pairs to evaluate (0 = all)")
+	goldConc := flag.Int("gold-conc", 8, "gold mode: concurrent validator calls")
+	goldModel := flag.String("gold-model", "gpt-4o-mini", "gold mode: OpenAI model to evaluate")
+	goldTimeout := flag.Duration("gold-timeout", 15*time.Second, "gold mode: per-call deadline (raise for reasoning models)")
+	goldClasses := flag.String("gold-classes", "", "gold mode: comma-separated expected relationships to evaluate (default: stratified across all). Use to measure the false-positive rate on the majority class, which is what bounds precision at a low base rate.")
 	save := flag.Bool("save", false, "save results to ./eval-results/{timestamp}.json")
 	flag.Parse()
 
 	// Benchmark mode runs locally — no server or auth required.
 	if *mode == "benchmark" {
 		return runBenchmarkMode(*save)
+	}
+
+	// Gold mode talks to the database directly, not the server.
+	if *mode == "gold" {
+		return runGoldMode(*goldLimit, *goldConc, *goldModel, *goldTimeout, *goldClasses, *save)
 	}
 
 	baseURL := os.Getenv("AKASHI_URL")
@@ -82,7 +103,7 @@ func run() int {
 	case "scorer":
 		return runScorerEval(baseURL, token, *save)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown mode: %s (use 'validator', 'scorer', or 'benchmark')\n", *mode)
+		fmt.Fprintf(os.Stderr, "unknown mode: %s (use 'validator', 'scorer', 'benchmark', or 'gold')\n", *mode)
 		return 1
 	}
 }
@@ -396,4 +417,293 @@ func callScorerEval(baseURL, token string) (scorerEvalResult, error) {
 		return scorerEvalResult{}, fmt.Errorf("decode: %w", err)
 	}
 	return envelope.Data, nil
+}
+
+// runGoldMode evaluates the live validator against blind gold labels.
+//
+// Unlike --mode=validator, which runs the hand-written DefaultEvalDataset, this
+// mode reads real scored pairs and their blind classifications from
+// conflict_gold_labels. That distinction is the point: the hand-written dataset
+// scored a perfect 1.000/1.000 while the shipped detector was running at 3.4%
+// precision, because a dataset written from the same intuitions as the prompt
+// cannot falsify that prompt.
+//
+// Requires AKASHI_DB_DSN (direct database access) and OPENAI_API_KEY.
+func runGoldMode(limit, conc int, model string, timeout time.Duration, classes string, save bool) int {
+	dsn := os.Getenv("AKASHI_DB_DSN")
+	if dsn == "" {
+		fmt.Fprintln(os.Stderr, "gold mode requires AKASHI_DB_DSN")
+		return 1
+	}
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		fmt.Fprintln(os.Stderr, "gold mode requires OPENAI_API_KEY")
+		return 1
+	}
+	orgID := os.Getenv("AKASHI_ORG_ID")
+	if orgID == "" {
+		orgID = "00000000-0000-0000-0000-000000000000"
+	}
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "open db:", err)
+		return 1
+	}
+	defer pool.Close()
+
+	pairs, err := conflicts.LoadGoldPairs(ctx, pool, orgID, 0)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "load gold:", err)
+		return 1
+	}
+	if len(pairs) == 0 {
+		fmt.Fprintln(os.Stderr, "no gold labels found for org", orgID)
+		return 1
+	}
+	fmt.Println(conflicts.GoldSummary(pairs))
+
+	// Corpus class counts come from the labels just loaded, never from a
+	// constant. The projection below divides by these, so a frozen snapshot
+	// would silently misreport precision the moment the label set changed —
+	// and the label set is expected to grow.
+	corpusSizes := map[string]float64{}
+	for _, p := range pairs {
+		corpusSizes[p.ExpectedRelationship]++
+	}
+
+	if classes != "" {
+		want, err := parseGoldClasses(classes)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		filtered := pairs[:0:0]
+		for _, p := range pairs {
+			if want[p.ExpectedRelationship] {
+				filtered = append(filtered, p)
+			}
+		}
+		if len(filtered) == 0 {
+			fmt.Fprintf(os.Stderr, "no gold pairs matched --gold-classes=%q\n", classes)
+			return 1
+		}
+		if limit > 0 {
+			filtered = spread(filtered, limit)
+		}
+		pairs = filtered
+	} else {
+		pairs = stratifyGold(pairs, limit)
+	}
+	fmt.Println("sampled \u2192", conflicts.GoldSummary(pairs))
+
+	v := conflicts.NewOpenAIValidator(apiKey, model, conflicts.WithRequestTimeout(timeout))
+	results := make([]conflicts.EvalResult, len(pairs))
+	sem := make(chan struct{}, conc)
+	var wg sync.WaitGroup
+	for i, p := range pairs {
+		wg.Add(1)
+		go func(i int, p conflicts.EvalPair) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			er := conflicts.EvalResult{Label: p.Label, ExpectedRelationship: p.ExpectedRelationship}
+			res, err := v.Validate(ctx, p.Input)
+			if err != nil {
+				er.Error = err.Error()
+			} else {
+				er.ActualRelationship = res.Relationship
+				er.Correct = conflicts.RelationshipEquivalent(p.ExpectedRelationship, res.Relationship)
+				er.ConflictExpected = p.ExpectedRelationship == "contradiction"
+				er.ConflictActual = res.Relationship == "contradiction"
+				er.Explanation = res.Explanation
+			}
+			results[i] = er
+		}(i, p)
+	}
+	wg.Wait()
+
+	reportGold(results, model, corpusSizes)
+	if save {
+		if err := saveResults("gold", results); err != nil {
+			fmt.Fprintln(os.Stderr, "save:", err)
+			return 1
+		}
+	}
+	return 0
+}
+
+// stratifyGold oversamples the rare, decision-relevant classes so a bounded run
+// still measures contradiction recall. reportGold re-weights back to true class
+// sizes before quoting precision.
+func stratifyGold(pairs []conflicts.EvalPair, limit int) []conflicts.EvalPair {
+	if limit <= 0 || len(pairs) <= limit {
+		return pairs
+	}
+	byRel := map[string][]conflicts.EvalPair{}
+	for _, p := range pairs {
+		byRel[p.ExpectedRelationship] = append(byRel[p.ExpectedRelationship], p)
+	}
+	kept := append([]conflicts.EvalPair{}, byRel["contradiction"]...)
+	kept = append(kept, spread(byRel["supersession"], limit/4)...)
+	kept = append(kept, spread(byRel["unrelated"], limit/20)...)
+	if rest := limit - len(kept); rest > 0 {
+		kept = append(kept, spread(byRel["complementary"], rest)...)
+	}
+	return kept
+}
+
+// spread samples n items evenly across the slice rather than taking the first n,
+// which would draw every pair from one time window.
+func spread(ps []conflicts.EvalPair, n int) []conflicts.EvalPair {
+	if n <= 0 {
+		return nil
+	}
+	if len(ps) <= n {
+		return ps
+	}
+	step := len(ps) / n
+	out := make([]conflicts.EvalPair, 0, n)
+	for i := 0; i < len(ps) && len(out) < n; i += step {
+		out = append(out, ps[i])
+	}
+	return out
+}
+
+// parseGoldClasses maps the --gold-classes argument onto the internal
+// relationship vocabulary.
+//
+// An operator reads class names out of conflict_gold_labels, where they are
+// gold labels ("related_not_contradicting"), but EvalPair carries the mapped
+// validator vocabulary ("complementary"). Accepting only the mapped form makes
+// the obvious invocation match zero pairs, and the run then measures nothing
+// while looking like it worked. Both spellings are accepted, and an
+// unrecognised one is an error rather than an empty filter.
+func parseGoldClasses(arg string) (map[string]bool, error) {
+	// Only the "related" class differs between the two vocabularies; the rest
+	// are spelled identically, which is exactly why the mismatch is easy to
+	// miss and worth handling explicitly.
+	alias := map[string]string{
+		conflicts.GoldRelated: "complementary",
+		"contradiction":       "contradiction",
+		"supersession":        "supersession",
+		"complementary":       "complementary",
+		"refinement":          "complementary",
+		"unrelated":           "unrelated",
+	}
+	want := map[string]bool{}
+	for _, raw := range strings.Split(arg, ",") {
+		c := strings.TrimSpace(raw)
+		if c == "" {
+			continue
+		}
+		mapped, ok := alias[c]
+		if !ok {
+			return nil, fmt.Errorf("unknown --gold-classes value %q (want one of: contradiction, supersession, related_not_contradicting, unrelated)", c)
+		}
+		want[mapped] = true
+	}
+	if len(want) == 0 {
+		return nil, fmt.Errorf("--gold-classes was empty")
+	}
+	return want, nil
+}
+
+func reportGold(results []conflicts.EvalResult, model string, corpusSizes map[string]float64) {
+	m := conflicts.ComputeMetrics(results)
+	fmt.Printf("\n=== gold-set eval (model=%s, n=%d, errors=%d) ===\n", model, m.TotalPairs, m.Errors)
+	fmt.Printf("relationship accuracy  : %.1f%%\n", m.RelationshipAcc*100)
+	fmt.Printf("contradiction precision: %.1f%%  recall: %.1f%%  F1: %.3f  (stratified sample)\n",
+		m.ConflictPrec*100, m.ConflictRecall*100, m.ConflictF1)
+
+	conf := map[string]map[string]int{}
+	for _, r := range results {
+		if r.Error != "" {
+			continue
+		}
+		if conf[r.ExpectedRelationship] == nil {
+			conf[r.ExpectedRelationship] = map[string]int{}
+		}
+		conf[r.ExpectedRelationship][r.ActualRelationship]++
+	}
+
+	// Sample precision flatters the judge because contradictions are
+	// oversampled. Re-weight per-class flag rates by true corpus sizes.
+	var flagged, tp float64
+	for expected, acts := range conf {
+		total := 0
+		for _, n := range acts {
+			total += n
+		}
+		if total == 0 {
+			continue
+		}
+		n := corpusSizes[expected] * float64(acts["contradiction"]) / float64(total)
+		flagged += n
+		if expected == "contradiction" {
+			tp = n
+		}
+	}
+	if flagged > 0 {
+		base := corpusSizes["contradiction"]
+		var totalCorpus float64
+		for _, n := range corpusSizes {
+			totalCorpus += n
+		}
+		// The guard is on the SAMPLE, not the corpus: a --gold-classes run that
+		// evaluated no contradiction-class pairs has no true positives to be
+		// precise about, however many the corpus holds.
+		_, sampledContradictions := conf["contradiction"]
+		if base == 0 || !sampledContradictions {
+			// Measuring one negative class in isolation (the point of
+			// --gold-classes) leaves nothing to be precise about. Report the
+			// false-positive rate, which is what such a run actually measures,
+			// instead of printing "precision 0.0%" as if the judge failed.
+			var evaluated float64
+			for expected, acts := range conf {
+				if expected == "contradiction" {
+					continue
+				}
+				for _, n := range acts {
+					evaluated += float64(n)
+				}
+			}
+			var falseFlags float64
+			for expected, acts := range conf {
+				if expected != "contradiction" {
+					falseFlags += float64(acts["contradiction"])
+				}
+			}
+			if evaluated > 0 {
+				fmt.Printf("no contradiction-class pairs evaluated — this run measures the false-positive rate: %.2f%% (%.0f of %.0f)\n",
+					falseFlags/evaluated*100, falseFlags, evaluated)
+			}
+		} else {
+			baseRate := base / totalCorpus
+			fmt.Printf("corpus-projected queue : %.0f pairs, precision %.1f%% (base rate %.1f%%, lift %.1fx)\n",
+				flagged, tp/flagged*100, baseRate*100, (tp/flagged)/baseRate)
+		}
+	}
+
+	fmt.Println("\ngold (row) \u2192 validator (col):")
+	rels := make([]string, 0, len(conf))
+	for k := range conf {
+		rels = append(rels, k)
+	}
+	sort.Strings(rels)
+	for _, e := range rels {
+		acts := make([]string, 0, len(conf[e]))
+		total := 0
+		for k, n := range conf[e] {
+			acts = append(acts, k)
+			total += n
+		}
+		sort.Strings(acts)
+		fmt.Printf("  %-14s ", e)
+		for _, a := range acts {
+			fmt.Printf("%s=%d (%.0f%%)  ", a, conf[e][a], float64(conf[e][a])/float64(total)*100)
+		}
+		fmt.Println()
+	}
 }
