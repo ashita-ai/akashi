@@ -40,6 +40,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -59,6 +60,7 @@ func run() int {
 	goldConc := flag.Int("gold-conc", 8, "gold mode: concurrent validator calls")
 	goldModel := flag.String("gold-model", "gpt-4o-mini", "gold mode: OpenAI model to evaluate")
 	goldTimeout := flag.Duration("gold-timeout", 15*time.Second, "gold mode: per-call deadline (raise for reasoning models)")
+	goldClasses := flag.String("gold-classes", "", "gold mode: comma-separated expected relationships to evaluate (default: stratified across all). Use to measure the false-positive rate on the majority class, which is what bounds precision at a low base rate.")
 	save := flag.Bool("save", false, "save results to ./eval-results/{timestamp}.json")
 	flag.Parse()
 
@@ -69,7 +71,7 @@ func run() int {
 
 	// Gold mode talks to the database directly, not the server.
 	if *mode == "gold" {
-		return runGoldMode(*goldLimit, *goldConc, *goldModel, *goldTimeout, *save)
+		return runGoldMode(*goldLimit, *goldConc, *goldModel, *goldTimeout, *goldClasses, *save)
 	}
 
 	baseURL := os.Getenv("AKASHI_URL")
@@ -427,7 +429,7 @@ func callScorerEval(baseURL, token string) (scorerEvalResult, error) {
 // cannot falsify that prompt.
 //
 // Requires AKASHI_DB_DSN (direct database access) and OPENAI_API_KEY.
-func runGoldMode(limit, conc int, model string, timeout time.Duration, save bool) int {
+func runGoldMode(limit, conc int, model string, timeout time.Duration, classes string, save bool) int {
 	dsn := os.Getenv("AKASHI_DB_DSN")
 	if dsn == "" {
 		fmt.Fprintln(os.Stderr, "gold mode requires AKASHI_DB_DSN")
@@ -461,7 +463,21 @@ func runGoldMode(limit, conc int, model string, timeout time.Duration, save bool
 		return 1
 	}
 	fmt.Println(conflicts.GoldSummary(pairs))
-	pairs = stratifyGold(pairs, limit)
+	if classes != "" {
+		want := map[string]bool{}
+		for _, c := range strings.Split(classes, ",") {
+			want[strings.TrimSpace(c)] = true
+		}
+		filtered := pairs[:0:0]
+		for _, p := range pairs {
+			if want[p.ExpectedRelationship] {
+				filtered = append(filtered, p)
+			}
+		}
+		pairs = spread(filtered, limit)
+	} else {
+		pairs = stratifyGold(pairs, limit)
+	}
 	fmt.Println("sampled \u2192", conflicts.GoldSummary(pairs))
 
 	v := conflicts.NewOpenAIValidator(apiKey, model, conflicts.WithRequestTimeout(timeout))
