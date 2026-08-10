@@ -228,6 +228,9 @@ SKIP: formatting, typo fixes, running tests, reading code, asking questions.`),
 			mcplib.WithString("alternatives",
 				mcplib.Description(`JSON array of options you considered and rejected. Each item: {"label":"<description of option>","rejection_reason":"<why you didn't choose it>"}. Providing alternatives improves completeness scoring and helps future agents understand your reasoning. Example: [{"label":"Use Redis for caching","rejection_reason":"adds operational overhead for our traffic levels"},{"label":"In-memory cache","rejection_reason":"not shared across instances"}]`),
 			),
+			mcplib.WithString("bindings",
+				mcplib.Description(`JSON array of named parameters this decision SETS, and the values it sets them to. Each item: {"parameter":"<name>","value":"<value>"}. Use it when your decision fixes a specific knob — a config key, flag, threshold, version, file path, or setting — not for prose summaries. Two decisions that bind the same parameter to different values are detected as a conflict exactly, by lookup rather than by a language model, so this is the highest-signal field you can supply. Values are compared literally: "5m" and "300s" count as different. Example: [{"parameter":"qdrant.create_field_index_on_startup","value":"false"},{"parameter":"cache.ttl","value":"5m"}]`),
+			),
 			mcplib.WithString("precedent_ref",
 				mcplib.Description("UUID of the prior decision this one directly builds on. Copy the value from akashi_check's precedent_ref_hint field. Wires the attribution graph so the audit trail shows how decisions evolved over time. Omit if there is no clear antecedent."),
 			),
@@ -989,6 +992,19 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		}
 	}
 
+	// Parse bindings. Unlike alternatives and evidence, a malformed binding is
+	// refused rather than dropped: the whole value of a binding is that a
+	// detection built on it is certain, and silently discarding one produces a
+	// decision that looks like it declared a parameter and did not — which
+	// shows up later as a conflict that should have fired and didn't.
+	var bindings []model.TraceBinding
+	if raw := request.GetString("bindings", ""); raw != "" {
+		if parseErr := json.Unmarshal([]byte(raw), &bindings); parseErr != nil {
+			return mcplib.NewToolResultError(fmt.Sprintf(
+				"bindings must be a JSON array of {\"parameter\":..., \"value\":...} objects: %v", parseErr)), nil
+		}
+	}
+
 	// Parse precedent_ref UUID if provided. Invalid format is logged and ignored —
 	// a trace without a precedent link is better than a failed trace.
 	var precedentRef *uuid.UUID
@@ -1342,6 +1358,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 			Confidence:   confidence,
 			Reasoning:    reasoningPtr,
 			Alternatives: alternatives,
+			Bindings:     bindings,
 			Evidence:     evidence,
 		},
 	})
@@ -1368,6 +1385,7 @@ func (s *Server) handleTrace(ctx context.Context, request mcplib.CallToolRequest
 		Confidence:   confidence,
 		Reasoning:    reasoningPtr,
 		Alternatives: alternatives,
+		Bindings:     bindings,
 		Evidence:     evidence,
 	}, precedentRef != nil)
 

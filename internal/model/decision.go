@@ -79,7 +79,13 @@ type Decision struct {
 
 	// Joined data (populated by queries, not stored in decisions table).
 	Alternatives []Alternative `json:"alternatives,omitempty"`
-	Evidence     []Evidence    `json:"evidence,omitempty"`
+
+	// Bindings (migration 109): named parameters this decision sets, and the
+	// values it sets them to. Optional. Two decisions binding the same
+	// parameter to different values are in exact conflict, found by join rather
+	// than by the LLM judge — see internal/model/binding.go.
+	Bindings []Binding  `json:"bindings,omitempty"`
+	Evidence []Evidence `json:"evidence,omitempty"`
 
 	// Consensus scoring (Spec 34): computed at query time from embedding similarity cluster.
 	// Returns 0 for decisions without embeddings.
