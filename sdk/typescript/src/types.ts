@@ -130,6 +130,13 @@ export interface DecisionConflict {
   /** Claim fragments from claim-level scoring. */
   claim_text_a?: string;
   claim_text_b?: string;
+  /**
+   * The single question both decisions answer differently, as named by the
+   * validator. Present only for contradictions: the judge must name the
+   * disputed question to return that verdict, so its presence means a dispute
+   * was identified rather than a pair merely scoring highly.
+   */
+  disputed_question?: string;
   /** Links to prior resolved conflict this one contradicts. */
   reopens_resolution_id?: string;
   /** Denormalized project names. */
