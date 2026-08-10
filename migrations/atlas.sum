@@ -1,4 +1,4 @@
-h1:HTUl//U4XMU0Z7Pk3n7NISu66veOFHCb5ksu/QFMZag=
+h1:Hz97Y3FWsJnJSI92fpL4gATST5LA4LvAtMaVS7IIeMo=
 001_initial.sql h1:uhyGXto+QacAaGYb9ZTGjsBs5chlKi8O0eHz9aCQsrY=
 022_full_text_search.sql h1:9iwtA8MgCzAxDV9YkUBn0CLT9ePSmj3GcPoMGg8TXf0=
 023_fix_outbox_index.sql h1:OtMEFBcMRWej02+ghnBXlPr6BVq+LoA62Id9XUWfDNI=
@@ -87,3 +87,5 @@ h1:HTUl//U4XMU0Z7Pk3n7NISu66veOFHCb5ksu/QFMZag=
 106_supersedes_suggestion_confirm.sql h1:eLUrgPvmBCscAcfcXmS9rhYzcO5CMI7KC/IjT+5Yxe4=
 107_conflict_gold_labels.sql h1:9jzCeDz6Gz3+uYNsJ70qp+zQ384/Lvk3c1RQQpLyxic=
 108_conflict_disputed_question.sql h1:uUdkk8NqKOwP4y1Pw8G37GQXB5B4O8/YBTcvqk6La8c=
+109_decision_bindings.sql h1:nu1M/ufJ2lUenexO0KetKU9Siu0gDCr0pqxEQqUUHAg=
+110_scoring_method_binding.sql h1:Rqe3o4Svad/8J0rBxv9+FN7LtlBdtjrOeLGIsNJLOUY=

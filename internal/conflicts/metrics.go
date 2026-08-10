@@ -36,6 +36,7 @@ type Metrics struct {
 	disjointWorkItemFiltered       metric.Int64Counter
 	disjointResourceFiltered       metric.Int64Counter
 	supersessionSuppressed         metric.Int64Counter
+	bindingConflicts               metric.Int64Counter
 
 	scoringDuration    metric.Float64Histogram
 	llmCallDuration    metric.Float64Histogram
@@ -248,6 +249,12 @@ func (s *Scorer) registerMetrics() {
 	if err != nil {
 		s.logger.Warn("conflicts: failed to create akashi.conflicts.supersession_suppressed metric", "error", err)
 		s.metrics.supersessionSuppressed, _ = meter.Int64Counter("akashi.conflicts.supersession_suppressed.fallback")
+
+		s.metrics.bindingConflicts, err = meter.Int64Counter("akashi.conflicts.binding_conflicts",
+			metric.WithDescription("Conflicts found by joining declared parameter bindings rather than by scoring text. These carry no false-positive rate, so they are counted separately from judge verdicts."))
+		if err != nil {
+			s.metrics.bindingConflicts, _ = meter.Int64Counter("akashi.conflicts.binding_conflicts.fallback")
+		}
 	}
 
 	// --- Histograms ---

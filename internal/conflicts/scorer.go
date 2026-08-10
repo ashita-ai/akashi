@@ -300,6 +300,13 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		s.logger.Debug("conflict scorer: skip decision", "decision_id", decisionID, "error", err)
 		return
 	}
+
+	// Bindings are joined before any text scoring. A declared parameter
+	// collision is exact and does not depend on the two decisions looking
+	// alike, so it must not be gated behind embedding retrieval — the pairs
+	// that declare the same parameter are not necessarily the pairs that
+	// score as similar.
+	s.scoreBindings(ctx, d, orgID)
 	if d.Embedding == nil || d.OutcomeEmbedding == nil {
 		s.logger.Debug("conflict scorer: decision lacks embeddings", "decision_id", decisionID)
 		return

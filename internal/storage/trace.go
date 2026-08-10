@@ -340,6 +340,31 @@ func (db *DB) createTraceInTx(ctx context.Context, tx pgx.Tx, params CreateTrace
 		}
 	}
 
+	// Bindings go in the same transaction as the decision that declares them.
+	// A binding that outlived a rolled-back trace would claim a parameter no
+	// decision set, and would then conflict with real decisions forever.
+	if len(params.Bindings) > 0 {
+		columns := []string{"id", "decision_id", "org_id", "parameter", "parameter_key", "value", "value_key", "created_at"}
+		rows := make([][]any, len(params.Bindings))
+		for i, b := range params.Bindings {
+			if b.ParameterKey == "" || b.ValueKey == "" {
+				return model.AgentRun{}, model.Decision{}, fmt.Errorf(
+					"storage: binding %q has no canonical key; call model.CanonicalizeBindings first", b.Parameter)
+			}
+			id := b.ID
+			if id == uuid.Nil {
+				id = uuid.New()
+			}
+			rows[i] = []any{id, d.ID, params.OrgID, b.Parameter, b.ParameterKey, b.Value, b.ValueKey, now}
+		}
+		copyCtx, copyCancel := context.WithTimeout(ctx, 30*time.Second)
+		_, err := tx.CopyFrom(copyCtx, pgx.Identifier{"decision_bindings"}, columns, pgx.CopyFromRows(rows))
+		copyCancel()
+		if err != nil {
+			return model.AgentRun{}, model.Decision{}, fmt.Errorf("storage: create bindings in trace tx: %w", err)
+		}
+	}
+
 	// 4. Create evidence via COPY.
 	if len(params.Evidence) > 0 {
 		columns := []string{"id", "decision_id", "org_id", "source_type", "source_uri", "content",

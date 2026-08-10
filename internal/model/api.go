@@ -279,6 +279,17 @@ type TraceRequest struct {
 // flag stays false because no boundary check runs in that path.
 //
 // See ashita-ai/akashi#713.
+// TraceBinding is the wire form of a decision binding: the named parameter a
+// decision sets, and the value it sets it to.
+//
+// Both fields are required. Values are compared, never interpreted — "5m" and
+// "300s" are different values, because deciding otherwise needs the
+// parameter's type, which is not recorded.
+type TraceBinding struct {
+	Parameter string `json:"parameter"`
+	Value     string `json:"value"`
+}
+
 type TraceDecision struct {
 	DecisionType string             `json:"decision_type"`
 	Outcome      string             `json:"outcome"`
@@ -286,6 +297,11 @@ type TraceDecision struct {
 	Reasoning    *string            `json:"reasoning,omitempty"`
 	Alternatives []TraceAlternative `json:"alternatives,omitempty"`
 	Evidence     []TraceEvidence    `json:"evidence,omitempty"`
+
+	// Bindings are the named parameters this decision sets and the values it
+	// sets them to. Optional. Two decisions binding the same parameter to
+	// different values conflict exactly, by join rather than by the LLM judge.
+	Bindings []TraceBinding `json:"bindings,omitempty"`
 
 	confidencePresent bool
 }

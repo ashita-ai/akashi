@@ -44,6 +44,7 @@ type CreateTraceParams struct {
 	Metadata     map[string]any
 	Decision     model.Decision
 	Alternatives []model.Alternative
+	Bindings     []model.Binding
 	Evidence     []model.Evidence
 	SessionID    *uuid.UUID
 	AgentContext map[string]any
