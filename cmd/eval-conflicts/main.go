@@ -62,6 +62,8 @@ func run() int {
 	goldTimeout := flag.Duration("gold-timeout", 15*time.Second, "gold mode: per-call deadline (raise for reasoning models)")
 	goldClasses := flag.String("gold-classes", "", "gold mode: comma-separated expected relationships to evaluate (default: stratified across all). Use to measure the false-positive rate on the majority class, which is what bounds precision at a low base rate.")
 	save := flag.Bool("save", false, "save results to ./eval-results/{timestamp}.json")
+	costRatio := flag.Float64("cost-ratio", 0, "cost of a missed contradiction relative to one false alarm. When set with --prevalence, reports normalized expected cost, which answers whether the detector beats not running it at all.")
+	prevalence := flag.Float64("prevalence", 0, "share of evaluated pairs that are genuine contradictions IN PRODUCTION (not in the eval sample). Required with --cost-ratio; precision moves with prevalence and a stratified sample's own rate would flatter the detector.")
 	flag.Parse()
 
 	// Benchmark mode runs locally — no server or auth required.
@@ -99,7 +101,7 @@ func run() int {
 
 	switch *mode {
 	case "validator":
-		return runValidatorEval(baseURL, token, *save)
+		return runValidatorEval(baseURL, token, *save, *costRatio, *prevalence)
 	case "scorer":
 		return runScorerEval(baseURL, token, *save)
 	default:
@@ -108,7 +110,7 @@ func run() int {
 	}
 }
 
-func runValidatorEval(baseURL, token string, save bool) int {
+func runValidatorEval(baseURL, token string, save bool, costRatio, prevalence float64) int {
 	fmt.Fprintf(os.Stderr, "running validator eval dataset (%d pairs)...\n", len(conflicts.DefaultEvalDataset()))
 
 	metrics, results, err := callValidatorEval(baseURL, token)
@@ -118,6 +120,7 @@ func runValidatorEval(baseURL, token string, save bool) int {
 	}
 
 	fmt.Print(conflicts.FormatMetrics(metrics, results))
+	printCostReport(metrics, costRatio, prevalence)
 
 	if save {
 		if err := saveResults("validator", map[string]any{
