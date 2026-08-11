@@ -81,4 +81,26 @@ func TestStructuralSuppressionRules_CallSiteParity(t *testing.T) {
 		assert.Equal(t, 1, strings.Count(body, `"`+rule+`"`),
 			"rule value %q must appear exactly once in scorer.go (its const declaration)", rule)
 	}
+
+	// Assert on the IDENTIFIER passed at each call site, not just the rule
+	// string. The two assertions above are both blind to a call site that
+	// passes the WRONG rule: the first counts the call prefix, which is
+	// unchanged, and the second counts the string literal, which appears only
+	// in the const block because call sites pass identifiers. Mutating
+	// scorer.go's outcome_sim_floor site to ruleDisjointResource left this test
+	// green — that rule would then have accumulated zero samples forever and
+	// reported as a suppressor with no measurable false negatives, which is the
+	// precise failure this test claims to prevent.
+	idents := []string{
+		"ruleConfidenceFloor", "ruleWorkflow", "ruleCoordinatedChange",
+		"ruleCrossBranchMechanical", "ruleSelfCorrection", "ruleSupersedesRefinement",
+		"ruleCrossAgentPrecedent", "ruleTemporalReassessment", "ruleOperationalProgression",
+		"ruleDisjointWorkItem", "ruleDisjointResource", "ruleOutcomeSimFloor",
+	}
+	require.Len(t, idents, len(structuralSuppressionRules),
+		"this list must name every rule identifier; a new rule needs an entry here too")
+	for _, id := range idents {
+		assert.Equal(t, 1, strings.Count(body, "&suppressionSamples, "+id+","),
+			"rule identifier %s needs exactly one sampleSuppression call site", id)
+	}
 }
