@@ -12845,3 +12845,52 @@ func TestTrigger_RetireSuggestionScopedByAgent_PG(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, gotB, 1, "agent B's suggestion must survive — confirmation by agent A is not their confirmation")
 }
+
+// The window is the cost control on a forced rescore: unbounded re-judges the
+// whole corpus at one LLM call per surviving pair. Decisions outside it must be
+// skipped WITHOUT being marked scored, so widening the window later picks them
+// up rather than leaving them permanently invisible.
+func TestFindEmbeddedDecisionIDsSince_BoundsByValidFrom(t *testing.T) {
+	ctx := context.Background()
+	agentID := "window-" + uuid.New().String()[:8]
+	run, err := testDB.CreateRun(ctx, model.CreateRunRequest{AgentID: agentID})
+	require.NoError(t, err)
+
+	emb := pgvector.NewVector(make([]float32, 1024))
+	outcomeEmb := pgvector.NewVector(make([]float32, 1024))
+
+	mk := func(age time.Duration) uuid.UUID {
+		d, err := testDB.CreateDecision(ctx, model.Decision{
+			RunID:            run.ID,
+			AgentID:          agentID,
+			DecisionType:     "architecture",
+			Outcome:          "windowed " + age.String(),
+			Confidence:       0.8,
+			Embedding:        &emb,
+			OutcomeEmbedding: &outcomeEmb,
+			ValidFrom:        time.Now().Add(-age),
+		})
+		require.NoError(t, err)
+		return d.ID
+	}
+	recent := mk(24 * time.Hour)
+	old := mk(90 * 24 * time.Hour)
+
+	inWindow, err := testDB.FindEmbeddedDecisionIDsSince(ctx, 1000, time.Now().Add(-7*24*time.Hour))
+	require.NoError(t, err)
+	ids := map[uuid.UUID]bool{}
+	for _, r := range inWindow {
+		ids[r.ID] = true
+	}
+	assert.True(t, ids[recent], "a decision inside the window must be returned")
+	assert.False(t, ids[old], "a decision outside the window must be skipped")
+
+	// Zero since is unbounded — the old decision is still unscored and reachable.
+	all, err := testDB.FindEmbeddedDecisionIDsSince(ctx, 1000, time.Time{})
+	require.NoError(t, err)
+	allIDs := map[uuid.UUID]bool{}
+	for _, r := range all {
+		allIDs[r.ID] = true
+	}
+	assert.True(t, allIDs[old], "an unbounded query must still reach decisions the window skipped")
+}

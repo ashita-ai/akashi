@@ -117,6 +117,7 @@ type Config struct {
 	EnableDestructiveDelete       bool // Enables irreversible DELETE /v1/agents/{agent_id}; default false.
 	ConflictRefreshInterval       time.Duration
 	ConflictBackfillInterval      time.Duration // How often to sweep for decisions that were never conflict-scored (default: 5m).
+	ConflictBackfillWindow        time.Duration // How far back the backfill reaches for unscored decisions (default: 0 = unbounded).
 	ConflictSignificanceThreshold float64       // Minimum significance to store (default 0.30).
 	IntegrityProofInterval        time.Duration // How often to build Merkle tree proofs.
 	IntegrityAuditInterval        time.Duration // How often to verify stored Merkle proofs.
@@ -350,6 +351,7 @@ func Load() (Config, error) {
 	cfg.OutboxPollInterval, errs = collectDuration(errs, "AKASHI_OUTBOX_POLL_INTERVAL", 1*time.Second)
 	cfg.ConflictRefreshInterval, errs = collectDuration(errs, "AKASHI_CONFLICT_REFRESH_INTERVAL", 30*time.Second)
 	cfg.ConflictBackfillInterval, errs = collectDuration(errs, "AKASHI_CONFLICT_BACKFILL_INTERVAL", 5*time.Minute)
+	cfg.ConflictBackfillWindow, errs = collectDuration(errs, "AKASHI_CONFLICT_BACKFILL_WINDOW", 0)
 	cfg.ConflictLLMTimeout, errs = collectDuration(errs, "AKASHI_CONFLICT_LLM_TIMEOUT", 15*time.Second)
 	cfg.IntegrityProofInterval, errs = collectDuration(errs, "AKASHI_INTEGRITY_PROOF_INTERVAL", 5*time.Minute)
 	cfg.IntegrityAuditInterval, errs = collectDuration(errs, "AKASHI_INTEGRITY_AUDIT_INTERVAL", 15*time.Minute)
@@ -500,6 +502,11 @@ func (c Config) Validate() error {
 	}
 	if c.ConflictBackfillInterval <= 0 {
 		errs = append(errs, errors.New("config: AKASHI_CONFLICT_BACKFILL_INTERVAL must be positive"))
+	}
+	// Zero means unbounded, which is the default; negative would silently invert
+	// the window into a future cutoff that matches nothing.
+	if c.ConflictBackfillWindow < 0 {
+		errs = append(errs, errors.New("config: AKASHI_CONFLICT_BACKFILL_WINDOW must not be negative (0 = unbounded)"))
 	}
 	// A non-positive batch size would make FindEmbeddedDecisionIDs fall back to its
 	// own default of 1000, so the drain would silently run at a size the operator
