@@ -587,3 +587,44 @@ func TestTraceDecisionUnmarshalJSON_PreservesOtherFields(t *testing.T) {
 	require.Len(t, d.Evidence, 1)
 	assert.Equal(t, "document", d.Evidence[0].SourceType)
 }
+
+// TestTraceDecisionUnmarshalJSON_RoundTripsEveryField is the durable version of
+// PreservesOtherFields, which enumerates fields by hand and therefore missed
+// "bindings" entirely: TraceDecision declared it, the custom unmarshaler's
+// shadow struct did not, and because that struct decodes with
+// DisallowUnknownFields the result was a hard 400 on any HTTP trace carrying
+// bindings — unusable from curl and all three SDKs while working over MCP.
+//
+// Marshalling a fully-populated TraceDecision and unmarshalling it back fails
+// loudly for ANY field added to TraceDecision but not to the shadow struct,
+// without this test needing to know the field exists.
+func TestTraceDecisionUnmarshalJSON_RoundTripsEveryField(t *testing.T) {
+	reasoning := "reasoning text"
+	rejection := "loses history"
+	original := model.TraceDecision{
+		DecisionType: "architecture",
+		Outcome:      "use event sourcing",
+		Confidence:   0.72,
+		Reasoning:    &reasoning,
+		Alternatives: []model.TraceAlternative{{Label: "CRUD", RejectionReason: &rejection}},
+		Evidence:     []model.TraceEvidence{{SourceType: "document", Content: "ADR-007"}},
+		Bindings:     []model.TraceBinding{{Parameter: "storage.mode", Value: "event_sourced"}},
+	}
+
+	raw, err := json.Marshal(original)
+	require.NoError(t, err)
+
+	var got model.TraceDecision
+	require.NoError(t, json.Unmarshal(raw, &got),
+		"a field on TraceDecision is missing from the unmarshaler's shadow struct: %s", raw)
+
+	assert.Equal(t, original.DecisionType, got.DecisionType)
+	assert.Equal(t, original.Outcome, got.Outcome)
+	assert.InDelta(t, original.Confidence, got.Confidence, 1e-6)
+	require.NotNil(t, got.Reasoning)
+	assert.Equal(t, *original.Reasoning, *got.Reasoning)
+	assert.Equal(t, original.Alternatives, got.Alternatives)
+	assert.Equal(t, original.Evidence, got.Evidence)
+	assert.Equal(t, original.Bindings, got.Bindings,
+		"bindings must survive the round trip — this is the regression that shipped")
+}

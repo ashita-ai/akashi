@@ -316,6 +316,14 @@ func (d TraceDecision) ConfidencePresent() bool {
 // supplied a confidence value, distinguishing "omitted" from "explicitly 0".
 func (d *TraceDecision) UnmarshalJSON(data []byte) error {
 	*d = TraceDecision{}
+	// Every JSON-tagged field on TraceDecision must appear here. This shadow
+	// struct decodes with DisallowUnknownFields, so a field present on
+	// TraceDecision but missing here does not degrade — it rejects the whole
+	// request with 400 "invalid request body". That is how "bindings" was
+	// unusable over HTTP and in all three SDKs while working over MCP:
+	// TraceDecision declared it, this struct did not, and adding it to a
+	// previously-working call broke that call outright.
+	// TestTraceDecisionUnmarshalJSON_RoundTripsEveryField pins the invariant.
 	type rawDecision struct {
 		DecisionType string             `json:"decision_type"`
 		Outcome      string             `json:"outcome"`
@@ -323,6 +331,7 @@ func (d *TraceDecision) UnmarshalJSON(data []byte) error {
 		Reasoning    *string            `json:"reasoning,omitempty"`
 		Alternatives []TraceAlternative `json:"alternatives,omitempty"`
 		Evidence     []TraceEvidence    `json:"evidence,omitempty"`
+		Bindings     []TraceBinding     `json:"bindings,omitempty"`
 	}
 	var raw rawDecision
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -335,6 +344,7 @@ func (d *TraceDecision) UnmarshalJSON(data []byte) error {
 	d.Reasoning = raw.Reasoning
 	d.Alternatives = raw.Alternatives
 	d.Evidence = raw.Evidence
+	d.Bindings = raw.Bindings
 	if raw.Confidence != nil {
 		d.Confidence = *raw.Confidence
 		d.confidencePresent = true

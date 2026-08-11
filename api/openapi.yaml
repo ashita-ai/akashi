@@ -4497,6 +4497,34 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/TraceEvidence"
+        bindings:
+          type: array
+          description: |
+            Named parameters this decision sets, and the values it sets them to.
+
+            Two decisions binding the same parameter to different values are
+            detected as a conflict exactly, by lookup rather than by the LLM
+            judge — no model call, and no false-positive rate. 27% of the real
+            contradictions in our labelled corpus have this shape.
+
+            Values are compared literally and never interpreted: `5m` and `300s`
+            are different values, because deciding otherwise would require the
+            parameter's type, which is not recorded.
+          items:
+            $ref: "#/components/schemas/TraceBinding"
+
+    TraceBinding:
+      type: object
+      required: [parameter, value]
+      properties:
+        parameter:
+          type: string
+          description: The named knob this decision sets, e.g. `cache.ttl`.
+          example: "conflict_llm_timeout"
+        value:
+          type: string
+          description: The value it is set to, compared literally.
+          example: "120s"
 
     TraceAlternative:
       type: object
