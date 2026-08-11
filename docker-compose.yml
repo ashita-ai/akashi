@@ -20,7 +20,22 @@ services:
     ports:
       - "127.0.0.1:${AKASHI_PORT:-8080}:${AKASHI_PORT:-8080}"
     env_file:
+      # Both are optional and additive; the environment: block below still wins
+      # where it sets a key explicitly.
+      #
+      # .env.cloud is listed because deployments pass it via --env-file, which
+      # only feeds ${...} interpolation — it does NOT inject anything into the
+      # container. Without this entry a var set there reaches the process only
+      # if it also appears in the environment: block, so adding a knob to
+      # .env.cloud silently does nothing. That cost two fixes: #747
+      # (AKASHI_CONFLICT_OPENAI_MODEL, which pinned the judge to the 8.1%
+      # operating point while ADR-017 documented 41.5% as intended) and #754
+      # (AKASHI_CONFLICT_SUPPRESSION_SAMPLE_RATE, which left a shipped table
+      # permanently empty). Listing it here removes the failure mode rather than
+      # requiring every future knob to be plumbed twice.
       - path: .env
+        required: false
+      - path: .env.cloud
         required: false
     environment:
       # Required: set these in .env or pass directly.
