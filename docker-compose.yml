@@ -61,6 +61,10 @@ services:
       AKASHI_CONFLICT_BACKFILL_WINDOW: ${AKASHI_CONFLICT_BACKFILL_WINDOW:-0}
       AKASHI_CONFLICT_BACKFILL_BATCH_SIZE: ${AKASHI_CONFLICT_BACKFILL_BATCH_SIZE:-500}
       AKASHI_CONFLICT_BACKFILL_INTERVAL: ${AKASHI_CONFLICT_BACKFILL_INTERVAL:-5m}
+      # Fraction of structurally-suppressed pairs persisted for false-negative
+      # measurement. 0 = off, which is the code default: the table stays empty
+      # and the suppressors' recall stays unmeasurable until this is set.
+      AKASHI_CONFLICT_SUPPRESSION_SAMPLE_RATE: ${AKASHI_CONFLICT_SUPPRESSION_SAMPLE_RATE:-0}
 
       AKASHI_PORT: ${AKASHI_PORT:-8080}
       AKASHI_LOG_LEVEL: ${AKASHI_LOG_LEVEL:-info}
