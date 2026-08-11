@@ -17,12 +17,19 @@ on:
 
 permissions:
   contents: read
+  issues: write # the failure notifier below opens an issue
 
 jobs:
   fuzz:
     name: ${{ matrix.target }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Must stay comfortably above the -timeout passed to go test below, so an
+    # overrun surfaces as a step failure (which the notifier catches) instead of
+    # a job cancellation (which it does not). The corpus cache accumulates
+    # entries across runs by design, so per-exec cost rises over time and the
+    # 5M-exec budget will get slower — measured ~9.5k execs/s locally, and a
+    # hosted runner is 2-4x slower, so 5M execs is 18-35 min today and growing.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -64,12 +71,49 @@ jobs:
             fuzz-corpus-${{ matrix.target }}-
 
       - name: Fuzz
-        run: go test -run='^$' -fuzz='^${{ matrix.target }}$' -parallel=2 -fuzztime=5000000x -timeout=40m ${{ matrix.pkg }}
+        # The grep is load-bearing. "go test -fuzz=^NoSuchTarget$" prints
+        # "testing: warning: no fuzz tests to fuzz" and exits 0, so a renamed or
+        # deleted target would report green here forever while contributing zero
+        # mutation coverage — and this job is now the ONLY mutation coverage, so
+        # nothing else would notice. Verified: -fuzz='^FuzzDoesNotExist$' exits 0.
+        #
+        # -timeout must stay under the job's timeout-minutes so an overrun panics
+        # as a step failure (which triggers the notifier below) rather than being
+        # cancelled at the job level (which would not).
+        run: |
+          set -o pipefail
+          go test -run='^$' -fuzz='^${{ matrix.target }}$' -parallel=2 \
+            -fuzztime=5000000x -timeout=50m ${{ matrix.pkg }} 2>&1 | tee fuzz.log
+          if grep -q 'no fuzz tests to fuzz' fuzz.log; then
+            echo "::error::fuzz target ${{ matrix.target }} not found in ${{ matrix.pkg }} — renamed or deleted"
+            exit 1
+          fi
 
       - name: Upload crashers
-        if: failure()
+        # always(), not failure(): a job-level cancellation skips failure(), and
+        # the crashing input is exactly what is needed to diagnose one.
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: fuzz-crashers-${{ matrix.target }}
           path: "**/testdata/fuzz/**"
           if-no-files-found: ignore
+
+      - name: Open an issue on failure
+        # Without this the recovery loop documented at the top of this file has
+        # no trigger: a scheduled job that goes red notifies nobody by default,
+        # and this repo has a single maintainer. A crasher found at 07:17 UTC is
+        # worthless if it sits unread.
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --title "Nightly fuzz failed: ${{ matrix.target }}" \
+            --body "Target \`${{ matrix.target }}\` in \`${{ matrix.pkg }}\` failed.
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          If this is a crash, the failing input is in the \`fuzz-crashers-${{ matrix.target }}\` artifact under \`testdata/fuzz/${{ matrix.target }}/\`. Commit it — it then replays as a seed in \`go test -race ./...\` on every PR.
+
+          If the log says \`no fuzz tests to fuzz\`, the target was renamed or deleted and this matrix entry needs updating."
