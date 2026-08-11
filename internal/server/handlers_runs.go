@@ -24,25 +24,34 @@ import (
 // ---------------------------------------------------------------------------
 
 // enrichmentRevisions holds the revision chain for a single decision.
-// Count is the number of items returned (post-access-filter). Total is the
-// number of revisions that exist before filtering; it is omitted when equal
-// to Count so consumers can detect hidden revisions.
+//
+// Count is the number of revisions the caller is allowed to see. No total is
+// published, deliberately: for a caller whose grants hide revisions a
+// pre-filter total is a direct oracle for records they may not read, and a
+// post-filter total is by construction equal to Count because nothing caps
+// this list. This is the same rule computePagination applies to every list
+// endpoint (handlers.go:648) — when access filtering hid rows, the total is
+// not knowable and is not published.
 type enrichmentRevisions struct {
 	Items    []model.Decision `json:"items"`
-	Count    int              `json:"count"` // Number of accessible items returned.
-	Total    int              `json:"total"` // Total accessible revisions (post access filtering).
+	Count    int              `json:"count"` // Accessible revisions returned.
 	Degraded bool             `json:"degraded,omitempty"`
 }
 
 // enrichmentConflicts holds conflicts for a single decision.
-// Count is the number of items returned (post-RBAC, post-truncation).
-// Total is the pre-RBAC count from the storage layer; omitted (zero) when
-// equal to Count so consumers can detect when RBAC or truncation hid conflicts.
+//
+// Count is the number of accessible conflicts returned, capped at
+// maxEnrichmentConflicts. HasMore reports whether the accessible set filled
+// that cap. Both are computed from the access-filtered set only, never from
+// the storage-layer count: GET /v1/runs/{run_id} is a read-role route and a
+// conflict is visible only when the caller has access to BOTH sides
+// (authz.FilterConflicts), so any quantity derived from the pre-filter count
+// tells a restricted reader how many conflicts exist between agents they hold
+// no grant for.
 type enrichmentConflicts struct {
 	Items    []model.DecisionConflict `json:"items"`
-	Count    int                      `json:"count"`    // Number of accessible items returned (may be capped).
-	Total    int                      `json:"total"`    // Pre-RBAC conflict count; 0 when equal to Count.
-	HasMore  bool                     `json:"has_more"` // True when pre-RBAC count exceeds the cap.
+	Count    int                      `json:"count"`
+	HasMore  bool                     `json:"has_more"`
 	Degraded bool                     `json:"degraded,omitempty"`
 }
 
@@ -397,6 +406,33 @@ const (
 	enrichmentRevisionFanIn = 8
 )
 
+// capEnrichmentConflicts truncates an already access-filtered conflict slice to
+// the per-decision cap and reports whether the accessible set filled it.
+//
+// Both return values derive only from the accessible slice. Known bound:
+// storage over-fetches one row per decision (perDecisionLimit+1,
+// storage/conflicts.go:302), so when a decision has more than 50 raw conflicts
+// AND access filtering hides some of them, hasMore can be false while more
+// accessible conflicts exist beyond the fetched window. That under-report is
+// accepted; the only alternative is a post-filter counting query whose result
+// could not be published without re-opening the disclosure this replaced.
+func capEnrichmentConflicts(conflicts []model.DecisionConflict) ([]model.DecisionConflict, bool) {
+	// hasMore is captured BEFORE truncation. Deriving it afterwards from the
+	// clamped slice is wrong in both directions: len >= cap fires at exactly
+	// maxEnrichmentConflicts accessible conflicts, when nothing was withheld,
+	// and len > cap can never fire at all because truncation already clamped it.
+	// The pre-change code read preFilterTotal > maxEnrichmentConflicts, which
+	// was correct on this boundary, so getting it wrong here would ship a fresh
+	// regression under cover of a security fix — and it would reach every
+	// caller, not just restricted ones, since admins skip access filtering
+	// entirely (authz.go:210).
+	hasMore := len(conflicts) > maxEnrichmentConflicts
+	if hasMore {
+		conflicts = conflicts[:maxEnrichmentConflicts]
+	}
+	return conflicts, hasMore
+}
+
 func (h *Handlers) buildDecisionEnrichments(
 	ctx context.Context,
 	orgID uuid.UUID,
@@ -418,7 +454,6 @@ func (h *Handlers) buildDecisionEnrichments(
 	// Phase 1: Batch-fetch lineage and conflicts concurrently.
 	var batchLineage map[uuid.UUID]storage.DecisionLineage
 	var batchConflicts map[uuid.UUID][]model.DecisionConflict
-	var batchConflictTotals map[uuid.UUID]int // pre-RBAC-filter counts
 	var lineageDegraded, conflictsDegraded atomic.Bool
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -450,10 +485,9 @@ func (h *Handlers) buildDecisionEnrichments(
 			conflictsDegraded.Store(true)
 		}
 		raw := batchResult.ByDecision
-		// Track pre-filter totals, then apply access filtering.
-		totals := make(map[uuid.UUID]int, len(raw))
+		// Pre-filter counts are deliberately not retained. Any response field
+		// derived from them discloses rows the caller cannot read.
 		for decID, conflicts := range raw {
-			totals[decID] = len(conflicts)
 			filtered, filterErr := filterConflictsByAccess(gctx, h.db, claims, conflicts, h.grantCache)
 			if filterErr != nil {
 				if !errors.Is(filterErr, context.Canceled) && !errors.Is(filterErr, context.DeadlineExceeded) {
@@ -465,7 +499,6 @@ func (h *Handlers) buildDecisionEnrichments(
 			}
 			raw[decID] = filtered
 		}
-		batchConflictTotals = totals
 		batchConflicts = raw
 		return nil
 	})
@@ -483,7 +516,7 @@ func (h *Handlers) buildDecisionEnrichments(
 		g2.Go(func() error {
 			entry := h.buildSingleEnrichment(gctx2, orgID, claims, d,
 				batchLineage, &lineageDegraded,
-				batchConflicts, batchConflictTotals, &conflictsDegraded)
+				batchConflicts, &conflictsDegraded)
 			mu.Lock()
 			enrichments[d.ID.String()] = entry
 			mu.Unlock()
@@ -531,7 +564,6 @@ func (h *Handlers) buildSingleEnrichment(
 	batchLineage map[uuid.UUID]storage.DecisionLineage,
 	lineageDegraded *atomic.Bool,
 	batchConflicts map[uuid.UUID][]model.DecisionConflict,
-	batchConflictTotals map[uuid.UUID]int,
 	conflictsDegraded *atomic.Bool,
 ) decisionEnrichment {
 	decID := d.ID
@@ -566,7 +598,6 @@ func (h *Handlers) buildSingleEnrichment(
 			entry.Revisions = enrichmentRevisions{Items: []model.Decision{}}
 		}
 	} else {
-		totalRevisions := len(revisions)
 		revisions, filterErr := filterDecisionsByAccess(ctx, h.db, claims, revisions, h.grantCache)
 		if filterErr != nil {
 			if isCtxErr(filterErr) {
@@ -577,11 +608,7 @@ func (h *Handlers) buildSingleEnrichment(
 			entry.Revisions = enrichmentRevisions{Items: []model.Decision{}, Degraded: true}
 			entry.Degraded = true
 		} else {
-			er := enrichmentRevisions{Items: revisions, Count: len(revisions)}
-			if totalRevisions != len(revisions) {
-				er.Total = totalRevisions
-			}
-			entry.Revisions = er
+			entry.Revisions = enrichmentRevisions{Items: revisions, Count: len(revisions)}
 		}
 	}
 
@@ -620,21 +647,8 @@ func (h *Handlers) buildSingleEnrichment(
 		if conflicts == nil {
 			conflicts = []model.DecisionConflict{}
 		}
-		// Pre-filter total from Phase 1 (before RBAC).
-		preFilterTotal := batchConflictTotals[decID]
-		hasMore := preFilterTotal > maxEnrichmentConflicts
-		if len(conflicts) > maxEnrichmentConflicts {
-			conflicts = conflicts[:maxEnrichmentConflicts]
-		}
-		ec := enrichmentConflicts{
-			Items:   conflicts,
-			Count:   len(conflicts),
-			HasMore: hasMore,
-		}
-		if preFilterTotal != len(conflicts) {
-			ec.Total = preFilterTotal
-		}
-		entry.Conflicts = ec
+		items, hasMore := capEnrichmentConflicts(conflicts)
+		entry.Conflicts = enrichmentConflicts{Items: items, Count: len(items), HasMore: hasMore}
 	default:
 		entry.Conflicts = enrichmentConflicts{Items: []model.DecisionConflict{}}
 	}
