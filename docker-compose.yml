@@ -56,6 +56,11 @@ services:
       # One-shot: clears open, non-gold-labelled conflicts and re-scores every
       # decision pair. Resolved/false_positive rows are preserved. Unset after use.
       AKASHI_FORCE_CONFLICT_RESCORE: ${AKASHI_FORCE_CONFLICT_RESCORE:-false}
+      # Bounds how far back the backfill reaches. Pair with the rescue flag above:
+      # an unbounded rescore re-judges the whole corpus at one LLM call per pair.
+      AKASHI_CONFLICT_BACKFILL_WINDOW: ${AKASHI_CONFLICT_BACKFILL_WINDOW:-0}
+      AKASHI_CONFLICT_BACKFILL_BATCH_SIZE: ${AKASHI_CONFLICT_BACKFILL_BATCH_SIZE:-500}
+      AKASHI_CONFLICT_BACKFILL_INTERVAL: ${AKASHI_CONFLICT_BACKFILL_INTERVAL:-5m}
 
       AKASHI_PORT: ${AKASHI_PORT:-8080}
       AKASHI_LOG_LEVEL: ${AKASHI_LOG_LEVEL:-info}
