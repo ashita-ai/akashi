@@ -73,9 +73,13 @@ type Scorer struct {
 	validator       Validator
 	validatorLabel  string // low-cardinality label for OTel attributes
 	backfillWorkers int
-	decayLambda     float64 // Temporal decay rate. 0 disables decay.
-	candidateLimit  int     // Max candidates retrieved from Qdrant per decision.
-	finder          search.CandidateFinder
+
+	// backfillWindow bounds how far back the backfill will reach for unscored
+	// decisions. Zero is unbounded. Set via WithBackfillWindow.
+	backfillWindow time.Duration
+	decayLambda    float64 // Temporal decay rate. 0 disables decay.
+	candidateLimit int     // Max candidates retrieved from Qdrant per decision.
+	finder         search.CandidateFinder
 	// pairwiseScorer is an optional external override for the confirmation step.
 	// When non-nil, it replaces the built-in Validator-backed scoring for each candidate pair.
 	pairwiseScorer PairwiseScorer
@@ -112,6 +116,20 @@ type Scorer struct {
 // no conflicts. Must be called before any scoring starts.
 func (s *Scorer) WithCandidateFinder(cf search.CandidateFinder) *Scorer {
 	s.finder = cf
+	return s
+}
+
+// WithBackfillWindow bounds how far back the backfill reaches for decisions that
+// were never conflict-scored. Zero (the default) is unbounded.
+//
+// This is a cost control, and the cost is not small: a forced rescore resets
+// every decision's scored mark, so an unbounded backfill re-judges the entire
+// corpus at one LLM call per surviving candidate pair. At a ~3% base rate most
+// of that spend re-derives disputes that were settled months ago. Decisions
+// outside the window are left unscored rather than marked, so widening the
+// window later picks them up with no backfilling of bookkeeping.
+func (s *Scorer) WithBackfillWindow(d time.Duration) *Scorer {
+	s.backfillWindow = d
 	return s
 }
 
@@ -1207,7 +1225,11 @@ func (s *Scorer) bestClaimConflict(ctx context.Context, decisionAID, decisionBID
 //
 // Returns the number of decisions processed.
 func (s *Scorer) BackfillScoring(ctx context.Context, batchSize int) (int, error) {
-	refs, err := s.db.FindEmbeddedDecisionIDs(ctx, batchSize)
+	var since time.Time
+	if s.backfillWindow > 0 {
+		since = time.Now().Add(-s.backfillWindow)
+	}
+	refs, err := s.db.FindEmbeddedDecisionIDsSince(ctx, batchSize, since)
 	if err != nil {
 		return 0, err
 	}
