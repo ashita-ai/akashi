@@ -30,6 +30,10 @@ A previous pass over this code (commit `a9416f7`) rewrote the field comments to 
 
 This matches the rule `computePagination` (`internal/server/handlers.go`) already applies to every list endpoint: when access filtering hid rows, the total is not knowable to the caller and is not published. `TestComputePagination` pins that behaviour.
 
+`cited_by_has_more` carried the identical defect and is fixed in the same change. Storage computes `CitedByMore` against the pre-filter citation set (`internal/storage/decisions.go`), and `authz.FilterLineage` rebuilt `CitedBy` without touching the flag — so a restricted caller could read `cited_by_has_more = true` beside an unfilled list and learn that citations exist which they may not read. `FilterLineage` now clears the flag whenever filtering removed an entry. That is deliberately conservative and can under-report; a truthful post-filter value cannot be published without re-opening the disclosure, and the same reasoning that removes `total` forbids publishing it.
+
+One residual is knowingly accepted: storage trims its `citedByLimit+1` probe row before returning, so when all fetched entries are accessible but the discarded probe row was not, one bit still escapes. Closing it requires storage to return the uncapped probe and cap post-filter, mirroring `capEnrichmentConflicts`. Recorded rather than silently left.
+
 ### Alternatives rejected
 
 - **Recompute `total` post-filter.** Provably carries zero information. Revisions are uncapped, so post-filter total ≡ `count`. Conflicts are over-fetched at `perDecisionLimit+1` = 51 (`internal/storage/conflicts.go`), so a post-filter total differs from `count` only at exactly 51 — the over-fetch sentinel, not a real total. A field that can only be redundant or meaningless exists only to be re-broken later.

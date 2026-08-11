@@ -417,10 +417,20 @@ const (
 // accepted; the only alternative is a post-filter counting query whose result
 // could not be published without re-opening the disclosure this replaced.
 func capEnrichmentConflicts(conflicts []model.DecisionConflict) ([]model.DecisionConflict, bool) {
-	if len(conflicts) > maxEnrichmentConflicts {
+	// hasMore is captured BEFORE truncation. Deriving it afterwards from the
+	// clamped slice is wrong in both directions: len >= cap fires at exactly
+	// maxEnrichmentConflicts accessible conflicts, when nothing was withheld,
+	// and len > cap can never fire at all because truncation already clamped it.
+	// The pre-change code read preFilterTotal > maxEnrichmentConflicts, which
+	// was correct on this boundary, so getting it wrong here would ship a fresh
+	// regression under cover of a security fix — and it would reach every
+	// caller, not just restricted ones, since admins skip access filtering
+	// entirely (authz.go:210).
+	hasMore := len(conflicts) > maxEnrichmentConflicts
+	if hasMore {
 		conflicts = conflicts[:maxEnrichmentConflicts]
 	}
-	return conflicts, len(conflicts) >= maxEnrichmentConflicts
+	return conflicts, hasMore
 }
 
 func (h *Handlers) buildDecisionEnrichments(

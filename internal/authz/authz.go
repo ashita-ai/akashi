@@ -264,6 +264,17 @@ func FilterLineage(ctx context.Context, db storage.Store, claims *auth.Claims, l
 			allowed = append(allowed, e)
 		}
 	}
+	// CitedByMore is computed in storage against the PRE-filter set
+	// (decisions.go:2332) and was never recomputed here, so it published the
+	// same oracle the enrichment totals did: a restricted caller could read
+	// cited_by_has_more = true while seeing an unfilled list and learn that
+	// citations exist which they may not read. Clearing it whenever filtering
+	// removed anything is deliberately conservative — it can under-report — but
+	// a truthful post-filter value cannot be published without re-opening the
+	// disclosure. Admins short-circuit above and keep the accurate flag.
+	if len(allowed) != len(lineage.CitedBy) {
+		lineage.CitedByMore = false
+	}
 	lineage.CitedBy = allowed
 
 	return lineage, nil
