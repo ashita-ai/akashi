@@ -95,6 +95,7 @@ type Config struct {
 	ConflictDecisionTopicSimFloor float64       // Min decision-level topic similarity to activate claim-level scoring (default: 0.70).
 	ConflictEarlyExitFloor        float64       // Min pre-LLM significance for early exit pruning (default: 0.25, 0 disables).
 	ConflictOutcomeSimFloor       float64       // Min outcome cosine similarity to suppress as agreeing (default: 0.85, 0 disables).
+	ConflictSuppressionSampleRate float64       // Fraction of structurally-suppressed pairs sampled for false-negative measurement (default: 0.0 = off).
 	CrossEncoderURL               string        // URL of the cross-encoder reranking service (empty = disabled).
 	CrossEncoderThreshold         float64       // Min cross-encoder score to proceed to LLM validation (default: 0.50).
 	NLIURL                        string        // URL of NLI sidecar for stance-aware pre-filtering (empty = disabled). Takes precedence over CrossEncoderURL.
@@ -311,6 +312,7 @@ func Load() (Config, error) {
 	cfg.ConflictDecisionTopicSimFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_DECISION_TOPIC_SIM_FLOOR", profileDefaults.decisionTopicSimFloor)
 	cfg.ConflictEarlyExitFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_EARLY_EXIT_FLOOR", profileDefaults.earlyExitFloor)
 	cfg.ConflictOutcomeSimFloor, errs = collectFloat64(errs, "AKASHI_CONFLICT_OUTCOME_SIM_FLOOR", profileDefaults.outcomeSimFloor)
+	cfg.ConflictSuppressionSampleRate, errs = collectFloat64(errs, "AKASHI_CONFLICT_SUPPRESSION_SAMPLE_RATE", 0.0)
 	cfg.CrossEncoderThreshold, errs = collectFloat64(errs, "AKASHI_CONFLICT_CROSS_ENCODER_THRESHOLD", profileDefaults.crossEncoderThreshold)
 	var highConfThreshF64 float64
 	highConfThreshF64, errs = collectFloat64(errs, "AKASHI_HIGH_CONFIDENCE_WARN_THRESHOLD", 0.85)
@@ -552,6 +554,9 @@ func (c Config) Validate() error {
 	}
 	if c.ConflictOutcomeSimFloor < 0 || c.ConflictOutcomeSimFloor > 1 {
 		errs = append(errs, errors.New("config: AKASHI_CONFLICT_OUTCOME_SIM_FLOOR must be between 0.0 and 1.0 (0 disables)"))
+	}
+	if c.ConflictSuppressionSampleRate < 0 || c.ConflictSuppressionSampleRate > 1 {
+		errs = append(errs, errors.New("config: AKASHI_CONFLICT_SUPPRESSION_SAMPLE_RATE must be between 0.0 and 1.0 (0 disables sampling)"))
 	}
 	if c.MinCompleteness < 0 || c.MinCompleteness > 1 {
 		errs = append(errs, errors.New("config: AKASHI_MIN_COMPLETENESS must be between 0.0 and 1.0"))
