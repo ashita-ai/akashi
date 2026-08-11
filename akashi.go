@@ -272,6 +272,7 @@ func New(opts ...Option) (*App, error) {
 		WithCandidateLimit(cfg.ConflictCandidateLimit).
 		WithEarlyExitFloor(cfg.ConflictEarlyExitFloor).
 		WithOutcomeSimFloor(cfg.ConflictOutcomeSimFloor).
+		WithSuppressionSampleRate(cfg.ConflictSuppressionSampleRate).
 		WithBackfillWindow(cfg.ConflictBackfillWindow)
 	if qdrantIndex != nil {
 		conflictScorer = conflictScorer.WithCandidateFinder(qdrantIndex)
