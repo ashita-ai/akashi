@@ -615,13 +615,16 @@ func TestConfidenceCalibrationGap_OutcomeBased_Miscalibrated(t *testing.T) {
 	assert.Contains(t, g, "confidence is not predicting outcomes")
 }
 
-// Tier 1: Assessment-based calibration passes when high >= mid.
+// Tier 1: Assessment-based calibration passes when high >= mid on a sample that
+// can carry the claim. Counts are at MinAssessedToClear: below that the ordering
+// may look right but "calibrated" is not an answer the data supports, which is
+// covered separately by the unverified tests below.
 func TestConfidenceCalibrationGap_OutcomeBased_Calibrated(t *testing.T) {
 	cal := storage.ConfidenceCalibration{
 		HasOutcomeData: true,
 		Tiers: []storage.ConfidenceTier{
-			{Tier: "high", Total: 40, AssessedCount: 10, AvgOutcome: ptrFloat(0.80), RevisionRate: 5},
-			{Tier: "mid", Total: 50, AssessedCount: 15, AvgOutcome: ptrFloat(0.72), RevisionRate: 3},
+			{Tier: "high", Total: 90, AssessedCount: 40, AvgOutcome: ptrFloat(0.80), RevisionRate: 5},
+			{Tier: "mid", Total: 100, AssessedCount: 50, AvgOutcome: ptrFloat(0.72), RevisionRate: 3},
 		},
 	}
 	g := confidenceCalibrationGap(cal, storage.ConfidenceDistribution{})
@@ -777,8 +780,8 @@ func TestConfidenceCalibrationGap_OutcomeTakesPrecedenceOverRevision(t *testing.
 	cal := storage.ConfidenceCalibration{
 		HasOutcomeData: true,
 		Tiers: []storage.ConfidenceTier{
-			{Tier: "high", Total: 30, AssessedCount: 5, AvgOutcome: ptrFloat(0.80), RevisionRate: 25},
-			{Tier: "mid", Total: 50, AssessedCount: 10, AvgOutcome: ptrFloat(0.70), RevisionRate: 2},
+			{Tier: "high", Total: 90, AssessedCount: 40, AvgOutcome: ptrFloat(0.80), RevisionRate: 25},
+			{Tier: "mid", Total: 100, AssessedCount: 50, AvgOutcome: ptrFloat(0.70), RevisionRate: 2},
 		},
 	}
 	g := confidenceCalibrationGap(cal, storage.ConfidenceDistribution{})
@@ -800,4 +803,55 @@ func TestConfidenceCalibrationGap_MissingMidTier(t *testing.T) {
 	g := confidenceCalibrationGap(cal, storage.ConfidenceDistribution{})
 
 	assert.Empty(t, g, "cannot calibrate without mid tier")
+}
+
+// The defect this guards: high >= mid on a handful of assessments used to
+// return no gap at all, so a trail with 2% outcome coverage read as healthy in
+// the one place an operator would look before trusting a confidence score.
+func TestConfidenceCalibrationGap_OutcomeOrderingRightButSampleTooThin(t *testing.T) {
+	cal := storage.ConfidenceCalibration{
+		HasOutcomeData: true,
+		Tiers: []storage.ConfidenceTier{
+			{Tier: "high", Total: 968, AssessedCount: 19, AvgOutcome: ptrFloat(0.95), RevisionRate: 0},
+			{Tier: "mid", Total: 2991, AssessedCount: 205, AvgOutcome: ptrFloat(0.87), RevisionRate: 0},
+		},
+	}
+	g := confidenceCalibrationGap(cal, storage.ConfidenceDistribution{})
+
+	assert.Contains(t, g, "unverified")
+	assert.Contains(t, g, "19 of 968")
+}
+
+// A low tier that outperforms mid means the ordering carries no information,
+// even when high-vs-mid looks healthy. Comparing only adjacent tiers misses it.
+func TestConfidenceCalibrationGap_NonMonotonicTiers(t *testing.T) {
+	cal := storage.ConfidenceCalibration{
+		HasOutcomeData: true,
+		Tiers: []storage.ConfidenceTier{
+			{Tier: "high", Total: 90, AssessedCount: 40, AvgOutcome: ptrFloat(0.95)},
+			{Tier: "mid", Total: 100, AssessedCount: 50, AvgOutcome: ptrFloat(0.87)},
+			{Tier: "low", Total: 40, AssessedCount: 30, AvgOutcome: ptrFloat(0.91)},
+		},
+	}
+	g := confidenceCalibrationGap(cal, storage.ConfidenceDistribution{})
+
+	assert.Contains(t, g, "ordering does not track outcomes")
+}
+
+// A corpus where nothing is ever superseded reports a uniform 0% revision rate.
+// "0% <= 0%" must not clear calibration on a signal that cannot fire.
+func TestConfidenceCalibrationGap_ZeroRevisionRateIsNotEvidence(t *testing.T) {
+	cal := storage.ConfidenceCalibration{
+		HasOutcomeData: false,
+		Tiers: []storage.ConfidenceTier{
+			{Tier: "high", Total: 968, RevisionRate: 0},
+			{Tier: "mid", Total: 2991, RevisionRate: 0},
+		},
+	}
+	// Falls through to the distribution-shape fallback rather than clearing.
+	g := confidenceCalibrationGap(cal, storage.ConfidenceDistribution{
+		TotalDecisions: 4143, AvgConfidence: 0.78, OverconfidentPct: 65,
+	})
+
+	assert.NotEmpty(t, g, "a dead proxy must not be reported as calibration")
 }

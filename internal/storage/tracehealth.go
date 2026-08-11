@@ -291,7 +291,7 @@ func (db *DB) GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID, fro
 		}
 	}
 
-	cal.Calibrated = ComputeCalibrated(tierMap, cal.HasOutcomeData)
+	cal.Calibrated, cal.CalibrationBasis = ComputeCalibrated(tierMap, cal.HasOutcomeData)
 
 	// Per-agent calibration: revision rate + outcome by agent.
 	agentRows, err := db.pool.Query(ctx, `

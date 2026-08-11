@@ -319,10 +319,17 @@ type AgentCalibration struct {
 // ConfidenceCalibration measures whether declared confidence actually predicts
 // decision outcomes, using both assessment data and temporal proxy signals.
 type ConfidenceCalibration struct {
-	Tiers          []ConfidenceTier   `json:"tiers"`
-	ByAgent        []AgentCalibration `json:"by_agent"`
-	Calibrated     bool               `json:"calibrated"`       // true if high-conf outcomes >= mid-conf
-	HasOutcomeData bool               `json:"has_outcome_data"` // true if any outcome_score IS NOT NULL
+	Tiers   []ConfidenceTier   `json:"tiers"`
+	ByAgent []AgentCalibration `json:"by_agent"`
+	// Calibrated is true only when confidence is DEMONSTRATED to predict
+	// outcomes on a sample large enough to carry the claim. It is not the
+	// negation of "miscalibrated": see CalibrationBasis to tell a measured
+	// result from an absence of evidence.
+	Calibrated bool `json:"calibrated"`
+	// CalibrationBasis is why Calibrated holds the value it does: "outcome",
+	// "revision_rate", "non_monotonic", or "insufficient_evidence".
+	CalibrationBasis string `json:"calibration_basis"`
+	HasOutcomeData   bool   `json:"has_outcome_data"` // true if any outcome_score IS NOT NULL
 }
 
 // ---------------------------------------------------------------------------
@@ -391,25 +398,77 @@ func TruncateOutcome(s string, maxLen int) string {
 	return string(runes[:maxLen])
 }
 
-// ComputeCalibrated determines if high-confidence decisions actually outperform mid-confidence.
-// With outcome data: high-conf avg_outcome must be >= mid-conf avg_outcome.
-// Without: high-conf revision rate must be <= mid-conf revision rate.
-func ComputeCalibrated(tiers map[string]*ConfidenceTier, hasOutcomeData bool) bool {
-	high, mid := tiers["high"], tiers["mid"]
+// Evidence thresholds for calibration claims. They are deliberately asymmetric.
+//
+// Declaring a fleet calibrated is a positive claim that declared confidence
+// predicts outcomes, and it is exactly the claim that is dangerous to get wrong:
+// it tells an operator to trust a number. Flagging possible miscalibration is a
+// warning, and a warning on thin evidence costs an operator a glance.
+//
+// So: MinAssessedToFlag is low enough to warn early, MinAssessedToClear is a
+// real sample. Below the clear bar the answer is "not established", never "yes".
+const (
+	MinAssessedToFlag  = 3
+	MinAssessedToClear = 30
+)
+
+// Calibration bases reported alongside the Calibrated flag, so a consumer can
+// tell a demonstrated result from an absence of evidence.
+const (
+	CalibrationBasisOutcome      = "outcome"
+	CalibrationBasisRevisionRate = "revision_rate"
+	CalibrationBasisInsufficient = "insufficient_evidence"
+	CalibrationBasisNonMonotonic = "non_monotonic"
+)
+
+// ComputeCalibrated reports whether declared confidence is DEMONSTRATED to
+// predict outcomes, and the basis for that answer.
+//
+// It previously returned true in three distinct situations: calibration was
+// shown, no tiers existed, and there was not enough data to call it
+// miscalibrated. Collapsing "shown" together with "unknown" is what let the API
+// answer calibrated=true on 19 assessed decisions out of 968 high-confidence
+// ones — an assertion the data could not support, in the one field an operator
+// would consult before trusting a confidence score. Absence of evidence is now
+// reported as CalibrationBasisInsufficient with calibrated=false.
+//
+// The low tier participates too. Comparing only high against mid cannot see a
+// low tier that outperforms mid, which is not calibration in any useful sense:
+// it says the ordering carries no information.
+func ComputeCalibrated(tiers map[string]*ConfidenceTier, hasOutcomeData bool) (bool, string) {
+	high, mid, low := tiers["high"], tiers["mid"], tiers["low"]
 	if high == nil || mid == nil {
-		return true // insufficient data to determine miscalibration
+		return false, CalibrationBasisInsufficient
 	}
 
-	if hasOutcomeData && high.AvgOutcome != nil && mid.AvgOutcome != nil {
-		return *high.AvgOutcome >= *mid.AvgOutcome
+	if hasOutcomeData && high.AvgOutcome != nil && mid.AvgOutcome != nil &&
+		high.AssessedCount >= MinAssessedToFlag && mid.AssessedCount >= MinAssessedToFlag {
+		if *high.AvgOutcome < *mid.AvgOutcome {
+			return false, CalibrationBasisOutcome
+		}
+		if low != nil && low.AvgOutcome != nil && low.AssessedCount >= MinAssessedToFlag &&
+			*low.AvgOutcome > *mid.AvgOutcome {
+			return false, CalibrationBasisNonMonotonic
+		}
+		if high.AssessedCount >= MinAssessedToClear && mid.AssessedCount >= MinAssessedToClear {
+			return true, CalibrationBasisOutcome
+		}
+		// Ordering looks right but the sample cannot carry the claim.
+		return false, CalibrationBasisInsufficient
 	}
 
 	// Temporal proxy: high-confidence decisions should not be revised more often.
-	if high.Total >= 5 && mid.Total >= 5 {
-		return high.RevisionRate <= mid.RevisionRate
+	// Only meaningful where revisions actually occur — a corpus in which nothing
+	// is ever superseded produces a uniform 0% revision rate, which would
+	// otherwise read as proof of calibration rather than as absence of signal.
+	if high.Total >= 5 && mid.Total >= 5 && (high.RevisionRate > 0 || mid.RevisionRate > 0) {
+		if high.RevisionRate > mid.RevisionRate {
+			return false, CalibrationBasisRevisionRate
+		}
+		return true, CalibrationBasisRevisionRate
 	}
 
-	return true // not enough data to call it miscalibrated
+	return false, CalibrationBasisInsufficient
 }
 
 // ---------------------------------------------------------------------------
