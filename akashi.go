@@ -710,20 +710,27 @@ func (a *App) runLoop(ctx context.Context, name string, interval time.Duration, 
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						a.logger.Error("panic in background loop",
-							"loop", name,
-							"panic", r,
-							"stack", string(debug.Stack()),
-						)
-					}
-				}()
-				fn(ctx)
-			}()
+			a.safeRun(ctx, name, fn)
 		}
 	}
+}
+
+// safeRun executes fn with panic recovery. Extracted from runLoop so that a
+// one-shot pass performed outside the ticker (such as the conflict backfill's
+// startup sweep) carries the same protection a ticked pass does — otherwise a
+// panic on the startup path takes the process down where the identical panic on
+// the periodic path would only be logged.
+func (a *App) safeRun(ctx context.Context, name string, fn func(ctx context.Context)) {
+	defer func() {
+		if r := recover(); r != nil {
+			a.logger.Error("panic in background loop",
+				"loop", name,
+				"panic", r,
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
+	fn(ctx)
 }
 
 // ── Background loops (moved from cmd/akashi/main.go) ──────────────────────────
@@ -740,11 +747,71 @@ func (a *App) conflictBackfillLoop(ctx context.Context) {
 			a.logger.Info("conflict backfill: ollama model ready")
 		}
 	}
-	if n, err := a.conflictScorer.BackfillScoring(ctx, 500); err != nil {
-		a.logger.Warn("conflict scoring backfill failed", "error", err)
-	} else if n > 0 {
+	// Drain whatever is already pending, then keep sweeping. This ran exactly
+	// once with a hardcoded batch of 500 until #745: the function was registered
+	// alongside the genuine ticker loops and named like one, but scored a single
+	// batch and returned. Any backlog larger than one batch — an operator-forced
+	// rescore being the obvious case, which resets every decision's scored mark —
+	// silently stopped at 500 and never resumed without a process restart.
+	a.safeRun(ctx, "conflictBackfill", a.sweepConflictBackfill)
+	a.runLoop(ctx, "conflictBackfill", a.cfg.ConflictBackfillInterval, a.sweepConflictBackfill)
+}
+
+// conflictBackfillMaxBatches bounds a single backfill sweep. BackfillScoring
+// marks each decision scored as it goes, so the drain normally ends when a short
+// batch comes back; this bound only matters if a decision is somehow never
+// marked, which would otherwise re-fetch the same rows forever and spin the LLM
+// judge hot. It is deliberately high enough that a real backlog drains in one
+// sweep (200 * the default 500 = 100k decisions).
+const conflictBackfillMaxBatches = 200
+
+// sweepConflictBackfill drains the pending-scoring queue and reports what it did.
+func (a *App) sweepConflictBackfill(ctx context.Context) {
+	n := drainConflictBackfill(ctx, a.conflictScorer, a.cfg.ConflictBackfillBatchSize,
+		conflictBackfillMaxBatches, a.logger)
+	if n > 0 {
 		a.logger.Info("conflict scoring backfill complete", "decisions_scored", n)
 	}
+}
+
+// backfillScorer is the slice of the conflict scorer the drain needs, narrowed to
+// an interface so the drain logic is testable without a database or an LLM.
+type backfillScorer interface {
+	BackfillScoring(ctx context.Context, batchSize int) (int, error)
+}
+
+// drainConflictBackfill scores pending decisions batch by batch until the queue
+// is empty, returning the total number of decisions processed.
+//
+// Termination rests on BackfillScoring's contract: it processes at most
+// batchSize decisions and marks each one scored, so a batch shorter than
+// batchSize means nothing is left to score. TestBackfillScoring_MarksDecisionsScored
+// pins that invariant — a second call over the same data returns 0.
+//
+// A batch error stops the sweep rather than retrying in place: the next tick
+// retries from the same position, and continuing past an error risks hammering a
+// failing database or judge. The error is logged with the count achieved so far
+// so a partial sweep is never reported as a clean one.
+func drainConflictBackfill(ctx context.Context, s backfillScorer, batchSize, maxBatches int, logger *slog.Logger) int {
+	total := 0
+	for range maxBatches {
+		if ctx.Err() != nil {
+			return total
+		}
+		n, err := s.BackfillScoring(ctx, batchSize)
+		total += n
+		if err != nil {
+			logger.Warn("conflict scoring backfill failed",
+				"error", err, "decisions_scored", total)
+			return total
+		}
+		if n < batchSize {
+			return total
+		}
+	}
+	logger.Warn("conflict scoring backfill hit its per-sweep batch bound — remaining decisions wait for the next sweep",
+		"max_batches", maxBatches, "batch_size", batchSize, "decisions_scored", total)
+	return total
 }
 
 func (a *App) conflictRefreshLoop(ctx context.Context) {

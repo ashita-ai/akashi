@@ -88,6 +88,7 @@ type Config struct {
 	ConflictLLMThreads            int           // CPU threads Ollama may use per inference call (default: floor(NumCPU/3), min 1). 0 = let Ollama decide.
 	ConflictCandidateLimit        int           // Max candidates retrieved from Qdrant per decision for conflict scoring (default: 20).
 	ConflictBackfillWorkers       int           // Parallel workers for conflict scoring backfill (default: 4).
+	ConflictBackfillBatchSize     int           // Decisions per conflict-scoring backfill batch (default: 500).
 	ConflictDecayLambda           float64       // Temporal decay rate for conflict significance (default: 0.01, 0 disables).
 	ConflictClaimTopicSimFloor    float64       // Min cosine similarity for two claims to be "about the same thing" (default: 0.60).
 	ConflictClaimDivFloor         float64       // Min outcome divergence for claims to count as disagreeing (default: 0.15).
@@ -115,6 +116,7 @@ type Config struct {
 	SkipEmbeddedMigrations        bool // Skip startup embedded migrations; for external migration orchestration.
 	EnableDestructiveDelete       bool // Enables irreversible DELETE /v1/agents/{agent_id}; default false.
 	ConflictRefreshInterval       time.Duration
+	ConflictBackfillInterval      time.Duration // How often to sweep for decisions that were never conflict-scored (default: 5m).
 	ConflictSignificanceThreshold float64       // Minimum significance to store (default 0.30).
 	IntegrityProofInterval        time.Duration // How often to build Merkle tree proofs.
 	IntegrityAuditInterval        time.Duration // How often to verify stored Merkle proofs.
@@ -253,6 +255,7 @@ func Load() (Config, error) {
 	cfg.RateLimitBurst, errs = collectInt(errs, "AKASHI_RATE_LIMIT_BURST", 200)
 	cfg.ConflictCandidateLimit, errs = collectInt(errs, "AKASHI_CONFLICT_CANDIDATE_LIMIT", 20)
 	cfg.ConflictBackfillWorkers, errs = collectInt(errs, "AKASHI_CONFLICT_BACKFILL_WORKERS", 4)
+	cfg.ConflictBackfillBatchSize, errs = collectInt(errs, "AKASHI_CONFLICT_BACKFILL_BATCH_SIZE", 500)
 	defaultLLMThreads := max(1, runtime.NumCPU()/3)
 	cfg.ConflictLLMThreads, errs = collectInt(errs, "AKASHI_CONFLICT_LLM_THREADS", defaultLLMThreads)
 	cfg.WALSegmentSize, errs = collectInt(errs, "AKASHI_WAL_SEGMENT_SIZE", 64*1024*1024)
@@ -346,6 +349,7 @@ func Load() (Config, error) {
 	cfg.JWTExpiration, errs = collectDuration(errs, "AKASHI_JWT_EXPIRATION", 24*time.Hour)
 	cfg.OutboxPollInterval, errs = collectDuration(errs, "AKASHI_OUTBOX_POLL_INTERVAL", 1*time.Second)
 	cfg.ConflictRefreshInterval, errs = collectDuration(errs, "AKASHI_CONFLICT_REFRESH_INTERVAL", 30*time.Second)
+	cfg.ConflictBackfillInterval, errs = collectDuration(errs, "AKASHI_CONFLICT_BACKFILL_INTERVAL", 5*time.Minute)
 	cfg.ConflictLLMTimeout, errs = collectDuration(errs, "AKASHI_CONFLICT_LLM_TIMEOUT", 15*time.Second)
 	cfg.IntegrityProofInterval, errs = collectDuration(errs, "AKASHI_INTEGRITY_PROOF_INTERVAL", 5*time.Minute)
 	cfg.IntegrityAuditInterval, errs = collectDuration(errs, "AKASHI_INTEGRITY_AUDIT_INTERVAL", 15*time.Minute)
@@ -493,6 +497,15 @@ func (c Config) Validate() error {
 	}
 	if c.ConflictRefreshInterval <= 0 {
 		errs = append(errs, errors.New("config: AKASHI_CONFLICT_REFRESH_INTERVAL must be positive"))
+	}
+	if c.ConflictBackfillInterval <= 0 {
+		errs = append(errs, errors.New("config: AKASHI_CONFLICT_BACKFILL_INTERVAL must be positive"))
+	}
+	// A non-positive batch size would make FindEmbeddedDecisionIDs fall back to its
+	// own default of 1000, so the drain would silently run at a size the operator
+	// never chose and never terminate on the short-batch check.
+	if c.ConflictBackfillBatchSize <= 0 {
+		errs = append(errs, errors.New("config: AKASHI_CONFLICT_BACKFILL_BATCH_SIZE must be positive"))
 	}
 	if c.IntegrityProofInterval <= 0 {
 		errs = append(errs, errors.New("config: AKASHI_INTEGRITY_PROOF_INTERVAL must be positive"))
