@@ -738,6 +738,13 @@ func TestValidate_ZeroIntervals(t *testing.T) {
 			errStr: "AKASHI_CONFLICT_BACKFILL_BATCH_SIZE",
 		},
 		{
+			// Zero is legal here (unbounded); only a negative window is rejected,
+			// since it would invert into a future cutoff matching nothing.
+			name:   "negative conflict backfill window",
+			setter: func(c *Config) { c.ConflictBackfillWindow = -time.Hour },
+			errStr: "AKASHI_CONFLICT_BACKFILL_WINDOW",
+		},
+		{
 			name:   "zero integrity proof interval",
 			setter: func(c *Config) { c.IntegrityProofInterval = 0 },
 			errStr: "AKASHI_INTEGRITY_PROOF_INTERVAL",
@@ -832,6 +839,7 @@ func validBaseConfig() Config {
 		ConflictRefreshInterval:    30 * time.Second,
 		ConflictBackfillInterval:   5 * time.Minute,
 		ConflictBackfillBatchSize:  500,
+		ConflictBackfillWindow:     0,
 		IntegrityProofInterval:     5 * time.Minute,
 		IntegrityAuditInterval:     15 * time.Minute,
 		IntegrityAuditTimeout:      5 * time.Minute,
@@ -1444,5 +1452,15 @@ func TestLoad_AssessmentPromptLimitRejectsZero(t *testing.T) {
 	}
 	if !contains(err.Error(), "AKASHI_ASSESSMENT_PROMPT_LIMIT") {
 		t.Fatalf("error should mention AKASHI_ASSESSMENT_PROMPT_LIMIT, got: %s", err.Error())
+	}
+}
+
+// Zero window means unbounded and is the default, so it must not be rejected
+// alongside the genuinely invalid negative case.
+func TestValidate_ZeroConflictBackfillWindowIsAllowed(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.ConflictBackfillWindow = 0
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("zero window is unbounded, not invalid: %v", err)
 	}
 }

@@ -1714,8 +1714,29 @@ func (db *DB) GetConflictCountsBatch(ctx context.Context, ids []uuid.UUID, orgID
 // SECURITY: Intentionally global — background backfill across all orgs. Each
 // returned row includes OrgID for downstream scoping (ScoreForDecision).
 func (db *DB) FindEmbeddedDecisionIDs(ctx context.Context, limit int) ([]DecisionRef, error) {
+	return db.FindEmbeddedDecisionIDsSince(ctx, limit, time.Time{})
+}
+
+// FindEmbeddedDecisionIDsSince is FindEmbeddedDecisionIDs bounded to decisions
+// with valid_from at or after since. A zero since is unbounded.
+//
+// The window exists because scoring the whole corpus and scoring the actionable
+// part of it are very different amounts of work for nearly the same value. A
+// forced rescore resets every decision's scored mark, and re-judging months-old
+// pairs costs a full LLM call each to surface disputes that were settled in
+// practice long ago. Decisions outside the window keep conflict_scored_at NULL
+// rather than being marked scored: they are genuinely unscored, and widening or
+// removing the window later picks them up with no further bookkeeping.
+//
+// SECURITY: Intentionally global — background backfill across all orgs. Each
+// returned row includes OrgID for downstream scoping (ScoreForDecision).
+func (db *DB) FindEmbeddedDecisionIDsSince(ctx context.Context, limit int, since time.Time) ([]DecisionRef, error) {
 	if limit <= 0 {
 		limit = 1000
+	}
+	var sinceArg any
+	if !since.IsZero() {
+		sinceArg = since
 	}
 	rows, err := db.pool.Query(ctx,
 		`SELECT id, org_id FROM decisions
@@ -1723,8 +1744,9 @@ func (db *DB) FindEmbeddedDecisionIDs(ctx context.Context, limit int) ([]Decisio
 		   AND embedding IS NOT NULL
 		   AND outcome_embedding IS NOT NULL
 		   AND conflict_scored_at IS NULL
+		   AND ($2::timestamptz IS NULL OR valid_from >= $2)
 		 ORDER BY valid_from ASC
-		 LIMIT $1`, limit)
+		 LIMIT $1`, limit, sinceArg)
 	if err != nil {
 		return nil, fmt.Errorf("storage: find embedded decision IDs: %w", err)
 	}
