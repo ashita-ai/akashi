@@ -4859,7 +4859,7 @@ components:
 
     EnrichmentRevisions:
       type: object
-      required: [items, count, total]
+      required: [items, count]
       properties:
         items:
           type: array
@@ -4867,17 +4867,17 @@ components:
             $ref: "#/components/schemas/Decision"
         count:
           type: integer
-          description: Number of accessible revisions returned (equals total when not degraded).
-        total:
-          type: integer
-          description: Total accessible revisions after RBAC filtering.
+          description: >-
+            Number of revisions the caller is permitted to see. No total is
+            published: the list is uncapped, so a total would either equal
+            count or disclose revisions hidden by access control.
         degraded:
           type: boolean
           description: True when revision data could not be fully retrieved due to a storage or authorization error.
 
     EnrichmentConflicts:
       type: object
-      required: [items, count, total, has_more]
+      required: [items, count, has_more]
       properties:
         items:
           type: array
@@ -4885,13 +4885,13 @@ components:
             $ref: "#/components/schemas/DecisionConflict"
         count:
           type: integer
-          description: Number of accessible conflicts returned (may be less than total due to the 50-item cap).
-        total:
-          type: integer
-          description: Total accessible conflicts after RBAC filtering but before cap truncation.
+          description: Number of conflicts the caller is permitted to see, capped at 50 per decision.
         has_more:
           type: boolean
-          description: True when more conflicts exist than the 50 returned (based on pre-RBAC-filter count).
+          description: >-
+            True when the caller's accessible conflict set filled the 50-item
+            cap. Derived from the accessible set only — it never reflects
+            conflicts hidden by access control.
         degraded:
           type: boolean
           description: True when conflict data could not be fully retrieved due to a storage or authorization error.
