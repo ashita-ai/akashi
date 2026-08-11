@@ -42,8 +42,25 @@ services:
       OLLAMA_URL: ${OLLAMA_URL:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mxbai-embed-large}
 
-      # Optional — LLM conflict validation (reduces false positives ~93%).
+      # Optional — LLM conflict validation. The judge is the only component that
+      # discriminates (scorer features are label-noise: significance AUC 0.500).
+      # Corpus-projected precision by judge, per ADR-017: gpt-4o-mini 8.1%,
+      # gpt-4o 26.9%, gpt-4.1 28.7%, gpt-5 41.5%. Leaving the default in place
+      # means a 726-pair review queue on a corpus of this size.
       AKASHI_CONFLICT_LLM_MODEL: ${AKASHI_CONFLICT_LLM_MODEL:-}
+      AKASHI_CONFLICT_OPENAI_MODEL: ${AKASHI_CONFLICT_OPENAI_MODEL:-gpt-4o-mini}
+      # Reasoning models need far more than the 15s default: a gpt-5 run at 15s
+      # failed 159 of 200 calls, and validation timeout is fail-safe — it presents
+      # as a silent drop in detections, not an error. Change both together.
+      AKASHI_CONFLICT_LLM_TIMEOUT: ${AKASHI_CONFLICT_LLM_TIMEOUT:-15s}
+      # One-shot: clears open, non-gold-labelled conflicts and re-scores every
+      # decision pair. Resolved/false_positive rows are preserved. Unset after use.
+      AKASHI_FORCE_CONFLICT_RESCORE: ${AKASHI_FORCE_CONFLICT_RESCORE:-false}
+      # Bounds how far back the backfill reaches. Pair with the rescue flag above:
+      # an unbounded rescore re-judges the whole corpus at one LLM call per pair.
+      AKASHI_CONFLICT_BACKFILL_WINDOW: ${AKASHI_CONFLICT_BACKFILL_WINDOW:-0}
+      AKASHI_CONFLICT_BACKFILL_BATCH_SIZE: ${AKASHI_CONFLICT_BACKFILL_BATCH_SIZE:-500}
+      AKASHI_CONFLICT_BACKFILL_INTERVAL: ${AKASHI_CONFLICT_BACKFILL_INTERVAL:-5m}
 
       AKASHI_PORT: ${AKASHI_PORT:-8080}
       AKASHI_LOG_LEVEL: ${AKASHI_LOG_LEVEL:-info}
