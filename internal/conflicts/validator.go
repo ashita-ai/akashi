@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ashita-ai/akashi/internal/compact"
 )
@@ -56,6 +57,37 @@ type ValidationResult struct {
 	// verdict that cannot name one is downgraded to complementary by
 	// ParseValidatorResponse. Empty for every other relationship.
 	SharedQuestion string
+
+	// SupersedingSide is the side the validator named on its REPLACES line as
+	// retiring the other: "A" or "B", matching the Decision A / Decision B
+	// labels formatPrompt writes. The prompt requires it for a SUPERSESSION
+	// verdict; a verdict that cannot name a side is downgraded to refinement by
+	// ParseValidatorResponse. Empty for every other relationship.
+	//
+	// This is the ONLY source of supersedes direction. It deliberately does not
+	// fall back to timestamp order: the prompt refuses recency as evidence, and
+	// re-deriving direction from ValidFrom one layer down reintroduced exactly
+	// what the prompt rejects, breaking on backdated traces and reverts.
+	SupersedingSide string
+
+	// ReplacementEvidence is the replacement language the validator quoted
+	// after the side token on the REPLACES line. Advisory: it is carried into
+	// the supersedes-suggestion reason but does NOT gate the contract, because
+	// free text cannot be validated and requiring it would only produce filler.
+	// Empty for every other relationship.
+	ReplacementEvidence string
+
+	// DowngradedBy names the parser-enforced contract that rewrote the verdict:
+	// "question" (a contradiction that named no disputed question) or "replaces"
+	// (a supersession that named no superseding side). Empty when the model's
+	// verdict was taken as given.
+	//
+	// It exists because a downgrade is otherwise indistinguishable downstream
+	// from an honest complementary/refinement verdict: both land in the same
+	// !IsConflict() branch, which logs at Debug and is therefore off at the
+	// default info level. A prompt or parser regression that silently discards
+	// valid verdicts would look exactly like a quiet corpus.
+	DowngradedBy string
 }
 
 // IsConflict returns true if the relationship represents an actionable conflict.
@@ -100,7 +132,12 @@ func formatPrompt(input ValidateInput) string {
 	b.WriteString("You are a relationship classifier for an AI decision audit system.\n\n")
 
 	// --- Decision by agent A ---
-	fmt.Fprintf(&b, "Agent %q decision (%s, recorded %s):\n%s\n",
+	// The "Decision A" / "Decision B" labels are the prompt's only stable way
+	// to refer to a side: agent names are not unique (same-agent pairs are the
+	// common case, see agentContext above) and timestamps are the clock the
+	// REPLACES contract exists to stop treating as evidence. The DIFFERENT
+	// BRANCHES hint below already used these labels without defining them.
+	fmt.Fprintf(&b, "Decision A (agent %q, %s, recorded %s):\n%s\n",
 		input.AgentA, input.TypeA, input.CreatedA.Format(time.RFC3339), input.OutcomeA)
 	if input.FullOutcomeA != "" && input.FullOutcomeA != input.OutcomeA {
 		fmt.Fprintf(&b, "[Full decision context: %s]\n", compact.Truncate(input.FullOutcomeA, 500))
@@ -110,7 +147,7 @@ func formatPrompt(input ValidateInput) string {
 	}
 
 	// --- Decision by agent B ---
-	fmt.Fprintf(&b, "\nAgent %q decision (%s, recorded %s):\n%s\n",
+	fmt.Fprintf(&b, "\nDecision B (agent %q, %s, recorded %s):\n%s\n",
 		input.AgentB, input.TypeB, input.CreatedB.Format(time.RFC3339), input.OutcomeB)
 	if input.FullOutcomeB != "" && input.FullOutcomeB != input.OutcomeB {
 		fmt.Fprintf(&b, "[Full decision context: %s]\n", compact.Truncate(input.FullOutcomeB, 500))
@@ -270,11 +307,11 @@ APPLY THESE TESTS IN ORDER. Stop at the first one that fits.
    work items, subsystems, incidents, tickets, or scopes, there is no shared question →
    COMPLEMENTARY (related work) or UNRELATED (different subject matter). Stop here.
 
-2. DID THE LATER DECISION EXPLICITLY RETIRE THE EARLIER ONE? Supersession requires stated evidence of
-   replacement — the later decision reverts, replaces, withdraws, or corrects the earlier position, or
+2. DID ONE DECISION EXPLICITLY RETIRE THE OTHER? Supersession requires stated evidence of
+   replacement — one decision reverts, replaces, withdraws, or corrects the other's position, or
    refers to it as done, obsolete, or changed. Being recorded later is NOT evidence of replacement:
-   every pair you see has a time order, so ordering alone means nothing. Without explicit replacement
-   language, this is not SUPERSESSION.
+   every pair you see has a time order, so ordering alone means nothing. Name the retiring side on
+   the REPLACES line. Without explicit replacement language, this is not SUPERSESSION.
 
 3. ARE BOTH POSITIONS STILL LIVE AND INCOMPATIBLE? If the two decisions answer the same question
    differently and neither has retired the other, someone must still choose between them →
@@ -285,8 +322,14 @@ CONTRADICTION REQUIRES A NAMED QUESTION:
 State on the QUESTION line the single question the two decisions answer differently, in one clause
 ("whether to run CreateFieldIndex at startup"). If you cannot name it, the answer is not CONTRADICTION.
 
+SUPERSESSION REQUIRES A NAMED SIDE:
+State on the REPLACES line which decision retired the other — A or B — then the replacement language
+you found ("B: replaced REST v1 with gRPC"). Time order is not replacement language. If you cannot
+name the side, the answer is not SUPERSESSION.
+
 RELATIONSHIP: one of [contradiction, supersession, complementary, refinement, unrelated]
 QUESTION: the single disputed question (required for contradiction; otherwise "n/a")
+REPLACES: A or B, then the replacement language (required for supersession; otherwise "n/a")
 CATEGORY: factual, assessment, strategic, or temporal
 SEVERITY: critical, high, medium, or low
 EXPLANATION: one sentence using agent names (not "Decision A" or "Decision B")`)
@@ -364,7 +407,7 @@ func formatDuration(d time.Duration) string {
 func ParseValidatorResponse(response string) (ValidationResult, error) {
 	lines := strings.Split(strings.TrimSpace(response), "\n")
 
-	var relationship, explanation, category, severity, question string
+	var relationship, explanation, category, severity, question, replaces string
 	// legacyVerdict marks a response that carried only the pre-taxonomy
 	// "VERDICT: yes/no" form. Those responses come from a prompt that never
 	// asked for a disputed question, so the contradiction contract below must
@@ -402,6 +445,9 @@ func ParseValidatorResponse(response string) (ValidationResult, error) {
 			explanation = strings.TrimLeft(strings.TrimSpace(trimmed[len("explanation:"):]), "*_ ")
 		case strings.HasPrefix(lower, "question:"):
 			question = strings.TrimLeft(strings.TrimSpace(trimmed[len("question:"):]), "*_ ")
+		case strings.HasPrefix(lower, "replaces:"):
+			// TrimLeft only — the value is a side token followed by free text.
+			replaces = strings.TrimLeft(strings.TrimSpace(trimmed[len("replaces:"):]), "*_ ")
 		case strings.HasPrefix(lower, "category:"):
 			category = strings.ToLower(strings.Trim(strings.TrimSpace(trimmed[len("category:"):]), "*_ "))
 		case strings.HasPrefix(lower, "severity:"):
@@ -452,8 +498,10 @@ func ParseValidatorResponse(response string) (ValidationResult, error) {
 	//
 	// Downgrade target is complementary, not unrelated: these pairs cleared
 	// embedding similarity, so they are topically related by construction.
+	var downgradedBy string
 	if relationship == "contradiction" && question == "" && !legacyVerdict {
 		relationship = "complementary"
+		downgradedBy = "question"
 		if explanation != "" {
 			explanation += " "
 		}
@@ -463,12 +511,48 @@ func ParseValidatorResponse(response string) (ValidationResult, error) {
 		question = ""
 	}
 
+	replacesSide, replacesEvidence := parseReplacesLine(replaces)
+
+	// Parser-enforced supersession contract, symmetric to the contradiction
+	// contract above. A SUPERSESSION verdict must name which side retired the
+	// other; a model that cannot name one has observed a timeline, not a
+	// replacement. Enforced here rather than in the prompt for the same
+	// measured reason as the question contract.
+	//
+	// Downgrade target is refinement, not complementary: the model asserted one
+	// decision evolves from the other, and that claim survives even when the
+	// replacement cannot be located. refinement is not IsConflict(), so a
+	// downgraded verdict writes nothing at all — no conflict AND no supersedes
+	// suggestion. That is deliberate: recording a link in a guessed direction is
+	// worse than recording nothing, because the link is durable and agent-facing.
+	//
+	// No legacyVerdict exemption is applied, and none is needed: the legacy
+	// "VERDICT: yes/no" form can only ever yield "contradiction" or "unrelated".
+	// "supersession" is reachable only from an explicit RELATIONSHIP line (or
+	// its "supersede" truncation alias, likewise RELATIONSHIP-only), so
+	// legacyVerdict is provably false here. Adding "&& !legacyVerdict" would be
+	// dead code implying a path that cannot exist.
+	if relationship == "supersession" && replacesSide == "" {
+		relationship = "refinement"
+		downgradedBy = "replaces"
+		if explanation != "" {
+			explanation += " "
+		}
+		explanation += "(downgraded: validator named no superseding side)"
+	}
+	if relationship != "supersession" {
+		replacesSide, replacesEvidence = "", ""
+	}
+
 	return ValidationResult{
-		Relationship:   relationship,
-		Explanation:    explanation,
-		Category:       category,
-		Severity:       severity,
-		SharedQuestion: question,
+		Relationship:        relationship,
+		Explanation:         explanation,
+		Category:            category,
+		Severity:            severity,
+		SharedQuestion:      question,
+		SupersedingSide:     replacesSide,
+		ReplacementEvidence: replacesEvidence,
+		DowngradedBy:        downgradedBy,
 	}, nil
 }
 
@@ -479,20 +563,182 @@ var placeholderQuestions = map[string]bool{
 	"not applicable": true, "-": true, "": true,
 }
 
+// normalizeValue strips the markdown, bracket, and quote wrapping models put
+// around a field value. Three interleaved passes, so "**[n/a]**" unwraps: the
+// markers can nest either way round.
+func normalizeValue(v string) string {
+	v = strings.Trim(strings.TrimSpace(v), "*_ ")
+	v = strings.Trim(strings.TrimSpace(v), "[]\"'")
+	return strings.TrimSpace(strings.Trim(v, "*_ "))
+}
+
 // normalizeSharedQuestion trims a QUESTION value and collapses placeholders to
 // the empty string so the contradiction contract treats them as unanswered.
+// A bold-wrapped placeholder ("**n/a**") must still be recognised — the key
+// parses fine, so a survivor would satisfy the contract with no question at all.
 func normalizeSharedQuestion(q string) string {
-	// Models wrap values in markdown and brackets, and a bold-wrapped
-	// placeholder ("**n/a**") must still be recognised as a placeholder — the
-	// key parses fine, so a survivor here would satisfy the contradiction
-	// contract with no question at all.
-	q = strings.Trim(strings.TrimSpace(q), "*_ ")
-	q = strings.Trim(strings.TrimSpace(q), "[]\"'")
-	q = strings.TrimSpace(strings.Trim(q, "*_ "))
+	q = normalizeValue(q)
 	if placeholderQuestions[strings.ToLower(strings.TrimRight(q, ".!"))] {
 		return ""
 	}
 	return q
+}
+
+// replacesSeparators are the characters a model may put between the side token
+// and its quoted replacement language.
+//
+// The markdown and double-quote characters are here because normalizeValue only
+// unwraps a value's outer ends: `**B**: replaced X` normalizes to `B**: replaced X`,
+// leaving the closing `**` interior. Rejecting that discarded the exact shape the
+// prompt asks for, and the discard was silent — the verdict was downgraded to
+// refinement and the judge's finding thrown away.
+//
+// Deliberately absent: `/`, so `A/B` still fails, and `'`, so an apostrophe
+// ("A's decision replaces B's") fails rather than parsing with mangled evidence.
+// Both failures are downgrades, which is the safe direction.
+const replacesSeparators = ":-–—|,.;\t *_\""
+
+// replacesCoordinators open a remainder that continues an enumeration rather
+// than quoting replacement language.
+var replacesCoordinators = map[string]bool{
+	"and": true, "or": true, "&": true, "+": true,
+	"then": true, "vs": true, "versus": true, "plus": true,
+}
+
+// replacesRetractions are standalone words by which a model takes back the
+// finding it just made. "A: no explicit replacement language found" names a side
+// and then withdraws it; storing that as the justification for a durable link is
+// worse than storing nothing.
+var replacesRetractions = map[string]bool{
+	"neither": true, "none": true, "n/a": true, "na": true, "nothing": true,
+	"unclear": true, "ambiguous": true, "unknown": true, "no": true,
+	"not": true, "cannot": true,
+}
+
+// replacesWords splits evidence into comparable words, trimming the punctuation
+// models attach to them so "B," and "**B**" both compare as "b".
+func replacesWords(evidence string) []string {
+	fields := strings.Fields(strings.ToLower(evidence))
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		out = append(out, strings.Trim(f, "*_[]\"'`,.;:!?()—–-"))
+	}
+	return out
+}
+
+// namesOppositeSide reports whether the evidence names the side that was NOT
+// selected as a standalone word. The value's job is to pick one of two
+// decisions, so a remainder that names the other one is an enumeration
+// ("A, B", "A or B"), not a selection.
+func namesOppositeSide(evidence, side string) bool {
+	other := "b"
+	if strings.EqualFold(side, "B") {
+		other = "a"
+	}
+	words := replacesWords(evidence)
+	for i, w := range words {
+		if w != other {
+			continue
+		}
+		// "decision b" is the same claim spelled longer.
+		if i > 0 && words[i-1] == "decision" {
+			return true
+		}
+		return true
+	}
+	return false
+}
+
+// enumeratesOrRetracts reports whether the evidence continues an enumeration or
+// withdraws the finding instead of quoting replacement language.
+func enumeratesOrRetracts(evidence string) bool {
+	words := replacesWords(evidence)
+	if len(words) == 0 {
+		return false
+	}
+	if replacesCoordinators[words[0]] {
+		return true
+	}
+	for _, w := range words {
+		if replacesRetractions[w] {
+			return true
+		}
+	}
+	return false
+}
+
+// parseReplacesLine splits a REPLACES value into the side the validator named
+// and the replacement language it quoted.
+//
+// The accepted side set is closed ("A" or "B"), which is what makes the
+// supersession contract enforceable: unlike QUESTION, "non-placeholder implies
+// valid" is not sound here, because the value's whole job is to select one of
+// two decisions. Anything that is not unambiguously one side — "n/a", "both",
+// "A/B", "ambiguous", a bare separator — fails the contract and returns "".
+// Note the placeholder table above is subsumed: every placeholder spelling
+// starts with 'n', '-', or is empty, none of which can be a side token.
+func parseReplacesLine(raw string) (side, evidence string) {
+	v := normalizeValue(raw)
+	// Models sometimes spell the side as "Decision A"; strip the noise word so
+	// "Decision B — replaced X" still resolves to B.
+	if len(v) >= len("decision ") && strings.EqualFold(v[:len("decision ")], "decision ") {
+		v = strings.TrimSpace(v[len("decision "):])
+	}
+	if v == "" {
+		return "", ""
+	}
+	// Take the WHOLE leading run of letters as the candidate token. Testing only
+	// the first byte read "Ambiguous" as A and "Both" as B — the two answers that
+	// most clearly mean the model could not pick a side — and left the closed-set
+	// property resting on the separator guard alone.
+	i := 0
+	for i < len(v) && isASCIILetter(v[i]) {
+		i++
+	}
+	token := v[:i]
+	switch token {
+	case "A", "B", "a", "b":
+		side = strings.ToUpper(token)
+	default:
+		return "", ""
+	}
+	rest := v[i:]
+	// A real side token stands alone or is followed by a separator.
+	if rest != "" {
+		r, _ := utf8.DecodeRuneInString(rest)
+		if !strings.ContainsRune(replacesSeparators, r) {
+			return "", ""
+		}
+		// A LOWERCASE token separated from what follows by nothing but whitespace
+		// is the English article far more often than a side label: "a bit unclear"
+		// is not a selection of A. "b — replaced X" is a selection of B, so the
+		// test is what the whitespace leads to, not the case on its own.
+		if token == "a" || token == "b" {
+			if after := strings.TrimLeft(rest, " \t"); len(after) != len(rest) {
+				ar, _ := utf8.DecodeRuneInString(after)
+				if after == "" || !strings.ContainsRune(replacesSeparators, ar) || ar == ' ' || ar == '\t' {
+					return "", ""
+				}
+			}
+		}
+	}
+	evidence = normalizeValue(strings.TrimLeft(rest, replacesSeparators))
+	// The value's job is to SELECT one side. A remainder naming the other side,
+	// opening with a coordinator, or retracting the finding means the model
+	// enumerated or gave up rather than choosing — and the prompt's own response
+	// template ("A or B, then the replacement language") parses as a bare side
+	// selection unless this rejects it, so an echoed template would otherwise
+	// write a guessed direction into a durable, agent-facing link.
+	if namesOppositeSide(evidence, side) || enumeratesOrRetracts(evidence) {
+		return "", ""
+	}
+	return side, evidence
+}
+
+// isASCIILetter reports whether b is an unaccented ASCII letter. Side tokens are
+// a closed two-value set, so no wider alphabet is needed.
+func isASCIILetter(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 // NoopValidator marks candidates as unvalidated when no LLM is configured.

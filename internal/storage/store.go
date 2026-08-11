@@ -163,7 +163,11 @@ type Store interface {
 	// supersedes_id link as a 'suggested' row in decision_supersedes.
 	// Idempotent: a row already present for (superseding_id, superseded_id) —
 	// confirmed or earlier-suggested — is left intact.
-	InsertSupersedesSuggestion(ctx context.Context, s SupersedesSuggestionInsert) error
+	//
+	// Returns true when the INVERSE link already exists, in which case nothing is
+	// written: the key is the ordered pair, so the two directions would otherwise
+	// both persist as contradictory agent-facing claims.
+	InsertSupersedesSuggestion(ctx context.Context, s SupersedesSuggestionInsert) (inverseExists bool, err error)
 
 	// ListSupersedesSuggestionsForDecisions returns all 'suggested' rows
 	// where superseding_id is in supersedingIDs. Ordered by superseding_id,

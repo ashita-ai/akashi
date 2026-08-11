@@ -192,14 +192,15 @@ func TestCheck_SurfacesSupersedesSuggestions(t *testing.T) {
 	require.NoError(t, err)
 
 	conf := float32(0.91)
-	require.NoError(t, testDB.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+	_, err = testDB.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
 		OrgID:         uuid.Nil,
 		SupersedingID: later.DecisionID,
 		SupersededID:  earlier.DecisionID,
 		SuggestedBy:   "detector:same_agent_same_ticket",
 		Confidence:    &conf,
 		Reason:        `same agent "` + agentID + `", same ticket "ARD-958"`,
-	}))
+	})
+	require.NoError(t, err)
 
 	resp, err := testSvc.Check(ctx, uuid.Nil, decisions.CheckInput{
 		DecisionType: "implementation",
