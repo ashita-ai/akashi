@@ -69,34 +69,20 @@ jobs:
         continue-on-error: true
         run: govulncheck ./...
 
-      - name: Fuzz (crash detection)
-        run: |
-          # Run the targets SEQUENTIALLY. They used to run four-at-a-time, which
-          # made this step a flaky gate on every PR — including documentation-only
-          # ones — with "context deadline exceeded" rather than a real crash.
-          #
-          # The cause is contention, not any one slow target: -timeout covers
-          # baseline coverage gathering plus the fuzzing budget, and four targets
-          # sharing a runner's cores can push a single binary past it. Two earlier
-          # attempts to fix this by trimming time budgets did not hold, because
-          # they treated the symptom. Serial execution costs roughly 30 extra
-          # seconds and removes the failure mode entirely.
-          #
-          # -timeout is also raised well clear of the fuzz budget so a slow runner
-          # cannot trip it. A genuine crash fails fast and is unaffected by either.
-          set -euo pipefail
-          for target in \
-            "FuzzComputeContentHash ./internal/integrity/" \
-            "FuzzBuildMerkleRoot    ./internal/integrity/" \
-            "FuzzValidateToken      ./internal/auth/" \
-            "FuzzValidateAgentID    ./internal/model/" \
-            "FuzzDecodeJSON         ./internal/server/"; do
-            set -- $target
-            echo "::group::fuzz $1"
-            go test -run='^$' -fuzz="$1" -fuzztime=8s -fuzzminimizetime=0s -parallel=1 -timeout=120s "$2"
-            echo "::endgroup::"
-          done
-
+      # Fuzzing is NOT on the merge path. `go test` without -fuzz runs every
+      # fuzz target's seed corpus as ordinary subtests (testing/fuzz.go, the
+      # "Fuzzing is not enabled" branch), so the step below already gives
+      # deterministic, race-detected crash coverage of every seed and of any
+      # crasher committed under testdata/fuzz/.
+      #
+      # Timed fuzzing (-fuzztime=<duration>) additionally spuriously fails on
+      # go1.26 — golang/go#75804, a race between the coordinator's deadline
+      # context and the child context its error suppression compares against.
+      # The fix (CL 774140) is in master and go1.27 only, and there is no
+      # go1.26 backport. Five months and seven remediation commits produced
+      # zero findings and repeated red builds on doc-only PRs.
+      # Mutation fuzzing now runs in .github/workflows/fuzz-nightly.yml with a
+      # count-based budget, which never constructs the deadline context.
       - name: Unit tests
         run: go test -race -count=1 ./...
 
