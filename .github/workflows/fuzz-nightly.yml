@@ -1,0 +1,75 @@
+name: Fuzz (nightly)
+
+# Not a merge gate. Budgets are count-based (-fuzztime=Nx) rather than
+# duration-based on purpose: internal/fuzz only builds the deadline context
+# when opts.Timeout > 0 (fuzz.go:105), so a count budget structurally cannot
+# hit golang/go#75804, the spurious "context deadline exceeded" that made the
+# per-PR gate flaky on go1.26.
+#
+# When this job fails, the run log names the target and go test has written the
+# failing input to <pkg>/testdata/fuzz/<Target>/. Commit that file: it then
+# runs as a seed in `go test -race ./...` on every PR, forever.
+
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: FuzzComputeContentHash
+            pkg: ./internal/integrity/
+          - target: FuzzBuildMerkleRoot
+            pkg: ./internal/integrity/
+          - target: FuzzValidateToken
+            pkg: ./internal/auth/
+          - target: FuzzValidateAgentID
+            pkg: ./internal/model/
+          - target: FuzzDecodeJSON
+            pkg: ./internal/server/
+    env:
+      # Dedicated GOCACHE so the generated fuzz corpus ($GOCACHE/fuzz/<pkg>)
+      # can be cached with restore-keys and actually accumulate across runs.
+      # setup-go's built-in cache is exact-match only (no restore-keys), which
+      # is why the per-PR gate always fuzzed from a frozen corpus.
+      GOCACHE: ${{ github.workspace }}/.gocache
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Go
+        # cache: false is required, not incidental. With cache: true and a
+        # job-level GOCACHE, setup-go would cache this same directory under its
+        # own exact-match key and fight the corpus cache below.
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Restore fuzz corpus
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ github.workspace }}/.gocache/fuzz
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: Fuzz
+        run: go test -run='^$' -fuzz='^${{ matrix.target }}$' -parallel=2 -fuzztime=5000000x -timeout=40m ${{ matrix.pkg }}
+
+      - name: Upload crashers
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fuzz-crashers-${{ matrix.target }}
+          path: "**/testdata/fuzz/**"
+          if-no-files-found: ignore
