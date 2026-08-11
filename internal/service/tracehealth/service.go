@@ -345,17 +345,41 @@ func confidenceCalibrationGap(cal storage.ConfidenceCalibration, cd storage.Conf
 	mid, hasMid := tiers["mid"]
 
 	// Tier 1: Assessment-based calibration (highest signal).
-	if cal.HasOutcomeData && hasHigh && hasMid && high.AvgOutcome != nil && mid.AvgOutcome != nil && high.AssessedCount >= 3 && mid.AssessedCount >= 3 {
+	if cal.HasOutcomeData && hasHigh && hasMid && high.AvgOutcome != nil && mid.AvgOutcome != nil &&
+		high.AssessedCount >= storage.MinAssessedToFlag && mid.AssessedCount >= storage.MinAssessedToFlag {
 		if *high.AvgOutcome < *mid.AvgOutcome {
 			return fmt.Sprintf(
 				"High-confidence decisions (>= 0.85) have avg outcome score %.2f vs %.2f for mid-range — confidence is not predicting outcomes.",
 				*high.AvgOutcome, *mid.AvgOutcome)
 		}
-		return "" // calibrated by outcome data
+		// A low tier that beats mid means the ordering carries no information,
+		// even though the high-vs-mid comparison above looks healthy. Checking
+		// only the two adjacent tiers cannot see it.
+		if low, hasLow := tiers["low"]; hasLow && low.AvgOutcome != nil &&
+			low.AssessedCount >= storage.MinAssessedToFlag && *low.AvgOutcome > *mid.AvgOutcome {
+			return fmt.Sprintf(
+				"Low-confidence decisions (< 0.5) have avg outcome score %.2f vs %.2f for mid-range — confidence ordering does not track outcomes.",
+				*low.AvgOutcome, *mid.AvgOutcome)
+		}
+		// Ordering looks right, but saying so needs a sample that can carry the
+		// claim. Reporting nothing here is what let the trail read as healthy on
+		// a handful of assessments.
+		if high.AssessedCount < storage.MinAssessedToClear || mid.AssessedCount < storage.MinAssessedToClear {
+			return fmt.Sprintf(
+				"Confidence calibration is unverified: only %d of %d high-confidence and %d of %d mid-range decisions have recorded outcomes (need %d per tier). Assess more decisions before trusting confidence scores.",
+				high.AssessedCount, high.Total, mid.AssessedCount, mid.Total, storage.MinAssessedToClear)
+		}
+		return "" // calibrated by outcome data, on a sample that supports it
 	}
 
 	// Tier 2: Revision-rate proxy (temporal signal).
-	if hasHigh && hasMid && high.Total >= 5 && mid.Total >= 5 {
+	//
+	// Requires at least one tier to show revisions. A corpus where nothing is
+	// ever superseded reports a uniform 0% revision rate, and "0% <= 0%" would
+	// clear calibration on a signal that is structurally incapable of firing —
+	// which is the state this deployment is in (never_superseded == total).
+	if hasHigh && hasMid && high.Total >= 5 && mid.Total >= 5 &&
+		(high.RevisionRate > 0 || mid.RevisionRate > 0) {
 		if high.RevisionRate > mid.RevisionRate && high.RevisionRate > 5 {
 			return fmt.Sprintf(
 				"High-confidence decisions (>= 0.85) are revised within 48h at %.0f%% vs %.0f%% for mid-range — agents may be over-committing.",
