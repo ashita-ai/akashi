@@ -48,12 +48,18 @@ func TestParseValidatorResponse_Complementary(t *testing.T) {
 }
 
 func TestParseValidatorResponse_Supersession(t *testing.T) {
-	result, err := ParseValidatorResponse("RELATIONSHIP: supersession\nCATEGORY: strategic\nSEVERITY: medium\nEXPLANATION: Decision B explicitly replaces Decision A.")
+	// The REPLACES line is required by the supersession contract: a verdict
+	// that names no superseding side is downgraded to refinement. The subject
+	// of this test — that a supersession verdict round-trips as an actionable
+	// conflict — is unchanged; only the fixture had to grow the field.
+	result, err := ParseValidatorResponse("RELATIONSHIP: supersession\nREPLACES: B: explicitly replaces A's API protocol choice\n" +
+		"CATEGORY: strategic\nSEVERITY: medium\nEXPLANATION: Decision B explicitly replaces Decision A.")
 	require.NoError(t, err)
 	assert.Equal(t, "supersession", result.Relationship)
 	assert.True(t, result.IsConflict(), "supersession is an actionable conflict")
 	assert.Equal(t, "strategic", result.Category)
 	assert.Equal(t, "medium", result.Severity)
+	assert.Equal(t, "B", result.SupersedingSide)
 }
 
 func TestParseValidatorResponse_Refinement(t *testing.T) {
@@ -186,8 +192,16 @@ func TestParseValidatorResponse_AllSeverities(t *testing.T) {
 }
 
 func TestParseValidatorResponse_AllRelationships(t *testing.T) {
+	// Each relationship carries whatever its parser contract demands:
+	// contradiction owes a QUESTION, supersession owes a REPLACES side. The
+	// subject here is the five-value round-trip, not the contracts themselves
+	// (question_contract_test.go and replaces_contract_test.go own those).
+	extra := map[string]string{
+		"contradiction": "QUESTION: whether to use Redis or Memcached for the cache\n",
+		"supersession":  "REPLACES: A\n",
+	}
 	for _, rel := range []string{"contradiction", "supersession", "complementary", "refinement", "unrelated"} {
-		result, err := ParseValidatorResponse(fmt.Sprintf("RELATIONSHIP: %s\nQUESTION: whether to use Redis or Memcached for the cache\nCATEGORY: factual\nSEVERITY: low\nEXPLANATION: test", rel))
+		result, err := ParseValidatorResponse(fmt.Sprintf("RELATIONSHIP: %s\n%sCATEGORY: factual\nSEVERITY: low\nEXPLANATION: test", rel, extra[rel]))
 		require.NoError(t, err, "relationship=%s", rel)
 		assert.Equal(t, rel, result.Relationship, "relationship=%s", rel)
 	}
@@ -249,7 +263,10 @@ func TestParseValidatorResponse_TruncatedRelationships(t *testing.T) {
 		expected string
 	}{
 		{"RELATIONSHIP: refine\nEXPLANATION: x", "refinement"},
-		{"RELATIONSHIP: supersede\nEXPLANATION: x", "supersession"},
+		// REPLACES is required for the alias to survive the supersession
+		// contract; the alias-under-contract interaction has its own test in
+		// replaces_contract_test.go.
+		{"RELATIONSHIP: supersede\nREPLACES: A\nEXPLANATION: x", "supersession"},
 		{"RELATIONSHIP: contradict\nQUESTION: whether to use Redis or Memcached for the cache\nEXPLANATION: x", "contradiction"},
 		{"RELATIONSHIP: complement\nEXPLANATION: x", "complementary"},
 	}
@@ -635,6 +652,17 @@ func TestFormatPrompt_DifferentTicketRefsSameDesignQuestionCanStillConflict(t *t
 	// reachable across disjoint tickets.
 	assert.Contains(t, prompt, "CONTRADICTION REQUIRES A NAMED QUESTION")
 	assert.Contains(t, prompt, "OPPOSITE STANCES")
+
+	// The supersession contract is the symmetric sibling: a SUPERSESSION verdict
+	// owes a named side on the REPLACES line, and the parser downgrades one that
+	// cannot name it.
+	assert.Contains(t, prompt, "SUPERSESSION REQUIRES A NAMED SIDE")
+	assert.Contains(t, prompt, "REPLACES:")
+	// The Decision A / Decision B headers are the only anchor the REPLACES side
+	// token has. A header reformat that drops them silently strips the contract
+	// of its meaning, so pin them here.
+	assert.Contains(t, prompt, "Decision A (agent")
+	assert.Contains(t, prompt, "Decision B (agent")
 }
 
 func TestFormatPrompt_SharedTicketRefs(t *testing.T) {
@@ -1136,11 +1164,17 @@ func TestScoreForDecision_LLMSupersession(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	// ScoreForDecision(dB.ID) makes dB the scored decision, so the validator's
+	// side "A" is dB and side "B" is dA (see validatorSideDecision). The judge
+	// therefore names dB — the decision whose outcome carries the replacement
+	// language — as the superseding side.
 	validator := &mockValidator{result: ValidationResult{
-		Relationship: "supersession",
-		Explanation:  "Decision B explicitly replaces Decision A's API protocol choice.",
-		Category:     "strategic",
-		Severity:     "medium",
+		Relationship:        "supersession",
+		Explanation:         "The gRPC decision explicitly replaces the REST v1 API protocol choice.",
+		Category:            "strategic",
+		Severity:            "medium",
+		SupersedingSide:     "A",
+		ReplacementEvidence: "replaced REST v1 with gRPC",
 	}}
 	scorer := NewScorer(testDB, logger, 0.1, validator, 0, 0)
 	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
@@ -1181,12 +1215,192 @@ func TestScoreForDecision_LLMSupersession(t *testing.T) {
 		}
 	}
 	require.NotNil(t, found, "supersession should produce a supersedes suggestion for the dA→dB pair")
+	// Direction now comes from the judge's REPLACES side, not from ValidFrom.
+	// dB is still the superseding side here because the judge named it; that
+	// recorded order agrees is incidental, and no longer what decides it.
 	assert.Equal(t, dB.ID, found.SupersedingID)
-	assert.Equal(t, "detector:llm_supersession", found.SuggestedBy)
+	assert.Equal(t, "detector:llm_supersession", found.SuggestedBy,
+		"judge direction and recorded order agree in this fixture")
 	require.NotNil(t, found.Confidence)
 	assert.InDelta(t, 1.0, *found.Confidence, 0.01,
 		"identical topic embeddings should yield confidence ≈ 1.0")
 	assert.Contains(t, found.Reason, agentID)
+	// The judge's own replacement language must reach the durable row. Before
+	// this change the reason was a template rendered from the clock inference
+	// and the judge's finding was logged and discarded.
+	assert.Contains(t, found.Reason, "replaced REST v1 with gRPC")
+}
+
+// The case the old clock rule got backwards. The judge names the EARLIER
+// decision as the one that retired the later one — a backdated trace, a
+// late-filed decision, or a revert. Direction must follow the judge, and the
+// disagreement must be recorded rather than silently resolved in favour of the
+// clock, because "the judge and the clock disagree" is information about the
+// trace that nothing else in the system captures.
+func TestScoreForDecision_LLMSupersessionUsesJudgeDirectionOverClock(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.Default()
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "llm-backdated-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runOld := createRun(t, agentID, orgID)
+	runNew := createRun(t, agentID, orgID)
+
+	topicEmb := makeEmbedding(960, 1.0)
+	outcomeEmbOld := makeEmbedding(961, 1.0)
+	outcomeEmbNew := makeEmbedding(962, 1.0)
+
+	dOld, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runOld.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "reverted the gRPC migration, REST v1 stays",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbOld,
+		ValidFrom: time.Now().Add(-2 * time.Hour),
+	})
+	require.NoError(t, err)
+
+	dNew, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runNew.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "migrate the API to gRPC",
+		Confidence: 0.9, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbNew,
+		ValidFrom: time.Now(),
+	})
+	require.NoError(t, err)
+
+	// dNew is the scored decision, so side "A" is dNew and side "B" is dOld.
+	// The judge names B — the decision with the EARLIER valid_from — as the one
+	// that retired the other. The clock says the opposite.
+	validator := &mockValidator{result: ValidationResult{
+		Relationship:        "supersession",
+		Explanation:         "the revert retires the gRPC migration decision.",
+		Category:            "strategic",
+		Severity:            "medium",
+		SupersedingSide:     "B",
+		ReplacementEvidence: "reverted the gRPC migration",
+	}}
+	scorer := NewScorer(testDB, logger, 0.1, validator, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
+	scorer.ScoreForDecision(ctx, dNew.ID, orgID)
+
+	// The read path fans out on superseding_id, and the judge flipped which
+	// decision that is — so the query targets dOld, not dNew. Scope to the
+	// specific pair: this suite shares org uuid.Nil and the candidate finder
+	// returns every embedding-neighbour in it.
+	suggestions, err := testDB.ListSupersedesSuggestionsForDecisions(ctx, orgID, []uuid.UUID{dOld.ID})
+	require.NoError(t, err)
+	var found *model.SupersedesSuggestion
+	for i := range suggestions {
+		if suggestions[i].SupersededID == dNew.ID {
+			found = &suggestions[i]
+			break
+		}
+	}
+	require.NotNil(t, found,
+		"the judge named the earlier decision as superseding; the suggestion must follow the judge, not the clock")
+	assert.Equal(t, dOld.ID, found.SupersedingID)
+	assert.Equal(t, dNew.ID, found.SupersededID)
+	assert.Equal(t, "detector:llm_supersession_backdated", found.SuggestedBy,
+		"judge/clock disagreement must be attributable, not folded into the agreeing population")
+	assert.Contains(t, found.Reason, "judge direction disagrees with recorded order")
+	assert.Contains(t, found.Reason, "reverted the gRPC migration")
+
+	// The clock-ordered row must not also exist: a fallback that wrote it would
+	// leave two contradictory durable links for one pair.
+	reverse, err := testDB.ListSupersedesSuggestionsForDecisions(ctx, orgID, []uuid.UUID{dNew.ID})
+	require.NoError(t, err)
+	for i := range reverse {
+		assert.NotEqual(t, dOld.ID, reverse[i].SupersededID,
+			"no clock-ordered suggestion may be written for a pair the judge ordered the other way")
+	}
+}
+
+// A supersession verdict with no superseding side cannot reach the scorer
+// through ParseValidatorResponse — the contract downgrades it first — so this
+// exercises the remaining producer: an in-process validator or test double
+// building the struct directly. Direction IS the content of the record, so the
+// scorer refuses to write one rather than falling back to the clock. Loud with
+// no side effect beats silent with a guessed direction.
+func TestScoreForDecision_LLMSupersessionWithoutSideWritesNothing(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.Default()
+	orgID := uuid.Nil
+
+	suffix := uuid.New().String()[:8]
+	agentID := "llm-noside-" + suffix
+	_, err := testDB.CreateAgent(ctx, model.Agent{
+		AgentID: agentID, OrgID: orgID, Name: agentID, Role: model.RoleAgent,
+	})
+	require.NoError(t, err)
+
+	runA := createRun(t, agentID, orgID)
+	runB := createRun(t, agentID, orgID)
+
+	topicEmb := makeEmbedding(970, 1.0)
+	outcomeEmbA := makeEmbedding(971, 1.0)
+	outcomeEmbB := makeEmbedding(972, 1.0)
+
+	dA, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runA.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "use REST v1 API",
+		Confidence: 0.8, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbA,
+		ValidFrom: time.Now().Add(-2 * time.Hour),
+	})
+	require.NoError(t, err)
+
+	dB, err := testDB.CreateDecision(ctx, model.Decision{
+		RunID: runB.ID, AgentID: agentID, OrgID: orgID,
+		DecisionType: "architecture", Outcome: "replaced REST v1 with gRPC",
+		Confidence: 0.9, Embedding: &topicEmb, OutcomeEmbedding: &outcomeEmbB,
+		ValidFrom: time.Now(),
+	})
+	require.NoError(t, err)
+
+	validator := &mockValidator{result: ValidationResult{
+		Relationship: "supersession",
+		Explanation:  "one of them replaces the other, unclear which.",
+		Category:     "strategic",
+		Severity:     "medium",
+		// SupersedingSide deliberately empty.
+	}}
+	scorer := NewScorer(testDB, logger, 0.1, validator, 0, 0)
+	scorer = scorer.WithCandidateFinder(storage.NewPgCandidateFinder(testDB))
+	scorer.ScoreForDecision(ctx, dB.ID, orgID)
+
+	// Without this the test could pass vacuously: an upstream structural filter
+	// suppressing the pair before the LLM would also write no suggestion, for a
+	// reason that has nothing to do with the missing side.
+	require.Positive(t, validator.callCount, "the pair must reach the LLM interception path")
+
+	for _, pair := range []struct {
+		superseding, superseded uuid.UUID
+	}{
+		{dB.ID, dA.ID},
+		{dA.ID, dB.ID},
+	} {
+		suggestions, err := testDB.ListSupersedesSuggestionsForDecisions(ctx, orgID, []uuid.UUID{pair.superseding})
+		require.NoError(t, err)
+		for i := range suggestions {
+			assert.NotEqualf(t, pair.superseded, suggestions[i].SupersededID,
+				"a supersession with no named side must write no supersedes suggestion (got %s→%s)",
+				pair.superseding, pair.superseded)
+		}
+	}
+
+	// Suppression still applies: the pair is intercepted as a supersession
+	// before the conflict-insertion path, so no conflict is opened either.
+	conflicts, err := testDB.ListConflicts(ctx, orgID, storage.ConflictFilters{}, 1000, 0)
+	require.NoError(t, err)
+	for _, c := range conflicts {
+		aMatch := c.DecisionAID == dA.ID || c.DecisionBID == dA.ID
+		bMatch := c.DecisionAID == dB.ID || c.DecisionBID == dB.ID
+		assert.Falsef(t, aMatch && bMatch,
+			"supersession must NOT be opened as a conflict (got conflict %s)", c.ID)
+	}
 }
 
 func TestScoreForDecision_LLMError(t *testing.T) {

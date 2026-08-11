@@ -12630,8 +12630,10 @@ func TestInsertSupersedesSuggestion_BasicAndIdempotent_PG(t *testing.T) {
 		Confidence:    &conf,
 		Reason:        `same agent "` + agentID + `", same ticket "ARD-958"`,
 	}
-	require.NoError(t, testDB.InsertSupersedesSuggestion(ctx, ins))
-	require.NoError(t, testDB.InsertSupersedesSuggestion(ctx, ins), "duplicate insert is a no-op")
+	_, err = testDB.InsertSupersedesSuggestion(ctx, ins)
+	require.NoError(t, err)
+	_, err = testDB.InsertSupersedesSuggestion(ctx, ins)
+	require.NoError(t, err)
 
 	got, err := testDB.ListSupersedesSuggestionsForDecisions(ctx, uuid.Nil, []uuid.UUID{b.ID})
 	require.NoError(t, err)
@@ -12659,7 +12661,7 @@ func TestInsertSupersedesSuggestion_RejectedBySuggestionFieldsCheck_PG(t *testin
 	require.NoError(t, err)
 
 	// Empty SuggestedBy is caught at the application layer before SQL.
-	err = testDB.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+	_, err = testDB.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
 		OrgID:         uuid.Nil,
 		SupersedingID: b.ID,
 		SupersededID:  a.ID,
@@ -12710,10 +12712,11 @@ func TestDeleteOldSupersedesSuggestions_PG(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, testDB.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+	_, err = testDB.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
 		OrgID: uuid.Nil, SupersedingID: b.ID, SupersededID: a.ID,
 		SuggestedBy: "detector:t",
-	}))
+	})
+	require.NoError(t, err)
 
 	n, err := testDB.DeleteOldSupersedesSuggestions(ctx, time.Now().Add(-time.Hour))
 	require.NoError(t, err)
@@ -12749,14 +12752,15 @@ func TestTrigger_RetiresMatchingSuggestionOnConfirm_PG(t *testing.T) {
 	// Detector inserts a suggestion: latent supersedes earlier (same agent
 	// forgot the link).
 	conf := float32(0.91)
-	require.NoError(t, testDB.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+	_, err = testDB.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
 		OrgID:         uuid.Nil,
 		SupersedingID: latent.ID,
 		SupersededID:  earlier.ID,
 		SuggestedBy:   "detector:same_agent_same_ticket",
 		Confidence:    &conf,
 		Reason:        "test fixture",
-	}))
+	})
+	require.NoError(t, err)
 
 	got, err := testDB.ListSupersedesSuggestionsForDecisions(ctx, uuid.Nil, []uuid.UUID{latent.ID})
 	require.NoError(t, err)
@@ -12815,14 +12819,16 @@ func TestTrigger_RetireSuggestionScopedByAgent_PG(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, testDB.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+	_, err = testDB.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
 		OrgID: uuid.Nil, SupersedingID: latentA.ID, SupersededID: earlier.ID,
 		SuggestedBy: "detector:same_agent_same_ticket",
-	}))
-	require.NoError(t, testDB.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+	})
+	require.NoError(t, err)
+	_, err = testDB.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
 		OrgID: uuid.Nil, SupersedingID: latentB.ID, SupersededID: earlier.ID,
 		SuggestedBy: "detector:same_agent_same_ticket",
-	}))
+	})
+	require.NoError(t, err)
 
 	// Agent A confirms — trigger should retire only A's suggestion.
 	supersedesEarlier := earlier.ID

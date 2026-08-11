@@ -515,8 +515,8 @@ func (m *mockStore) ListSupersedesSuggestionsForDecisions(_ context.Context, _ u
 	return nil, nil
 }
 
-func (m *mockStore) InsertSupersedesSuggestion(_ context.Context, _ storage.SupersedesSuggestionInsert) error {
-	return nil
+func (m *mockStore) InsertSupersedesSuggestion(_ context.Context, _ storage.SupersedesSuggestionInsert) (bool, error) {
+	return false, nil
 }
 
 func (m *mockStore) DeleteOldSupersedesSuggestions(_ context.Context, _ time.Time) (int64, error) {

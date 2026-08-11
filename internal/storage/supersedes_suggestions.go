@@ -18,28 +18,52 @@ import (
 // for (superseding_id, superseded_id) — whether confirmed or earlier-suggested
 // — the insert is a no-op, leaving any confirmed link intact.
 //
+// It also refuses to write when the INVERSE row exists. The primary key is the
+// ordered pair (superseding_id, superseded_id), so (X,Y) and (Y,X) do not
+// collide, and direction is no longer a function of stored data: it is whatever
+// the judge answered on that pass, sampled at the provider's default
+// temperature. The same pair is judged in both orientations routinely — the
+// per-run pairCache does not span backfill runs — so an inconsistent answer
+// across two passes would otherwise persist two contradictory, agent-facing
+// links with no reconciliation path. Reports inverseExists so the caller can
+// surface the disagreement rather than silently resolve it.
+//
+// Residual race: the existence check and the insert share one statement and so
+// one snapshot, but under READ COMMITTED a concurrent transaction can still
+// commit the inverse between them. Closing that fully needs a unique index on
+// the unordered pair (LEAST/GREATEST) for suggested rows; this narrows the
+// window to concurrent inserts of the same pair rather than any two runs.
+//
 // SuggestedBy must be non-empty (enforced by migration 105's CHECK constraint).
 // SupersedingID and SupersededID must be distinct (enforced by table CHECK).
-func (db *DB) InsertSupersedesSuggestion(ctx context.Context, s SupersedesSuggestionInsert) error {
+func (db *DB) InsertSupersedesSuggestion(ctx context.Context, s SupersedesSuggestionInsert) (inverseExists bool, err error) {
 	if s.SuggestedBy == "" {
-		return errors.New("storage: suggested_by is required for supersedes suggestion")
+		return false, errors.New("storage: suggested_by is required for supersedes suggestion")
 	}
 	if s.SupersedingID == s.SupersededID {
-		return errors.New("storage: superseding_id and superseded_id must differ")
+		return false, errors.New("storage: superseding_id and superseded_id must differ")
 	}
-	_, err := db.pool.Exec(ctx,
-		`INSERT INTO decision_supersedes
-		    (superseding_id, superseded_id, org_id, relationship, is_primary,
-		     suggested_by, suggested_confidence, suggested_reason)
-		 VALUES ($1, $2, $3, 'suggested', FALSE, $4, $5, $6)
-		 ON CONFLICT (superseding_id, superseded_id) DO NOTHING`,
+	err = db.pool.QueryRow(ctx,
+		`WITH inverse AS (
+		     SELECT 1 FROM decision_supersedes
+		      WHERE superseding_id = $2 AND superseded_id = $1 AND org_id = $3
+		 ), ins AS (
+		     INSERT INTO decision_supersedes
+		         (superseding_id, superseded_id, org_id, relationship, is_primary,
+		          suggested_by, suggested_confidence, suggested_reason)
+		     SELECT $1, $2, $3, 'suggested', FALSE, $4, $5, $6
+		      WHERE NOT EXISTS (SELECT 1 FROM inverse)
+		     ON CONFLICT (superseding_id, superseded_id) DO NOTHING
+		     RETURNING 1
+		 )
+		 SELECT EXISTS (SELECT 1 FROM inverse)`,
 		s.SupersedingID, s.SupersededID, s.OrgID,
 		s.SuggestedBy, s.Confidence, nullableString(s.Reason),
-	)
+	).Scan(&inverseExists)
 	if err != nil {
-		return fmt.Errorf("storage: insert supersedes suggestion: %w", err)
+		return false, fmt.Errorf("storage: insert supersedes suggestion: %w", err)
 	}
-	return nil
+	return inverseExists, nil
 }
 
 // ListSupersedesSuggestionsForDecisions returns all detector-suggested
