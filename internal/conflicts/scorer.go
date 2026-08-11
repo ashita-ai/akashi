@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"math"
 	"sort"
@@ -132,6 +133,10 @@ type Scorer struct {
 	// agreement at similarity >= 0.85, calibrated against 30 real mxbai-embed-large
 	// decisions — see claimDivFloor and defaultOutcomeSimFloor constants).
 	outcomeSimFloor float64
+
+	// suppressionSampleRate is the fraction of structurally-suppressed pairs
+	// persisted to suppressed_pair_samples for blind labelling. 0 disables.
+	suppressionSampleRate float64
 }
 
 // WithCandidateFinder wires a Qdrant-backed CandidateFinder for conflict candidate
@@ -210,6 +215,16 @@ func (s *Scorer) WithEarlyExitFloor(floor float64) *Scorer {
 func (s *Scorer) WithOutcomeSimFloor(floor float64) *Scorer {
 	if floor >= 0 {
 		s.outcomeSimFloor = floor
+	}
+	return s
+}
+
+// WithSuppressionSampleRate sets the fraction of structurally-suppressed pairs
+// recorded for false-negative measurement. 0 disables sampling (default).
+// Values outside [0,1] are ignored.
+func (s *Scorer) WithSuppressionSampleRate(rate float64) *Scorer {
+	if rate >= 0 && rate <= 1 {
+		s.suppressionSampleRate = rate
 	}
 	return s
 }
@@ -318,6 +333,95 @@ func (p *pairCache) checkAndMark(a, b uuid.UUID) bool {
 	}
 	p.seen[key] = true
 	return false
+}
+
+// Structural suppression rules, in the order they are applied in
+// scoreForDecision. Every one of these MUST have a sampleSuppression call at
+// its drop site; see migration 111. Score-based skips (early-exit floor,
+// significance threshold, cross-encoder threshold) are deliberately NOT in
+// this family — they screen the long tail of unrelated pairs and would swamp
+// the labelling budget with 'unrelated'.
+const (
+	ruleConfidenceFloor        = "confidence_floor"
+	ruleWorkflow               = "complementary_workflow"
+	ruleCoordinatedChange      = "coordinated_change"
+	ruleCrossBranchMechanical  = "cross_branch_mechanical"
+	ruleSelfCorrection         = "same_branch_self_correction"
+	ruleSupersedesRefinement   = "same_agent_ticket_refinement"
+	ruleCrossAgentPrecedent    = "cross_agent_precedent_refinement"
+	ruleTemporalReassessment   = "temporal_reassessment"
+	ruleOperationalProgression = "operational_progression"
+	ruleDisjointWorkItem       = "disjoint_work_item"
+	ruleDisjointResource       = "disjoint_resource"
+	ruleOutcomeSimFloor        = "outcome_sim_floor"
+)
+
+// structuralSuppressionRules is the authoritative membership list. The parity
+// test asserts the number of sampleSuppression call sites equals its length.
+var structuralSuppressionRules = []string{
+	ruleConfidenceFloor, ruleWorkflow, ruleCoordinatedChange, ruleCrossBranchMechanical,
+	ruleSelfCorrection, ruleSupersedesRefinement, ruleCrossAgentPrecedent,
+	ruleTemporalReassessment, ruleOperationalProgression, ruleDisjointWorkItem,
+	ruleDisjointResource, ruleOutcomeSimFloor,
+}
+
+// orderPair returns the two IDs in canonical (ascending) order, matching the
+// suppressed_pair_samples_ordered CHECK. Postgres compares uuid values as
+// 16 raw bytes, so bytes.Compare here and "<" there agree.
+func orderPair(a, b uuid.UUID) (uuid.UUID, uuid.UUID) {
+	if bytes.Compare(a[:], b[:]) > 0 {
+		return b, a
+	}
+	return a, b
+}
+
+// suppressionSampled decides, deterministically in the pair, whether a
+// suppressed pair joins the measurement corpus. Deterministic rather than
+// random because a rescore re-suppresses the same pairs: with per-call
+// randomness the sampled set converges on every suppressed pair over
+// successive rescores and "a 5% sample" stops being true, both statistically
+// and as a cost bound.
+func suppressionSampled(a, b uuid.UUID, rate float64) bool {
+	if rate <= 0 {
+		return false
+	}
+	if rate >= 1 {
+		return true
+	}
+	lo, hi := orderPair(a, b)
+	h := fnv.New64a()
+	_, _ = h.Write(lo[:])
+	_, _ = h.Write(hi[:])
+	return float64(h.Sum64()%10000)/10000.0 < rate
+}
+
+// sampleSuppression appends a pair to the pending sample batch when it is in
+// the deterministic sample. Cheap and allocation-free when sampling is off.
+func (s *Scorer) sampleSuppression(out *[]storage.SuppressedPairSample, rule string, a, b uuid.UUID) {
+	if !suppressionSampled(a, b, s.suppressionSampleRate) {
+		return
+	}
+	lo, hi := orderPair(a, b)
+	*out = append(*out, storage.SuppressedPairSample{DecisionAID: lo, DecisionBID: hi, Rule: rule})
+}
+
+// flushSuppressionSamples persists the batch. A write failure is logged and
+// counted, not returned: this is a measurement side-channel, and failing a
+// rescore because an observability insert failed would trade a real capability
+// for a diagnostic one. It is never silent — the Warn line and the
+// suppression_sample_write_failed counter both fire, so a broken corpus is
+// visible at the default log level rather than inferred from a short table.
+func (s *Scorer) flushSuppressionSamples(ctx context.Context, orgID uuid.UUID, samples []storage.SuppressedPairSample) {
+	if len(samples) == 0 {
+		return
+	}
+	if err := s.db.InsertSuppressedPairSamples(ctx, orgID, samples); err != nil {
+		s.metrics.suppressionSampleWriteFailed.Add(ctx, 1)
+		s.logger.Warn("conflict scorer: suppressed pair sample write failed",
+			"org_id", orgID, "count", len(samples), "error", err)
+		return
+	}
+	s.metrics.suppressionSampled.Add(ctx, int64(len(samples)))
 }
 
 // ScoreForDecision finds similar decisions, computes significance using both
@@ -461,6 +565,11 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		decay      float64
 	}
 
+	// Structural suppressions sampled for false-negative measurement. Flushed
+	// once after the sorted iteration loop below; nil and allocation-free when
+	// sampling is disabled (the default).
+	var suppressionSamples []storage.SuppressedPairSample
+
 	scored := make([]candidateScore, 0, len(candidates))
 	for _, cand := range candidates {
 		if cand.OutcomeEmbedding == nil {
@@ -474,6 +583,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 		// have very low confidence. Applied before cosine similarity to save CPU.
 		if float64(d.Confidence)*float64(cand.Confidence) < confidenceFloorProduct {
 			s.metrics.confidenceFloorFiltered.Add(ctx, 1)
+			s.sampleSuppression(&suppressionSamples, ruleConfidenceFloor, decisionID, cand.ID)
 			continue
 		}
 
@@ -618,6 +728,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				"decision_a", decisionID, "decision_b", sc.cand.ID,
 				"type_a", d.DecisionType, "type_b", sc.cand.DecisionType,
 				"agent_a", d.AgentID, "agent_b", sc.cand.AgentID)
+			s.sampleSuppression(&suppressionSamples, ruleWorkflow, decisionID, sc.cand.ID)
 			continue
 		}
 
@@ -632,6 +743,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			s.logger.Debug("conflict scorer: coordinated change filter suppressed pair",
 				"decision_a", decisionID, "decision_b", sc.cand.ID,
 				"agent_a", d.AgentID, "agent_b", sc.cand.AgentID)
+			s.sampleSuppression(&suppressionSamples, ruleCoordinatedChange, decisionID, sc.cand.ID)
 			continue
 		}
 
@@ -645,6 +757,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				"decision_a", decisionID, "decision_b", sc.cand.ID,
 				"branch_a", nestedContextString(d.AgentContext, "git_branch"),
 				"branch_b", nestedContextString(sc.cand.AgentContext, "git_branch"))
+			s.sampleSuppression(&suppressionSamples, ruleCrossBranchMechanical, decisionID, sc.cand.ID)
 			continue
 		}
 
@@ -658,6 +771,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				"decision_a", decisionID, "decision_b", sc.cand.ID,
 				"agent_id", d.AgentID,
 				"branch", nestedContextString(d.AgentContext, "git_branch"))
+			s.sampleSuppression(&suppressionSamples, ruleSelfCorrection, decisionID, sc.cand.ID)
 			continue
 		}
 
@@ -677,6 +791,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				"agent_id", d.AgentID,
 				"ticket_ref", ticket)
 			s.recordSupersedesSuggestion(ctx, d, sc.cand, sc.topicSim, ticket)
+			s.sampleSuppression(&suppressionSamples, ruleSupersedesRefinement, decisionID, sc.cand.ID)
 			continue
 		}
 
@@ -695,6 +810,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				"decision_a", decisionID, "decision_b", sc.cand.ID,
 				"agent_a", d.AgentID, "agent_b", sc.cand.AgentID,
 				"ticket_ref", extractTicketRef(d))
+			s.sampleSuppression(&suppressionSamples, ruleCrossAgentPrecedent, decisionID, sc.cand.ID)
 			continue
 		}
 
@@ -710,6 +826,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				"type_a", d.DecisionType, "type_b", sc.cand.DecisionType,
 				"project", derefString(d.Project),
 				"delta", d.ValidFrom.Sub(sc.cand.ValidFrom).Abs())
+			s.sampleSuppression(&suppressionSamples, ruleTemporalReassessment, decisionID, sc.cand.ID)
 			continue
 		}
 
@@ -729,6 +846,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				"type_a", d.DecisionType, "type_b", sc.cand.DecisionType,
 				"project", derefString(d.Project),
 				"delta", d.ValidFrom.Sub(sc.cand.ValidFrom).Abs())
+			s.sampleSuppression(&suppressionSamples, ruleOperationalProgression, decisionID, sc.cand.ID)
 			continue
 		}
 
@@ -750,6 +868,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				"type_a", d.DecisionType, "type_b", sc.cand.DecisionType,
 				"project", derefString(d.Project),
 				"refs_a", extractWorkItemRefs(d), "refs_b", extractWorkItemRefs(sc.cand))
+			s.sampleSuppression(&suppressionSamples, ruleDisjointWorkItem, decisionID, sc.cand.ID)
 			continue
 		}
 
@@ -771,6 +890,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 				"type_a", d.DecisionType, "type_b", sc.cand.DecisionType,
 				"project", derefString(d.Project),
 				"refs_a", extractResourceRefs(d), "refs_b", extractResourceRefs(sc.cand))
+			s.sampleSuppression(&suppressionSamples, ruleDisjointResource, decisionID, sc.cand.ID)
 			continue
 		}
 
@@ -794,6 +914,7 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			s.logger.Debug("conflict scorer: outcome similarity floor suppressed pair",
 				"decision_a", decisionID, "decision_b", sc.cand.ID,
 				"outcome_sim", sc.outcomeSim, "floor", s.outcomeSimFloor)
+			s.sampleSuppression(&suppressionSamples, ruleOutcomeSimFloor, decisionID, sc.cand.ID)
 			continue
 		}
 
@@ -1194,6 +1315,11 @@ func (s *Scorer) scoreForDecision(ctx context.Context, decisionID, orgID uuid.UU
 			s.logger.Debug("conflict scorer: notify failed", "error", err)
 		}
 	}
+
+	// Reached on every path out of the loop above: the loop contains no return
+	// and its only early exit is the `break` in the early-exit branch.
+	s.flushSuppressionSamples(ctx, orgID, suppressionSamples)
+
 	s.metrics.candidatesExamined.Record(ctx, float64(examined))
 	if inserted > 0 {
 		s.logger.Info("conflict scorer: scored conflicts", "decision_id", decisionID, "inserted", inserted)

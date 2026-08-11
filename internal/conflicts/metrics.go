@@ -43,6 +43,9 @@ type Metrics struct {
 	supersedesInverseSuppressed       metric.Int64Counter
 	contractDowngraded                metric.Int64Counter
 
+	suppressionSampled           metric.Int64Counter
+	suppressionSampleWriteFailed metric.Int64Counter
+
 	scoringDuration    metric.Float64Histogram
 	llmCallDuration    metric.Float64Histogram
 	significanceDist   metric.Float64Histogram
@@ -292,6 +295,22 @@ func (s *Scorer) registerMetrics() {
 	if err != nil {
 		s.logger.Warn("conflicts: failed to create akashi.conflicts.contract_downgraded metric", "error", err)
 		s.metrics.contractDowngraded, _ = meter.Int64Counter("akashi.conflicts.contract_downgraded.fallback")
+	}
+
+	s.metrics.suppressionSampled, err = meter.Int64Counter("akashi.conflicts.suppression_sampled",
+		metric.WithDescription("Structurally-suppressed pairs persisted for blind labelling. The denominator for false-negative measurement; compare against the per-rule *_filtered counters to confirm the sample rate is what was configured."),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.suppression_sampled metric", "error", err)
+		s.metrics.suppressionSampled, _ = meter.Int64Counter("akashi.conflicts.suppression_sampled.fallback")
+	}
+
+	s.metrics.suppressionSampleWriteFailed, err = meter.Int64Counter("akashi.conflicts.suppression_sample_write_failed",
+		metric.WithDescription("Failed sample batch writes. Non-zero means the false-negative corpus is incomplete and any recall figure computed from it is biased; without this the loss is invisible, exactly as documented for contract_downgraded above."),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.suppression_sample_write_failed metric", "error", err)
+		s.metrics.suppressionSampleWriteFailed, _ = meter.Int64Counter("akashi.conflicts.suppression_sample_write_failed.fallback")
 	}
 
 	// --- Histograms ---
