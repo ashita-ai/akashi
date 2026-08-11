@@ -300,7 +300,7 @@ func (l *LiteDB) GetConfidenceCalibration(ctx context.Context, orgID uuid.UUID, 
 			break
 		}
 	}
-	cal.Calibrated = storage.ComputeCalibrated(tierMap, cal.HasOutcomeData)
+	cal.Calibrated, cal.CalibrationBasis = storage.ComputeCalibrated(tierMap, cal.HasOutcomeData)
 
 	// Per-agent calibration.
 	agentQuery := `SELECT` + //nolint:gosec // G202: timeFilter contains only parameterized time-range clauses
