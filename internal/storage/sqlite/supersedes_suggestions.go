@@ -18,12 +18,28 @@ import (
 // 'suggested' row in decision_supersedes. Mirrors the Postgres behavior:
 // idempotent, no-op when a row already exists for (superseding_id,
 // superseded_id) — confirmed links are never overwritten by suggestions.
-func (l *LiteDB) InsertSupersedesSuggestion(ctx context.Context, s storage.SupersedesSuggestionInsert) error {
+// It also refuses to write when the INVERSE row exists, mirroring the Postgres
+// guard: the key is the ordered pair, so (X,Y) and (Y,X) do not collide, and
+// direction now comes from a sampled judge answer rather than from stored data.
+// Guarding one backend and not the other is how the unguarded one silently
+// becomes the divergence path.
+func (l *LiteDB) InsertSupersedesSuggestion(ctx context.Context, s storage.SupersedesSuggestionInsert) (bool, error) {
 	if s.SuggestedBy == "" {
-		return errors.New("sqlite: suggested_by is required for supersedes suggestion")
+		return false, errors.New("sqlite: suggested_by is required for supersedes suggestion")
 	}
 	if s.SupersedingID == s.SupersededID {
-		return errors.New("sqlite: superseding_id and superseded_id must differ")
+		return false, errors.New("sqlite: superseding_id and superseded_id must differ")
+	}
+	var inverseExists bool
+	if err := l.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM decision_supersedes
+		                 WHERE superseding_id = ? AND superseded_id = ? AND org_id = ?)`,
+		uuidStr(s.SupersededID), uuidStr(s.SupersedingID), uuidStr(s.OrgID),
+	).Scan(&inverseExists); err != nil {
+		return false, fmt.Errorf("sqlite: check inverse supersedes suggestion: %w", err)
+	}
+	if inverseExists {
+		return true, nil
 	}
 	var conf any
 	if s.Confidence != nil {
@@ -47,9 +63,9 @@ func (l *LiteDB) InsertSupersedesSuggestion(ctx context.Context, s storage.Super
 		s.SuggestedBy, conf, reason, timeStr(time.Now().UTC()),
 	)
 	if err != nil {
-		return fmt.Errorf("sqlite: insert supersedes suggestion: %w", err)
+		return false, fmt.Errorf("sqlite: insert supersedes suggestion: %w", err)
 	}
-	return nil
+	return false, nil
 }
 
 // ListSupersedesSuggestionsForDecisions returns suggested supersedes links

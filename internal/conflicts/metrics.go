@@ -38,6 +38,11 @@ type Metrics struct {
 	supersessionSuppressed         metric.Int64Counter
 	bindingConflicts               metric.Int64Counter
 
+	supersessionSideMissing           metric.Int64Counter
+	supersessionDirectionDisagreement metric.Int64Counter
+	supersedesInverseSuppressed       metric.Int64Counter
+	contractDowngraded                metric.Int64Counter
+
 	scoringDuration    metric.Float64Histogram
 	llmCallDuration    metric.Float64Histogram
 	significanceDist   metric.Float64Histogram
@@ -255,6 +260,38 @@ func (s *Scorer) registerMetrics() {
 		if err != nil {
 			s.metrics.bindingConflicts, _ = meter.Int64Counter("akashi.conflicts.binding_conflicts.fallback")
 		}
+	}
+
+	s.metrics.supersessionSideMissing, err = meter.Int64Counter("akashi.conflicts.supersession_side_missing",
+		metric.WithDescription("Supersession verdicts that reached the scorer with no superseding side named. The parser downgrades such verdicts, so a non-zero count means a ValidationResult bypassed ParseValidatorResponse; no supersedes suggestion is written."),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.supersession_side_missing metric", "error", err)
+		s.metrics.supersessionSideMissing, _ = meter.Int64Counter("akashi.conflicts.supersession_side_missing.fallback")
+	}
+
+	s.metrics.supersessionDirectionDisagreement, err = meter.Int64Counter("akashi.conflicts.supersession_direction_disagreement",
+		metric.WithDescription("Supersedes suggestions where the validator named a superseding side whose valid_from is earlier than the side it retires (backdated trace, late-filed decision, or revert). The judge's direction is recorded; this counter is the production measurement of a rate the offline gold set cannot measure."),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.supersession_direction_disagreement metric", "error", err)
+		s.metrics.supersessionDirectionDisagreement, _ = meter.Int64Counter("akashi.conflicts.supersession_direction_disagreement.fallback")
+	}
+
+	s.metrics.supersedesInverseSuppressed, err = meter.Int64Counter("akashi.conflicts.supersedes_inverse_suppressed",
+		metric.WithDescription("Supersedes suggestions dropped because the inverse link already existed — two passes over the same pair disagreed about which decision retired which. Direction comes from a sampled judge answer, so this is the production measurement of judge orientation instability; a rising count means suggestion direction should not be trusted."),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.supersedes_inverse_suppressed metric", "error", err)
+		s.metrics.supersedesInverseSuppressed, _ = meter.Int64Counter("akashi.conflicts.supersedes_inverse_suppressed.fallback")
+	}
+
+	s.metrics.contractDowngraded, err = meter.Int64Counter("akashi.conflicts.contract_downgraded",
+		metric.WithDescription("Verdicts downgraded by a parser-enforced contract: a contradiction that named no question, or a supersession that named no side. Attributed by contract. Without this the downgrade is invisible at the default info log level, so a prompt or parser regression that silently discards valid verdicts looks identical to a quiet corpus."),
+	)
+	if err != nil {
+		s.logger.Warn("conflicts: failed to create akashi.conflicts.contract_downgraded metric", "error", err)
+		s.metrics.contractDowngraded, _ = meter.Int64Counter("akashi.conflicts.contract_downgraded.fallback")
 	}
 
 	// --- Histograms ---

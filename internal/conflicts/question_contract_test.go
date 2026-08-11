@@ -67,8 +67,15 @@ func TestParseValidatorResponse_PlaceholderQuestionsDoNotSatisfyContract(t *test
 // dispute was actually identified.
 func TestParseValidatorResponse_QuestionClearedForNonContradiction(t *testing.T) {
 	for _, rel := range []string{"supersession", "complementary", "refinement", "unrelated"} {
+		// A supersession verdict owes a REPLACES side; without it the parser
+		// downgrades to refinement and this test would be asserting the wrong
+		// relationship rather than the question-clearing property it is about.
+		var extra string
+		if rel == "supersession" {
+			extra = "REPLACES: A\n"
+		}
 		result, err := ParseValidatorResponse(fmt.Sprintf(
-			"RELATIONSHIP: %s\nQUESTION: whether to use Redis\nEXPLANATION: x", rel))
+			"RELATIONSHIP: %s\nQUESTION: whether to use Redis\n%sEXPLANATION: x", rel, extra))
 		require.NoError(t, err, "relationship=%s", rel)
 		assert.Equal(t, rel, result.Relationship)
 		assert.Empty(t, result.SharedQuestion, "relationship=%s must not carry a disputed question", rel)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/ashita-ai/akashi/internal/model"
 	"github.com/ashita-ai/akashi/internal/storage"
+	"github.com/ashita-ai/akashi/internal/storage/sqlite"
 )
 
 func TestInsertSupersedesSuggestion_BasicAndIdempotent(t *testing.T) {
@@ -31,7 +32,7 @@ func TestInsertSupersedesSuggestion_BasicAndIdempotent(t *testing.T) {
 		Confidence:    &conf,
 		Reason:        `same agent "claude-code", same ticket "ARD-958"`,
 	}
-	require.NoError(t, db.InsertSupersedesSuggestion(ctx, first))
+	mustInsertSuggestion(t, db, ctx, first)
 
 	got, err := db.ListSupersedesSuggestionsForDecisions(ctx, orgID, []uuid.UUID{b.ID})
 	require.NoError(t, err)
@@ -47,7 +48,7 @@ func TestInsertSupersedesSuggestion_BasicAndIdempotent(t *testing.T) {
 	// retry is intentionally discarded — the first detector observation wins.
 	second := first
 	second.Reason = "noop on retry"
-	require.NoError(t, db.InsertSupersedesSuggestion(ctx, second))
+	mustInsertSuggestion(t, db, ctx, second)
 
 	got, err = db.ListSupersedesSuggestionsForDecisions(ctx, orgID, []uuid.UUID{b.ID})
 	require.NoError(t, err)
@@ -65,7 +66,7 @@ func TestInsertSupersedesSuggestion_RejectsEmptySource(t *testing.T) {
 	a := createTestDecision(t, db, orgID, "agent", "first")
 	b := createTestDecision(t, db, orgID, "agent", "second")
 
-	err := db.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+	_, err := db.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
 		OrgID:         orgID,
 		SupersedingID: b.ID,
 		SupersededID:  a.ID,
@@ -82,7 +83,7 @@ func TestInsertSupersedesSuggestion_RejectsSelfReference(t *testing.T) {
 
 	a := createTestDecision(t, db, orgID, "agent", "only")
 
-	err := db.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+	_, err := db.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
 		OrgID:         orgID,
 		SupersedingID: a.ID,
 		SupersededID:  a.ID,
@@ -101,14 +102,14 @@ func TestListSupersedesSuggestionsForDecisions_FiltersByOrgAndIDs(t *testing.T) 
 	b := createTestDecision(t, db, orgID, "agent", "b")
 	c := createTestDecision(t, db, orgID, "agent", "c")
 
-	require.NoError(t, db.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+	mustInsertSuggestion(t, db, ctx, storage.SupersedesSuggestionInsert{
 		OrgID: orgID, SupersedingID: b.ID, SupersededID: a.ID,
 		SuggestedBy: "detector:t",
-	}))
-	require.NoError(t, db.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+	})
+	mustInsertSuggestion(t, db, ctx, storage.SupersedesSuggestionInsert{
 		OrgID: orgID, SupersedingID: c.ID, SupersededID: a.ID,
 		SuggestedBy: "detector:t",
-	}))
+	})
 
 	// Empty input → nil, no error.
 	out, err := db.ListSupersedesSuggestionsForDecisions(ctx, orgID, nil)
@@ -168,10 +169,10 @@ func TestDeleteOldSupersedesSuggestions(t *testing.T) {
 	a := createTestDecision(t, db, orgID, "agent", "a")
 	b := createTestDecision(t, db, orgID, "agent", "b")
 
-	require.NoError(t, db.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+	mustInsertSuggestion(t, db, ctx, storage.SupersedesSuggestionInsert{
 		OrgID: orgID, SupersedingID: b.ID, SupersededID: a.ID,
 		SuggestedBy: "detector:t",
-	}))
+	})
 
 	// Cutoff in the past — no rows pruned.
 	n, err := db.DeleteOldSupersedesSuggestions(ctx, time.Now().Add(-time.Hour))
@@ -231,12 +232,12 @@ func TestTrigger_RetiresMatchingSuggestionOnConfirm(t *testing.T) {
 	earlier := createTestDecision(t, db, orgID, "claude-code", "ARD-958 layer-2")
 	latent := createTestDecision(t, db, orgID, "claude-code", "ARD-958 layer-3")
 
-	require.NoError(t, db.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+	mustInsertSuggestion(t, db, ctx, storage.SupersedesSuggestionInsert{
 		OrgID:         orgID,
 		SupersedingID: latent.ID,
 		SupersededID:  earlier.ID,
 		SuggestedBy:   "detector:same_agent_same_ticket",
-	}))
+	})
 
 	got, err := db.ListSupersedesSuggestionsForDecisions(ctx, orgID, []uuid.UUID{latent.ID})
 	require.NoError(t, err)
@@ -273,14 +274,14 @@ func TestTrigger_RetireSuggestionScopedByAgent(t *testing.T) {
 	latentA := createTestDecision(t, db, orgID, "agent-A", "agent A latent")
 	latentB := createTestDecision(t, db, orgID, "agent-B", "agent B latent")
 
-	require.NoError(t, db.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+	mustInsertSuggestion(t, db, ctx, storage.SupersedesSuggestionInsert{
 		OrgID: orgID, SupersedingID: latentA.ID, SupersededID: earlier.ID,
 		SuggestedBy: "detector:same_agent_same_ticket",
-	}))
-	require.NoError(t, db.InsertSupersedesSuggestion(ctx, storage.SupersedesSuggestionInsert{
+	})
+	mustInsertSuggestion(t, db, ctx, storage.SupersedesSuggestionInsert{
 		OrgID: orgID, SupersedingID: latentB.ID, SupersededID: earlier.ID,
 		SuggestedBy: "detector:same_agent_same_ticket",
-	}))
+	})
 
 	supersedesEarlier := earlier.ID
 	_, _, err := db.CreateTraceTx(ctx, storage.CreateTraceParams{
@@ -302,4 +303,51 @@ func TestTrigger_RetireSuggestionScopedByAgent(t *testing.T) {
 	gotB, err := db.ListSupersedesSuggestionsForDecisions(ctx, orgID, []uuid.UUID{latentB.ID})
 	require.NoError(t, err)
 	assert.Len(t, gotB, 1, "agent B's suggestion must survive — A's confirm is not B's")
+}
+
+// mustInsertSuggestion inserts and asserts the write succeeded, for the call
+// sites that are not exercising the inverse-link guard. Tests that care about
+// the guard call InsertSupersedesSuggestion directly and assert on the returned
+// inverseExists flag.
+func mustInsertSuggestion(t *testing.T, db *sqlite.LiteDB, ctx context.Context, s storage.SupersedesSuggestionInsert) bool {
+	t.Helper()
+	inverseExists, err := db.InsertSupersedesSuggestion(ctx, s)
+	require.NoError(t, err)
+	return inverseExists
+}
+
+// Direction is no longer a function of stored data — it is whatever the judge
+// answered on that pass, sampled at the provider's default temperature. The key
+// is the ordered pair, so without this guard two passes that disagree about
+// which decision retired which would both persist, leaving contradictory
+// agent-facing claims with no reconciliation path.
+func TestInsertSupersedesSuggestion_RefusesInverseLink(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.EnsureDefaultOrg(ctx))
+	orgID := uuid.Nil
+
+	a := createTestDecision(t, db, orgID, "agent", "first")
+	b := createTestDecision(t, db, orgID, "agent", "second")
+
+	inverseExists := mustInsertSuggestion(t, db, ctx, storage.SupersedesSuggestionInsert{
+		OrgID: orgID, SupersedingID: b.ID, SupersededID: a.ID,
+		SuggestedBy: "detector:llm_supersession",
+	})
+	assert.False(t, inverseExists, "first write has no inverse to contend with")
+
+	// Same pair, opposite direction — the judge flipped its answer.
+	inverseExists = mustInsertSuggestion(t, db, ctx, storage.SupersedesSuggestionInsert{
+		OrgID: orgID, SupersedingID: a.ID, SupersededID: b.ID,
+		SuggestedBy: "detector:llm_supersession",
+	})
+	assert.True(t, inverseExists, "the opposing direction must be reported, not written")
+
+	fromB, err := db.ListSupersedesSuggestionsForDecisions(ctx, orgID, []uuid.UUID{b.ID})
+	require.NoError(t, err)
+	assert.Len(t, fromB, 1, "the original link stands")
+
+	fromA, err := db.ListSupersedesSuggestionsForDecisions(ctx, orgID, []uuid.UUID{a.ID})
+	require.NoError(t, err)
+	assert.Empty(t, fromA, "the contradicting inverse link must not have been written")
 }
