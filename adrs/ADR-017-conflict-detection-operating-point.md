@@ -65,10 +65,30 @@ information is worse still: it is invariant to label inversion, so a detector th
 negation of the truth scores identically. Any metric that averages over classes, or that is symmetric
 under inversion, will rank the wrong system first on this corpus.
 
-**Third, the scorer's own features carry no label signal.** `significance` has AUC 0.500 against the gold
-labels — pure noise. `topic_similarity` reaches 0.587. There is no threshold on these features that
-separates contradictions from the rest, so the scorer cannot be the discriminating component no matter
-how it is tuned.
+**Third, the scorer's own features carry little label signal.** Measured over all 2,772 gold-labelled
+pairs (93 positives, 2,679 negatives), rank AUC with midrank tie handling, Hanley–McNeil 95% intervals:
+
+| feature | AUC | 95% CI |
+|---|---|---|
+| `temporal_decay` | 0.728 | 0.67–0.79 |
+| `topic_similarity` | 0.616 | 0.55–0.68 |
+| `significance` | 0.601 | 0.54–0.66 |
+| `confidence_weight` | 0.584 | 0.52–0.65 |
+| `outcome_divergence` | 0.434 | 0.38–0.49 |
+
+Two results worth naming. `outcome_divergence` — the feature built to measure how far two outcomes
+diverge — is **inverted**, and its interval excludes 0.5, so the effect is not noise. And the strongest
+single predictor is `temporal_decay`, which was designed as a staleness weight, not a signal. The
+`significance` and `topic_similarity` intervals overlap heavily, so they cannot be ranked against each
+other on this corpus. None of them supports a threshold that separates contradictions from the rest, so
+the scorer cannot be the discriminating component no matter how it is tuned.
+
+**Correction (2026-08-12).** This section previously reported `significance` AUC 0.500 ("pure noise") and
+`topic_similarity` 0.587. Neither figure reproduces. Re-derivation over four populations — all 2,772,
+the 2,733 not rescored since labelling, `blind_llm_stratified_v1` (212), and `blind_llm_fullcorpus_v1`
+(2,560) — puts `significance` between 0.543 and 0.611 and never at 0.500. The qualitative conclusion is
+unchanged; the "pure noise" characterisation was wrong. Feature columns are mutable and 39 labelled rows
+were rescored after the 2026-08-10 labelling run, so any published AUC must name its snapshot date.
 
 It is worth being clear about why systems that appear to have solved conflict detection have not solved
 ours. Kubernetes server-side apply can raise a conflict cheaply and exactly because identity is a JSON
@@ -201,8 +221,9 @@ test precision 22.95 / recall 19.44.
 Each of these was implemented and measured on this corpus. Do not re-propose them without new evidence
 that invalidates the measurement.
 
-**Threshold tuning on scorer features.** `significance` AUC 0.500, `topic_similarity` AUC 0.587. There is
-nothing to threshold.
+**Threshold tuning on scorer features.** `significance` AUC 0.601, `topic_similarity` AUC 0.616, both on
+intervals roughly six points wide; `outcome_divergence` is inverted at 0.434. There is nothing worth
+thresholding.
 
 **Deterministic gates.** Every gate we tried sits on the diagonal — it suppresses true positives at
 roughly the rate it suppresses false positives, which is what "no signal" looks like. Entity-disjoint

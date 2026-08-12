@@ -53,8 +53,13 @@ bypass exists because bi-encoders cannot represent stance opposition: "X is corr
 that matter most. Any pair above the floor goes to the judge regardless of significance.
 
 Do not try to recover precision by raising the significance threshold. Against the gold
-labels, significance has AUC **0.500** — pure noise; topic similarity alone is 0.587.
-Neither has a threshold that separates contradictions from non-contradictions.
+labels (2,772 pairs, snapshot 2026-08-12), significance has AUC **0.601** (95% CI
+0.54–0.66) and topic similarity **0.616** (0.55–0.68). Their intervals overlap, so neither
+is measurably better than the other, and neither has a threshold that separates
+contradictions from non-contradictions. `outcome_divergence` is inverted at 0.434
+(0.38–0.49); the strongest feature in the scorer is `temporal_decay` at 0.728 (0.67–0.79),
+which was never intended as a signal. See ADR-017 §2 for the full table and the correction
+note — figures of 0.500/0.587 published before 2026-08-12 do not reproduce.
 
 ### 1.3 Structural suppressors (pre-LLM)
 
