@@ -179,7 +179,7 @@ func TestIsDisjointResource(t *testing.T) {
 			name: "one side has no extractable resource (customer name only) → NOT suppressed",
 			d: model.Decision{
 				ID: idA, Project: &mono, DecisionType: "deployment",
-				Outcome: "recovered the Burbuxa sink by rolling kafka2pg to stable, left pg2kafka unchanged",
+				Outcome: "recovered the Globex sink by rolling kafka2pg to stable, left pg2kafka unchanged",
 			},
 			cand: model.Decision{
 				ID: idB, Project: &mono, DecisionType: "investigation",

@@ -16,7 +16,7 @@ import (
 // isTemporalReassessment. The table covers each guardrail in isolation plus
 // anchor cases drawn from the 2026-06-18 open-conflict queue:
 //
-//   - SalesPatriot (suppressed): codex "rolled kafka2pg back to its pre-rollout
+//   - Acme (suppressed): codex "rolled kafka2pg back to its pre-rollout
 //     digest" (operations, 06-18) vs claude "verified the connector ONLINE"
 //     (deployment, 06-10) — eight days apart, same project, no reversal vocab.
 //     A remediation step in an incident timeline, not a disagreement.
@@ -43,18 +43,18 @@ func TestIsOperationalStateProgression(t *testing.T) {
 		expected bool
 	}{
 		{
-			// SalesPatriot anchor: operations vs deployment, 8 days apart.
+			// Acme anchor: operations vs deployment, 8 days apart.
 			name: "both operational, same project, far apart, no reversal vocab → suppressed",
 			d: model.Decision{
 				ID: idA, AgentID: "codex-mcp-client", Project: &mono,
 				DecisionType: "operations",
-				Outcome:      "restored SalesPatriot online by rolling kafka2pg back to its pre-rollout digest and scaling it to 1",
+				Outcome:      "restored Acme online by rolling kafka2pg back to its pre-rollout digest and scaling it to 1",
 				ValidFrom:    now,
 			},
 			cand: model.Decision{
 				ID: idB, AgentID: "claude-code", Project: &mono,
 				DecisionType: "deployment",
-				Outcome:      "verified SalesPatriot connector_c3fed173 is online and branchable on the deployed pgstream image",
+				Outcome:      "verified Acme connector_redacted01 is online and branchable on the deployed pgstream image",
 				ValidFrom:    now.Add(-beyond),
 			},
 			expected: true,
@@ -208,15 +208,15 @@ func TestIsOperationalStateProgression(t *testing.T) {
 			expected: false,
 		},
 		{
-			// SalesPatriot FN anchor: e81b6b22 (pause, DATALOSS) vs 3cf6a4c3
-			// (scale up, "resume loses no data") on connector_c3fed173, 10.9d
+			// Acme FN anchor: e81b6b22 (pause, DATALOSS) vs 3cf6a4c3
+			// (scale up, "resume loses no data") on connector_redacted01, 10.9d
 			// apart, no supersession vocab. The data-safety guard must keep this
 			// same-writer pair out of the suppress path — it is the disagreement
 			// a human must see, not a sequential step.
 			name: "data-loss keyword in later outcome → NOT suppressed (data-safety guard)",
 			d: model.Decision{
 				ID: idA, Project: &mono, DecisionType: "operations",
-				Outcome:   "paused SalesPatriot kafka2pg after rollout validation found active target-side DATALOSS quarantine growth",
+				Outcome:   "paused Acme kafka2pg after rollout validation found active target-side DATALOSS quarantine growth",
 				ValidFrom: now,
 			},
 			cand: model.Decision{

@@ -2053,8 +2053,8 @@ func isTemporalReassessment(d, cand model.Decision) bool {
 // the earlier action no longer describes what the later one is changing.
 //
 // The signal is only weak, and deliberately not relied on alone: a single
-// resource can stay in one incident longer than the window (the live SalesPatriot
-// connector_c3fed173 incident ran 2026-05-26 → 06-18), in which case directives
+// resource can stay in one incident longer than the window (the live Acme
+// connector_redacted01 incident ran 2026-05-26 → 06-18), in which case directives
 // spanning >7 days are still about the same live system, not unrelated steps.
 // Time-apart cannot distinguish that case from genuine progression, so
 // isOperationalStateProgression layers other guards on top: the data-loss guard
@@ -2072,7 +2072,7 @@ const operationalProgressionWindow = 7 * 24 * time.Hour
 //
 // Motivation: the dominant live false-positive class (2026-06 open-conflict
 // audit) was cross-ticket operational steps on one hot subsystem
-// (pgstream / Debezium / SalesPatriot CDC) clustered by shared vocabulary —
+// (pgstream / Debezium / Acme CDC) clustered by shared vocabulary —
 // e.g. "rolled kafka2pg back to its pre-rollout digest" eight days after
 // "verified the connector ONLINE". Embeddings place them close (topic_sim
 // 0.70-0.85) and the LLM validator returns CONTRADICTION, but a rollback or
@@ -2102,7 +2102,7 @@ const operationalProgressionWindow = 7 * 24 * time.Hour
 //     quarantine event — a data-safety event is categorically high-stakes and
 //     must reach the validator regardless of the time gap (checked on both
 //     sides, both text fields). This is the guard that keeps same-resource
-//     incident disagreements like the live SalesPatriot DATALOSS pause from
+//     incident disagreements like the live Acme DATALOSS pause from
 //     being silently dropped pre-LLM. See decisionContainsDataLossKeyword.
 //   - not precedent-linked and not the same session — explicit links and
 //     intra-session pairs are left to the LLM, mirroring isTemporalReassessment
@@ -2298,8 +2298,8 @@ func isDisjointWorkItem(d, cand model.Decision) bool {
 // No data-safety guard here (removed 2026-07-23). The guard is load-bearing and
 // deliberately chosen in the TEMPORAL sibling isOperationalStateProgression
 // (decision efc42730): two decisions on the SAME writer a week apart can be one
-// incident disagreeing with itself — verified against the SalesPatriot
-// connector_c3fed173 DATALOSS pause. That rationale cannot hold here, because a
+// incident disagreeing with itself — verified against the Acme
+// connector_redacted01 DATALOSS pause. That rationale cannot hold here, because a
 // connector_/org_ id is the PHYSICAL identity of a data plane: connector_57a42328
 // and connector_f924df29 are different incidents by construction, so a DATALOSS
 // finding on one can neither be the same incident as, nor contradict, a finding
@@ -2504,7 +2504,7 @@ func containsSupersessionKeyword(outcome string) bool {
 // event is categorically high-stakes, and silently dropping a same-system pair
 // that reports one — before the LLM validator or a human ever sees it — would
 // trade the system's core guarantee (a complete paper trail of disagreements)
-// for noise reduction. Surfaced by the 2026-06 SalesPatriot connector_c3fed173
+// for noise reduction. Surfaced by the 2026-06 Acme connector_redacted01
 // incident, where "paused … active target-side DATALOSS quarantine growth" sat
 // >7 days from "scaled … resume loses no data" on the same writer.
 //
