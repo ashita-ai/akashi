@@ -77,6 +77,12 @@ you can see which one is doing the work:
 | Disjoint resource | `disjointResourceFiltered` | Different `connector_`/`org_` resources |
 | Outcome-similarity agreement | `outcomeSimFiltered` | `AKASHI_CONFLICT_OUTCOME_SIM_FLOOR` (default `0.85`) |
 
+Measured on the live candidate stream (2026-08-11), these rules together suppress **~56%**
+of candidate pairs before any judge sees them — 990 of 1,779 in the trailing window. Their
+false-negative rate is what migration 111's deterministic 5% sample
+(`suppressed_pair_samples`) exists to measure; until that sample accumulates labels, the
+56% is a throughput fact, not a safety one.
+
 These are cheap and they cut LLM cost, but **do not expect them to buy precision.** Every
 deterministic gate measured against the gold labels sits on the diagonal — it removes
 false positives and true positives in the same proportion:
