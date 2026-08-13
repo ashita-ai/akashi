@@ -110,6 +110,7 @@ claude mcp add --transport http --scope user akashi http://localhost:8080/mcp \
 | [Self-Hosting](docs/self-hosting.md) | Postgres-only through full stack with Qdrant and Ollama |
 | [Configuration](docs/configuration.md) | Every environment variable |
 | [Conflict Detection](docs/conflicts.md) | Scoring, LLM validation, resolution |
+| [Detector Internals](docs/conflict-detection.md) | Operating point, judge models, evaluation, rejected alternatives |
 | [Quality Scoring](docs/quality-scoring.md) | Completeness scores and anti-gaming |
 | [GDPR Erasure](docs/erasure.md) | Tombstone erasure for right-to-be-forgotten |
 | [IDE Hooks](docs/hooks.md) | Claude Code and Cursor integration |

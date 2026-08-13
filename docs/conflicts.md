@@ -4,6 +4,11 @@ Akashi automatically detects when AI agents make contradictory decisions. This d
 covers the full conflict pipeline: how conflicts are found, how they're scored, and how
 to resolve them.
 
+> This page describes the mechanism. For the detector's **measured** behaviour — its operating
+> point, base rate, judge-model comparison, how to evaluate a change, and the alternatives
+> already tried and rejected — see [conflict-detection.md](conflict-detection.md) and ADR-017.
+> Read those before changing detection logic.
+
 ## Overview
 
 When a decision is recorded via `POST /v1/trace`, Akashi asynchronously:

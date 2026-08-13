@@ -185,17 +185,15 @@ WHERE attempts >= 10;
 
 Raw Qdrant similarity scores are adjusted before returning results:
 
-```
-outcome_weight =
-    0.40 * assessment_score    (explicit feedback; 0 if no assessments)
-    0.25 * log1p(citations)/log(6)  (logarithmic, saturates at 5 citations)
-    0.15 * stability_score     (0 if superseded within 48h)
-    0.10 * agreement_score     (min(AgreementCount/3, 1))
-    0.10 * conflict_win_rate   (0 if no conflict history)
+Five outcome signals are combined into a weight that scales raw similarity, alongside a recency
+decay. Assessment feedback dominates at 40%, then citations, stability, agreement, and conflict
+win rate.
 
-relevance = similarity × (0.5 + 0.5×outcome_weight) × recency_decay
-recency_decay = 1 / (1 + age_days/90)
-```
+**The authoritative formula is the doc comment on `ReScore` in `internal/search/search.go`** —
+read it there rather than trusting a copy. The version this page used to carry had already
+drifted: it showed citations as a fixed logarithmic cap, when they are percentile-normalized
+within the org whenever percentile data is available, falling back to the log form only when it
+is not.
 
 - **Assessment (primary, 40%)**: Explicit correctness feedback from `akashi_assess`. Contributes 0 when no assessments exist.
 - **Citations (25%)**: Logarithmic — first citation worth more than later ones.

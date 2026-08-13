@@ -255,3 +255,17 @@ For deeper context on the codebase, see:
 - [diagrams.md](docs/diagrams.md) — Mermaid diagrams of all major data flows
 - [configuration.md](docs/configuration.md) — Full environment variable reference
 - [faq.md](docs/faq.md) — Concepts, auth, integrity; includes the five-level RBAC role table
+- [conflict-detection.md](docs/conflict-detection.md) — The detector's measured operating point,
+  how to evaluate a change, and the alternatives already tried and rejected
+
+### Changing conflict detection
+
+`internal/conflicts/` is held to a higher evidence bar than the rest of the repo, because it has
+been retuned on intuition before and the retunings did not survive measurement. Read
+[conflict-detection.md](docs/conflict-detection.md) and [ADR-017](adrs/) first.
+
+Two things to know before you start. The gold-label corpus behind the published precision numbers
+is **not distributed** — `--mode=gold` will find an empty table on your machine, and §3 of that
+document explains what evidence to bring instead. And the structural suppressors are individually
+unit-testable with no database and no API key, which makes them the best entry point:
+`go test ./internal/conflicts/...`.
