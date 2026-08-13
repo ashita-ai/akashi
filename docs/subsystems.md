@@ -170,7 +170,7 @@ Tenant isolation: every query includes `org_id` as a required filter.
 |----------|-------|
 | Max attempts | 10 |
 | Backoff | Exponential: `2^attempts` seconds, capped at 5 minutes |
-| Dead-letter cleanup | Entries with `attempts >= 10` and older than 7 days are deleted hourly |
+| Dead-letter cleanup | Entries with `attempts >= 10` and older than 7 days are archived to `search_outbox_dead_letters`, then deleted from `search_outbox` (checked hourly) |
 | Lock duration | 60 seconds per batch (prevents double-processing) |
 
 Dead-lettered entries remain in PostgreSQL and are queryable via SQL. They are not indexed in Qdrant until manually reset:
@@ -179,6 +179,19 @@ Dead-lettered entries remain in PostgreSQL and are queryable via SQL. They are n
 UPDATE search_outbox
 SET attempts = 0, locked_until = NULL, last_error = NULL
 WHERE attempts >= 10;
+```
+
+**This only works within the 7-day window.** After the hourly cleanup archives an entry, it
+is no longer in `search_outbox` and the `UPDATE` above matches nothing — it succeeds and does
+nothing, which is the worst way to find out. To replay an archived entry, re-queue it:
+
+```sql
+INSERT INTO search_outbox (decision_id, org_id, operation)
+SELECT decision_id, org_id, operation
+FROM search_outbox_dead_letters
+WHERE outbox_id = <id>
+ON CONFLICT (decision_id, operation) DO UPDATE
+   SET attempts = 0, locked_until = NULL, last_error = NULL, created_at = now();
 ```
 
 ### Re-Scoring
@@ -196,10 +209,11 @@ within the org whenever percentile data is available, falling back to the log fo
 is not.
 
 - **Assessment (primary, 40%)**: Explicit correctness feedback from `akashi_assess`. Contributes 0 when no assessments exist.
-- **Citations (25%)**: Logarithmic — first citation worth more than later ones.
+- **Citations (25%)**: Percentile-normalized within the org when percentile data is available; falls back to a logarithmic cap (saturating at 5 citations) when it is not.
 - **Stability (15%)**: Decisions superseded within 48h of creation score 0.
-- **Agreement / conflict win rate**: Minor boosts based on consensus signals.
-- **Recency decay**: Decisions lose relevance with a 90-day half-life.
+- **Agreement (10%) / conflict win rate (10%)**: Minor boosts based on consensus signals. Win rate contributes 0 when there is no conflict history.
+- **Recency decay**: `1 / (1 + age_days/90)` — halved at 90 days, but hyperbolic rather than exponential, so it keeps flattening rather than halving again (one third at 180 days, not one quarter).
+- **Completeness**: not a factor. It was removed deliberately — a thoroughly filled-out trace is not a correct one.
 - **Over-fetch**: Qdrant returns `limit * 3` results; re-scoring and truncation happen in Go.
 
 ### Graceful Shutdown

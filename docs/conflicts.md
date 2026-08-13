@@ -90,19 +90,44 @@ significance threshold are classified into relationship types:
 | Relationship | Meaning | Creates conflict? |
 |-------------|---------|-------------------|
 | `contradiction` | Incompatible positions on the same question | Yes |
-| `supersession` | One decision explicitly replaces the other | Yes |
+| `supersession` | One decision explicitly replaces the other | No — routed to `supersedes_suggestions` |
 | `complementary` | Different findings about different aspects | No |
 | `refinement` | One deepens the other without contradicting | No |
 | `unrelated` | Different topics despite surface similarity | No |
 
+`IsConflict()` still returns true for both `contradiction` and `supersession`, so evals are
+unaffected — but the scorer intercepts a `supersession` verdict before that check and records
+it as a row in `supersedes_suggestions` rather than opening a conflict. Supersession is a
+lifecycle event, not a standing disagreement. The suggestion surfaces in `akashi_check`; you
+confirm it by re-tracing the newer decision with `supersedes_id` set, or ignore it and let
+retention prune it.
+
 The validator also assigns:
 
 - **Category**: `factual`, `assessment`, `strategic`, or `temporal`
-- **Severity**: `critical`, `high`, `medium`, or `low`
+- **Severity**: `high`, `medium`, or `low`. `critical` is never assigned by scoring — it is
+  reserved for precedent escalation, when a conflict reopens the winning side of a
+  previously resolved one.
+
+A `contradiction` verdict that does not name the disputed question is downgraded to
+`complementary` by the response parser: the judge is not trusted to claim a disagreement it
+cannot state.
 
 ### False positive reduction
 
-The LLM prompt includes contextual signals that reduce false positives:
+Two layers, in order.
+
+**Structural suppressors run before any LLM call.** Twelve deterministic filters drop
+candidate pairs that cannot be genuine disagreements — different PR or ticket references,
+different `connector_`/`org_` resources, one agent revising itself on one branch, the same
+mechanical operation on two branches, operational state that legitimately mutates,
+iterative refinement within a ticket, and so on. Each increments its own OTel counter.
+Together they suppress roughly 56% of candidates. The full table, the counter names, and the
+measured caveat — these buy throughput and LLM cost, **not** precision, because they remove
+true and false positives in the same proportion — are in
+[conflict-detection.md §1.3](conflict-detection.md).
+
+**The LLM prompt then includes contextual signals:**
 
 - **Cross-project**: Decisions from different projects are flagged as almost certainly unrelated.
 - **Same session**: Sequential decisions in the same session (e.g., review → fix) are
@@ -119,18 +144,20 @@ pre-computed significance in descending order. Candidates below the floor are sk
 unless they qualify for "direct-to-scorer" bypass (high topic similarity pairs that only
 an LLM can properly classify).
 
-### Cross-encoder reranking
+### NLI / cross-encoder reranking
 
-An optional cross-encoder can pre-filter candidates before LLM validation, reducing LLM
-calls by 50–80%. Configure with:
+An optional sidecar can pre-filter candidates before LLM validation, reducing LLM calls by
+50–80%. Two implementations share one `POST /score` contract
+(`{"text_a":…,"text_b":…}` → `{"score":0.0-1.0}`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AKASHI_CONFLICT_CROSS_ENCODER_URL` | _(empty)_ | Cross-encoder service endpoint. Empty = disabled. |
-| `AKASHI_CONFLICT_CROSS_ENCODER_THRESHOLD` | `0.50` | Minimum cross-encoder score to proceed to LLM. |
+| `AKASHI_CONFLICT_NLI_URL` | _(empty)_ | DeBERTa-v3-base NLI sidecar (`services/nli/`). Stance-aware, so more accurate here than a generic cross-encoder. **Takes precedence when both are set.** |
+| `AKASHI_CONFLICT_CROSS_ENCODER_URL` | _(empty)_ | Generic cross-encoder service endpoint. Empty = disabled. |
+| `AKASHI_CONFLICT_CROSS_ENCODER_THRESHOLD` | `0.50` | Minimum contradiction score to proceed to LLM. Applies to both. |
 
-Pairs below the threshold are skipped without an LLM call. If the cross-encoder service
-is unreachable, the system falls open to LLM validation (no silent suppression).
+Pairs below the threshold are skipped without an LLM call. If the service is unreachable,
+the system falls open to LLM validation (no silent suppression).
 
 ### Revision chain exclusion
 
@@ -292,8 +319,14 @@ When OpenTelemetry is configured, the conflict pipeline emits these metrics:
 | `AKASHI_CONFLICT_EARLY_EXIT_FLOOR` | `0.25` | Min pre-LLM significance for early exit (0 disables) |
 | `AKASHI_CONFLICT_DECAY_LAMBDA` | `0.01` | Temporal decay rate (0 disables; ~70 days to half significance) |
 | `AKASHI_CONFLICT_BACKFILL_WORKERS` | `4` | Parallel workers for batch scoring |
-| `AKASHI_CONFLICT_LLM_MODEL` | _(empty)_ | LLM model for validation (e.g., `qwen3.5:9b`) |
+| `AKASHI_CONFLICT_LLM_MODEL` | _(empty)_ | Ollama model for validation (e.g., `qwen3.5:9b`) |
+| `AKASHI_CONFLICT_OPENAI_MODEL` | `gpt-4o-mini` | OpenAI judge when `_LLM_MODEL` is unset. **The highest-leverage knob in the pipeline** — see [conflict-detection.md §2](conflict-detection.md) |
+| `AKASHI_CONFLICT_LLM_TIMEOUT` | `15s` | Per-call deadline. Raise to 120s+ for reasoning models; a timeout is fail-safe and presents as a silent drop in detections |
 | `AKASHI_CONFLICT_LLM_THREADS` | `floor(NumCPU/3)` | CPU threads for Ollama |
+| `AKASHI_CONFLICT_OUTCOME_SIM_FLOOR` | `0.85` | Outcome-embedding similarity above which a pair is suppressed as complementary |
+| `AKASHI_CONFLICT_NLI_URL` | _(empty)_ | NLI sidecar for stance-aware pre-filtering |
+| `AKASHI_CONFLICT_SUPPRESSION_SAMPLE_RATE` | `0.0` | Fraction of structurally-suppressed pairs recorded for blind labelling |
+| `AKASHI_CONFLICT_BACKFILL_WINDOW` | `0` (unbounded) | How far back a rescore reaches. Bound this before a forced rescore |
 | `AKASHI_CONFLICT_CLAIM_TOPIC_SIM_FLOOR` | `0.60` | Min cosine similarity for claim pairs |
 | `AKASHI_CONFLICT_CLAIM_DIV_FLOOR` | `0.15` | Min outcome divergence for claim pairs |
 | `AKASHI_CONFLICT_DECISION_TOPIC_SIM_FLOOR` | `0.70` | Min decision similarity to activate claim scoring |
@@ -328,4 +361,8 @@ POST /v1/admin/conflicts/eval
 ```
 
 Runs the built-in evaluation dataset and returns precision, recall, F1, and accuracy.
-Use this after changing the LLM model or tuning thresholds to verify detection quality.
+
+This is a smoke test, not a quality measurement: the dataset was written alongside the prompt
+it tests and scored 1.000/1.000 while the shipped detector was at 3.4% precision in
+production. For a number worth acting on, use `cmd/eval-conflicts --mode=gold` against a
+blind-labelled corpus — see [conflict-detection.md §3](conflict-detection.md).

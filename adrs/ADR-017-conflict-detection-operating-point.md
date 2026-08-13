@@ -9,8 +9,8 @@ Accepted, 2026-08-10
 Akashi's conflict detection pipeline (`internal/conflicts/`) takes pairs of decisions that are
 semantically close and asks whether they contradict each other. Candidates come from Qdrant top-20
 retrieval during the trace pipeline (`internal/service/decisions/service.go` calls `ScoreForDecision`);
-`scorer.go:527` sends any pair with topic similarity ≥ 0.70 straight to the scorer, and an LLM validator
-then classifies it.
+the `directToScorer` bypass in `scorer.go` sends any pair with topic similarity ≥ 0.70 straight to the
+scorer, and an LLM validator then classifies it.
 
 We had no measurement of whether this worked. To get one, we blind-labelled the production corpus.
 
