@@ -64,7 +64,22 @@ func run() int {
 	save := flag.Bool("save", false, "save results to ./eval-results/{timestamp}.json")
 	costRatio := flag.Float64("cost-ratio", 0, "cost of a missed contradiction relative to one false alarm. When set with --prevalence, reports normalized expected cost, which answers whether the detector beats not running it at all.")
 	prevalence := flag.Float64("prevalence", 0, "share of evaluated pairs that are genuine contradictions IN PRODUCTION (not in the eval sample). Required with --cost-ratio; precision moves with prevalence and a stratified sample's own rate would flatter the detector.")
+	labelSens := flag.Float64("label-sensitivity", 0, "gold mode: measured sensitivity of the blind labeller that produced the gold corpus. Set together with --label-specificity to report a misclassification-corrected base rate. There is no default and there must not be one: these constants are a property of your labelling protocol, and a borrowed one silently rewrites every precision figure downstream.")
+	labelSpec := flag.Float64("label-specificity", 0, "gold mode: measured specificity of the same labeller. Its complement is the labeller's false-flag rate, which must be below the observed base rate or the correction has no admissible answer at all.")
+	labelN := flag.Int("label-calibration-n", 0, "gold mode: size of the re-rate sample --label-sensitivity and --label-specificity were measured on. Printed with the correction so a reader can tell a measurement from an assumption.")
 	flag.Parse()
+
+	cal, err := parseLabelCalibration(*labelSens, *labelSpec, *labelN)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if cal != nil && *mode != "gold" {
+		// Accepting and ignoring them would let an operator believe a run was
+		// noise-corrected when it was not.
+		fmt.Fprintf(os.Stderr, "--label-sensitivity/--label-specificity apply to --mode=gold only (got --mode=%s)\n", *mode)
+		return 1
+	}
 
 	// Benchmark mode runs locally — no server or auth required.
 	if *mode == "benchmark" {
@@ -73,7 +88,7 @@ func run() int {
 
 	// Gold mode talks to the database directly, not the server.
 	if *mode == "gold" {
-		return runGoldMode(*goldLimit, *goldConc, *goldModel, *goldTimeout, *goldClasses, *save)
+		return runGoldMode(*goldLimit, *goldConc, *goldModel, *goldTimeout, *goldClasses, *save, cal)
 	}
 
 	baseURL := os.Getenv("AKASHI_URL")
@@ -432,7 +447,7 @@ func callScorerEval(baseURL, token string) (scorerEvalResult, error) {
 // cannot falsify that prompt.
 //
 // Requires AKASHI_DB_DSN (direct database access) and OPENAI_API_KEY.
-func runGoldMode(limit, conc int, model string, timeout time.Duration, classes string, save bool) int {
+func runGoldMode(limit, conc int, model string, timeout time.Duration, classes string, save bool, cal *conflicts.LabelCalibration) int {
 	dsn := os.Getenv("AKASHI_DB_DSN")
 	if dsn == "" {
 		fmt.Fprintln(os.Stderr, "gold mode requires AKASHI_DB_DSN")
@@ -471,7 +486,7 @@ func runGoldMode(limit, conc int, model string, timeout time.Duration, classes s
 	// constant. The projection below divides by these, so a frozen snapshot
 	// would silently misreport precision the moment the label set changed —
 	// and the label set is expected to grow.
-	corpusSizes := map[string]float64{}
+	corpusSizes := map[string]int{}
 	for _, p := range pairs {
 		corpusSizes[p.ExpectedRelationship]++
 	}
@@ -527,7 +542,7 @@ func runGoldMode(limit, conc int, model string, timeout time.Duration, classes s
 	}
 	wg.Wait()
 
-	reportGold(results, model, corpusSizes)
+	reportGold(results, model, corpusSizes, cal)
 	if save {
 		if err := saveResults("gold", results); err != nil {
 			fmt.Fprintln(os.Stderr, "save:", err)
@@ -613,7 +628,7 @@ func parseGoldClasses(arg string) (map[string]bool, error) {
 	return want, nil
 }
 
-func reportGold(results []conflicts.EvalResult, model string, corpusSizes map[string]float64) {
+func reportGold(results []conflicts.EvalResult, model string, corpusSizes map[string]int, cal *conflicts.LabelCalibration) {
 	m := conflicts.ComputeMetrics(results)
 	fmt.Printf("\n=== gold-set eval (model=%s, n=%d, errors=%d) ===\n", model, m.TotalPairs, m.Errors)
 	fmt.Printf("relationship accuracy  : %.1f%%\n", m.RelationshipAcc*100)
@@ -633,60 +648,27 @@ func reportGold(results []conflicts.EvalResult, model string, corpusSizes map[st
 
 	// Sample precision flatters the judge because contradictions are
 	// oversampled. Re-weight per-class flag rates by true corpus sizes.
-	var flagged, tp float64
-	for expected, acts := range conf {
-		total := 0
-		for _, n := range acts {
-			total += n
-		}
-		if total == 0 {
-			continue
-		}
-		n := corpusSizes[expected] * float64(acts["contradiction"]) / float64(total)
-		flagged += n
-		if expected == "contradiction" {
-			tp = n
-		}
-	}
-	if flagged > 0 {
-		base := corpusSizes["contradiction"]
-		var totalCorpus float64
-		for _, n := range corpusSizes {
-			totalCorpus += n
-		}
-		// The guard is on the SAMPLE, not the corpus: a --gold-classes run that
-		// evaluated no contradiction-class pairs has no true positives to be
-		// precise about, however many the corpus holds.
-		_, sampledContradictions := conf["contradiction"]
-		if base == 0 || !sampledContradictions {
+	proj := conflicts.ProjectCorpusPrecision(conf, corpusSizes)
+	if proj.Flagged > 0 {
+		if proj.Measurable {
+			fmt.Printf("corpus-projected queue : %.0f pairs, precision %.1f%% (base rate %.1f%%, lift %.1fx)\n",
+				proj.Flagged, proj.Precision*100, proj.BaseRate*100, proj.Lift)
+			// The queue is small enough that the point estimate alone has
+			// misled once already: a 47-pair sample put gpt-5 at 65.2%
+			// precision before a 300-pair run corrected it to 41.5%.
+			fmt.Printf("                         95%% CI %.1f%%-%.1f%% (queue-size sampling only; the per-class flag rates are estimates too)\n",
+				proj.PrecisionLo*100, proj.PrecisionHi*100)
+		} else if proj.SampleEvaluated > 0 {
 			// Measuring one negative class in isolation (the point of
 			// --gold-classes) leaves nothing to be precise about. Report the
 			// false-positive rate, which is what such a run actually measures,
 			// instead of printing "precision 0.0%" as if the judge failed.
-			var evaluated float64
-			for expected, acts := range conf {
-				if expected == "contradiction" {
-					continue
-				}
-				for _, n := range acts {
-					evaluated += float64(n)
-				}
-			}
-			var falseFlags float64
-			for expected, acts := range conf {
-				if expected != "contradiction" {
-					falseFlags += float64(acts["contradiction"])
-				}
-			}
-			if evaluated > 0 {
-				fmt.Printf("no contradiction-class pairs evaluated — this run measures the false-positive rate: %.2f%% (%.0f of %.0f)\n",
-					falseFlags/evaluated*100, falseFlags, evaluated)
-			}
-		} else {
-			baseRate := base / totalCorpus
-			fmt.Printf("corpus-projected queue : %.0f pairs, precision %.1f%% (base rate %.1f%%, lift %.1fx)\n",
-				flagged, tp/flagged*100, baseRate*100, (tp/flagged)/baseRate)
+			fmt.Printf("no contradiction-class pairs evaluated — this run measures the false-positive rate: %.2f%% (%.0f of %.0f)\n",
+				proj.SampleFalseFlagRate*100, proj.SampleFalseFlags, proj.SampleEvaluated)
 		}
+	}
+	if cal != nil && proj.BaseRate > 0 {
+		printLabelNoiseCorrection(proj.BaseRate, *cal)
 	}
 
 	fmt.Println("\ngold (row) \u2192 validator (col):")
@@ -709,4 +691,54 @@ func reportGold(results []conflicts.EvalResult, model string, corpusSizes map[st
 		}
 		fmt.Println()
 	}
+}
+
+// parseLabelCalibration turns the --label-* flags into a calibration, or nil
+// when the operator did not ask for the correction.
+//
+// The constants are deliberately not defaulted. Akashi's own 0.817/0.943 pair
+// is prose-derived from a 200-pair re-rate whose per-pair agreement rows were
+// never published; baking it in would turn a sensitivity-analysis input into
+// something a reader would take for a measurement. A half-specified
+// calibration is an error rather than a skipped report, because a gold run
+// costs money and an operator who asked for the correction should find out
+// before the bill, not after.
+func parseLabelCalibration(sens, spec float64, n int) (*conflicts.LabelCalibration, error) {
+	if sens == 0 && spec == 0 {
+		if n != 0 {
+			return nil, fmt.Errorf("--label-calibration-n given without --label-sensitivity and --label-specificity")
+		}
+		return nil, nil
+	}
+	if sens <= 0 || sens > 1 {
+		return nil, fmt.Errorf("--label-sensitivity must be in (0,1], got %v", sens)
+	}
+	if spec <= 0 || spec > 1 {
+		return nil, fmt.Errorf("--label-specificity must be in (0,1], got %v", spec)
+	}
+	if n < 0 {
+		return nil, fmt.Errorf("--label-calibration-n must not be negative, got %d", n)
+	}
+	return &conflicts.LabelCalibration{Sensitivity: sens, Specificity: spec, N: n}, nil
+}
+
+// printLabelNoiseCorrection reports what the corpus base rate becomes once the
+// noise in the reference labels is accounted for — including, and especially,
+// when the answer is that it cannot be established at all.
+func printLabelNoiseCorrection(observed float64, cal conflicts.LabelCalibration) {
+	fmt.Printf("\n=== label-noise correction (labeller Se %.1f%%, Sp %.1f%%", cal.Sensitivity*100, cal.Specificity*100)
+	if cal.N > 0 {
+		fmt.Printf(", re-rated on n=%d", cal.N)
+	}
+	fmt.Println(") ===")
+
+	corrected, err := conflicts.CorrectedBaseRate(observed, cal)
+	if err != nil {
+		fmt.Printf("WARNING: the observed base rate of %.3f%% cannot be corrected with this calibration.\n", observed*100)
+		fmt.Printf("  %v\n", err)
+		fmt.Println("  Every precision, lift and cost-ratio figure above rests on that base rate. Treat them as unestablished.")
+		return
+	}
+	fmt.Printf("observed base rate %.3f%% → corrected %.3f%% (Rogan-Gladen; this calibration widens the interval %.2fx)\n",
+		observed*100, corrected*100, cal.VarianceAmplification())
 }
