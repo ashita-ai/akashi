@@ -26,7 +26,7 @@ See [Conflict Detection](docs/conflicts.md) and [Subsystems](docs/subsystems.md)
 ## Try it in 60 seconds
 
 No Docker, no database, no API keys. `akashi-local` is a single binary that speaks MCP over
-stdio and stores everything in SQLite (see [ADR-009](adrs/)):
+stdio and stores everything in SQLite (see [ADR-009](adrs/ADR-009-distribution-local-lite-and-cloud-mcp.md)):
 
 ```bash
 make build-local
@@ -90,8 +90,11 @@ claude mcp add --transport http --scope user akashi http://localhost:8080/mcp \
 | `akashi_check` | Find precedents and conflicts before deciding |
 | `akashi_trace` | Record a decision with reasoning and confidence |
 | `akashi_assess` | Record whether a past decision was correct |
+| `akashi_pending_assessments` | List decisions still awaiting an assessment |
 | `akashi_query` | Search decisions by filters or semantics |
 | `akashi_conflicts` | List open conflicts between agents |
+| `akashi_resolve` | Resolve a conflict, or mark it a false positive |
+| `akashi_reconcile` | Resolve a conflict with a synthesis decision that retires both sides |
 | `akashi_stats` | Decision trail health metrics |
 
 ## SDKs
@@ -114,8 +117,10 @@ claude mcp add --transport http --scope user akashi http://localhost:8080/mcp \
 | [Quality Scoring](docs/quality-scoring.md) | Completeness scores and anti-gaming |
 | [GDPR Erasure](docs/erasure.md) | Tombstone erasure for right-to-be-forgotten |
 | [IDE Hooks](docs/hooks.md) | Claude Code and Cursor integration |
+| [Decisions](docs/decisions.md) | The decision model, trace flow, and embeddings |
 | [Subsystems](docs/subsystems.md) | Embeddings, rate limiting, Qdrant pipeline |
 | [Runbook](docs/runbook.md) | Health checks, monitoring, troubleshooting |
+| [Data Lifecycle](docs/operations/data-lifecycle.md) | Retention, archival, reconciliation, restore drills |
 | [Diagrams](docs/diagrams.md) | Write path, read path, auth flow, schema |
 | [ADRs](adrs/) | Architecture decision records |
 | [OpenAPI](api/openapi.yaml) | Full API spec (also at `GET /openapi.yaml`) |

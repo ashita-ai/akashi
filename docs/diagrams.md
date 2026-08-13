@@ -10,10 +10,14 @@ of the Akashi decision trace layer.
 A client records a decision by posting to `/v1/trace`. The request passes through
 the middleware chain (request ID, security headers, CORS, tracing, logging, JWT
 auth, panic recovery), then through `requireRole(agent)` authorization before
-reaching the handler. The handler delegates to the shared `decisions.Service`,
-which orchestrates embedding generation, quality scoring, and
-an atomic transactional write. Notification and conflict scoring happen after the
-transaction commits and are non-fatal on failure.
+reaching the handler. The handler delegates to the shared `decisions.Service`.
+
+Order matters here and is easy to get backwards. The completeness score is computed
+**first**, on exactly what the agent submitted, so the optional ingest gate can refuse a
+thin trace before any embedding latency or quota is spent. Confidence deflation runs
+**after** the gate, so the gate judges the submitted value, not the deflated one.
+Notification and conflict scoring happen after the transaction commits and are non-fatal on
+failure.
 
 ```mermaid
 sequenceDiagram
@@ -24,7 +28,7 @@ sequenceDiagram
     participant H as HandleTrace
     participant DS as decisionSvc.Trace()
     participant E as embedder.Embed()
-    participant Q as quality.Score()
+    participant Q as quality pkg
     participant DB as storage.CreateTraceTx()
     participant N as storage.Notify()
 
@@ -37,14 +41,34 @@ sequenceDiagram
     H->>H: decodeJSON (MaxBytesReader), validate fields
     H->>H: verify agent_id exists in caller's org
     H->>DS: Trace(ctx, orgID, TraceInput)
-    DS->>E: Embed(decisionType + ": " + outcome + reasoning)
-    E-->>DS: full embedding vector(1024) or warning
-    DS->>E: Embed(outcome)
-    E-->>DS: outcome embedding vector(1024) or warning
-    DS->>E: Embed(evidence[i].content) for each evidence
-    E-->>DS: evidence vectors
+
+    DS->>DS: normalize decision_type; resolve alias<br/>or Levenshtein-canonicalize (dist <= 2),<br/>keep original in metadata
     DS->>Q: Score(decision)
     Q-->>DS: completeness_score (0.0-1.0)
+    DS->>Q: completenessGate.Evaluate(score, decision_type)
+    alt Below threshold, mode=reject
+        Q-->>DS: Below
+        DS->>DB: INSERT mutation_audit_log (trace_decision_rejected)
+        DS-->>H: CompletenessRejection
+        H-->>C: 422 COMPLETENESS_BELOW_THRESHOLD
+    else Pass, or mode=warn/off
+        Q-->>DS: proceed (warn appends to warnings[])
+    end
+
+    par Concurrent
+        DS->>E: Embed(decisionType + ": " + outcome + reasoning)
+        E-->>DS: full embedding vector(1024) or nil + warning
+    and
+        DS->>E: Embed(outcome)
+        E-->>DS: outcome embedding vector(1024) or nil
+    end
+    DS->>E: Embed(evidence[i].content) for each evidence
+    E-->>DS: evidence vectors
+
+    DS->>Q: AdjustConfidence(confidence, evidence, alts, reasoningLen)
+    Q-->>DS: deflated confidence; original kept in metadata
+    DS->>DS: bootstrap metadata; canonicalize bindings
+
     DS->>DB: CreateTraceTx(params)
 
     rect rgb(235, 245, 255)
@@ -53,6 +77,7 @@ sequenceDiagram
         DB->>DB: INSERT INTO decisions (embedding, outcome_embedding, completeness_score)
         DB->>DB: COPY INTO alternatives
         DB->>DB: COPY INTO evidence
+        DB->>DB: INSERT INTO decision_bindings (canonicalized parameter/value pairs)
         DB->>DB: INSERT INTO search_outbox (always, regardless of embedding)
         DB->>DB: UPDATE agent_runs SET status=completed
         DB->>DB: COMMIT
@@ -61,7 +86,8 @@ sequenceDiagram
     DB-->>DS: (run, decision)
     DS->>N: pg_notify('akashi_decisions', payload)
     N-->>DS: OK (non-fatal on error)
-    DS-->>H: TraceResult{RunID, DecisionID, EventCount}
+    Note over DS: async, post-commit: claim extraction + embedding,<br/>then conflictScorer.ScoreForDecision
+    DS-->>H: TraceResult{RunID, DecisionID, EventCount, Warnings}
     H-->>C: 201 Created {run_id, decision_id, event_count}
 ```
 
@@ -113,9 +139,10 @@ Qdrant. The outbox row is inserted inside the same transaction that writes the
 decision, so the two are atomically consistent. A background worker polls the
 outbox on a configurable interval, processes entries in batches using
 `SELECT ... FOR UPDATE SKIP LOCKED` for concurrency safety, and uses exponential
-backoff on failure. Entries that exceed 10 attempts are logged as dead letters
-and cleaned up after 7 days. Decisions without embeddings are deferred (not
-upserted) until a backfill provides an embedding.
+backoff on failure. Entries that exceed 10 attempts are logged as dead letters; after 7 days
+they are archived into `search_outbox_dead_letters` and removed from `search_outbox`, so a
+reset that targets `search_outbox` no longer reaches them. Decisions without embeddings are
+deferred (not upserted) until a backfill provides an embedding.
 
 ```mermaid
 sequenceDiagram
@@ -150,7 +177,7 @@ sequenceDiagram
         end
 
         alt attempts >= 10
-            Note over W: Log dead-letter warning<br/>Periodic cleanup deletes entries<br/>older than 7 days
+            Note over W: Log dead-letter warning<br/>Hourly cleanup archives entries older than 7 days<br/>into search_outbox_dead_letters, then deletes<br/>them from search_outbox
         end
     end
 ```
@@ -491,6 +518,48 @@ erDiagram
         timestamptz created_at
     }
 
+    decision_bindings {
+        uuid id PK
+        uuid decision_id FK
+        uuid org_id FK
+        text parameter "as written, for display"
+        text parameter_key "canonical form the join runs on"
+        text value "as written; compared literally, never interpreted"
+        text value_key "canonical form"
+        timestamptz created_at
+    }
+
+    decision_erasures {
+        uuid id PK
+        uuid decision_id FK
+        uuid org_id FK
+        text erased_by
+        text original_hash "pre-scrub content hash"
+        text erased_hash "post-scrub content hash"
+        text reason "nullable"
+        timestamptz erased_at
+    }
+
+    decision_supersedes {
+        uuid superseding_id PK "composite PK with superseded_id"
+        uuid superseded_id PK
+        uuid org_id FK
+        text relationship "supersedes | reconciles"
+        bool is_primary
+        text suggested_by "nullable; set when detector-inferred"
+        real suggested_confidence "nullable"
+        text suggested_reason "nullable"
+        timestamptz recorded_at
+    }
+
+    decision_type_aliases {
+        uuid org_id PK "composite PK with alias"
+        text alias PK "the spelling agents sent"
+        text canonical "the standard type it maps to"
+        text created_by "default system"
+        timestamptz created_at
+    }
+
     organizations ||--o{ agents : "has"
     organizations ||--o{ api_keys : "has"
     organizations ||--o{ agent_runs : "has"
@@ -514,5 +583,26 @@ erDiagram
     decisions ||--o{ scored_conflicts : "decision_a"
     decisions ||--o{ scored_conflicts : "decision_b"
     decisions ||--o{ search_outbox : "queues sync"
+    decisions ||--o{ decision_bindings : "binds parameters"
+    decisions ||--o| decision_erasures : "erased by (GDPR tombstone)"
+    decisions ||--o{ decision_supersedes : "superseding"
+    decisions ||--o{ decision_supersedes : "superseded"
+    organizations ||--o{ decision_type_aliases : "canonicalizes types for"
     scored_conflicts }o--|| conflict_groups : "grouped into"
 ```
+
+### Tables not shown
+
+The diagram covers the decision graph. These exist and matter operationally, but are
+standalone ledgers or buffers with no interesting relationships to draw:
+
+| Table | Purpose | Reference |
+|---|---|---|
+| `mutation_audit_log` | Append-only paper trail for every API mutation, including gate rejections | [runbook.md](runbook.md) |
+| `deletion_audit_log` | Row-level archive for destructive admin deletes | [data-lifecycle.md](operations/data-lifecycle.md) |
+| `search_outbox_dead_letters` | Archive for outbox entries past 10 attempts and 7 days | [subsystems.md](subsystems.md) |
+| `agent_events_archive` | Historical events moved out of the hot hypertable | [data-lifecycle.md](operations/data-lifecycle.md) |
+| `integrity_proofs`, `proof_leaves`, `integrity_violations` | Merkle batch proofs and audit results | [ADR-013](../adrs/ADR-013-merkle-integrity-proofs.md) |
+| `conflict_gold_labels` | Blind four-way labels used by `--mode=gold` | [conflict-detection.md](conflict-detection.md) |
+| `suppressed_pair_samples` | Sampled structurally-suppressed pairs, for measuring suppressor recall | [conflict-detection.md](conflict-detection.md) |
+| `idempotency_keys` | Replay safety for write APIs | [configuration.md](configuration.md#write-idempotency) |

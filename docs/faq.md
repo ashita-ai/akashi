@@ -16,7 +16,7 @@ Yes. Akashi is released under the Apache 2.0 license.
 
 ### What AI agents and frameworks does Akashi work with?
 
-Akashi is agent-agnostic. Any agent that can make HTTP calls or use MCP (Model Context Protocol) can integrate. SDKs are available for Go, Python, and TypeScript. The MCP interface works with Claude Code, Cursor, Windsurf, and any other MCP-compatible client. Framework integrations for LangChain, CrewAI, and Vercel AI SDK are planned.
+Akashi is agent-agnostic. Any agent that can make HTTP calls or use MCP (Model Context Protocol) can integrate. SDKs are available for Go, Python, and TypeScript. The MCP interface works with Claude Code, Cursor, Windsurf, and any other MCP-compatible client. End-to-end walkthroughs for LangChain, CrewAI, and the Vercel AI SDK live in [`examples/`](../examples/).
 
 ---
 
@@ -106,10 +106,14 @@ Every traced decision receives a quality score (0.0–1.0) based on how much con
 | Alternatives with rejection reasons | 0.20 |
 | Confidence (penalizes extremes of 0 or 1) | 0.15 |
 | Evidence items | 0.15 |
-| Outcome length | 0.10 |
+| Outcome length (full credit at 21–300 chars, less above) | 0.10 |
 | Precedent reference | 0.10 |
 
-Higher-quality decisions surface higher in precedent search results. The scoring has anti-gaming measures — padding fields with filler text does not help.
+The scoring has anti-gaming measures — padding fields with filler text does not help, and an over-long `outcome` scores worse than a concise one.
+
+Completeness does **not** affect search ranking. It measures how thorough a trace is, not whether the decision was right; what surfaces a precedent higher is assessment feedback, citations, and stability. Its uses are the trace-health report and the optional ingest gate. See [quality-scoring.md](quality-scoring.md).
+
+Confidence is also adjusted downward at write time when it is not backed by evidence, alternatives, or reasoning — see [quality-scoring.md § Confidence deflation](quality-scoring.md#confidence-deflation).
 
 ### What is `akashi_assess`?
 
@@ -123,7 +127,7 @@ After a decision plays out, an agent (or human) can call `akashi_assess` to reco
 
 Two mechanisms:
 
-- **API keys** — `ApiKey <agent_id>:<key>` header. Never expire, survive server restarts. Recommended for configuration files and long-running integrations. Keys are hashed with Argon2id (memory-hard, GPU-resistant).
+- **API keys** — `ApiKey <agent_id>:<key>` header. Survive server restarts, and never expire unless you set `expires_at` when creating the key. Recommended for configuration files and long-running integrations. Keys are hashed with Argon2id (memory-hard, GPU-resistant) and can be rotated or revoked.
 - **JWT tokens** — `Bearer <token>` header. Ed25519-signed, expire after 24 hours by default. Obtained by exchanging an API key at `POST /auth/token`.
 
 ### What are the RBAC roles?
@@ -140,7 +144,7 @@ Five roles in descending privilege order:
 
 ### How does multi-tenancy work?
 
-Every query is scoped by `org_id`. Agents belong to exactly one organization, and all data access is filtered by the agent's org. There are over 230 org_id filters across the storage layer. Within an org, fine-grained access grants let one agent share its decisions with specific other agents.
+Every query is scoped by `org_id`. Agents belong to exactly one organization, and all data access is filtered by the agent's org. There are over 500 `org_id` references across the storage layer. Within an org, fine-grained access grants let one agent share its decisions with specific other agents.
 
 ---
 
@@ -164,7 +168,7 @@ Yes. Decisions can be erased via tombstone erasure, which scrubs the content but
 
 ### What happens if Qdrant goes down?
 
-Akashi degrades gracefully. Semantic vector search falls back to PostgreSQL full-text search (BM25-style). Decisions are still stored and queryable — you lose semantic similarity ranking until Qdrant recovers. Failed Qdrant syncs retry with exponential backoff and dead-letter after 10 attempts.
+Akashi degrades gracefully. Semantic vector search falls back to PostgreSQL full-text search (`tsvector`/`tsquery` with `ts_rank`, plus ILIKE matching). Decisions are still stored and queryable — you lose semantic similarity ranking until Qdrant recovers. Failed Qdrant syncs retry with exponential backoff and dead-letter after 10 attempts.
 
 ### What happens if the embedding provider is unavailable?
 
@@ -187,7 +191,7 @@ Akashi tries providers in order: Ollama → OpenAI → noop. If all are unavaila
 | Python | `pip install akashi` | Async and sync clients, requires Python 3.10+ |
 | TypeScript | `npm install akashi` | Zero runtime dependencies, native `fetch` |
 
-All three SDKs expose the same methods: `Check`, `Trace`, `Query`, `Search`, `Recent`, and `Assess`.
+All three cover the same core workflow — `check`, `trace`, `assess`, `query`, `search`, `recent` — and each carries roughly 75 methods spanning conflicts, agents, grants, runs, retention, and admin endpoints. Coverage is close but not identical across languages, and neither is a complete mapping of the OpenAPI spec; check the SDK source for the method you need.
 
 ### Can I use Akashi without an SDK?
 

@@ -34,6 +34,29 @@ POST /v1/decisions/{id}/erase
 | Evidence `content` | `"[erased]"` |
 | Evidence `source_uri` | `NULL` |
 | Evidence `embedding` | `NULL` |
+| Claim `claim_text` | `"[erased]"` |
+| Claim `embedding` | `NULL` |
+
+Claims (`decision_claims`) are sentence-level statements derived from the outcome and
+reasoning, so they carry the same PII as the text they were extracted from and are scrubbed
+in the same transaction. The response reports how many rows of each kind were affected.
+
+### Response
+
+```json
+{
+  "decision_id": "…",
+  "erased_at": "2026-08-13T04:21:00Z",
+  "original_hash": "…",
+  "erased_hash": "…",
+  "alternatives_erased": 3,
+  "evidence_erased": 2,
+  "claims_erased": 5
+}
+```
+
+Like every JSON response, this arrives wrapped in the standard `{"data": …, "meta": …}`
+envelope.
 
 ### What is preserved
 
@@ -79,14 +102,20 @@ After erasure, `GET /v1/verify/{id}` returns:
 
 ```json
 {
+  "decision_id": "…",
   "status": "erased",
-  "original_hash": "sha256:abc...",
-  "erased_hash": "sha256:def...",
-  "verified": true
+  "valid": true,
+  "content_hash": "…",
+  "original_hash": "…",
+  "erased_at": "2026-08-13T04:21:00Z",
+  "erased_by": "compliance-agent"
 }
 ```
 
-This confirms the erasure was applied correctly and the content hash chain is intact.
+`content_hash` is the hash recomputed over the scrubbed fields; `original_hash` is what it
+was before. `valid: true` means the stored hash still matches the stored (scrubbed) content
+— the erasure was applied correctly and the chain is intact. Note the erased branch reports
+`valid`, not the `verified` field used by the non-erased branches.
 
 ## Operational notes
 

@@ -257,7 +257,7 @@ Operational idempotency settings:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AKASHI_COMPLETENESS_PROFILES` | _(empty)_ | JSON map of decision_type → profile overrides for completeness scoring. Each profile has `min_evidence` (int), `alternatives_expected` (bool), `max_confidence_no_evidence` (float). See [quality-scoring.md](quality-scoring.md) for details |
+| `AKASHI_COMPLETENESS_PROFILES` | _(empty)_ | **Currently inert — setting it has no effect.** Intended as a JSON map of decision_type → profile overrides (`min_evidence`, `alternatives_expected`, `max_confidence_no_evidence`) for the completeness tips. The value is parsed at startup and never consumed; the only caller of `quality.ProfileFor` passes `nil`. Tracked in [#765](https://github.com/ashita-ai/akashi/issues/765). See [quality-scoring.md](quality-scoring.md) |
 | `AKASHI_STANDARD_DECISION_TYPES` | _(built-in 12)_ | Comma-separated list of decision types considered "standard" for suggestion tips. Replaces the built-in defaults when set. Example: `architecture,security,data_pipeline,access_control` |
 
 Hook endpoints (`/hooks/session-start`, `/hooks/pre-tool-use`, `/hooks/post-tool-use`) are unauthenticated but restricted to localhost by default. They enable IDE agents to receive context injection, edit gating, and automatic decision tracing without shell-script marker files.
@@ -310,7 +310,7 @@ In `reject` mode the HTTP API returns `422 Unprocessable Entity` with the `COMPL
 
 ## Data retention
 
-Akashi supports per-org data retention policies that automatically delete decisions older than a configured threshold. Policies are set via `PUT /v1/retention` (admin-only). Legal holds (`POST /v1/retention/hold`) exempt matching decisions from both automated and GDPR deletion. All deletion operations are recorded in the `deletion_log` table.
+Akashi supports per-org data retention policies that automatically delete decisions older than a configured threshold. Policies are set via `PUT /v1/retention` (admin-only). Legal holds (`POST /v1/retention/hold`) exempt matching decisions from both automated and GDPR deletion. All deletion operations are recorded in the `deletion_audit_log` table.
 
 | Variable | Default | Description |
 |----------|---------|-------------|

@@ -645,7 +645,14 @@ psql "$DATABASE_URL" -c "
 
 ## 10. Conflict Detection Evaluation
 
-Akashi detects conflicts between agent decisions using an embedding-based scorer followed by an optional LLM validator. Two evaluation modes let you measure detection quality against ground truth.
+Akashi detects conflicts between agent decisions using an embedding-based scorer followed by an optional LLM validator.
+
+> **Read [conflict-detection.md](conflict-detection.md) and [ADR-017](../adrs/ADR-017-conflict-detection-operating-point.md) before acting on anything in this section.** They carry the measured behaviour, and two of the instincts this section supports have been measured and rejected on the production corpus:
+>
+> - **Tuning scorer thresholds does not buy precision.** Contradictions are 3.35% of scored pairs, and no scorer feature separates them (best AUC 0.601, CI 0.54–0.66). Thresholds change throughput and cost, not the precision of what survives. The judge model is the discriminating component: `gpt-4o-mini` runs at ~8% queue precision, `gpt-5` at ~41.5%.
+> - **The hand-written validator dataset cannot falsify the detector.** `DefaultEvalDataset` scored 1.000 precision / 1.000 recall while the shipped detector was running at 3.4% precision in production. An eval set written from the same intuitions as the prompt will always pass.
+>
+> The authoritative measurement is `--mode=gold` against `conflict_gold_labels`, described in [conflict-detection.md §3](conflict-detection.md). The label-based scorer eval below remains useful for one thing only: telling you how noisy *your* queue is right now.
 
 ### Concepts
 
@@ -723,18 +730,33 @@ Open conflicts return `400`; resolve or mark them false-positive first.
 
 ### Reducing False Positives
 
-For a noisy deployment, switch to the high-precision profile and force one
-rescore:
+**Change the judge model first.** It is the only lever measured to move precision, and by a
+factor of five:
+
+```sh
+export AKASHI_CONFLICT_OPENAI_MODEL=gpt-5   # default gpt-4o-mini: ~8% queue precision
+export AKASHI_CONFLICT_LLM_TIMEOUT=120s     # MANDATORY: at the 15s default, gpt-5 failed 159/200 calls
+```
+
+The timeout is not optional. A validation timeout is fail-safe — the candidate is skipped, not
+flagged — so too low a value produces no error and no alert, only a quiet drop in detections
+that reads exactly like "the new model is more precise." After switching, check
+`akashi.conflicts.llm_calls{result="timeout"}` before concluding anything.
+
+The `high_precision` profile is a throughput and cost lever, not a precision lever — its
+thresholds sit on the diagonal, removing true and false positives in the same proportion. Use
+it to shrink the queue, not to clean it:
 
 ```sh
 export AKASHI_CONFLICT_PROFILE=high_precision
 export AKASHI_FORCE_CONFLICT_RESCORE=true
 ```
 
-Restart once with both variables set, wait for rescore to complete, then remove
-`AKASHI_FORCE_CONFLICT_RESCORE` so future restarts do not clear and rebuild the
-conflict table again. Keep `AKASHI_CONFLICT_PROFILE=high_precision` if the
-deployment favors reviewer time over marginal recall.
+Restart once with both variables set, wait for the rescore to complete, then remove
+`AKASHI_FORCE_CONFLICT_RESCORE` so future restarts do not clear and rebuild the conflict
+table again. On a large corpus, bound the cost first with `AKASHI_CONFLICT_BACKFILL_WINDOW`
+(e.g. `720h`) — a forced rescore re-judges every surviving candidate pair at one LLM call
+each.
 
 ### Running Scorer Eval (Precision from Labels)
 
@@ -770,7 +792,13 @@ Scorer Precision: 85.7% (6 TP, 1 FP, 7 labeled)
 
 ### Running Validator Eval (LLM Accuracy)
 
-The validator eval runs a hardcoded dataset of 27 decision pairs through the LLM validator and measures precision and recall of the LLM's conflict/no-conflict judgments.
+The validator eval runs a hardcoded dataset of decision pairs through the LLM validator and reports precision and recall of the LLM's conflict/no-conflict judgments.
+
+> **This number is not evidence of detection quality.** The dataset was written alongside the
+> prompt it tests, and it scored a perfect 1.000/1.000 while the shipped detector was running
+> at 3.4% precision in production. Treat it as a smoke test that the validator is wired up and
+> parsing responses — nothing more. For a number you can act on, use `--mode=gold`
+> ([conflict-detection.md §3](conflict-detection.md)).
 
 ```sh
 export AKASHI_URL=http://localhost:8081
@@ -821,7 +849,17 @@ This is useful for verifying that threshold changes don't break the scorer's abi
 1. Run your akashi instance locally on port 8081.
 2. Exercise the system — trace decisions, let the scorer detect conflicts.
 3. Review detected conflicts via the UI or `GET /v1/conflicts`.
-4. Label 20+ conflicts across all three categories for a meaningful precision measurement.
-5. Run `go run ./cmd/eval-conflicts --mode=scorer --save` to compute precision.
-6. Tune scorer thresholds (`AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD`, early exit floor) and re-evaluate.
-7. Repeat after model or embedding changes to catch regressions.
+4. Label 20+ conflicts across all three categories.
+5. Run `go run ./cmd/eval-conflicts --mode=scorer --save` to get your queue's current precision.
+6. If it is low, **change the judge model** (see "Reducing False Positives" above). Do not
+   reach for `AKASHI_CONFLICT_SIGNIFICANCE_THRESHOLD` or the early-exit floor — measured
+   against 2,772 blind gold labels, no scorer-feature threshold separates contradictions from
+   the rest, so tuning them shrinks the queue without cleaning it.
+7. Re-run the scorer eval after the model change, and after any embedding change, to catch
+   regressions.
+
+To go further than "how noisy is my queue" — comparing judges, measuring majority-class
+false-positive rate, or choosing an operating point against your own miss:false-alarm cost
+ratio — build a blind-labelled corpus and use `--mode=gold`. The procedure, including what an
+outside contributor can offer without access to the maintainer's corpus, is in
+[conflict-detection.md §3](conflict-detection.md).

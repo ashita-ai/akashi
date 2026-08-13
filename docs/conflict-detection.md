@@ -1,7 +1,8 @@
 # Conflict Detection: Operator and Contributor Reference
 
-> **Requires PR #740.** `conflict_gold_labels` (migration 107), `--mode=gold`,
-> `AKASHI_CONFLICT_OPENAI_MODEL` and `AKASHI_CONFLICT_LLM_TIMEOUT` do not exist before it.
+> `conflict_gold_labels` (migration 107), `--mode=gold`, `AKASHI_CONFLICT_OPENAI_MODEL` and
+> `AKASHI_CONFLICT_LLM_TIMEOUT` arrived in PR #740 and are on `main`. On an older checkout,
+> none of this page's evaluation instructions apply.
 
 This document is about **tuning and evaluating** conflict detection quality. For the
 mechanism reference — significance formula, claim extraction, metrics, admin endpoints —
@@ -24,8 +25,8 @@ default (`gpt-4o-mini`) runs at roughly 8% queue precision. A stronger judge get
 ### 1.1 Trigger and candidate generation
 
 `POST /v1/trace` persists the decision, then fires conflict scoring asynchronously —
-`internal/service/decisions/service.go` (e.g. line 763) calls `ScoreForDecision`,
-implemented in `internal/conflicts/scorer.go:285`. Candidates come from a Qdrant vector
+`internal/service/decisions/service.go` calls `ScoreForDecision`, implemented in
+`internal/conflicts/scorer.go` (`ScoreForDecision` → `scoreForDecision`). Candidates come from a Qdrant vector
 search over decision embeddings (`internal/search/qdrant.go`), capped at the top 20 nearest
 neighbours (`AKASHI_CONFLICT_CANDIDATE_LIMIT`, default `20`).
 
@@ -43,7 +44,7 @@ confidence weight × temporal decay). Candidates below `AKASHI_CONFLICT_EARLY_EX
 (default `0.25`) are pruned — *unless* they qualify for the direct-to-scorer bypass:
 
 ```go
-// internal/conflicts/scorer.go:527
+// internal/conflicts/scorer.go — grep for directToScorer
 directToScorer := hasScorer && sc.topicSim >= s.decisionTopicSimFloor
 ```
 
@@ -64,8 +65,11 @@ note — figures of 0.500/0.587 published before 2026-08-12 do not reproduce.
 ### 1.3 Structural suppressors (pre-LLM)
 
 Before any LLM call, `scoreForDecision` applies a family of deterministic filters, each
-incrementing its own counter (Go field names on `s.metrics`, greppable in `scorer.go`) so
-you can see which one is doing the work:
+incrementing its own counter so you can see which one is doing the work. The counters are Go
+field names on `s.metrics`, all declared in `internal/conflicts/metrics.go`; the predicates
+themselves live in the per-filter files alongside `scorer.go` (`branch_filters.go`,
+`cross_agent_precedent.go`, `disjoint_resource.go`, `disjoint_work_item.go`,
+`operational_progression.go`, `temporal_filter.go`, `workflow_filters.go`):
 
 | Filter | Counter | What it kills |
 |---|---|---|
@@ -84,9 +88,10 @@ you can see which one is doing the work:
 
 Measured on the live candidate stream (2026-08-11), these rules together suppress **~56%**
 of candidate pairs before any judge sees them — 990 of 1,779 in the trailing window. Their
-false-negative rate is what migration 111's deterministic 5% sample
-(`suppressed_pair_samples`) exists to measure; until that sample accumulates labels, the
-56% is a throughput fact, not a safety one.
+false-negative rate is what migration 111's `suppressed_pair_samples` table exists to
+measure, via the deterministic sample enabled by `AKASHI_CONFLICT_SUPPRESSION_SAMPLE_RATE`
+(default `0` — off; `0.05` is the intended dogfood setting). Until that sample accumulates
+labels, the 56% is a throughput fact, not a safety one.
 
 These are cheap and they cut LLM cost, but **do not expect them to buy precision.** Every
 deterministic gate measured against the gold labels sits on the diagonal — it removes
@@ -118,8 +123,9 @@ moved measured precision:
    no shared question. (2) Timeline test. (3) Are both positions still live and
    incompatible?
 2. **A parser-enforced disputed-question contract.** A `contradiction` verdict that names
-   no question is downgraded to `complementary` at `validator.go:450`. The verdict is not
-   trusted unless the model can state what is in dispute.
+   no question is downgraded to `complementary` in `ParseValidatorResponse`
+   (`internal/conflicts/validator.go`). The verdict is not trusted unless the model can state
+   what is in dispute.
 
 The wording is fragile in a specific, measured way. An intermediate version framed step 2
 as "a timeline is SUPERSESSION, never CONTRADICTION" and **inverted the failure**:
@@ -139,10 +145,12 @@ collapsed to 1.1%. If you edit this prompt, run the gold eval (§3). Do not eyeb
   applies transitive dedup: if both decisions already participate in conflicts inside the
   same group, the pair is dropped (`transitiveGroupFiltered`). This is what prevents the
   O(n²) explosion from supersession chains.
-- **Supersession routing.** At `scorer.go:896` a `supersession` verdict is recorded as a
-  row in `supersedes_suggestions` instead of opening a conflict (shipped in #729). The
-  validator still *returns* `supersession`, so precision/recall evals are unaffected —
-  only the scorer's handling changes.
+- **Supersession routing.** A `supersession` verdict is recorded as a row in
+  `supersedes_suggestions` instead of opening a conflict — the scorer intercepts the verdict
+  before `IsConflict()` and hands it to `internal/conflicts/supersedes_suggestions.go`
+  (shipped in #729; direction taken from the judge rather than the clock since #749). The
+  validator still *returns* `supersession`, so precision/recall evals are unaffected — only
+  the scorer's handling changes.
 
 Auto-resolution policy lives in `internal/conflicts/autoresolve.go` (`ClassifyTier`,
 `ShouldAutoResolve`, `DetermineWinner`).
@@ -224,8 +232,9 @@ Related knobs: `AKASHI_CONFLICT_LLM_MODEL` (Ollama text model), `AKASHI_CONFLICT
 > 2. **A counter-example with a mechanism.** A concrete pair the detector gets wrong, plus which
 >    stage produced the error (structural suppressor, significance threshold, judge verdict, or
 >    parser contract) and the reasoning for the fix. Structural suppressors are individually
->    unit-testable with no database at all — see the `*_filter_test.go` files in
->    `internal/conflicts/`.
+>    unit-testable with no database at all — see the per-filter tests in `internal/conflicts/`
+>    (`branch_filters_test.go`, `disjoint_resource_test.go`, `disjoint_work_item_test.go`,
+>    `operational_progression_test.go`, `temporal_filter_test.go`, `cross_agent_precedent_test.go`).
 > 3. **A pure-code change with tests.** Parser contracts, prompt structure, and the suppressors
 >    are all testable offline. `go test ./internal/conflicts/...` needs no Docker.
 >
@@ -451,7 +460,7 @@ firm restrictions, and are meant as a help or guidance to the editor"
 
 | Approach | Result |
 |---|---|
-| Threshold tuning on scorer features | significance AUC 0.500, topic similarity 0.587 |
+| Threshold tuning on scorer features | no separating threshold; significance AUC 0.601 (0.54–0.66), topic similarity 0.616 (0.55–0.68) — see §1.2 |
 | Deterministic gates | all on the diagonal (§1.3) |
 | Fine-tuned DeBERTa cross-encoder | held-out AUC 0.494 at 67 training positives |
 | Embedding-pair classifier (1024-d, \|a−b\| and a·b, PCA-64) | AUC 0.611 — worse than metadata alone (0.730) |
