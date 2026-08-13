@@ -1,4 +1,4 @@
-.PHONY: all build build-local build-ui build-with-ui test test-unit test-integration lint fmt vet clean docker-up docker-down ci security tidy \
+.PHONY: all build build-local build-ui build-with-ui test test-unit test-integration lint fmt vet clean docker-up docker-down ci preflight security tidy \
        dev-ui migrate-apply migrate-lint migrate-hash migrate-diff migrate-status migrate-validate new-migration \
        check-doc-consistency verify-restore reconcile-qdrant reconcile-qdrant-repair \
        archive-events-dry-run archive-events verify-exit-criteria install-hooks clean-hooks coverage
@@ -11,8 +11,29 @@ LDFLAGS := -ldflags "-X main.version=$(VERSION)"
 
 all: fmt lint vet test build
 
-# Run the full CI pipeline locally (mirrors .github/workflows/ci.yml)
-ci: tidy check-doc-consistency build lint vet security test migrate-validate
+# The local gate, and the ONLY definition of it. Exactly ci.yml's build job
+# minus the test suite: no Docker, no database, no API keys, seconds to run.
+#
+# AGENTS.md and CONTRIBUTING.md point here instead of restating the list.
+# Three hand-maintained copies is how the documented checklist came to omit
+# check-doc-consistency and the lite build while CI ran both on every push.
+#
+# The equivalent raw commands, in the order CI runs them, kept copy-pasteable:
+#   go mod tidy && git diff --exit-code go.mod go.sum
+#   python3 scripts/check_doc_config_consistency.py
+#   atlas migrate validate --dir file://migrations
+#   go build ./...
+#   go build -tags lite -o /dev/null ./cmd/akashi-local
+#   golangci-lint run ./...
+#   go vet ./...
+preflight: tidy check-doc-consistency migrate-validate build build-local lint vet
+	@echo "preflight passed"
+
+# Run the full CI pipeline locally (mirrors .github/workflows/ci.yml).
+# A strict superset of preflight, so the two cannot drift apart.
+# Deliberately NOT included, because they need Node or a live service:
+# build-with-ui, the three SDK test suites, and the coverage gate.
+ci: preflight security test
 	@echo "CI passed"
 
 check-doc-consistency:

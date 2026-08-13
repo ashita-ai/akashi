@@ -24,12 +24,14 @@ This registers a `PostToolUse` hook that fires after every `git commit` and remi
 
 **Before every commit (mandatory, CI rejects failures):**
 ```sh
-go mod tidy && git diff --exit-code go.mod go.sum
-go build ./...
-go vet ./...
-golangci-lint run ./...
-atlas migrate validate --dir file://migrations
+make preflight
 ```
+
+This is `ci.yml`'s build job minus the tests: tidy + go.mod diff, doc/config consistency,
+Atlas migration validation, `go build`, the **lite build** (`-tags lite ./cmd/akashi-local`),
+lint, and vet. No Docker, no database, no API keys. The Makefile target is the only definition —
+do not restate the command list here, which is how the two CI-enforced gates went missing from
+it for months. The raw commands are kept as a comment above the target.
 
 **Before every push (mandatory, CI runs with `-race`):**
 ```sh
@@ -54,11 +56,15 @@ make ci                                  # full local CI mirror
 ```
 cmd/akashi/          Server entrypoint. Config loading, dependency wiring, signal handling.
 cmd/akashi-local/    Local-lite MCP server (SQLite, stdio transport, zero-infra). See ADR-009.
-cmd/eval-conflicts/  Offline evaluation tool for conflict detection precision/recall.
+cmd/eval-conflicts/  Evaluation harness for conflict detection precision/recall. Only
+                     --mode=benchmark runs standalone; --mode=validator and --mode=scorer
+                     need a running server, and --mode=gold needs AKASHI_DB_DSN plus a
+                     populated conflict_gold_labels table. See docs/conflict-detection.md.
 internal/
   server/            HTTP handlers (handlers*.go), middleware (middleware.go), SSE broker.
   storage/           PostgreSQL queries. One file per entity (decisions.go, agents.go, events.go...).
-  storage/sqlite/    SQLite storage backend for local/lite mode (build tag: lite).
+  storage/sqlite/    SQLite storage backend for local/lite mode. Carries NO build tag — it
+                     compiles in every build and is simply not imported outside cmd/akashi-local.
   service/           Business logic. decisions/ (trace pipeline), embedding/, quality/, query/, search/,
                      trace/ (event buffer, WAL), autoassess/, autoresolve/, tracehealth/.
   model/             Domain types. Decision, AgentEvent, Alternative, Evidence, etc.
@@ -152,7 +158,7 @@ If you still believe the behavior should change, update the tests in the same co
 **Always:**
 - Scope every storage query by `org_id`
 - Include `valid_to IS NULL` when querying current decision state
-- Run the 5 pre-commit checks + `go test -race` before pushing
+- Run `make preflight` + `go test -race` before pushing
 - Use `require.NoError(t, err)` / `assert.*` from testify in tests
 - Use `writeJSON(w, r, statusCode, payload)` for HTTP responses
 - Use `slog` structured logging (never `fmt.Print` or `log.*`)
@@ -160,7 +166,7 @@ If you still believe the behavior should change, update the tests in the same co
 **Never:**
 - Commit `.env` files, API keys, or credentials
 - Add `Co-Authored-By` trailers to commits
-- Skip pre-commit checks ("just this once" has caused two CI failures)
+- Skip `make preflight` ("just this once" has caused two CI failures)
 - Modify already-applied migrations (create a new one instead)
 - Use `os.Exit` inside `run()` (it skips defers; return an error instead)
 - Remove a failing test without understanding why it fails first

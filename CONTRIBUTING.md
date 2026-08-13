@@ -36,10 +36,18 @@ without it get sent back.
 ### Prerequisites
 
 - **Go 1.26+** ([install](https://go.dev/dl/))
-- **Docker** (for testcontainers and the local stack)
+- **Docker** (only for integration tests and the local stack — unit tests need none)
 - **Atlas CLI** ([install](https://atlasgo.io/getting-started#installation)) — database migration tool
+- **Python 3** — `make preflight` runs `scripts/check_doc_config_consistency.py`
 - **golangci-lint v2.11.0** — `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.0`
-- **Node.js 20+** (only if working on the UI)
+- **goimports v0.42.0** — `go install golang.org/x/tools/cmd/goimports@v0.42.0` (used by `make fmt`)
+- **govulncheck v1.1.4** — `go install golang.org/x/vuln/cmd/govulncheck@v1.1.4` (used by `make ci`)
+- **Node.js 22** (only if working on the UI — matches CI and the Dockerfile)
+
+The three `go install` tools land in `$(go env GOPATH)/bin`, usually `~/go/bin`. Put it on your
+`PATH` or `make lint` will report the tool as missing rather than the code as clean. The pinned
+versions are the ones CI installs (`.github/workflows/ci.yml`); a different golangci-lint minor
+can report findings CI does not, and vice versa.
 
 ### Starting the test database
 
@@ -139,43 +147,57 @@ SDK integration tests that hit a live server require `AKASHI_URL` and `AKASHI_AP
 
 ## Writing a migration
 
-1. Create `migrations/NNN_description.sql` where `NNN` is the next sequential number (check the `migrations/` directory for the current highest).
-2. Start the file with a comment: `-- NNN: Brief description of what this migration does.`
-3. Regenerate the checksum file:
-   ```sh
-   atlas migrate hash --dir file://migrations
-   ```
-4. Validate:
-   ```sh
-   atlas migrate validate --dir file://migrations
-   ```
-5. Stage both the `.sql` file and `migrations/atlas.sum` in your commit.
+```sh
+make new-migration name=add_foo_index
+```
+
+That picks the next sequential number, writes the `-- NNN: description.` header, and rehashes
+`atlas.sum` — the three steps most easily got wrong by hand. Write your SQL into the created
+file, then:
+
+```sh
+make migrate-validate
+```
+
+Stage both the `.sql` file and `migrations/atlas.sum`. If validation fails after you edit the
+file, `make migrate-hash` regenerates the checksum.
 
 **Never edit an existing migration** — always create a new one. Applied migrations are immutable.
 
+Two mechanisms apply migrations, and they are not the same one. The server runs a simple
+forward-only runner over the embedded files at startup, tracking what it has applied in
+`schema_migrations` (`internal/storage/migrate.go`); set `AKASHI_SKIP_EMBEDDED_MIGRATIONS=true`
+to suppress it. Atlas owns checksum integrity, linting, and production application — `make
+migrate-apply` is the operator path, not part of local development.
+
 ## Pre-commit checklist
 
-Run these before every commit. CI rejects failures on all of them.
-
 ```sh
-go mod tidy && git diff --exit-code go.mod go.sum
-go build ./...
-go vet ./...
-golangci-lint run ./...
-atlas migrate validate --dir file://migrations
+make preflight
 ```
+
+That is the whole gate, and it is the same list CI runs in its build job — tidy plus a
+`go.mod`/`go.sum` diff, doc/config consistency, Atlas migration validation, `go build`, the
+lite build, lint, and vet. It needs no Docker, no database, and no API keys.
+
+The target is the single definition on purpose. This file used to carry a hand-copied
+five-command version that had drifted: it omitted `scripts/check_doc_config_consistency.py`
+and the `-tags lite` build, both of which CI enforces on every push. If you want the raw
+commands, they are kept as a comment directly above the `preflight` target in the `Makefile`.
 
 If `go mod tidy` changes `go.mod` or `go.sum`, stage them in the commit.
 
-If `atlas migrate validate` fails, regenerate the checksum with `atlas migrate hash --dir file://migrations` and stage `migrations/atlas.sum`.
+If migration validation fails, regenerate the checksum with `make migrate-hash` and stage
+`migrations/atlas.sum`.
 
-Before pushing, also run:
+Before pushing:
 
 ```sh
-go test -race -count=1 ./...
+make test-unit    # fast, no containers
+make test         # full suite, requires Docker
 ```
 
-Or run the full CI mirror locally:
+Or the full CI mirror, which is `preflight` plus govulncheck and the test suite:
 
 ```sh
 make ci
