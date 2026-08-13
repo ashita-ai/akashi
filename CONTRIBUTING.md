@@ -22,7 +22,16 @@ If you want a persistent local stack for manual testing or running the server:
 docker compose -f docker-compose.complete.yml up -d postgres qdrant
 ```
 
-This starts TimescaleDB (with pgvector) on port 5432 and Qdrant on port 6333.
+This starts TimescaleDB (with pgvector) on port 5432 and Qdrant on port 6333, both bound to
+loopback only. Verify before going further — the containers report healthy whether or not the
+ports reached your host:
+
+```sh
+psql postgres://akashi:akashi@localhost:5432/akashi -c 'select 1'
+```
+
+If you already run Postgres or Qdrant locally, the bind fails loudly. Set `POSTGRES_PORT` or
+`QDRANT_PORT` to move the published port, and adjust `DATABASE_URL` to match.
 
 For the complete stack (database + Qdrant + Ollama + Akashi server):
 
@@ -35,6 +44,33 @@ First launch downloads Ollama models (~7 GB total) and takes 10–20 minutes. Tr
 ```sh
 docker compose -f docker-compose.complete.yml logs -f ollama-init
 ```
+
+### Running the server from source
+
+Once the database is reachable, point a locally built binary at it. Akashi reads a `.env` from
+the working directory on startup (`akashi.go:112`).
+
+```sh
+cp .env.example .env
+```
+
+Then edit `.env` for a host run — `.env.example` is written for the container:
+
+- `AKASHI_JWT_PRIVATE_KEY` and `AKASHI_JWT_PUBLIC_KEY` point at `/data/*.pem`, which does not
+  exist on your host. **Comment both out.** When both are empty, Akashi generates an ephemeral
+  Ed25519 keypair in memory (`internal/auth/auth.go:58`) — fine for development, and it means
+  tokens do not survive a restart.
+- `AKASHI_EMBEDDING_PROVIDER=noop` keeps the server off Ollama and OpenAI. Semantic search and
+  conflict detection then run at low recall by design — see [Embedding provider note](#embedding-provider-note).
+
+```sh
+make build
+./bin/akashi
+curl -s http://localhost:8080/health | jq .
+```
+
+Configuration errors are fatal and accumulate: the server reports every invalid variable at
+once, each naming its remedy, rather than starting in a degraded state.
 
 ### Running tests
 

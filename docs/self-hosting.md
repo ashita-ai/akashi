@@ -145,11 +145,29 @@ Check server health:
 curl -s http://localhost:8080/health | jq .
 ```
 
-Expected response:
+Expected response (`qdrant` and `sse_broker` appear only when those subsystems are configured):
 
 ```json
-{"status":"healthy"}
+{
+  "status": "healthy",
+  "version": "1.0.0",
+  "postgres": "connected",
+  "qdrant": "connected",
+  "buffer_depth": 0,
+  "buffer_status": "ok",
+  "sse_broker": "running",
+  "uptime_seconds": 42
+}
 ```
+
+`status` has three values. `healthy` is the normal case. `degraded` means the trace event buffer
+is over 75% of capacity — the server is still serving, but ingest is outrunning the flush, and
+`buffer_status` will read `critical`. `unhealthy` means the Postgres ping failed, and the
+endpoint returns 503 alongside it.
+
+`/health` is a liveness probe and reports 200 while degraded. For orchestrators deciding whether
+to route traffic, use `GET /readyz` instead: it returns 503 when any dependency required to serve
+requests is unreachable, with a per-dependency `checks` map.
 
 Record a test decision:
 

@@ -45,6 +45,13 @@ services:
   postgres:
     image: timescale/timescaledb-ha:pg18
     restart: unless-stopped
+    # Published so `psql`, `make migrate-lint`, and a server run from source can
+    # reach it — Makefile's ATLAS_DEV_URL already assumes localhost:5432.
+    # Loopback only, never 0.0.0.0: this Postgres ships default credentials.
+    # Set POSTGRES_PORT if you already run Postgres on 5432; the bind fails
+    # loudly rather than silently attaching to the wrong database.
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     environment:
       POSTGRES_USER: akashi
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-akashi}
@@ -70,6 +77,9 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.13.6
     restart: unless-stopped
+    # Loopback only — see the note on postgres above.
+    ports:
+      - "127.0.0.1:${QDRANT_PORT:-6333}:6333"
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
