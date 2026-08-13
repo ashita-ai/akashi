@@ -337,6 +337,62 @@ confidence intervals too wide to act on (the 47-pair run read 0%).
 Also available: `POST /v1/admin/conflicts/validate-pair` for a single ad-hoc pair, and
 `--mode=benchmark` for local scorer changes with no server or API key.
 
+#### Correcting for label noise: `--label-sensitivity` and `--label-specificity`
+
+Added with ADR-019. If `--help` on your build does not list them, you are on an older build and every
+precision figure it prints is uncorrected.
+
+The gold labels are LLM-generated, so the 3.35% base rate that every projection above divides by is
+itself an estimate from a noisy rater. These two flags supply that rater's reliability and apply the
+Rogan–Gladen correction to the base rate before precision is projected:
+
+```bash
+go run ./cmd/eval-conflicts --mode=gold --gold-model=gpt-5 --gold-timeout=120s \
+  --label-sensitivity=0.817 \
+  --label-specificity=0.943
+```
+
+`--label-sensitivity` is the rater's recall of true contradictions; `--label-specificity` is
+`1 - (the rater's false-flag rate on non-contradictions)`. Both flags are required together and both
+default to unset, in which case no correction is applied and the printed base rate is the raw 3.35%.
+
+The 0.817 / 0.943 above come from the 200-pair re-rate reported in ADR-017 §Measurements. **The
+per-pair agreement rows behind them were never persisted**, so treat them as sensitivity-analysis
+inputs and sweep them rather than trusting either digit.
+
+**Reading an inadmissible result.** The correction is `theta = (p + Sp - 1) / (Se + Sp - 1)`, and it
+returns a positive prevalence only when `(1 - Sp) < p` — the rater's false-flag rate must be below the
+base rate it is measuring. At the constants above it is not (5.7% against a 3.35% base rate), so
+`theta` comes out at **-3.09%**. A negative prevalence is not a number the run can use, and it is not
+clamped to zero: the correction reports the failure, names the positivity condition it violated, and
+the run exits non-zero.
+
+Three things this does **not** mean:
+
+- It does not mean the corpus has no contradictions. It means this labelling protocol cannot resolve a
+  prevalence this low, so the base rate is not established.
+- It is not a bug in the run, and it is not fixed by supplying different constants. Only a better
+  reference labeller moves `Sp`.
+- It does not invalidate the operating point. gpt-5 at 41.5% is still the default.
+
+**What to do with it.** Report precision as a band over prevalence rather than a point. At the gpt-5
+operating point (s = 0.505, f = 2.00%):
+
+| Assumed prevalence | Queue precision | Break-even miss:false-alarm ratio |
+|---|---|---|
+| 3.35% | 46.7% | 1.14 : 1 |
+| 2.00% | 34.0% | 1.94 : 1 |
+| 1.00% | 20.3% | 3.92 : 1 |
+
+The 46.7% top row and the 41.5% default above are the same operating point at the same 3.35%
+prevalence, differing only in the false-positive rate: this table uses the majority-class f = 2.00%
+measured on 300 pairs, while 41.5% comes from ADR-017's class-weighted f = 2.44% across all
+non-contradiction classes.
+
+If your cost ratio sits inside that band, the feature is unproven for your cost structure — treat §4's
+break-even arithmetic as unresolved rather than passed. ADR-019 has the full sweep, the positivity
+condition, and the calibration work that would close it.
+
 ---
 
 ## 4. Choosing an operating point from a cost ratio

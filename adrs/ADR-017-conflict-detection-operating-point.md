@@ -90,6 +90,24 @@ the 2,733 not rescored since labelling, `blind_llm_stratified_v1` (212), and `bl
 unchanged; the "pure noise" characterisation was wrong. Feature columns are mutable and 39 labelled rows
 were rescored after the 2026-08-10 labelling run, so any published AUC must name its snapshot date.
 
+**Correction (2026-08-13). Every precision figure in this document is conditional on a base rate the
+labelling protocol cannot resolve.** See ADR-019. Pushing this document's own reported label-reliability
+constants (sensitivity 0.817, false-flag rate 5.7%, Measurements below) back through the Rogan–Gladen
+misclassification correction gives a corrected prevalence of **-3.09%** — negative, therefore
+inadmissible. The estimator is positive only when the labeller's false-flag rate is below the base rate
+it is measuring, i.e. below 3.355%; the measured value is 5.7%. This does *not* mean there are no
+contradictions. It means the 3.35% base rate is not established, and every number downstream of it —
+3.4% for the shipped detector, the 8.1% / 26.9% / 28.7% / 41.5% judge table, 74.2% for the cascade, the
+1.39:1 break-even ratio — is a point estimate whose interval was never computed. At the gpt-5 operating
+point that interval spans 20.3% to 46.7% precision over a prevalence range this evidence cannot narrow.
+The numbers below are not retracted and remain the best available estimates and the current operating
+point; they are no longer quotable without that band. ADR-019 decision 3 specifies the fix (a
+human-labelled calibration subset of 480 labels — a census of all 93 gold contradictions plus a
+387-row sample of the gold negatives, drawn 29:1 toward the negative class — with the raw per-pair
+agreement rows retained). Note also that the 0.817 / 5.7% constants exist only as prose in the
+Measurements section — the per-pair agreement rows were never persisted — so they are
+sensitivity-analysis inputs, not measurements.
+
 It is worth being clear about why systems that appear to have solved conflict detection have not solved
 ours. Kubernetes server-side apply can raise a conflict cheaply and exactly because identity is a JSON
 field path — two writers touching the same path is a decidable syntactic fact
@@ -320,6 +338,7 @@ false-positive rate that precision is this sensitive to.
 - `scorer.go:527` — `directToScorer` for topic similarity ≥ 0.70; `scorer.go:896` — supersession routing (#729)
 - `cmd/eval-conflicts --mode=gold` — gold-set evaluation (PR #740); migration 107 — `conflict_gold_labels`
 - ADR-015 — separation of conflict severity from confidence scoring
+- ADR-019 — label-noise floor and prefilter routing; re-scopes every precision figure in this document
 - Nie et al., "I like fish, especially dolphins: Addressing Contradictions in Dialogue Modeling" (DECODE),
   ACL 2021. <https://aclanthology.org/2021.acl-long.134/>
 - de Marneffe, Rafferty & Manning, "Finding Contradictions in Text", ACL 2008.

@@ -542,15 +542,31 @@ func runGoldMode(limit, conc int, model string, timeout time.Duration, classes s
 	}
 	wg.Wait()
 
-	reportGold(results, model, corpusSizes, cal)
+	// The full report is printed regardless: the operator paid for this run and
+	// must see every number. reportGold's error only decides the exit code.
+	reportErr := reportGold(results, model, corpusSizes, cal)
 	if save {
 		if err := saveResults("gold", results); err != nil {
 			fmt.Fprintln(os.Stderr, "save:", err)
 			return 1
 		}
 	}
+	if reportErr != nil {
+		fmt.Fprintf(os.Stderr, "\nFAIL: %v\n", reportErr)
+		return exitBaseRateUnestablished
+	}
 	return 0
 }
+
+// exitBaseRateUnestablished is the exit code of a gold run whose label-noise
+// correction came out inadmissible.
+//
+// It is distinct from 1 because nothing about the run failed: every figure was
+// computed and printed. What the code says is narrower — do not trust the base
+// rate those figures divide by. A CI job checking $? must not read a green run
+// off a base rate the tool has just declared unestablished, which is what
+// happened while this path only printed a warning.
+const exitBaseRateUnestablished = 2
 
 // stratifyGold oversamples the rare, decision-relevant classes so a bounded run
 // still measures contradiction recall. reportGold re-weights back to true class
@@ -628,7 +644,14 @@ func parseGoldClasses(arg string) (map[string]bool, error) {
 	return want, nil
 }
 
-func reportGold(results []conflicts.EvalResult, model string, corpusSizes map[string]int, cal *conflicts.LabelCalibration) {
+// reportGold prints the gold-set report and returns a non-nil error when a
+// requested label-noise correction was inadmissible.
+//
+// The error is returned rather than printed and swallowed so the caller can
+// fail the run. It is produced mid-report and returned at the end, never early:
+// an inadmissible correction invalidates the base rate, not the run, and the
+// operator still gets the confusion matrix.
+func reportGold(results []conflicts.EvalResult, model string, corpusSizes map[string]int, cal *conflicts.LabelCalibration) error {
 	m := conflicts.ComputeMetrics(results)
 	fmt.Printf("\n=== gold-set eval (model=%s, n=%d, errors=%d) ===\n", model, m.TotalPairs, m.Errors)
 	fmt.Printf("relationship accuracy  : %.1f%%\n", m.RelationshipAcc*100)
@@ -667,8 +690,22 @@ func reportGold(results []conflicts.EvalResult, model string, corpusSizes map[st
 				proj.SampleFalseFlagRate*100, proj.SampleFalseFlags, proj.SampleEvaluated)
 		}
 	}
-	if cal != nil && proj.BaseRate > 0 {
-		printLabelNoiseCorrection(proj.BaseRate, *cal)
+	var correctionErr error
+	if cal != nil {
+		if proj.BaseRate > 0 {
+			correctionErr = printLabelNoiseCorrection(proj.BaseRate, *cal)
+		} else {
+			// The operator passed the calibration flags and paid for the run.
+			// Skipping the correction without saying so leaves them believing
+			// the printed figures were noise-corrected when they were not.
+			// Rogan-Gladen corrects an observed base rate, and there is none:
+			// nothing in the loaded corpus carries the contradiction label.
+			fmt.Println("\n=== label-noise correction: SKIPPED ===")
+			fmt.Printf("No correction was applied. The loaded gold corpus holds %d pairs and none are labelled %q,\n",
+				proj.CorpusSize, conflicts.GoldContradiction)
+			fmt.Println("so the observed base rate is 0% and there is nothing for the correction to divide.")
+			fmt.Println("Load a corpus containing contradiction-labelled rows, or drop the --label-* flags.")
+		}
 	}
 
 	fmt.Println("\ngold (row) \u2192 validator (col):")
@@ -691,6 +728,7 @@ func reportGold(results []conflicts.EvalResult, model string, corpusSizes map[st
 		}
 		fmt.Println()
 	}
+	return correctionErr
 }
 
 // parseLabelCalibration turns the --label-* flags into a calibration, or nil
@@ -725,7 +763,12 @@ func parseLabelCalibration(sens, spec float64, n int) (*conflicts.LabelCalibrati
 // printLabelNoiseCorrection reports what the corpus base rate becomes once the
 // noise in the reference labels is accounted for — including, and especially,
 // when the answer is that it cannot be established at all.
-func printLabelNoiseCorrection(observed float64, cal conflicts.LabelCalibration) {
+//
+// An inadmissible correction is returned as an error, not merely printed. The
+// figures above it are all divided by a base rate the correction has just
+// refused to certify, and a caller that exits 0 on that would hand a CI job a
+// green run on an unestablished number.
+func printLabelNoiseCorrection(observed float64, cal conflicts.LabelCalibration) error {
 	fmt.Printf("\n=== label-noise correction (labeller Se %.1f%%, Sp %.1f%%", cal.Sensitivity*100, cal.Specificity*100)
 	if cal.N > 0 {
 		fmt.Printf(", re-rated on n=%d", cal.N)
@@ -736,9 +779,16 @@ func printLabelNoiseCorrection(observed float64, cal conflicts.LabelCalibration)
 	if err != nil {
 		fmt.Printf("WARNING: the observed base rate of %.3f%% cannot be corrected with this calibration.\n", observed*100)
 		fmt.Printf("  %v\n", err)
+		// Stated here as well as inside the error: the degenerate-denominator
+		// path does not mention it, and the positivity condition is the whole
+		// reason a run can arrive at no admissible answer.
+		fmt.Printf("  Positivity condition: the labeller's false-flag rate (1 - specificity = %.3f%%) must be below the observed base rate (%.3f%%).\n",
+			(1-cal.Specificity)*100, observed*100)
 		fmt.Println("  Every precision, lift and cost-ratio figure above rests on that base rate. Treat them as unestablished.")
-		return
+		fmt.Printf("  The rest of the report still prints; this run will exit %d.\n", exitBaseRateUnestablished)
+		return fmt.Errorf("label-noise correction is inadmissible, so the base rate is not established: %w", err)
 	}
 	fmt.Printf("observed base rate %.3f%% → corrected %.3f%% (Rogan-Gladen; this calibration widens the interval %.2fx)\n",
 		observed*100, corrected*100, cal.VarianceAmplification())
+	return nil
 }
