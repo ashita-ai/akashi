@@ -672,10 +672,29 @@ func reportGold(results []conflicts.EvalResult, model string, corpusSizes map[st
 	// Sample precision flatters the judge because contradictions are
 	// oversampled. Re-weight per-class flag rates by true corpus sizes.
 	proj := conflicts.ProjectCorpusPrecision(conf, corpusSizes)
+
+	// Resolve the correction before printing anything it invalidates. The
+	// headline queue line is the one that gets screenshotted, grepped and
+	// pasted into a dashboard; a caveat printed below it does not travel with
+	// it. If the base rate cannot be established, that has to be on the same
+	// line as the number it disqualifies.
+	var (
+		corrected     float64
+		correctionErr error
+	)
+	correctable := cal != nil && proj.BaseRate > 0
+	if correctable {
+		corrected, correctionErr = conflicts.CorrectedBaseRate(proj.BaseRate, *cal)
+	}
+	unestablished := ""
+	if correctionErr != nil {
+		unestablished = "  [BASE RATE UNESTABLISHED - see label-noise correction below]"
+	}
+
 	if proj.Flagged > 0 {
 		if proj.Measurable {
-			fmt.Printf("corpus-projected queue : %.0f pairs, precision %.1f%% (base rate %.1f%%, lift %.1fx)\n",
-				proj.Flagged, proj.Precision*100, proj.BaseRate*100, proj.Lift)
+			fmt.Printf("corpus-projected queue : %.0f pairs, precision %.1f%% (base rate %.1f%%, lift %.1fx)%s\n",
+				proj.Flagged, proj.Precision*100, proj.BaseRate*100, proj.Lift, unestablished)
 			// The queue is small enough that the point estimate alone has
 			// misled once already: a 47-pair sample put gpt-5 at 65.2%
 			// precision before a 300-pair run corrected it to 41.5%.
@@ -690,10 +709,9 @@ func reportGold(results []conflicts.EvalResult, model string, corpusSizes map[st
 				proj.SampleFalseFlagRate*100, proj.SampleFalseFlags, proj.SampleEvaluated)
 		}
 	}
-	var correctionErr error
 	if cal != nil {
-		if proj.BaseRate > 0 {
-			correctionErr = printLabelNoiseCorrection(proj.BaseRate, *cal)
+		if correctable {
+			printLabelNoiseCorrection(proj.BaseRate, *cal, corrected, correctionErr)
 		} else {
 			// The operator passed the calibration flags and paid for the run.
 			// Skipping the correction without saying so leaves them believing
@@ -728,7 +746,10 @@ func reportGold(results []conflicts.EvalResult, model string, corpusSizes map[st
 		}
 		fmt.Println()
 	}
-	return correctionErr
+	if correctionErr != nil {
+		return fmt.Errorf("label-noise correction is inadmissible, so the base rate is not established: %w", correctionErr)
+	}
+	return nil
 }
 
 // parseLabelCalibration turns the --label-* flags into a calibration, or nil
@@ -764,18 +785,17 @@ func parseLabelCalibration(sens, spec float64, n int) (*conflicts.LabelCalibrati
 // noise in the reference labels is accounted for — including, and especially,
 // when the answer is that it cannot be established at all.
 //
-// An inadmissible correction is returned as an error, not merely printed. The
-// figures above it are all divided by a base rate the correction has just
-// refused to certify, and a caller that exits 0 on that would hand a CI job a
-// green run on an unestablished number.
-func printLabelNoiseCorrection(observed float64, cal conflicts.LabelCalibration) error {
+// The correction is resolved by the caller, before the projection figures are
+// printed, so that the headline queue line can be marked inline rather than
+// contradicted several lines later. This function only renders that result;
+// reportGold owns the error and the non-zero exit that follows from it.
+func printLabelNoiseCorrection(observed float64, cal conflicts.LabelCalibration, corrected float64, err error) {
 	fmt.Printf("\n=== label-noise correction (labeller Se %.1f%%, Sp %.1f%%", cal.Sensitivity*100, cal.Specificity*100)
 	if cal.N > 0 {
 		fmt.Printf(", re-rated on n=%d", cal.N)
 	}
 	fmt.Println(") ===")
 
-	corrected, err := conflicts.CorrectedBaseRate(observed, cal)
 	if err != nil {
 		fmt.Printf("WARNING: the observed base rate of %.3f%% cannot be corrected with this calibration.\n", observed*100)
 		fmt.Printf("  %v\n", err)
@@ -784,11 +804,11 @@ func printLabelNoiseCorrection(observed float64, cal conflicts.LabelCalibration)
 		// reason a run can arrive at no admissible answer.
 		fmt.Printf("  Positivity condition: the labeller's false-flag rate (1 - specificity = %.3f%%) must be below the observed base rate (%.3f%%).\n",
 			(1-cal.Specificity)*100, observed*100)
-		fmt.Println("  Every precision, lift and cost-ratio figure above rests on that base rate. Treat them as unestablished.")
+		fmt.Println("  Every precision, lift and cost-ratio figure above rests on that base rate. Treat them as unestablished;")
+		fmt.Println("  the queue line above is marked [BASE RATE UNESTABLISHED] for that reason.")
 		fmt.Printf("  The rest of the report still prints; this run will exit %d.\n", exitBaseRateUnestablished)
-		return fmt.Errorf("label-noise correction is inadmissible, so the base rate is not established: %w", err)
+		return
 	}
 	fmt.Printf("observed base rate %.3f%% → corrected %.3f%% (Rogan-Gladen; this calibration widens the interval %.2fx)\n",
 		observed*100, corrected*100, cal.VarianceAmplification())
-	return nil
 }

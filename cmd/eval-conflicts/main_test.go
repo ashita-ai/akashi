@@ -87,6 +87,45 @@ func TestReportGold_InadmissibleCorrectionReturnsError(t *testing.T) {
 	assert.Less(t, warn, matrix, "exit code signals distrust; it must not truncate the report")
 }
 
+// The queue line is the one that gets screenshotted, grepped and pasted into a
+// dashboard. A caveat printed below it does not travel with it, so the
+// disqualification has to be on the same line as the number it disqualifies —
+// which means the correction must be resolved before that line is printed.
+func TestReportGold_InadmissibleCorrectionMarksTheQueueLineItself(t *testing.T) {
+	cal := &conflicts.LabelCalibration{Sensitivity: 0.817, Specificity: 0.943, N: 200}
+
+	out := captureStdout(t, func() {
+		_ = reportGold(goldResults(), "gpt-5", akashiCorpus(), cal)
+	})
+
+	var queueLine string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "corpus-projected queue") {
+			queueLine = line
+			break
+		}
+	}
+	require.NotEmpty(t, queueLine, "the projection headline must still print")
+	assert.Contains(t, queueLine, "BASE RATE UNESTABLISHED",
+		"the headline carries the precision figure, so it must carry the disqualification too")
+
+	// And the marker must appear before the correction block, not only inside
+	// it — otherwise it has not travelled with the number.
+	assert.Less(t, strings.Index(out, "BASE RATE UNESTABLISHED"), strings.Index(out, "label-noise correction"))
+}
+
+// The converse: an admissible correction must leave the headline clean, or the
+// marker becomes noise operators learn to ignore.
+func TestReportGold_AdmissibleCorrectionLeavesTheQueueLineUnmarked(t *testing.T) {
+	cal := &conflicts.LabelCalibration{Sensitivity: 0.90, Specificity: 0.995, N: 200}
+
+	out := captureStdout(t, func() {
+		_ = reportGold(goldResults(), "gpt-5", akashiCorpus(), cal)
+	})
+
+	assert.NotContains(t, out, "BASE RATE UNESTABLISHED")
+}
+
 func TestReportGold_AdmissibleCorrectionReturnsNil(t *testing.T) {
 	// A labeller whose false-flag rate (0.5%) sits below the 3.355% base rate.
 	cal := &conflicts.LabelCalibration{Sensitivity: 0.90, Specificity: 0.995, N: 200}
