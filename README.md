@@ -97,8 +97,23 @@ claude mcp add --transport http --scope user akashi http://localhost:8080/mcp \
 | [Subsystems](docs/subsystems.md) | Embeddings, rate limiting, Qdrant pipeline |
 | [Runbook](docs/runbook.md) | Health checks, monitoring, troubleshooting |
 | [Diagrams](docs/diagrams.md) | Write path, read path, auth flow, schema |
-| [ADRs](adrs/) | 15 architecture decision records |
+| [ADRs](adrs/) | Architecture decision records |
 | [OpenAPI](api/openapi.yaml) | Full API spec (also at `GET /openapi.yaml`) |
+| [Contributing](CONTRIBUTING.md) | Local setup, the pre-commit gate, and the invariants a PR is judged against |
+
+## Contributing
+
+Contributions are welcome. The fast path needs no Docker, no database, and no API keys:
+
+```bash
+go build ./...
+go test -race ./...     # unit tests only; every container-backed test is behind a build tag
+```
+
+That is the whole loop for most changes, and it takes seconds. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR — it names the two invariants
+(`org_id` scoping and `valid_to IS NULL`) that a reviewer will check first, and points at
+[AGENTS.md](AGENTS.md), which is normative for conventions.
 
 ## License
 

@@ -98,19 +98,40 @@ docs/                Configuration reference; conflict-detection operator guide.
 1. Add the handler method to the appropriate `handlers_*.go` file:
 ```go
 func (h *Handlers) HandleMyThing(w http.ResponseWriter, r *http.Request) {
-    orgID := OrgIDFromContext(r.Context())        // always extract org
-    agentID := AgentIDFromContext(r.Context())     // from auth middleware
+    orgID := OrgIDFromContext(r.Context())   // always extract org
+    claims := ClaimsFromContext(r.Context()) // caller identity: claims.ActorID(), claims.Role
     // ... business logic ...
     writeJSON(w, r, http.StatusOK, result)
 }
 ```
+There is no `AgentIDFromContext`. The caller's identity comes off `ClaimsFromContext`, whose
+`ActorID()` prefers `AgentID` (API-key auth) and falls back to `Subject` (JWT auth).
+
 2. Register the route in `server.go`:
 ```go
 mux.Handle("GET /v1/my-thing", readRole(http.HandlerFunc(h.HandleMyThing)))
 ```
-3. Add the storage query in the appropriate `internal/storage/*.go` file. Always filter by `org_id`.
-4. Add the endpoint to `api/openapi.yaml`.
-5. Run the full pre-commit checks.
+`adminOnly`, `orgOwnerOnly`, `writeRole` and `readRole` are local variables declared inside
+`New()` (server.go:158, :172, :185, :192), not package-level functions — they exist only in that
+scope. Pick the lowest role that is still correct: `readRole` (reader+) for queries, `writeRole`
+(agent+) for ingestion, `adminOnly` for management, `orgOwnerOnly` for anything irreversible.
+`POST /v1/decisions/{id}/erase` at server.go:173 is the worked example of the last case. The full
+five-level ladder is in `docs/faq.md`; changing an existing endpoint's role is an ask-first item.
+
+3. Add the storage query in the appropriate `internal/storage/*.go` file. Always filter by
+   `org_id`, and add `valid_to IS NULL` if the query should return current state.
+
+4. Add a cross-org test. `TestHandlersCritical_GetDecisionCrossOrgReturns404` is the template:
+   a caller from org B must get 404, not 403, for a resource in org A.
+
+5. Add the endpoint to `api/openapi.yaml`. This one is machine-checked —
+   `internal/server/openapi_test.go` parses the route registrations out of server.go and fails
+   on any route missing from the spec.
+
+6. Run `make preflight`.
+
+SDK parity is **not** required for a new endpoint. All three SDKs cover well under the spec's 86
+operations and always have; adding a method is welcome, and opening a follow-up issue is the norm.
 
 ## How to add a migration
 

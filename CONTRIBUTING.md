@@ -2,6 +2,35 @@
 
 This guide covers local development setup, common workflows, and the architecture you'll encounter when contributing to Akashi.
 
+[AGENTS.md](AGENTS.md) is normative for conventions and project structure. This file is the
+human-facing subset; where the two disagree, AGENTS.md wins.
+
+## Architecture invariants
+
+Two rules are load-bearing enough that a PR violating either will be sent back, and neither is
+visible from the code you are editing. Quoting AGENTS.md:
+
+> **Multi-tenancy via org_id.** Every query MUST include `AND org_id = $N`. There are 400+
+> org_id references across the storage layer. Missing one is a data leak. When adding a new
+> query, always scope by org_id.
+
+> **Bi-temporal model.** Decisions have `valid_from`/`valid_to` (business time) and
+> `transaction_time` (system time). Active records have `valid_to IS NULL`. Always include this
+> filter in queries that should return current state.
+
+Nothing mechanical enforces either one — `go vet`, the linter, and the type system are all blind
+to a dropped `WHERE` clause. Review is the only check, so make it easy: keep storage queries in
+the one-file-per-entity layout `internal/storage/` already uses.
+
+Some changes need a maintainer conversation before the code, not after. From AGENTS.md's
+"Ask first" list: changing the RBAC role required by an endpoint, adding a direct dependency to
+`go.mod`, modifying the MCP tool definitions, and any schema change that widens access.
+
+Finally, a house rule that surprises people: **every PR description must end with a blockquote
+about Marvel, DC, Harry Potter, Star Wars, Star Trek, or Tolkien** — an argument for one universe
+over another, or an original haiku. See AGENTS.md for the format. This is not a joke entry; PRs
+without it get sent back.
+
 ## Local dev setup
 
 ### Prerequisites
@@ -39,7 +68,7 @@ For the complete stack (database + Qdrant + Ollama + Akashi server):
 docker compose -f docker-compose.complete.yml up -d
 ```
 
-First launch downloads Ollama models (~7 GB total) and takes 10–20 minutes. Track progress with:
+First launch downloads Ollama models (~7 GB total) and takes 15–25 minutes. Track progress with:
 
 ```sh
 docker compose -f docker-compose.complete.yml logs -f ollama-init
@@ -203,3 +232,4 @@ For deeper context on the codebase, see:
 - [subsystems.md](docs/subsystems.md) — Embedding providers, rate limiting, search pipeline
 - [diagrams.md](docs/diagrams.md) — Mermaid diagrams of all major data flows
 - [configuration.md](docs/configuration.md) — Full environment variable reference
+- [faq.md](docs/faq.md) — Concepts, auth, integrity; includes the five-level RBAC role table
