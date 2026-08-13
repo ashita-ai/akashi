@@ -23,7 +23,26 @@ Decisions are written atomically with reasoning, alternatives, and evidence. Con
 
 See [Conflict Detection](docs/conflicts.md) and [Subsystems](docs/subsystems.md) for internals.
 
-## Quick start
+## Try it in 60 seconds
+
+No Docker, no database, no API keys. `akashi-local` is a single binary that speaks MCP over
+stdio and stores everything in SQLite (see [ADR-009](adrs/)):
+
+```bash
+make build-local
+./bin/akashi-local          # database created at ~/.akashi/local.db
+```
+
+Point an MCP client at it — for Claude Code:
+
+```bash
+claude mcp add akashi -- /absolute/path/to/bin/akashi-local
+```
+
+`akashi_check` and `akashi_trace` work immediately. Conflict detection in this mode is
+text-based rather than semantic; see [Conflict Detection](docs/conflicts.md).
+
+## Quick start (full stack)
 
 ```bash
 docker compose -f docker-compose.complete.yml up -d
