@@ -2,15 +2,52 @@
 
 This guide covers local development setup, common workflows, and the architecture you'll encounter when contributing to Akashi.
 
+[AGENTS.md](AGENTS.md) is normative for conventions and project structure. This file is the
+human-facing subset; where the two disagree, AGENTS.md wins.
+
+## Architecture invariants
+
+Two rules are load-bearing enough that a PR violating either will be sent back, and neither is
+visible from the code you are editing. Quoting AGENTS.md:
+
+> **Multi-tenancy via org_id.** Every query MUST include `AND org_id = $N`. There are 400+
+> org_id references across the storage layer. Missing one is a data leak. When adding a new
+> query, always scope by org_id.
+
+> **Bi-temporal model.** Decisions have `valid_from`/`valid_to` (business time) and
+> `transaction_time` (system time). Active records have `valid_to IS NULL`. Always include this
+> filter in queries that should return current state.
+
+Nothing mechanical enforces either one — `go vet`, the linter, and the type system are all blind
+to a dropped `WHERE` clause. Review is the only check, so make it easy: keep storage queries in
+the one-file-per-entity layout `internal/storage/` already uses.
+
+Some changes need a maintainer conversation before the code, not after. From AGENTS.md's
+"Ask first" list: changing the RBAC role required by an endpoint, adding a direct dependency to
+`go.mod`, modifying the MCP tool definitions, and any schema change that widens access.
+
+Finally, a house rule that surprises people: **every PR description must end with a blockquote
+about Marvel, DC, Harry Potter, Star Wars, Star Trek, or Tolkien** — an argument for one universe
+over another, or an original haiku. See AGENTS.md for the format. This is not a joke entry; PRs
+without it get sent back.
+
 ## Local dev setup
 
 ### Prerequisites
 
 - **Go 1.26+** ([install](https://go.dev/dl/))
-- **Docker** (for testcontainers and the local stack)
+- **Docker** (only for integration tests and the local stack — unit tests need none)
 - **Atlas CLI** ([install](https://atlasgo.io/getting-started#installation)) — database migration tool
+- **Python 3** — `make preflight` runs `scripts/check_doc_config_consistency.py`
 - **golangci-lint v2.11.0** — `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.0`
-- **Node.js 20+** (only if working on the UI)
+- **goimports v0.42.0** — `go install golang.org/x/tools/cmd/goimports@v0.42.0` (used by `make fmt`)
+- **govulncheck v1.1.4** — `go install golang.org/x/vuln/cmd/govulncheck@v1.1.4` (used by `make ci`)
+- **Node.js 22** (only if working on the UI — matches CI and the Dockerfile)
+
+The three `go install` tools land in `$(go env GOPATH)/bin`, usually `~/go/bin`. Put it on your
+`PATH` or `make lint` will report the tool as missing rather than the code as clean. The pinned
+versions are the ones CI installs (`.github/workflows/ci.yml`); a different golangci-lint minor
+can report findings CI does not, and vice versa.
 
 ### Starting the test database
 
@@ -22,7 +59,16 @@ If you want a persistent local stack for manual testing or running the server:
 docker compose -f docker-compose.complete.yml up -d postgres qdrant
 ```
 
-This starts TimescaleDB (with pgvector) on port 5432 and Qdrant on port 6333.
+This starts TimescaleDB (with pgvector) on port 5432 and Qdrant on port 6333, both bound to
+loopback only. Verify before going further — the containers report healthy whether or not the
+ports reached your host:
+
+```sh
+psql postgres://akashi:akashi@localhost:5432/akashi -c 'select 1'
+```
+
+If you already run Postgres or Qdrant locally, the bind fails loudly. Set `POSTGRES_PORT` or
+`QDRANT_PORT` to move the published port, and adjust `DATABASE_URL` to match.
 
 For the complete stack (database + Qdrant + Ollama + Akashi server):
 
@@ -30,11 +76,38 @@ For the complete stack (database + Qdrant + Ollama + Akashi server):
 docker compose -f docker-compose.complete.yml up -d
 ```
 
-First launch downloads Ollama models (~7 GB total) and takes 10–20 minutes. Track progress with:
+First launch downloads Ollama models (~7 GB total) and takes 15–25 minutes. Track progress with:
 
 ```sh
 docker compose -f docker-compose.complete.yml logs -f ollama-init
 ```
+
+### Running the server from source
+
+Once the database is reachable, point a locally built binary at it. Akashi reads a `.env` from
+the working directory on startup (`akashi.go:112`).
+
+```sh
+cp .env.example .env
+```
+
+Then edit `.env` for a host run — `.env.example` is written for the container:
+
+- `AKASHI_JWT_PRIVATE_KEY` and `AKASHI_JWT_PUBLIC_KEY` point at `/data/*.pem`, which does not
+  exist on your host. **Comment both out.** When both are empty, Akashi generates an ephemeral
+  Ed25519 keypair in memory (`internal/auth/auth.go:58`) — fine for development, and it means
+  tokens do not survive a restart.
+- `AKASHI_EMBEDDING_PROVIDER=noop` keeps the server off Ollama and OpenAI. Semantic search and
+  conflict detection then run at low recall by design — see [Embedding provider note](#embedding-provider-note).
+
+```sh
+make build
+./bin/akashi
+curl -s http://localhost:8080/health | jq .
+```
+
+Configuration errors are fatal and accumulate: the server reports every invalid variable at
+once, each naming its remedy, rather than starting in a degraded state.
 
 ### Running tests
 
@@ -74,43 +147,57 @@ SDK integration tests that hit a live server require `AKASHI_URL` and `AKASHI_AP
 
 ## Writing a migration
 
-1. Create `migrations/NNN_description.sql` where `NNN` is the next sequential number (check the `migrations/` directory for the current highest).
-2. Start the file with a comment: `-- NNN: Brief description of what this migration does.`
-3. Regenerate the checksum file:
-   ```sh
-   atlas migrate hash --dir file://migrations
-   ```
-4. Validate:
-   ```sh
-   atlas migrate validate --dir file://migrations
-   ```
-5. Stage both the `.sql` file and `migrations/atlas.sum` in your commit.
+```sh
+make new-migration name=add_foo_index
+```
+
+That picks the next sequential number, writes the `-- NNN: description.` header, and rehashes
+`atlas.sum` — the three steps most easily got wrong by hand. Write your SQL into the created
+file, then:
+
+```sh
+make migrate-validate
+```
+
+Stage both the `.sql` file and `migrations/atlas.sum`. If validation fails after you edit the
+file, `make migrate-hash` regenerates the checksum.
 
 **Never edit an existing migration** — always create a new one. Applied migrations are immutable.
 
+Two mechanisms apply migrations, and they are not the same one. The server runs a simple
+forward-only runner over the embedded files at startup, tracking what it has applied in
+`schema_migrations` (`internal/storage/migrate.go`); set `AKASHI_SKIP_EMBEDDED_MIGRATIONS=true`
+to suppress it. Atlas owns checksum integrity, linting, and production application — `make
+migrate-apply` is the operator path, not part of local development.
+
 ## Pre-commit checklist
 
-Run these before every commit. CI rejects failures on all of them.
-
 ```sh
-go mod tidy && git diff --exit-code go.mod go.sum
-go build ./...
-go vet ./...
-golangci-lint run ./...
-atlas migrate validate --dir file://migrations
+make preflight
 ```
+
+That is the whole gate, and it is the same list CI runs in its build job — tidy plus a
+`go.mod`/`go.sum` diff, doc/config consistency, Atlas migration validation, `go build`, the
+lite build, lint, and vet. It needs no Docker, no database, and no API keys.
+
+The target is the single definition on purpose. This file used to carry a hand-copied
+five-command version that had drifted: it omitted `scripts/check_doc_config_consistency.py`
+and the `-tags lite` build, both of which CI enforces on every push. If you want the raw
+commands, they are kept as a comment directly above the `preflight` target in the `Makefile`.
 
 If `go mod tidy` changes `go.mod` or `go.sum`, stage them in the commit.
 
-If `atlas migrate validate` fails, regenerate the checksum with `atlas migrate hash --dir file://migrations` and stage `migrations/atlas.sum`.
+If migration validation fails, regenerate the checksum with `make migrate-hash` and stage
+`migrations/atlas.sum`.
 
-Before pushing, also run:
+Before pushing:
 
 ```sh
-go test -race -count=1 ./...
+make test-unit    # fast, no containers
+make test         # full suite, requires Docker
 ```
 
-Or run the full CI mirror locally:
+Or the full CI mirror, which is `preflight` plus govulncheck and the test suite:
 
 ```sh
 make ci
@@ -167,3 +254,18 @@ For deeper context on the codebase, see:
 - [subsystems.md](docs/subsystems.md) — Embedding providers, rate limiting, search pipeline
 - [diagrams.md](docs/diagrams.md) — Mermaid diagrams of all major data flows
 - [configuration.md](docs/configuration.md) — Full environment variable reference
+- [faq.md](docs/faq.md) — Concepts, auth, integrity; includes the five-level RBAC role table
+- [conflict-detection.md](docs/conflict-detection.md) — The detector's measured operating point,
+  how to evaluate a change, and the alternatives already tried and rejected
+
+### Changing conflict detection
+
+`internal/conflicts/` is held to a higher evidence bar than the rest of the repo, because it has
+been retuned on intuition before and the retunings did not survive measurement. Read
+[conflict-detection.md](docs/conflict-detection.md) and [ADR-017](adrs/) first.
+
+Two things to know before you start. The gold-label corpus behind the published precision numbers
+is **not distributed** — `--mode=gold` will find an empty table on your machine, and §3 of that
+document explains what evidence to bring instead. And the structural suppressors are individually
+unit-testable with no database and no API key, which makes them the best entry point:
+`go test ./internal/conflicts/...`.

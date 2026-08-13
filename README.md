@@ -23,7 +23,26 @@ Decisions are written atomically with reasoning, alternatives, and evidence. Con
 
 See [Conflict Detection](docs/conflicts.md) and [Subsystems](docs/subsystems.md) for internals.
 
-## Quick start
+## Try it in 60 seconds
+
+No Docker, no database, no API keys. `akashi-local` is a single binary that speaks MCP over
+stdio and stores everything in SQLite (see [ADR-009](adrs/)):
+
+```bash
+make build-local
+./bin/akashi-local          # database created at ~/.akashi/local.db
+```
+
+Point an MCP client at it — for Claude Code:
+
+```bash
+claude mcp add akashi -- /absolute/path/to/bin/akashi-local
+```
+
+`akashi_check` and `akashi_trace` work immediately. Conflict detection in this mode is
+text-based rather than semantic; see [Conflict Detection](docs/conflicts.md).
+
+## Quick start (full stack)
 
 ```bash
 docker compose -f docker-compose.complete.yml up -d
@@ -91,14 +110,30 @@ claude mcp add --transport http --scope user akashi http://localhost:8080/mcp \
 | [Self-Hosting](docs/self-hosting.md) | Postgres-only through full stack with Qdrant and Ollama |
 | [Configuration](docs/configuration.md) | Every environment variable |
 | [Conflict Detection](docs/conflicts.md) | Scoring, LLM validation, resolution |
+| [Detector Internals](docs/conflict-detection.md) | Operating point, judge models, evaluation, rejected alternatives |
 | [Quality Scoring](docs/quality-scoring.md) | Completeness scores and anti-gaming |
 | [GDPR Erasure](docs/erasure.md) | Tombstone erasure for right-to-be-forgotten |
 | [IDE Hooks](docs/hooks.md) | Claude Code and Cursor integration |
 | [Subsystems](docs/subsystems.md) | Embeddings, rate limiting, Qdrant pipeline |
 | [Runbook](docs/runbook.md) | Health checks, monitoring, troubleshooting |
 | [Diagrams](docs/diagrams.md) | Write path, read path, auth flow, schema |
-| [ADRs](adrs/) | 15 architecture decision records |
+| [ADRs](adrs/) | Architecture decision records |
 | [OpenAPI](api/openapi.yaml) | Full API spec (also at `GET /openapi.yaml`) |
+| [Contributing](CONTRIBUTING.md) | Local setup, the pre-commit gate, and the invariants a PR is judged against |
+
+## Contributing
+
+Contributions are welcome. The fast path needs no Docker, no database, and no API keys:
+
+```bash
+go build ./...
+go test -race ./...     # unit tests only; every container-backed test is behind a build tag
+```
+
+That is the whole loop for most changes, and it takes seconds. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR — it names the two invariants
+(`org_id` scoping and `valid_to IS NULL`) that a reviewer will check first, and points at
+[AGENTS.md](AGENTS.md), which is normative for conventions.
 
 ## License
 

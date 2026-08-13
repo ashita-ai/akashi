@@ -4,18 +4,32 @@ Akashi automatically detects when AI agents make contradictory decisions. This d
 covers the full conflict pipeline: how conflicts are found, how they're scored, and how
 to resolve them.
 
+> This page describes the mechanism. For the detector's **measured** behaviour — its operating
+> point, base rate, judge-model comparison, how to evaluate a change, and the alternatives
+> already tried and rejected — see [conflict-detection.md](conflict-detection.md) and ADR-017.
+> Read those before changing detection logic.
+
 ## Overview
 
 When a decision is recorded via `POST /v1/trace`, Akashi asynchronously:
 
-1. **Retrieves candidates** — finds semantically similar past decisions via Qdrant (or
-   brute-force cosine similarity in local-lite mode — coming soon, see issue #312).
+1. **Retrieves candidates** — finds semantically similar past decisions via Qdrant, falling
+   back to PostgreSQL text search when Qdrant is not configured.
 2. **Scores significance** — computes a composite score from topic similarity, outcome
    divergence, confidence, and temporal decay.
 3. **Validates via LLM** (optional) — classifies the relationship as contradiction,
    supersession, complementary, refinement, or unrelated.
 4. **Persists conflicts** — only contradictions and supersessions are stored.
 5. **Notifies** — fires a `LISTEN/NOTIFY` event on the `akashi_conflicts` channel.
+
+Everything below this line describes the full pipeline. **Local-lite mode
+(`cmd/akashi-local`) runs a different, much simpler detector** — `LiteScorer` in
+`internal/conflicts/lite_scorer.go`. It compares decisions within the same org and
+`decision_type`, extracts claims from their outcomes, and measures text overlap; no embeddings,
+no vector store, and no LLM are involved. It catches obvious contradictions between agents
+writing about the same topic and will miss anything that needs semantic similarity. Treat the
+scoring, validation, and cross-encoder sections below as describing the server, not the lite
+binary.
 
 ## Significance scoring
 

@@ -30,7 +30,7 @@ Three modes, from most to least infrastructure:
 |------|---------------|--------|
 | **Complete local stack** | Docker Compose with TimescaleDB, Qdrant, Ollama | Available |
 | **Binary only** | Bring your own PostgreSQL (with pgvector + TimescaleDB) | Available |
-| **Local-lite** | Zero-dependency binary with SQLite | Coming soon ([#312](https://github.com/ashita-ai/akashi/issues/312)) |
+| **Local-lite** | Zero-dependency binary with SQLite | Available (`make build-local`; see ADR-009) |
 
 ### How do I get started quickly?
 

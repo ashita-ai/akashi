@@ -24,12 +24,14 @@ This registers a `PostToolUse` hook that fires after every `git commit` and remi
 
 **Before every commit (mandatory, CI rejects failures):**
 ```sh
-go mod tidy && git diff --exit-code go.mod go.sum
-go build ./...
-go vet ./...
-golangci-lint run ./...
-atlas migrate validate --dir file://migrations
+make preflight
 ```
+
+This is `ci.yml`'s build job minus the tests: tidy + go.mod diff, doc/config consistency,
+Atlas migration validation, `go build`, the **lite build** (`-tags lite ./cmd/akashi-local`),
+lint, and vet. No Docker, no database, no API keys. The Makefile target is the only definition —
+do not restate the command list here, which is how the two CI-enforced gates went missing from
+it for months. The raw commands are kept as a comment above the target.
 
 **Before every push (mandatory, CI runs with `-race`):**
 ```sh
@@ -54,11 +56,15 @@ make ci                                  # full local CI mirror
 ```
 cmd/akashi/          Server entrypoint. Config loading, dependency wiring, signal handling.
 cmd/akashi-local/    Local-lite MCP server (SQLite, stdio transport, zero-infra). See ADR-009.
-cmd/eval-conflicts/  Offline evaluation tool for conflict detection precision/recall.
+cmd/eval-conflicts/  Evaluation harness for conflict detection precision/recall. Only
+                     --mode=benchmark runs standalone; --mode=validator and --mode=scorer
+                     need a running server, and --mode=gold needs AKASHI_DB_DSN plus a
+                     populated conflict_gold_labels table. See docs/conflict-detection.md.
 internal/
   server/            HTTP handlers (handlers*.go), middleware (middleware.go), SSE broker.
   storage/           PostgreSQL queries. One file per entity (decisions.go, agents.go, events.go...).
-  storage/sqlite/    SQLite storage backend for local/lite mode (build tag: lite).
+  storage/sqlite/    SQLite storage backend for local/lite mode. Carries NO build tag — it
+                     compiles in every build and is simply not imported outside cmd/akashi-local.
   service/           Business logic. decisions/ (trace pipeline), embedding/, quality/, query/, search/,
                      trace/ (event buffer, WAL), autoassess/, autoresolve/, tracehealth/.
   model/             Domain types. Decision, AgentEvent, Alternative, Evidence, etc.
@@ -98,19 +104,40 @@ docs/                Configuration reference; conflict-detection operator guide.
 1. Add the handler method to the appropriate `handlers_*.go` file:
 ```go
 func (h *Handlers) HandleMyThing(w http.ResponseWriter, r *http.Request) {
-    orgID := OrgIDFromContext(r.Context())        // always extract org
-    agentID := AgentIDFromContext(r.Context())     // from auth middleware
+    orgID := OrgIDFromContext(r.Context())   // always extract org
+    claims := ClaimsFromContext(r.Context()) // caller identity: claims.ActorID(), claims.Role
     // ... business logic ...
     writeJSON(w, r, http.StatusOK, result)
 }
 ```
+There is no `AgentIDFromContext`. The caller's identity comes off `ClaimsFromContext`, whose
+`ActorID()` prefers `AgentID` (API-key auth) and falls back to `Subject` (JWT auth).
+
 2. Register the route in `server.go`:
 ```go
 mux.Handle("GET /v1/my-thing", readRole(http.HandlerFunc(h.HandleMyThing)))
 ```
-3. Add the storage query in the appropriate `internal/storage/*.go` file. Always filter by `org_id`.
-4. Add the endpoint to `api/openapi.yaml`.
-5. Run the full pre-commit checks.
+`adminOnly`, `orgOwnerOnly`, `writeRole` and `readRole` are local variables declared inside
+`New()` (server.go:158, :172, :185, :192), not package-level functions — they exist only in that
+scope. Pick the lowest role that is still correct: `readRole` (reader+) for queries, `writeRole`
+(agent+) for ingestion, `adminOnly` for management, `orgOwnerOnly` for anything irreversible.
+`POST /v1/decisions/{id}/erase` at server.go:173 is the worked example of the last case. The full
+five-level ladder is in `docs/faq.md`; changing an existing endpoint's role is an ask-first item.
+
+3. Add the storage query in the appropriate `internal/storage/*.go` file. Always filter by
+   `org_id`, and add `valid_to IS NULL` if the query should return current state.
+
+4. Add a cross-org test. `TestHandlersCritical_GetDecisionCrossOrgReturns404` is the template:
+   a caller from org B must get 404, not 403, for a resource in org A.
+
+5. Add the endpoint to `api/openapi.yaml`. This one is machine-checked —
+   `internal/server/openapi_test.go` parses the route registrations out of server.go and fails
+   on any route missing from the spec.
+
+6. Run `make preflight`.
+
+SDK parity is **not** required for a new endpoint. All three SDKs cover well under the spec's 86
+operations and always have; adding a method is welcome, and opening a follow-up issue is the norm.
 
 ## How to add a migration
 
@@ -131,7 +158,7 @@ If you still believe the behavior should change, update the tests in the same co
 **Always:**
 - Scope every storage query by `org_id`
 - Include `valid_to IS NULL` when querying current decision state
-- Run the 5 pre-commit checks + `go test -race` before pushing
+- Run `make preflight` + `go test -race` before pushing
 - Use `require.NoError(t, err)` / `assert.*` from testify in tests
 - Use `writeJSON(w, r, statusCode, payload)` for HTTP responses
 - Use `slog` structured logging (never `fmt.Print` or `log.*`)
@@ -139,7 +166,7 @@ If you still believe the behavior should change, update the tests in the same co
 **Never:**
 - Commit `.env` files, API keys, or credentials
 - Add `Co-Authored-By` trailers to commits
-- Skip pre-commit checks ("just this once" has caused two CI failures)
+- Skip `make preflight` ("just this once" has caused two CI failures)
 - Modify already-applied migrations (create a new one instead)
 - Use `os.Exit` inside `run()` (it skips defers; return an error instead)
 - Remove a failing test without understanding why it fails first

@@ -530,7 +530,14 @@ func verifyAPIKey(ctx context.Context, db *storage.DB, credential, orgHeader str
 }
 
 // requireRole returns middleware that enforces a minimum role level.
-// Uses the role hierarchy: admin > agent > reader.
+//
+// The hierarchy has five levels, not three (model.RoleRank):
+//
+//	platform_admin (5) > org_owner (4) > admin (3) > agent (2) > reader (1)
+//
+// Pick the lowest role that is still correct. admin is NOT the ceiling: erasure
+// is gated on org_owner (server.go:172) because it is irreversible, and a
+// destructive endpoint documented as "admin-only" is under-gated by two levels.
 func requireRole(minRole model.AgentRole) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

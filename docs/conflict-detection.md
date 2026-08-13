@@ -201,6 +201,39 @@ Related knobs: `AKASHI_CONFLICT_LLM_MODEL` (Ollama text model), `AKASHI_CONFLICT
 
 ## 3. How to evaluate a change
 
+> **Read this before you start: the gold corpus is not distributed, and you cannot run
+> `--mode=gold` without building your own.**
+>
+> `conflict_gold_labels` (migration 107) has exactly one write path in this repository, and it
+> is inside a test (`internal/conflicts/goldset_protection_test.go`). There is no endpoint, no
+> CLI subcommand, no seed script, and no fixture that populates it. The 2,772 labelled pairs
+> behind every number in this document are real decision texts from the maintainer's own
+> deployment — they carry ticket references, service names, and customer-adjacent identifiers,
+> and they are not published.
+>
+> So on a fresh clone, `--mode=gold` connects, finds an empty table, and reports nothing. It
+> does this *after* you have provisioned a Postgres, set `AKASHI_DB_DSN`, and supplied an
+> `OPENAI_API_KEY`. That is a bad way to find out, which is why it is written here first.
+>
+> **What an outside contributor can offer instead**, in descending order of strength:
+>
+> 1. **Your own labelled corpus.** Run the detector against your own decision trail, label the
+>    scored pairs blind against the four-way taxonomy in §3.2, and report precision the way §3.3
+>    describes — re-weighted onto true class sizes, with the sample size and interval attached.
+>    This is the strongest evidence available and it does not require our data.
+> 2. **A counter-example with a mechanism.** A concrete pair the detector gets wrong, plus which
+>    stage produced the error (structural suppressor, significance threshold, judge verdict, or
+>    parser contract) and the reasoning for the fix. Structural suppressors are individually
+>    unit-testable with no database at all — see the `*_filter_test.go` files in
+>    `internal/conflicts/`.
+> 3. **A pure-code change with tests.** Parser contracts, prompt structure, and the suppressors
+>    are all testable offline. `go test ./internal/conflicts/...` needs no Docker.
+>
+> What is *not* useful, and has been tried and measured: threshold tuning, new regex
+> suppressors, and hand-written eval sets. §3.2 explains why a hand-written set cannot falsify
+> the prompt it was written alongside, and §5 records the alternatives already rejected with
+> their numbers. Read both before proposing one.
+
 ### 3.1 Run the gold eval
 
 ```bash
